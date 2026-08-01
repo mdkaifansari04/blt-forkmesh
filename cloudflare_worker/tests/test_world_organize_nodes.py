@@ -89,7 +89,6 @@ def test_node_order_is_stable_but_membership_changes_reflow_the_ring():
     assert "usableNodes.forEach(({ node, name: nodeName }, nodeIndex)" in block
     assert "networkNodeSnapshot" in block
     assert 'worldLayoutId("node-"' not in block
-    assert "registerMovableObject(" not in block
     # Automatic placement piggybacks on the catalog update: it does not add
     # another timer, request, or listener.
     assert "fetch(" not in block
@@ -144,9 +143,6 @@ def test_node_deletion_immediately_reflows_surviving_cabinets():
 
 def test_live_node_layout_reanchors_after_pool_or_obstacle_changes():
     assert "function relayoutNetworkNodes()" in SCENE
-    apply_start = SCENE.index("function applyWorldLayout(")
-    apply_end = SCENE.index("\n  }\n", apply_start)
-    assert "relayoutNetworkNodes();" in SCENE[apply_start:apply_end]
     member_start = SCENE.index("function updateMemberLounge(")
     member_end = SCENE.index("\n  }\n", member_start)
     assert "previousSeatRadius" in SCENE[member_start:member_end]
@@ -185,17 +181,18 @@ def test_reward_pool_shows_a_live_mirror_count_above_the_orb():
     fountain_start = SCENE.index("function createFountain(")
     fountain = SCENE[fountain_start: SCENE.index("\n}\n", fountain_start)]
     assert 'mirrorCountSprite.name = "reward-pool-mirror-count";' in fountain
-    # Above the 1.15-radius orb sitting at y=5.15, clear of its geometry.
-    assert "mirrorCountSprite.position.y = 7.6;" in fountain
+    # The online count is painted directly into the raised fireball orb.
+    assert "mirrorCountSprite.position.y = 6.7;" in fountain
+    assert "depthTest: false" in fountain
     assert "group.add(mirrorCountSprite);" in fountain
     # Hidden until the first signed catalog lands, so no placeholder zero.
     assert "mirrorCountSprite.visible = false;" in fountain
     texture_start = SCENE.index("function rewardPoolMirrorCountTexture(")
     texture = SCENE[texture_start: SCENE.index("\n}\n", texture_start)]
-    assert 'context.fillText(count === 1 ? "MIRROR" : "MIRRORS", 256, 168);' in texture
-    # Offline cabinets stay in the ring, so the serving share is stated too.
-    assert '"ALL ONLINE"' in texture
-    assert "`${live.toLocaleString(\"en-US\")} ONLINE`" in texture
+    assert 'context.fillText(live.toLocaleString("en-US"), 256, 92);' in texture
+    assert 'context.fillText("ONLINE", 256, 168);' in texture
+    # Offline cabinets stay in the ring, and the second line states the total.
+    assert '`${count.toLocaleString("en-US")} TOTAL`' in texture
 
 
 def test_mirror_count_is_repainted_by_the_live_node_update():

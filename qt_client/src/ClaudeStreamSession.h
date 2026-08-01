@@ -52,6 +52,10 @@ public:
     void sendToolResult(const QString &toolUseId, const QString &content);
     void stop();
     bool running() const;
+    // PID of the running CLI (0 when not running). Everything the agent shells
+    // out to — builds included — lands under this process, so the UI can count
+    // its descendants (adhoc #57).
+    qint64 processId() const;
 
 signals:
     void started();

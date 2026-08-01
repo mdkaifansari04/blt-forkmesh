@@ -103,6 +103,31 @@ def test_public_catalog_preserves_signed_pull_count_for_world_consumers():
     assert safe_catalog_record(_base(visibility="public"))["pullCount"] == ""
 
 
+def test_public_catalog_carries_bounded_last_served_stamps_only():
+    # Optional catalog-v2 extension: when the node last served a clone / a
+    # website read, plus the bounded class of client. Absent (never empty) when
+    # unreported so older publishers' signatures still verify, and a raw
+    # User-Agent or a non-positive stamp never enters the public record.
+    rec = safe_catalog_record(_base(
+        visibility="public",
+        cloneServedAt="1750000000000",
+        cloneServedAgent="git-client",
+        websiteServedAt="0",
+        websiteServedAgent="Mozilla/5.0 (X11; Linux) Firefox/141.0",
+    ))
+    assert rec["cloneServedAt"] == "1750000000000"
+    assert rec["cloneServedAgent"] == "git-client"
+    assert "websiteServedAt" not in rec
+    assert "websiteServedAgent" not in rec
+    unreported = safe_catalog_record(_base(visibility="public"))
+    assert not {
+        "cloneServedAt",
+        "cloneServedAgent",
+        "websiteServedAt",
+        "websiteServedAgent",
+    }.intersection(unreported)
+
+
 def test_changed_file_paths_are_bounded_unique_and_safe():
     record = safe_catalog_record(_base(
         visibility="public",

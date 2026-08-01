@@ -69,6 +69,12 @@ def _load_runner(run_jobs):
     def json_response(payload, status=200):
         return SimpleNamespace(status=status, payload=payload)
 
+    sentry_events = []
+
+    async def capture_sentry_error(_env, status, method, path, message,
+                                   **_kwargs):
+        sentry_events.append((status, method, path, message))
+
     namespace = {
         "DurableObject": DurableObject,
         "Date": Date,
@@ -76,6 +82,8 @@ def _load_runner(run_jobs):
         "urlparse": urlparse,
         "json_response": json_response,
         "_safe_error_text": str,
+        "capture_sentry_error": capture_sentry_error,
+        "sentry_events": sentry_events,
     }
     module = ast.fix_missing_locations(
         ast.Module(body=selected, type_ignores=[]))
@@ -83,7 +91,7 @@ def _load_runner(run_jobs):
     return namespace
 
 
-def test_trigger_only_kicks_the_alarm_runner_and_config_registers_it():
+def test_trigger_samples_status_directly_then_kicks_the_alarm_runner():
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
     default = next(
         node for node in tree.body
@@ -97,8 +105,19 @@ def test_trigger_only_kicks_the_alarm_runner_and_config_registers_it():
         if isinstance(node, ast.AsyncFunctionDef)
         and node.name == "_run_scheduled_jobs"))
 
+    # The platform Cron Trigger is the only per-minute schedule the platform
+    # itself guarantees, so the /status sample must land from here even when
+    # the whole Durable Object subsystem is failing (wedged runner isolate,
+    # exhausted free-tier DO allowance). The sample runs FIRST so a kick that
+    # hangs on a dead object cannot starve it, and each half is isolated so
+    # one failing cannot suppress the other.
+    assert "record_status_sample(self.env)" in scheduled
     assert "_cron_runner_kick(self.env)" in scheduled
-    assert "record_status_sample" not in scheduled
+    assert scheduled.index("record_status_sample(self.env)") < \
+        scheduled.index("_cron_runner_kick(self.env)")
+    # The maintenance batch keeps its own sample call: with the claim row in
+    # record_status_sample exactly one caller records each minute, and the
+    # runner covers minutes where the trigger's Python wrapper was killed.
     assert "record_status_sample" in jobs
     assert "https_mirror_health_cron" in jobs
     assert "_cron_watchdog_completion" in jobs
@@ -158,6 +177,11 @@ def test_runner_keeps_successor_alarm_when_a_batch_fails():
         + ns["CRON_RUNNER_ALARM_OFFSET_MS"])
     assert "batch failed" in storage.data["last_failure"]
     assert "last_completed_slot" not in storage.data
+    # Workers Logs is off, so the swallowed batch failure must surface via
+    # Sentry (best-effort) instead of console/print.
+    assert any(
+        "batch failed" in message
+        for _status, _method, _path, message in ns["sentry_events"])
 
 
 def test_mid_minute_trigger_kick_reconciles_without_losing_next_slot():

@@ -7,9 +7,9 @@
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
 #include "../src/ChatVisitorPresence.h"
-#include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
+#include "../src/DirectorySizeScan.h"
 #include "../src/DiscussionInboxBackoff.h"
 #include "../src/DiscussionStore.h"
 #include "../src/ForkMeshIdentity.h"
@@ -31,6 +31,8 @@
 #include "../src/RepoSecurity.h"
 #include "../src/RoomCrypto.h"
 #include "../src/StrictGitReader.h"
+#include "../src/SystemStats.h"
+#include "../src/UsageLimitCalendar.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -49,6 +51,7 @@
 #include <QProcessEnvironment>
 #include <QFileInfo>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 
@@ -357,6 +360,40 @@ int main(int argc, char *argv[])
     }
 
     {
+        const qint64 resetMs = QDateTime::fromString(
+                                   QStringLiteral("2026-08-01T12:30:00Z"),
+                                   Qt::ISODate)
+                                   .toMSecsSinceEpoch();
+        const QString calendar = UsageLimitCalendar::eventText(
+            QStringLiteral("claude"), QStringLiteral("5h"),
+            QStringLiteral("Claude Code"), QStringLiteral("5-hour"), resetMs,
+            resetMs - 60 * 1000);
+        check(calendar.contains(QStringLiteral("BEGIN:VCALENDAR\r\n")) &&
+                  calendar.contains(QStringLiteral("METHOD:PUBLISH\r\n")) &&
+                  calendar.contains(QStringLiteral(
+                      "UID:forkmesh-usage-claude-5h-1785587400000@local\r\n")) &&
+                  calendar.contains(QStringLiteral("DTSTART:20260801T123000Z\r\n")) &&
+                  calendar.contains(QStringLiteral("TRIGGER:PT0M\r\n")) &&
+                  calendar.contains(QStringLiteral(
+                      "SUMMARY:ForkMesh: Claude Code usage is ready\r\n")),
+              "usage-limit calendar export is a timed iCalendar event with an alarm");
+        check(UsageLimitCalendar::eventText(
+                  QStringLiteral("claude"), QStringLiteral("5h"),
+                  QStringLiteral("Claude Code"), QStringLiteral("5-hour"), 0)
+                  .isEmpty(),
+              "usage-limit calendar export rejects a missing reset time");
+
+        const QString path = UsageLimitCalendar::writeEvent(
+            QStringLiteral("codex"), QStringLiteral("weekly"),
+            QStringLiteral("Codex"), QStringLiteral("weekly"), resetMs);
+        QFile file(path);
+        check(!path.isEmpty() && file.open(QIODevice::ReadOnly) &&
+                  QString::fromUtf8(file.readAll()).contains(
+                      QStringLiteral("ForkMesh: Codex usage is ready")),
+              "usage-limit calendar event is written atomically under app data");
+    }
+
+    {
         // Bounded chat history (issue #428): a mirror node must not retain
         // unlimited chat frames — or huge file payloads — in RAM.
         QList<QJsonObject> history;
@@ -477,9 +514,16 @@ int main(int argc, char *argv[])
         check(!ForkMeshIdentity::verifySignature(identity.publicKey(), sig,
                                                  canonical + "x"),
               "verifySignature rejects a tampered payload");
+        // Tamper with the FIRST base64 character, not the last: the trailing
+        // characters of a 64-byte signature carry bits that decode to nothing,
+        // so rewriting them sometimes yields the very same signature and the
+        // check flaked. Every bit of the first character is significant.
+        const QString tamperedSignature =
+            (sig.startsWith(QLatin1Char('A')) ? QStringLiteral("B")
+                                              : QStringLiteral("A")) +
+            sig.mid(1);
         check(!ForkMeshIdentity::verifySignature(identity.publicKey(),
-                                                 sig.left(sig.size() - 2) + "AA",
-                                                 canonical),
+                                                 tamperedSignature, canonical),
               "verifySignature rejects a tampered signature");
     }
 
@@ -1214,17 +1258,6 @@ int main(int argc, char *argv[])
         check(prompts == 1 && !manager.seenPaths.isEmpty(),
               "the accepted firewall rule whitelists subsequent requests");
     }
-
-    // --- Commit comment signing ------------------------------------------
-    CommitComment commitVec;
-    commitVec.author = "TESTPUB";
-    commitVec.ts = 3000;
-    commitVec.body = "Nice";
-    const QByteArray expectedCommit =
-        "forkmesh-commit-comment-v1\nabc123\nTESTPUB\n3000\n"
-        "fdc96ffbf256523aec8846ae56321053c7ab751c99eb766e6bb4a7d362a4f060";
-    check(CommitCommentStore::canonicalString("abc123", commitVec) == expectedCommit,
-          "commit-comment canonical string matches the cross-language vector");
 
     // A burn-up series must reconstruct historical state, including a close
     // and a later reopening, rather than repeating today's status backwards.
@@ -5480,16 +5513,6 @@ int main(int argc, char *argv[])
                   "checkMergeable names the conflicting file from the ref-merge");
         }
 
-        // --- CommitCommentStore round-trip -------------------------------
-        const QByteArray head = gitOutput({"rev-parse", "HEAD"}).trimmed();
-        CommitCommentStore comments(tmp.path(), QString(), &identity, "tester");
-        check(comments.addComment(QString::fromUtf8(head), "great commit", &err),
-              "commit addComment succeeds");
-        const QList<CommitComment> loadedComments =
-            comments.loadFor(QString::fromUtf8(head));
-        check(loadedComments.size() == 1 && loadedComments.first().body == "great commit",
-              "commit comment round-trips from commits/<sha>/NNNN-comment.md");
-
         // --- CoveStore round-trip ----------------------------------------
         // Create an encrypted cove, confirm the committed file is opaque, then
         // unlock it from a fresh envelope read and verify the documents.
@@ -5822,6 +5845,36 @@ int main(int argc, char *argv[])
         legacy.remove("yolo");
         check(!AgentSession::fromJson(legacy).yolo,
               "a session JSON without the yolo key never auto-merges");
+
+        // Genie (adhoc #38) is stamped the same way: the launch attaches the MCP
+        // connector because the run was started as a genie, so the flag has to
+        // survive a restart (a resumed genie must get its tools back) and an
+        // older session file must not read as one.
+        check(!AgentSession::fromJson(legacy).genie,
+              "a session JSON without the genie key is not a genie run");
+        session.genie = true;
+        check(store.saveSession(session), "saving a genie session succeeds");
+        AgentStore genieReopened(tmp.path());
+        const QList<AgentSession> genieSessions = genieReopened.loadAllSessions();
+        check(genieSessions.size() == 1 && genieSessions.first().genie,
+              "the genie flag reloads intact after a restart");
+        // The sparkle glyph marks a genie only while it is still in flight; a
+        // finished or merged one reads exactly like every other run.
+        AgentSession live = genieSessions.first();
+        live.status = AgentStatus::Running;
+        check(live.genieInFlight(), "a running genie is drawn with the genie glyph");
+        live.status = AgentStatus::Success;
+        check(!live.genieInFlight(),
+              "a finished genie falls back to the ordinary status glyph");
+        live.status = AgentStatus::Running;
+        live.merged = true;
+        check(!live.genieInFlight(),
+              "a merged genie shows the merge glyph, not the genie one");
+        AgentSession ordinary = live;
+        ordinary.genie = false;
+        ordinary.merged = false;
+        check(!ordinary.genieInFlight(),
+              "an ordinary run never shows the genie glyph");
     }
 
     {
@@ -5925,6 +5978,47 @@ int main(int argc, char *argv[])
                            "jobs:\n  j:\n    steps:\n      - run: echo hi\n"));
         check(any.runsOnNode({QStringLiteral("mirror2")}),
               "the reserved \"any\" label matches every node");
+
+        // The Actions tab's "Run on" dropdown pins a node without editing the
+        // YAML: the pin is stored on the repository record and stands in for the
+        // workflow's own runs-on labels.
+        QStringList pins;
+        check(ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml"))
+                  .isEmpty(),
+              "no pin means the workflow file decides where it runs");
+        pins = ActionFile::setPinnedNode(pins, {QStringLiteral(".forkmesh/ci.yml")},
+                                         QStringLiteral("Mac1"));
+        check(ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml")) ==
+                  QStringLiteral("mac1"),
+              "a pinned node is stored lower-cased and read back by path");
+        check(ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/deploy.yml"))
+                  .isEmpty(),
+              "a pin only applies to the workflow it names");
+        pins = ActionFile::setPinnedNode(
+            pins,
+            {QStringLiteral(".forkmesh/ci.yml"), QStringLiteral(".forkmesh/deploy.yml")},
+            QStringLiteral("mirror2"));
+        check(pins.size() == 2 &&
+                  ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml")) ==
+                      QStringLiteral("mirror2"),
+              "pinning every workflow at once repins the ones already pinned");
+        pins = ActionFile::setPinnedNode(pins, {QStringLiteral(".forkmesh/ci.yml")},
+                                         QString());
+        check(pins.size() == 1 &&
+                  ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml"))
+                      .isEmpty() &&
+                  ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/deploy.yml")) ==
+                      QStringLiteral("mirror2"),
+              "clearing one pin leaves the others alone");
+
+        // A pin decides on its own: the dedication check runs against the pinned
+        // label, so a workflow the file sends elsewhere still runs here.
+        ActionWorkflow pinned;
+        pinned.runsOn = QStringList{
+            ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/deploy.yml"))};
+        check(pinned.runsOnNode({QStringLiteral("mirror2")}) &&
+                  !pinned.runsOnNode({QStringLiteral("mac1")}),
+              "the pinned node is the only one that runs the workflow");
 
         // This node's own labels: node name, mirror-executor name, platform, and
         // whatever capability tags the operator typed in Settings.
@@ -6562,6 +6656,16 @@ int main(int argc, char *argv[])
               "nothing is pruned under the limit, and keep=0 still spares the "
               "newest snapshot");
 
+        // The hourly toggle's unset-default follows the Cloudflare API token:
+        // only a control node backs itself up without being asked, because
+        // every other install (desktop or VPS) would rather not spend a day of
+        // ~1GB tarballs it never opted into.
+        check(forkmesh::autoBackupDefault(QStringLiteral("cf-token")) &&
+                  !forkmesh::autoBackupDefault(QString()) &&
+                  !forkmesh::autoBackupDefault(QStringLiteral("   ")),
+              "hourly backups default on only for control nodes, and a blank "
+              "token is not one");
+
         const QDateTime now =
             QDateTime::fromString(QStringLiteral("2026-07-28T10:00:00"),
                                   Qt::ISODate);
@@ -6751,6 +6855,190 @@ int main(int argc, char *argv[])
                   maskToken(QString()).isEmpty(),
               "masking hides the middle of the token");
     }
+
+    {
+        // Size map over a folder the user cannot fully read (adhoc #76): the
+        // mount table has to yield the pseudo filesystems Qt's QStorageInfo
+        // hides (or /proc/kcore's fictional terabytes swallow a scan of "/"),
+        // unreadable directories have to be counted rather than silently
+        // skipped, and the tree has to survive the trip back from the elevated
+        // helper process.
+        using namespace forkmesh;
+
+        const QByteArray mountInfo =
+            "23 28 0:22 / /proc rw,nosuid,relatime shared:12 - proc proc rw\n"
+            "24 28 0:23 / /sys rw,nosuid shared:2 - sysfs sysfs rw\n"
+            "31 28 0:29 / /media/My\\040Disk rw,relatime shared:5 - ext4 "
+            "/dev/sdb1 rw\n";
+        const QSet<QString> mounts = mountPointsFromMountTable(mountInfo);
+        check(mounts.contains(QStringLiteral("/proc")) &&
+                  mounts.contains(QStringLiteral("/sys")) &&
+                  mounts.contains(QStringLiteral("/media/My Disk")),
+              "mountinfo yields the pseudo mounts QStorageInfo hides, "
+              "unescaped");
+        const QSet<QString> mtab = mountPointsFromMountTable(
+            "proc /proc proc rw,nosuid 0 0\ntmpfs /run tmpfs rw 0 0\n");
+        check(mtab.contains(QStringLiteral("/proc")) &&
+                  mtab.contains(QStringLiteral("/run")) && mtab.size() == 2,
+              "the /proc/mounts layout parses to the same mount points");
+
+        QTemporaryDir tree;
+        check(tree.isValid(), "the size-map scan gets a scratch tree");
+        const QDir root(tree.path());
+        check(root.mkpath(QStringLiteral("keep")) &&
+                  root.mkpath(QStringLiteral("pruned")) &&
+                  root.mkpath(QStringLiteral("locked")),
+              "the scratch tree has readable, pruned and locked folders");
+        const auto writeBytes = [&root](const QString &relative, int size) {
+            QFile file(root.absoluteFilePath(relative));
+            return file.open(QIODevice::WriteOnly) &&
+                   file.write(QByteArray(size, 'x')) == size;
+        };
+        check(writeBytes(QStringLiteral("keep/a.bin"), 4096) &&
+                  writeBytes(QStringLiteral("pruned/b.bin"), 8192) &&
+                  writeBytes(QStringLiteral("locked/c.bin"), 2048),
+              "the scratch tree has one file per folder");
+        QFile::setPermissions(root.absoluteFilePath(QStringLiteral("locked")),
+                              QFileDevice::WriteOwner);
+
+        DirectorySizeScanOptions options;
+        options.pruned.insert(root.absoluteFilePath(QStringLiteral("pruned")));
+        const DirectorySizeScanResult scan =
+            scanDirectorySizes(tree.path(), options);
+        check(scan.root.size == 4096 &&
+                  (runningAsRoot() || scan.root.fileCount == 1),
+              "pruned paths contribute no bytes to the totals");
+        if (!runningAsRoot()) {
+            check(scan.unreadableDirs == 1 &&
+                      scan.unreadableSample.size() == 1 &&
+                      scan.unreadableSample.first().endsWith(
+                          QStringLiteral("/locked")),
+                  "an unlistable directory is reported, not silently dropped");
+            // What decides whether selecting a folder asks for the root password
+            // before scanning it at all (adhoc #112).
+            check(scanNeedsElevation(tree.path(), {}),
+                  "a folder holding an unlistable directory wants root up front");
+            check(!scanNeedsElevation(
+                      tree.path(),
+                      {root.absoluteFilePath(QStringLiteral("locked"))}),
+                  "a folder whose only locked child is pruned does not");
+            check(!scanNeedsElevation(
+                      root.absoluteFilePath(QStringLiteral("keep")), {}),
+                  "a fully readable folder never raises a password prompt");
+        } else {
+            check(!scanNeedsElevation(tree.path(), {}),
+                  "already running as root, there is nothing left to ask for");
+        }
+        // Restore, or QTemporaryDir cannot clean up after itself.
+        QFile::setPermissions(root.absoluteFilePath(QStringLiteral("locked")),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                  QFileDevice::ExeOwner);
+
+        QString requestPath;
+        DirectorySizeScanOptions decodedOptions;
+        check(decodeScanRequest(encodeScanRequest(tree.path(), options),
+                                &requestPath, &decodedOptions) &&
+                  requestPath == tree.path() &&
+                  decodedOptions.pruned == options.pruned &&
+                  decodedOptions.maxDepth == options.maxDepth,
+              "the elevated helper's request survives the round trip");
+        check(!decodeScanRequest(QByteArray("{}"), &requestPath, &decodedOptions),
+              "a request without a folder is rejected");
+
+        DirectorySizeScanResult decoded;
+        check(decodeScanResult(encodeScanResult(scan), &decoded) &&
+                  decoded.root.size == scan.root.size &&
+                  decoded.root.children.size() == scan.root.children.size() &&
+                  decoded.unreadableDirs == scan.unreadableDirs &&
+                  decoded.unreadableSample == scan.unreadableSample,
+              "the elevated helper's tree survives the round trip");
+        check(!decodeScanResult(QByteArray("not a scan"), &decoded) &&
+                  !decodeScanResult(QByteArray(), &decoded),
+              "a truncated or foreign payload is never read as a tree");
+
+        // Live progress (adhoc #112): the walk names the folder it is inside so
+        // the tab can show it, and the same updates survive the trip out of the
+        // elevated helper on stderr.
+        QStringList visited;
+        qint64 lastBytes = -1;
+        scanDirectorySizes(tree.path(), options,
+                           [&](const QString &current, qint64 bytes, int) {
+                               visited.append(current);
+                               lastBytes = bytes;
+                           });
+        check(visited.contains(QDir::cleanPath(tree.path())) && lastBytes >= 0,
+              "a scan reports the folder it is walking, root first");
+
+        QString progressPath;
+        qint64 progressBytes = 0;
+        int progressFiles = 0;
+        // A newline in a filename would otherwise split one update into two.
+        const QString awkward =
+            tree.path() + QStringLiteral("/od d\nname 100%");
+        check(decodeScanProgress(encodeScanProgress(awkward, 4096, 7),
+                                 &progressPath, &progressBytes,
+                                 &progressFiles) &&
+                  progressPath == awkward && progressBytes == 4096 &&
+                  progressFiles == 7,
+              "a progress line round-trips a path with a newline in it");
+        check(encodeScanProgress(awkward, 4096, 7).count('\n') == 1,
+              "one progress update is exactly one line");
+        check(!decodeScanProgress(QByteArray("sudo: a password is required"),
+                                  &progressPath, &progressBytes,
+                                  &progressFiles) &&
+                  !decodeScanProgress(QByteArray("FMSZ-PROGRESS 12"),
+                                      &progressPath, &progressBytes,
+                                      &progressFiles),
+              "sudo's own chatter and a truncated line are not progress");
+
+        // Stop button: a canceled poll must unwind before the walk descends
+        // into anything, rather than finishing the tree and throwing it away.
+        int cancelChecks = 0;
+        const DirectorySizeScanResult stopped = scanDirectorySizes(
+            tree.path(), options, {},
+            [&] { ++cancelChecks; return true; });
+        check(stopped.root.size == 0 && stopped.root.fileCount == 0 &&
+                  stopped.root.children.isEmpty() && cancelChecks > 0,
+              "a scan canceled up front produces an empty tree, not a partial one");
+    }
+
+#if defined(Q_OS_LINUX)
+    {
+        // Counting an agent's own compilers (adhoc #57): the /proc walk has to
+        // find a grandchild by command name and ignore everything outside the
+        // tree it was asked about.
+        using SystemStats::descendantsNamed;
+        check(descendantsNamed(0, QStringLiteral("sleep")).count == 0 &&
+                  descendantsNamed(QCoreApplication::applicationPid(), QString())
+                          .count == 0,
+              "an invalid root PID or empty name counts nothing");
+
+        QProcess child;
+        // `sh` execs the sleep, so the match is a grandchild of this process —
+        // the same shape as claude → bash → cc1plus.
+        child.start(QStringLiteral("/bin/sh"),
+                    {QStringLiteral("-c"), QStringLiteral("sleep 30")});
+        if (child.waitForStarted(5000)) {
+            SystemStats::DescendantLoad load;
+            QElapsedTimer waited;
+            waited.start();
+            while (waited.elapsed() < 5000 && load.count == 0) {
+                load = descendantsNamed(QCoreApplication::applicationPid(),
+                                        QStringLiteral("sleep"));
+                if (load.count == 0)
+                    QThread::msleep(50); // sh hasn't exec'd the sleep yet
+            }
+            check(load.count >= 1 && load.residentBytes > 0,
+                  "a descendant process is counted with its resident memory");
+            check(descendantsNamed(child.processId(),
+                                   QStringLiteral("forkmesh-tests"))
+                          .count == 0,
+                  "processes outside the subtree are not counted");
+            child.kill();
+            child.waitForFinished(5000);
+        }
+    }
+#endif
 
     if (failures) {
         qCritical("TESTS FAILED");

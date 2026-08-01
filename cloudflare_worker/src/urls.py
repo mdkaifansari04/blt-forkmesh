@@ -58,12 +58,13 @@ REPO_PULL_MERGE_RE = re.compile(
 REPO_ACTION_RUNS_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/actions/runs$")
 # Commit-comment inbox: signed per-commit comments from any node.
-REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
 # Discussion inbox: signed discussion open/comment submissions from any node.
 REPO_DISCUSSIONS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/discussions$")
-# Content-free tallies of inbox items awaiting the owner node's next sync, so
-# the website can badge tabs with "N pending" without owner auth (counts only —
-# the items themselves stay encrypted and owner-gated).
+# Content-free tallies of inbox items no online node (source of truth or an
+# approved mirror) has merged yet, so the website can badge tabs with
+# "N pending" without owner auth (counts only — the items themselves stay
+# encrypted and owner/mirror-gated). Any online mirror drains the queue by
+# merging submissions straight into the branch it serves.
 REPO_PENDING_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/pending$")
 # Thread subscriptions (issue #361): a node signs a subscribe/unsubscribe for one
 # issue or PR so it gets notified of every reply, not just mentions of it.
@@ -83,6 +84,11 @@ REPO_SECURITY_SCANS_RE = re.compile(
     r"(lease|ingest|latest|history|triage)$")
 # Public mirror health for a logical repo group.
 REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
+# Exact-node content reachability. Unlike the ordinary repository read route,
+# this never fails over to another mirror: operators use it to verify that the
+# named node itself can return the repository README.
+REPO_MIRROR_REACHABILITY_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/mirrors/([^/]+)/reachability$")
 # Catalog-facing About details editable from the dashboard by the source owner.
 REPO_ABOUT_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/about$")
 REPO_LOGO_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/logo$")

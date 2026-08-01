@@ -10,8 +10,9 @@ and drive them against in-memory D1 stubs.
 
 import ast
 import asyncio
+import json
 from pathlib import Path
-from types import SimpleNamespace
+from urllib.parse import quote
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,7 +53,7 @@ def _load(*names, extra_globals=None):
         "_status_minute", "_is_tunnel_content_path",
         "_status_deploy_semaphore_active",
         "_record_status_deploy_sample",
-        "_email_delivery_status",
+        "_claim_status_sample_minute",
     }
     selected = []
     for node in list(urls_tree.body) + list(tree.body):
@@ -88,7 +89,7 @@ class _Clock:
 
 def _sample_env(
         now, error_paths, host_online=True, db_ok=True, error_rows=None,
-        mirror_rows=None, latest_email=None):
+        mirror_rows=None, do_abort_rows=None):
     """Stub error rows plus the signed direct-HTTPS mirror health count."""
     inserted = []
     hourly = []
@@ -106,6 +107,8 @@ def _sample_env(
         return {}
 
     async def d1_all(_env, sql, *_args):
+        if "durable_object_abort_minute" in sql:
+            return list(do_abort_rows or [])
         if "error_log" in sql:
             if error_rows is not None:
                 return error_rows
@@ -152,11 +155,11 @@ def _sample_env(
 
 def _run_sample(
         error_paths=(), host_online=True, db_ok=True, error_rows=None,
-        mirror_rows=None, latest_email=None, email_configured=True):
+        mirror_rows=None, do_abort_rows=None):
     extra, inserted, hourly, minutely = _sample_env(
         _Clock.value, error_paths, host_online, db_ok,
         error_rows=error_rows, mirror_rows=mirror_rows,
-        latest_email=latest_email,
+        do_abort_rows=do_abort_rows,
     )
     g = _load("record_status_sample", extra_globals=extra)
     env = SimpleNamespace(
@@ -400,6 +403,20 @@ def test_do_duration_abort_fails_its_own_bucket_and_realtime():
     assert results["errors"] == 1
     assert results["api"] == 0
     assert "Exceeded allowed duration" in reasons["durable_objects"]
+
+
+def test_aggregated_do_aborts_fail_only_realtime_and_do_status_rows():
+    results, reasons, _minutes = _run_sample(
+        error_rows=[],
+        do_abort_rows=[{"aborts": 7, "duration_aborts": 5}],
+    )
+    assert results["durable_objects"] == 1
+    assert results["realtime"] == 1
+    assert results["errors"] == 0
+    assert results["api"] == 0
+    assert results["website"] == 0
+    assert "7 Durable Object requests aborted" in reasons["durable_objects"]
+    assert "5 exceeded allowed duration" in reasons["durable_objects"]
 
 
 def test_reason_includes_status_and_message_and_extra_count():
@@ -969,6 +986,75 @@ def test_record_status_sample_writes_one_minute_row_per_system():
     assert no_reason is None
 
 
+def test_one_sampler_records_each_minute_via_the_claim_row():
+    # The platform Cron Trigger and the ForkMeshCronRunner alarm both call
+    # record_status_sample every minute. The claim row must let exactly one
+    # of them record the minute — the daily/hourly rollups are checks-counter
+    # increments, so a second recording would inflate the hour's coverage.
+    extra, inserted, hourly, minutely = _sample_env(_Clock.value, [])
+    claims = {}
+    base_d1_run = extra["d1_run"]
+    base_d1_first = extra["d1_first"]
+
+    async def d1_run(env, sql, *args):
+        if sql.startswith("INSERT INTO system_status_sample_claim"):
+            claims.setdefault(args[0], args[1])
+            return
+        await base_d1_run(env, sql, *args)
+
+    async def d1_first(env, sql, *args):
+        if "system_status_sample_claim" in sql:
+            return {"claim": claims.get(args[0])}
+        return await base_d1_first(env, sql, *args)
+
+    counter = [0]
+
+    class _Uint8Array:
+        @staticmethod
+        def new(length):
+            return length
+
+    class _Crypto:
+        @staticmethod
+        def getRandomValues(length):
+            counter[0] += 1
+            return [(counter[0] + i) % 256 for i in range(length)]
+
+    extra.update({
+        "d1_run": d1_run, "d1_first": d1_first,
+        "js_crypto": _Crypto, "Uint8Array": _Uint8Array,
+    })
+    g = _load("record_status_sample", extra_globals=extra)
+    asyncio.run(g["record_status_sample"](object()))
+    recorded = len(minutely)
+    assert recorded > 0
+
+    # A second caller inside the same minute loses the read-back token check
+    # and must skip the whole sample (no minute rows, no counter increments).
+    asyncio.run(g["record_status_sample"](object()))
+    assert len(minutely) == recorded
+    assert len(inserted) == recorded
+    assert len(hourly) == recorded
+
+
+def test_claim_infrastructure_failure_fails_open_and_still_samples():
+    # A broken claim table must never blank the public sample — worst case a
+    # duplicated minute overwrites cleanly and costs one extra check count,
+    # while a skipped minute would paint fake downtime.
+    extra, _inserted, _hourly, minutely = _sample_env(_Clock.value, [])
+    base_d1_run = extra["d1_run"]
+
+    async def d1_run(env, sql, *args):
+        if sql.startswith("INSERT INTO system_status_sample_claim"):
+            raise RuntimeError("no such table: system_status_sample_claim")
+        await base_d1_run(env, sql, *args)
+
+    extra["d1_run"] = d1_run
+    g = _load("record_status_sample", extra_globals=extra)
+    asyncio.run(g["record_status_sample"](object()))
+    assert len(minutely) > 0
+
+
 def test_minute_strip_is_sixty_buckets_oldest_to_newest():
     out = _run_history([])
     by_id = {s["id"]: s for s in out["systems"]}
@@ -1113,6 +1199,8 @@ def _run_history_current(
                 assert any(
                     "Exceeded allowed duration" in str(a) for a in args
                 ), sql
+                assert "durable_object_abort_minute" in sql
+                assert len(args) == 3
                 return {"n": do_abort_count}
             return {"n": error_count}
         if "MAX(forkmesh_verified_at)" in sql:
@@ -1190,8 +1278,8 @@ def test_room_route_turns_a_do_duration_abort_into_a_retryable_503():
     # Regression: a room DO request that outlives the free-tier duration cap
     # dies with pyodide.http.AbortError, which used to escape _route and
     # surface as a Worker Error 1101. The room fetch must be guarded, log the
-    # cause (so the /status counter above sees it), and answer 503 without
-    # leaking exception detail to the client.
+    # aggregate the cause (so /status sees it), and answer 503 without leaking
+    # exception detail to the client or creating a row per reconnect.
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
     src = None
     for node in ast.walk(tree):
@@ -1308,7 +1396,7 @@ def test_flagship_repository_monitor_is_public_and_deduplicates_email_states():
     assert "Repository page shell did not load" in ENTRY_TEXT
     assert "await org_alias_rewrite(env, request, route_url)" in ENTRY_TEXT
     assert "Root repository tree did not contain README.md" in ENTRY_TEXT
-    assert "README.md body did not load" in ENTRY_TEXT
+    assert 'return "%s body did not load" % label' in ENTRY_TEXT
     assert "repository_monitor_state" in ENTRY_TEXT
     assert "notified_state" in ENTRY_TEXT
     assert "[ForkMesh outage]" in ENTRY_TEXT
@@ -1316,6 +1404,130 @@ def test_flagship_repository_monitor_is_public_and_deduplicates_email_states():
     assert "is passing again after " in ENTRY_TEXT
     assert "Suggested first step" in ENTRY_TEXT
     assert "WHERE monitor_id LIKE 'status:%'" in ENTRY_TEXT
+
+
+def test_flagship_repository_probe_loads_records_from_eligible_mirrors():
+    pulls_ref = "a" * 40
+    calls = []
+    missing_provenance = set()
+
+    payloads = {
+        ("tree", "tree?path="): {
+            "ok": True,
+            "entries": [{"name": "README.md", "type": "blob"}],
+        },
+        ("blob", "blob?path=README.md"): {
+            "ok": True, "content": "# ForkMesh",
+        },
+        ("tree", "tree?path=.forkmesh/issues"): {
+            "ok": True,
+            "entries": [
+                {"name": "open", "path": ".forkmesh/issues/open",
+                 "type": "tree"},
+            ],
+        },
+        ("tree", "tree?path=.forkmesh/issues/open"): {
+            "ok": True,
+            "entries": [{"name": "12", "type": "tree"}],
+        },
+        ("blobs", "blobs?path=.forkmesh/issues/open/12/issue-12.json"): {
+            "ok": True,
+            "blobs": {
+                ".forkmesh/issues/open/12/issue-12.json": {
+                    "content": '{"number":12,"title":"Monitor me"}',
+                },
+            },
+        },
+        ("tree", "tree?path=.forkmesh/discussions"): {
+            "ok": True,
+            "entries": [{"name": "3", "type": "tree"}],
+        },
+        ("blobs", "blobs?path=.forkmesh/discussions/3/discussion.md"): {
+            "ok": True,
+            "blobs": {
+                ".forkmesh/discussions/3/discussion.md": {
+                    "content": "---\ntitle: Discuss\n---\nBody",
+                },
+            },
+        },
+        ("branches", "branches"): {
+            "branches": [{"name": "forkmesh/pulls", "commit": pulls_ref}],
+        },
+        ("tree", "tree?path=pulls&ref=" + pulls_ref): {
+            "ok": True,
+            "entries": [{"name": "7", "type": "tree"}],
+        },
+        ("blobs", "blobs?path=pulls/7/pull.md&ref=" + pulls_ref): {
+            "ok": True,
+            "blobs": {
+                "pulls/7/pull.md": {
+                    "content": "---\ntitle: Pull\n---\nBody",
+                },
+            },
+        },
+    }
+
+    class Headers:
+        def __init__(self, values=None):
+            self.values = {
+                str(key).lower(): value for key, value in (values or {}).items()
+            }
+
+        def get(self, name):
+            return self.values.get(str(name).lower())
+
+    class Response:
+        status = 200
+
+        def __init__(self, body, served=True):
+            self.body = body
+            self.headers = Headers(
+                {"X-ForkMesh-Served-By": "mirror2"} if served else {})
+
+        async def text(self):
+            return self.body
+
+    class Assets:
+        async def fetch(self, _request):
+            return Response('<main data-page="repo"></main>', served=False)
+
+    class Env:
+        ASSETS = Assets()
+
+    class JsRequest:
+        @staticmethod
+        def new(url):
+            return url
+
+    async def routed(_env, url, operation, **_kwargs):
+        suffix = url.split("/forkmesh/forkmesh/", 1)[1]
+        key = (operation, suffix)
+        calls.append(key)
+        return Response(
+            json.dumps(payloads[key]),
+            served=key not in missing_provenance,
+        )
+
+    runtime = _load(
+        "_flagship_repository_probe",
+        extra_globals={
+            "JsRequest": JsRequest,
+            "MAX_NODE_NAME": 63,
+            "clean_string": lambda value, maximum: str(value)[:maximum],
+            "json": json,
+            "quote": quote,
+            "_routed_repository_read": routed,
+        },
+    )
+    probe = runtime["_flagship_repository_probe"]
+    assert asyncio.run(probe(Env())) == (True, "")
+    assert set(calls) == set(payloads)
+
+    calls.clear()
+    missing_provenance.add(("tree", "tree?path=.forkmesh/discussions"))
+    ok, reason = asyncio.run(probe(Env()))
+    assert ok is False
+    assert reason == "Discussions collection was not served by an eligible mirror"
 
 
 def test_installer_delivery_is_checked_every_ten_minutes_and_public():
@@ -1414,6 +1626,13 @@ def test_migration_file_matches_worker_schema():
         ROOT / "migrations" / "0023_system_status_hourly.sql"
     ).read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS system_status_hourly" in hourly_migration
+    abort_migration = (
+        ROOT / "migrations" / "0116_durable_object_abort_minute.sql"
+    ).read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS durable_object_abort_minute" in (
+        abort_migration)
+    assert "CREATE TABLE IF NOT EXISTS durable_object_abort_minute" in (
+        ENTRY_TEXT)
 
 
 if __name__ == "__main__":

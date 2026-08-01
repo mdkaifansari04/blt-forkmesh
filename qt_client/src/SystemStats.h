@@ -46,4 +46,16 @@ double cpuPercent();
 // Human-readable byte size, e.g. "134.0 MB" / "1.62 GB" ("0 B" for <= 0).
 QString formatBytes(qint64 bytes);
 
+// How much of the host a process subtree's same-named workers are using.
+struct DescendantLoad {
+    int count = 0;             // matching processes below the root
+    qint64 residentBytes = 0;  // their combined RSS
+};
+
+// Counts the processes in `rootPid`'s subtree (children, grandchildren, …) whose
+// command name is exactly `comm` — e.g. how many `cc1plus` compilers a running
+// agent's build has spawned (adhoc #57) — and sums their resident memory. Linux
+// only (walks /proc); returns an empty summary elsewhere or when rootPid <= 0.
+DescendantLoad descendantsNamed(qint64 rootPid, const QString &comm);
+
 } // namespace SystemStats

@@ -44,6 +44,31 @@ function timestamp(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+// Bounded client classes a node may report for the clone / website read it
+// last served. Anything else (including a raw User-Agent a tampered record
+// might carry) stays unknown rather than being echoed into the cabinet.
+const SERVE_AGENT_CLASSES = new Set([
+  "forkmesh-node",
+  "git-client",
+  "bot-tool",
+  "browser",
+  "client",
+]);
+
+function serveAgent(value) {
+  const agent = text(value, "", 16).toLowerCase();
+  return SERVE_AGENT_CLASSES.has(agent) ? agent : null;
+}
+
+function serveMetadata(source) {
+  return omitUnknownValues({
+    cloneServedAt: timestamp(source?.cloneServedAt),
+    cloneServedAgent: serveAgent(source?.cloneServedAgent),
+    websiteServedAt: timestamp(source?.websiteServedAt),
+    websiteServedAgent: serveAgent(source?.websiteServedAgent),
+  });
+}
+
 function commitMetadata(source) {
   const commit = source?.lastCommit || source?.commitDetails || {};
   const message = text(
@@ -92,6 +117,8 @@ function repositoryRecency(record) {
 }
 
 function publicRepositoryRecord(mirror, payload) {
+  const checkedAt =
+    Number(mirror?.checkedAt) > 0 ? timestamp(mirror.checkedAt) : null;
   return omitUnknownValues({
     owner: text(payload?.requestedOwner || payload?.owner, "", 80),
     name: text(
@@ -108,7 +135,24 @@ function publicRepositoryRecord(mirror, payload) {
     cloneAvailable: mirror?.cloneAvailable === true,
     endpointHealthy: mirror?.endpointHealthy === true,
     endpointFresh: mirror?.endpointFresh === true,
-    checkedAt: timestamp(mirror?.checkedAt),
+    endpointIntegrity: text(
+      mirror?.endpointIntegrity,
+      "unknown",
+      24,
+    ).toLowerCase(),
+    checkedAt,
+    latencyMs:
+      checkedAt === null ? null : knownInteger(mirror?.latencyMs, 60_000),
+    endpoint: text(mirror?.endpoint, "", 240) || null,
+    region: text(mirror?.region, "", 40).toLowerCase() || null,
+    ownerUser: text(mirror?.ownerUser, "", 80) || null,
+    abuseBlocked: mirror?.abuseBlocked === true,
+    operations: Array.isArray(mirror?.operations)
+      ? mirror.operations
+          .map((value) => text(value, "", 40))
+          .filter(Boolean)
+          .slice(0, 32)
+      : [],
     behind: mirror?.behind === true,
     lastSeen: timestamp(mirror?.lastSeen),
     lastSync: timestamp(mirror?.lastSync),
@@ -130,6 +174,7 @@ function publicRepositoryRecord(mirror, payload) {
     id: text(mirror?.id, "", 120),
     machineName: text(mirror?.machineName, "", 63) || null,
     ...commitMetadata(mirror),
+    ...serveMetadata(mirror),
   });
 }
 
@@ -154,6 +199,7 @@ function nodeAggregateRecord(node) {
     nodeId: text(node?.nodeId || node?.id, "", 120),
     machineName: text(node?.machineName, "", 63) || null,
     ...commitMetadata(node),
+    ...serveMetadata(node),
   });
 }
 
@@ -296,12 +342,24 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         // The machine's advertised node name — the display label for the
         // cabinet. The account (`name`) stays the identity/grouping key.
         machineName: primary.machineName || aggregate.machineName || null,
+        ownerUser: primary.ownerUser || null,
         online,
         healthy,
         status: online ? "online" : primary.status || "offline",
         integrity: primary.integrity || "unknown",
         activity: primary.activity || "unknown",
         activityUpdatedAt: primary.activityUpdatedAt || null,
+        endpoint: primary.endpoint || null,
+        checkedAt: primary.checkedAt || null,
+        latencyMs: primary.latencyMs ?? null,
+        region: primary.region || null,
+        endpointHealthy: primary.endpointHealthy === true,
+        endpointIntegrity: primary.endpointIntegrity || "unknown",
+        endpointFresh: primary.endpointFresh === true,
+        abuseBlocked: primary.abuseBlocked === true,
+        operations: Array.isArray(primary.operations)
+          ? primary.operations.slice(0, 32)
+          : [],
         cloneAvailable: repositories.some(
           (repository) =>
             repository.status === "online" &&
@@ -326,6 +384,7 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         lastSeen: primary.lastSeen || null,
         lastSync: hasPrimary ? primary.lastSync : aggregate.lastSync,
         updatedAt: hasPrimary ? primary.updatedAt : aggregate.updatedAt,
+        hostedSince: primary.hostedSince || null,
         syncAgeMs: primary.syncAgeMs ?? null,
         sizeBytes: hasPrimary ? primary.sizeBytes : aggregate.sizeBytes,
         issueCount: hasPrimary ? primary.issueCount : aggregate.issueCount,
@@ -347,6 +406,21 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         websiteServed: hasPrimary
           ? primary.websiteServed
           : aggregate.websiteServed,
+        // Paired with the two counters above: the stamp has to describe the
+        // same repository the count does, so it follows the same primary /
+        // aggregate choice rather than mixing sources.
+        cloneServedAt: hasPrimary
+          ? (primary.cloneServedAt ?? null)
+          : (aggregate.cloneServedAt ?? null),
+        cloneServedAgent: hasPrimary
+          ? (primary.cloneServedAgent ?? null)
+          : (aggregate.cloneServedAgent ?? null),
+        websiteServedAt: hasPrimary
+          ? (primary.websiteServedAt ?? null)
+          : (aggregate.websiteServedAt ?? null),
+        websiteServedAgent: hasPrimary
+          ? (primary.websiteServedAgent ?? null)
+          : (aggregate.websiteServedAgent ?? null),
         repositories,
         ...resources,
       });

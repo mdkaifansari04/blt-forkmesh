@@ -150,7 +150,7 @@ def test_landmarks_use_stable_positions_inside_the_world_and_office_campus():
     positions = {
         "fountain": (0, 0),
         "campfire": (0, 130),
-        "repositories": (35, 38),
+        "repositories": (130, 0),
         "office": (0, -215),
     }
     for landmark, (x, z) in positions.items():
@@ -365,7 +365,7 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
         "setAvatarFediverseProfile,",
         "queueMicrotask(() => onFediverseProfile(target))",
         '"FEDIVERSE · UNAVAILABLE"',
-        "const activityBorder =",
+        'activityRing.name = "avatar-activity-ring"',
         "new THREE.PlaneGeometry(0.88, 0.88)",
     ):
         assert contract in SCENE
@@ -431,7 +431,7 @@ def test_self_profile_has_follower_avatars_and_activitypub_selfie_composer():
             timer
             not in APP[
                 APP.index("  async loadWorldFediverseProfile(target = {}) {"):
-                APP.index("  applyWorldLayoutEditor() {")
+                APP.index("  applyAdminElementsAccess() {")
             ]
         )
 
@@ -539,15 +539,59 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert "session?.accountTier" not in APP
 
 
-def test_presence_pongs_do_not_trigger_full_avatar_or_capacity_rebuilds():
+def test_presence_moves_use_the_constant_time_scene_fast_path():
     receiver = APP[
         APP.index("  receivePresence(message) {"):
         APP.index("\n  setupBroadcastChannel()", APP.index("  receivePresence(message) {"))
     ]
     assert "let peersChanged = false" in receiver
-    assert "if (peersChanged) this.renderPeers()" in receiver
+    # Roster changes still coalesce into one deferred renderPeers() pass, while
+    # ordinary movement only changes an existing avatar interpolation target.
+    assert "if (peersChanged) this.schedulePeerRender()" in receiver
     assert 'message.type === "move"' in receiver
+    assert "this.world?.setRemotePlayerMovement?.(id, next)" in receiver
+    assert "!== true" in receiver
     assert 'message.type === "ping"' not in receiver
+    assert "function setRemotePlayerMovement" in SCENE
+    assert "avatar.userData.loungeActivity" in SCENE
+    assert "administrativelyRemovedAccounts.has(" in SCENE
+    assert "setRemotePlayerMovement," in SCENE
+
+
+def test_handshakes_are_offered_from_one_profile_and_answered_by_the_peer():
+    # The greeting is offered from the visitor's own profile panel, so it is
+    # always addressed at exactly the avatar the visitor selected.
+    assert "data-world-handshake-offer" in APP
+    assert "data-world-handshake-accept" in APP
+    assert "data-world-handshake-decline" in APP
+    assert "offerWorldHandshake(peerId)" in APP
+    assert "answerWorldHandshake(peerId, accepted)" in APP
+    assert '"handshake-offer",\n        "handshake-accept",' in APP
+    # Offers are live-socket state on both ends: they expire, and a peer who
+    # leaves takes their open greeting with them.
+    assert "WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000" in APP
+    assert "this.pendingHandshakes = new Map()" in APP
+    assert "this.sentHandshakeOffers = new Map()" in APP
+    assert "pruneWorldHandshakes()" in APP
+    receiver = APP[
+        APP.index("  receivePresence(message) {"):
+        APP.index(
+            "\n  setupBroadcastChannel()",
+            APP.index("  receivePresence(message) {"),
+        )
+    ]
+    assert "this.pendingHandshakes.delete(departed)" in receiver
+    assert 'message.kind === "handshake-offer"' in receiver
+    assert 'message.kind === "handshake-decline"' in receiver
+    # Only an accepted handshake animates for everyone, and it names both
+    # halves of the pair so each browser poses the same two avatars.
+    assert 'message.kind === "handshake" &&' in receiver
+    assert "this.playWorldHandshake(accepterId, offererId)" in receiver
+    assert "function playHandshake(peerId, partnerId)" in SCENE
+    assert "function startAvatarHandshake(avatar" in SCENE
+    assert "function poseHandshakingArm(arm, rest, angle)" in SCENE
+    assert "AVATAR_HANDSHAKE_DURATION_MS = 2200" in SCENE
+    assert "playHandshake," in SCENE
 
 
 def test_world_hud_omits_the_redundant_repository_node_and_player_counts():
@@ -651,8 +695,43 @@ def test_avatar_faces_keyboard_travel_direction_without_an_entry_gate():
     assert "Entering ForkMesh World" not in APP
     assert "data-world-loading" in APP
     assert 'loading.dataset.ready = "true"' in APP
-    assert "initialWorldLayout: mergedInitialLayout" in APP
     assert ".world-loading-screen" not in CSS
+
+
+def test_opening_curtain_itemizes_every_boot_step_with_live_timers():
+    # "Opening ForkMesh World" used to be one headline over a percentage. The
+    # curtain now lists every startup step with its own running seconds
+    # counter, so a slow open names the step it is actually waiting on.
+    assert "const WORLD_BOOT_STEPS = [" in APP
+    for step in ("restore", "session", "engine", "scene", "data", "populate", "spawn"):
+        assert f'{{ id: "{step}", label: "' in APP
+    assert "data-world-loading-steps" in APP
+    assert 'data-world-boot-step="${escapeHTML(step.id)}"' in APP
+    assert "data-world-boot-time" in APP
+    assert "data-world-loading-elapsed" in APP
+    # Counters redraw on their own interval and stop when the ledger closes,
+    # including the WebGL-fallback path that throws the curtain away.
+    assert "const WORLD_BOOT_TICK_MS = 100;" in APP
+    assert "() => this.tickBootSteps()," in APP
+    assert "window.clearInterval(this.bootTickTimer);" in APP
+    assert 'this.completeBootTimeline({ state: "failed" });' in APP
+    # Every awaited stage of bootstrap() reports through the ledger.
+    assert 'this.trackBootStep(\n        "session",' in APP
+    assert 'this.trackBootStep("data", this.loadWorldData())' in APP
+    assert 'this.startBootStep("scene", "geometry, lighting, labels")' in APP
+    assert 'this.finishBootStep("scene");' in APP
+    assert 'this.finishBootStep("populate");' in APP
+    assert 'this.finishBootStep("spawn");' in APP
+    # The world-data fan-out reports "n/total requests" as it settles rather
+    # than sitting silent for the whole batch.
+    assert 'this.countBootRequests("data", [' in APP
+    assert "`${settled}/${total} requests`" in APP
+    # Ten repaints a second must not be announced: the single stage line above
+    # the ledger stays the curtain's live region.
+    assert 'aria-live="off"' in APP
+    assert ".world-loading-steps li {" in CSS
+    assert '.world-loading-steps li[data-state="running"] .world-loading-step-mark' in CSS
+    assert "font-variant-numeric: tabular-nums;" in CSS
 
 
 def test_world_has_consent_aware_activity_events_and_media():
@@ -901,9 +980,12 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "event.preventDefault();" in pull_guard
     assert "[data-world-thumbstick]" in pull_guard
     assert "[data-world-canvas-wrap]" in pull_guard
-    assert "if (touchPointers.size > 0)" in SCENE
     assert "pendingTouchResize = true;" in SCENE
-    assert "if (!touchPointers.size && pendingTouchResize)" in SCENE
+    assert "externalTouchInteractionActive" in SCENE
+    assert "setTouchInteractionActive" in SCENE
+    assert "touchPointers.size > 0 || externalTouchInteractionActive" in SCENE
+    assert "this.world?.setTouchInteractionActive?.(true);" in APP
+    assert "this.world?.setTouchInteractionActive?.(false);" in APP
     mobile = CSS[CSS.index("@media (max-width: 720px)"):]
     assert ".world-right-rail {" in mobile
     assert "display: grid;" in mobile
@@ -925,7 +1007,7 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         "saveCurrentWorldView()",
         "editSavedWorldView(id)",
         "restoreSavedWorldView(id)",
-        "this.officeController?.restoreSavedView?.(view)",
+        "officeController?.restoreSavedView?.(view)",
     ):
         assert contract in APP
     for contract in (
@@ -1013,7 +1095,10 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert "data-world-chat-terminal-frame" not in APP
     assert 'data-world-default-repository="forkmesh/forkmesh"' in APP
     assert 'id="fullChatAction"' in APP
-    assert '<option value="agent" selected>Send to bot</option>' in APP
+    assert 'id="fullChatAction" type="hidden" value="chat"' in APP
+    assert "Send to bot</option>" not in APP
+    assert '<span data-dashboard-chat-send-label>Chat</span>' in APP
+    assert 'title="Enter will send this task to the bot"' in APP
     assert "world-chat-terminal-channel" in APP
     assert "world-chat-terminal-connection" in APP
     chat_version = hashlib.sha256(DASHBOARD_CHAT.encode()).hexdigest()[:12]
@@ -1128,10 +1213,10 @@ def test_world_receives_private_notifications_and_global_announcements():
     assert 'this.postJSON("/api/notifications"' in APP
     assert "data-world-notification-count" in APP
     assert "data-world-notifications-open" in APP
-    assert "Show global and personal notifications" in APP
+    assert "Show global and personal pings" in APP
     assert 'this.openLandmark("events")' in APP
     assert 'id === "events"' in APP
-    assert 'label: "Notifications"' in APP
+    assert 'label: "Pings"' in APP
     assert "data-world-notifications-refresh" in APP
     assert "data-world-notifications-read" in APP
     assert "World announcement:" in APP
@@ -1403,15 +1488,17 @@ def test_top_toolbar_opens_dashboard_in_a_safe_new_tab():
     )
 
 
-def test_admin_error_button_opens_the_error_table_in_a_safe_new_tab():
-    start = APP.index("  openAdminErrors() {")
-    method = APP[start:APP.index("\n  // Read the locked placement", start)]
-    assert 'destination.searchParams.set("table", "error_log")' in method
-    assert "window.open(" in method
-    assert '"_blank"' in method
-    assert '"noopener,noreferrer"' in method
-    assert "opened.opener = null" in method
-    assert "window.location.assign" not in method
+def test_admin_error_button_opens_a_sortable_in_world_error_table():
+    start = APP.index("  async openAdminErrors(")
+    method = APP[start:APP.index("\n  rewardEvents()", start)]
+    assert 'detail.dataset.openLandmark = "admin-errors"' in method
+    assert "this.adminErrorsPanelHTML()" in method
+    assert "this.showDetailOverlay(" in method
+    assert "await this.refreshAdminErrorRows()" in method
+    assert "window.open(" not in method
+    assert 'data-world-activity-search="errors"' in APP
+    assert 'data-world-activity-filter="errors"' in APP
+    assert 'data-world-activity-sort="errors"' in APP
 
 
 def test_world_task_button_and_inactive_avatar_visibility_contracts():
@@ -1433,6 +1520,18 @@ def test_render_stalls_include_bounded_likely_component_attribution():
     assert 'component = "Three.js renderer workload";' in SCENE
     assert 'component = `office ${officeSceneMode} scene`;' in SCENE
     assert 'codeArea = "renderer.render(scene, camera)";' in SCENE
+    assert "const frameWorkStartedAt = performance.now();" in SCENE
+    assert "performance.now() - frameWorkStartedAt" in SCENE
+    assert "scheduleRenderStallWarning(frameWorkMs, refreshedShadowMap);" in SCENE
+    assert "scheduleRenderStallWarning(rawFrameMs);" not in SCENE
+    assert "renderer.shadowMap.autoUpdate = false;" in SCENE
+    assert "sun.shadow.mapSize.set(512, 512);" in SCENE
+    assert "nextShadowMapUpdateAt = time + SHADOW_MAP_UPDATE_MS;" in SCENE
+    assert "time + SHADOW_MAP_STALL_COOLDOWN_MS" in SCENE
+    assert 'component = "shadow map refresh";' in SCENE
+    assert "function canvasReadableImageURL(value)" in SCENE
+    assert "url.origin !== window.location.origin" in SCENE
+    assert "const key = canvasReadableImageURL(url);" in SCENE
 
 
 def test_world_first_person_zoom_out_falls_back_to_third_person():
@@ -2263,10 +2362,28 @@ def test_world_member_directory_seats_registered_users_from_roster():
     assert "this.memberDirectory.length" in APP
 
 
+def test_world_settings_moves_focus_before_hiding_the_panel():
+    assert (
+        'data-world-settings aria-labelledby="world-settings-title" '
+        'aria-hidden="true" inert'
+    ) in APP
+    toggle = APP.split("  toggleSettings(open) {", 1)[1].split(
+        "\n  selectSettingsTab(", 1
+    )[0]
+    assert "panel.inert = false;" in toggle
+    assert "panel.contains(active)" in toggle
+    assert "target?.focus?.();" in toggle
+    assert "active.blur();" in toggle
+    assert toggle.index("target?.focus?.();") < toggle.index(
+        'panel.setAttribute("aria-hidden", "true");'
+    )
+    assert "panel.inert = true;" in toggle
+
+
 def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
-    # adhoc #287: one bench per registered account rings the campfire. Away
-    # members appear as seated figures facing the fire, members walking the
-    # world as live avatars leave their bench empty, and the ring rebuilds
+    # adhoc #287: one bench per registered account rings the campfire. A
+    # bounded recent subset appears as seated figures facing the fire, members
+    # walking the world leave their named bench empty, and the ring rebuilds
     # wider whenever a new account joins so everyone still fits. adhoc #291
     # adds one extra bench that always stays open for the next guest, and
     # adhoc #303 one more per guest already in the world, names every bench
@@ -2279,16 +2396,17 @@ def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
         "+ guestSeats + 1,\n    )" in SCENE
     )
     assert "function setCampfireSeatLabel" in SCENE
-    assert "function campfireSeatPlateTexture" in SCENE
+    assert "function drawCampfireSeatPlate" in SCENE
+    assert "function repaintCampfireSeatLabels" in SCENE
+    assert 'labelMesh.name = "campfire-member-bench-label-atlas"' in SCENE
     assert '"OPEN SEAT"' in SCENE
     assert '"OUT AND ABOUT"' in SCENE
     assert "campfire.userData.seatByName" in SCENE
     assert "noteDirectoryMembers" in APP
-    # The ring's arc carries the seats plus the walk-in gap (adhoc #430).
-    assert (
-        "(count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI)"
-        in SCENE
-    )
+    # Concentric rows hold 25 people each and preserve one aligned walk-in gap.
+    assert "const CAMPFIRE_MEMBERS_PER_ROW = 25;" in SCENE
+    assert "const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);" in SCENE
+    assert "CAMPFIRE_ENTRANCE_WIDTH / radius" in SCENE
     assert '"sitting around the campfire"' in SCENE
     # Figures and idle live avatars both face the pit at the circle's centre.
     # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
@@ -2330,7 +2448,6 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert "system-capacity-database-tables" in SCENE
     assert 'systemCapacityPlatform.userData.officeFloorId = "infrastructure"' in SCENE
     assert "infrastructureFloor.add(systemCapacityPlatform);" in SCENE
-    assert 'registerMovableObject("system-capacity-platform"' not in SCENE
     assert "Math.log1p(table.rowCount)" in SCENE
     # Every table the Worker counted is drawn, empty ones included, up to the
     # same ceiling the Worker itself enumerates.
@@ -2552,14 +2669,18 @@ def test_approved_federated_instances_render_without_private_relay_material():
 
 
 def test_cloudflare_setup_deep_link_carries_no_cloudflare_secret():
-    exact = "forkmesh://control/cloudflare"
-    assert exact in QT_MAIN
-    assert "target == QLatin1String" in QT_MAIN
+    assert 'url.scheme() != QLatin1String("forkmesh")' in QT_MAIN
+    assert 'url.host() != QLatin1String("control")' in QT_MAIN
+    assert 'url.path() != QLatin1String("/cloudflare")' in QT_MAIN
+    assert "isCloudflareSetupLink" in QT_MAIN
+    assert "prohibited.match(item.first)" in QT_MAIN
     assert "openCloudflareSetupFromSystemLink" in QT_CONTROL
     assert "m_cloudflareTokenEdit->setFocus" in QT_CONTROL
+    assert 'query.queryItemValue(name, QUrl::FullyDecoded)' in QT_CONTROL
     assert "activationTarget.toUtf8()" in QT_SINGLE_INSTANCE
     assert '<h2 id="cloudflare">Cloudflare setup stays local</h2>' in QT_DOCS
-    assert "carries no token or other secret in its URL" in QT_DOCS
+    assert "bounded public topology only" in QT_DOCS
+    assert "token-, password-, key-, and" in QT_DOCS
     assert 'Exec="$BIN" %u' in LINUX_DESKTOP_INSTALLER
     assert "MimeType=x-scheme-handler/forkmesh;" in LINUX_DESKTOP_INSTALLER
     assert "Exec=forkmesh %u" in APPIMAGE_PACKAGER
@@ -2734,16 +2855,18 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
         "    return Date.now() >= this.activityNoticesEnabledAt;\n"
         "  }"
     ) in APP
-    # Native chat already owns both message and system rows. The World accepts
-    # those signals for avatar/unread state without drawing a second overlay.
+    # Native chat owns the transcript rows; the floating bubble stack renders
+    # each signal at most once, only after the join grace, and system activity
+    # re-entering from the transcript never bounces back into it.
     handler = APP[
         APP.index("  handleWorldChatMessage = (event) => {"):
         APP.index("\n  };", APP.index("  handleWorldChatMessage = (event) => {"))
     ]
-    assert (
-        'if (data.type === "forkmesh:world-activity") return;' in handler
+    assert "transcript: false," in handler
+    assert handler.count("if (this.activityNoticesSettled()) {") == 2
+    assert handler.index("if (data.history === true) return;") < handler.index(
+        '{ kind: "chat", sender },'
     )
-    assert "this.activityNotice(" not in handler
     # The first notification/event reads still seed the seen sets, so nothing
     # already waiting at load is announced on a later poll either.
     announce = APP[
@@ -2754,9 +2877,7 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
         "globalEvents.forEach((item) => this.seenWorldEvents.add(item.id));"
         in announce
     )
-    assert (
-        "if (announcements.length && this.activityNoticesSettled()) {" in announce
-    )
+    assert "if (!this.activityNoticesSettled()) return;" in announce
     # A mirror doorbell during the grace still arms the scene effect and the
     # catalog refresh; only its narration is held back.
     push = APP[
@@ -2886,14 +3007,11 @@ def test_world_guests_chat_under_the_name_their_avatar_wears():
     assert "`guest:${guestId()}`" in APP
 
 
-def test_world_updates_apply_layout_live_and_ask_before_code_refresh():
-    # Layout is data and can be applied to the active scene. A deployed code
-    # revision instead raises an explicit refresh action and never reloads the
-    # visitor out from under an active walk.
+def test_world_updates_ask_before_code_refresh():
+    # A deployed code revision raises an explicit refresh action and never
+    # reloads the visitor out from under an active walk.
     assert "const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;" in APP
     assert "startUpdateWatch()" in APP
-    assert "startWorldLayoutWatch()" in APP
-    assert "this.applyFetchedWorldLayout(layout);" in APP
     assert "async checkForWorldUpdate()" in APP
     update = APP[
         APP.index("  async checkForWorldUpdate()"):

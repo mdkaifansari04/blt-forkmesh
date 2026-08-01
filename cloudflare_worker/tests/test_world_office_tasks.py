@@ -22,6 +22,33 @@ spec.loader.exec_module(tasks_api)
 NOW = 2_100_000_000_000
 
 
+def test_task_image_thumbnails_are_tiny_and_image_only():
+    valid = "data:image/webp;base64,aGVsbG8="
+    result = tasks_api._attachments([
+        {
+            "name": "shot.webp",
+            "mime": "image/webp",
+            "size": 2048,
+            "thumbnail": valid,
+        },
+        {
+            "name": "notes.txt",
+            "mime": "text/plain",
+            "size": 50,
+            "thumbnail": valid,
+        },
+        {
+            "name": "bad.png",
+            "mime": "image/png",
+            "size": 50,
+            "thumbnail": "data:text/html;base64,PHNjcmlwdD4=",
+        },
+    ])
+    assert result[0]["thumbnail"] == valid
+    assert "thumbnail" not in result[1]
+    assert "thumbnail" not in result[2]
+
+
 def run_async_test(function):
     def wrapped(*args, **kwargs):
         return asyncio.run(function(*args, **kwargs))
@@ -53,7 +80,7 @@ class FakeRuntime:
             .read_text(encoding="utf-8"))
         self.db.executescript(
             (ROOT / "migrations" /
-             "0113_task_images_mailtrap_webhook.sql")
+             "0113_organization_task_priority_scale.sql")
             .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
@@ -417,6 +444,63 @@ async def test_global_priorities_are_manager_owned_projected_and_sorted():
     assert high["data"]["task"]["priority"] == 1
     assert runtime.audits[-1]["action"] == (
         "organization.task_priority_changed")
+    clamped = await tasks_api.handle(
+        runtime.use("PATCH", "alice", {"priority": 500}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{low['data']['task']['id']}",
+    )
+    assert clamped["data"]["task"]["priority"] == 99
+    defaulted = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Normal priority",
+            "assignee": "bob",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert defaulted["data"]["task"]["priority"] == 50
+
+
+@run_async_test
+async def test_follow_up_references_parent_and_inherits_assignee_and_routing():
+    runtime = FakeRuntime()
+    parent_response = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Investigate production error",
+            "department": "engineering",
+            "destination": "agent",
+            "assigneeKind": "agent",
+            "repository": "forkmesh/forkmesh",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    parent = parent_response["data"]["task"]
+    denied = await tasks_api.handle(
+        runtime.use("POST", "carol", {
+            "title": "Unauthorized continuation",
+            "parentTaskId": parent["id"],
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert denied["status"] == 403
+
+    follow_up = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Verify the production repair",
+            "parentTaskId": parent["id"],
+            # Client attempts cannot redirect a follow-up to someone else.
+            "assigneeKind": "user",
+            "assignee": "bob",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert follow_up["status"] == 201
+    task = follow_up["data"]["task"]
+    assert task["parentTaskId"] == parent["id"]
+    assert task["assigneeKind"] == "agent"
+    assert task["assignee"] == "agent"
+    assert task["department"] == "engineering"
+    assert task["destination"] == "agent"
+    assert task["repository"] == "forkmesh/forkmesh"
+    assert runtime.audits[-1]["details"]["followUp"] is True
 
 
 @run_async_test
@@ -527,7 +611,12 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
             "howToTest": "Open the World and verify the result.",
             "attachments": [
                 {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
-                {"name": "world.png", "mime": "image/png", "size": 4096},
+                {
+                    "name": "world.png",
+                    "mime": "image/png",
+                    "size": 4096,
+                    "thumbnail": "data:image/png;base64,aGVsbG8=",
+                },
             ],
         }),
         tasks_api.UNIVERSAL_PREFIX,
@@ -541,7 +630,12 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
     assert task["repository"] == "forkmesh/forkmesh"
     assert task["attachments"] == [
         {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
-        {"name": "world.png", "mime": "image/png", "size": 4096},
+        {
+            "name": "world.png",
+            "mime": "image/png",
+            "size": 4096,
+            "thumbnail": "data:image/png;base64,aGVsbG8=",
+        },
     ]
     stored = runtime.db.execute(
         "SELECT data FROM organization_tasks WHERE task_id=?",
@@ -1209,6 +1303,38 @@ async def test_encrypted_copy_same_origin_reassignment_and_metadata_only_audit()
     )
     assert reassigned["status"] == 200
     assert reassigned["data"]["task"]["assignee"] == "carol"
+
+    agent = await tasks_api.handle(
+        runtime.use("PATCH", "mary", {
+            "assigneeKind": "agent",
+            "repository": "forkmesh/forkmesh",
+        }),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+    )
+    assert agent["status"] == 200
+    assert agent["data"]["task"]["assigneeKind"] == "agent"
+    assert agent["data"]["task"]["assignee"] == "agent"
+    assert agent["data"]["task"]["destination"] == "agent"
+    assert agent["data"]["task"]["repository"] == "forkmesh/forkmesh"
+
+    returned = await tasks_api.handle(
+        runtime.use("PATCH", "mary", {"assigneeKind": "unassigned"}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+    )
+    assert returned["status"] == 200
+    assert returned["data"]["task"]["assigneeKind"] == "unassigned"
+    assert returned["data"]["task"]["assignee"] == ""
+    assert returned["data"]["task"]["destination"] == "department"
+
+    missing_repository = await tasks_api.handle(
+        runtime.use("PATCH", "mary", {
+            "assigneeKind": "agent",
+            "repository": "",
+        }),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+    )
+    assert missing_repository["status"] == 400
+    assert missing_repository["data"]["error"] == "repository_required"
 
     member_update = await tasks_api.handle(
         runtime.use("PATCH", "bob", {"title": "Not allowed"}),

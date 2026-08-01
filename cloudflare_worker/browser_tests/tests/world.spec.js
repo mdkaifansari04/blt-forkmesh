@@ -82,6 +82,7 @@ async function prepareWorldPage(
     ticketActivity = null,
     directoryUsers = [],
     systemCapacityTables = [],
+    systemCapacityD1Storage = null,
     officeEntryRequests = [],
     officeFloorRequests = [],
     officeAttendanceRequests = [],
@@ -314,7 +315,9 @@ async function prepareWorldPage(
                     authenticated: true,
                     accountStatus: "Registered",
                     name: session.nodeName,
-                    isAdmin: systemCapacityTables.length > 0,
+                    isAdmin:
+                      systemCapacityTables.length > 0 ||
+                      Boolean(systemCapacityD1Storage),
                     ticket: "playwright-world-ticket",
                     expiresAt: FIXED_NOW + 300_000,
                     totalActiveMs: Math.max(
@@ -323,10 +326,13 @@ async function prepareWorldPage(
                     ),
                     activityObservedAt:
                       Number(ticketActivity?.activityObservedAt) || FIXED_NOW,
-                    ...(systemCapacityTables.length
+                    ...(systemCapacityTables.length || systemCapacityD1Storage
                       ? {
                           systemCapacity: {
                             tables: systemCapacityTables,
+                            ...(systemCapacityD1Storage
+                              ? { d1Storage: systemCapacityD1Storage }
+                              : {}),
                           },
                         }
                       : {}),
@@ -482,13 +488,19 @@ async function prepareWorldPage(
             : url.pathname === "/api/repositories"
               ? { repositories: [] }
               : {};
+    const officeTaskBasePath = url.pathname.startsWith("/api/tasks")
+      ? "/api/tasks"
+      : "/api/world/office/marketing-tasks";
     if (
       officeTaskFixture &&
-      url.pathname.startsWith("/api/world/office/marketing-tasks")
+      (
+        url.pathname.startsWith("/api/tasks") ||
+        url.pathname.startsWith("/api/world/office/marketing-tasks")
+      )
     ) {
       const method = route.request().method();
       const suffix = url.pathname
-        .slice("/api/world/office/marketing-tasks".length)
+        .slice(officeTaskBasePath.length)
         .split("/")
         .filter(Boolean);
       let requestBody = {};
@@ -1329,6 +1341,81 @@ async function openWorldRepositoryExplorer(page) {
   );
 }
 
+test("World prompt button copies owner deploy and member PR workflows", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await page.addInitScript(() => {
+    window.__worldCopiedPrompts = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text) => {
+          window.__worldCopiedPrompts.push(text);
+        },
+      },
+    });
+  });
+  await prepareWorldPage(page, "world-mcp-prompt", {
+    session: {
+      nodeName: "jett",
+      sessionToken: "playwright-jett-session",
+    },
+  });
+  await waitForWorld(page);
+
+  const promptButton = page.getByRole("button", {
+    name: "Copy MCP task prompt",
+  });
+  await expect(promptButton).toContainText("Prompt");
+  await page.locator("forkmesh-world").evaluate(async (shell) => {
+    shell.sessionAuthenticated = true;
+    shell.organizations = [{ name: "forkmesh", role: "owner" }];
+    shell.postJSON = async (path, body) => {
+      window.__worldPromptRequest = { path, body };
+      return { token: "fmbot_owner_test" };
+    };
+    await shell.copyMcpTaskPrompt(
+      shell.querySelector("[data-world-mcp-prompt]"),
+    );
+  });
+  await expect.poll(() =>
+    page.evaluate(() => window.__worldCopiedPrompts.length)
+  ).toBe(1);
+  await expect(promptButton).toBeEnabled();
+
+  const owner = await page.evaluate(() => ({
+    prompt: window.__worldCopiedPrompts[0],
+    request: window.__worldPromptRequest,
+  }));
+  expect(owner.request.path).toBe("/api/orgs/forkmesh/bot-tokens");
+  expect(owner.request.body.scopes).toEqual([
+    "organization.tasks.read",
+    "organization.tasks.write",
+  ]);
+  expect(owner.request.body.expiresDays).toBe(1);
+  expect(owner.prompt).toContain("merge only when the merge");
+  expect(owner.prompt).toContain("then deploy");
+  expect(owner.prompt).not.toContain("Do not merge or deploy");
+
+  await page.locator("forkmesh-world").evaluate(async (shell) => {
+    shell.organizations = [{ name: "forkmesh", role: "member" }];
+    shell.postJSON = async () => ({ token: "fmbot_member_test" });
+    await shell.copyMcpTaskPrompt(
+      shell.querySelector("[data-world-mcp-prompt]"),
+    );
+  });
+  await expect.poll(() =>
+    page.evaluate(() => window.__worldCopiedPrompts.length)
+  ).toBe(2);
+  const memberPrompt = await page.evaluate(
+    () => window.__worldCopiedPrompts[1],
+  );
+  expect(memberPrompt).toContain("open a focused pull request");
+  expect(memberPrompt).toContain("Do not merge or deploy");
+  expect(memberPrompt).not.toContain("then deploy");
+});
+
 test("signed-in World receives private and global notifications", async ({
   page,
 }) => {
@@ -1574,9 +1661,167 @@ test("collapsed CHAT bar counts unread remote lines but never your own", async (
   await expect(badge).toBeHidden();
 });
 
-test("mobile World chat keeps its composer above the terminal bars", async ({
+test("chat launcher opens on hover with messages and left-aligned channels", async ({
   page,
 }) => {
+  test.slow();
+  const passphrase = "playwright-world-hover-chat-passphrase";
+  const key = worldChatKey(passphrase);
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    (socket) => {
+      socket.send(
+        JSON.stringify(
+          encryptWorldChatEnvelope(
+            {
+              type: "chat",
+              id: "hover-history-1",
+              senderId: "hover-guest",
+              sender: "Hover Guest",
+              accountKind: "guest",
+              channel: "#general",
+              text: "The latest chats open with the launcher.",
+              ts: FIXED_NOW - 1_000,
+            },
+            key,
+            1,
+          ),
+        ),
+      );
+      socket.send(JSON.stringify({
+        kind: "forkmesh-history-end",
+        v: 1,
+      }));
+    },
+  );
+  await prepareWorldPage(page, "world-quick-composer", {
+    chatPassphrase: passphrase,
+  });
+  await waitForWorld(page);
+
+  const terminal = page.locator("[data-world-chat-terminal]");
+  const summary = terminal.locator("summary");
+  const collapsed = await summary.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const marker = getComputedStyle(
+      element.querySelector(".world-chat-terminal-avatar"),
+      "::after",
+    );
+    return {
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      marker: marker.display,
+    };
+  });
+  expect(collapsed).toEqual({ width: 56, height: 56, marker: "none" });
+
+  const summaryBox = await summary.boundingBox();
+  expect(summaryBox).not.toBeNull();
+  await page.mouse.move(
+    summaryBox.x + summaryBox.width / 2,
+    summaryBox.y + summaryBox.height / 2,
+  );
+  await expect(terminal).toHaveAttribute("open", "");
+  await expect(page.locator("[data-world-quick-composer-avatar]")).toBeVisible();
+  await expect(terminal).toHaveAttribute("data-show-feed", "true");
+  await expect(page.locator("[data-world-quick-chat-feed]")).toBeVisible();
+  await expect(
+    page.locator("#fullChatMessages .chat-message-row"),
+  ).toContainText("The latest chats open with the launcher.");
+
+  const channelLayout = await page
+    .locator("[data-world-quick-channels]")
+    .evaluate((element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      const first = element.querySelector("button")?.getBoundingClientRect();
+      const second = element
+        .querySelector("button:nth-of-type(2)")
+        ?.getBoundingClientRect();
+      const surface = element.closest("[data-world-native-chat]");
+      const feed = surface
+        ?.querySelector("[data-world-quick-chat-feed]")
+        ?.getBoundingClientRect();
+      const close = surface
+        ?.querySelector("[data-world-chat-terminal-close]")
+        ?.getBoundingClientRect();
+      return {
+        display: style.display,
+        flexDirection: style.flexDirection,
+        channelLeft: Math.round(rect.left),
+        firstLeft: Math.round(first?.left || 0),
+        firstTop: Math.round(first?.top || 0),
+        secondLeft: Math.round(second?.left || 0),
+        secondTop: Math.round(second?.top || 0),
+        feedLeft: Math.round(feed?.left || 0),
+        feedTop: Math.round(feed?.top || 0),
+        closeLeft: Math.round(close?.left || 0),
+        channelRight: Math.round(rect.right),
+      };
+    });
+  expect(channelLayout).toMatchObject({
+    display: "flex",
+    flexDirection: "row",
+  });
+  expect(channelLayout.firstLeft).toBeLessThanOrEqual(
+    channelLayout.channelLeft + 8,
+  );
+  expect(channelLayout.firstLeft).toBeLessThanOrEqual(
+    channelLayout.feedLeft + 8,
+  );
+  expect(channelLayout.secondLeft).toBeGreaterThan(channelLayout.firstLeft);
+  expect(channelLayout.secondTop).toBe(channelLayout.firstTop);
+  expect(channelLayout.feedTop).toBeGreaterThan(channelLayout.firstTop);
+  expect(channelLayout.channelRight).toBeLessThanOrEqual(
+    channelLayout.closeLeft - 4,
+  );
+
+  await page.keyboard.press("Escape");
+  await expect(terminal).not.toHaveAttribute("open", "");
+  await expect(summary).toBeFocused();
+  await page.mouse.move(0, 0);
+  await terminal.evaluate((element) => {
+    element.classList.add("world-chat-terminal--idle");
+  });
+  await expect(page.locator(".world-chat-terminal-prompt-icon")).toBeVisible();
+});
+
+test("World chat opens intentionally and restores keyboard focus on close", async ({
+  page,
+}) => {
+  test.slow();
+  await prepareWorldPage(page, "world-chat-keyboard", {
+    chatPassphrase: "playwright-public-world-general-passphrase",
+  });
+  await waitForWorld(page);
+
+  const terminal = page.locator("[data-world-chat-terminal]");
+  const summary = terminal.locator(":scope > summary");
+  await summary.focus();
+  await expect(terminal).not.toHaveAttribute("open", "");
+
+  await page.keyboard.press("Enter");
+  await expect(terminal).toHaveAttribute("open", "");
+  await expect(page.locator("#fullChatInput")).toBeFocused();
+  await expect(
+    page.locator("[data-dashboard-chat-composer-toolbar]"),
+  ).toBeHidden();
+
+  await page.keyboard.press("Escape");
+  await expect(terminal).not.toHaveAttribute("open", "");
+  await expect(summary).toBeFocused();
+
+  await page.keyboard.press("Enter");
+  await expect(terminal).toHaveAttribute("open", "");
+  await page.locator("[data-world-chat-terminal-close]").click();
+  await expect(terminal).not.toHaveAttribute("open", "");
+  await expect(summary).toBeFocused();
+});
+
+test("mobile World chat contains its rail, transcript, and prompt", async ({
+  page,
+}) => {
+  test.slow();
   await page.setViewportSize({ width: 390, height: 667 });
   await prepareWorldPage(page, "mobile-world-chat", {
     chatPassphrase: "playwright-public-world-general-passphrase",
@@ -1596,33 +1841,437 @@ test("mobile World chat keeps its composer above the terminal bars", async ({
   await expect(input).toBeVisible();
   await input.focus();
 
-  // Approximate the visual viewport after a mobile keyboard opens.
+  const channels = page.locator("[data-world-quick-channels]");
+  const lastChannel = page.locator(
+    '[data-world-quick-channel="notifications"]',
+  );
+  const channelScrollBefore = await channels.evaluate(
+    (element) => element.scrollLeft,
+  );
+  await lastChannel.focus();
+  await expect
+    .poll(() => channels.evaluate((element) => element.scrollLeft))
+    .toBeGreaterThan(channelScrollBefore);
+  const focusedChannel = await channels.evaluate((element) => {
+    const rail = element.getBoundingClientRect();
+    const last = element.querySelector(
+      '[data-world-quick-channel="notifications"]',
+    )?.getBoundingClientRect();
+    return {
+      scrollable: element.scrollWidth > element.clientWidth,
+      lastLeft: last?.left || 0,
+      lastRight: last?.right || 0,
+      railLeft: rail.left,
+      railRight: rail.right,
+    };
+  });
+  expect(focusedChannel.scrollable).toBe(true);
+  expect(focusedChannel.lastLeft).toBeGreaterThanOrEqual(
+    focusedChannel.railLeft - 1,
+  );
+  expect(focusedChannel.lastRight).toBeLessThanOrEqual(
+    focusedChannel.railRight + 1,
+  );
+  const normalDockGap = await terminal.evaluate((element) => {
+    const terminalRect = element.getBoundingClientRect();
+    const dock = document.querySelector(".world-avatar-actions");
+    const dockRect = dock?.getBoundingClientRect();
+    return (dockRect?.top || window.innerHeight) - terminalRect.bottom;
+  });
+  expect(normalDockGap).toBeGreaterThanOrEqual(4);
+  const stagedAttachments = page.locator(
+    "[data-dashboard-chat-attachments]",
+  );
+  await stagedAttachments.evaluate((element) => {
+    const preview = document.createElement("button");
+    preview.type = "button";
+    preview.textContent = "release-preview.png ×";
+    preview.setAttribute("aria-label", "Remove release-preview.png");
+    element.append(preview);
+  });
+  await expect(stagedAttachments).toBeVisible();
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.coarsePointerViewport = true;
+    shell.lastStableViewportWidth = 390;
+    shell.lastStableViewportHeight = 667;
+  });
+
+  await input.fill(
+    "A longer prompt must remain readable when the mobile keyboard is open. ".repeat(
+      8,
+    ),
+  );
   await page.setViewportSize({ width: 390, height: 320 });
-  await page.waitForTimeout(100);
+  await expect(page.locator("forkmesh-world")).toHaveAttribute(
+    "data-world-chat-compact",
+    "true",
+  );
 
   const metrics = await input.evaluate((element) => {
+    const body = element.closest("[data-world-native-chat]");
+    const header = body?.querySelector(".world-quick-chat-header");
+    const feed = body?.querySelector("[data-world-quick-chat-feed]");
+    const transcript = body?.querySelector("#fullChatMessages");
     const composer = element.closest("[data-dashboard-chat-composer]");
     const terminal = element.closest("[data-world-chat-terminal]");
     const send = terminal?.querySelector("#fullChatSend");
+    const close = terminal?.querySelector("[data-world-chat-terminal-close]");
+    const attachments = terminal?.querySelector(
+      "[data-dashboard-chat-attachments]",
+    );
+    const dock = document.querySelector(".world-avatar-actions");
+    const bodyRect = body?.getBoundingClientRect();
+    const headerRect = header?.getBoundingClientRect();
+    const feedRect = feed?.getBoundingClientRect();
+    const transcriptRect = transcript?.getBoundingClientRect();
     const inputRect = element.getBoundingClientRect();
     const composerRect = composer?.getBoundingClientRect();
     const terminalRect = terminal?.getBoundingClientRect();
     const sendRect = send?.getBoundingClientRect();
+    const closeRect = close?.getBoundingClientRect();
+    const attachmentsRect = attachments?.getBoundingClientRect();
+    const dockRect = dock?.getBoundingClientRect();
+    const contained = (rect) =>
+      Boolean(
+        rect &&
+          terminalRect &&
+          rect.left >= terminalRect.left - 1 &&
+          rect.right <= terminalRect.right + 1 &&
+          rect.top >= terminalRect.top - 1 &&
+          rect.bottom <= terminalRect.bottom + 1,
+      );
     return {
       innerHeight: window.innerHeight,
-      inputBottom: inputRect.bottom,
-      sendBottom: sendRect?.bottom || 0,
-      composerBottom: composerRect?.bottom || 0,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      bodyFits:
+        Boolean(bodyRect && terminalRect) &&
+        bodyRect.right <= terminalRect.right + 1 &&
+        bodyRect.bottom <= terminalRect.bottom + 1 &&
+        body.scrollWidth <= body.clientWidth + 1 &&
+        body.scrollHeight <= body.clientHeight + 1,
+      ordered:
+        Boolean(headerRect && feedRect && composerRect) &&
+        headerRect.bottom <= feedRect.top + 1 &&
+        feedRect.bottom <= composerRect.top + 1,
+      transcriptContained:
+        Boolean(feedRect && transcriptRect) &&
+        transcriptRect.left >= feedRect.left - 1 &&
+        transcriptRect.right <= feedRect.right + 1 &&
+        transcriptRect.top >= feedRect.top - 1 &&
+        transcriptRect.bottom <= feedRect.bottom + 1,
+      feedHeight: feedRect?.height || 0,
+      inputHeight: inputRect.height,
+      inputContained: contained(inputRect),
+      sendContained: contained(sendRect),
+      closeContained: contained(closeRect),
+      attachmentsContained: contained(attachmentsRect),
+      attachmentsClearInput:
+        Boolean(attachmentsRect) &&
+        attachmentsRect.bottom <= inputRect.top + 1,
+      sendWidth: sendRect?.width || 0,
+      sendHeight: sendRect?.height || 0,
+      dockTop: dockRect?.top || window.innerHeight,
+      terminalZ: Number.parseInt(getComputedStyle(terminal).zIndex, 10) || 0,
+      dockZ: dock
+        ? Number.parseInt(getComputedStyle(dock).zIndex, 10) || 0
+        : 0,
       terminalBottom: terminalRect?.bottom || 0,
-      fits:
-        Boolean(terminalRect && composerRect && sendRect) &&
-        composerRect.bottom <= terminalRect.bottom + 1 &&
-        inputRect.bottom <= terminalRect.bottom + 1 &&
-        sendRect.bottom <= terminalRect.bottom + 1,
     };
   });
-  expect(metrics).toMatchObject({ innerHeight: 320, fits: true });
-  expect(metrics.terminalBottom).toBeLessThanOrEqual(metrics.innerHeight + 1);
+  expect(metrics).toMatchObject({
+    innerHeight: 320,
+    documentScrollWidth: 390,
+    bodyFits: true,
+    ordered: true,
+    transcriptContained: true,
+    inputContained: true,
+    sendContained: true,
+    closeContained: true,
+    attachmentsContained: true,
+    attachmentsClearInput: true,
+  });
+  expect(metrics.feedHeight).toBeGreaterThanOrEqual(80);
+  expect(metrics.inputHeight).toBeGreaterThanOrEqual(52);
+  expect(metrics.sendWidth).toBeGreaterThanOrEqual(48);
+  expect(metrics.sendHeight).toBeGreaterThanOrEqual(48);
+  expect(metrics.terminalBottom).toBeLessThanOrEqual(metrics.innerHeight - 7);
+  expect(
+    metrics.terminalBottom <= metrics.dockTop - 4 ||
+      metrics.terminalZ > metrics.dockZ,
+  ).toBe(true);
+
+  await page.setViewportSize({ width: 390, height: 240 });
+  const shortest = await terminal.evaluate((element) => {
+    const terminalRect = element.getBoundingClientRect();
+    const body = element.querySelector("[data-world-native-chat]");
+    const feed = element.querySelector("[data-world-quick-chat-feed]");
+    const composer = element.querySelector("[data-dashboard-chat-composer]");
+    const input = element.querySelector("#fullChatInput");
+    const send = element.querySelector("#fullChatSend");
+    const attachments = element.querySelector(
+      "[data-dashboard-chat-attachments]",
+    );
+    const bodyRect = body?.getBoundingClientRect();
+    const feedRect = feed?.getBoundingClientRect();
+    const composerRect = composer?.getBoundingClientRect();
+    const inputRect = input?.getBoundingClientRect();
+    const sendRect = send?.getBoundingClientRect();
+    const attachmentsRect = attachments?.getBoundingClientRect();
+    const contained = (rect) =>
+      Boolean(
+        rect &&
+          rect.left >= terminalRect.left - 1 &&
+          rect.right <= terminalRect.right + 1 &&
+          rect.top >= terminalRect.top - 1 &&
+          rect.bottom <= terminalRect.bottom + 1,
+      );
+    return {
+      innerHeight: window.innerHeight,
+      terminalTop: terminalRect.top,
+      terminalBottom: terminalRect.bottom,
+      feedHeight: feedRect?.height || 0,
+      bodyFits:
+        Boolean(body && bodyRect) &&
+        contained(bodyRect) &&
+        body.scrollWidth <= body.clientWidth + 1 &&
+        body.scrollHeight <= body.clientHeight + 1,
+      ordered:
+        Boolean(feedRect && composerRect) &&
+        feedRect.bottom <= composerRect.top + 1,
+      inputContained: contained(inputRect),
+      sendContained: contained(sendRect),
+      attachmentsContained: contained(attachmentsRect),
+      attachmentsClearInput:
+        Boolean(attachmentsRect && inputRect) &&
+        attachmentsRect.bottom <= inputRect.top + 1,
+    };
+  });
+  expect(shortest).toMatchObject({
+    innerHeight: 240,
+    bodyFits: true,
+    ordered: true,
+    inputContained: true,
+    sendContained: true,
+    attachmentsContained: true,
+    attachmentsClearInput: true,
+  });
+  expect(shortest.terminalTop).toBeGreaterThanOrEqual(7);
+  expect(shortest.terminalBottom).toBeLessThanOrEqual(233);
+  expect(shortest.feedHeight).toBeGreaterThanOrEqual(56);
+
+  await page.setViewportSize({ width: 390, height: 180 });
+  await expect(page.locator("forkmesh-world")).toHaveAttribute(
+    "data-world-chat-micro",
+    "true",
+  );
+  const micro = await terminal.evaluate((element) => {
+    const terminalRect = element.getBoundingClientRect();
+    const body = element.querySelector("[data-world-native-chat]");
+    const feedRect = element
+      .querySelector("[data-world-quick-chat-feed]")
+      ?.getBoundingClientRect();
+    const inputRect = element
+      .querySelector("#fullChatInput")
+      ?.getBoundingClientRect();
+    const sendRect = element
+      .querySelector("#fullChatSend")
+      ?.getBoundingClientRect();
+    const attachmentsRect = element
+      .querySelector("[data-dashboard-chat-attachments]")
+      ?.getBoundingClientRect();
+    const contained = (rect) =>
+      Boolean(
+        rect &&
+          rect.left >= terminalRect.left - 1 &&
+          rect.right <= terminalRect.right + 1 &&
+          rect.top >= terminalRect.top - 1 &&
+          rect.bottom <= terminalRect.bottom + 1,
+      );
+    return {
+      innerHeight: window.innerHeight,
+      terminalTop: terminalRect.top,
+      terminalBottom: terminalRect.bottom,
+      feedHeight: feedRect?.height || 0,
+      bodyFits:
+        Boolean(body) &&
+        body.scrollWidth <= body.clientWidth + 1 &&
+        body.scrollHeight <= body.clientHeight + 1,
+      inputContained: contained(inputRect),
+      sendContained: contained(sendRect),
+      attachmentsContained: contained(attachmentsRect),
+      attachmentsClearInput:
+        Boolean(attachmentsRect && inputRect) &&
+        attachmentsRect.bottom <= inputRect.top + 1,
+    };
+  });
+  expect(micro).toMatchObject({
+    innerHeight: 180,
+    bodyFits: true,
+    inputContained: true,
+    sendContained: true,
+    attachmentsContained: true,
+    attachmentsClearInput: true,
+  });
+  expect(micro.terminalTop).toBeGreaterThanOrEqual(7);
+  expect(micro.terminalBottom).toBeLessThanOrEqual(173);
+  expect(micro.feedHeight).toBeGreaterThanOrEqual(32);
+});
+
+test("World chat follows the visual viewport when a software keyboard opens", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 667 });
+  await prepareWorldPage(page, "mobile-world-chat-keyboard", {
+    chatPassphrase: "playwright-public-world-general-passphrase",
+  });
+  await waitForWorld(page);
+
+  const terminal = page.locator("[data-world-chat-terminal]");
+  await terminal.evaluate((element) => {
+    element.open = true;
+  });
+  const applied = await page.locator("forkmesh-world").evaluate((shell) => {
+    const viewport = window.visualViewport;
+    if (!viewport) return false;
+    try {
+      Object.defineProperty(viewport, "height", {
+        configurable: true,
+        value: 320,
+      });
+      Object.defineProperty(viewport, "offsetTop", {
+        configurable: true,
+        value: 0,
+      });
+    } catch (_) {
+      return false;
+    }
+    shell.coarsePointerViewport = true;
+    shell.lastStableViewportWidth = 390;
+    viewport.dispatchEvent(new Event("resize"));
+    return true;
+  });
+  expect(applied).toBe(true);
+  await expect(page.locator("forkmesh-world")).toHaveAttribute(
+    "data-world-chat-compact",
+    "true",
+  );
+
+  const metrics = await terminal.evaluate((element) => {
+    const shell = element.closest("forkmesh-world");
+    const terminalRect = element.getBoundingClientRect();
+    const feedRect = element
+      .querySelector("[data-world-quick-chat-feed]")
+      ?.getBoundingClientRect();
+    const transcriptRect = element
+      .querySelector("#fullChatMessages")
+      ?.getBoundingClientRect();
+    const composerRect = element
+      .querySelector("[data-dashboard-chat-composer]")
+      ?.getBoundingClientRect();
+    const inputRect = element
+      .querySelector("#fullChatInput")
+      ?.getBoundingClientRect();
+    const sendRect = element
+      .querySelector("#fullChatSend")
+      ?.getBoundingClientRect();
+    const dock = document.querySelector(".world-avatar-actions");
+    const dockRect = dock?.getBoundingClientRect();
+    return {
+      layoutHeight: window.innerHeight,
+      chatHeight: shell.style.getPropertyValue(
+        "--world-chat-viewport-height",
+      ),
+      coveredBottom: shell.style.getPropertyValue(
+        "--world-chat-covered-bottom",
+      ),
+      terminalTop: terminalRect.top,
+      terminalBottom: terminalRect.bottom,
+      feedHeight: feedRect?.height || 0,
+      transcriptContained:
+        Boolean(feedRect && transcriptRect) &&
+        transcriptRect.left >= feedRect.left - 1 &&
+        transcriptRect.right <= feedRect.right + 1 &&
+        transcriptRect.top >= feedRect.top - 1 &&
+        transcriptRect.bottom <= feedRect.bottom + 1,
+      composerBottom: composerRect?.bottom || 0,
+      inputRight: inputRect?.right || 0,
+      sendRight: sendRect?.right || 0,
+      terminalRight: terminalRect.right,
+      dockTop: dockRect?.top || window.innerHeight,
+      terminalZ: Number.parseInt(getComputedStyle(element).zIndex, 10) || 0,
+      dockZ: dock
+        ? Number.parseInt(getComputedStyle(dock).zIndex, 10) || 0
+        : 0,
+    };
+  });
+  expect(metrics).toMatchObject({
+    layoutHeight: 667,
+    chatHeight: "320px",
+    coveredBottom: "347px",
+  });
+  expect(metrics.terminalTop).toBeGreaterThanOrEqual(7);
+  expect(metrics.terminalBottom).toBeLessThanOrEqual(313);
+  expect(
+    metrics.terminalBottom <= metrics.dockTop - 4 ||
+      metrics.terminalZ > metrics.dockZ,
+  ).toBe(true);
+  expect(metrics.feedHeight).toBeGreaterThanOrEqual(80);
+  expect(metrics.transcriptContained).toBe(true);
+  expect(metrics.composerBottom).toBeLessThanOrEqual(
+    metrics.terminalBottom + 1,
+  );
+  expect(metrics.inputRight).toBeLessThanOrEqual(metrics.terminalRight + 1);
+  expect(metrics.sendRight).toBeLessThanOrEqual(metrics.terminalRight + 1);
+});
+
+test("World chat prompt fits on a direct micro-height load", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 180 });
+  await prepareWorldPage(page, "mobile-world-chat-direct-micro", {
+    chatPassphrase: "playwright-public-world-general-passphrase",
+  });
+  await waitForWorld(page);
+
+  const shell = page.locator("forkmesh-world");
+  const terminal = page.locator("[data-world-chat-terminal]");
+  await terminal.evaluate((element) => {
+    element.open = true;
+  });
+  await expect(shell).toHaveAttribute("data-world-chat-micro", "true");
+  await expect(page.locator("#fullChatInput")).toBeVisible();
+
+  const metrics = await terminal.evaluate((element) => {
+    const terminalRect = element.getBoundingClientRect();
+    const inputRect = element
+      .querySelector("#fullChatInput")
+      ?.getBoundingClientRect();
+    const sendRect = element
+      .querySelector("#fullChatSend")
+      ?.getBoundingClientRect();
+    const feedRect = element
+      .querySelector("[data-world-quick-chat-feed]")
+      ?.getBoundingClientRect();
+    return {
+      innerHeight: window.innerHeight,
+      coveredBottom: getComputedStyle(
+        element.closest("forkmesh-world"),
+      ).getPropertyValue("--world-chat-covered-bottom"),
+      terminalTop: terminalRect.top,
+      terminalBottom: terminalRect.bottom,
+      inputBottom: inputRect?.bottom || Infinity,
+      sendBottom: sendRect?.bottom || Infinity,
+      feedHeight: feedRect?.height || 0,
+    };
+  });
+
+  expect(metrics).toMatchObject({
+    innerHeight: 180,
+    coveredBottom: "60px",
+  });
+  expect(metrics.terminalTop).toBeGreaterThanOrEqual(7);
+  expect(metrics.terminalBottom).toBeLessThanOrEqual(173);
+  expect(metrics.inputBottom).toBeLessThanOrEqual(metrics.terminalBottom);
+  expect(metrics.sendBottom).toBeLessThanOrEqual(metrics.terminalBottom);
+  expect(metrics.feedHeight).toBeGreaterThanOrEqual(32);
 });
 
 test("World chat keeps five replayed messages lazy and its prompt in view", async ({
@@ -1696,11 +2345,28 @@ test("World chat keeps five replayed messages lazy and its prompt in view", asyn
   await terminal.evaluate((element) => {
     element.open = true;
   });
+  await page.locator('[data-world-quick-channel="general"]').click();
   const messages = page.locator("#fullChatMessages .chat-message-row");
   await expect(messages).toHaveCount(5);
   await expect(page.locator(".chat-history-indicator")).toContainText(
     "7 earlier messages",
   );
+  // Oldest at the top, newest on the bottom rail, with the "earlier messages"
+  // handle above the first row and the feed parked at the latest line.
+  const feedOrder = await page.locator("#fullChatMessages").evaluate((element) => {
+    const rows = Array.from(element.querySelectorAll(".chat-message-row"));
+    const indicator = element.querySelector(".chat-history-indicator");
+    return {
+      texts: rows.map((row) => row.querySelector("p")?.textContent?.trim() || ""),
+      indicatorFirst: element.firstElementChild === indicator,
+      atBottom:
+        element.scrollHeight - element.scrollTop - element.clientHeight <= 2,
+    };
+  });
+  expect(feedOrder.indicatorFirst).toBe(true);
+  expect(feedOrder.atBottom).toBe(true);
+  expect(feedOrder.texts[0]).toContain("Retained message 8.");
+  expect(feedOrder.texts.at(-1)).toContain("Edited retained message 12.");
   await expect(page.locator("#fullChatInput")).toBeInViewport();
 
   const geometry = await terminal.evaluate((element) => {
@@ -1865,6 +2531,39 @@ test("ForkMesh Office walk-in opens chat only through the explicit fallback", as
   expect(chatSocketURLs).toHaveLength(globalChatSocketCount + 1);
   expect(page.url()).toBe(worldURL);
   expect(context.pages()).toHaveLength(pageCount);
+});
+
+test("Office runtime stays off the initial World graph and loads on demand", async ({
+  page,
+}) => {
+  const officeModules = new Set([
+    "/world/world-office.js",
+    "/world/world-office-meeting.js",
+    "/world/world-office-tasks.js",
+  ]);
+  const requestedOfficeModules = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (officeModules.has(path)) requestedOfficeModules.push(path);
+  });
+  await prepareWorldPage(page, "office-lazy-runtime");
+  await waitForWorld(page);
+  expect(requestedOfficeModules).toEqual([]);
+
+  const runtime = await page.locator("forkmesh-world").evaluate(async (shell) => {
+    const controller = await shell.ensureOfficeRuntime();
+    return {
+      controller: Boolean(controller),
+      meeting: Boolean(shell.officeMeeting),
+      tasks: Boolean(shell.officeTasks),
+    };
+  });
+  expect(runtime).toEqual({
+    controller: true,
+    meeting: true,
+    tasks: true,
+  });
+  expect(new Set(requestedOfficeModules)).toEqual(officeModules);
 });
 
 test("a signed-in member walks into the continuous ten-story Office without a gate", async ({
@@ -4158,7 +4857,10 @@ test("Local controls carry Work and Security tabs instead of a session card", as
   await page.locator('[data-world-settings-tab="work"]').click();
   await expect(page.locator("[data-world-work-total]")).toHaveText("1");
   await expect(page.locator("[data-world-work-active]")).toHaveText("0");
-  const workTask = page.locator("[data-world-work-list] > li").first();
+  const workTask = page
+    .locator("[data-world-organization-task-list] .world-task-row")
+    .filter({ hasText: "Write the launch digest" })
+    .first();
   await expect(workTask).toContainText("Write the launch digest");
   await workTask.locator('[data-world-office-task-action="start"]').click();
   await expect
@@ -4166,13 +4868,15 @@ test("Local controls carry Work and Security tabs instead of a session card", as
       officeTaskFixture.requests.filter(
         (request) =>
           request.path ===
-          `/api/world/office/marketing-tasks/${taskId}/start`,
+          `/api/tasks/${taskId}/start`,
       ).length,
     )
     .toBeGreaterThan(0);
   // The row flips to Stop once the server-timed start lands.
   await expect(
-    page.locator('[data-world-work-list] [data-world-office-task-action="stop"]'),
+    page.locator(
+      '[data-world-organization-task-list] [data-world-office-task-action="stop"]',
+    ),
   ).toBeVisible();
   await expect(page.locator("[data-world-work-active]")).toHaveText("1");
 
@@ -5441,7 +6145,9 @@ test("local diagnostics report renderer and existing socket state without new te
   await expect(diagnostics).toContainText("Socket frames");
   await expect(diagnostics).toContainText("coalesced");
   await expect(diagnostics).toContainText("dddddddddddd");
-  await expect(diagnostics).toContainText("No diagnostics are transmitted");
+  await expect(diagnostics).toContainText(
+    "Nothing here is transmitted while you are in the World",
+  );
 
   const snapshot = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.lastDiagnosticsSnapshot,
@@ -5522,6 +6228,101 @@ test("the topbar has no clock or emote actions and local light level survives mo
     (shell) => shell.identity,
   );
   expect(publicIdentityState.lightLevel).toBeUndefined();
+});
+
+test("a handshake is offered to one visitor and poses both avatars once accepted", async ({
+  page,
+}) => {
+  test.slow();
+  const frames = [];
+  let relay = null;
+  await prepareWorldPage(page, "handshake-host", {
+    worldSocketHandler(socket, socketId) {
+      relay = socket;
+      socket.onMessage((raw) => frames.push(JSON.parse(String(raw))));
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        peers: [
+          {
+            id: "peer-neighbor",
+            name: "Neighbor",
+            status: "available",
+            x: 3,
+            y: 0.38,
+            z: 4,
+            yaw: 0,
+            space: "town-square",
+          },
+        ],
+      }));
+    },
+  });
+  await waitForWorld(page);
+
+  // A handshake is offered from the selected visitor's own profile, so it is
+  // always addressed at exactly one live peer.
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.openWorldMemberDetail({
+      peerId: "peer-neighbor",
+      name: "Neighbor",
+      accountStatus: "Guest",
+    });
+  });
+  await page.getByRole("button", { name: "Offer handshake" }).click();
+  await expect
+    .poll(() => frames.filter((frame) => frame.kind === "handshake-offer"))
+    .toEqual([
+      { type: "interaction", kind: "handshake-offer", target: "peer-neighbor" },
+    ]);
+  await expect(
+    page.getByRole("button", { name: "Handshake offered" }),
+  ).toBeDisabled();
+
+  // The relay publishes the accepted pair to the room; both halves pose.
+  relay.send(JSON.stringify({
+    type: "interaction",
+    kind: "handshake",
+    from: "peer-neighbor",
+    with: "handshake-host",
+  }));
+  await expect
+    .poll(() =>
+      page.locator("forkmesh-world").evaluate((shell) => ({
+        self:
+          Number(shell.world.player.userData.handshakeStartedAt || 0) > 0,
+        peer:
+          Number(
+            shell.world.scene.getObjectByName("avatar:peer-neighbor")
+              ?.userData?.handshakeStartedAt || 0,
+          ) > 0,
+      })),
+    )
+    .toEqual({ self: true, peer: true });
+  await expect(
+    page.getByRole("button", { name: "Offer handshake" }),
+  ).toBeEnabled();
+
+  // An offer arriving from that peer turns the same panel into the answer.
+  relay.send(JSON.stringify({
+    type: "interaction",
+    kind: "handshake-offer",
+    from: "peer-neighbor",
+  }));
+  await page.getByRole("button", { name: "Shake hands back" }).click();
+  await expect
+    .poll(() => frames.filter((frame) => frame.kind === "handshake-accept"))
+    .toEqual([
+      {
+        type: "interaction",
+        kind: "handshake-accept",
+        target: "peer-neighbor",
+      },
+    ]);
+  // Answering consumes the offer: the panel goes back to offering one.
+  await expect(
+    page.getByRole("button", { name: "Offer handshake" }),
+  ).toBeVisible();
 });
 
 test("Unicode emoji status is local-persisted, coalesced, and available to every avatar label", async ({
@@ -5846,6 +6647,151 @@ test("thumbstick motion is continuous, proportional, and recenters on release", 
   await context.close();
 });
 
+test("thumbstick recenters when its terminal event arrives outside the control", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "thumbstick-interrupted-release");
+  await waitForWorld(page);
+
+  const thumbstick = page.locator("[data-world-thumbstick]");
+  const handle = page.locator("[data-world-thumbstick-handle]");
+  const box = await thumbstick.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+  };
+  const dispatchThumbstickPointer = (type, pointerId) =>
+    thumbstick.evaluate(
+      (element, { type, pointerId, x, y }) => {
+        element.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId,
+            pointerType: "touch",
+            clientX: x,
+            clientY: y,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      },
+      {
+        type,
+        pointerId,
+        x: centre.x,
+        y: centre.y - (type === "pointermove" ? box.height * 0.3 : 0),
+      },
+    );
+  await dispatchThumbstickPointer("pointerdown", 1);
+  await dispatchThumbstickPointer("pointermove", 1);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(true);
+
+  // Simulate a mobile browser delivering the terminal event at window rather
+  // than at the captured control. The element listener alone cannot see this.
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new PointerEvent("pointercancel", {
+        pointerId: 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  });
+
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(false);
+  await expect(thumbstick).toHaveAttribute("data-active", "false");
+  for (const property of ["--thumb-x", "--thumb-y"]) {
+    expect(
+      await handle.evaluate((element, name) =>
+        getComputedStyle(element).getPropertyValue(name).trim(),
+        property,
+      ),
+    ).toBe("0px");
+  }
+
+  // A fresh touch must be accepted instead of being blocked by stale state.
+  await dispatchThumbstickPointer("pointerdown", 2);
+  await dispatchThumbstickPointer("pointermove", 2);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(true);
+  await dispatchThumbstickPointer("pointerup", 2);
+  await context.close();
+});
+
+test("thumbstick walking defers renderer resize until release", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "thumbstick-resize");
+  await waitForWorld(page);
+
+  const thumbstick = page.locator("[data-world-thumbstick]");
+  const box = await thumbstick.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+    id: 1,
+  };
+  const client = await page.context().newCDPSession(page);
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [centre],
+  });
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ ...centre, y: centre.y - box.height * 0.3 }],
+  });
+
+  const bufferBeforeResize = await page
+    .locator(".world-canvas")
+    .evaluate((canvas) => ({ width: canvas.width, height: canvas.height }));
+  await page.locator("[data-world-canvas-wrap]").evaluate((wrap) => {
+    wrap.style.height = `${Math.max(
+      240,
+      Math.round(wrap.getBoundingClientRect().height - 120),
+    )}px`;
+  });
+  await page.waitForTimeout(150);
+  expect(
+    await page
+      .locator(".world-canvas")
+      .evaluate((canvas) => ({ width: canvas.width, height: canvas.height })),
+  ).toEqual(bufferBeforeResize);
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+  await expect.poll(() =>
+    page.locator(".world-canvas").evaluate((canvas) => canvas.height),
+  ).not.toBe(bufferBeforeResize.height);
+  await client.detach();
+  await context.close();
+});
+
 test("one-finger look and two-finger pinch use distinct bounded gestures", async ({
   browser,
 }) => {
@@ -6010,6 +6956,7 @@ test("approved instances stay truthful", async ({
 test("System Capacity fits one height-scaled bar per populated D1 table", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await prepareWorldPage(page, "system-capacity-bars", {
     session: {
       sessionToken: "playwright-admin-session",
@@ -6020,6 +6967,12 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
       { name: "repositories", rowCount: 27 },
       { name: "world_events", rowCount: 4096 },
     ],
+    systemCapacityD1Storage: {
+      bytes: 14_811_136,
+      freeDatabaseLimitBytes: 500_000_000,
+      paidDatabaseLimitBytes: 10_000_000_000,
+      includedAccountStorageBytes: 5_000_000_000,
+    },
   });
   await waitForWorld(page);
 
@@ -6029,6 +6982,21 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
     );
     const tableLayer = shell.world.scene.getObjectByName(
       "system-capacity-database-tables",
+    );
+    const footprint = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-footprint",
+    );
+    const footprintFace = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-footprint-face",
+    );
+    const components = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-components",
+    );
+    const componentsFace = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-components-face",
+    );
+    const d1Storage = shell.world.scene.getObjectByName(
+      "system-capacity-d1-storage",
     );
     const bars = [];
     tableLayer?.traverse((object) => {
@@ -6045,16 +7013,34 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
     return {
       platformName: platform?.name || "",
       visibleTableCount: platform?.userData.visibleTableCount,
-      legend: Boolean(
-        shell.world.scene.getObjectByName("system-capacity-table-legend"),
-      ),
+      footprint: {
+        floor: footprint?.userData.officeFloorId || "",
+        width: footprintFace?.material?.map?.image?.width || 0,
+        height: footprintFace?.material?.map?.image?.height || 0,
+      },
+      components: {
+        floor: components?.userData.officeFloorId || "",
+        width: componentsFace?.material?.map?.image?.width || 0,
+        height: componentsFace?.material?.map?.image?.height || 0,
+      },
+      d1StorageVisible: Boolean(d1Storage),
       bars,
     };
   });
 
   expect(capacity.platformName).toBe("system-capacity-infrastructure");
   expect(capacity.visibleTableCount).toBe(3);
-  expect(capacity.legend).toBe(true);
+  expect(capacity.footprint).toEqual({
+    floor: "infrastructure",
+    width: 1800,
+    height: 1100,
+  });
+  expect(capacity.components).toEqual({
+    floor: "infrastructure",
+    width: 1800,
+    height: 1100,
+  });
+  expect(capacity.d1StorageVisible).toBe(true);
   expect(capacity.bars.map((bar) => bar.name).sort()).toEqual([
     "repositories",
     "users",
@@ -6073,11 +7059,20 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
 
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.setPaused(true);
-    shell.world.camera.position.set(8, 7.5, -14);
-    shell.world.camera.lookAt(8, 1.6, -27);
+    const face = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-footprint-face",
+    );
+    const target = face.getWorldPosition(shell.world.camera.position.clone());
+    const front = face
+      .localToWorld(target.clone().set(0, 0, 1))
+      .sub(target)
+      .normalize();
+    shell.world.camera.position.copy(target).add(front.multiplyScalar(28));
+    shell.world.camera.lookAt(target);
+    shell.world.camera.updateMatrixWorld();
     shell.world.renderer.render(shell.world.scene, shell.world.camera);
   });
-  await expect(page).toHaveScreenshot("world-system-capacity.png", {
+  await expect(page).toHaveScreenshot("world-worker-footprint.png", {
     animations: "disabled",
     maxDiffPixelRatio: 0.012,
   });
@@ -7580,6 +8575,157 @@ test("the authenticated member appears immediately and active time advances loca
   expect(stillPaused).toBeCloseTo(paused.totalActiveMs, 3);
 });
 
+test("a fresh member spawns seated in the open Members Circle", async ({
+  page,
+}) => {
+  const session = {
+    nodeName: "newcomer",
+    sessionToken: "fresh-member-circle-session",
+  };
+  await prepareWorldPage(page, "fresh-member-circle", {
+    session,
+    directoryUsers: [
+      {
+        name: "newcomer",
+        nodes: [],
+        createdAt: FIXED_NOW - 1_000,
+      },
+    ],
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.world?.scene?.getObjectByName(
+      "campfire-newest-member-name-sparkles",
+    )?.visible === true;
+  });
+
+  const arrival = await page.locator("forkmesh-world").evaluate((shell) => {
+    const player = shell.world.player;
+    const count = shell.world.scene.getObjectByName("campfire-member-count");
+    const sparkle = shell.world.scene.getObjectByName(
+      "campfire-newest-member-name-sparkles",
+    );
+    const fireSparksLeft = shell.world.scene.getObjectByName(
+      "campfire-newest-member-fire-sparks-left",
+    );
+    const fireSparksRight = shell.world.scene.getObjectByName(
+      "campfire-newest-member-fire-sparks-right",
+    );
+    const flame = shell.world.scene.getObjectByName("campfire-primary-flame");
+    const dirt = shell.world.scene.getObjectByName(
+      "campfire-member-circle-dirt",
+    );
+    const startHere = shell.world.scene.getObjectByName(
+      "forkmesh-start-here-map",
+    );
+    return {
+      seated: shell.freshArrivalCampfireSeated,
+      activity: shell.lastMovement.activity,
+      x: player.position.x,
+      y: player.position.y,
+      z: player.position.z,
+      leftKnee: player.userData.leftKnee.rotation.x,
+      countScale: count.scale.toArray(),
+      countY: count.position.y,
+      sparkleVisible: sparkle.visible,
+      fireSparksVisible: fireSparksLeft.visible && fireSparksRight.visible,
+      fireSparksSpan:
+        fireSparksRight.geometry.attributes.position.getX(15) -
+        fireSparksLeft.geometry.attributes.position.getX(15),
+      fireHeight: flame.scale.y,
+      fireWidth: flame.scale.x,
+      dirtY: dirt.position.y,
+      signPresent: Boolean(
+        shell.world.scene.getObjectByName(
+          "forkmesh-members-circle-path-sign",
+        ),
+      ),
+      startHere: {
+        x: startHere.position.x,
+        z: startHere.position.z,
+        rotation: startHere.rotation.y,
+      },
+    };
+  });
+
+  expect(arrival.seated).toBe(true);
+  expect(arrival.activity).toBe("sitting beside the campfire");
+  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeGreaterThan(5);
+  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeLessThan(10);
+  expect(arrival.y).toBeLessThan(0.38);
+  expect(Math.abs(arrival.leftKnee)).toBeGreaterThan(0.5);
+  expect(arrival.countScale).toEqual([9.5, 4.75, 1]);
+  expect(arrival.countY).toBeGreaterThan(14);
+  expect(arrival.sparkleVisible).toBe(true);
+  expect(arrival.fireSparksVisible).toBe(true);
+  expect(Math.abs(arrival.fireSparksSpan)).toBeGreaterThan(8);
+  expect(arrival.fireHeight).toBeGreaterThan(2.5);
+  expect(arrival.fireWidth).toBeGreaterThan(2.5);
+  expect(arrival.dirtY).toBeGreaterThan(0.105);
+  expect(arrival.signPresent).toBe(false);
+  expect(arrival.startHere.x).toBe(0);
+  expect(arrival.startHere.z).toBe(168);
+  expect(arrival.startHere.rotation).toBeCloseTo(Math.PI, 5);
+
+  // Position storage contains coordinates but deliberately no activity label.
+  // A clean reload must recognize the bench ring and rebuild the seated pose.
+  await page.reload();
+  await waitForWorld(page);
+  const reloaded = await page.locator("forkmesh-world").evaluate((shell) => ({
+    activity: shell.lastMovement.activity,
+    y: shell.world.player.position.y,
+    leftKnee: shell.world.player.userData.leftKnee.rotation.x,
+    radius: Math.hypot(
+      shell.world.player.position.x,
+      shell.world.player.position.z - 130,
+    ),
+  }));
+  expect(reloaded.activity).toBe("sitting beside the campfire");
+  expect(reloaded.y).toBeLessThan(0.38);
+  expect(Math.abs(reloaded.leftKnee)).toBeGreaterThan(0.5);
+  expect(reloaded.radius).toBeGreaterThan(5);
+  expect(reloaded.radius).toBeLessThan(10);
+});
+
+test("the System Status board countdown advances between minute syncs", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "status-board-countdown");
+  await waitForWorld(page);
+
+  const countdown = await page.locator("forkmesh-world").evaluate(
+    (shell, fixedNow) => {
+      let now = fixedNow + 5_000;
+      Date.now = () => now;
+      shell.statusBoardLoad = null;
+      shell.statusBoardRequestedAt = fixedNow;
+      shell.statusBoardLastCheckAt = fixedNow - 25_000;
+      shell.syncSystemStatusBoardTimer();
+      const dial = shell.world.scene.getObjectByName(
+        "forkmesh-status-banner-countdown",
+      );
+      const first = {
+        seconds: dial.userData.countdownSeconds,
+        loading: dial.userData.countdownLoading,
+      };
+      now += 11_000;
+      shell.syncSystemStatusBoardTimer();
+      return {
+        first,
+        second: {
+          seconds: dial.userData.countdownSeconds,
+          loading: dial.userData.countdownLoading,
+        },
+      };
+    },
+    FIXED_NOW,
+  );
+
+  expect(countdown.first).toEqual({ seconds: 55, loading: false });
+  expect(countdown.second).toEqual({ seconds: 44, loading: false });
+});
+
 test("Town Square placement is contextual, tracking-free, and collapses safely", async ({
   page,
 }) => {
@@ -8053,12 +9199,19 @@ test("focus music selection and controls persist without autoplaying on reload",
 test("portrait coarse-pointer thumbstick and visual viewport remain usable", async ({
   browser,
 }) => {
+  test.setTimeout(60_000);
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
     hasTouch: true,
     isMobile: true,
   });
   const page = await context.newPage();
+  const hiddenFocusWarnings = [];
+  page.on("console", (message) => {
+    if (message.text().includes("Blocked aria-hidden on an element")) {
+      hiddenFocusWarnings.push(message.text());
+    }
+  });
   await prepareWorldPage(page, "portrait-touch");
   await waitForWorld(page);
 
@@ -8068,8 +9221,8 @@ test("portrait coarse-pointer thumbstick and visual viewport remain usable", asy
     "data-open",
     "true",
   );
-  const nameInput = page.locator("[data-world-display-name]");
-  await nameInput.focus();
+  const statusNoteInput = page.locator("[data-world-status-note]");
+  await statusNoteInput.focus();
   const before = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.getPosition(),
   );
@@ -8100,6 +9253,7 @@ test("portrait coarse-pointer thumbstick and visual viewport remain usable", asy
     "data-open",
     "false",
   );
+  expect(hiddenFocusWarnings).toEqual([]);
 
   const control = page.locator("[data-world-thumbstick]");
   // Leave enough time for more than one animation frame even when the release

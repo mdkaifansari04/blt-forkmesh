@@ -24,12 +24,12 @@ def test_roster_artifact_adverts_trigger_release_blob_replication():
     )
 
 
-def test_mirror_dropped_event_fallback_is_jittered_three_minutes():
+def test_mirror_dropped_event_fallback_is_jittered_one_minute():
     main = MAIN.read_text(encoding="utf-8")
     internal = INTERNAL.read_text(encoding="utf-8")
     repos = REPOS.read_text(encoding="utf-8")
 
-    assert "constexpr qint64 kMirrorSyncIntervalMs = 3LL * 60 * 1000;" in internal
+    assert "constexpr qint64 kMirrorSyncIntervalMs = 60LL * 1000;" in internal
     assert "constexpr int kMirrorSyncJitterPercent = 15;" in internal
     assert (
         "int(kMirrorSyncIntervalMs * kMirrorSyncJitterPercent / 100)"

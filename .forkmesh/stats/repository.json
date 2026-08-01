@@ -1,0 +1,14 @@
+{
+    "ceilingBytes": 138481269,
+    "ceilingDay": "2026-08-01",
+    "ceilingLines": 696247,
+    "days": [
+        {
+            "bytes": 138483148,
+            "day": "2026-08-01",
+            "files": 3574,
+            "lines": 696280
+        }
+    ],
+    "ratchet": false
+}
