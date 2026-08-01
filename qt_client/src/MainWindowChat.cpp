@@ -309,9 +309,9 @@ void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
         m_faviconFetching.contains(host) || m_faviconMissing.contains(host))
         return;
 
-    // Hosts with a hardcoded mark (api.anthropic.com and friends) never hit the
-    // network: they answer 404 for /favicon.ico, which showed up in the log as
-    // an error line per request (adhoc #436).
+    // Hosts with a hardcoded mark (API endpoints such as api.anthropic.com and
+    // api.mainnet-beta.solana.com) never hit the network: their /favicon.ico
+    // requests fail and otherwise appear as error lines in the log.
     // Cached like a downloaded icon (but never written to the disk cache) so the
     // breadcrumb rail and both log views pick it up the same way; no breadcrumb
     // rebuild from here, since this runs while a log line is being rendered.

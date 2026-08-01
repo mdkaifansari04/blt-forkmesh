@@ -9441,15 +9441,17 @@ inline QPixmap letterFavicon(const QString &host, int side = 36)
 }
 
 // Hosts that get a hardcoded, locally drawn icon instead of a /favicon.ico
-// fetch. api.anthropic.com serves no favicon, so every Claude request in the
-// network log used to spit out a red "GET ERR 404 .../favicon.ico" line of its
-// own (adhoc #436). Returns an empty string for hosts with no builtin mark.
+// fetch. API endpoints do not serve favicons, so their request lines must not
+// cause an additional failed favicon request in the network log. Returns an
+// empty string for hosts with no builtin mark.
 inline QString builtinFaviconKey(const QString &host)
 {
     const QString h = host.toLower();
     if (h == QStringLiteral("anthropic.com") || h.endsWith(".anthropic.com") ||
         h == QStringLiteral("claude.ai") || h.endsWith(".claude.ai"))
         return QStringLiteral("anthropic");
+    if (h == QStringLiteral("api.mainnet-beta.solana.com"))
+        return QStringLiteral("solana");
     return {};
 }
 
@@ -9469,8 +9471,21 @@ inline QPixmap builtinFavicon(const QString &host, int side = 36)
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor("#d97757")); // Anthropic clay
+    painter.setBrush(key == QStringLiteral("solana")
+                         ? QColor("#17172e") // Solana navy
+                         : QColor("#d97757")); // Anthropic clay
     painter.drawRoundedRect(QRectF(0, 0, side, side), side / 4.0, side / 4.0);
+    if (key == QStringLiteral("solana")) {
+        QPen stroke(QColor("#14f195"));
+        stroke.setWidthF(qMax(1.0, side * 0.11));
+        stroke.setCapStyle(Qt::RoundCap);
+        painter.setPen(stroke);
+        const qreal inset = side * 0.25;
+        const qreal width = side * 0.5;
+        for (const qreal y : {side * 0.32, side * 0.50, side * 0.68})
+            painter.drawLine(QPointF(inset, y), QPointF(inset + width, y));
+        return pixmap;
+    }
     // Burst mark: rounded strokes radiating from the centre.
     QPen stroke(QColor("#ffffff"));
     stroke.setWidthF(qMax(1.0, side * 0.09));
