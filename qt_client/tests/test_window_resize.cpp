@@ -1949,6 +1949,11 @@ int main(int argc, char *argv[])
         check(window.testBranchesKeepFlexibleNameColumn(),
               QStringLiteral("Branches keeps its leading cell flexible so inline "
                              "metadata and branch names do not overlap"));
+        check(window.testBranchDelegatePaintsSingleTextLayer(
+                  QStringLiteral("feature/keep-selected")),
+              QStringLiteral("Branches leaves text and icons out of the style "
+                             "background layer so its custom row paints each "
+                             "branch name exactly once"));
         const QString branchBadges = window.testBranchVisualBadges(
             QStringLiteral("feature/keep-selected"));
         check(branchBadges.startsWith(QStringLiteral("1|1|0|1|0|")),
@@ -2127,8 +2132,10 @@ int main(int argc, char *argv[])
         QElapsedTimer diffTimer;
         diffTimer.start();
         while (diffTimer.elapsed() < 5000 &&
-               !window.testBranchDiffFiles().contains(
-                   QStringLiteral("live-uncommitted.txt")))
+               (!window.testBranchDiffFiles().contains(
+                    QStringLiteral("live-uncommitted.txt")) ||
+                !window.testBranchDiffFiles().contains(
+                    QStringLiteral("base-delete.txt"))))
             QApplication::processEvents(QEventLoop::AllEvents, 20);
         check(window.testBranchDiffFiles().contains(
                   QStringLiteral("live-uncommitted.txt")),
