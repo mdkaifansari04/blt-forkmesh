@@ -227,6 +227,7 @@ const WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000;
 // The status Worker records one sample per minute. Poll on that same cadence;
 // the board's lightweight stand texture counts down every second in between.
 const WORLD_STATUS_POLL_MS = 60 * 1000;
+const WORLD_STATUS_ISSUE_WINDOW_MS = 60 * 1000;
 const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS = 15 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_BASE_MS = 5 * 60 * 1000;
@@ -1107,6 +1108,28 @@ function validWorldSession() {
     sessionToken.length <= 2048
     ? { ...session, nodeName, sessionToken }
     : null;
+}
+
+function statusPayloadHasRecentIssue(payload, now = Date.now()) {
+  const systems = Array.isArray(payload?.systems) ? payload.systems : [];
+  const payloadNow = Number(payload?.now);
+  const referenceNow = Number.isFinite(payloadNow) && payloadNow > 0
+    ? payloadNow
+    : now;
+  const cutoff = referenceNow - WORLD_STATUS_ISSUE_WINDOW_MS;
+  return systems.some((system) =>
+    (Array.isArray(system?.minutes) ? system.minutes : []).some((minute) => {
+      const minuteTs = Number(minute?.minuteTs);
+      const status = String(minute?.status || "").toLowerCase();
+      return (
+        Number.isFinite(minuteTs) &&
+        minuteTs >= cutoff &&
+        minuteTs <= referenceNow &&
+        status !== "operational" &&
+        status !== "future"
+      );
+    }),
+  );
 }
 
 async function copyWorldText(value) {
@@ -4149,6 +4172,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </a>
 
           <nav class="world-top-actions" data-world-top-actions aria-label="World tools">
+            <a
+              class="world-admin-status-light"
+              data-world-admin-status-light
+              href="/status"
+              aria-label="A system status issue was recorded in the past minute"
+              title="A system status issue was recorded in the past minute — open status"
+              hidden
+            >
+              <span class="world-admin-status-light-orb" aria-hidden="true"></span>
+            </a>
             ${
               identity.accountStatus === "Supporting member"
                 ? ""
@@ -5625,6 +5658,7 @@ class ForkMeshWorld extends HTMLElement {
     this.adminErrorLatestId = 0;
     this.adminErrorCount = 0;
     this.adminErrorEffectTimer = 0;
+    this.adminStatusIssueActive = false;
     this.adminErrors = [];
     this.adminErrorGroups = [];
     this.adminErrorsState = "idle";
@@ -12473,6 +12507,21 @@ class ForkMeshWorld extends HTMLElement {
   applyAdminElementsAccess() {
     const elementsTab = this.$("[data-world-elements-tab]");
     if (elementsTab) elementsTab.hidden = false;
+    this.renderAdminStatusLight(this.adminStatusIssueActive);
+  }
+
+  renderAdminStatusLight(active = false) {
+    const light = this.$("[data-world-admin-status-light]");
+    if (!light) return;
+    this.adminStatusIssueActive = active === true;
+    const visible = this.identity?.isAdmin === true && this.adminStatusIssueActive;
+    light.hidden = !visible;
+    light.setAttribute(
+      "aria-label",
+      visible
+        ? "A system status issue was recorded in the past minute"
+        : "No recent system status issues",
+    );
   }
 
   adminErrorStorageKey() {
@@ -13122,6 +13171,7 @@ class ForkMeshWorld extends HTMLElement {
     this.statusBoardRequestedAt = Date.now();
     this.statusBoardLastCheckAt =
       Math.max(0, Number(payload?.current?.lastCronSampleTs) || 0);
+    this.renderAdminStatusLight(statusPayloadHasRecentIssue(payload));
     this.world?.updateSystemStatusBoard?.(payload);
     this.syncSystemStatusBoardTimer();
   }
@@ -26451,6 +26501,7 @@ class ForkMeshWorld extends HTMLElement {
       this.identity.nodes = [];
     }
     this.stopAdminErrorPolling();
+    this.renderAdminStatusLight(false);
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.resetWorldActivity();
