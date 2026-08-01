@@ -191,11 +191,15 @@ bool writeOwnerJson(const QString &path, const QJsonObject &object,
 // Rewrite the CLOUDFLARE_* assignments in cloudflare_worker/.env.production in
 // place, keeping every other production secret and comment. The file is the
 // deploy machine's own credential store, so it is written owner-only and is
-// never created through a symlink.
+// never created through a symlink. *changed reports whether the file needed a
+// write at all, so a caller re-saving a value it already holds (the Vultr key
+// on every provisioning call) neither rewrites the file nor claims it did.
 bool writeEnvAssignments(const QString &path,
                          const QMap<QString, QString> &values,
-                         QString *error)
+                         QString *error, bool *changed = nullptr)
 {
+    if (changed)
+        *changed = false;
     const auto fail = [error](const QString &message) {
         if (error)
             *error = message;
@@ -215,10 +219,15 @@ bool writeEnvAssignments(const QString &path,
             return fail(QStringLiteral("Could not read %1.").arg(path));
         contents = QString::fromUtf8(existing.readAll());
     }
+    const QString before = contents;
     for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
         contents = forkmesh::control::updatedEnvAssignment(contents, it.key(),
                                                            it.value());
     }
+    if (info.exists() && contents == before)
+        return true;
+    if (changed)
+        *changed = true;
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly) ||
@@ -3777,14 +3786,17 @@ QStringList MainWindow::rememberVultrApiKey(const QString &apiKey,
         QCoreApplication::applicationDirPath());
     QString envError;
     bool retryable = false;
+    bool envChanged = false;
     if (envPath.isEmpty()) {
         // No checkout beside this build: there is no file to write and no
         // later call can change that, so this is reported, not retried.
         envError = QStringLiteral(
             "cloudflare_worker/.env.production was not found next to this "
             "build's Worker bundle, so no file was rewritten.");
-    } else if (writeEnvAssignments(envPath, {{canonical, key}}, &envError)) {
-        applied << envPath;
+    } else if (writeEnvAssignments(envPath, {{canonical, key}}, &envError,
+                                   &envChanged)) {
+        if (envChanged)
+            applied << envPath;
     } else {
         retryable = true;
     }
