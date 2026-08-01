@@ -1096,6 +1096,37 @@ QStringList MainWindow::testNodeDirectoryNames() const
     return names;
 }
 
+QStringList MainWindow::testChatMemberNames(const QString &conversation)
+{
+    const QString saved = m_currentConversation;
+    m_currentConversation = conversation;
+    refreshChatMembers();
+    QStringList names;
+    if (m_chatMembersLayout) {
+        static const QRegularExpression tag(QStringLiteral("<[^>]*>"));
+        for (int i = 0; i < m_chatMembersLayout->count(); ++i) {
+            QWidget *card = m_chatMembersLayout->itemAt(i)->widget();
+            if (!card)
+                continue;
+            // The name label is the only one carrying the presence bullet.
+            for (QLabel *label : card->findChildren<QLabel *>()) {
+                if (!label->text().contains(QString::fromUtf8("\xE2\x97\x8F")))
+                    continue;
+                names.append(label->text()
+                                 .remove(tag)
+                                 .remove(QString::fromUtf8("\xE2\x97\x8F"))
+                                 .remove(QStringLiteral("(you)"))
+                                 .trimmed());
+                break;
+            }
+        }
+    }
+    m_currentConversation = saved;
+    refreshChatMembers();
+    names.sort(Qt::CaseInsensitive);
+    return names;
+}
+
 void MainWindow::testRenderNetworkRepos(const QJsonArray &repos)
 {
     showSection(kNetworkReposSectionIndex);
