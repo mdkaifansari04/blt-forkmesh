@@ -454,7 +454,19 @@ QWidget *MainWindow::buildSetupPage()
     auto *setupContent = new QWidget;
     auto *setupContentLayout = new QVBoxLayout(setupContent);
     setupContentLayout->addStretch();
-    setupContentLayout->addWidget(card, 0, Qt::AlignHCenter);
+    // Centre the card with stretches, not Qt::AlignHCenter: the card wraps its
+    // subtitle (heightForWidth), and an aligned widget's height gets computed
+    // at the full row width rather than the card's fixed 420px. The taller,
+    // narrower reality was then squeezed by ~32px, which half-clipped the
+    // subtitle's second line and cut the descenders off the generated node
+    // name in the username field (adhoc #113: "the node name is a bit cut
+    // off"). Inside this row the card's cell is exactly its own width, so its
+    // wrapped height is computed correctly.
+    auto *cardRow = new QHBoxLayout;
+    cardRow->addStretch();
+    cardRow->addWidget(card);
+    cardRow->addStretch();
+    setupContentLayout->addLayout(cardRow);
     setupContentLayout->addStretch();
 
     auto *setupScroll = new QScrollArea;
@@ -969,6 +981,16 @@ QString MainWindow::testRepoDefaultBranch() const
     return repoDefaultBranch(repoBranches());
 }
 
+QString MainWindow::testRepoActionsTabText() const
+{
+    return m_repoActionsTab ? m_repoActionsTab->text() : QString();
+}
+
+QString MainWindow::testRepoBranchesButtonText() const
+{
+    return m_branchesButton ? m_branchesButton->text() : QString();
+}
+
 bool MainWindow::testShowRepoIssuesTab()
 {
     if (!m_repoDetailStack || m_repoDetailStack->count() <= 2 ||
@@ -1136,6 +1158,42 @@ QString MainWindow::testNetworkRepoMirrorHeader() const
         !m_networkReposTable->horizontalHeaderItem(2))
         return QString();
     return m_networkReposTable->horizontalHeaderItem(2)->text();
+}
+
+QStringList MainWindow::testNetworkRepoColumns() const
+{
+    QStringList labels;
+    if (!m_networkReposTable)
+        return labels;
+    for (int column = 0; column < m_networkReposTable->columnCount(); ++column) {
+        if (QTableWidgetItem *item =
+                m_networkReposTable->horizontalHeaderItem(column))
+            labels.append(item->text());
+    }
+    return labels;
+}
+
+QString MainWindow::testNetworkRepoCellText(int row,
+                                            const QString &header) const
+{
+    if (!m_networkReposTable || row < 0 ||
+        row >= m_networkReposTable->rowCount())
+        return QString();
+    for (int column = 0; column < m_networkReposTable->columnCount(); ++column) {
+        QTableWidgetItem *label =
+            m_networkReposTable->horizontalHeaderItem(column);
+        if (!label || label->text() != header)
+            continue;
+        QTableWidgetItem *item = m_networkReposTable->item(row, column);
+        return item ? item->text() : QString();
+    }
+    return QString();
+}
+
+int MainWindow::testReposNavBadgeCount() const
+{
+    auto *railButton = dynamic_cast<ActivityRailButton *>(m_reposNavButton);
+    return railButton ? railButton->badgeCount() : -1;
 }
 #endif
 
@@ -1371,11 +1429,14 @@ void MainWindow::startSession()
     server->setEndpoints(endpoints);
     attachBackend(server);
     // Stamp outgoing frames with this account's kind from the first frame —
-    // updateUserSwitcher() re-applies it whenever the profile hydrates.
+    // updateUserSwitcher() re-applies it whenever the profile hydrates. A
+    // fresh install with no username yet speaks as "guest" (not "node") so its
+    // messages render on the web surfaces, which only show user/guest frames.
     server->setAccountKind(
         (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty())
             ? QStringLiteral("user")
-            : QStringLiteral("node"));
+            : chatIdentityIsGuest() ? QStringLiteral("guest")
+                                    : QStringLiteral("node"));
     if (!server->start())
         return;
 
@@ -2312,10 +2373,61 @@ QString MainWindow::nodeOwnerDisplayName() const
 
 QString MainWindow::chatDisplayName() const
 {
+    // No username yet (fresh install still on its generated node name): chat
+    // as a guest, exactly like the website's anonymous visitors, so messages
+    // render on every surface instead of being dropped as node frames. The
+    // machine keeps its generated node name; only the person is anonymous.
+    if (chatIdentityIsGuest())
+        return guestChatName();
     const QString user = topBarUserName().trimmed();
     if (!user.isEmpty())
         return user.left(80);
     return accountNameFromInput(m_userName, QString()).left(80);
+}
+
+bool MainWindow::chatIdentityIsGuest() const
+{
+    // Headless nodes are fleet machines whose chat identity IS the node —
+    // renaming them "Guest ####" out from under rosters would be a regression.
+    if (m_headless)
+        return false;
+    // Any linked or signed-in user identity wins over guest status.
+    if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty() ||
+        !m_nodeOwnerUser.trimmed().isEmpty())
+        return false;
+    // A guest is an install still running under the name a first run handed
+    // out. Typing a username (setup screen or Settings) or logging in / signing
+    // up replaces account/nodeName, so the two diverge and guest mode ends.
+    const QString generated = accountNameFromInput(
+        QSettings().value(kGeneratedNodeNameSetting).toString(), QString());
+    return !generated.isEmpty() &&
+           savedProfileName().compare(generated, Qt::CaseInsensitive) == 0;
+}
+
+QString MainWindow::guestChatName() const
+{
+    // Match the website's anonymous-visitor naming ("Guest 1234"): recognised
+    // by every surface's guest grouping (isTemporaryChatGuest, the web's guest
+    // section). Reuse the generated node name's numeric tail so the name is
+    // stable across restarts; fall back to a digest of the identity key.
+    const QString generated =
+        QSettings().value(kGeneratedNodeNameSetting).toString();
+    static const QRegularExpression tailDigits(QStringLiteral("(\\d{4})$"));
+    const QRegularExpressionMatch match = tailDigits.match(generated);
+    QString digits = match.hasMatch() ? match.captured(1) : QString();
+    if (digits.isEmpty()) {
+        const QByteArray key = m_profileIdentity.publicKey().toUtf8();
+        if (!key.isEmpty()) {
+            const QByteArray digest =
+                QCryptographicHash::hash(key, QCryptographicHash::Sha256);
+            quint32 value = 0;
+            for (int i = 0; i < 4; ++i)
+                value = (value << 8) | quint8(digest.at(i));
+            digits = QString::number(1000 + value % 9000);
+        }
+    }
+    return digits.isEmpty() ? QStringLiteral("Guest")
+                            : QStringLiteral("Guest %1").arg(digits);
 }
 
 // The node name of THIS machine — never the username. A user account owns many

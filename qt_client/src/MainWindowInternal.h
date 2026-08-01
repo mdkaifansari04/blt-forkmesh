@@ -2696,6 +2696,14 @@ const QString kRepoUrl = QStringLiteral("https://github.com/forkmesh/forkmesh.gi
 const QString kDisplayNameSetting = QStringLiteral("profile/displayName");
 const QString kHandleSetting = QStringLiteral("profile/handle");
 const QString kAccountNameSetting = QStringLiteral("account/nodeName");
+// The fun node name a true first run handed out (see randomFunNodeName). While
+// the account name is still exactly this — nobody typed a username, signed up,
+// or logged in — the person at the desktop is a guest, not a user, and chat
+// speaks as "Guest ####" like the website does for anonymous visitors (adhoc
+// #113). Renaming (setup screen or Settings) or claiming a user account makes
+// account/nodeName diverge from this and thereby exits guest mode.
+const QString kGeneratedNodeNameSetting =
+    QStringLiteral("account/generatedNodeName");
 // This machine's own node name on the mesh, distinct from the username: a user
 // account owns many nodes, and the machine you're sitting at is just one of
 // them. Unset means "derive a default" (hostname for user-account installs,
@@ -7287,6 +7295,7 @@ public:
         m_badge = count;
         update();
     }
+    int badgeCount() const { return m_badge; }
 
     void setSyncing(bool on)
     {
@@ -8829,13 +8838,17 @@ inline QString nodeListIdentityKey(const MemberInfo &m)
 // fb9d" rows in the Nodes list). The web chat stamps these accountKind "guest";
 // frames sent before that stamp existed are recognised by the placeholder names
 // the world assigns ("World visitor · <name>", "World Guest ab12", "Guest 1234")
-// — but only when the peer never advertised a registered node identity, so a
-// real node someone happens to have named "Guest ..." keeps its row.
+// — but only when the peer never advertised a node identity, so a real node
+// keeps its row. That nodeName escape now matters for "guest" too: a fresh
+// desktop install chats as "Guest ####" until someone picks a username (adhoc
+// #113), yet the machine itself still advertises its generated node name and
+// belongs in node surfaces. Browser-tab guests advertise no nodeName and stay
+// filtered.
 inline bool isTemporaryChatGuest(const MemberInfo &m)
 {
     const QString kind = m.accountKind.trimmed().toLower();
     if (kind == QLatin1String("guest"))
-        return true;
+        return m.nodeName.trimmed().isEmpty();
     if (!kind.isEmpty() || !m.nodeName.trimmed().isEmpty())
         return false;
     static const QRegularExpression legacyGuestName(

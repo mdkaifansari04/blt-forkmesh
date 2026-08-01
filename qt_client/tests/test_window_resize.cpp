@@ -47,6 +47,7 @@
 namespace forkmesh {
 namespace ui {
 QString linkifyIssueRefs(const QString &escaped);
+bool isTemporaryChatGuest(const MemberInfo &m);
 QString agentModelLabel(const QString &model);
 bool agentModelIsClaudeStyle(const QString &model);
 bool agentModelMatchesProvider(const QString &provider, const QString &model);
@@ -1054,14 +1055,26 @@ int main(int argc, char *argv[])
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-a")},
                     {QStringLiteral("name"), QStringLiteral("widget")},
                     {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("description"),
+                     QStringLiteral("Never shown in the grid")},
+                    {QStringLiteral("branch"), QStringLiteral("main")},
+                    {QStringLiteral("issueCount"), QStringLiteral("7")},
+                    {QStringLiteral("platform"), QStringLiteral("linux")},
                     {QStringLiteral("source"), QStringLiteral("local-node")}},
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-b")},
                     {QStringLiteral("name"), QStringLiteral("widget")},
                     {QStringLiteral("rootCommit"), rootA},
                     {QStringLiteral("source"), QStringLiteral("remote-clone")}},
+        // The relay's public alias is a copy of the record above, so it carries
+        // the same published facts under the organization's name.
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("acme")},
                     {QStringLiteral("name"), QStringLiteral("widget")},
                     {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("description"),
+                     QStringLiteral("Never shown in the grid")},
+                    {QStringLiteral("branch"), QStringLiteral("main")},
+                    {QStringLiteral("issueCount"), QStringLiteral("7")},
+                    {QStringLiteral("platform"), QStringLiteral("linux")},
                     {QStringLiteral("source"),
                      QStringLiteral("organization-alias")},
                     {QStringLiteral("servingOwner"),
@@ -1083,6 +1096,37 @@ int main(int argc, char *argv[])
           QStringLiteral("Repos uses a compact mirror-count column"));
     check(window.testNetworkRepoActionText(0) == QStringLiteral("Switch"),
           QStringLiteral("Repos provides an explicit Switch button"));
+
+    // adhoc #118: the page shows the full catalog record per repository -- every
+    // published field gets its own column, except the description.
+    const QStringList repoColumns = window.testNetworkRepoColumns();
+    const QStringList expectedRepoColumns{
+        QStringLiteral("Visibility"), QStringLiteral("Live host"),
+        QStringLiteral("Branch"),     QStringLiteral("Commits"),
+        QStringLiteral("Platform"),   QStringLiteral("Size"),
+        QStringLiteral("Clone URL"),  QStringLiteral("Maintainer")};
+    bool allRepoColumnsPresent = true;
+    for (const QString &column : expectedRepoColumns)
+        allRepoColumnsPresent =
+            allRepoColumnsPresent && repoColumns.contains(column);
+    check(allRepoColumnsPresent,
+          QStringLiteral("Repos gives every catalog field its own column"));
+    check(!repoColumns.contains(QStringLiteral("Description")),
+          QStringLiteral("Repos leaves the repository description out of the grid"));
+    check(window.testNetworkRepoCellText(0, QStringLiteral("Branch")) ==
+                  QStringLiteral("main") &&
+              window.testNetworkRepoCellText(0, QStringLiteral("Issues")) ==
+                  QStringLiteral("7") &&
+              window.testNetworkRepoCellText(0, QStringLiteral("Platform")) ==
+                  QStringLiteral("linux"),
+          QStringLiteral("Repos rows carry the published catalog values"));
+    check(!window.testNetworkRepoCellText(0, QStringLiteral("Repository"))
+               .contains(QStringLiteral("Never shown")),
+          QStringLiteral("Repos rows never print the repository description"));
+    // The rail badge counts what this page lists (two grouped repositories),
+    // not the machine's own copies.
+    check(window.testReposNavBadgeCount() == 2,
+          QStringLiteral("Repos rail badge counts the repositories on the network"));
 
     // Reward settings must never launch the former reserve/donation/finalize
     // account funnel. A mock account flow is installed specifically to prove it
@@ -1147,6 +1191,34 @@ int main(int argc, char *argv[])
     window.testSetRoster(withUserPeer);
     check(!window.testNetworkLog().join(QLatin1Char('\n')).contains(QStringLiteral("jett")),
           QStringLiteral("a plain user account online is not logged as a node connecting"));
+
+    // Adhoc #113: an anonymous chat guest coming online is a person passing
+    // through, not a node. Only a guest that advertises a machine nodeName (a
+    // first-run desktop) is announced — under the machine's name, never the
+    // person's "Guest ####" alias.
+    window.testResetNetworkLog();
+    QList<MemberInfo> withGuestPeer = withUserPeer;
+    MemberInfo guestPeer =
+        testMember(QStringLiteral("guest-peer"), QStringLiteral("Guest 4242"));
+    guestPeer.accountKind = QStringLiteral("guest");
+    withGuestPeer.append(guestPeer);
+    window.testSetRoster(withGuestPeer);
+    check(!window.testNetworkLog().join(QLatin1Char('\n')).contains(
+              QStringLiteral("Guest 4242")),
+          QStringLiteral("an anonymous guest online is not logged as a node"));
+    window.testResetNetworkLog();
+    MemberInfo guestDesktopPeer =
+        testMember(QStringLiteral("guest-desktop-peer"),
+                   QStringLiteral("Guest 4242"));
+    guestDesktopPeer.accountKind = QStringLiteral("guest");
+    guestDesktopPeer.nodeName = QStringLiteral("magnetic-terminal-4242");
+    withGuestPeer.append(guestDesktopPeer);
+    window.testSetRoster(withGuestPeer);
+    const QString guestLog = window.testNetworkLog().join(QLatin1Char('\n'));
+    check(guestLog.contains(QStringLiteral("magnetic-terminal-4242")) &&
+              !guestLog.contains(QStringLiteral("Guest 4242")),
+          QStringLiteral(
+              "a first-run desktop guest announces as its machine node name"));
 
     // adhoc #404: a browser guest / World visitor that stops sending presence is
     // forgotten after ten idle minutes, while a real node keeps its offline row
@@ -1889,6 +1961,80 @@ int main(int argc, char *argv[])
         }
     }
 
+    // adhoc #116: a fresh install's first clone lands well after the repo-detail
+    // view opened, so every ref-backed label starts out empty. Reading them back
+    // used to be gated on the Code/Branches tab being on screen, so with any
+    // other tab up the status strip's bottom-left branch button and the branch
+    // count stayed on their empty-repo values for good — and the lazily-loaded
+    // tab badges kept the zero they were built with whatever tab was showing.
+    // Open a repo with no refs at all, move off Code, then let the clone land:
+    // the next push-driven refresh must catch all of it up.
+    {
+        QTemporaryDir lateRepo;
+        QWidget *statusBar =
+            window.findChild<QWidget *>(QStringLiteral("appStatusBar"));
+        QPushButton *branchButton =
+            statusBar ? statusBar->findChild<QPushButton *>(
+                            QStringLiteral("ghostButton"))
+                      : nullptr;
+        if (lateRepo.isValid() && branchButton) {
+            // An empty directory: the record exists and its path exists, but git
+            // has nothing to report — exactly the window between "the repo is in
+            // the list" and "its first clone finished".
+            const int idx = window.testAddLocalRepository("me", "laterepo",
+                                                          lateRepo.path());
+            window.testOpenRepository(idx);
+            QApplication::processEvents();
+            // Off the Code tab: it re-reads refs on every refresh anyway, so
+            // leaving it up would hide the regression this pins.
+            window.testShowRepoIssuesTab();
+            QApplication::processEvents();
+            const QString beforeBranch = branchButton->text();
+
+            // The clone lands: main plus two more branches, and one workflow.
+            const bool cloned =
+                initGitRepo(lateRepo) &&
+                runGitChecked(lateRepo.path(), {"branch", "release/1"}) &&
+                runGitChecked(lateRepo.path(), {"branch", "feature/two"});
+            QDir(lateRepo.path()).mkpath(QStringLiteral(".forkmesh"));
+            QFile workflow(
+                QDir(lateRepo.path()).filePath(QStringLiteral(".forkmesh/ci.yml")));
+            const bool wroteWorkflow =
+                workflow.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+                workflow.write("name: ci\non: [push]\nsteps:\n  - run: true\n") > 0;
+            workflow.close();
+
+            if (cloned && wroteWorkflow) {
+                window.testRefreshOpenRepoDetail();
+                // The Actions badge loads on a worker thread; give it a bounded
+                // window to land rather than a fixed sleep.
+                QElapsedTimer settle;
+                settle.start();
+                while (settle.elapsed() < 10000 &&
+                       window.testRepoActionsTabText() !=
+                           QStringLiteral("Actions (1)")) {
+                    QApplication::processEvents(QEventLoop::AllEvents, 50);
+                }
+                check(beforeBranch != QStringLiteral("main") &&
+                          branchButton->text() == QStringLiteral("main"),
+                      QString("status strip's branch button picks up main once "
+                              "the first clone lands (was %1, now %2)")
+                          .arg(beforeBranch, branchButton->text()));
+                check(window.testRepoBranchesButtonText() ==
+                          QStringLiteral("3 branches"),
+                      QString("branch count catches up with the landed clone "
+                              "(got %1)")
+                          .arg(window.testRepoBranchesButtonText()));
+                // The Actions tab was never opened: its badge must still be right.
+                check(window.testRepoActionsTabText() ==
+                          QStringLiteral("Actions (1)"),
+                      QString("workflow count loads without opening the Actions "
+                              "tab (got %1)")
+                          .arg(window.testRepoActionsTabText()));
+            }
+        }
+    }
+
     // Issue #232: repository About metadata belongs under the ForkMesh metadata
     // directory, not as a root-level info.json that collides with project files.
     {
@@ -2137,6 +2283,79 @@ int main(int argc, char *argv[])
             settings.setValue(verifiedKey, oldVerified);
         else
             settings.remove(verifiedKey);
+    }
+
+    // Adhoc #113: a first run hands the MACHINE a generated node name, but the
+    // person has no username yet — chat speaks as an anonymous "Guest ####"
+    // (accountKind "guest", like the website's visitors) until a username is
+    // typed or an account is claimed. Typing one ends guest mode.
+    {
+        QSettings settings;
+        const QString nodeKey = QStringLiteral("account/nodeName");
+        const QString generatedKey = QStringLiteral("account/generatedNodeName");
+        const QString handleKey = QStringLiteral("profile/handle");
+        const QString displayKey = QStringLiteral("profile/displayName");
+        const QVariant oldNode = settings.value(nodeKey);
+        const QVariant oldGenerated = settings.value(generatedKey);
+        const QVariant oldHandle = settings.value(handleKey);
+        const QVariant oldDisplay = settings.value(displayKey);
+        settings.remove(nodeKey);
+        settings.remove(generatedKey);
+        settings.remove(handleKey);
+        settings.remove(displayKey);
+
+        MainWindow fresh;
+        fresh.testEnableSessionStartBypass(true);
+        const QString generatedName = settings.value(nodeKey).toString();
+        check(!generatedName.isEmpty() &&
+                  settings.value(generatedKey).toString() == generatedName,
+              QStringLiteral("first run records the generated node name"));
+        check(fresh.testChatIdentityIsGuest(),
+              QStringLiteral("first run chats as a guest, not as the node"));
+        static const QRegularExpression guestShape(
+            QStringLiteral("^Guest \\d{4}$"));
+        check(guestShape.match(fresh.testChatDisplayName()).hasMatch(),
+              QStringLiteral("guest chat name is \"Guest ####\" (%1)")
+                  .arg(fresh.testChatDisplayName()));
+        check(fresh.testMachineNodeName() == generatedName,
+              QStringLiteral("the machine keeps the generated node name"));
+
+        // A desktop guest still advertises its machine node name, so node
+        // surfaces keep its row; a browser guest (no nodeName) stays filtered
+        // (adhoc #308).
+        MemberInfo desktopGuest;
+        desktopGuest.name = QStringLiteral("Guest 8888");
+        desktopGuest.accountKind = QStringLiteral("guest");
+        desktopGuest.nodeName = generatedName;
+        MemberInfo browserGuest;
+        browserGuest.name = QStringLiteral("Guest 1667");
+        browserGuest.accountKind = QStringLiteral("guest");
+        check(!forkmesh::ui::isTemporaryChatGuest(desktopGuest),
+              QStringLiteral("a guest advertising a node name keeps node rows"));
+        check(forkmesh::ui::isTemporaryChatGuest(browserGuest),
+              QStringLiteral("a browser guest without a node stays filtered"));
+
+        // Typing a username replaces the generated name and ends guest mode.
+        fresh.testSetSetupInputs(QStringLiteral("carol"), QString());
+        fresh.testStartSession();
+        check(!fresh.testChatIdentityIsGuest(),
+              QStringLiteral("typing a username ends guest mode"));
+        check(fresh.testChatDisplayName() == QStringLiteral("carol"),
+              QStringLiteral("chat then speaks as the chosen username"));
+        stopChildProcesses(fresh);
+
+        if (oldNode.isValid())
+            settings.setValue(nodeKey, oldNode);
+        else
+            settings.remove(nodeKey);
+        if (oldGenerated.isValid())
+            settings.setValue(generatedKey, oldGenerated);
+        else
+            settings.remove(generatedKey);
+        if (oldHandle.isValid())
+            settings.setValue(handleKey, oldHandle);
+        if (oldDisplay.isValid())
+            settings.setValue(displayKey, oldDisplay);
     }
 
     // Issue #203: quick-adding an issue without assigning it to an agent should
