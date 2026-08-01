@@ -6517,9 +6517,13 @@ class ForkMeshWorld extends HTMLElement {
       // Validate the optional persisted account session before issuing any
       // private World reads. This prevents an expired local token from
       // fanning out into a page full of avoidable 401/403 requests.
-      const dataPromise = contextPromise.then(() =>
-        this.trackBootStep("data", this.loadWorldData()),
-      );
+      const dataPromise = contextPromise.then(() => {
+        // Open the row before the call: loadWorldData counts its fan-out onto
+        // an already-running step, and the argument would otherwise be
+        // evaluated before trackBootStep could start one.
+        this.startBootStep("data");
+        return this.trackBootStep("data", this.loadWorldData());
+      });
       this.setLoadingProgress(28, "Starting the live renderer…");
       const THREE = await this.trackBootStep(
         "engine",
@@ -8629,19 +8633,17 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async loadContext() {
-    const [contextResult, ticketResult] = await Promise.allSettled(
-      this.countBootRequests("session", [
-        this.fetchJSON("/api/world/context", {
-          auth: false,
-          timeout: 5000,
-          cache: "no-store",
-        }),
-        this.fetchJSON("/api/world/ticket", {
-          timeout: 5000,
-          cache: "no-store",
-        }),
-      ]),
-    );
+    const [contextResult, ticketResult] = await Promise.allSettled([
+      this.fetchJSON("/api/world/context", {
+        auth: false,
+        timeout: 5000,
+        cache: "no-store",
+      }),
+      this.fetchJSON("/api/world/ticket", {
+        timeout: 5000,
+        cache: "no-store",
+      }),
+    ]);
     const context =
       contextResult.status === "fulfilled" ? contextResult.value : null;
     const ticket =
@@ -8823,113 +8825,111 @@ class ForkMeshWorld extends HTMLElement {
       visitorsResult,
       statusResult,
     ] =
-      await Promise.allSettled(
-        // Counted so the opening curtain can show this fan-out settling
-        // request by request instead of one silent multi-second wait.
-        this.countBootRequests("data", [
-          this.fetchJSON("/api/network/overview", { auth: false }),
-          this.fetchMirrorCatalog({ force: forceMirrors }),
-          this.fetchJSON("/api/world/instances", {
-            auth: false,
-            timeout: 5000,
-            cache: "no-store",
-          }),
-          this.fetchJSON("/api/repositories", { auth: hasSession }),
-          this.fetchJSON("/api/repository-imports", {
-            auth: hasSession,
-            timeout: 12000,
-            cache: "no-store",
-          }),
-          this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
-          this.fetchJSON("/api/accounts/central-fund", {
-            auth: false,
-            timeout: 5000,
-            cache: "no-store",
-          }),
-          this.fetchJSON("/api/world/organizations", {
-            auth: hasSession,
-            timeout: 5000,
-            cache: "no-store",
-          }),
-          this.fetchJSON("/security/latest.json", {
-            auth: false,
-            timeout: 4000,
-            cache: "no-store",
-          }),
-          this.fetchJSON("/api/world/fediverse", {
-            auth: false,
-            timeout: 4000,
-            cache: "no-store",
-          }),
-          hasSession
-            ? this.fetchJSON("/api/world/media/spaces", {
-                timeout: 5000,
-                cache: "no-store",
-              })
-            : Promise.resolve({ spaces: [] }),
-          this.fetchJSON("/world/bot-directory.json", {
-            auth: false,
-            timeout: 4000,
-          }),
-          hasSession
-            ? this.fetchJSON("/api/rewards/pending", {
-                timeout: 5000,
-                cache: "no-store",
-              })
-            : Promise.resolve({ rewards: [] }),
-          hasSession && session?.nodeName
-            ? this.fetchJSON(
-                `/api/notifications?node=${encodeURIComponent(
-                  String(session.nodeName).toLowerCase(),
-                )}&limit=100`,
-                {
-                  timeout: 5000,
-                  cache: "no-store",
-                },
-              )
-            : Promise.resolve({ notifications: [], unread: 0 }),
-          this.fetchJSON("/api/world/inactive", {
-            auth: false,
-            timeout: 5000,
-            cache: "no-store",
-          }),
-          this.fetchJSON("/api/world/events", {
-            auth: false,
-            timeout: 5000,
-            cache: "no-store",
-          }),
-          this.fetchJSON(
-            "/api/world/community-ads/placements?context=town-square",
-            {
-              auth: false,
-              timeout: 4000,
+      // The fan-out is counted so the opening curtain can show it settling
+      // request by request instead of one silent multi-second wait.
+      await Promise.allSettled(this.countBootRequests("data", [
+        this.fetchJSON("/api/network/overview", { auth: false }),
+        this.fetchMirrorCatalog({ force: forceMirrors }),
+        this.fetchJSON("/api/world/instances", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/repositories", { auth: hasSession }),
+        this.fetchJSON("/api/repository-imports", {
+          auth: hasSession,
+          timeout: 12000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
+        this.fetchJSON("/api/accounts/central-fund", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/world/organizations", {
+          auth: hasSession,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/security/latest.json", {
+          auth: false,
+          timeout: 4000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/world/fediverse", {
+          auth: false,
+          timeout: 4000,
+          cache: "no-store",
+        }),
+        hasSession
+          ? this.fetchJSON("/api/world/media/spaces", {
+              timeout: 5000,
               cache: "no-store",
-            },
-          ),
-          this.fetchJSON("/api/world/fediverse-mentions", {
+            })
+          : Promise.resolve({ spaces: [] }),
+        this.fetchJSON("/world/bot-directory.json", {
+          auth: false,
+          timeout: 4000,
+        }),
+        hasSession
+          ? this.fetchJSON("/api/rewards/pending", {
+              timeout: 5000,
+              cache: "no-store",
+            })
+          : Promise.resolve({ rewards: [] }),
+        hasSession && session?.nodeName
+          ? this.fetchJSON(
+              `/api/notifications?node=${encodeURIComponent(
+                String(session.nodeName).toLowerCase(),
+              )}&limit=100`,
+              {
+                timeout: 5000,
+                cache: "no-store",
+              },
+            )
+          : Promise.resolve({ notifications: [], unread: 0 }),
+        this.fetchJSON("/api/world/inactive", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/world/events", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON(
+          "/api/world/community-ads/placements?context=town-square",
+          {
             auth: false,
-            timeout: 5000,
+            timeout: 4000,
             cache: "no-store",
-          }),
-          this.fetchJSON("/api/accounts/users", {
-            auth: false,
-            timeout: 5000,
-          }),
-          // Edge-cached for a minute server-side; no per-visitor variance, so
-          // the browser cache may reuse it too.
-          this.fetchJSON("/api/world/visitors", {
-            auth: false,
-            timeout: 5000,
-          }),
-          this.fetchJSON("/api/status?view=world", {
-            auth: false,
-            timeout: 8000,
-            maxAge: 60 * 1000,
-            backoff: true,
-            staleIfError: true,
-          }),
-        ]),
-      );
+          },
+        ),
+        this.fetchJSON("/api/world/fediverse-mentions", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/accounts/users", {
+          auth: false,
+          timeout: 5000,
+        }),
+        // Edge-cached for a minute server-side; no per-visitor variance, so
+        // the browser cache may reuse it too.
+        this.fetchJSON("/api/world/visitors", {
+          auth: false,
+          timeout: 5000,
+        }),
+        this.fetchJSON("/api/status?view=world", {
+          auth: false,
+          timeout: 8000,
+          maxAge: 60 * 1000,
+          backoff: true,
+          staleIfError: true,
+        }),
+      ]));
     this.network = networkResult.status === "fulfilled" ? networkResult.value : {};
     this.mirrorCatalogs =
       mirrorResult.status === "fulfilled"
