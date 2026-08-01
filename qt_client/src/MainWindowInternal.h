@@ -7295,6 +7295,7 @@ public:
         m_badge = count;
         update();
     }
+    int badgeCount() const { return m_badge; }
 
     void setSyncing(bool on)
     {
