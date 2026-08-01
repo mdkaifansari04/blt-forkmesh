@@ -8605,6 +8605,16 @@ QWidget *MainWindow::buildRepoDetailSection()
         QStringLiteral("Source control \xE2\x80\x94 view the current changes"));
     connect(m_railGitButton, &QPushButton::clicked, this, [this] {
         showSection(0);
+        // Git opens on the repo's default branch (adhoc #133). Browsing another
+        // branch is an explicit Code-view detour (the strip's branch button, a
+        // row in the branches panel) and setRepoBranch keeps that ref until
+        // something moves it, so entering source control from the rail used to
+        // land on that branch's history instead of the main-branch view this
+        // destination otherwise always shows. Reset the browsed ref first, then
+        // open the panel below so its list is built for the default branch.
+        const QString base = repoDefaultBranchFast();
+        if (!base.isEmpty() && base != m_repoBranch)
+            setRepoBranch(base);
         // Open the commits/changes workspace inside the Code overview. Going
         // through the commit strip's toggle runs its deferred list build and
         // change rescan; when it's already showing, just re-assert the view.

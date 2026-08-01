@@ -1114,8 +1114,16 @@ void MainWindow::refreshChatMembers()
             break;
         }
     } else {
-        // Public mesh/office rooms expose live presence, but only database
-        // accounts are users. Guests and unregistered node aliases stay out.
+        // Public mesh/office rooms (#general and friends) are open to every
+        // registered account, so the users column lists the whole database
+        // directory instead of only whoever happens to be online right now
+        // (adhoc #129). Presence still drives the online dot, the sort order
+        // and the node badges below; it just no longer decides membership.
+        // Guests and unregistered node aliases have no directory row, so they
+        // still stay out.
+        for (auto it = m_chatDirectoryUsers.constBegin();
+             it != m_chatDirectoryUsers.constEnd(); ++it)
+            roomUserKeys.insert(it.key());
         for (auto it = liveByUser.constBegin(); it != liveByUser.constEnd(); ++it)
             roomUserKeys.insert(it.key());
     }

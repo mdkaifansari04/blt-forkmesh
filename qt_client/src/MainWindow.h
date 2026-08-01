@@ -393,6 +393,9 @@ public:
                                    const QStringList &nodes);
     void testShowNodesSection();
     QStringList testNodeDirectoryNames() const;
+    // The chat header's users popup: rebuild it for `conversation` and read back
+    // the names it lists (adhoc #129).
+    QStringList testChatMemberNames(const QString &conversation);
     void testRenderNetworkRepos(const QJsonArray &repos);
     QStringList testNetworkRepoNames() const;
     QString testNetworkRepoActionText(int row) const;
