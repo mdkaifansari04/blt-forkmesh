@@ -58,13 +58,20 @@ struct DirectorySizeScanResult {
 using DirectorySizeScanProgress =
     std::function<void(const QString &path, qint64 bytes, int files)>;
 
+// "Give up now" poll for the Size map tab's Stop button: checked once per
+// directory, the same cadence as the progress callback, so a click unwinds
+// the recursion in about one progress tick rather than waiting for the rest
+// of the tree. Empty means never cancel.
+using DirectorySizeScanCancel = std::function<bool()>;
+
 // Raw on-disk bytes, .git excluded, symlinks skipped so link cycles can't loop
 // or inflate the totals. Files become leaf children alongside subdirectories
 // (adhoc #262). Safe to call from a worker thread: touches nothing but the
 // filesystem.
 DirectorySizeScanResult
 scanDirectorySizes(const QString &path, const DirectorySizeScanOptions &options,
-                   const DirectorySizeScanProgress &progress = {});
+                   const DirectorySizeScanProgress &progress = {},
+                   const DirectorySizeScanCancel &canceled = {});
 
 // True when a plain scan of this folder would visibly miss things: this user
 // cannot list something directly inside it, so the map would be drawn without
