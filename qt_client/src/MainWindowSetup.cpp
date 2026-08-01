@@ -792,6 +792,49 @@ QString MainWindow::testWorktreeBranchLabel() const
     return m_worktreeBranchLabel ? m_worktreeBranchLabel->text() : QString();
 }
 
+int MainWindow::testOverviewBodyPage() const
+{
+    return m_overviewBodyStack ? m_overviewBodyStack->currentIndex() : -1;
+}
+
+QStringList MainWindow::testSourceControlPaths() const
+{
+    QStringList paths;
+    if (!m_scmTree)
+        return paths;
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
+        for (int i = 0; group && i < group->childCount(); ++i) {
+            const QString path =
+                group->child(i)->data(0, Qt::UserRole).toString();
+            if (!path.isEmpty())
+                paths.append(path);
+        }
+    }
+    return paths;
+}
+
+bool MainWindow::testClickSourceControlPath(const QString &path)
+{
+    if (!m_scmTree)
+        return false;
+    m_lastSourceControlDiffPath.clear();
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
+        for (int i = 0; group && i < group->childCount(); ++i) {
+            QTreeWidgetItem *item = group->child(i);
+            if (item->data(0, Qt::UserRole).toString() != path)
+                continue;
+            // Clear first so currentItemChanged fires even when the requested
+            // row was already selected by scroll-following logic.
+            m_scmTree->setCurrentItem(nullptr);
+            m_scmTree->setCurrentItem(item);
+            return m_lastSourceControlDiffPath == path;
+        }
+    }
+    return false;
+}
+
 QString MainWindow::testArrowOnWorktrees(bool down)
 {
     if (!m_worktreesTable)
@@ -811,11 +854,10 @@ QString MainWindow::testArrowOnWorktrees(bool down)
 void MainWindow::testClickRepoDetailTab(int id)
 {
     if (id == 1) {
-        // Commits has no top-bar tab anymore: drive the commit strip's
-        // "N Commits" toggle instead, the same path a real click takes
-        // (no-op when the panel is already showing — click would hide it).
-        if (m_historyButton && !m_historyButton->isChecked())
-            m_historyButton->click();
+        // Commit history has one entry point: drive the Git activity-rail
+        // destination exactly as a real click does.
+        if (m_railGitButton)
+            m_railGitButton->click();
         return;
     }
     if (id == m_worktreesTabIndex) {
@@ -823,6 +865,14 @@ void MainWindow::testClickRepoDetailTab(int id)
         // toolbar's "N worktrees" toggle path a real click now takes.
         showOverviewWorktrees();
         loadWorktreesPanel();
+        focusRepoDetailTable(id);
+        return;
+    }
+    if (id == m_branchesTabIndex) {
+        // Branches also lives inside Code overview rather than in the top tab
+        // row; drive its toolbar destination directly.
+        showOverviewBranches();
+        loadBranchesPanel();
         focusRepoDetailTable(id);
         return;
     }

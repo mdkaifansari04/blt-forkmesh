@@ -50,6 +50,22 @@ QString esc(const QString &s) { return s.toHtmlEscaped(); }
 // terminal the CLI actually runs in.
 QFont monoFont() { return QFontDatabase::systemFont(QFontDatabase::FixedFont); }
 
+// The permission mode a CLI init event reports, spelled the way the composer's
+// mode selector does. Used only for sessions ForkMesh didn't launch (surfaced
+// external ones), where no stored mode label is available.
+QString permissionModeLabel(const QString &raw)
+{
+    if (raw == QLatin1String("bypassPermissions") || raw == QLatin1String("acceptAll"))
+        return QStringLiteral("Auto");
+    if (raw == QLatin1String("acceptEdits"))
+        return QStringLiteral("Edit");
+    if (raw == QLatin1String("plan"))
+        return QStringLiteral("Plan");
+    if (raw == QLatin1String("default"))
+        return QStringLiteral("Ask");
+    return raw; // an unknown/future mode reads better verbatim than dropped
+}
+
 // Search-match highlight colours, fixed rather than theme-derived so they read
 // clearly on both light and dark canvases (dark text on a warm fill). The
 // currently-selected match gets a stronger orange.
@@ -656,6 +672,15 @@ void ClaudeTranscriptView::jumpToBottom()
 
 void ClaudeTranscriptView::setSplitDiffs(bool on) { m_splitDiffs = on; }
 
+void ClaudeTranscriptView::setSessionContext(const QString &branch,
+                                             const QString &mode,
+                                             const QString &strength)
+{
+    m_ctxBranch = branch.trimmed();
+    m_ctxMode = mode.trimmed();
+    m_ctxStrength = strength.trimmed();
+}
+
 // A playful, ForkMesh-flavoured gerund for the live "what it's doing" ticker.
 void ClaudeTranscriptView::cycleActivityWord()
 {
@@ -997,9 +1022,29 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
     if (type == QLatin1String("system")) {
         const QString sub = ev.value(QStringLiteral("subtype")).toString();
         if (sub == QLatin1String("init")) {
-            auto *l = new QLabel(QStringLiteral("session started %1 %2")
-                                     .arg(esc(ev.value(QStringLiteral("model")).toString()),
-                                          esc(ev.value(QStringLiteral("cwd")).toString())));
+            // What the CLI announces (model, cwd) plus the run's own context —
+            // branch, permission mode, reasoning strength — which only the host
+            // knows (adhoc #9). Empty parts drop out rather than leaving gaps.
+            QStringList parts{ev.value(QStringLiteral("model")).toString().trimmed(),
+                              ev.value(QStringLiteral("cwd")).toString().trimmed()};
+            QStringList context;
+            if (!m_ctxBranch.isEmpty())
+                context << QStringLiteral("branch %1").arg(m_ctxBranch);
+            const QString mode =
+                m_ctxMode.isEmpty()
+                    ? permissionModeLabel(
+                          ev.value(QStringLiteral("permissionMode")).toString().trimmed())
+                    : m_ctxMode;
+            if (!mode.isEmpty())
+                context << mode;
+            if (!m_ctxStrength.isEmpty())
+                context << QStringLiteral("%1 thinking").arg(m_ctxStrength);
+            parts.removeAll(QString());
+            QString line = QStringLiteral("session started ") + parts.join(QLatin1Char(' '));
+            if (!context.isEmpty())
+                line += QStringLiteral(" · ") + context.join(QStringLiteral(" · "));
+            auto *l = new QLabel(esc(line));
+            l->setWordWrap(true); // long branch names shouldn't widen the view
             l->setFont(monoFont());
             l->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
             addRow(l, QString(), GlyphNone);
