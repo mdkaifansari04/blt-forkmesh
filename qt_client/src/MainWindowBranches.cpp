@@ -529,6 +529,30 @@ void MainWindow::loadWorktreesPanel()
         connect(openBtn, &QPushButton::clicked, this,
                 [p] { QDesktopServices::openUrl(QUrl::fromLocalFile(p)); });
         h->addWidget(openBtn);
+        // Review a worktree through the same Git range viewer as its branch and
+        // any branch-backed PR. That viewer includes the source graph, commits,
+        // changed files and this checkout's uncommitted changes.
+        if (!wt.branch.isEmpty()) {
+            const QString branch = wt.branch;
+            auto *reviewBtn = new QPushButton("Review changes");
+            reviewBtn->setObjectName("ghostButton");
+            reviewBtn->setCursor(Qt::PointingHandCursor);
+            setOcticon(reviewBtn, "git-compare", 14);
+            reviewBtn->setToolTip(
+                "Open this worktree in the shared Git branch and diff viewer");
+            connect(reviewBtn, &QPushButton::clicked, this,
+                    [this, branch, isMain] {
+                        if (isMain) {
+                            showOverviewCommits();
+                            setCommitWorkspacePage(kCommitWorkspaceChangesPage);
+                            refreshSourceControl();
+                            loadCommits();
+                        } else {
+                            switchToBranch(branch);
+                        }
+                    });
+            h->addWidget(reviewBtn);
+        }
         // Issue #295: surface the agent working in this worktree's branch — show
         // its status in the list and let you jump straight to its session.
         const AgentSession *agent = nullptr;
@@ -640,15 +664,18 @@ void MainWindow::loadWorktreesPanel()
     }
 }
 
-// Open the Worktrees tab and select the row whose branch matches, so clicking a
-// branch in the agent session header lands on that worktree's changes (#265).
+// Open a named worktree in the universal Git range viewer. A worktree is the
+// checkout of a branch, so its committed range, changed-files list and dirty
+// files belong in the same viewer used by Branches and PRs. Detached worktrees
+// have no branch range and remain available through the Worktrees panel itself.
 void MainWindow::switchToWorktree(const QString &branch)
 {
-    // The worktrees panel lives inside the Code overview now (no top-level tab),
-    // beside the branches panel (adhoc #170).
+    if (!branch.trimmed().isEmpty()) {
+        switchToBranch(branch);
+        return;
+    }
     showOverviewWorktrees();
     loadWorktreesPanel();
-    selectWorktreeRow(branch);
 }
 
 // Open a branch's commits, changed files and diff in the Git view's range pane
@@ -4076,6 +4103,7 @@ void MainWindow::showBranchDiff(const QString &branch)
     const QString work = branchWorkDir(branch);
     const int gen = ++m_branchScopeLoadGen;
     struct BranchScope {
+        bool hasWorktree = false;
         int dirty = 0;
         QList<QStringList> commits; // {fullHash, shortHash, subject, relTime}
     };
@@ -4083,6 +4111,7 @@ void MainWindow::showBranchDiff(const QString &branch)
         [dir, base, branch, work]() {
             BranchScope s;
             if (!work.isEmpty()) {
+                s.hasWorktree = true;
                 QByteArray status;
                 runGitCapture(work, {"status", "--porcelain"}, &status, nullptr);
                 s.dirty = QString::fromUtf8(status)
@@ -4108,13 +4137,20 @@ void MainWindow::showBranchDiff(const QString &branch)
                 m_branchDiffBranch != branch)
                 return;
             QSignalBlocker block(m_branchScopeList);
-            if (s.dirty > 0) {
+            if (s.hasWorktree) {
                 auto *wt = new QListWidgetItem(
-                    QStringLiteral("Uncommitted changes  (%1)").arg(s.dirty));
-                wt->setIcon(themedOcticon("pencil", QColor("#d29922"), 14));
+                    s.dirty > 0
+                        ? QStringLiteral("Worktree changes  (%1)").arg(s.dirty)
+                        : QStringLiteral("Worktree  · clean"));
+                wt->setIcon(themedOcticon(
+                    s.dirty > 0 ? "pencil" : "check-circle",
+                    s.dirty > 0 ? QColor("#d29922") : QColor("#3fb950"), 14));
                 wt->setData(Qt::UserRole, QStringLiteral("wt"));
                 wt->setToolTip(
-                    QStringLiteral("%1 uncommitted file(s) in %2").arg(s.dirty).arg(work));
+                    s.dirty > 0
+                        ? QStringLiteral("%1 uncommitted file(s) in %2")
+                              .arg(s.dirty).arg(work)
+                        : QStringLiteral("Clean worktree at %1").arg(work));
                 m_branchScopeList->addItem(wt);
             }
             for (const QStringList &f : s.commits) {
