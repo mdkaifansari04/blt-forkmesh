@@ -4,7 +4,7 @@ number: 89
 title: Issue #376: make these show real commit messages
 base: main
 head: issue/376-real-commit-messages
-status: open
+status: closed
 ts: 1785570728375
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett

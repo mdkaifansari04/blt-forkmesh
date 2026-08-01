@@ -4,7 +4,7 @@ number: 91
 title: Issue #378: Remove the admin basic auth
 base: main
 head: issue/378-remove-admin-basic-auth
-status: open
+status: closed
 ts: 1785570728377
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett

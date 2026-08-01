@@ -4,7 +4,7 @@ number: 88
 title: Issue #369: [code + business: needs legal review] Non-custodial on-chain bounty escrow
 base: main
 head: issue/369-noncustodial-bounty-escrow
-status: open
+status: closed
 ts: 1785570728374
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett

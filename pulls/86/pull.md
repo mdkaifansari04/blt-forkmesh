@@ -4,7 +4,7 @@ number: 86
 title: Issue #141: delete issue seems to be taking a long time, it freezes the app
 base: main
 head: issue/141-delete-issue-freeze
-status: open
+status: closed
 ts: 1785570728372
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett

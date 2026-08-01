@@ -4,7 +4,7 @@ number: 95
 title: Issue #382: sync failed for hashed-mesh-8261/forkmesh: fatal: 'origin' does not appear to be a git repository
 base: main
 head: issue/382-hashed-mirror-origin-sync
-status: open
+status: closed
 ts: 1785570728381
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett
