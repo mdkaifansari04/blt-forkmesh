@@ -8,7 +8,13 @@ SCENE = (PUBLIC / "world" / "world-scene.js").read_text(encoding="utf-8")
 WORLD = (PUBLIC / "world" / "world.js").read_text(encoding="utf-8")
 PAGE = (PUBLIC / "leaderboards.html").read_text(encoding="utf-8")
 CLIENT = (PUBLIC / "leaderboards.js").read_text(encoding="utf-8")
+SCHEMA = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
 QT_ROOT = ROOT.parent / "qt_client" / "src"
+
+
+def _wallet_leaderboard_body():
+    return ENTRY.split("async def wallet_leaderboard", 1)[1].split(
+        "async def leaderboards_overview", 1)[0]
 
 
 def test_shared_public_endpoint_exposes_every_board():
@@ -28,11 +34,44 @@ def test_shared_public_endpoint_exposes_every_board():
         "contributors",
         "referrals",
         "referring-sites",
+        "wallets",
         "funds-mainnodes",
         "funds-contributors",
         "funds-projects",
     ):
         assert f'"{board_id}"' in ENTRY
+
+
+def test_member_sol_wallet_board_ranks_published_addresses_only():
+    body = _wallet_leaderboard_body()
+    # Only public, active, non-private user profiles carrying a valid address.
+    assert 'rec.get("profile_private")' in body
+    assert '_account_kind(rec) != "user"' in body
+    assert 'rec.get("status") != "active"' in body
+    assert 'SOLANA_RE.match(wallet)' in body
+    # Balance is the lowest-level public read, ranked highest first.
+    assert "_solana_balance_lamports(env, member[\"wallet\"])" in body
+    assert 'board.sort(key=lambda entry: (-entry["lamports"], entry["name"]))' in body
+    # Bounded on-chain work: an edge-cached response plus a rotating refresh
+    # slice, with the un-refreshed remainder reported rather than hidden.
+    assert "WALLET_LEADERBOARD_CACHE_KEY" in body
+    assert "WALLET_BALANCE_REFRESH_PER_REBUILD" in body
+    assert '"refreshed": len(refresh)' in body
+    # A failed RPC keeps the last stored reading instead of publishing zero.
+    assert "if lamports is None:\n            continue" in body
+    assert '"/api/leaderboards/wallets"' in ENTRY
+    assert "CREATE TABLE IF NOT EXISTS wallet_balances" in SCHEMA
+    assert (
+        "CREATE TABLE IF NOT EXISTS wallet_balances"
+        in (ROOT / "migrations" / "0118_wallet_balances.sql").read_text(
+            encoding="utf-8")
+    )
+
+
+def test_member_sol_wallet_board_reaches_the_world_and_the_hub():
+    assert 'id: "wallets",' in SCENE
+    assert 'title: "MEMBER SOL WALLETS",' in SCENE
+    assert 'board.id === "wallets"' in CLIENT
 
 
 def test_website_has_a_searchable_filterable_leaderboard_hub():

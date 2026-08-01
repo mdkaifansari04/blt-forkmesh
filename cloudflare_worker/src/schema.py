@@ -499,6 +499,16 @@ SCHEMA_STATEMENTS = [
         scope TEXT NOT NULL, key TEXT NOT NULL, name TEXT,
         lamports INTEGER NOT NULL DEFAULT 0, last_ts INTEGER,
         PRIMARY KEY (scope, key))""",
+    # Last public on-chain balance read for a member's published payout address,
+    # for the "member SOL wallets" board. Both columns are public data (the
+    # address is public profile data, the balance is a public getBalance), and
+    # the row exists only so the board can rank every published address while
+    # re-reading a rotating slice per rebuild instead of all of them at once.
+    """CREATE TABLE IF NOT EXISTS wallet_balances (
+        wallet TEXT PRIMARY KEY, name TEXT,
+        lamports INTEGER NOT NULL DEFAULT 0,
+        checked_at INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS idx_wallet_balances_checked ON wallet_balances(checked_at)",
     """CREATE TABLE IF NOT EXISTS notifications (
         dedupe_bi TEXT PRIMARY KEY,
         recipient_bi TEXT NOT NULL,

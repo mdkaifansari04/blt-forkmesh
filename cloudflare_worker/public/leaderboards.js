@@ -88,6 +88,14 @@
     if (board.id === "referring-sites") {
       return "Aggregate HTTP referrals";
     }
+    if (board.id === "wallets") {
+      // The published payout address itself, abbreviated the way the rest of
+      // the site shows one. Public profile data, not a claim on any funds.
+      const wallet = String(row.wallet || "");
+      return wallet.length > 10
+        ? `${wallet.slice(0, 4)}…${wallet.slice(-4)}`
+        : wallet;
+    }
     return "";
   }
 

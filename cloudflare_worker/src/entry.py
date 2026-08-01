@@ -4974,6 +4974,121 @@ async def site_referrer_leaderboard(env):
     return resp
 
 
+# --- Member SOL wallets -------------------------------------------------------
+# Members who publish an optional self-custodial payout address, ranked by the
+# public balance of that address. Both halves are already public: the address is
+# public profile data (_account_public_payload exposes it), and the amount is a
+# plain getBalance any block explorer answers identically for that address.
+# Private profiles are excluded, no key or transaction is involved, and a
+# position here is neither a payout nor a promise of one.
+WALLET_LEADERBOARD_CACHE_KEY = (
+    "https://forkmesh.internal/api/leaderboards/wallets"
+)
+WALLET_LEADERBOARD_TTL = 300  # seconds per colo; balances move slower than this
+WALLET_LEADERBOARD_LIMIT = 10
+# Each balance costs one public-RPC subrequest, so a rebuild refreshes only the
+# least-recently-checked slice and ranks everyone else from their stored read.
+# Rotation means every published wallet is reached within a few rebuilds instead
+# of a fixed head of the directory being the only one ever priced.
+WALLET_BALANCE_REFRESH_PER_REBUILD = 6
+WALLET_BALANCE_RETAIN_ROWS = 500
+
+
+async def wallet_leaderboard(env):
+    cached = await edge_cache_match(WALLET_LEADERBOARD_CACHE_KEY)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    now = int(Date.now())
+    rows = await d1_all(
+        env,
+        "SELECT data FROM users ORDER BY username COLLATE NOCASE LIMIT ?",
+        1000)
+    members = []
+    seen = set()
+    for row in rows or []:
+        rec = await decrypt_row(env, row.get("data", ""))
+        if (not rec or _account_kind(rec) != "user"
+                or rec.get("status") != "active"
+                or rec.get("profile_private")):
+            continue
+        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        wallet = (rec.get("solana") or "").strip()
+        if not name or name in seen or not SOLANA_RE.match(wallet):
+            continue
+        seen.add(name)
+        members.append({"name": name, "wallet": wallet})
+
+    stored = {}
+    for row in await d1_all(
+            env, "SELECT wallet, lamports, checked_at FROM wallet_balances"):
+        wallet = str(row.get("wallet") or "")
+        if wallet:
+            stored[wallet] = (int(row.get("lamports") or 0),
+                              int(row.get("checked_at") or 0))
+
+    # Oldest reading first, so the rotation always spends its subrequests on the
+    # least fresh members (an unseen wallet sorts at 0 and goes first).
+    members.sort(key=lambda m: (stored.get(m["wallet"], (0, 0))[1], m["name"]))
+    refresh = members[:WALLET_BALANCE_REFRESH_PER_REBUILD]
+    balances = await asyncio.gather(*[
+        _solana_balance_lamports(env, member["wallet"]) for member in refresh])
+    for member, lamports in zip(refresh, balances):
+        # None means the RPC could not answer; keep the last stored reading
+        # rather than publishing an unchecked address as zero.
+        if lamports is None:
+            continue
+        stored[member["wallet"]] = (int(lamports), now)
+        await d1_run(
+            env,
+            "INSERT INTO wallet_balances "
+            "(wallet, name, lamports, checked_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(wallet) DO UPDATE SET name=excluded.name,"
+            "lamports=excluded.lamports,checked_at=excluded.checked_at",
+            member["wallet"], member["name"], int(lamports), now)
+    # An address a member has since removed or replaced leaves a row nothing
+    # reads, so bound the table the way the referrer board does — only once it
+    # actually needs bounding, since every rebuild would otherwise pay a write.
+    if len(stored) > WALLET_BALANCE_RETAIN_ROWS:
+        await d1_run(
+            env,
+            "DELETE FROM wallet_balances WHERE wallet NOT IN ("
+            "SELECT wallet FROM wallet_balances "
+            "ORDER BY checked_at DESC LIMIT ?)",
+            WALLET_BALANCE_RETAIN_ROWS)
+
+    board = []
+    for member in members:
+        lamports, checked_at = stored.get(member["wallet"], (0, 0))
+        if not checked_at:
+            continue
+        board.append({
+            "name": member["name"],
+            "wallet": member["wallet"],
+            "lamports": lamports,
+            "sol": lamports / LAMPORTS_PER_SOL,
+            "checkedAt": checked_at,
+        })
+    board.sort(key=lambda entry: (-entry["lamports"], entry["name"]))
+    resp = json_response(
+        {"ok": True,
+         "board": board[:WALLET_LEADERBOARD_LIMIT],
+         # Members publishing an address, and how many of them this rebuild
+         # re-priced, so a rotation behind the full set is visible rather than
+         # looking like complete coverage.
+         "members": len(members),
+         "refreshed": len(refresh),
+         "custody": "external-self-custodial-public-address",
+         "notice": (
+             "Public payout addresses and their public on-chain balances. "
+             "ForkMesh holds no member funds or keys, and a place on this "
+             "board is not a reward, payout, or promise of one."
+         )},
+        cache_seconds=WALLET_LEADERBOARD_TTL)
+    await edge_cache_put(WALLET_LEADERBOARD_CACHE_KEY, resp)
+    return resp
+
+
 async def leaderboards_overview(env):
     """One public leaderboard model shared by the website and World.
 
@@ -4981,22 +5096,25 @@ async def leaderboards_overview(env):
     only normalizes their already-public rows so clients cannot drift on which
     boards exist, how they are titled, or which value each board ranks.
     """
-    # These four public sources are independent. Resolve them concurrently so
+    # These five public sources are independent. Resolve them concurrently so
     # the combined endpoint costs the slowest cache/database read, not the sum
-    # of all four, which keeps both the page and World island quick at startup.
-    network_response, referral_response, site_response, users_response = (
+    # of all five, which keeps both the page and World island quick at startup.
+    (network_response, referral_response, site_response, users_response,
+     wallet_response) = (
         await asyncio.gather(
             network_leaderboards(env),
             referral_leaderboard(env),
             site_referrer_leaderboard(env),
             _account_users_directory(env, None),
+            wallet_leaderboard(env),
         )
     )
-    network, referrals, sites, users = await asyncio.gather(
+    network, referrals, sites, users, wallets = await asyncio.gather(
         _response_json(network_response),
         _response_json(referral_response),
         _response_json(site_response),
         _response_json(users_response),
+        _response_json(wallet_response),
     )
     activity_rows = []
     for user in users.get("users", []):
@@ -5072,6 +5190,10 @@ async def leaderboards_overview(env):
             "External sites sending visits to ForkMesh",
             "visits", sites.get("board"), "community"),
         board(
+            "wallets", "Member SOL wallets",
+            "Published payout addresses by public on-chain balance",
+            "sol", wallets.get("board"), "community"),
+        board(
             "funds-mainnodes", "Legacy funds · mainnodes",
             "Historical reporting aggregate; not a balance",
             "sol", network.get("fundsMainnodes"), "historical"),
@@ -5093,6 +5215,7 @@ async def leaderboards_overview(env):
             "activity": {"board": activity_rows},
             "referrals": referrals,
             "sites": sites,
+            "wallets": wallets,
             "fundsNotice": network.get("fundsNotice", ""),
             "fundsState": network.get("fundsState", ""),
             "fundsCustody": network.get("fundsCustody", ""),
@@ -44231,6 +44354,10 @@ class Default(WorkerEntrypoint):
         # Public ranking boards (node uptime + repos per owner) for /network/.
         if url.path in ("/api/network/leaderboards", "/api/network/leaderboards/"):
             return await network_leaderboards(self.env)
+        # Members who published a public payout address, by on-chain balance.
+        if url.path in ("/api/leaderboards/wallets",
+                        "/api/leaderboards/wallets/"):
+            return await wallet_leaderboard(self.env)
         if url.path in ("/api/leaderboards", "/api/leaderboards/"):
             return await leaderboards_overview(self.env)
 

@@ -2304,6 +2304,12 @@ const WORLD_LEADERBOARD_BOARD_STUBS = Object.freeze([
     valueKind: "contributions",
   },
   {
+    id: "wallets",
+    title: "MEMBER SOL WALLETS",
+    subtitle: "PUBLISHED ADDRESS BALANCE",
+    valueKind: "sol",
+  },
+  {
     id: "funds-mainnodes",
     title: "LEGACY · MAINNODES",
     subtitle: "HISTORICAL REPORTING",
@@ -2442,7 +2448,9 @@ function leaderboardGridBoardDescriptors(state = {}) {
       title: String(board.title || id).toUpperCase(),
       subtitle: String(board.subtitle || "LIVE PUBLIC RANKINGS").toUpperCase(),
       accent:
-        id.includes("funds") || id === "largest" ? "#f7c96b" : "#9ef7c6",
+        id.includes("funds") || id.includes("wallet") || id === "largest"
+          ? "#f7c96b"
+          : "#9ef7c6",
       entries: (Array.isArray(board.rows) ? board.rows : [])
         .slice(0, 5)
         .map((row) => ({
