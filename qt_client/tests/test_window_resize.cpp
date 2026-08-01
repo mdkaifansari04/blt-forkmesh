@@ -1989,15 +1989,30 @@ int main(int argc, char *argv[])
                              "non-default branch is browsed (adhoc #1)"));
         window.testClickCommitsReviewButton();
         QApplication::processEvents();
+        // adhoc #12: the review borrows the right pane only — the left column
+        // keeps its working-tree slots and the graph goes back to the default
+        // branch, with the branch being merged in named above the branch button.
         check(window.testCommitWorkspacePage() == 2 &&
-                  window.testGitFilesSlotPage() == 1 &&
-                  window.testGitHistorySlotPage() == 1,
-              QString("the Review button opens the branch's range review pane "
-                      "(adhoc #1/#107, page = %1, files slot = %2, history slot "
+                  window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("the Review button opens the range diff on the Git view's "
+                      "right pane, leaving the left column on the working tree "
+                      "(adhoc #12, page = %1, files slot = %2, history slot "
                       "= %3)")
                   .arg(window.testCommitWorkspacePage())
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage()));
+        check(window.testBrowsedBranch() == QStringLiteral("main"),
+              QString("opening the review hands the graph back to the default "
+                      "branch (adhoc #12, branch = %1)")
+                  .arg(window.testBrowsedBranch()));
+        check(window.testMergingBannerText().contains(
+                  QStringLiteral("feature/keep-selected")),
+              QString("the branch being merged in is named above the branch "
+                      "button (adhoc #12, banner = %1)")
+                  .arg(window.testMergingBannerText().isEmpty()
+                           ? QStringLiteral("<hidden>")
+                           : window.testMergingBannerText()));
         const bool mergeClicked = window.testClickBranchReviewMerge(false);
         QApplication::processEvents();
         const QString mainTip =
@@ -2014,6 +2029,12 @@ int main(int argc, char *argv[])
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage())
                   .arg(mainTip.trimmed()));
+        check(window.testMergingBannerText().isEmpty(),
+              QString("closing the review hides the merging-in indicator "
+                      "(adhoc #12, banner = %1)")
+                  .arg(window.testMergingBannerText().isEmpty()
+                           ? QStringLiteral("<hidden>")
+                           : window.testMergingBannerText()));
         check(mainTip.contains(QStringLiteral("Merge feature/keep-selected into main")),
               QString("the review's merge button really merged the branch (adhoc "
                       "#119, main tip = %1)").arg(mainTip.trimmed()));
