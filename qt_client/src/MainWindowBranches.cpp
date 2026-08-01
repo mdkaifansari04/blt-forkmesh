@@ -42,6 +42,19 @@ static constexpr int kBranchConflictRole = Qt::UserRole + 75;
 static constexpr int kBranchAheadRole = Qt::UserRole + 76;
 static constexpr int kBranchBehindRole = Qt::UserRole + 77;
 
+// Match the compact agent-branch chip: conflicts win because they need manual
+// resolution, otherwise a branch behind its base gets the download/merge-needed
+// marker.  Keeping this decision in one helper also makes the icon semantics
+// directly testable without comparing rendered pixels.
+static QString branchHealthIconName(bool conflicted, int behind)
+{
+    if (conflicted)
+        return QStringLiteral("alert");
+    if (behind > 0)
+        return QStringLiteral("download");
+    return QString();
+}
+
 class BranchOverviewDelegate : public SelectionBorderRowDelegate
 {
 public:
@@ -116,9 +129,17 @@ public:
         }
         x += 28;
 
-        if (index.data(kBranchConflictRole).toBool())
-            themedOcticon("alert", QColor("#d29922"), 13)
+        const QString healthIcon = branchHealthIconName(
+            index.data(kBranchConflictRole).toBool(),
+            index.data(kBranchBehindRole).isValid()
+                ? index.data(kBranchBehindRole).toInt()
+                : -1);
+        if (!healthIcon.isEmpty()) {
+            const QColor healthColor(currentThemeIsDark() ? "#e3742f"
+                                                           : "#bc4c00");
+            themedOcticon(healthIcon, healthColor, 13)
                 .paint(painter, QRect(x, cy - 7, 14, 14));
+        }
         x += iconSlot;
 
         const QVariant addedValue = index.data(kBranchAddedRole);
@@ -1023,6 +1044,23 @@ QString MainWindow::testBranchVisualBadges(const QString &branch) const
                                                           : QStringLiteral("0"),
                  value(kBranchUpdatedRole), value(kBranchBehindRole),
                  value(kBranchAheadRole));
+    }
+    return QString();
+}
+
+QString MainWindow::testBranchHealthIcon(const QString &branch) const
+{
+    if (!m_branchesTable)
+        return QString();
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        const QTableWidgetItem *item =
+            m_branchesTable->item(row, kBranchesNameColumn);
+        if (!item || item->text() != branch)
+            continue;
+        const QVariant behind = item->data(kBranchBehindRole);
+        return branchHealthIconName(
+            item->data(kBranchConflictRole).toBool(),
+            behind.isValid() ? behind.toInt() : -1);
     }
     return QString();
 }
@@ -3408,11 +3446,15 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         }
         name->setData(kBranchConflictRole, hasConflict);
         QString healthTip;
-        if (branch != base && divergenceKnown)
+        if (branch != base && divergenceKnown) {
             healthTip = QStringLiteral("%1 commit(s) behind · %2 ahead of %3")
                             .arg(behind)
                             .arg(ahead)
                             .arg(base);
+            if (behind > 0)
+                healthTip += QStringLiteral("\nMerge %1 into this branch to update it")
+                                 .arg(base);
+        }
         if (hasConflict)
             healthTip += (healthTip.isEmpty() ? QString() : QStringLiteral("\n")) +
                          QStringLiteral("Conflicts with %1").arg(base);

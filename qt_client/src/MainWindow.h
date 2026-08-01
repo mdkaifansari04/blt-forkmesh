@@ -667,6 +667,7 @@ public:
     // Compact Branch-cell data as
     // files|added|removed|worktree|conflict|updated|behind|ahead.
     QString testBranchVisualBadges(const QString &branch) const;
+    QString testBranchHealthIcon(const QString &branch) const;
     bool testBranchesUseCompactColumns() const;
     bool testBranchesKeepFlexibleNameColumn() const;
     bool testBranchDelegatePaintsSingleTextLayer(const QString &branch) const;
