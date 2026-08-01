@@ -1175,10 +1175,18 @@ void MainWindow::refreshSourceControlOutgoing()
 {
     if (!m_scmOutgoingPanel || !m_scmOutgoingLabel || !m_scmSyncButton)
         return;
-    if (sourceControlShowsRange() || m_repoDetailIndex < 0 ||
-        m_repoDetailIndex >= m_repositories.size()) {
+    const bool showOutgoingPanel =
+        !sourceControlShowsRange() && m_scmPanel && m_scmPanel->isVisible();
+    if (!showOutgoingPanel)
+        m_scmOutgoingPanel->hide();
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         ++m_scmOutgoingGeneration;
         m_scmOutgoingPanel->hide();
+        if (m_railGitButton) {
+            m_railGitButton->setPendingSyncCount(0);
+            m_railGitButton->setToolTip(
+                QStringLiteral("Source control — view the current changes"));
+        }
         return;
     }
 
@@ -1190,6 +1198,8 @@ void MainWindow::refreshSourceControlOutgoing()
         !QDir(repo.localPath).exists(QStringLiteral(".git"))) {
         ++m_scmOutgoingGeneration;
         m_scmOutgoingPanel->hide();
+        if (m_railGitButton)
+            m_railGitButton->setPendingSyncCount(0);
         return;
     }
 
@@ -1200,6 +1210,8 @@ void MainWindow::refreshSourceControlOutgoing()
                        &branchOut, nullptr)) {
         ++m_scmOutgoingGeneration;
         m_scmOutgoingPanel->hide(); // detached HEAD has no branch to publish
+        if (m_railGitButton)
+            m_railGitButton->setPendingSyncCount(0);
         return;
     }
     const QString branch = QString::fromUtf8(branchOut).trimmed();
@@ -1230,9 +1242,10 @@ void MainWindow::refreshSourceControlOutgoing()
 
     const bool busy = m_pushingRepos.contains(m_repoDetailIndex) ||
                       m_syncingRepos.contains(m_repoDetailIndex);
-    if (m_scmOutgoingPanel->property("branch").toString() != branch)
+    if (showOutgoingPanel &&
+        m_scmOutgoingPanel->property("branch").toString() != branch)
         m_scmOutgoingPanel->hide();
-    if (busy && m_scmOutgoingPanel->isVisible()) {
+    if (showOutgoingPanel && busy && m_scmOutgoingPanel->isVisible()) {
         m_scmSyncButton->setEnabled(false);
         m_scmSyncButton->setText(QStringLiteral("Syncing Changes…"));
         setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
@@ -1246,10 +1259,27 @@ void MainWindow::refreshSourceControlOutgoing()
         repo.localPath, countArgs,
         [this, generation, repoIndex, branch](bool ok, const QByteArray &out) {
             if (generation != m_scmOutgoingGeneration ||
-                repoIndex != m_repoDetailIndex || sourceControlShowsRange())
+                repoIndex != m_repoDetailIndex)
                 return;
             const int pending =
                 ok ? QString::fromUtf8(out).trimmed().toInt() : 0;
+            if (m_railGitButton) {
+                m_railGitButton->setPendingSyncCount(pending);
+                m_railGitButton->setToolTip(
+                    pending > 0
+                        ? QStringLiteral("Source control — %1 commit%2 waiting to sync")
+                              .arg(pending)
+                              .arg(pending == 1 ? QString() : QStringLiteral("s"))
+                        : QStringLiteral("Source control — view the current changes"));
+            }
+            // A closed Git view or branch/range comparison must leave its hidden
+            // controls inert, while the rail marker still reflects the checkout's
+            // unpublished commits.
+            if (sourceControlShowsRange() || !m_scmPanel ||
+                !m_scmPanel->isVisible()) {
+                m_scmOutgoingPanel->hide();
+                return;
+            }
             const bool stillBusy = m_pushingRepos.contains(repoIndex) ||
                                    m_syncingRepos.contains(repoIndex);
             if (pending <= 0 && !stillBusy) {

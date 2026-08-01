@@ -679,6 +679,7 @@ public:
     // Compact Branch-cell data as files|added|removed|worktree|conflict|updated.
     QString testBranchVisualBadges(const QString &branch) const;
     bool testBranchesUseCompactColumns() const;
+    bool testBranchesKeepFlexibleNameColumn() const;
     // Inject an agent session so a test can prove the branches list surfaces the
     // issue/agent a branch is attached to (adhoc #191).
     void testAddAgentSession(const AgentSession &session)
@@ -702,6 +703,10 @@ public:
     int testOverviewBodyPage() const;
     bool testClickBranchRowInOverview(const QString &branch);
     bool testBranchesPanelOwnsDiffView() const;
+    // True only when Git owns the full repository workspace: its rail entry is
+    // selected, every Code-only chrome band is hidden, and no registered diff
+    // viewer outside the Git stack is visible.
+    bool testGitWorkspaceIsExclusive() const;
     // Follow a branch link and read back the branch the table landed on right
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
@@ -750,6 +755,7 @@ public:
     // Click the activity rail's Git entry, so a test can prove it always lands
     // on the default branch's working-tree view.
     void testClickRailGitButton();
+    int testGitPendingSyncCount() const;
     void testNavigateBack() { navigateBack(); }
     void testNavigateForward() { navigateForward(); }
     QString testNavBackToolTip() const;
