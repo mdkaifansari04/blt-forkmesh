@@ -1626,6 +1626,13 @@ int main(int argc, char *argv[])
             QStringLiteral("me"), QStringLiteral("outgoing-repo"),
             upstreamRepo.path());
         window.testOpenRepository(outgoingRepoIndex);
+        QElapsedTimer railSyncTimer;
+        railSyncTimer.start();
+        while (window.testGitPendingSyncCount() != 3 &&
+               railSyncTimer.elapsed() < 5000)
+            QApplication::processEvents(QEventLoop::AllEvents, 10);
+        const bool railMarkedBeforeOpen =
+            window.testGitPendingSyncCount() == 3;
         window.testClickRailGitButton();
 
         QWidget *outgoingPanel = window.findChild<QWidget *>(
@@ -1643,7 +1650,8 @@ int main(int argc, char *argv[])
                   outgoingPanel->isVisibleTo(&window) &&
                   syncChanges->text().contains(QStringLiteral("3↑")) &&
                   syncChanges->isEnabled() &&
-                  outgoingLabel->text().contains(QStringLiteral("main")),
+                  outgoingLabel->text().contains(QStringLiteral("main")) &&
+                  railMarkedBeforeOpen && window.testGitPendingSyncCount() == 3,
               QString("Source Control shows three outgoing commits and an enabled "
                       "Sync Changes button (history=%1 visible=%2 button=%3 "
                       "label=%4)")
@@ -1927,6 +1935,9 @@ int main(int argc, char *argv[])
         check(window.testBranchesUseCompactColumns(),
               QStringLiteral("Branches folds Updated and Worktree into its compact "
                              "Agent-style leading cell"));
+        check(window.testBranchesKeepFlexibleNameColumn(),
+              QStringLiteral("Branches keeps its leading cell flexible so inline "
+                             "metadata and branch names do not overlap"));
         const QString branchBadges = window.testBranchVisualBadges(
             QStringLiteral("feature/keep-selected"));
         check(branchBadges.startsWith(QStringLiteral("1|1|0|1|0|")),

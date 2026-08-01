@@ -667,6 +667,7 @@ public:
     // Compact Branch-cell data as files|added|removed|worktree|conflict|updated.
     QString testBranchVisualBadges(const QString &branch) const;
     bool testBranchesUseCompactColumns() const;
+    bool testBranchesKeepFlexibleNameColumn() const;
     // Inject an agent session so a test can prove the branches list surfaces the
     // issue/agent a branch is attached to (adhoc #191).
     void testAddAgentSession(const AgentSession &session)
@@ -738,6 +739,7 @@ public:
     // Click the activity rail's Git entry, so a test can prove it always lands
     // on the default branch's working-tree view.
     void testClickRailGitButton();
+    int testGitPendingSyncCount() const;
     void testNavigateBack() { navigateBack(); }
     void testNavigateForward() { navigateForward(); }
     QString testNavBackToolTip() const;

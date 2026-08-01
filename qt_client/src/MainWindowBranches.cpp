@@ -959,6 +959,13 @@ bool MainWindow::testBranchesUseCompactColumns() const
            m_branchesTable->isColumnHidden(3);
 }
 
+bool MainWindow::testBranchesKeepFlexibleNameColumn() const
+{
+    return m_branchesTable &&
+           m_branchesTable->horizontalHeader()->sectionResizeMode(0) ==
+               QHeaderView::Stretch;
+}
+
 QString MainWindow::testSwitchToBranchImmediateSelection(const QString &branch)
 {
     switchToBranch(branch);
@@ -1015,6 +1022,11 @@ void MainWindow::testClickRailGitButton()
 {
     if (m_railGitButton)
         m_railGitButton->click();
+}
+
+int MainWindow::testGitPendingSyncCount() const
+{
+    return m_railGitButton ? m_railGitButton->pendingSyncCount() : 0;
 }
 
 QString MainWindow::testCompareIndicatorText() const
@@ -2302,7 +2314,10 @@ QWidget *MainWindow::buildBranchesTab()
     // cell widgets, so it would collapse this column and clip the buttons.
     // Keep it Fixed and size it to the actual buttons in loadBranchesPanel().
     bh->setSectionResizeMode(5, QHeaderView::Fixed);
-    makeColumnsResizable(m_branchesTable);
+    // Keep the Branch cell flexible. Converting it to Interactive freezes its
+    // narrow initial size and leaves a large unused area to the right, forcing
+    // the inline agent/worktree/churn metadata to overlap the branch name.
+    makeColumnsResizable(m_branchesTable, 0);
     // Updated and Worktree now live as compact glyphs/metadata inside Branch,
     // matching the Agents list. Keep their model cells populated (automation and
     // accessibility still read them) but remove the duplicate visual columns.
