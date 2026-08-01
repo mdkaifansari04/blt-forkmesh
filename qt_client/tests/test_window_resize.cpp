@@ -1424,6 +1424,36 @@ int main(int argc, char *argv[])
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
+    // The fleet toolbar shows the live queue plus concurrent-agent limit beside
+    // Start all, and lets the common capacity adjustment happen in one click.
+    {
+        QLabel *queueStatus = window.findChild<QLabel *>(
+            QStringLiteral("agentQueueStatusLabel"));
+        QPushButton *decrease = window.findChild<QPushButton *>(
+            QStringLiteral("agentQueueLimitDecreaseButton"));
+        QPushButton *increase = window.findChild<QPushButton *>(
+            QStringLiteral("agentQueueLimitIncreaseButton"));
+        QLineEdit *settingsLimit = window.findChild<QLineEdit *>(
+            QStringLiteral("maxRunningAgentsEdit"));
+        check(queueStatus && decrease && increase && settingsLimit &&
+                  queueStatus->text() == QStringLiteral("Queue: 0 / 5"),
+              QStringLiteral("Agents toolbar shows the queued count and run limit "
+                             "beside Start all"));
+        if (queueStatus && decrease && increase && settingsLimit) {
+            increase->click();
+            check(QSettings().value(QStringLiteral("agents/maxRunning")).toInt() == 6 &&
+                      queueStatus->text() == QStringLiteral("Queue: 0 / 6") &&
+                      settingsLimit->text() == QStringLiteral("6"),
+                  QStringLiteral("one click raises the queue's concurrent-agent "
+                                 "limit and syncs Settings"));
+            decrease->click();
+            check(QSettings().value(QStringLiteral("agents/maxRunning")).toInt() == 5 &&
+                      queueStatus->text() == QStringLiteral("Queue: 0 / 5") &&
+                      settingsLimit->text() == QStringLiteral("5"),
+                  QStringLiteral("one click lowers the queue's concurrent-agent "
+                                 "limit and syncs Settings"));
+        }
+    }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
     // own "Updated" column) and the title, which is the column that flexes — so

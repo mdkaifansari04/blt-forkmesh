@@ -2377,6 +2377,11 @@ private:
     // Re-drain the queue after a slot frees, coalesced onto the event loop and
     // skipped unless something is queued AND there is room to start it.
     void scheduleAgentQueuePump();
+    // Persist the machine-wide concurrent-agent limit, keep both controls in
+    // sync, and immediately drain any newly available queue slots.
+    void setAgentConcurrencyLimit(int limit);
+    // Update the Agents-toolbar queue readout and its one-click limit controls.
+    void refreshAgentQueueControls();
     // How many sessions currently hold one of the maxRunningAgents() slots
     // (adhoc #433): our own, unmerged, actively-executing ones.
     int runningAgentCount() const;
@@ -4986,6 +4991,7 @@ private:
     // Default coding-agent provider for new assignments; seeds the quick-add and
     // issue-detail provider pickers. Codex | OpenAI API | Claude API | Claude Code.
     QComboBox *m_defaultAgentProviderCombo = nullptr;
+    QLineEdit *m_maxRunningAgentsEdit = nullptr;
     QLineEdit *m_codexApiKeyEdit = nullptr;
     QLineEdit *m_openAiAdminKeyEdit = nullptr;
     QLineEdit *m_codexModelEdit = nullptr;
@@ -6694,6 +6700,11 @@ private:
     // (adhoc #136).
     QPushButton *m_agentStopAllButton = nullptr;
     QPushButton *m_agentStartAllButton = nullptr;
+    // Beside Start all: queued sessions / concurrent run limit, with direct
+    // one-click controls for that limit.
+    QLabel *m_agentQueueStatusLabel = nullptr;
+    QPushButton *m_agentQueueLimitDecreaseButton = nullptr;
+    QPushButton *m_agentQueueLimitIncreaseButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     // Detail-toolbar buttons (adhoc #51) opening this session's branch in the
     // Branches tab and its worktree in the Worktrees tab. Full-size buttons like
