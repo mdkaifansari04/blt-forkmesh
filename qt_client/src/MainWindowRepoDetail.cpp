@@ -1512,6 +1512,18 @@ void MainWindow::openRepoDetail(int repoIndex)
     if (m_actionsTable)
         m_actionsTable->setRowCount(0);
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
+    // Every lazily-loaded badge above has just been reset to its empty value.
+    // Fill them in so the tab row is right without each tab having to be clicked
+    // (adhoc #116). Deferred one event-loop turn, like the file-search index
+    // above: the loads themselves are worker-backed, but the issue load applies
+    // its result straight into the table, and starting it inside the open would
+    // let that land in the same turn and count against first paint. Re-check the
+    // index so a fast follow-up switch doesn't count the repo we just left.
+    const int countsFor = m_repoDetailIndex;
+    QTimer::singleShot(0, this, [this, countsFor] {
+        if (m_repoDetailIndex == countsFor)
+            refreshRepoTabCounts();
+    });
     refreshRepoPinBanner();      // warn if the relay's integrity pin is stale
     // The rail's Git badge is visible from the first paint, so give it this
     // repo's uncommitted count now instead of leaving the previous repo's
@@ -1576,6 +1588,25 @@ void MainWindow::updateRepoPullCount()
     if (m_repoPullsTab)
         m_repoPullsTab->setText(
             QStringLiteral("PRs (%1)").arg(formatCount(m_currentPulls.size())));
+}
+
+// Fill in the repo-tab badges whose panels load lazily. Opening a repo resets
+// every count to its empty value but only loads the landing tab's data, so a
+// repo with hundreds of issues advertised "Issues (0)" — and "Discussions (0)",
+// and "Actions (0)" — until each tab was clicked. On a fresh install, where the
+// first clone lands after the view is already up, every one of them was wrong at
+// once (adhoc #116). All three reads happen on worker threads, and the
+// Discussions and Actions ones only write their label — neither builds its
+// (still lazy) panel. Issues rides its existing background loader, which does
+// also fill the issue table; that is the same work the startup restore path has
+// always done, and it lands on a queued callback, not in the open itself.
+void MainWindow::refreshRepoTabCounts()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    reloadIssuesInBackground();
+    reloadDiscussionCountInBackground();
+    reloadWorkflowCountInBackground();
 }
 
 void MainWindow::loadRepoFileTree()
