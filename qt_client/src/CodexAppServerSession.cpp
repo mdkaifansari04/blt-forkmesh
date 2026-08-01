@@ -3,6 +3,9 @@
 #include "AgentJail.h"
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QProcess>
@@ -56,7 +59,48 @@ QString sandboxForMode(const QString &mode)
                : QStringLiteral("workspace-write");
 }
 
-QJsonObject sandboxPolicyForMode(const QString &mode)
+QStringList gitMetadataRoots(const QString &cwd)
+{
+    // A linked worktree's .git is a file which points outside cwd.  Git needs
+    // to write both that per-worktree directory (index.lock, HEAD.lock) and
+    // its common directory (refs, objects) when committing.  Allow only those
+    // resolved metadata directories; the rest of the checkout remains covered
+    // by the ordinary workspace-write sandbox.
+    const QFileInfo dotGit(QDir(cwd).filePath(QStringLiteral(".git")));
+    if (!dotGit.isFile())
+        return {};
+
+    QFile gitFile(dotGit.absoluteFilePath());
+    if (!gitFile.open(QIODevice::ReadOnly | QIODevice::Text))
+        return {};
+    const QString line = QString::fromUtf8(gitFile.readLine()).trimmed();
+    const QString gitdirPrefix = QStringLiteral("gitdir:");
+    if (!line.startsWith(gitdirPrefix, Qt::CaseInsensitive))
+        return {};
+
+    QString gitDir = line.mid(gitdirPrefix.size()).trimmed();
+    if (QDir::isRelativePath(gitDir))
+        gitDir = QDir(dotGit.absolutePath()).absoluteFilePath(gitDir);
+    gitDir = QFileInfo(gitDir).canonicalFilePath();
+    if (gitDir.isEmpty())
+        return {};
+
+    QStringList roots{gitDir};
+    QFile commonFile(QDir(gitDir).filePath(QStringLiteral("commondir")));
+    if (!commonFile.open(QIODevice::ReadOnly | QIODevice::Text))
+        return roots;
+    QString commonDir = QString::fromUtf8(commonFile.readLine()).trimmed();
+    if (commonDir.isEmpty())
+        return roots;
+    if (QDir::isRelativePath(commonDir))
+        commonDir = QDir(gitDir).absoluteFilePath(commonDir);
+    commonDir = QFileInfo(commonDir).canonicalFilePath();
+    if (!commonDir.isEmpty() && commonDir != gitDir)
+        roots.append(commonDir);
+    return roots;
+}
+
+QJsonObject sandboxPolicyForMode(const QString &mode, const QString &cwd)
 {
     if (normalizedMode(mode).contains(QStringLiteral("plan"))) {
         return QJsonObject{{QStringLiteral("type"), QStringLiteral("readOnly")},
@@ -64,7 +108,8 @@ QJsonObject sandboxPolicyForMode(const QString &mode)
     }
     return QJsonObject{
         {QStringLiteral("type"), QStringLiteral("workspaceWrite")},
-        {QStringLiteral("writableRoots"), QJsonArray()},
+        {QStringLiteral("writableRoots"),
+         QJsonArray::fromStringList(gitMetadataRoots(cwd))},
         {QStringLiteral("networkAccess"), false},
         {QStringLiteral("excludeTmpdirEnvVar"), false},
         {QStringLiteral("excludeSlashTmp"), false}};
@@ -676,7 +721,7 @@ void CodexAppServerSession::beginTurn(const QString &text)
                        {QStringLiteral("approvalPolicy"),
                         approvalPolicyForMode(m_mode)},
                        {QStringLiteral("sandboxPolicy"),
-                        sandboxPolicyForMode(m_mode)}};
+                        sandboxPolicyForMode(m_mode, m_cwd)}};
     if (!m_model.isEmpty())
         params.insert(QStringLiteral("model"), m_model);
     if (!m_effort.isEmpty())
