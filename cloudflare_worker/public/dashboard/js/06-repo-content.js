@@ -1960,26 +1960,80 @@
     }
   }
 
+  // The connector token is minted locally by the desktop app (Settings -> MCP)
+  // and never leaves that machine, so the website cannot look it up: it asks
+  // once, remembers it here, and from then on every copied prompt is a
+  // paste-and-run block. Shift-clicking the button replaces a rotated token.
+  const MCP_CONNECTOR_TOKEN_KEY = "forkmesh.mcpConnectorToken";
+  const MCP_CONNECTOR_TOKEN_PLACEHOLDER =
+    "PASTE_CONNECTOR_TOKEN_FROM_FORKMESH_DESKTOP_SETTINGS_MCP";
+
+  function loadMcpConnectorToken() {
+    try {
+      return String(localStorage.getItem(MCP_CONNECTOR_TOKEN_KEY) || "").trim().slice(0, 200);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function saveMcpConnectorToken(token) {
+    try {
+      if (token) localStorage.setItem(MCP_CONNECTOR_TOKEN_KEY, token);
+      else localStorage.removeItem(MCP_CONNECTOR_TOKEN_KEY);
+    } catch (_) {}
+  }
+
   // "Copy MCP prompt" on the issue detail page: one paste block that points an
   // MCP-capable coding agent at the forkmesh MCP server so it pulls this issue,
   // works it on a dedicated branch, submits the pull request, and reports back
-  // which model it ran as and its thinking setting. The prompt embeds no
-  // credential — the agent's own connector token (desktop Settings -> MCP)
-  // authorizes the signed writes.
-  function issueMcpPrompt(repo, number, values) {
+  // which model it ran as and its thinking setting. The block carries the whole
+  // connection — the mcpServers entry the desktop's Settings -> MCP tab shows
+  // (python3, tools/forkmesh_mcp_server.py, the repo checkout) plus the
+  // connector token the signed write tools require — so nothing has to be
+  // assembled by hand before the agent can run.
+  function issueMcpPrompt(repo, number, values, token) {
     const repoSlug = `${repo.owner || "owner"}/${repo.name || "repo"}`;
     const title = String(values?.title || "").trim();
     const titleSlug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
     const branch = titleSlug ? `issue-${number}-${titleSlug}` : `issue-${number}`;
     const issueUrl = `${location.origin}${repoPathUrl(repo)}/issues/${number}`;
+    const repoCloneUrl = cloneUrl(repo);
+    const forkmeshCloneUrl = `${location.origin}/forkmesh/forkmesh`;
+    const serverScript = "<FORKMESH_CHECKOUT>/tools/forkmesh_mcp_server.py";
+    const repoCheckout = `<CHECKOUT_OF_${repoSlug}>`;
+    const connectorToken = token || MCP_CONNECTOR_TOKEN_PLACEHOLDER;
+    const configuration = {
+      mcpServers: {
+        forkmesh: {
+          command: "python3",
+          args: [serverScript],
+          env: {
+            FORKMESH_REPO: repoCheckout,
+            FORKMESH_MCP_TOKEN: connectorToken,
+          },
+        },
+      },
+    };
+    const tokenNote = token
+      ? "FORKMESH_MCP_TOKEN above is a live connector token: keep it exactly as written. Treat it as a secret - never print it in logs, commits, pull requests, or chat."
+      : `FORKMESH_MCP_TOKEN above is a placeholder: replace ${MCP_CONNECTOR_TOKEN_PLACEHOLDER} with the connector token the ForkMesh desktop app mints under Settings -> MCP -> Generate token, otherwise the write tools stay read-only. Treat it as a secret - never print it in logs, commits, pull requests, or chat.`;
     return [
       `Work ForkMesh issue #${number} in ${repoSlug} end to end through the "forkmesh" MCP server.`,
       "",
       `Issue: ${title || `#${number}`}`,
       `Issue page: ${issueUrl}`,
+      `Repository: git clone ${repoCloneUrl}`,
       "",
-      "1. Use the forkmesh MCP server for every ForkMesh read and write. If it is not connected, stop and ask me to connect it first: the ForkMesh desktop app mints the connector token and the exact configuration block under Settings -> MCP.",
-      `2. Call whoami to confirm the connector reaches ${repoSlug} with write access, then pull this issue with search_issues and read every file it references with read_file before planning.`,
+      'Connect the "forkmesh" MCP server first - it is the stdio server that carries every ForkMesh tool (whoami, search_issues, read_file, comment_on_issue, open_pr_from_branch). Add this to your agent\'s MCP configuration, replacing each <...> with an absolute path on this machine and cloning whatever is missing:',
+      "",
+      JSON.stringify(configuration, null, 2),
+      "",
+      `<FORKMESH_CHECKOUT> is a checkout of ForkMesh itself, which ships the server script: git clone ${forkmeshCloneUrl}. ${repoCheckout} is your local checkout of ${repoSlug}: git clone ${repoCloneUrl}.`,
+      `In Claude Code that is one command: claude mcp add forkmesh --scope user --env FORKMESH_REPO=${repoCheckout} --env FORKMESH_MCP_TOKEN=${connectorToken} -- python3 ${serverScript}`,
+      tokenNote,
+      "",
+      `1. Call whoami on the forkmesh MCP server to confirm it answers and reaches ${repoSlug} with write access. If it is missing or read-only, fix the configuration above and retry; use the forkmesh MCP server for every ForkMesh read and write rather than any other issue tracker.`,
+      "2. Pull this issue with search_issues and read every file it references with read_file before planning.",
       `3. Work in the local checkout of ${repoSlug} that the connector exposes. Create a dedicated branch named ${branch} from the latest main; never commit to main directly.`,
       `4. Implement the smallest complete fix, run the repository's tests and required checks, and commit with a clear message referencing issue #${number}.`,
       `5. Submit the work with open_pr_from_branch: branch ${branch}, base main, a title referencing issue #${number}, and a description that summarizes the change and the test results.`,
@@ -1989,7 +2043,7 @@
     ].join("\n");
   }
 
-  async function copyIssueMcpPrompt(button) {
+  async function copyIssueMcpPrompt(button, options) {
     const detail = state.repoRecordDetail;
     const repo = state.selectedRepo;
     if (!button || !repo || detail?.kind !== "issues") return false;
@@ -2000,7 +2054,18 @@
       location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
       return false;
     }
-    const prompt = issueMcpPrompt(repo, detail.number, detail.parsed?.values);
+    let token = loadMcpConnectorToken();
+    if (!token || options?.replaceToken) {
+      const entered = window.prompt(
+        "Paste the ForkMesh connector token (desktop app -> Settings -> MCP -> Generate token). It is embedded in the copied prompt so the agent's write tools work, and remembered on this browser. Leave it empty to copy the prompt with a placeholder instead.",
+        token,
+      );
+      if (entered !== null) {
+        token = String(entered).trim().slice(0, 200);
+        saveMcpConnectorToken(token);
+      }
+    }
+    const prompt = issueMcpPrompt(repo, detail.number, detail.parsed?.values, token);
     const copied = await copyTextToClipboard(prompt);
     if (!copied) {
       button.title = "Could not access the clipboard";
@@ -2046,7 +2111,7 @@
     // /login and returns here, so the visitor discovers the workflow either way.
     const mcpPromptAction =
       isIssues && !options.pending
-        ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
+        ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end, MCP server configuration and connector token included (shift-click to replace the saved token)" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
         : "";
     const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
     // Always mount the timeline container for issues so a comment posted from
