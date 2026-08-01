@@ -22,6 +22,7 @@
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QPointer>
+#include <QPromise>
 #include <QProcess>
 #include <QPropertyAnimation>
 #include <QScrollArea>
@@ -3164,6 +3165,7 @@ void MainWindow::refreshRepoQuality()
 namespace {
 // The scan itself lives in DirectorySizeScan.cpp so the elevated helper
 // process can run the identical walk (adhoc #76).
+using forkmesh::DirectorySizeScanCancel;
 using forkmesh::DirectorySizeScanOptions;
 using forkmesh::DirectorySizeScanResult;
 
@@ -3224,6 +3226,17 @@ QWidget *MainWindow::buildSizeMapTab()
             [this] { refreshSizeMapTab(true, true); });
     addRefreshSpin(refresh);
 
+    // Only visible while a scan (worker thread or elevated helper) is running.
+    auto *stop = new QPushButton("Stop");
+    stop->setObjectName("ghostButton");
+    stop->setProperty("buttonSize", "sm");
+    stop->setCursor(Qt::PointingHandCursor);
+    setOcticon(stop, "x", 16);
+    stop->setToolTip("Stop the scan in progress.");
+    stop->setVisible(false);
+    m_sizeMapStop = stop;
+    connect(stop, &QPushButton::clicked, this, [this] { stopSizeMapScan(); });
+
     auto *headingCol = new QVBoxLayout;
     headingCol->setContentsMargins(0, 0, 0, 0);
     headingCol->setSpacing(3);
@@ -3235,6 +3248,7 @@ QWidget *MainWindow::buildSizeMapTab()
     headerRow->setSpacing(8);
     headerRow->addLayout(headingCol, 1);
     headerRow->addWidget(refresh, 0, Qt::AlignTop);
+    headerRow->addWidget(stop, 0, Qt::AlignTop);
     layout->addLayout(headerRow);
 
     // Folder switcher: the map defaults to the repository's working copy but
@@ -3504,6 +3518,8 @@ void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
         return;
     }
     m_sizeMapScanning = true;
+    if (m_sizeMapStop)
+        m_sizeMapStop->setVisible(true);
     const int epoch = ++m_sizeMapScanEpoch;
     m_sizeMapStatus->setText(
         QStringLiteral("Scanning %1 …").arg(QDir::toNativeSeparators(path)));
@@ -3526,10 +3542,15 @@ void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
                 Qt::QueuedConnection);
         };
     auto *watcher = new QFutureWatcher<DirectorySizeScanResult>(this);
+    m_sizeMapWatcher = watcher;
     connect(watcher, &QFutureWatcher<DirectorySizeScanResult>::finished, this,
             [this, watcher, path, epoch, hideIgnored] {
                 watcher->deleteLater();
+                if (m_sizeMapWatcher == watcher)
+                    m_sizeMapWatcher = nullptr;
                 m_sizeMapScanning = false;
+                if (m_sizeMapStop)
+                    m_sizeMapStop->setVisible(false);
                 if (epoch != m_sizeMapScanEpoch)
                     return; // a newer scan superseded this one
                 DirectorySizeScanResult result = watcher->result();
@@ -3542,11 +3563,20 @@ void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
                 }
                 applySizeMapResult(path, std::move(result), hideIgnored, false);
             });
-    watcher->setFuture(QtConcurrent::run([path, options, progress] {
-        const forkmesh::BackgroundScope activity(
-            QStringLiteral("scan"), QStringLiteral("Sizing %1").arg(path));
-        return forkmesh::scanDirectorySizes(path, options, progress);
-    }));
+    // The QPromise parameter is how Stop reaches into a running walk: the
+    // future's cancel() only flips promise.isCanceled(), so scanDirectorySizes
+    // takes a canceled() poll wired to it and checks it between directories
+    // (adhoc #189's Stop button).
+    watcher->setFuture(QtConcurrent::run(
+        [path, options, progress](QPromise<DirectorySizeScanResult> &promise) {
+            const forkmesh::BackgroundScope activity(
+                QStringLiteral("scan"), QStringLiteral("Sizing %1").arg(path));
+            const DirectorySizeScanCancel canceled = [&promise] {
+                return promise.isCanceled();
+            };
+            promise.addResult(
+                forkmesh::scanDirectorySizes(path, options, progress, canceled));
+        }));
 }
 
 // Live status line while a scan runs: the folder being walked right now, with
@@ -3725,6 +3755,8 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
     }
 
     m_sizeMapScanning = true;
+    if (m_sizeMapStop)
+        m_sizeMapStop->setVisible(true);
     const int epoch = ++m_sizeMapScanEpoch;
     if (m_sizeMapElevate)
         m_sizeMapElevate->setVisible(false);
@@ -3733,6 +3765,7 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
             .arg(QDir::toNativeSeparators(path)));
 
     auto *process = new QProcess(this);
+    m_sizeMapElevatedProcess = process;
     request->setParent(process); // the temp file dies with the process
     process->setProgram(program);
     process->setArguments(arguments);
@@ -3767,7 +3800,11 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
             [this, process, path, epoch, hideIgnored, upfront](
                 int exitCode, QProcess::ExitStatus) {
                 process->deleteLater();
+                if (m_sizeMapElevatedProcess == process)
+                    m_sizeMapElevatedProcess = nullptr;
                 m_sizeMapScanning = false;
+                if (m_sizeMapStop)
+                    m_sizeMapStop->setVisible(false);
                 if (epoch != m_sizeMapScanEpoch)
                     return; // a newer scan superseded this one
                 const QByteArray payload = process->readAllStandardOutput();
@@ -3808,7 +3845,11 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
                 if (error != QProcess::FailedToStart)
                     return;
                 process->deleteLater();
+                if (m_sizeMapElevatedProcess == process)
+                    m_sizeMapElevatedProcess = nullptr;
                 m_sizeMapScanning = false;
+                if (m_sizeMapStop)
+                    m_sizeMapStop->setVisible(false);
                 if (epoch != m_sizeMapScanEpoch || !m_sizeMapStatus)
                     return;
                 // Same fallback as a declined prompt: a map of the readable
@@ -3827,6 +3868,32 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
         stdinPayload.fill('\0');
     }
     process->closeWriteChannel();
+}
+
+void MainWindow::stopSizeMapScan()
+{
+    // Disconnect before cancel/kill, same as stopSearch(): once the finished
+    // handler can never fire, there is no race between its own bookkeeping and
+    // whatever the very next Rescan does, so this can freely reuse
+    // m_sizeMapScanning/m_sizeMapScanEpoch instead of tracking a third flag.
+    if (m_sizeMapWatcher) {
+        disconnect(m_sizeMapWatcher, nullptr, this, nullptr);
+        m_sizeMapWatcher->cancel();
+        m_sizeMapWatcher->deleteLater();
+        m_sizeMapWatcher = nullptr;
+    }
+    if (m_sizeMapElevatedProcess) {
+        disconnect(m_sizeMapElevatedProcess, nullptr, this, nullptr);
+        m_sizeMapElevatedProcess->kill();
+        m_sizeMapElevatedProcess->deleteLater();
+        m_sizeMapElevatedProcess = nullptr;
+    }
+    m_sizeMapScanning = false;
+    ++m_sizeMapScanEpoch; // discards any progress update already queued
+    if (m_sizeMapStop)
+        m_sizeMapStop->setVisible(false);
+    if (m_sizeMapStatus)
+        m_sizeMapStatus->setText(QStringLiteral("Scan stopped."));
 }
 
 QWidget *MainWindow::buildInsightsTab()

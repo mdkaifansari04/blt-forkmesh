@@ -74,6 +74,7 @@ struct MirrorSelfSnapshot {
 };
 
 #include <QElapsedTimer>
+#include <QFutureWatcher>
 #include <QHash>
 #include <QIcon>
 #include <QJsonArray>
@@ -392,10 +393,19 @@ public:
                                    const QStringList &nodes);
     void testShowNodesSection();
     QStringList testNodeDirectoryNames() const;
+    // The chat header's users popup: rebuild it for `conversation` and read back
+    // the names it lists (adhoc #129).
+    QStringList testChatMemberNames(const QString &conversation);
     void testRenderNetworkRepos(const QJsonArray &repos);
     QStringList testNetworkRepoNames() const;
     QString testNetworkRepoActionText(int row) const;
     QString testNetworkRepoMirrorHeader() const;
+    // Every Repos column label, and one row's value under a named column, so a
+    // test can pin the full catalog field set the page shows (adhoc #118).
+    QStringList testNetworkRepoColumns() const;
+    QString testNetworkRepoCellText(int row, const QString &header) const;
+    // Badge riding the activity rail's Repos icon.
+    int testReposNavBadgeCount() const;
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
     // Quick log filter (the chip row above the log): the chips currently offered,
     // and clicking one by category ("" = All).
@@ -456,6 +466,9 @@ public:
     void testRefreshSignInButton() { updateSignInButton(); }
     QString testUserName() const { return m_userName; }
     QString testAccountName() const { return m_accountName; }
+    bool testChatIdentityIsGuest() const { return chatIdentityIsGuest(); }
+    QString testChatDisplayName() const { return chatDisplayName(); }
+    QString testMachineNodeName() const { return machineNodeName(); }
     QString testSavedSolanaAddress() const;
     bool testAccountAuthenticated() const { return m_accountAuthenticated; }
     QString testAccountTier() const { return m_accountTier; }
@@ -487,6 +500,14 @@ public:
     // The branch the open repo treats as its default/merge base, so a test can
     // prove it stays main even when the working tree is parked on a feature branch.
     Q_INVOKABLE QString testRepoDefaultBranch() const;
+    // The push-driven repo-detail refresh, so a test can land a repo's refs
+    // *after* the detail view opened — a fresh install's first clone — and prove
+    // the status strip and the tab counts catch up (adhoc #116).
+    Q_INVOKABLE void testRefreshOpenRepoDetail() { refreshOpenRepoDetail(); }
+    // Text of the "Actions (N)" tab badge, empty when the tab row isn't built.
+    Q_INVOKABLE QString testRepoActionsTabText() const;
+    // Text of the Code toolbar's "N branches" toggle, empty when not built.
+    Q_INVOKABLE QString testRepoBranchesButtonText() const;
     // Switch the open repo-detail view to its Issues sub-tab (stack index 2) so
     // the issues toolbar gets real geometry. Returns false if not built yet.
     Q_INVOKABLE bool testShowRepoIssuesTab();
@@ -1005,6 +1026,12 @@ private:
     QString topBarUserName() const; // linked user/account name shown in the top bar
     QString nodeOwnerDisplayName() const; // user account that owns this node, if known
     QString chatDisplayName() const; // user identity used for chat sender names
+    // A first-run desktop whose account name is still the auto-generated node
+    // name (and that no user account owns) has no username yet: the person
+    // chats as an anonymous guest, the same way the website treats visitors
+    // (adhoc #113). Headless nodes are fleet machines and never guests.
+    bool chatIdentityIsGuest() const;
+    QString guestChatName() const;   // stable "Guest ####" for this install
     QString machineNodeName() const; // THIS machine's node name (never the username)
     void saveMachineNodeName(const QString &name); // persist + re-advertise
     // Persist the extra Actions `runs-on:` labels this machine answers to,
@@ -1031,6 +1058,7 @@ private:
     void queryNavSolanaUsdPrice(const QString &addr, qint64 lamports);
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
+    void updateReposNavBadge();    // rail badge = repos the Repos page lists
     // Keep the open repo's sync-derived indicators in step (adhoc #374 removed the
     // floating "Sync" pill that used to hover above the Code tab; the activity
     // rail's Git glyph and the commit list's "waiting to sync" markers remain).
@@ -1316,6 +1344,9 @@ private:
     QWidget *buildNetworkReposSection();
     void refreshNetworkReposPage();
     void renderNetworkRepos(const QJsonArray &repos);
+    // Fills a Repos row's catalog-data columns (everything the relay publishes
+    // about the repository except its description).
+    void fillNetworkRepoDataCells(int row, const QJsonObject &repo);
     void fetchNetworkRepoMirrors(const QString &owner, const QString &name,
                                  int row, int generation);
     int findNetworkRepoIndex(const QString &owner, const QString &name,
@@ -1787,6 +1818,10 @@ private:
     // selected from the one behind the button: if that prompt is dismissed the
     // map falls back to an unprivileged scan, so the tab is never left blank.
     void rescanSizeMapElevated(bool upfront = false);
+    // Stop button: cancels whichever scan is currently running, worker-thread
+    // walk or elevated helper process, the same disconnect-before-kill pattern
+    // as stopSearch().
+    void stopSizeMapScan();
     // Live "scanning <folder> · N files · M so far" line, driven from the walk
     // itself (adhoc #112).
     void showSizeMapScanProgress(const QString &current, qint64 bytes,
@@ -1800,6 +1835,9 @@ private:
     QWidget *buildDiscussionsTab();
     DiscussionStore discussionStoreForCurrentRepo() const;
     void reloadDiscussions();
+    // The "Discussions (N)" badge alone, loaded off-thread, so the count is right
+    // without building the (lazy) Discussions panel — see refreshRepoTabCounts().
+    void reloadDiscussionCountInBackground();
     void showDiscussion(int number);
     void renderDiscussionThread(const Discussion &discussion);
     void updateDiscussionActionState();
@@ -2390,6 +2428,9 @@ private:
     void refreshRepoActions();           // workflows column + runs for the open repo
     QList<ActionWorkflow> availableWorkflowsForRepo(
         const RepositoryRecord &repo) const;
+    // The "Actions (N)" badge alone, discovered off-thread, so the count is right
+    // without building the (lazy) Actions panel — see refreshRepoTabCounts().
+    void reloadWorkflowCountInBackground();
     // Show/populate the manual-run bar for the selected workflow (branches from
     // the repo's mirror, default "main"); hidden unless it allows manual runs.
     void updateManualRunBar();
@@ -2617,6 +2658,10 @@ private:
     void updateRepoIssueCount();
     void updateRepoDiscussionCount();
     void updateRepoPullCount();
+    // Fill in every repo-tab badge whose panel loads lazily (Issues, Discussions,
+    // Actions) from worker threads, so the tab row is right on the first frame
+    // rather than only after each tab is clicked (adhoc #116).
+    void refreshRepoTabCounts();
     void loadRepoOverview(const QString &path);
     void showRepoOverview();
     void showRepoEditor();
@@ -4065,6 +4110,9 @@ private:
     void startSyncFetch(int index, bool quiet, bool hasMirror,
                         const QStringList &args, const QString &beforeDigest,
                         const QString &beforeHeadCommit);
+    // Select (and prime) the repo a fresh install has been waiting on, once its
+    // first clone lands. Returns true when this index was the one awaited.
+    bool completePendingRepoAutoOpen(int index);
     void autoSyncMirrors();
     // Periodic-timer wrapper for autoSyncMirrors(): skips the round while the
     // relay host sits in BackoffNetworkAccessManager's 429/5xx cooldown, since
@@ -4310,7 +4358,6 @@ private:
     QString m_organizationTaskActor;
     bool m_organizationTasksCanManage = false;
     bool m_organizationTasksLoading = false;
-    QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
     // "Agents" heads the app navigation rail (adhoc #70), badged with the number
     // of running sessions. Its live fleet matrix stays on the window-chrome
     // line, followed there by the recent action-run strip.
@@ -4485,6 +4532,9 @@ private:
     QPushButton *m_networkReposRefreshButton = nullptr;
     int m_networkReposLoadGen = 0;
     QJsonArray m_networkReposLastPayload; // regroup when user/node ownership arrives
+    // Repositories the Repos page last listed, which is what its rail badge
+    // counts; -1 until the catalog has been rendered once (adhoc #118).
+    int m_networkRepoRowCount = -1;
     // Opaque private archive ids are delivered only in an authenticated,
     // ACL-filtered catalog response. They let the client use a name-free
     // /api/private-replicas/<id> URL; no private owner/repository identity is
@@ -5159,6 +5209,14 @@ private:
     // directories this user cannot list, hidden again once the elevated rescan
     // has produced the complete tree for that folder.
     QPushButton *m_sizeMapElevate = nullptr;
+    // "Stop": shown only while a scan is running; stopSizeMapScan() hides it.
+    QPushButton *m_sizeMapStop = nullptr;
+    // The in-flight unprivileged scan's watcher, so Stop can cancel it. Null
+    // once the scan finishes or is stopped.
+    QFutureWatcher<forkmesh::DirectorySizeScanResult> *m_sizeMapWatcher = nullptr;
+    // The in-flight elevated helper process, so Stop can kill it. Null once
+    // the scan finishes or is stopped.
+    QProcess *m_sizeMapElevatedProcess = nullptr;
     // Container holding one StorageMiniMap per mounted filesystem; refilled on
     // every rescan so mounts appearing or vanishing are picked up.
     QWidget *m_sizeMapVolumesBox = nullptr;
@@ -5643,6 +5701,8 @@ private:
     QPushButton *m_discussionCommentButton = nullptr;
     QLabel *m_discussionCategorySummary = nullptr;
     QList<Discussion> m_currentDiscussions;
+    // Same guard as m_workflowCountLoadGen, for the badge-only discussions load.
+    int m_discussionCountLoadGen = 0;
     int m_currentDiscussionNumber = -1;
     DiscussionInboxBackoff m_discussionInboxBackoff;
     // Exponential backoff for the app's periodic network pollers (owner-inbox
@@ -5910,7 +5970,6 @@ private:
     // that returns the same inbox again never re-flashes them (adhoc #77).
     QSet<QString> m_flashedWebAlertIds;
     QPushButton *m_notificationButton = nullptr;
-    QLabel *m_notificationRailBadge = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     // The website's alert inbox, mirrored onto that page (adhoc #59).
     QJsonArray m_webAlerts;
@@ -5923,6 +5982,10 @@ private:
     QLabel *m_actionNodeLabel = nullptr;         // caption above that dropdown
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
+    // Bumped by every workflow discovery (panel or badge-only): a background
+    // count that lands after a newer load — or after the panel loaded the real
+    // list — drops its result instead of overwriting it.
+    int m_workflowCountLoadGen = 0;
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
     // (a sync, an agent committing) otherwise re-runs the whole heavyweight
     // refresh — git log, per-PR apply checks, branch reload — once per event,

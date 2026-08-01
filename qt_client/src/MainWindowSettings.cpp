@@ -2532,10 +2532,12 @@ void MainWindow::updateUserAvatarButton()
     if (!m_userAvatarNavButton)
         return;
     // Circular, like the website renders an account's picture (adhoc #19).
-    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 34, 0.5);
+    // 24px, so the rail's Account item reads at the same visual weight as its
+    // 20px octicon siblings (adhoc #117).
+    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 24, 0.5);
     if (!pm.isNull())
         m_userAvatarNavButton->setIcon(QIcon(pm));
-    m_userAvatarNavButton->setIconSize(QSize(34, 34));
+    m_userAvatarNavButton->setIconSize(QSize(24, 24));
     m_userAvatarNavButton->setText(QString());
 }
 
