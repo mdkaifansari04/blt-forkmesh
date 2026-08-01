@@ -593,7 +593,12 @@ public:
     // issue #272: open the Worktrees tab on a branch, rebuild the panel (as an
     // "Update from main" merge does), and read back which worktree stays selected
     // so a test can prove the detail pane doesn't go blank after a refresh.
-    void testSwitchToWorktree(const QString &branch) { switchToWorktree(branch); }
+    void testSwitchToWorktree(const QString &branch)
+    {
+        showOverviewWorktrees();
+        loadWorktreesPanel();
+        selectWorktreeRow(branch);
+    }
     void testReloadWorktreesPanel() { loadWorktreesPanel(); }
     QString testSelectedWorktreeBranch() const { return m_worktreeSelectedBranch; }
     // Detail-pane branch label text, so a test can prove the worktree detail
@@ -702,10 +707,9 @@ public:
     // lands on the range review pane in the Git view (adhoc #107).
     int testCommitWorkspacePage() const;
     QString testBranchDiffBranch() const { return m_branchDiffBranch; }
-    // Which page each half of the Git view's left column shows: always 0 (the
-    // working tree's changes / commit history) since the range review stopped
-    // borrowing the slots (adhoc #12). Returns -1 when that half doesn't exist
-    // yet.
+    QStringList testBranchDiffFiles() const { return m_branchDiffFilePaths; }
+    // Which page each half of the Git view's left column shows. Both stay on the
+    // universal source-control panel and commit graph for every diff kind.
     int testGitFilesSlotPage() const;
     int testGitHistorySlotPage() const;
     // The base end of the "<branch> \xE2\x86\x92 <base>" compare indicator beside
@@ -720,8 +724,7 @@ public:
     // goes back to the working tree when the review is dismissed (adhoc #110).
     void testCloseBranchRange();
     // Click the activity rail's Git entry, so a test can prove it always lands
-    // on the default branch's working-tree view no matter which Git sub-view
-    // (a browsed branch, a compare) was left open (adhoc #1/#16).
+    // on the default branch's working-tree view.
     void testClickRailGitButton();
     // Click the range pane's "Merge to main" (deleteAll=false) or "Merge & delete
     // all" button once it's live, so a test can prove merging from the review
@@ -2737,7 +2740,6 @@ private:
     // single refresh so the heavyweight reload doesn't run once per event.
     void scheduleOpenRepoDetailRefresh();
     void updateRepoCodeSize();
-    void updateRepoCommitCount();
     void updateRepoIssueCount();
     void updateRepoDiscussionCount();
     void updateRepoPullCount();
@@ -2749,9 +2751,8 @@ private:
     void showRepoOverview();
     void showRepoEditor();
     void showRepoCoveExplorer();
-    // The commit history lives inside the Code overview (no top-bar tab): the
-    // commit strip's "N Commits" button toggles the area under the latest-commit
-    // bar between the file browser and the commits panel.
+    // The Git workspace is stored beside the Code overview for layout reuse,
+    // but only the activity-rail Git destination opens it.
     void showOverviewCommits();
     void showOverviewFiles();
     void showOverviewBranches();
@@ -5454,6 +5455,10 @@ private:
     // a commit, or the uncommitted changes); set by renderBranchDiffPatch so the
     // per-file Viewed toggle persists against the right scope, not always "all".
     QString m_branchDiffViewedContext;
+    // Checkout whose complete snapshot is compared with the base. For a linked
+    // worktree this lets the one Git view include committed, staged, unstaged,
+    // and untracked changes rather than only the branch tip.
+    QString m_branchDiffWorkDir;
     // Sticky header pinned over the branch/PR diff (same form as the PR viewer's:
     // filename, Pac-Man read-progress chart, percent label and a Viewed toggle).
     QFrame *m_branchDiffSticky = nullptr;
@@ -5557,7 +5562,6 @@ private:
     QPushButton *m_worktreesButton = nullptr; // "N worktrees" toggle in the Code toolbar
     QPushButton *m_remotesButton = nullptr;   // "N remotes" dropdown in the Code toolbar
     QPushButton *m_tagsButton = nullptr;
-    QPushButton *m_toolbarCommitsButton = nullptr; // -> commits panel, next to Branches/Tags
     // Persistent segmented toggle, always visible above the Code page, that
     // switches between the GitHub-style overview and the explorer/editor view.
     QPushButton *m_filesModeOverviewButton = nullptr; // -> code overview
@@ -5707,18 +5711,13 @@ private:
     // Source Control panel (left side of the Commits tab).
     static constexpr int kCommitWorkspaceChangesPage = 0;
     static constexpr int kCommitWorkspaceCommitPage = 1;
-    // Branch/PR range review page (adhoc #107): the branch diff, shown in the
-    // Git view's right pane. It used to borrow the left column's two slots for
-    // its own files/scope lists (adhoc #110); it no longer does (adhoc #12) —
-    // the working-tree CHANGES and the commit graph stay put, with the branch
-    // under review named above the graph's branch button.
+    // Branch/PR range review page: its diff fills the right pane while the
+    // universal source-control panel and commit graph stay in the left column.
     static constexpr int kCommitWorkspaceRangePage = 2;
-    // The Git view's left column: two stacks showing the working-tree changes
-    // (top) and the commit history (bottom). Each hosts a single page since the
-    // range review stopped borrowing them (adhoc #12).
+    // The Git view's left column: source control above commit history.
     QStackedWidget *m_gitFilesSlot = nullptr;
     QStackedWidget *m_gitHistorySlot = nullptr;
-    // Show a right-pane page (and keep the compare indicator in step).
+    // Show a right-pane page and keep its compare indicator in step.
     void setCommitWorkspacePage(int page);
     // The "<branch> -> <base>" compare indicator on the graph's branch row:
     // while a branch/PR comparison is open on the right pane, an arrow and a
@@ -5812,9 +5811,8 @@ private:
     bool m_overviewLoading = false;
     int m_treeLoadedForIndex = -1;          // repo whose explorer tree is built
     QLabel *m_commitBar = nullptr;
-    QPushButton *m_historyButton = nullptr;
     // Area under the latest-commit bar: 0 = crumb + file list + README,
-    // 1 = the commits panel (list + diff), toggled by m_historyButton.
+    // 1 = the Git workspace, reachable only from the activity rail.
     QStackedWidget *m_overviewBodyStack = nullptr;
     QLabel *m_overviewCrumb = nullptr;
     QString m_commitBarStatusHash;
@@ -6374,6 +6372,10 @@ private:
     QPushButton *m_agentInfoButton = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
+    // "Create PR" — pull requests are user-driven (adhoc #2 follow-up): a run
+    // finishing no longer opens one, this button does. Shown until the session
+    // has a PR.
+    QPushButton *m_agentCreatePrButton = nullptr;
     // "Create linked issue" — shown for ad-hoc sessions with no issue yet, so the
     // run can be promoted to a tracked issue from the detail header (adhoc #189).
     QPushButton *m_agentCreateIssueButton = nullptr;

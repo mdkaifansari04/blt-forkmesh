@@ -811,11 +811,10 @@ QString MainWindow::testArrowOnWorktrees(bool down)
 void MainWindow::testClickRepoDetailTab(int id)
 {
     if (id == 1) {
-        // Commits has no top-bar tab anymore: drive the commit strip's
-        // "N Commits" toggle instead, the same path a real click takes
-        // (no-op when the panel is already showing — click would hide it).
-        if (m_historyButton && !m_historyButton->isChecked())
-            m_historyButton->click();
+        // Commit history has one entry point: drive the Git activity-rail
+        // destination exactly as a real click does.
+        if (m_railGitButton)
+            m_railGitButton->click();
         return;
     }
     if (id == m_worktreesTabIndex) {
