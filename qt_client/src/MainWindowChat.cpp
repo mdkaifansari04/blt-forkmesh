@@ -9363,9 +9363,12 @@ QWidget *MainWindow::buildHostsSection()
         "creates and manages the SSH key for it automatically, boots the "
         "instance, installs ForkMesh over SSH and links the new node to your "
         "account so it starts mirroring and syncing right away. The API key "
-        "(Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is used from "
-        "memory only and never saved to disk \xE2\x80\x94 store it as a "
-        "VULTR_API_KEY device variable to prefill it. When a "
+        "(Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is saved once "
+        "Vultr accepts it \xE2\x80\x94 into this device's VULTR_API_KEY "
+        "variable (Settings \xE2\x86\x92 Variables / Secrets) and into "
+        "cloudflare_worker/.env.production \xE2\x80\x94 so you never have to "
+        "enter it again; it travels only in the Authorization header of this "
+        "app's HTTPS calls to Vultr, never in a command line. When a "
         "CLOUDFLARE_API_TOKEN device variable and a Cloudflare zone are "
         "configured, the new node also gets a <node>.<zone> DNS record so it "
         "joins the mesh under a stable name like your other mirrors. The "
@@ -9381,7 +9384,12 @@ QWidget *MainWindow::buildHostsSection()
     m_vultrApiKeyEdit = new QLineEdit;
     m_vultrApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_vultrApiKeyEdit->setPlaceholderText(
-        QStringLiteral("Vultr API key — kept in memory only"));
+        QStringLiteral("Vultr API key — saved after the first successful run"));
+    // Prefill from whatever this device already stores (this page's own saves,
+    // Settings > Quick setup, or a hand-added variable), so a returning
+    // operator only has to press the button (adhoc #127).
+    m_vultrApiKeyEdit->setText(
+        forkmesh::control::vultrApiKeyFromVariables(ActionStore::variables()));
     vultrForm->addRow(QStringLiteral("Vultr API key"), m_vultrApiKeyEdit);
     m_vultrNameEdit = new QLineEdit;
     m_vultrNameEdit->setPlaceholderText(QString::fromUtf8(
@@ -14120,7 +14128,8 @@ void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
                 ? QByteArray()
                 : QJsonDocument(body).toJson(QJsonDocument::Compact));
     }
-    connect(reply, &QNetworkReply::finished, this, [reply, onDone] {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, apiKey, onDone] {
         reply->deleteLater();
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
@@ -14137,6 +14146,20 @@ void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
                            .arg(status)
                            .arg(detail));
             return;
+        }
+        // Vultr just authenticated this key, so it is worth keeping: every
+        // flow on this page (create, destroy) then resolves it from the store
+        // instead of asking for it again. Later calls in the same run are a
+        // no-op (adhoc #127).
+        QString rememberError;
+        const QStringList remembered =
+            rememberVultrApiKey(apiKey, &rememberError);
+        if (!remembered.isEmpty()) {
+            appendHostInstallLog(
+                QStringLiteral("Saved your Vultr API key to %1.\n")
+                    .arg(remembered.join(QStringLiteral(" and "))));
+            if (!rememberError.isEmpty())
+                appendHostInstallLog(rememberError + QLatin1Char('\n'));
         }
         onDone(object, QString());
     });

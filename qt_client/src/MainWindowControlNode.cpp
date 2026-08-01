@@ -3728,6 +3728,73 @@ void MainWindow::generateCloudflareApiToken()
         });
 }
 
+QStringList MainWindow::rememberVultrApiKey(const QString &apiKey,
+                                            QString *error)
+{
+    if (error)
+        error->clear();
+    const QString key = apiKey.trimmed();
+    // A multi-line value is never a real key, and writing one would corrupt
+    // both the child environment it is injected into and the .env file below.
+    if (key.isEmpty() || key == m_vultrRememberedKey ||
+        key.contains(QLatin1Char('\n')) || key.contains(QLatin1Char('\r'))) {
+        return {};
+    }
+
+    const QStringList names = forkmesh::control::vultrApiKeyVariableNames();
+    const QString canonical = names.constFirst();
+    QMap<QString, QString> variables = ActionStore::variables();
+    bool changed = false;
+    bool haveCanonical = false;
+    for (auto it = variables.begin(); it != variables.end(); ++it) {
+        const QString name = it.key().trimmed();
+        if (!names.contains(name, Qt::CaseInsensitive))
+            continue;
+        // An alias the operator saved earlier (Quick setup wrote
+        // VULTR_API_TOKEN) is updated in place rather than left behind: a
+        // stale one resolves ahead of the canonical name for anything reading
+        // it directly, so the key just proven good would stay shadowed.
+        if (name.compare(canonical, Qt::CaseInsensitive) == 0)
+            haveCanonical = true;
+        if (it.value().trimmed() != key) {
+            it.value() = key;
+            changed = true;
+        }
+    }
+    if (!haveCanonical) {
+        variables.insert(canonical, key);
+        changed = true;
+    }
+    QStringList applied;
+    if (changed) {
+        ActionStore::setVariables(variables);
+        reloadVariablesTable();
+        applied << QStringLiteral("this device's %1 variable").arg(canonical);
+    }
+
+    const QString envPath = forkmesh::control::siteDeployEnvFilePath(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
+    QString envError;
+    bool retryable = false;
+    if (envPath.isEmpty()) {
+        // No checkout beside this build: there is no file to write and no
+        // later call can change that, so this is reported, not retried.
+        envError = QStringLiteral(
+            "cloudflare_worker/.env.production was not found next to this "
+            "build's Worker bundle, so no file was rewritten.");
+    } else if (writeEnvAssignments(envPath, {{canonical, key}}, &envError)) {
+        applied << envPath;
+    } else {
+        retryable = true;
+    }
+    if (error)
+        *error = envError;
+    if (!retryable)
+        m_vultrRememberedKey = key;
+    return applied;
+}
+
 void MainWindow::adoptRotatedCloudflareToken(const QString &token)
 {
     // Redact the new secret from this tab's own output before anything else can
