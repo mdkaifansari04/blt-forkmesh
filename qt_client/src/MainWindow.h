@@ -456,6 +456,9 @@ public:
     void testRefreshSignInButton() { updateSignInButton(); }
     QString testUserName() const { return m_userName; }
     QString testAccountName() const { return m_accountName; }
+    bool testChatIdentityIsGuest() const { return chatIdentityIsGuest(); }
+    QString testChatDisplayName() const { return chatDisplayName(); }
+    QString testMachineNodeName() const { return machineNodeName(); }
     QString testSavedSolanaAddress() const;
     bool testAccountAuthenticated() const { return m_accountAuthenticated; }
     QString testAccountTier() const { return m_accountTier; }
@@ -1005,6 +1008,12 @@ private:
     QString topBarUserName() const; // linked user/account name shown in the top bar
     QString nodeOwnerDisplayName() const; // user account that owns this node, if known
     QString chatDisplayName() const; // user identity used for chat sender names
+    // A first-run desktop whose account name is still the auto-generated node
+    // name (and that no user account owns) has no username yet: the person
+    // chats as an anonymous guest, the same way the website treats visitors
+    // (adhoc #113). Headless nodes are fleet machines and never guests.
+    bool chatIdentityIsGuest() const;
+    QString guestChatName() const;   // stable "Guest ####" for this install
     QString machineNodeName() const; // THIS machine's node name (never the username)
     void saveMachineNodeName(const QString &name); // persist + re-advertise
     // Persist the extra Actions `runs-on:` labels this machine answers to,

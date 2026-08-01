@@ -47,6 +47,7 @@
 namespace forkmesh {
 namespace ui {
 QString linkifyIssueRefs(const QString &escaped);
+bool isTemporaryChatGuest(const MemberInfo &m);
 QString agentModelLabel(const QString &model);
 bool agentModelIsClaudeStyle(const QString &model);
 bool agentModelMatchesProvider(const QString &provider, const QString &model);
@@ -1148,6 +1149,34 @@ int main(int argc, char *argv[])
     check(!window.testNetworkLog().join(QLatin1Char('\n')).contains(QStringLiteral("jett")),
           QStringLiteral("a plain user account online is not logged as a node connecting"));
 
+    // Adhoc #113: an anonymous chat guest coming online is a person passing
+    // through, not a node. Only a guest that advertises a machine nodeName (a
+    // first-run desktop) is announced — under the machine's name, never the
+    // person's "Guest ####" alias.
+    window.testResetNetworkLog();
+    QList<MemberInfo> withGuestPeer = withUserPeer;
+    MemberInfo guestPeer =
+        testMember(QStringLiteral("guest-peer"), QStringLiteral("Guest 4242"));
+    guestPeer.accountKind = QStringLiteral("guest");
+    withGuestPeer.append(guestPeer);
+    window.testSetRoster(withGuestPeer);
+    check(!window.testNetworkLog().join(QLatin1Char('\n')).contains(
+              QStringLiteral("Guest 4242")),
+          QStringLiteral("an anonymous guest online is not logged as a node"));
+    window.testResetNetworkLog();
+    MemberInfo guestDesktopPeer =
+        testMember(QStringLiteral("guest-desktop-peer"),
+                   QStringLiteral("Guest 4242"));
+    guestDesktopPeer.accountKind = QStringLiteral("guest");
+    guestDesktopPeer.nodeName = QStringLiteral("magnetic-terminal-4242");
+    withGuestPeer.append(guestDesktopPeer);
+    window.testSetRoster(withGuestPeer);
+    const QString guestLog = window.testNetworkLog().join(QLatin1Char('\n'));
+    check(guestLog.contains(QStringLiteral("magnetic-terminal-4242")) &&
+              !guestLog.contains(QStringLiteral("Guest 4242")),
+          QStringLiteral(
+              "a first-run desktop guest announces as its machine node name"));
+
     // adhoc #404: a browser guest / World visitor that stops sending presence is
     // forgotten after ten idle minutes, while a real node keeps its offline row
     // so it stays selectable in the Node dropdown.
@@ -2137,6 +2166,79 @@ int main(int argc, char *argv[])
             settings.setValue(verifiedKey, oldVerified);
         else
             settings.remove(verifiedKey);
+    }
+
+    // Adhoc #113: a first run hands the MACHINE a generated node name, but the
+    // person has no username yet — chat speaks as an anonymous "Guest ####"
+    // (accountKind "guest", like the website's visitors) until a username is
+    // typed or an account is claimed. Typing one ends guest mode.
+    {
+        QSettings settings;
+        const QString nodeKey = QStringLiteral("account/nodeName");
+        const QString generatedKey = QStringLiteral("account/generatedNodeName");
+        const QString handleKey = QStringLiteral("profile/handle");
+        const QString displayKey = QStringLiteral("profile/displayName");
+        const QVariant oldNode = settings.value(nodeKey);
+        const QVariant oldGenerated = settings.value(generatedKey);
+        const QVariant oldHandle = settings.value(handleKey);
+        const QVariant oldDisplay = settings.value(displayKey);
+        settings.remove(nodeKey);
+        settings.remove(generatedKey);
+        settings.remove(handleKey);
+        settings.remove(displayKey);
+
+        MainWindow fresh;
+        fresh.testEnableSessionStartBypass(true);
+        const QString generatedName = settings.value(nodeKey).toString();
+        check(!generatedName.isEmpty() &&
+                  settings.value(generatedKey).toString() == generatedName,
+              QStringLiteral("first run records the generated node name"));
+        check(fresh.testChatIdentityIsGuest(),
+              QStringLiteral("first run chats as a guest, not as the node"));
+        static const QRegularExpression guestShape(
+            QStringLiteral("^Guest \\d{4}$"));
+        check(guestShape.match(fresh.testChatDisplayName()).hasMatch(),
+              QStringLiteral("guest chat name is \"Guest ####\" (%1)")
+                  .arg(fresh.testChatDisplayName()));
+        check(fresh.testMachineNodeName() == generatedName,
+              QStringLiteral("the machine keeps the generated node name"));
+
+        // A desktop guest still advertises its machine node name, so node
+        // surfaces keep its row; a browser guest (no nodeName) stays filtered
+        // (adhoc #308).
+        MemberInfo desktopGuest;
+        desktopGuest.name = QStringLiteral("Guest 8888");
+        desktopGuest.accountKind = QStringLiteral("guest");
+        desktopGuest.nodeName = generatedName;
+        MemberInfo browserGuest;
+        browserGuest.name = QStringLiteral("Guest 1667");
+        browserGuest.accountKind = QStringLiteral("guest");
+        check(!forkmesh::ui::isTemporaryChatGuest(desktopGuest),
+              QStringLiteral("a guest advertising a node name keeps node rows"));
+        check(forkmesh::ui::isTemporaryChatGuest(browserGuest),
+              QStringLiteral("a browser guest without a node stays filtered"));
+
+        // Typing a username replaces the generated name and ends guest mode.
+        fresh.testSetSetupInputs(QStringLiteral("carol"), QString());
+        fresh.testStartSession();
+        check(!fresh.testChatIdentityIsGuest(),
+              QStringLiteral("typing a username ends guest mode"));
+        check(fresh.testChatDisplayName() == QStringLiteral("carol"),
+              QStringLiteral("chat then speaks as the chosen username"));
+        stopChildProcesses(fresh);
+
+        if (oldNode.isValid())
+            settings.setValue(nodeKey, oldNode);
+        else
+            settings.remove(nodeKey);
+        if (oldGenerated.isValid())
+            settings.setValue(generatedKey, oldGenerated);
+        else
+            settings.remove(generatedKey);
+        if (oldHandle.isValid())
+            settings.setValue(handleKey, oldHandle);
+        if (oldDisplay.isValid())
+            settings.setValue(displayKey, oldDisplay);
     }
 
     // Issue #203: quick-adding an issue without assigning it to an agent should
