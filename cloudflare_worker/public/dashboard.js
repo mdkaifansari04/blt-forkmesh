@@ -14667,6 +14667,8 @@
       pending_inbox: "inbox",
       mirror_request: "radio",
       account_email_sent: "mail-check",
+      organization_task_started: "clipboard-list",
+      organization_task_activity: "clipboard-list",
     })[kind] || "bell";
   }
 
@@ -14728,10 +14730,50 @@
         </div>
       </div>
       <p class="mt-5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">${escapeHtml(item.body || "ForkMesh notification")}</p>
+      ${organizationTaskDetailsHtml(item)}
       ${mirrorRequestActionsHtml(item)}
       ${item.href ? `<a href="${escapeHtml(item.href)}" class="mt-5 inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Open context</a>` : ""}
     `;
     window.lucide?.createIcons();
+  }
+
+  // Organization task pings (adhoc #147) carry the whole event on meta, so the
+  // reader gets who/what/which org spelled out as fields instead of having to
+  // parse the one-line summary the ping list shows.
+  function organizationTaskDetailsHtml(item) {
+    if (!item || !String(item.kind || "").startsWith("organization_task")) return "";
+    const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
+    const assignee = String(meta.assignee || "");
+    const assigneeLabel = meta.assigneeKind === "agent"
+      ? "An agent"
+      : (assignee ? `@${assignee}` : "Unassigned");
+    const priority = Number(meta.priority) || 0;
+    const status = ({
+      idle: "Not started",
+      active: "In progress",
+      done: "Done",
+    })[String(meta.status || "")] || String(meta.status || "");
+    const rows = [
+      ["Who", meta.actor ? `@${meta.actor}` : ""],
+      ["What", `${String(meta.action || "updated")} a task`],
+      ["Task", meta.taskTitle || ""],
+      ["Organization", meta.organization || ""],
+      ["Department", meta.department || ""],
+      ["Team", meta.team || ""],
+      ["Assigned to", assigneeLabel],
+      ["Priority", priority > 0 ? String(priority) : ""],
+      ["Status", status],
+      ["Repository", meta.repository || ""],
+    ].filter(([, value]) => String(value || "").trim());
+    if (!rows.length) return "";
+    return `
+      <dl class="mt-5 grid grid-cols-[auto,1fr] gap-x-4 gap-y-1 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs">
+        ${rows.map(([label, value]) => `
+          <dt class="text-muted-foreground">${escapeHtml(label)}</dt>
+          <dd class="min-w-0 break-words text-foreground">${escapeHtml(String(value))}</dd>
+        `).join("")}
+      </dl>
+    `;
   }
 
   // Accept/Reject controls on an incoming "someone asked your node to mirror
@@ -14938,7 +14980,10 @@
     state.selectedNotificationId = id;
     renderNotificationModal();
     if (!item.readAt) await markNotificationsRead([id]);
-    if (modal) setNotificationModalOpen(true);
+    if (modal) {
+      setNotificationDropdownOpen(false);
+      setNotificationModalOpen(true);
+    }
   }
 
   // The release version changes at most per deploy: cache it in sessionStorage
@@ -15385,7 +15430,10 @@
 
     const notificationOpen = event.target.closest("[data-notification-open]");
     if (notificationOpen) {
-      await openNotification(notificationOpen.dataset.notificationOpen || "", Boolean(event.target.closest("#notificationModal")));
+      await openNotification(
+        notificationOpen.dataset.notificationOpen || "",
+        !event.target.closest("#notificationModal"),
+      );
       return;
     }
 
