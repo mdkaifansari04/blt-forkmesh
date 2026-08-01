@@ -664,10 +664,10 @@ void MainWindow::loadWorktreesPanel()
     }
 }
 
-// Open a named worktree in the universal Git range viewer. A worktree is the
-// checkout of a branch, so its committed range, changed-files list and dirty
-// files belong in the same viewer used by Branches and PRs. Detached worktrees
-// have no branch range and remain available through the Worktrees panel itself.
+// Open a named worktree in the Git view. A worktree is the checkout of a
+// branch, so it lands on the same branch-browsing view switchToBranch uses.
+// Detached worktrees have no branch and remain available through the
+// Worktrees panel itself.
 void MainWindow::switchToWorktree(const QString &branch)
 {
     if (!branch.trimmed().isEmpty()) {
@@ -678,30 +678,34 @@ void MainWindow::switchToWorktree(const QString &branch)
     loadWorktreesPanel();
 }
 
-// Open a branch's commits, changed files and diff in the Git view's range pane
-// (adhoc #107) — clicking a branch name in the agent session header, the PR
-// header or the Branches panel lands here. The render starts straight away
-// (its git reads run on worker threads — adhoc #420); the Branches panel's
-// refresh below keeps its rows in step and reports a branch that doesn't exist.
+// View a branch in the Git view's main page — clicking a branch name in the
+// agent session header, the PR header or the Branches panel lands here. The
+// graph list browses the branch's history with the branch indicator tracking
+// it, the same read-only ref switch the graph's branch button does; the
+// separate range-review pane stays reserved for pull requests
+// (openPullDiffInGitView). The Branches panel's refresh below keeps its rows
+// in step and reports a branch that doesn't exist (adhoc #185/#420).
 void MainWindow::switchToBranch(const QString &branch)
 {
     m_branchDiffPullNumber = -1; // plain branch mode
+    // A range review or commit detail left on the workspace hands the right
+    // pane and the left column's slots back to the working tree first, so the
+    // graph the branch loads into is what's actually on screen.
+    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
     showOverviewCommits();
-    setCommitWorkspacePage(kCommitWorkspaceRangePage);
-    showBranchDiff(branch);
-    // Ctrl+F and the scroll-driven tools act on the diff from the first key.
-    if (m_branchDiffView)
-        m_branchDiffView->setFocus();
-    // The commits workspace may not have been opened yet this visit: fill the
-    // left rail (history + working changes) the same deferred way the Commits
-    // toggle does, without stealing the right pane (showCommitList keeps its
-    // hands off the range page).
-    QTimer::singleShot(0, this, [this] {
-        if (commitsListIsCurrent())
-            refreshSourceControl();
-        else
-            loadCommits();
-    });
+    const QString target = branch.trimmed();
+    if (!target.isEmpty() && target != m_repoBranch) {
+        setRepoBranch(target); // rebuilds the graph + branch button for the ref
+    } else {
+        // Already browsing this ref: fill the workspace the same deferred way
+        // the Commits toggle does.
+        QTimer::singleShot(0, this, [this] {
+            if (commitsListIsCurrent())
+                refreshSourceControl();
+            else
+                loadCommits();
+        });
+    }
     if (!m_branchesTable || branch.isEmpty()) {
         loadBranchesPanel();
         return;
@@ -789,6 +793,12 @@ void MainWindow::testCloseBranchRange()
 {
     if (m_branchCloseButton)
         m_branchCloseButton->click();
+}
+
+void MainWindow::testClickRailGitButton()
+{
+    if (m_railGitButton)
+        m_railGitButton->click();
 }
 
 bool MainWindow::testClickBranchReviewMerge(bool deleteAll)

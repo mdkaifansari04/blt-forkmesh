@@ -683,13 +683,16 @@ public:
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
     QString testSwitchToBranchImmediateSelection(const QString &branch);
-    // Take the worktree route and expose the branch bound to the universal Git
-    // range viewer, proving worktrees no longer open a second diff surface.
+    // Take the worktree route and expose the branch the Git view is browsing,
+    // proving worktrees no longer open a second diff surface.
     QString testSwitchToWorktreeGitBranch(const QString &branch)
     {
         switchToWorktree(branch);
-        return m_branchDiffBranch;
+        return m_repoBranch;
     }
+    // The branch whose history the Git view's graph is browsing (empty = HEAD),
+    // so a test can prove a branch link lands the graph on that branch.
+    QString testBrowsedBranch() const { return m_repoBranch; }
     // Take the agent detail page's "Branch" route, so a test can prove it binds
     // the Git view to that session's own repository before opening its branch
     // there — the sessions list is global (adhoc #131).
@@ -707,6 +710,10 @@ public:
     // Click the range pane's close button, so a test can prove the left column
     // goes back to the working tree when the review is dismissed (adhoc #110).
     void testCloseBranchRange();
+    // Click the activity rail's Git entry, so a test can prove it always lands
+    // on the default branch's working-tree view no matter which Git sub-view
+    // (a browsed branch, a range review) was left open (adhoc #1).
+    void testClickRailGitButton();
     // Click the range pane's "Merge to main" (deleteAll=false) or "Merge & delete
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.

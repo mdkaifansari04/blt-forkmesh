@@ -1906,43 +1906,44 @@ int main(int argc, char *argv[])
               QString("clicking a branch link selects the branch without waiting "
                       "for the panel's git reads (adhoc #420, landed on %1)")
                   .arg(landed.isEmpty() ? QStringLiteral("<none>") : landed));
-        // adhoc #107: the branch diff viewer lives in the Git view now — the
-        // same click must land the commits workspace on the range review pane
-        // with that branch under review.
-        check(window.testCommitWorkspacePage() == 2 &&
-                  window.testBranchDiffBranch() ==
+        // adhoc #1: a branch link browses the branch in the Git view's main
+        // page — the graph list and its branch button follow the ref — instead
+        // of opening the separate range-review pane (that pane stays reserved
+        // for pull requests).
+        check(window.testCommitWorkspacePage() == 0 &&
+                  window.testBrowsedBranch() ==
                       QStringLiteral("feature/keep-selected"),
-              QString("a branch link opens the branch's diff in the Git view's "
-                      "range pane (adhoc #107, page = %1, branch = %2)")
+              QString("a branch link browses the branch in the Git view's main "
+                      "page (adhoc #1, page = %1, branch = %2)")
                   .arg(window.testCommitWorkspacePage())
-                  .arg(window.testBranchDiffBranch()));
-        // adhoc #110: the review borrows the left column's existing slots — the
-        // range's changed files where the working-tree changes sit, its commits
-        // where the history sits — instead of opening a column of its own.
-        check(window.testGitFilesSlotPage() == 1 &&
-                  window.testGitHistorySlotPage() == 1,
-              QString("the range's files and commits take over the Git view's "
-                      "left column (adhoc #110, files slot = %1, history slot "
-                      "= %2)")
+                  .arg(window.testBrowsedBranch()));
+        // The left column keeps its working-tree slots: no range review took
+        // over the changed-files and history halves.
+        check(window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("browsing a branch keeps the Git view's left column on "
+                      "the working tree (adhoc #1, files slot = %1, history "
+                      "slot = %2)")
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage()));
         check(window.testSwitchToWorktreeGitBranch(
                   QStringLiteral("feature/keep-selected")) ==
                   QStringLiteral("feature/keep-selected") &&
-                  window.testCommitWorkspacePage() == 2,
-              QStringLiteral("a named worktree opens in the universal Git range "
-                             "viewer instead of a separate diff pane"));
-        // And closing the review hands both halves back to the working tree.
-        window.testCloseBranchRange();
-        check(window.testCommitWorkspacePage() == 0 &&
+                  window.testCommitWorkspacePage() == 0,
+              QStringLiteral("a named worktree opens in the Git view's branch "
+                             "browser instead of a separate diff pane"));
+        // adhoc #1: the rail's Git entry always lands back on the default
+        // branch's working-tree view, even while another branch is browsed.
+        window.testClickRailGitButton();
+        QApplication::processEvents();
+        check(window.testBrowsedBranch() == QStringLiteral("main") &&
+                  window.testCommitWorkspacePage() == 0 &&
                   window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("closing the range review restores the working-tree "
-                      "changes and commit history (adhoc #110, page = %1, files "
-                      "slot = %2, history slot = %3)")
-                  .arg(window.testCommitWorkspacePage())
-                  .arg(window.testGitFilesSlotPage())
-                  .arg(window.testGitHistorySlotPage()));
+              QString("the rail's Git entry goes back to the main-branch view "
+                      "from a browsed branch (adhoc #1, branch = %1, page = %2)")
+                  .arg(window.testBrowsedBranch())
+                  .arg(window.testCommitWorkspacePage()));
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
         QApplication::processEvents();
@@ -1969,10 +1970,13 @@ int main(int argc, char *argv[])
         window.testSwitchToBranchImmediateSelection(
             QStringLiteral("feature/keep-selected"));
         QApplication::processEvents();
-        check(window.testCommitWorkspacePage() == 2,
-              QString("re-opening the branch review lands on the range pane again "
-                      "(adhoc #119 setup, page = %1)")
-                  .arg(window.testCommitWorkspacePage()));
+        check(window.testCommitWorkspacePage() == 0 &&
+                  window.testBrowsedBranch() ==
+                      QStringLiteral("feature/keep-selected"),
+              QString("re-opening the branch keeps the Git view on its main "
+                      "page (adhoc #1, page = %1, branch = %2)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testBrowsedBranch()));
         const bool mergeClicked = window.testClickBranchReviewMerge(false);
         QApplication::processEvents();
         const QString mainTip =
@@ -2009,18 +2013,18 @@ int main(int argc, char *argv[])
               QString("the agent's Branch button binds the Git view to that "
                       "session's repository (adhoc #131, git dir = %1)")
                   .arg(agentBranchDir));
-        check(window.testCommitWorkspacePage() == 2 &&
-                  window.testBranchDiffBranch() ==
+        check(window.testCommitWorkspacePage() == 0 &&
+                  window.testBrowsedBranch() ==
                       QStringLiteral("feature/keep-selected"),
-              QString("the agent's Branch button opens its branch in the Git "
-                      "view's range pane (adhoc #131, page = %1, branch = %2)")
+              QString("the agent's Branch button browses its branch in the Git "
+                      "view's main page (adhoc #131/#1, page = %1, branch = %2)")
                   .arg(window.testCommitWorkspacePage())
-                  .arg(window.testBranchDiffBranch()));
-        check(window.testGitFilesSlotPage() == 1 &&
-                  window.testGitHistorySlotPage() == 1,
-              QString("the agent's branch brings its changed files and the scope "
-                      "list into the Git view's left column (adhoc #131, files "
-                      "slot = %1, history slot = %2)")
+                  .arg(window.testBrowsedBranch()));
+        check(window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("the agent's branch keeps the Git view's left column on "
+                      "the working tree (adhoc #1, files slot = %1, history "
+                      "slot = %2)")
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage()));
     }

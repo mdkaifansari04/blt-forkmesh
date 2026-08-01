@@ -8737,6 +8737,15 @@ QWidget *MainWindow::buildRepoDetailSection()
         // land on that branch's history instead of the main-branch view this
         // destination otherwise always shows. Reset the browsed ref first, then
         // open the panel below so its list is built for the default branch.
+        //
+        // A branch/PR range review (or a commit detail) left on the workspace
+        // doesn't survive this destination either: showCommitList deliberately
+        // keeps its hands off the range page, so without this reset the rail
+        // landed back on whatever review was parked there instead of the
+        // main-branch view. Hand the right pane and the left column's slots
+        // back to the working tree before the branch reset so the reloads
+        // below fill the view that's actually on screen.
+        setCommitWorkspacePage(kCommitWorkspaceChangesPage);
         const QString base = repoDefaultBranchFast();
         if (!base.isEmpty() && base != m_repoBranch)
             setRepoBranch(base);
