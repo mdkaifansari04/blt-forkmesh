@@ -559,7 +559,7 @@ void MainWindow::pruneReleaseTagsForCurrentRepo(const QString &keepTag)
 
     // Deleting only changes the tag refs in the working copy; propagate that
     // into the served bare mirror now (syncRepository fetches heads+tags with
-    // --prune) instead of waiting on the three-minute auto-sync — the same
+    // --prune) instead of waiting on the one-minute auto-sync — the same
     // immediacy propagateRepoUpdate already gives freshly committed issues/PRs.
     propagateRepoUpdate(m_repoDetailIndex);
 }
@@ -1026,8 +1026,12 @@ QWidget *MainWindow::buildMirrorNodesTab()
     refreshButton->setCursor(Qt::PointingHandCursor);
     refreshButton->setToolTip(QStringLiteral("Reload the local mirror nodes table"));
     setOcticon(refreshButton, "sync", 16);
-    connect(refreshButton, &QPushButton::clicked, this,
-            &MainWindow::loadMirrorNodesPanel);
+    connect(refreshButton, &QPushButton::clicked, this, [this] {
+        // A manual refresh is an operator request for fresh catalog state, not
+        // merely a repaint of the five-minute cached result.
+        m_catalogMirrorsFetchedMs = 0;
+        loadMirrorNodesPanel();
+    });
     addRefreshSpin(refreshButton);
     auto *refreshNodesButton = new QPushButton;
     refreshNodesButton->setObjectName("ghostButton");
@@ -1132,6 +1136,20 @@ QWidget *MainWindow::buildMirrorNodesTab()
         }
     });
     pacmanTick->start();
+    // A visible Mirror nodes page is an operator view: refresh its catalog
+    // snapshot once a minute so it never sits on stale commit/sync status. The
+    // timer remains idle while another repository tab is selected.
+    auto *panelRefresh = new QTimer(m_mirrorNodesTable);
+    panelRefresh->setInterval(60 * 1000);
+    connect(panelRefresh, &QTimer::timeout, m_mirrorNodesTable, [this] {
+        if (!m_mirrorNodesTable->isVisible())
+            return;
+        // Bypass the normal five-minute catalog cache only while the operator
+        // is looking at this table; live roster changes still redraw it sooner.
+        m_catalogMirrorsFetchedMs = 0;
+        loadMirrorNodesPanel();
+    });
+    panelRefresh->start();
     // Double-click a node row to open its profile.
     // itemActivated (rather than cellDoubleClicked) so Enter opens the selected
     // node's profile, matching the tab's arrow-key navigation (adhoc #183).
