@@ -7324,6 +7324,7 @@ public:
         m_badge = count;
         update();
     }
+    int badgeCount() const { return m_badge; }
 
     // Red "needs you" badge (Chat unread, pending Pings) instead of the default
     // blue count — the same corner geometry either way, so the two badge
