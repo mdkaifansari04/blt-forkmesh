@@ -1647,16 +1647,18 @@ int main(int argc, char *argv[])
                outgoingTimer.elapsed() < 5000)
             QApplication::processEvents(QEventLoop::AllEvents, 10);
         check(outgoingHistory && outgoingPanel && syncChanges && outgoingLabel &&
-                  outgoingPanel->isVisibleTo(&window) &&
+                  !outgoingPanel->isVisibleTo(&window) &&
+                  syncChanges->isVisibleTo(&window) &&
                   syncChanges->text().contains(QStringLiteral("3↑")) &&
                   syncChanges->isEnabled() &&
                   outgoingLabel->text().contains(QStringLiteral("main")) &&
                   railMarkedBeforeOpen && window.testGitPendingSyncCount() == 3,
-              QString("Source Control shows three outgoing commits and an enabled "
-                      "Sync Changes button (history=%1 visible=%2 button=%3 "
-                      "label=%4)")
+              QString("Source Control promotes the enabled Sync Changes action "
+                      "while outgoing commits are pending (history=%1 cardHidden=%2 "
+                      "buttonVisible=%3 button=%4 label=%5)")
                   .arg(outgoingHistory)
-                  .arg(outgoingPanel && outgoingPanel->isVisibleTo(&window))
+                  .arg(outgoingPanel && !outgoingPanel->isVisibleTo(&window))
+                  .arg(syncChanges && syncChanges->isVisibleTo(&window))
                   .arg(syncChanges ? syncChanges->text()
                                    : QStringLiteral("<missing>"))
                   .arg(outgoingLabel ? outgoingLabel->text()
@@ -1667,7 +1669,17 @@ int main(int argc, char *argv[])
         bool localRef = false;
         bool remoteRef = false;
         bool mergeLoop = false;
+        bool outgoingTopRow = false;
         if (graph) {
+            if (graph->rowCount() > 0) {
+                QTableWidgetItem *topSummary = graph->item(0, 6);
+                QTableWidgetItem *topLane = graph->item(0, 8);
+                outgoingTopRow = topSummary && topLane &&
+                                 topSummary->data(Qt::UserRole + 35).toBool() &&
+                                 topLane->data(Qt::UserRole + 20).toList().isEmpty() &&
+                                 topLane->data(Qt::UserRole + 22).toList() ==
+                                     QVariantList{0};
+            }
             for (int row = 0; row < graph->rowCount(); ++row) {
                 if (QTableWidgetItem *summary = graph->item(row, 6)) {
                     const QStringList kinds =
@@ -1686,9 +1698,11 @@ int main(int argc, char *argv[])
                 }
             }
         }
-        check(localRef && remoteRef && mergeLoop,
-              QString("commit graph identifies local target refs, remote cloud "
-                      "refs, and a merge loop (local=%1 remote=%2 loop=%3)")
+        check(outgoingTopRow && localRef && remoteRef && mergeLoop,
+              QString("commit graph links an outgoing dotted top row to local "
+                      "target refs, remote cloud refs, and a merge loop "
+                      "(outgoing=%1 local=%2 remote=%3 loop=%4)")
+                  .arg(outgoingTopRow)
                   .arg(localRef)
                   .arg(remoteRef)
                   .arg(mergeLoop));

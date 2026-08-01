@@ -525,6 +525,10 @@ constexpr int kCommitFilesRole =
                        // touched, previewed in the summary's hover box
 constexpr int kCommitRefKindsRole =
     Qt::UserRole + 34; // QStringList aligned with kCommitRefsRole: local/remote/tag
+// The synthetic first row for local commits that still need publishing.  It is
+// part of the graph (rather than a detached notice above it) so its dotted node
+// can connect directly to the tip it represents.
+constexpr int kCommitOutgoingRole = Qt::UserRole + 35;
 
 // URL scheme for a clickable branch-name link; the percent-encoded branch name
 // follows. Clicking it opens that branch's row in the Branches tab (adhoc #123).
@@ -612,7 +616,7 @@ inline void paintRowSelectionBorder(QPainter *painter,
 inline void paintCommitGraphGutter(QPainter *painter, const QRect &r,
                                    const QVariantList &topLanes,
                                    const QVariantList &botLanes, int nodeLane,
-                                   bool isMerge)
+                                   bool isMerge, bool isOutgoing = false)
 {
     if (topLanes.isEmpty() && botLanes.isEmpty() && nodeLane < 0)
         return;
@@ -716,7 +720,16 @@ inline void paintCommitGraphGutter(QPainter *painter, const QRect &r,
             straight(nx, yTop, yMid - trim, c);
         if (botSet.contains(nodeLane))
             straight(nx, yMid + trim, yBot, c);
-        if (isMerge) {
+        if (isOutgoing) {
+            // A local-only tip is not a commit of its own.  Draw it as a dotted
+            // ring, then continue its lane into the actual top commit below.
+            painter->setBrush(Qt::NoBrush);
+            QPen pen(c, 1.8, Qt::DotLine);
+            pen.setCapStyle(Qt::RoundCap);
+            painter->setPen(pen);
+            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter,
+                                 kGraphNodeOuter);
+        } else if (isMerge) {
             // Merge node: hollow ring + filled centre.
             painter->setBrush(Qt::NoBrush);
             painter->setPen(QPen(c, 2.0));
@@ -777,7 +790,8 @@ public:
         const int nodeLane = nodeLaneVar.isValid() ? nodeLaneVar.toInt() : -1;
         paintCommitGraphGutter(painter, option.rect, topLanes, botLanes,
                                nodeLane,
-                               graphIdx.data(kGraphIsMergeRole).toBool());
+                               graphIdx.data(kGraphIsMergeRole).toBool(),
+                               index.data(kCommitOutgoingRole).toBool());
         int rowMaxLane = std::max(nodeLane, 0);
         for (const QVariant &v : topLanes)
             rowMaxLane = std::max(rowMaxLane, v.toInt());
@@ -841,13 +855,24 @@ public:
             x += 18;
         }
         int rightEdge = r.right();
-        // Branch / tag badges (the VS Code graph's ref pills) lead the summary.
+        // Branch / tag badges live at the trailing edge, matching the source
+        // graph: the message remains easy to scan while refs stay together.
         const QStringList refs = index.data(kCommitRefsRole).toStringList();
         const QStringList refKinds =
             index.data(kCommitRefKindsRole).toStringList();
+        if (index.data(kCommitUnsyncedRole).toBool()) {
+            const QString mark = QString::fromUtf8("\xE2\x96\xB2");
+            const int mw = fm.horizontalAdvance(mark);
+            painter->setPen(QColor("#d29922"));
+            painter->drawText(QRect(rightEdge - mw, r.top(), mw, r.height()),
+                              Qt::AlignVCenter | Qt::AlignRight, mark);
+            rightEdge -= mw + 8;
+        }
         if (!refs.isEmpty()) {
             painter->setRenderHint(QPainter::Antialiasing, true);
-            for (int refIndex = 0; refIndex < refs.size(); ++refIndex) {
+            // Paint from right to left so the refs retain their source order
+            // while the whole pill group is anchored on the row's right edge.
+            for (int refIndex = refs.size() - 1; refIndex >= 0; --refIndex) {
                 const QString ref = refs.at(refIndex);
                 const QString kind = refKinds.value(refIndex);
                 const bool remote = kind == QLatin1String("remote");
@@ -863,7 +888,8 @@ public:
                 const int rw = fm.horizontalAdvance(ref) + 12 + iconSize + iconGap;
                 if (x + rw > rightEdge - 80)
                     break; // keep room for the summary itself
-                const QRect br(x, r.center().y() - fm.height() / 2 - 1, rw,
+                rightEdge -= rw;
+                const QRect br(rightEdge, r.center().y() - fm.height() / 2 - 1, rw,
                                fm.height() + 2);
                 // Local heads carry the target/commit glyph, remote-tracking
                 // heads carry the cloud glyph, and tags retain their own mark.
@@ -883,17 +909,9 @@ public:
                 painter->drawText(
                     br.adjusted(6 + iconSize + iconGap, 0, -6, 0),
                     Qt::AlignVCenter | Qt::AlignLeft, ref);
-                x += rw + 5;
+                rightEdge -= 5;
             }
             painter->setBrush(Qt::NoBrush);
-        }
-        if (index.data(kCommitUnsyncedRole).toBool()) {
-            const QString mark = QString::fromUtf8("\xE2\x96\xB2");
-            const int mw = fm.horizontalAdvance(mark);
-            painter->setPen(QColor("#d29922"));
-            painter->drawText(QRect(rightEdge - mw, r.top(), mw, r.height()),
-                              Qt::AlignVCenter | Qt::AlignRight, mark);
-            rightEdge -= mw + 8;
         }
         // Draw the subject flush-left, then append the author dimmed at its tail
         // so the row reads "<subject> · <author>" instead of a separate
