@@ -8033,11 +8033,17 @@ class ForkMeshWorld extends HTMLElement {
       Number(record.bufferWidth) > 0 && Number(record.bufferHeight) > 0
         ? `${coarseCrashReading(record.bufferWidth)}x${coarseCrashReading(record.bufferHeight)}`
         : "unknown";
+    // Everything that identifies the device leads, so the admin ping (which
+    // carries a bounded prefix of this line) always names what crashed.
+    const gpu = String(record.gpu || "").slice(0, 120);
     const parts = [
       discarded
         ? "World reloaded after the browser discarded the tab"
         : "World crashed and reloaded; previous session ended without pagehide",
       `device ${device.touch ? "touch" : "pointer"} ${device.screen || "unknown"} screen`,
+      ...(gpu ? [`gpu ${gpu}`] : []),
+      `cores ${describe(device.cores)}`,
+      `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
       `renderer ${record.compact === true ? "compact" : "full"}`,
       `safe mode ${record.safeMode === true ? "on" : "off"}`,
       `uptime ${coarse((beatAt - Number(record.startedAt)) / 1000, "s")}`,
@@ -8056,13 +8062,9 @@ class ForkMeshWorld extends HTMLElement {
       `geometries ${coarse(record.geometries)}`,
       `programs ${coarse(record.programs)}`,
       `buffer ${buffer} at dpr ${Number(record.pixelRatio) || 0}`,
-      `cores ${describe(device.cores)}`,
-      `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
       `heap ${coarse(record.heapUsedMb, "MB")} of ${coarse(record.heapLimitMb, "MB")}`,
       `context losses ${describe(record.contextLosses)}`,
     ];
-    const gpu = String(record.gpu || "").slice(0, 120);
-    if (gpu) parts.push(`gpu ${gpu}`);
     this.reportWorldClientError(parts.join("; "));
   }
 

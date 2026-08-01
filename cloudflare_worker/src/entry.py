@@ -35902,8 +35902,11 @@ async def _notify_new_error_group(env, status, method, path, message):
         return
     source = _admin_error_source(method, path)
     title = "New %s error group (%s)" % (source.lower(), status)
+    # notification_payload keeps 500 characters of body, and a truncated
+    # crash report loses exactly the tail that explains the crash (heap,
+    # context losses, GPU). Spend the whole allowance on the message.
     body = "%s %s — %s" % (
-        str(method or "?"), str(path or "?"), str(message or "")[:300])
+        str(method or "?"), str(path or "?"), str(message or "")[:460])
     for row in rows:
         try:
             record = await decrypt_row(env, row.get("data", "")) or {}
@@ -37985,8 +37988,8 @@ ADMIN_STYLE = """
         border-color:var(--ab-link);padding:3px 8px;font-size:11px;white-space:nowrap}
  .ab-root .error-bot:hover{background:var(--ab-link);color:#fff}
  .ab-root .error-bot-task{display:inline;margin:0}
- .ab-root .error-message{display:inline-block;max-width:520px;overflow:hidden;
-        text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+ .ab-root .error-message{display:inline-block;max-width:640px;
+        white-space:pre-wrap;overflow-wrap:anywhere;vertical-align:middle}
  .ab-root .error-copy{background:transparent;color:var(--ab-muted);
         border-color:var(--ab-border-2);padding:1px 6px;font-size:11px;
         margin-left:6px;vertical-align:middle}
@@ -38818,7 +38821,9 @@ async def _render_table_view(
                     _html_escape(request_method or "—"),
                     _html_escape(path or "—"),
                     _html_escape(message or "—"),
-                    _html_escape((message or "—")[:160]),
+                    # A crash report earns its length: show all of it. The
+                    # cell wraps, so the group stays readable at any size.
+                    _html_escape(message or "—"),
                     _admin_error_copy_button(message or ""),
                     _admin_error_users_cell(
                         group["actors"], group["anonymous"]),

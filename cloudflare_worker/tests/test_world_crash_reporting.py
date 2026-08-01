@@ -99,6 +99,87 @@ def test_crashed_sessions_reboot_into_the_compact_renderer():
     ) in WORLD
 
 
+def test_compact_renderer_paints_large_plates_at_half_resolution():
+    # The mobile crash is a memory crash: ~96 plates at desktop resolution
+    # allocate more 2D backing store than a phone tab is allowed to hold.
+    assert "const CANVAS_TEXTURE_SCALE_MIN_PIXELS = 512 * 512;" in SCENE
+    assert "let canvasTextureScale = 1;" in SCENE
+    assert "canvasTextureScale = compactRenderer ? 0.5 : 1;" in SCENE
+    # The scale must be chosen before the first plate paints, or the phone
+    # allocates the full-size buffers this is meant to avoid.
+    build = SCENE[SCENE.index("export function createWorldScene("):]
+    assert build.index("canvasTextureScale = compactRenderer") < build.index(
+        "createWorldSky({")
+    # Draw code keeps its own coordinate system: only the buffer shrinks.
+    assert "canvas.width = Math.max(1, Math.round(width * scale));" in SCENE
+    assert "context.setTransform(scale, 0, 0, scale, 0, 0);" in SCENE
+    # Painters that read canvas.width/height keep full resolution.
+    assert (
+        "if (canvasTextureScale >= 1 || draw.length >= 2) return 1;"
+    ) in SCENE
+    # An in-place repaint lands in the same coordinate system.
+    repaint = SCENE[SCENE.index("function repaintCanvasTexture("):]
+    repaint = repaint[:repaint.index("\nfunction ")]
+    assert "Number(canvas.dataset?.textureScale) || 1" in repaint
+    assert (
+        "context.clearRect(0, 0, canvas.width / scale, canvas.height / scale)"
+    ) in repaint
+
+
+def test_crash_reports_name_the_device_renderer_and_resident_scene():
+    # "Crashing on mobile" is only actionable with the device class, the
+    # renderer mode, and what the GPU was holding when the tab died.
+    report = WORLD[WORLD.index("  reportPreviousWorldCrash()"):]
+    report = report[:report.index("  reportWorldClientError(")]
+    for reading in (
+        "device ${device.touch",
+        "renderer ${record.compact === true",
+        "cores ${describe(device.cores)}",
+        "device memory ",
+        "textures ${coarse(record.textures)}",
+        "geometries ${coarse(record.geometries)}",
+        "programs ${coarse(record.programs)}",
+        "draws ${coarse(record.calls)}",
+        "buffer ${buffer} at dpr ",
+        "space ${String(record.space",
+        "avatars ${describe(record.avatars)}",
+    ):
+        assert reading in report, reading
+    # The device facts are read once and reused, like the GPU label.
+    assert "deviceProfile()" in WORLD
+    assert "navigator.hardwareConcurrency" in WORLD
+    assert "navigator.deviceMemory" in WORLD
+    # The heartbeat has to carry the renderer counters the report prints.
+    assert "drawingBufferWidth" in WORLD and "drawingBufferWidth" in SCENE
+    assert "compactRenderer: scene.compactRenderer === true," in WORLD
+
+
+def test_volatile_crash_readings_are_bucketed_so_equivalent_crashes_group():
+    # The admin view groups rows by exact message text. Raw counters would
+    # file every crash as its own group of one — no count, no frequency, and
+    # one administrator ping per crash.
+    assert "function coarseCrashReading(value)" in WORLD
+    assert "const magnitude = 10 ** Math.floor(Math.log10(number));" in WORLD
+    assert "return Math.round(number / magnitude) * magnitude;" in WORLD
+
+
+def test_crash_reports_reach_the_admin_ping_without_losing_the_tail():
+    # The reported group was cut at "context los": the message survived the
+    # collector but the ping body truncated it mid-reading.
+    assert '_sanitize_client_error_text(payload.get("message"), 900)' in ENTRY
+    assert 'String(message || "").slice(0, 900)' in WORLD
+    notify = ENTRY[ENTRY.index("async def _notify_new_error_group("):]
+    notify = notify[:notify.index("async def _write_error_log(")]
+    assert 'str(message or "")[:460]' in notify
+    # 460 plus the "JS /client-error/world — " prefix stays inside the
+    # 500-character body the notification payload keeps.
+    assert 'clean_string(body, 500)' in ENTRY
+    # The admin table shows the whole report rather than one clipped line.
+    assert "white-space:pre-wrap;overflow-wrap:anywhere" in ENTRY
+    assert "text-overflow:ellipsis;white-space:nowrap;vertical-align:middle" \
+        not in ENTRY
+
+
 def test_crash_reports_survive_server_side_validation_and_redaction():
     fields = _client_error_fields()({
         "kind": "crash",
