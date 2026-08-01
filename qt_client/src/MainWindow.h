@@ -691,6 +691,10 @@ public:
     int testOverviewBodyPage() const;
     bool testClickBranchRowInOverview(const QString &branch);
     bool testBranchesPanelOwnsDiffView() const;
+    // True only when Git owns the full repository workspace: its rail entry is
+    // selected, every Code-only chrome band is hidden, and no registered diff
+    // viewer outside the Git stack is visible.
+    bool testGitWorkspaceIsExclusive() const;
     // Follow a branch link and read back the branch the table landed on right
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
