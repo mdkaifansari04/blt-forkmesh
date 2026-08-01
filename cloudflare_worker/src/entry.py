@@ -13282,6 +13282,14 @@ async def _catalog_logical_owners(env, repository_rows):
         record["logicalOwners"] = logical[:20]
 
 
+def _repo_publication_authority(authority_node_id, prior_node_id,
+                                incoming_node_id):
+    """Return (canonical node, is secondary) without implicit transfers."""
+    canonical = str(authority_node_id or prior_node_id or incoming_node_id or "")
+    incoming = str(incoming_node_id or "")
+    return canonical, bool(incoming and canonical and incoming != canonical)
+
+
 async def catalog_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
@@ -13376,6 +13384,13 @@ async def catalog_handler(env, request):
         }
         repos = []
         repository_owner_rows = []
+        authority_rows = await d1_all(
+            env, "SELECT repo_bi,node_id FROM repo_source_authorities")
+        authority_by_repo = {
+            str(value.get("repo_bi") or ""):
+                clean_string(value.get("node_id", ""), 64)
+            for value in authority_rows or []
+        }
         ssh_gateway = _ssh_gateway_settings(env)
         for r in rows:
             rec = await decrypt_row(env, r["data"])
@@ -13415,6 +13430,13 @@ async def catalog_handler(env, request):
                 rec["liveHost"] = (
                     str(owner_bi or "") in live_endpoint_nodes
                 )
+                authority_node_id = authority_by_repo.get(
+                    str(r.get("key_bi") or ""), "")
+                if authority_node_id:
+                    rec["canonicalNodeId"] = authority_node_id
+                    rec["sourceAuthority"] = (
+                        clean_string(rec.get("nodeId", ""), 64)
+                        == authority_node_id)
                 # Plaintext flag so clients can badge private repos without
                 # re-deriving it from the visibility string.
                 rec["isPrivate"] = rec.get("visibility") == "private"
@@ -13452,6 +13474,34 @@ async def catalog_handler(env, request):
                             "/api/private-replicas/" + access_id)
                 repos.append(rec)
                 repository_owner_rows.append((rec, owner_bi))
+        # Same-account secondary devices have their own signed telemetry and
+        # serving endpoint, but never replace the canonical catalog row. Return
+        # them as explicit mirrors so node lists and failover tooling retain
+        # their capacity. Private device mirrors stay owner-only; anonymous
+        # responses include public records only.
+        mirror_rows = await d1_all(
+            env,
+            "SELECT repo_bi,node_id,data FROM repo_device_mirrors "
+            "ORDER BY updated_at DESC LIMIT ?",
+            MAX_CATALOG_REPOS,
+        )
+        for mirror_row in mirror_rows or []:
+            mirror = await decrypt_row(env, mirror_row.get("data"))
+            if not mirror:
+                continue
+            if mirror.get("visibility") != "public":
+                if not authed_viewer or mirror.get("owner") != authed_viewer:
+                    continue
+            mirror["reportedSource"] = mirror.get(
+                "reportedSource", mirror.get("source"))
+            mirror["source"] = "remote-clone"
+            mirror["sourceAuthority"] = False
+            mirror["canonicalNodeId"] = authority_by_repo.get(
+                str(mirror_row.get("repo_bi") or ""), "")
+            mirror["isPrivate"] = mirror.get("visibility") == "private"
+            mirror["liveHost"] = False
+            repos.append(mirror)
+            repository_owner_rows.append((mirror, ""))
         await _catalog_logical_owners(env, repository_owner_rows)
         # Second pass: mark each repo cloneable when its own host is offline but a
         # peer mirroring the same logical repo is online — the relay serves that
@@ -13621,6 +13671,7 @@ async def catalog_handler(env, request):
         exists = prior_row is not None
         prior_commit = ""
         prior_state_hash = ""
+        prior = {}
         # Reject rollbacks: a replayed older record must not be able to repin an
         # earlier (validly-signed) repo state and downgrade the served refs.
         if exists:
@@ -13638,6 +13689,78 @@ async def catalog_handler(env, request):
                     return json_response({"error": "stale_update"}, status=409)
             except (TypeError, ValueError):
                 pass
+        # Device-scoped source authority. Account keys intentionally authorize
+        # every device belonging to that account, but that must not mean a clone
+        # on a second computer can silently replace the original working-copy
+        # holder. Existing repositories acquire their authority lazily from the
+        # stored record's nodeId; truly legacy rows without one let the first
+        # modern, signed publisher claim it. There is deliberately no implicit
+        # transfer path: losing a device cannot turn a random checkout into the
+        # source of truth.
+        incoming_node_id = clean_string(record.get("nodeId", ""), 64)
+        incoming_machine = clean_string(
+            record.get("machineName", ""), MAX_NODE_NAME)
+        authority = await d1_first(
+            env,
+            "SELECT node_id,machine_name FROM repo_source_authorities "
+            "WHERE repo_bi=?",
+            key_bi,
+        )
+        stored_authority_node_id = clean_string(
+            (authority or {}).get("node_id", ""), 64)
+        prior_node_id = (
+            clean_string(prior.get("nodeId", ""), 64) if exists else "")
+        authority_node_id, secondary_device = _repo_publication_authority(
+            stored_authority_node_id, prior_node_id, incoming_node_id)
+        if authority_node_id:
+            now_ms = int(Date.now())
+            await d1_run(
+                env,
+                "INSERT INTO repo_source_authorities "
+                "(repo_bi,node_id,machine_name,created_at,updated_at) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET "
+                "updated_at=excluded.updated_at",
+                key_bi, authority_node_id,
+                (clean_string(prior.get("machineName", ""), MAX_NODE_NAME)
+                 if exists and authority_node_id != incoming_node_id
+                 else incoming_machine),
+                now_ms, now_ms,
+            )
+        if (
+                exists
+                and incoming_node_id
+                and authority_node_id
+                and secondary_device):
+            mirror_record = dict(record)
+            # `reportedSource` preserves what the signed client asserted. The
+            # effective source is relay-derived from the durable authority row;
+            # consumers must never grant this device source pin privileges.
+            mirror_record["reportedSource"] = mirror_record.get("source")
+            mirror_record["source"] = "remote-clone"
+            mirror_record["sourceAuthority"] = False
+            mirror_record["canonicalNodeId"] = authority_node_id
+            mirror_enc = await encrypt_row(env, mirror_record)
+            await d1_run(
+                env,
+                "INSERT INTO repo_device_mirrors "
+                "(repo_bi,node_id,data,updated_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(repo_bi,node_id) DO UPDATE SET "
+                "data=excluded.data,updated_at=excluded.updated_at",
+                key_bi, incoming_node_id, mirror_enc, int(Date.now()),
+            )
+            # Endpoint health is maintained by the device's signed heartbeat;
+            # unlike the canonical write below there is no authority state to
+            # activate here. Evict the shared list so this mirror appears now.
+            await edge_cache_delete(CATALOG_CACHE_KEY)
+            canonical = dict(prior)
+            canonical["sourceAuthority"] = True
+            canonical["canonicalNodeId"] = authority_node_id
+            return json_response({
+                "ok": True,
+                "mirror": True,
+                "canonicalNodeId": authority_node_id,
+                "repository": canonical,
+            }, status=202)
         if not exists:
             cnt = await d1_first(
                 env, "SELECT COUNT(*) AS c FROM repositories WHERE owner_bi=?", owner_bi)
@@ -15661,6 +15784,10 @@ async def _clear_repo_delete_tombstone(env, repo_bi):
 
 
 async def _delete_repo_scoped_state(env, repo_bi):
+    await d1_run(
+        env, "DELETE FROM repo_device_mirrors WHERE repo_bi=?", repo_bi)
+    await d1_run(
+        env, "DELETE FROM repo_source_authorities WHERE repo_bi=?", repo_bi)
     await d1_run(
         env, "DELETE FROM profile_contribution_days WHERE source_repo_bi=?",
         repo_bi)
@@ -41338,6 +41465,25 @@ async def _https_mirror_public_context(env, owner, repo):
                         break
             if not target_row:
                 return None
+        # Secondary devices are not catalog authorities, but their signed refs
+        # may still serve once they match the authority's pin. Fold them into
+        # this routing decision as effective remote clones without allowing
+        # their self-attestations to create a trusted pin.
+        device_rows = await d1_all(
+            env,
+            "SELECT node_id,data FROM repo_device_mirrors WHERE repo_bi=?",
+            target_row.get("key_bi"),
+        )
+        for device_row in device_rows or []:
+            device_record = await decrypt_row(env, device_row.get("data"))
+            if not isinstance(device_record, dict):
+                continue
+            device_record["reportedSource"] = device_record.get("source")
+            device_record["source"] = "remote-clone"
+            rows.append({
+                "key_bi": target_row.get("key_bi"),
+                "data": device_record,
+            })
         target = target_row["data"]
         members = [
             row for row in rows
@@ -41418,7 +41564,8 @@ async def _https_mirror_public_context(env, owner, repo):
         for row in members:
             record = row.get("data") or {}
             node = clean_string(
-                record.get("owner", ""), MAX_NODE_NAME).lower()
+                record.get("machineName") or record.get("owner", ""),
+                MAX_NODE_NAME).lower()
             state = clean_string(record.get("stateHash", ""), 64).lower()
             if not valid_node_name(node):
                 continue
