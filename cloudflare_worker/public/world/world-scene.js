@@ -17904,7 +17904,7 @@ export function createWorldScene({
   // rebuildCampfireCircle with an accurate seat count.
   setShadows(campfire);
   world.add(campfire);
-  registerWorldElement("campfire", "Campfire circle", "Districts", campfire);
+  registerWorldElement("campfire", "Members Circle campfire", "Districts", campfire);
   landmarkObjects.set("campfire", campfire);
 
   // A wooden swing set beside the Office garden gym: three swings hang from
