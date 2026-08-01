@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "RepoStatsStore.h"
 #include "AgentJail.h"
 #include "AgentPromptImages.h"
 #include "KebabHeaderView.h"
@@ -6220,6 +6221,9 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
     config.promptPreamble = agentPromptPreamble();
+    const QString ratchetGuidance = RepoStatsStore::agentGuidance(repoGitDir());
+    if (!ratchetGuidance.isEmpty())
+        config.promptPreamble += QStringLiteral("\n\n") + ratchetGuidance;
     config.mode = QSettings()
                       .value(kAgentModeSetting,
                              QSettings().value(kClaudeAutoModeSetting, true).toBool()
@@ -10234,7 +10238,7 @@ QString MainWindow::sessionBaseBranch(int sessionId)
 // Resolve what a session's diff is measured *from*. The Files-changed tab must
 // show exactly what the branch link's destination shows — the Worktrees/Branches
 // detail view diffs the worktree against the *live* base branch tip (`git diff
-// <base>`, see showWorktreeDiff). So return the base branch name and let `git
+// <base>`, see updateWorktreeSelection). So return the base branch name and let `git
 // diff <base>` resolve its current tip too. Diffing against merge-base(base, HEAD)
 // instead made this page disagree with that view every time the base branch moved
 // on after the fork — "it always shows something different" (adhoc #28). Diffing
@@ -10404,7 +10408,7 @@ void MainWindow::renderAgentDiff(int sessionId, const AgentDiffProbe &probe)
 
 // Enable the per-session worktree actions (merge / update / delete) only for a
 // real feature-branch worktree that exists on disk — never the default branch or
-// the primary checkout. Mirrors showWorktreeDiff's button gating.
+// the primary checkout. Mirrors updateWorktreeSelection's button gating.
 void MainWindow::updateAgentFilesTabState(int sessionId)
 {
     AgentSession *s = findAgentSession(sessionId);

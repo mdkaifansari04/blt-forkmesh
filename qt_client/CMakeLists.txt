@@ -197,6 +197,8 @@ set(FORKMESH_APP_SOURCES
     src/RepoContributionSnapshot.h
     src/RepoContributionSnapshotInternal.h
     src/RepoContributionSnapshot.cpp
+    src/RepoStatsStore.h
+    src/RepoStatsStore.cpp
     src/StrictGitReader.h
     src/StrictGitReader.cpp
     src/RepoSecurity.h
@@ -573,7 +575,7 @@ if(FORKMESH_BUILD_TESTS)
         src/SystemStats.h
         src/SystemStats.cpp
     )
-    target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
+    target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network Qt6::Concurrent OpenSSL::Crypto)
     if(APPLE)
         set_target_properties(forkmesh-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
@@ -840,6 +842,14 @@ if(FORKMESH_BUILD_TESTS)
         target_link_libraries(forkmesh-window-tests PRIVATE util Qt6::DBus)
         target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_HAVE_PORTAL)
     endif()
+
+    qt_add_executable(forkmesh-repo-stats-tests
+        tests/test_repo_stats.cpp
+        src/RepoStatsStore.h
+        src/RepoStatsStore.cpp
+    )
+    target_link_libraries(forkmesh-repo-stats-tests PRIVATE Qt6::Core)
+    target_include_directories(forkmesh-repo-stats-tests PRIVATE src)
     target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_WINDOW_TESTS)
     # Recompiles every heavy app source: same throttle as the app target.
     set_target_properties(forkmesh-window-tests PROPERTIES
@@ -887,7 +897,7 @@ if(FORKMESH_BUILD_TESTS)
         forkmesh-public-mirror-tests
         forkmesh-upstream-sync-tests
         forkmesh-e2e-stub-agent forkmesh-e2e
-        forkmesh-window-tests forkmesh-perf-tests
+        forkmesh-window-tests forkmesh-perf-tests forkmesh-repo-stats-tests
         PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
     # Register all suites with CTest so they run independently of the app:
@@ -896,6 +906,7 @@ if(FORKMESH_BUILD_TESTS)
     # The headless smoke tests need an offscreen Qt platform.
     enable_testing()
     add_test(NAME forkmesh-tests COMMAND forkmesh-tests)
+    add_test(NAME forkmesh-repo-stats-tests COMMAND forkmesh-repo-stats-tests)
     find_program(FORKMESH_PYTHON_EXECUTABLE NAMES python3 python)
     if(FORKMESH_PYTHON_EXECUTABLE)
         add_test(
