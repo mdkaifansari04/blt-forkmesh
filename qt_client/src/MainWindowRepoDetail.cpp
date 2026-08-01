@@ -457,7 +457,8 @@ QWidget *MainWindow::buildRepoFilesPanel()
     modeRow->addWidget(m_branchesButton);
     modeRow->addWidget(m_worktreesButton);
     modeRow->addWidget(m_remotesButton);
-    modeRow->addWidget(m_toolbarCommitsButton);
+    // No toolbar Commits button here: it duplicated the commit strip's own
+    // "N Commits" toggle and was retired on main (aa108e5cf).
     modeRow->addWidget(m_tagsButton);
     // Releases (adhoc #180): moved out of the top tab bar to sit beside Tags.
     // The button itself is created with the other repo tabs in
