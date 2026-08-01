@@ -66,6 +66,9 @@ constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
 // the log is persisted line by line. A pending summary is flushed once its
 // first ticket is this old, or as soon as the strip goes quiet.
 constexpr qint64 kBackgroundTaskFastFlushMs = 2000;
+const QString kVultrProvisionSetting =
+    QStringLiteral("hosts/vultrProvision/v1");
+constexpr int kVultrProvisionStageCount = 6;
 } // namespace
 
 // -------------------------------------------------------------- server rail
@@ -9873,6 +9876,57 @@ QWidget *MainWindow::buildHostsSection()
     vultrHint->setWordWrap(true);
     vultrCol->addWidget(vultrHint);
 
+    // A compact, GitHub-Actions-style deployment rail. Every numbered stage is
+    // backed by the durable checkpoint restored below; the last stage becomes
+    // green only after the public mirror catalog says the endpoint is healthy,
+    // fresh, integrity-approved and clone eligible.
+    m_vultrProgressPanel = new QWidget(vultrCard);
+    m_vultrProgressPanel->setObjectName(
+        QStringLiteral("vultrDeployProgress"));
+    auto *stageRow = new QHBoxLayout(m_vultrProgressPanel);
+    stageRow->setContentsMargins(0, 6, 0, 6);
+    stageRow->setSpacing(5);
+    m_vultrStageNumbers.clear();
+    m_vultrStageLabels.clear();
+    const QStringList stageNames = {
+        QStringLiteral("Credentials"), QStringLiteral("Plan + image"),
+        QStringLiteral("Create server"), QStringLiteral("Boot + connect"),
+        QStringLiteral("Install"), QStringLiteral("Live traffic")};
+    for (int i = 0; i < stageNames.size(); ++i) {
+        auto *stage = new QWidget(m_vultrProgressPanel);
+        stage->setObjectName(QStringLiteral("vultrDeployStage%1").arg(i + 1));
+        auto *col = new QVBoxLayout(stage);
+        col->setContentsMargins(2, 0, 2, 0);
+        col->setSpacing(3);
+        auto *number = new QLabel(QString::number(i + 1), stage);
+        number->setAlignment(Qt::AlignCenter);
+        number->setFixedSize(28, 28);
+        number->setAccessibleName(
+            QStringLiteral("Deployment stage %1").arg(i + 1));
+        auto *label = new QLabel(stageNames.at(i), stage);
+        label->setAlignment(Qt::AlignCenter);
+        label->setWordWrap(true);
+        label->setMinimumWidth(72);
+        col->addWidget(number, 0, Qt::AlignHCenter);
+        col->addWidget(label, 0, Qt::AlignHCenter);
+        m_vultrStageNumbers.append(number);
+        m_vultrStageLabels.append(label);
+        stageRow->addWidget(stage, 1);
+        if (i + 1 < stageNames.size()) {
+            auto *connector = new QFrame(m_vultrProgressPanel);
+            connector->setFrameShape(QFrame::HLine);
+            connector->setObjectName(QStringLiteral("vultrStageConnector"));
+            connector->setMaximumWidth(22);
+            stageRow->addWidget(connector);
+        }
+    }
+    vultrCol->addWidget(m_vultrProgressPanel);
+    m_vultrLiveBadge = new QLabel(vultrCard);
+    m_vultrLiveBadge->setObjectName(QStringLiteral("vultrMirrorLiveBadge"));
+    m_vultrLiveBadge->setAlignment(Qt::AlignCenter);
+    m_vultrLiveBadge->setVisible(false);
+    vultrCol->addWidget(m_vultrLiveBadge);
+
     auto *vultrForm = new QFormLayout;
     vultrForm->setLabelAlignment(Qt::AlignRight);
     vultrForm->setSpacing(6);
@@ -10031,6 +10085,8 @@ QWidget *MainWindow::buildHostsSection()
     outer->addWidget(scroll, 1);
 
     refreshHostsTable();
+    renderVultrProvisionProgress();
+    restoreVultrProvision();
     QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
     return page;
 }
@@ -14528,11 +14584,329 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
 // shared Live output pane. The API key is captured by value through the chain
 // and lives only in these closures and the Authorization headers.
 
+QString MainWindow::vultrProvisionLogPath() const
+{
+    const QString appData =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (appData.isEmpty())
+        return {};
+    const QString dir = QDir(appData).filePath(QStringLiteral("deployments"));
+    if (!QDir().mkpath(dir))
+        return {};
+    return QDir(dir).filePath(QStringLiteral("vultr-mirror-latest.log"));
+}
+
+void MainWindow::saveVultrProvisionLog()
+{
+    if (!m_hostInstallLog)
+        return;
+    const QString path = vultrProvisionLogPath();
+    if (path.isEmpty())
+        return;
+    // Bound the persisted transcript so a noisy SSH process cannot grow the
+    // settings directory without limit. The visible widget still retains the
+    // full current-session output; restart restores the newest 1 MiB.
+    QString plain = m_hostInstallLog->toPlainText();
+    constexpr int kMaxPersistedChars = 1024 * 1024;
+    if (plain.size() > kMaxPersistedChars)
+        plain = plain.right(kMaxPersistedChars);
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return;
+    file.write(plain.toUtf8());
+    file.commit();
+}
+
+void MainWindow::scheduleVultrProvisionLogSave()
+{
+    if (m_vultrLogSaveScheduled)
+        return;
+    m_vultrLogSaveScheduled = true;
+    QTimer::singleShot(250, this, [this] {
+        m_vultrLogSaveScheduled = false;
+        saveVultrProvisionLog();
+    });
+}
+
+void MainWindow::renderVultrProvisionProgress(bool failed)
+{
+    const int current = qBound(0, m_vultrProvisionStage,
+                               kVultrProvisionStageCount);
+    for (int i = 0; i < m_vultrStageNumbers.size(); ++i) {
+        const int stage = i + 1;
+        const bool complete =
+            m_vultrProvisionState == QLatin1String("succeeded") ||
+            (current > stage);
+        const bool active = current == stage &&
+                            m_vultrProvisionState == QLatin1String("active");
+        const bool stageFailed = failed && current == stage;
+        QString background = QStringLiteral("#30363d");
+        QString foreground = QStringLiteral("#8b949e");
+        QString border = QStringLiteral("#484f58");
+        if (complete) {
+            background = QStringLiteral("#238636");
+            foreground = QStringLiteral("#ffffff");
+            border = QStringLiteral("#2ea043");
+        } else if (active) {
+            background = QStringLiteral("#1f6feb");
+            foreground = QStringLiteral("#ffffff");
+            border = QStringLiteral("#58a6ff");
+        } else if (stageFailed) {
+            background = QStringLiteral("#da3633");
+            foreground = QStringLiteral("#ffffff");
+            border = QStringLiteral("#f85149");
+        }
+        m_vultrStageNumbers.at(i)->setStyleSheet(
+            QStringLiteral("QLabel { background:%1; color:%2; border:2px solid %3; "
+                           "border-radius:14px; font-weight:700; }")
+                .arg(background, foreground, border));
+        m_vultrStageLabels.at(i)->setStyleSheet(
+            QStringLiteral("QLabel { color:%1; font-size:11px; %2 }")
+                .arg((complete || active || stageFailed)
+                         ? QStringLiteral("#f0f6fc")
+                         : QStringLiteral("#8b949e"),
+                     active ? QStringLiteral("font-weight:700;") : QString()));
+    }
+    if (m_vultrLiveBadge) {
+        const bool live = m_vultrProvisionState == QLatin1String("succeeded");
+        const bool verifying = m_vultrProvisionState == QLatin1String("active") &&
+                               current == kVultrProvisionStageCount;
+        m_vultrLiveBadge->setVisible(live || verifying);
+        m_vultrLiveBadge->setText(
+            live
+                ? QString::fromUtf8("\xE2\x97\x8F LIVE \xE2\x80\x94 mirror is serving repository traffic")
+                : QString::fromUtf8("\xE2\x97\x8F VERIFYING \xE2\x80\x94 waiting for healthy public traffic"));
+        m_vultrLiveBadge->setStyleSheet(
+            live
+                ? QStringLiteral("QLabel { color:#3fb950; background:#0d2818; "
+                                 "border:1px solid #238636; border-radius:6px; "
+                                 "padding:7px; font-weight:700; }")
+                : QStringLiteral("QLabel { color:#d29922; background:#2d2106; "
+                                 "border:1px solid #9e6a03; border-radius:6px; "
+                                 "padding:7px; font-weight:700; }"));
+    }
+}
+
+void MainWindow::persistVultrProvisionState(const QString &state,
+                                             const QString &message)
+{
+    if (!state.isEmpty())
+        m_vultrProvisionState = state;
+    if (!message.isNull())
+        m_vultrProvisionMessage = message;
+    QJsonObject checkpoint{
+        {QStringLiteral("version"), 1},
+        {QStringLiteral("state"), m_vultrProvisionState},
+        {QStringLiteral("stage"), m_vultrProvisionStage},
+        {QStringLiteral("detail"), m_vultrProvisionDetail},
+        {QStringLiteral("message"), m_vultrProvisionMessage},
+        {QStringLiteral("node"), m_vultrProvisionNode},
+        {QStringLiteral("dnsHostname"), m_vultrDnsHostname},
+        {QStringLiteral("instanceId"), m_vultrInstanceId},
+        {QStringLiteral("ip"), m_vultrInstanceIp},
+        {QStringLiteral("identityFile"), m_vultrIdentityFile},
+        {QStringLiteral("installAgentClis"), m_vultrInstallAgentClis},
+        {QStringLiteral("installUseLocalBinary"),
+         m_vultrInstallUseLocalBinary},
+        {QStringLiteral("pollCount"), m_vultrPollCount},
+        {QStringLiteral("installAttempts"), m_vultrInstallAttempts},
+        {QStringLiteral("hostMetadata"), m_vultrHostMetadata},
+        {QStringLiteral("updatedAt"), QDateTime::currentMSecsSinceEpoch()},
+    };
+    QSettings settings;
+    settings.setValue(
+        kVultrProvisionSetting,
+        QString::fromUtf8(
+            QJsonDocument(checkpoint).toJson(QJsonDocument::Compact)));
+    settings.sync();
+    saveVultrProvisionLog();
+}
+
+void MainWindow::setVultrProvisionStage(int stage, const QString &detail,
+                                        bool failed)
+{
+    const int bounded = qBound(1, stage, kVultrProvisionStageCount);
+    m_vultrProvisionStage = m_vultrResumeChain
+                                ? qMax(m_vultrProvisionStage, bounded)
+                                : bounded;
+    if (!detail.isEmpty())
+        m_vultrProvisionDetail = detail;
+    if (m_vultrStatus && !m_vultrProvisionDetail.isEmpty())
+        m_vultrStatus->setText(m_vultrProvisionDetail);
+    renderVultrProvisionProgress(failed);
+    persistVultrProvisionState(failed ? QStringLiteral("failed")
+                                      : QStringLiteral("active"),
+                                 failed ? m_vultrProvisionDetail : QString());
+}
+
+void MainWindow::restoreVultrProvision()
+{
+    const QJsonObject saved = QJsonDocument::fromJson(
+        QSettings().value(kVultrProvisionSetting).toString().toUtf8()).object();
+    if (saved.value(QStringLiteral("version")).toInt() != 1)
+        return;
+    m_vultrProvisionState = saved.value(QStringLiteral("state")).toString();
+    m_vultrProvisionStage = saved.value(QStringLiteral("stage")).toInt();
+    m_vultrProvisionDetail = saved.value(QStringLiteral("detail")).toString();
+    m_vultrProvisionMessage = saved.value(QStringLiteral("message")).toString();
+    m_vultrProvisionNode = saved.value(QStringLiteral("node")).toString();
+    m_vultrDnsHostname =
+        saved.value(QStringLiteral("dnsHostname")).toString();
+    m_vultrInstanceId = saved.value(QStringLiteral("instanceId")).toString();
+    m_vultrInstanceIp = saved.value(QStringLiteral("ip")).toString();
+    m_vultrIdentityFile =
+        saved.value(QStringLiteral("identityFile")).toString();
+    m_vultrInstallAgentClis =
+        saved.value(QStringLiteral("installAgentClis")).toBool();
+    m_vultrInstallUseLocalBinary =
+        saved.value(QStringLiteral("installUseLocalBinary")).toBool();
+    m_vultrPollCount = saved.value(QStringLiteral("pollCount")).toInt();
+    m_vultrInstallAttempts =
+        saved.value(QStringLiteral("installAttempts")).toInt();
+    m_vultrHostMetadata =
+        saved.value(QStringLiteral("hostMetadata")).toObject();
+    if (m_vultrNameEdit && !m_vultrProvisionNode.isEmpty())
+        m_vultrNameEdit->setText(m_vultrProvisionNode);
+    if (m_vultrAgentClisCheck)
+        m_vultrAgentClisCheck->setChecked(m_vultrInstallAgentClis);
+    const QString logPath = vultrProvisionLogPath();
+    QFile log(logPath);
+    if (m_hostInstallLog && log.open(QIODevice::ReadOnly))
+        m_hostInstallLog->setPlainText(
+            QString::fromUtf8(log.read(1024 * 1024)));
+    const bool failed = m_vultrProvisionState == QLatin1String("failed");
+    renderVultrProvisionProgress(failed);
+    if (m_vultrStatus) {
+        const QString restored = !m_vultrProvisionMessage.isEmpty()
+                                     ? m_vultrProvisionMessage
+                                     : m_vultrProvisionDetail;
+        m_vultrStatus->setText(restored);
+    }
+    if (m_vultrCreateButton) {
+        m_vultrCreateButton->setText(
+            failed ? QStringLiteral("Retry deployment")
+                   : m_vultrProvisionState == QLatin1String("active")
+                         ? QStringLiteral("Resuming deployment…")
+                         : QStringLiteral("Create another mirror"));
+    }
+    m_vultrResumeRequested =
+        m_vultrProvisionState == QLatin1String("active") || failed;
+    if (m_vultrProvisionState == QLatin1String("active")) {
+        QTimer::singleShot(0, this, &MainWindow::resumeVultrProvision);
+    }
+}
+
+void MainWindow::resumeVultrProvision()
+{
+    if (!m_vultrResumeRequested || m_vultrProvisionNode.isEmpty())
+        return;
+    QString apiKey = m_vultrApiKeyEdit
+                         ? m_vultrApiKeyEdit->text().trimmed()
+                         : QString();
+    if (apiKey.isEmpty())
+        apiKey = forkmesh::control::vultrApiKeyFromVariables(
+            ActionStore::variables());
+    const QString invalid = forkmesh::control::validateVultrMirrorRequest(
+        apiKey, m_vultrProvisionNode);
+    if (!invalid.isEmpty()) {
+        m_vultrProvisionActive = false;
+        if (m_vultrStatus)
+            m_vultrStatus->setText(
+                QStringLiteral("Deployment is paused. Enter the saved Vultr "
+                               "API key, then click Resume deployment. %1")
+                    .arg(invalid));
+        if (m_vultrCreateButton) {
+            m_vultrCreateButton->setEnabled(true);
+            m_vultrCreateButton->setText(
+                QStringLiteral("Resume deployment"));
+        }
+        return;
+    }
+    const QMap<QString, QString> variables = ActionStore::variables();
+    m_vultrTunnelApiToken =
+        forkmesh::control::cloudflareApiTokenFromVariables(variables);
+    m_vultrProvisionActive = true;
+    if (m_vultrCreateButton) {
+        m_vultrCreateButton->setEnabled(false);
+        m_vultrCreateButton->setText(QStringLiteral("Deployment running…"));
+    }
+    appendHostInstallLog(QString::fromUtf8(
+        "\n\xE2\x86\xBB Desktop restarted \xE2\x80\x94 resuming Vultr deployment at stage %1.\n")
+        .arg(m_vultrProvisionStage));
+    if (m_vultrProvisionStage >= 6 && !m_vultrProvisionNode.isEmpty()) {
+        const QString address = m_vultrDnsHostname.isEmpty()
+                                    ? m_vultrInstanceIp
+                                    : m_vultrDnsHostname;
+        waitForVultrMirrorPublication(
+            m_vultrProvisionNode,
+            QStringLiteral("Vultr mirror \"%1\" (%2) is installed, linked, "
+                           "and serving traffic.")
+                .arg(m_vultrProvisionNode, address));
+        return;
+    }
+    if (m_vultrProvisionStage >= 5 && !m_vultrInstanceIp.isEmpty() &&
+        !m_vultrIdentityFile.isEmpty()) {
+        m_vultrInstallAttempts = 0;
+        persistVultrProvisionState();
+        QTimer::singleShot(1000, this, [this] {
+            startVultrHostInstall(m_vultrProvisionNode, m_vultrInstanceIp,
+                                  m_vultrIdentityFile);
+        });
+        return;
+    }
+    if (!m_vultrInstanceId.isEmpty() && !m_vultrIdentityFile.isEmpty()) {
+        setVultrProvisionStage(4, QStringLiteral("Resuming server boot checks…"));
+        pollVultrInstance(apiKey, m_vultrInstanceId, m_vultrProvisionNode,
+                          m_vultrIdentityFile);
+        return;
+    }
+    // Pre-instance stages are idempotent. Re-run key/plan/image discovery, and
+    // the create step itself first searches Vultr by label before POSTing so a
+    // restart in the request/response window cannot create a duplicate VPS.
+    m_vultrResumeRequested = false;
+    m_vultrResumeChain = true;
+    m_vultrProvisionActive = false;
+    createVultrMirrorFromForm();
+}
+
+void MainWindow::findVultrProvisionInstance(
+    const QString &apiKey, const QString &node,
+    std::function<void(QString, QString)> onDone)
+{
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances?per_page=500"),
+        QByteArrayLiteral("GET"), {},
+        [node, onDone](QJsonObject result, QString error) {
+            if (!error.isEmpty()) {
+                onDone({}, error);
+                return;
+            }
+            for (const QJsonValue &value :
+                 result.value(QStringLiteral("instances")).toArray()) {
+                const QJsonObject instance = value.toObject();
+                const QString label =
+                    instance.value(QStringLiteral("label")).toString();
+                const QString hostname =
+                    instance.value(QStringLiteral("hostname")).toString();
+                if (label.compare(node, Qt::CaseInsensitive) == 0 ||
+                    hostname.compare(node, Qt::CaseInsensitive) == 0) {
+                    onDone(instance.value(QStringLiteral("id")).toString(), {});
+                    return;
+                }
+            }
+            onDone({}, {});
+        });
+}
+
 void MainWindow::finishVultrProvision(bool ok, const QString &message)
 {
-    m_vultrProvisionActive = false;
+    if (ok)
+        m_vultrProvisionStage = kVultrProvisionStageCount;
+    m_vultrProvisionDetail = message;
+    m_vultrProvisionMessage = message;
     if (m_vultrCreateButton)
-        m_vultrCreateButton->setEnabled(true);
+        m_vultrCreateButton->setText(ok ? QStringLiteral("Create another mirror")
+                                        : QStringLiteral("Retry deployment"));
     if (m_vultrStatus)
         m_vultrStatus->setText(
             (ok ? QString::fromUtf8("\xE2\x9C\x94 ")
@@ -14542,6 +14916,17 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
             (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
                 : QString::fromUtf8("\n\xE2\x9C\x98 ")) +
             message + QStringLiteral("\n"));
+    saveVultrProvisionLog();
+    m_vultrProvisionActive = false;
+    m_vultrResumeRequested = !ok;
+    m_vultrResumeChain = false;
+    persistVultrProvisionState(ok ? QStringLiteral("succeeded")
+                                  : QStringLiteral("failed"),
+                                 message);
+    renderVultrProvisionProgress(!ok);
+    m_vultrTunnelApiToken.clear();
+    if (m_vultrCreateButton)
+        m_vultrCreateButton->setEnabled(true);
 }
 
 void MainWindow::waitForVultrMirrorPublication(
@@ -14550,14 +14935,15 @@ void MainWindow::waitForVultrMirrorPublication(
     constexpr int kMaxPublicationPolls = 90; // fifteen minutes at 10 seconds
     if (!m_vultrProvisionActive)
         return;
-    if (m_vultrStatus) {
-        m_vultrStatus->setText(QString::fromUtf8(
-            "ForkMesh is running on %1 \xE2\x80\x94 waiting for its signed "
-            "Mirror nodes / World catalog record (%2/%3)\xE2\x80\xA6")
+    m_vultrProvisionNode = node;
+    m_vultrResumeChain = false;
+    setVultrProvisionStage(
+        6,
+        QString::fromUtf8(
+            "ForkMesh is running on %1 — verifying healthy public traffic (%2/%3)…")
             .arg(node)
             .arg(attempt + 1)
             .arg(kMaxPublicationPolls));
-    }
 
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/repo/forkmesh/forkmesh/mirrors"));
@@ -14612,16 +14998,26 @@ void MainWindow::waitForVultrMirrorPublication(
         if (published) {
             appendHostInstallLog(QString::fromUtf8(
                 "\n\xE2\x9C\x94 Verified %1 in the public Mirror nodes / World "
-                "catalog.\n").arg(node));
+                "catalog: online, fresh, integrity-approved, clone eligible, "
+                "and serving repository traffic.\n").arg(node));
             finishVultrProvision(true, successMessage);
             return;
         }
         if (attempt + 1 >= kMaxPublicationPolls) {
-            finishVultrProvision(false, QString::fromUtf8(
-                "ForkMesh is installed on %1, but it did not become a healthy, "
-                "integrity-approved, clone-eligible Tunnel endpoint within fifteen "
-                "minutes. The host remains saved and will keep retrying; check "
-                "its Logs before treating the mirror as ready.").arg(node));
+            appendHostInstallLog(QString::fromUtf8(
+                "Still waiting for %1 to become a healthy public mirror after "
+                "fifteen minutes; the server remains installed and verification "
+                "will continue every minute.\n").arg(node));
+            m_vultrProvisionDetail = QString::fromUtf8(
+                "Installed on %1; still waiting for healthy public traffic. "
+                "Verification continues automatically…").arg(node);
+            persistVultrProvisionState(QStringLiteral("active"));
+            renderVultrProvisionProgress();
+            QTimer::singleShot(
+                60000, this,
+                [this, node, successMessage] {
+                    waitForVultrMirrorPublication(node, successMessage, 0);
+                });
             return;
         }
         QTimer::singleShot(
@@ -14998,6 +15394,10 @@ void MainWindow::resolveVultrSshKeyId(
 
 void MainWindow::createVultrMirrorFromForm()
 {
+    if (m_vultrResumeRequested) {
+        resumeVultrProvision();
+        return;
+    }
     if (m_vultrProvisionActive) {
         if (m_vultrStatus)
             m_vultrStatus->setText(
@@ -15105,9 +15505,19 @@ void MainWindow::createVultrMirrorFromForm()
     if (!cloudflareStoreError.isEmpty())
         appendHostInstallLog(cloudflareStoreError + QLatin1Char('\n'));
 
+    const bool resumedPreInstance = m_vultrResumeChain;
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
+    m_vultrProvisionState = QStringLiteral("active");
+    m_vultrProvisionMessage.clear();
+    m_vultrProvisionNode = node;
+    if (!resumedPreInstance) {
+        m_vultrProvisionStage = 1;
+        m_vultrInstanceId.clear();
+        m_vultrInstanceIp.clear();
+        m_vultrIdentityFile.clear();
+    }
     // A brand-new instance is nobody's mirror yet, so the installer's default
     // relay-download path has no online node to clone from and dies with "No
     // online ForkMesh node is currently mirroring 'forkmesh'". Start straight
@@ -15126,18 +15536,23 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname = tunnelHostname;
     m_vultrTunnelApiToken = cloudflareToken;
-    m_vultrHostMetadata = QJsonObject{
-        {QStringLiteral("provider"), QStringLiteral("Vultr")},
-        {QStringLiteral("displayName"), node},
-    };
+    if (!resumedPreInstance) {
+        m_vultrHostMetadata = QJsonObject{
+            {QStringLiteral("provider"), QStringLiteral("Vultr")},
+            {QStringLiteral("displayName"), node},
+        };
+    }
     m_hostInstallAttemptBanner.clear();
-    if (m_vultrCreateButton)
+    if (m_vultrCreateButton) {
         m_vultrCreateButton->setEnabled(false);
-    if (m_hostInstallLog) {
+        m_vultrCreateButton->setText(QStringLiteral("Deployment running…"));
+    }
+    if (m_hostInstallLog && !resumedPreInstance) {
         m_hostInstallLog->clear();
         m_hostInstallLogCarry.clear();
         m_hostInstallLogFg = -1;
         m_hostInstallLogBold = false;
+        saveVultrProvisionLog();
     }
     appendHostInstallLog(QString::fromUtf8(
         "Creating Vultr mirror \"%1\" \xE2\x80\x94 cheapest supported US plan, latest "
@@ -15162,9 +15577,10 @@ void MainWindow::createVultrMirrorFromForm()
                       "Claude Code and Codex will be installed and signed in "
                       "with this device's access (%1).\n").arg(agentAccess));
     }
-    if (m_vultrStatus)
-        m_vultrStatus->setText(
-            QString::fromUtf8("Preparing the managed SSH key\xE2\x80\xA6"));
+    setVultrProvisionStage(
+        1, resumedPreInstance
+               ? QStringLiteral("Resuming credentials and managed SSH key…")
+               : QStringLiteral("Preparing credentials and managed SSH key…"));
 
     ensureVultrManagedKeypair([this, apiKey, node](
                                   QString keyPath, QString publicKey,
@@ -15173,6 +15589,8 @@ void MainWindow::createVultrMirrorFromForm()
             finishVultrProvision(false, keyError);
             return;
         }
+        m_vultrIdentityFile = keyPath;
+        persistVultrProvisionState();
         appendHostInstallLog(
             QStringLiteral("Managed SSH key: %1\n").arg(keyPath));
         if (m_vultrStatus)
@@ -15185,9 +15603,8 @@ void MainWindow::createVultrMirrorFromForm()
                 finishVultrProvision(false, sshError);
                 return;
             }
-            if (m_vultrStatus)
-                m_vultrStatus->setText(QString::fromUtf8(
-                    "Choosing the cheapest supported US plan\xE2\x80\xA6"));
+            setVultrProvisionStage(
+                2, QStringLiteral("Choosing a supported plan and Debian image…"));
             vultrApiCall(
                 apiKey, QStringLiteral("/v2/plans?per_page=500"),
                 QByteArrayLiteral("GET"), {},
@@ -15257,9 +15674,9 @@ void MainWindow::createVultrMirrorFromForm()
                                 QStringLiteral("Operating system: %1\n")
                                     .arg(debian.value(QStringLiteral("name"))
                                              .toString()));
-                            if (m_vultrStatus)
-                                m_vultrStatus->setText(QString::fromUtf8(
-                                    "Creating the instance\xE2\x80\xA6"));
+                            setVultrProvisionStage(
+                                3, QStringLiteral(
+                                       "Checking for an existing server before creation…"));
                             const QJsonObject payload =
                                 forkmesh::control::vultrInstanceCreatePayload(
                                     node,
@@ -15269,45 +15686,75 @@ void MainWindow::createVultrMirrorFromForm()
                                     debian.value(QStringLiteral("id"))
                                         .toInt(),
                                     sshKeyId);
-                            vultrApiCall(
-                                apiKey, QStringLiteral("/v2/instances"),
-                                QByteArrayLiteral("POST"), payload,
-                                [this, apiKey, node, keyPath](
-                                    QJsonObject createResult,
-                                    QString createError) {
-                                    if (!createError.isEmpty()) {
-                                        finishVultrProvision(false,
-                                                             createError);
+                            findVultrProvisionInstance(
+                                apiKey, node,
+                                [this, apiKey, node, keyPath, payload](
+                                    QString existingId, QString findError) {
+                                    if (!findError.isEmpty()) {
+                                        finishVultrProvision(false, findError);
                                         return;
                                     }
-                                    const QString instanceId =
-                                        createResult
-                                            .value(QStringLiteral("instance"))
-                                            .toObject()
-                                            .value(QStringLiteral("id"))
-                                            .toString();
-                                    if (instanceId.isEmpty()) {
-                                        finishVultrProvision(
-                                            false,
-                                            QStringLiteral(
-                                                "Vultr did not return an "
-                                                "instance id."));
+                                    const auto continueWithInstance =
+                                        [this, apiKey, node, keyPath](
+                                            const QString &instanceId,
+                                            bool reused) {
+                                            if (instanceId.isEmpty()) {
+                                                finishVultrProvision(
+                                                    false,
+                                                    QStringLiteral(
+                                                        "Vultr did not return an "
+                                                        "instance id."));
+                                                return;
+                                            }
+                                            m_vultrInstanceId = instanceId;
+                                            m_vultrIdentityFile = keyPath;
+                                            m_vultrHostMetadata.insert(
+                                                QStringLiteral("instanceId"),
+                                                instanceId);
+                                            appendHostInstallLog(
+                                                reused
+                                                    ? QString::fromUtf8(
+                                                          "Found existing instance %1 for %2; resuming instead of creating a duplicate.\n")
+                                                          .arg(instanceId, node)
+                                                    : QString::fromUtf8(
+                                                          "Instance %1 created \xE2\x80\x94 waiting for it to boot\xE2\x80\xA6\n")
+                                                          .arg(instanceId));
+                                            m_vultrResumeChain = false;
+                                            setVultrProvisionStage(
+                                                4, QStringLiteral(
+                                                       "Waiting for the server to boot and accept SSH…"));
+                                            pollVultrInstance(
+                                                apiKey, instanceId, node,
+                                                keyPath);
+                                        };
+                                    if (!existingId.isEmpty()) {
+                                        continueWithInstance(existingId, true);
                                         return;
                                     }
-                                    m_vultrHostMetadata.insert(
-                                        QStringLiteral("instanceId"),
-                                        instanceId);
-                                    appendHostInstallLog(QString::fromUtf8(
-                                        "Instance %1 created \xE2\x80\x94 "
-                                        "waiting for it to boot\xE2\x80\xA6\n")
-                                        .arg(instanceId));
-                                    if (m_vultrStatus)
-                                        m_vultrStatus->setText(
-                                            QString::fromUtf8(
-                                                "Waiting for the instance to "
-                                                "boot\xE2\x80\xA6"));
-                                    pollVultrInstance(apiKey, instanceId,
-                                                      node, keyPath);
+                                    setVultrProvisionStage(
+                                        3, QStringLiteral("Creating the Vultr server…"));
+                                    vultrApiCall(
+                                        apiKey,
+                                        QStringLiteral("/v2/instances"),
+                                        QByteArrayLiteral("POST"), payload,
+                                        [this, continueWithInstance](
+                                            QJsonObject createResult,
+                                            QString createError) {
+                                            if (!createError.isEmpty()) {
+                                                // The next resume re-lists by
+                                                // label before trying POST again.
+                                                finishVultrProvision(
+                                                    false, createError);
+                                                return;
+                                            }
+                                            continueWithInstance(
+                                                createResult
+                                                    .value(QStringLiteral("instance"))
+                                                    .toObject()
+                                                    .value(QStringLiteral("id"))
+                                                    .toString(),
+                                                false);
+                                        });
                                 });
                         });
                 });
@@ -15331,7 +15778,18 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             if (!m_vultrProvisionActive)
                 return;
             if (!error.isEmpty()) {
-                finishVultrProvision(false, error);
+                appendHostInstallLog(
+                    QStringLiteral("Server status check failed: %1; retrying.\n")
+                        .arg(error));
+                setVultrProvisionStage(
+                    4, QStringLiteral(
+                           "Vultr status check was interrupted; retrying automatically…"));
+                QTimer::singleShot(
+                    10000, this,
+                    [this, apiKey, instanceId, node, identityFile] {
+                        pollVultrInstance(apiKey, instanceId, node,
+                                          identityFile);
+                    });
                 return;
             }
             const QJsonObject instance =
@@ -15356,13 +15814,14 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
                         "ForkMesh manually once it is up."));
                     return;
                 }
-                if (m_vultrStatus)
-                    m_vultrStatus->setText(
-                        QString::fromUtf8(
-                            "Waiting for the instance to boot "
-                            "(status: %1)\xE2\x80\xA6")
-                            .arg(instance.value(QStringLiteral("status"))
-                                     .toString()));
+                setVultrProvisionStage(
+                    4,
+                    QString::fromUtf8(
+                        "Waiting for the server to boot (status: %1, check %2/%3)…")
+                        .arg(instance.value(QStringLiteral("status"))
+                                 .toString())
+                        .arg(m_vultrPollCount + 1)
+                        .arg(kMaxPolls));
                 QTimer::singleShot(
                     10000, this,
                     [this, apiKey, instanceId, node, identityFile] {
@@ -15373,6 +15832,9 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             }
             appendHostInstallLog(
                 QStringLiteral("Instance is up at %1.\n").arg(ip));
+            m_vultrInstanceId = instanceId;
+            m_vultrInstanceIp = ip;
+            m_vultrIdentityFile = identityFile;
             // Persist the host with its managed key path before the install
             // so every later SSH action (install, logs, uninstall, Actions)
             // authenticates with that key. Vultr Debian images boot as root.
@@ -15383,9 +15845,9 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             // the hostname with the required proxied CNAME. Creating a direct
             // A record here races/conflicts with that record and can leave the
             // node installed but permanently outside live routing.
-            if (m_vultrStatus)
-                m_vultrStatus->setText(QString::fromUtf8(
-                    "Giving SSH a moment to come up\xE2\x80\xA6"));
+            setVultrProvisionStage(
+                5, QStringLiteral(
+                       "Server is online; waiting briefly for SSH before installation…"));
             QTimer::singleShot(
                 15000, this, [this, node, ip, identityFile] {
                     startVultrHostInstall(node, ip, identityFile);
@@ -15422,6 +15884,9 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
     if (m_hostUploadBinaryCheck)
         m_hostUploadBinaryCheck->setChecked(false);
     ++m_vultrInstallAttempts;
+    m_vultrProvisionNode = node;
+    m_vultrInstanceIp = ip;
+    m_vultrIdentityFile = identityFile;
     const QString attemptLabel =
         QStringLiteral("Attempt %1 of %2 at %3")
             .arg(QString::number(m_vultrInstallAttempts),
@@ -15434,15 +15899,14 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
     // The banner is set for the first attempt too, so the provisioning
     // preamble above it (instance id, address, DNS record) survives as well.
     m_hostInstallAttemptBanner = attemptLabel;
-    if (m_vultrStatus)
-        m_vultrStatus->setText(
-            QString::fromUtf8(
-                m_vultrInstallUseLocalBinary
-                    ? "Installing ForkMesh (attempt %1 of %2) \xE2\x80\x94 "
-                      "uploading this app's release directly\xE2\x80\xA6"
-                    : "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
-                .arg(m_vultrInstallAttempts)
-                .arg(kMaxInstallAttempts));
+    setVultrProvisionStage(
+        5,
+        QString::fromUtf8(
+            m_vultrInstallUseLocalBinary
+                ? "Installing ForkMesh (attempt %1 of %2) — uploading this app's release directly…"
+                : "Installing ForkMesh (attempt %1 of %2)…")
+            .arg(m_vultrInstallAttempts)
+            .arg(kMaxInstallAttempts));
     // A fresh instance often refuses SSH for a short while after Vultr
     // reports it active, so an early attempt failing is expected, not a
     // real failure — only the last attempt should report "Install failed".
@@ -15465,8 +15929,8 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                     ? ip
                     : QStringLiteral("%1, %2").arg(m_vultrDnsHostname, ip);
             const QString done = QString::fromUtf8(
-                "Vultr mirror \"%1\" (%2) is installed, linked, and published "
-                "to Mirror nodes and the World.").arg(node, address);
+                "Vultr mirror \"%1\" (%2) is installed, linked, healthy, and "
+                "serving repository traffic.").arg(node, address);
             if (!m_vultrInstallAgentClis) {
                 waitForVultrMirrorPublication(node, done);
                 return;
@@ -15479,9 +15943,9 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
             const bool copyLogins =
                 !forkmesh::control::agentCliCredentialsAreEmpty(
                     localAgentCliCredentials());
-            if (m_vultrStatus)
-                m_vultrStatus->setText(QString::fromUtf8(
-                    "Installing Claude Code and Codex\xE2\x80\xA6"));
+            setVultrProvisionStage(
+                5, QStringLiteral(
+                       "ForkMesh installed; setting up Claude Code and Codex…"));
             runAgentCliInstall(
                 node, ip, QStringLiteral("root"), QString(), identityFile,
                 copyLogins,
@@ -15743,6 +16207,8 @@ void MainWindow::appendHostInstallLog(const QString &text)
 {
     appendAnsiLog(m_hostInstallLog, m_hostInstallLogCarry, m_hostInstallLogFg,
                   m_hostInstallLogBold, currentThemeIsDark(), text);
+    if (m_vultrProvisionActive)
+        scheduleVultrProvisionLogSave();
 }
 
 void MainWindow::appendHostDeployLog(HostDeploySession *session,

@@ -1644,6 +1644,23 @@ private:
     // this account. The API key never travels in argv; once Vultr accepts it,
     // rememberVultrApiKey stores it so no later run has to ask for it again.
     void createVultrMirrorFromForm();
+    // Six-stage durable deployment UI/state. The non-secret checkpoint is
+    // written after every transition and restored when Hosts is rebuilt, so a
+    // restarted desktop resumes boot polling, installation, or public mirror
+    // verification instead of starting another billable instance.
+    void setVultrProvisionStage(int stage, const QString &detail = QString(),
+                                bool failed = false);
+    void renderVultrProvisionProgress(bool failed = false);
+    void persistVultrProvisionState(const QString &state = QStringLiteral("active"),
+                                    const QString &message = QString());
+    void restoreVultrProvision();
+    void resumeVultrProvision();
+    QString vultrProvisionLogPath() const;
+    void saveVultrProvisionLog();
+    void scheduleVultrProvisionLogSave();
+    void findVultrProvisionInstance(
+        const QString &apiKey, const QString &node,
+        std::function<void(QString instanceId, QString error)> onDone);
     // Persist a Vultr API key Vultr itself has just accepted, in the two places
     // this app reads provisioning credentials from: the canonical
     // VULTR_API_KEY device variable (Settings > Variables / Secrets, injected
@@ -4838,7 +4855,22 @@ private:
     QCheckBox *m_vultrAgentClisCheck = nullptr;
     QPushButton *m_vultrCreateButton = nullptr;
     QLabel *m_vultrStatus = nullptr;
+    QWidget *m_vultrProgressPanel = nullptr;
+    QList<QLabel *> m_vultrStageNumbers;
+    QList<QLabel *> m_vultrStageLabels;
+    QLabel *m_vultrLiveBadge = nullptr;
     bool m_vultrProvisionActive = false;
+    bool m_vultrResumeRequested = false;
+    bool m_vultrResumeChain = false;
+    bool m_vultrLogSaveScheduled = false;
+    int m_vultrProvisionStage = 0;
+    QString m_vultrProvisionState;
+    QString m_vultrProvisionDetail;
+    QString m_vultrProvisionMessage;
+    QString m_vultrProvisionNode;
+    QString m_vultrInstanceId;
+    QString m_vultrInstanceIp;
+    QString m_vultrIdentityFile;
     int m_vultrPollCount = 0;        // instance boot polls used this run
     int m_vultrInstallAttempts = 0;  // SSH install attempts used this run
     // Flipped once an attempt fails because no online node is mirroring the
