@@ -5128,15 +5128,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <button type="button" data-world-element-master="on">Everything on</button>
                 <button type="button" data-world-element-master="off">Everything off</button>
               </div>
-              <label class="world-element-sort">
-                <span>Sort by</span>
-                <select data-world-element-sort aria-label="Sort world elements">
-                  <option value="drawables">Drawn</option>
-                  <option value="triangles">Triangles</option>
-                  <option value="interactives">Clicks</option>
-                </select>
-              </label>
-              <div class="world-element-list" data-world-element-list>
+              <div class="world-element-table" data-world-element-list role="table" aria-label="World elements">
                 <p class="world-setting-note">World element controls appear once the scene is ready.</p>
               </div>
               <p class="world-office-panel-status" data-world-element-status role="status" aria-live="polite"></p>
@@ -5586,6 +5578,7 @@ class ForkMeshWorld extends HTMLElement {
     // the scene at construction and edited live from the Elements tab.
     this.disabledWorldElements = storedDisabledWorldElements();
     this.worldElementSort = "drawables";
+    this.worldElementSortAscending = false;
     this.worldTicketResolved = false;
     this.settingsUpdatedAt = 0;
     this.worldPreferencesLoaded = false;
@@ -10583,6 +10576,18 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
+      const elementSort = event.target.closest("[data-world-element-sort]");
+      if (elementSort) {
+        const key = elementSort.dataset.worldElementSort;
+        if (this.worldElementSort === key) {
+          this.worldElementSortAscending = this.worldElementSortAscending !== true;
+        } else {
+          this.worldElementSort = key;
+          this.worldElementSortAscending = key === "label" || key === "category";
+        }
+        this.renderWorldElementsPane();
+        return;
+      }
       if (event.target.closest("[data-world-debug-copy]")) {
         void this.copyDiagnosticsSnapshot();
         return;
@@ -11095,16 +11100,6 @@ class ForkMeshWorld extends HTMLElement {
           elementToggle.dataset.worldElementToggle,
           elementToggle.checked,
         );
-        return;
-      }
-      const elementSort = event.target.closest("[data-world-element-sort]");
-      if (elementSort) {
-        this.worldElementSort = ["drawables", "triangles", "interactives"].includes(
-          elementSort.value,
-        )
-          ? elementSort.value
-          : "drawables";
-        this.renderWorldElementsPane();
         return;
       }
       const emojiCategory = event.target.closest(
@@ -23311,69 +23306,69 @@ class ForkMeshWorld extends HTMLElement {
         '<p class="world-setting-note">The world is still loading — element controls appear once the scene is built.</p>';
       return;
     }
-    const categoryOrder = [
-      "Systems",
-      "Terrain",
-      "Districts",
-      "Boards & kiosks",
-      "Scenery",
-      "Recreation",
-      "Vehicles & rides",
-      "Avatars & bots",
-      "Infrastructure",
+    const columns = [
+      { key: "label", heading: "Element" },
+      { key: "category", heading: "Group" },
+      { key: "drawables", heading: "Drawn" },
+      { key: "triangles", heading: "Tri" },
+      { key: "interactives", heading: "Click" },
     ];
-    const grouped = new Map();
-    elements.forEach((element) => {
-      const category = String(element.category || "Other");
-      if (!grouped.has(category)) grouped.set(category, []);
-      grouped.get(category).push(element);
-    });
-    const orderedCategories = [
-      ...categoryOrder.filter((category) => grouped.has(category)),
-      ...[...grouped.keys()].filter(
-        (category) => !categoryOrder.includes(category),
-      ),
-    ];
-    const sort = ["drawables", "triangles", "interactives"].includes(
-      this.worldElementSort,
-    )
+    const sort = columns.some((column) => column.key === this.worldElementSort)
       ? this.worldElementSort
       : "drawables";
-    const compareElements = (left, right) =>
-      Number(right[sort]) - Number(left[sort]) ||
-      left.label.localeCompare(right.label);
-    list.innerHTML = orderedCategories
-      .map((category) => {
-        const rows = grouped
-          .get(category)
-          .sort(compareElements)
-          .map((element) => {
-            const stats = element.system
-              ? "per-frame system"
-              : `${compactCountLabel(element.drawables)} drawn · ${compactCountLabel(element.triangles)} tri · ${compactCountLabel(element.interactives)} click`;
+    const textSort = sort === "label" || sort === "category";
+    const ascending = this.worldElementSortAscending === true;
+    const compareElements = (left, right) => {
+      const delta = textSort
+        ? String(left[sort]).localeCompare(String(right[sort]))
+        : Number(right[sort]) - Number(left[sort]);
+      return (
+        (textSort === ascending ? delta : -delta) ||
+        left.label.localeCompare(right.label)
+      );
+    };
+    const header = `
+      <div class="world-element-head" role="row">
+        <span aria-hidden="true"></span>
+        ${columns
+          .map((column) => {
+            const active = column.key === sort;
             return `
-            <label class="world-element-row" data-enabled="${element.enabled}">
-              <input
-                type="checkbox"
-                data-world-element-toggle="${escapeHTML(element.id)}"
-                ${element.enabled ? "checked" : ""}
-              />
-              <span class="world-element-copy">
-                <strong>${escapeHTML(element.label)}</strong>
-                <small>${escapeHTML(stats)}</small>
-              </span>
-            </label>`;
+            <button
+              type="button"
+              role="columnheader"
+              data-world-element-sort="${column.key}"
+              aria-sort="${active ? (ascending ? "ascending" : "descending") : "none"}"
+            >${column.heading}${active ? (ascending ? " ▲" : " ▼") : ""}</button>`;
           })
-          .join("");
+          .join("")}
+      </div>`;
+    const rows = elements
+      .sort(compareElements)
+      .map((element) => {
+        const count = (value) =>
+          element.system ? "—" : compactCountLabel(value);
         return `
-        <section class="world-element-category">
-          <h4>${escapeHTML(category)}</h4>
-          ${rows}
-        </section>`;
+        <label
+          class="world-element-row"
+          role="row"
+          data-enabled="${element.enabled}"
+          ${element.system ? 'title="Per-frame system — no geometry of its own"' : ""}
+        >
+          <input
+            type="checkbox"
+            data-world-element-toggle="${escapeHTML(element.id)}"
+            ${element.enabled ? "checked" : ""}
+          />
+          <strong>${escapeHTML(element.label)}</strong>
+          <span class="world-element-group">${escapeHTML(element.category)}</span>
+          <span class="world-element-count">${escapeHTML(count(element.drawables))}</span>
+          <span class="world-element-count">${escapeHTML(count(element.triangles))}</span>
+          <span class="world-element-count">${escapeHTML(count(element.interactives))}</span>
+        </label>`;
       })
       .join("");
-    const sortControl = this.$("[data-world-element-sort]");
-    if (sortControl) sortControl.value = sort;
+    list.innerHTML = header + rows;
   }
 
   renderWorldSessions(message = "", tone = "") {
