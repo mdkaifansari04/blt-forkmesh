@@ -1904,6 +1904,16 @@ int main(int argc, char *argv[])
         // away. The panel's git reads run on a worker thread now, so the
         // selection has to come from the rows already on screen — reading it
         // back without pumping the event loop proves nothing was waited on.
+        // The Git range must represent the complete worktree snapshot, including
+        // edits the agent has not committed yet — a ref-only main..branch diff
+        // silently omitted these and made the consolidated view look empty while
+        // an agent was still working.
+        const QString livePath = wtPath + QStringLiteral("/live-uncommitted.txt");
+        QFile liveFile(livePath);
+        if (liveFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            liveFile.write("visible before commit\n");
+            liveFile.close();
+        }
         const QString landed = window.testSwitchToBranchImmediateSelection(
             QStringLiteral("feature/keep-selected"));
         check(landed == QStringLiteral("feature/keep-selected"),
@@ -1932,12 +1942,23 @@ int main(int argc, char *argv[])
                   .arg(window.testCompareIndicatorText().isEmpty()
                            ? QStringLiteral("<hidden>")
                            : window.testCompareIndicatorText()));
-        // The left column keeps its working-tree slots: the comparison took
-        // over neither the changed-files nor the history half.
+        QElapsedTimer diffTimer;
+        diffTimer.start();
+        while (diffTimer.elapsed() < 5000 &&
+               !window.testBranchDiffFiles().contains(
+                   QStringLiteral("live-uncommitted.txt")))
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        check(window.testBranchDiffFiles().contains(
+                  QStringLiteral("live-uncommitted.txt")),
+              QString("a worktree comparison includes its uncommitted and "
+                      "untracked files (files = %1)")
+                  .arg(window.testBranchDiffFiles().join(QStringLiteral(", "))));
+        // Every diff keeps the same universal source-control composer and
+        // changes tree above the branch's commit graph.
         check(window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("comparing a branch keeps the Git view's left column on "
-                      "the working tree (adhoc #1/#16, files slot = %1, history "
+              QString("comparing a branch keeps the universal source-control "
+                      "panel above the branch graph (files slot = %1, history "
                       "slot = %2)")
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage()));
@@ -1959,9 +1980,8 @@ int main(int argc, char *argv[])
                   QStringLiteral("feature/keep-selected"),
               QStringLiteral("a named worktree opens in the Git view's combined "
                              "branch view instead of a separate diff pane"));
-        // adhoc #1/#16: the rail's Git entry always lands back on the default
-        // branch's working-tree view — clicking Git again clears the branch
-        // comparison and goes back to just main.
+        // The rail's Git entry is the stable home destination: it always clears
+        // a branch/worktree comparison and returns to main.
         window.testClickRailGitButton();
         QApplication::processEvents();
         check(window.testBrowsedBranch() == QStringLiteral("main") &&
@@ -1969,14 +1989,14 @@ int main(int argc, char *argv[])
                   window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
               QString("the rail's Git entry clears the branch comparison and "
-                      "goes back to the main-branch view (adhoc #1/#16, branch "
+                      "returns to main (branch "
                       "= %1, page = %2)")
                   .arg(window.testBrowsedBranch())
                   .arg(window.testCommitWorkspacePage()));
         check(window.testCompareIndicatorText().isEmpty(),
-              QString("the compare indicator hides once the Git entry cleared "
-                      "the comparison (adhoc #16, base = %1)")
+              QString("the compare indicator hides after returning to main (base = %1)")
                   .arg(window.testCompareIndicatorText()));
+        QFile::remove(livePath);
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
         QApplication::processEvents();
@@ -2012,9 +2032,8 @@ int main(int argc, char *argv[])
                       QStringLiteral("feature/keep-selected") &&
                   window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("re-opening the branch shows its graph and its diff "
-                      "against main together, leaving the left column on the "
-                      "working tree (adhoc #16, page = %1, branch = %2, files "
+              QString("re-opening the branch shows its graph and diff against "
+                      "main with the universal source-control panel (page = %1, branch = %2, files "
                       "slot = %3, history slot = %4)")
                   .arg(window.testCommitWorkspacePage())
                   .arg(window.testBrowsedBranch())
@@ -2050,6 +2069,11 @@ int main(int argc, char *argv[])
               QString("the comparison's merge button really merged the branch "
                       "(adhoc #119, main tip = %1)").arg(mainTip.trimmed()));
 
+        // The merge path reloads the persistent agent store, while this fixture
+        // was injected in memory only. Restore it before exercising the separate
+        // cross-repository Branch-button route below.
+        window.testAddAgentSession(issueSession);
+
         // adhoc #131: the agent detail page's "Branch" button opens that session's
         // branch in the Git view's combined view — its graph plus its diff
         // against the compare base. The sessions list is global, so the click has
@@ -2075,8 +2099,8 @@ int main(int argc, char *argv[])
                   .arg(window.testBrowsedBranch()));
         check(window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("the agent's branch keeps the Git view's left column on "
-                      "the working tree (adhoc #1, files slot = %1, history "
+              QString("the agent's branch keeps the source-control panel above "
+                      "the branch graph (files slot = %1, history "
                       "slot = %2)")
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage()));
@@ -2152,13 +2176,16 @@ int main(int argc, char *argv[])
 
             if (cloned && wroteWorkflow) {
                 window.testRefreshOpenRepoDetail();
-                // The Actions badge loads on a worker thread; give it a bounded
-                // window to land rather than a fixed sleep.
+                // The Actions badge and branch snapshot load on separate worker
+                // threads; wait for both rather than letting the faster one end
+                // the settle loop while the branch count still reads zero.
                 QElapsedTimer settle;
                 settle.start();
                 while (settle.elapsed() < 10000 &&
-                       window.testRepoActionsTabText() !=
-                           QStringLiteral("Actions (1)")) {
+                       (window.testRepoActionsTabText() !=
+                            QStringLiteral("Actions (1)") ||
+                        window.testRepoBranchesButtonText() !=
+                            QStringLiteral("3 branches"))) {
                     QApplication::processEvents(QEventLoop::AllEvents, 50);
                 }
                 check(beforeBranch != QStringLiteral("main") &&
