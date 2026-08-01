@@ -1613,6 +1613,9 @@ int main(int argc, char *argv[])
     QTemporaryDir wtRepo;
     if (initGitRepo(wtRepo)) {
         runGitChecked(wtRepo.path(), {"branch", "feature/keep-selected"});
+        // A second branch so the compare base has somewhere else to point
+        // (adhoc #16 — the base end of "<branch> -> <base>" is switchable).
+        runGitChecked(wtRepo.path(), {"branch", "feature/other-base"});
         const QString wtPath = wtRepo.path() + QStringLiteral("/wt-keep");
         runGitChecked(wtRepo.path(),
                       {"worktree", "add", wtPath, "feature/keep-selected"});
@@ -1907,47 +1910,73 @@ int main(int argc, char *argv[])
               QString("clicking a branch link selects the branch without waiting "
                       "for the panel's git reads (adhoc #420, landed on %1)")
                   .arg(landed.isEmpty() ? QStringLiteral("<none>") : landed));
-        // adhoc #1: a branch link browses the branch in the Git view's main
-        // page — the graph list and its branch button follow the ref — instead
-        // of opening the separate range-review pane (that pane stays reserved
-        // for pull requests).
-        check(window.testCommitWorkspacePage() == 0 &&
+        // adhoc #16: there is no separate branch view any more. A branch link
+        // opens one combined view in the Git tab — the graph browses the branch
+        // (its button follows the ref) and the right pane opens that branch's
+        // diff against the compare base at the same time.
+        check(window.testCommitWorkspacePage() == 2 &&
                   window.testBrowsedBranch() ==
+                      QStringLiteral("feature/keep-selected") &&
+                  window.testBranchDiffBranch() ==
                       QStringLiteral("feature/keep-selected"),
-              QString("a branch link browses the branch in the Git view's main "
-                      "page (adhoc #1, page = %1, branch = %2)")
+              QString("a branch link opens the branch's graph and its diff "
+                      "against main in the one Git view (adhoc #16, page = %1, "
+                      "branch = %2, diff = %3)")
                   .arg(window.testCommitWorkspacePage())
-                  .arg(window.testBrowsedBranch()));
-        // The left column keeps its working-tree slots: no range review took
-        // over the changed-files and history halves.
+                  .arg(window.testBrowsedBranch())
+                  .arg(window.testBranchDiffBranch()));
+        // The branch symbol -> main indicator names what it's compared against.
+        check(window.testCompareIndicatorText() == QStringLiteral("main"),
+              QString("the compare indicator points the branch at main (adhoc "
+                      "#16, base = %1)")
+                  .arg(window.testCompareIndicatorText().isEmpty()
+                           ? QStringLiteral("<hidden>")
+                           : window.testCompareIndicatorText()));
+        // The left column keeps its working-tree slots: the comparison took
+        // over neither the changed-files nor the history half.
         check(window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("browsing a branch keeps the Git view's left column on "
-                      "the working tree (adhoc #1, files slot = %1, history "
+              QString("comparing a branch keeps the Git view's left column on "
+                      "the working tree (adhoc #1/#16, files slot = %1, history "
                       "slot = %2)")
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage()));
+        // adhoc #16: the base end is switchable — re-diff against another
+        // branch and the indicator follows.
+        window.testSetCompareBase(QStringLiteral("feature/other-base"));
+        QApplication::processEvents();
+        check(window.testCompareIndicatorText() ==
+                  QStringLiteral("feature/other-base"),
+              QString("the compare base can be changed off main (adhoc #16, "
+                      "base = %1)")
+                  .arg(window.testCompareIndicatorText().isEmpty()
+                           ? QStringLiteral("<hidden>")
+                           : window.testCompareIndicatorText()));
+        window.testSetCompareBase(QStringLiteral("main"));
+        QApplication::processEvents();
         check(window.testSwitchToWorktreeGitBranch(
                   QStringLiteral("feature/keep-selected")) ==
-                  QStringLiteral("feature/keep-selected") &&
-                  window.testCommitWorkspacePage() == 0,
-              QStringLiteral("a named worktree opens in the Git view's branch "
-                             "browser instead of a separate diff pane"));
-        // adhoc #1: the rail's Git entry always lands back on the default
-        // branch's working-tree view, even while another branch is browsed.
+                  QStringLiteral("feature/keep-selected"),
+              QStringLiteral("a named worktree opens in the Git view's combined "
+                             "branch view instead of a separate diff pane"));
+        // adhoc #1/#16: the rail's Git entry always lands back on the default
+        // branch's working-tree view — clicking Git again clears the branch
+        // comparison and goes back to just main.
         window.testClickRailGitButton();
         QApplication::processEvents();
         check(window.testBrowsedBranch() == QStringLiteral("main") &&
                   window.testCommitWorkspacePage() == 0 &&
                   window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("the rail's Git entry goes back to the main-branch view "
-                      "from a browsed branch (adhoc #1, branch = %1, page = %2)")
+              QString("the rail's Git entry clears the branch comparison and "
+                      "goes back to the main-branch view (adhoc #1/#16, branch "
+                      "= %1, page = %2)")
                   .arg(window.testBrowsedBranch())
                   .arg(window.testCommitWorkspacePage()));
-        check(!window.testCommitsReviewButtonVisible(),
-              QStringLiteral("the Review button hides while the default branch "
-                             "is browsed (adhoc #1)"));
+        check(window.testCompareIndicatorText().isEmpty(),
+              QString("the compare indicator hides once the Git entry cleared "
+                      "the comparison (adhoc #16, base = %1)")
+                  .arg(window.testCompareIndicatorText()));
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
         QApplication::processEvents();
@@ -1956,9 +1985,9 @@ int main(int argc, char *argv[])
               QStringLiteral("the background refresh rebuilds the rows after the "
                              "click (adhoc #420)"));
 
-        // adhoc #119: merging from the review ends the review — the branch's work
+        // adhoc #119: merging from the comparison ends it — the branch's work
         // is in main, so leaving its diff open only shows the user something
-        // they're finished with. Re-open the range pane, then let its "Merge to
+        // they're finished with. Re-open the branch, then let its "Merge to
         // main" button run: the Git view must go back to the working tree exactly
         // as if the pane's ✕ had been clicked.
         //
@@ -1974,45 +2003,29 @@ int main(int argc, char *argv[])
         window.testSwitchToBranchImmediateSelection(
             QStringLiteral("feature/keep-selected"));
         QApplication::processEvents();
-        check(window.testCommitWorkspacePage() == 0 &&
-                  window.testBrowsedBranch() ==
-                      QStringLiteral("feature/keep-selected"),
-              QString("re-opening the branch keeps the Git view on its main "
-                      "page (adhoc #1, page = %1, branch = %2)")
-                  .arg(window.testCommitWorkspacePage())
-                  .arg(window.testBrowsedBranch()));
-        // The deeper range review (with the merge/PR toolbar) is one explicit
-        // click away while a non-default branch is browsed: the commits page's
-        // "Review" button opens the pane the branch links used to land on.
-        check(window.testCommitsReviewButtonVisible(),
-              QStringLiteral("the commits page shows a Review button while a "
-                             "non-default branch is browsed (adhoc #1)"));
-        window.testClickCommitsReviewButton();
-        QApplication::processEvents();
-        // adhoc #12: the review borrows the right pane only — the left column
-        // keeps its working-tree slots and the graph goes back to the default
-        // branch, with the branch being merged in named above the branch button.
+        // adhoc #16: re-opening the branch opens the one combined view — the
+        // graph on the branch, its diff against main on the right pane, both
+        // ends named by the branch button and the compare indicator. No second
+        // click into a separate review page.
         check(window.testCommitWorkspacePage() == 2 &&
+                  window.testBrowsedBranch() ==
+                      QStringLiteral("feature/keep-selected") &&
                   window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("the Review button opens the range diff on the Git view's "
-                      "right pane, leaving the left column on the working tree "
-                      "(adhoc #12, page = %1, files slot = %2, history slot "
-                      "= %3)")
+              QString("re-opening the branch shows its graph and its diff "
+                      "against main together, leaving the left column on the "
+                      "working tree (adhoc #16, page = %1, branch = %2, files "
+                      "slot = %3, history slot = %4)")
                   .arg(window.testCommitWorkspacePage())
+                  .arg(window.testBrowsedBranch())
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage()));
-        check(window.testBrowsedBranch() == QStringLiteral("main"),
-              QString("opening the review hands the graph back to the default "
-                      "branch (adhoc #12, branch = %1)")
-                  .arg(window.testBrowsedBranch()));
-        check(window.testMergingBannerText().contains(
-                  QStringLiteral("feature/keep-selected")),
-              QString("the branch being merged in is named above the branch "
-                      "button (adhoc #12, banner = %1)")
-                  .arg(window.testMergingBannerText().isEmpty()
+        check(window.testCompareIndicatorText() == QStringLiteral("main"),
+              QString("the branch is compared against main by default (adhoc "
+                      "#16, base = %1)")
+                  .arg(window.testCompareIndicatorText().isEmpty()
                            ? QStringLiteral("<hidden>")
-                           : window.testMergingBannerText()));
+                           : window.testCompareIndicatorText()));
         const bool mergeClicked = window.testClickBranchReviewMerge(false);
         QApplication::processEvents();
         const QString mainTip =
@@ -2020,32 +2033,30 @@ int main(int argc, char *argv[])
         check(mergeClicked && window.testCommitWorkspacePage() == 0 &&
                   window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("merging from the branch review closes it and hands the Git "
-                      "view back to the working tree (adhoc #119, clicked = %1, "
-                      "page = %2, files slot = %3, history slot = %4, main tip = "
-                      "%5)")
+              QString("merging from the branch comparison closes it and hands the "
+                      "Git view back to the working tree (adhoc #119, clicked = "
+                      "%1, page = %2, files slot = %3, history slot = %4, main "
+                      "tip = %5)")
                   .arg(mergeClicked ? QStringLiteral("yes") : QStringLiteral("no"))
                   .arg(window.testCommitWorkspacePage())
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage())
                   .arg(mainTip.trimmed()));
-        check(window.testMergingBannerText().isEmpty(),
-              QString("closing the review hides the merging-in indicator "
-                      "(adhoc #12, banner = %1)")
-                  .arg(window.testMergingBannerText().isEmpty()
-                           ? QStringLiteral("<hidden>")
-                           : window.testMergingBannerText()));
+        check(window.testCompareIndicatorText().isEmpty(),
+              QString("closing the comparison hides the compare indicator "
+                      "(adhoc #16, base = %1)")
+                  .arg(window.testCompareIndicatorText()));
         check(mainTip.contains(QStringLiteral("Merge feature/keep-selected into main")),
-              QString("the review's merge button really merged the branch (adhoc "
-                      "#119, main tip = %1)").arg(mainTip.trimmed()));
+              QString("the comparison's merge button really merged the branch "
+                      "(adhoc #119, main tip = %1)").arg(mainTip.trimmed()));
 
         // adhoc #131: the agent detail page's "Branch" button opens that session's
-        // branch in the Git view — the range pane, with the branch's changed files
-        // in the left column's CHANGES slot and its scope list below them. The
-        // sessions list is global, so the click has to point the Git view at the
-        // session's own repository first; from another repo's detail page it would
-        // otherwise render that repo's (missing) branch. Park the detail view on
-        // "me/r", then take the button's route for the session on "me/wtrepo".
+        // branch in the Git view's combined view — its graph plus its diff
+        // against the compare base. The sessions list is global, so the click has
+        // to point the Git view at the session's own repository first; from
+        // another repo's detail page it would otherwise render that repo's
+        // (missing) branch. Park the detail view on "me/r", then take the
+        // button's route for the session on "me/wtrepo".
         window.testOpenRepository(repoIdx);
         QApplication::processEvents();
         window.testSwitchToAgentBranch(issueSession.id);
@@ -2055,11 +2066,11 @@ int main(int argc, char *argv[])
               QString("the agent's Branch button binds the Git view to that "
                       "session's repository (adhoc #131, git dir = %1)")
                   .arg(agentBranchDir));
-        check(window.testCommitWorkspacePage() == 0 &&
+        check(window.testCommitWorkspacePage() == 2 &&
                   window.testBrowsedBranch() ==
                       QStringLiteral("feature/keep-selected"),
-              QString("the agent's Branch button browses its branch in the Git "
-                      "view's main page (adhoc #131/#1, page = %1, branch = %2)")
+              QString("the agent's Branch button opens its branch's combined "
+                      "graph + diff view (adhoc #131/#16, page = %1, branch = %2)")
                   .arg(window.testCommitWorkspacePage())
                   .arg(window.testBrowsedBranch()));
         check(window.testGitFilesSlotPage() == 0 &&
