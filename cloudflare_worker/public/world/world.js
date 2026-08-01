@@ -333,6 +333,11 @@ function coarseCrashReading(value) {
   return Math.round(number / magnitude) * magnitude;
 }
 
+function coarseCrashLabel(value, unit = "") {
+  const reading = coarseCrashReading(value);
+  return Number.isFinite(reading) ? `${reading}${unit}` : "unknown";
+}
+
 // Chromium-only heap reading; NaN elsewhere and the caller omits the figure.
 function heapUsedMB() {
   const bytes = Number(performance?.memory?.usedJSHeapSize);
@@ -8105,12 +8110,6 @@ class ForkMeshWorld extends HTMLElement {
       Number.isFinite(Number(value)) && Number(value) >= 0
         ? `${Math.round(Number(value))}${unit}`
         : "unknown";
-    // Volatile readings are bucketed so equivalent crashes group together;
-    // small exact counts (peers, crash count, context losses) stay exact.
-    const coarse = (value, unit = "") => {
-      const reading = coarseCrashReading(value);
-      return Number.isFinite(reading) ? `${reading}${unit}` : "unknown";
-    };
     const navigation = String(
       performance.getEntriesByType?.("navigation")?.[0]?.type || "unknown",
     ).slice(0, 16);
@@ -8120,7 +8119,9 @@ class ForkMeshWorld extends HTMLElement {
         ? `${coarseCrashReading(record.bufferWidth)}x${coarseCrashReading(record.bufferHeight)}`
         : "unknown";
     // Everything that identifies the device leads, so the admin ping (which
-    // carries a bounded prefix of this line) always names what crashed.
+    // carries a bounded prefix of this line) always names what crashed. The
+    // volatile readings below are bucketed so equivalent crashes group;
+    // small exact counts (peers, crashes, context losses) stay exact.
     const gpu = String(record.gpu || "").slice(0, 120);
     const parts = [
       discarded
@@ -8132,23 +8133,23 @@ class ForkMeshWorld extends HTMLElement {
       `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
       `renderer ${record.compact === true ? "compact" : "full"} webgl${record.webgl2 === true ? "2" : "1"}`,
       `safe mode ${record.safeMode === true ? "on" : "off"}`,
-      `uptime ${coarse((beatAt - Number(record.startedAt)) / 1000, "s")}`,
-      `heartbeat gap ${coarse((Date.now() - beatAt) / 1000, "s")}`,
+      `uptime ${coarseCrashLabel((beatAt - Number(record.startedAt)) / 1000, "s")}`,
+      `heartbeat gap ${coarseCrashLabel((Date.now() - beatAt) / 1000, "s")}`,
       `navigation ${navigation}`,
       `visibility ${String(record.visibility || "unknown").slice(0, 16)}`,
       `tab crashes ${this.worldCrashCount()}`,
       `socket ${String(record.socket || "unknown").slice(0, 16)} with ${describe(record.peers)} peers`,
       `space ${String(record.space || "unknown").slice(0, 32)}`,
       `avatars ${describe(record.avatars)}`,
-      `fps ${coarse(record.fps)}`,
-      `frame ${coarse(record.frameTimeMs, "ms")} worst ${coarse(record.longestFrameMs, "ms")}`,
-      `triangles ${coarse(record.triangles)}`,
-      `draws ${coarse(record.calls)}`,
-      `textures ${coarse(record.textures)}`,
-      `geometries ${coarse(record.geometries)}`,
-      `programs ${coarse(record.programs)}`,
+      `fps ${coarseCrashLabel(record.fps)}`,
+      `frame ${coarseCrashLabel(record.frameTimeMs, "ms")} worst ${coarseCrashLabel(record.longestFrameMs, "ms")}`,
+      `triangles ${coarseCrashLabel(record.triangles)}`,
+      `draws ${coarseCrashLabel(record.calls)}`,
+      `textures ${coarseCrashLabel(record.textures)}`,
+      `geometries ${coarseCrashLabel(record.geometries)}`,
+      `programs ${coarseCrashLabel(record.programs)}`,
       `buffer ${buffer} at dpr ${Number(record.pixelRatio) || 0}`,
-      `heap ${coarse(record.heapUsedMb, "MB")} of ${coarse(record.heapLimitMb, "MB")}`,
+      `heap ${coarseCrashLabel(record.heapUsedMb, "MB")} of ${coarseCrashLabel(record.heapLimitMb, "MB")}`,
       `context losses ${describe(record.contextLosses)}`,
     ];
     this.reportWorldClientError(parts.join("; "));
@@ -8219,20 +8220,16 @@ class ForkMeshWorld extends HTMLElement {
         Math.round((Date.now() - (this.crashGuardStartedAt || Date.now())) / 1000),
       );
       const device = this.deviceProfile();
-      const coarse = (value) => {
-        const reading = coarseCrashReading(value);
-        return Number.isFinite(reading) ? String(reading) : "unknown";
-      };
       const parts = [
-        `World renderer crashed; WebGL context lost after ${coarse(uptimeS)}s`,
+        `World renderer crashed; WebGL context lost after ${coarseCrashLabel(uptimeS)}s`,
         `device ${device.touch ? "touch" : "pointer"} ${device.screen || "unknown"} screen`,
         `renderer ${output?.compactRenderer === true ? "compact" : "full"}`,
-        `fps ${coarse(renderer?.fps)}`,
-        `triangles ${coarse(renderer?.triangles)}`,
-        `textures ${coarse(renderer?.textures)}`,
-        `geometries ${coarse(renderer?.geometries)}`,
+        `fps ${coarseCrashLabel(renderer?.fps)}`,
+        `triangles ${coarseCrashLabel(renderer?.triangles)}`,
+        `textures ${coarseCrashLabel(renderer?.textures)}`,
+        `geometries ${coarseCrashLabel(renderer?.geometries)}`,
         `dpr ${renderer ? Number(renderer.pixelRatio) || 0 : 0}`,
-        `cores ${coarse(device.cores)}`,
+        `cores ${coarseCrashLabel(device.cores)}`,
         `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
         `safe mode ${this.rendererSafeMode === true ? "on" : "off"}`,
       ];

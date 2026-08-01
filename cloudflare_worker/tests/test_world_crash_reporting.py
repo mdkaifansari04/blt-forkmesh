@@ -137,10 +137,10 @@ def test_crash_reports_name_the_device_renderer_and_resident_scene():
         "webgl${record.webgl2 === true",
         "cores ${describe(device.cores)}",
         "device memory ",
-        "textures ${coarse(record.textures)}",
-        "geometries ${coarse(record.geometries)}",
-        "programs ${coarse(record.programs)}",
-        "draws ${coarse(record.calls)}",
+        "textures ${coarseCrashLabel(record.textures)}",
+        "geometries ${coarseCrashLabel(record.geometries)}",
+        "programs ${coarseCrashLabel(record.programs)}",
+        "draws ${coarseCrashLabel(record.calls)}",
         "buffer ${buffer} at dpr ",
         "space ${String(record.space",
         "avatars ${describe(record.avatars)}",
@@ -168,6 +168,7 @@ def test_volatile_crash_readings_are_bucketed_so_equivalent_crashes_group():
     # file every crash as its own group of one — no count, no frequency, and
     # one administrator ping per crash.
     assert "function coarseCrashReading(value)" in WORLD
+    assert "function coarseCrashLabel(value, unit = \"\")" in WORLD
     assert "const magnitude = 10 ** Math.floor(Math.log10(number));" in WORLD
     assert "return Math.round(number / magnitude) * magnitude;" in WORLD
 
