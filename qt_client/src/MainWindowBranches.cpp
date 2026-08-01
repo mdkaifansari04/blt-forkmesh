@@ -2222,10 +2222,10 @@ QWidget *MainWindow::buildBranchesTab()
 // (adhoc #107): the branch detail viewer that used to sit inside the Branches
 // panel, moved beside the working-tree and commit pages and upgraded with the PR
 // viewer's diff tools (find bar, prev/next change, split toggle, Pac-Man sticky
-// header, auto-mark-viewed on scroll). openBranchRangeReview()/
-// openPullDiffInGitView() land here. It swaps in for the working-tree diff on
-// the right pane only (adhoc #12) — the separate scope / changed-files columns
-// it used to bring along are gone, so the rest of the git tab stays put.
+// header, auto-mark-viewed on scroll). switchToBranch()/openPullDiffInGitView()
+// land here. It swaps in for the working-tree diff on the right pane only
+// (adhoc #12) — the separate scope / changed-files columns it used to bring
+// along are gone, so the rest of the git tab stays put.
 QWidget *MainWindow::buildBranchRangePane()
 {
     m_branchDiffView = new QTextBrowser;

@@ -542,7 +542,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_branchesButton->setCursor(Qt::PointingHandCursor);
     m_branchesButton->setToolTip(
         "Open the Branches panel to manage branches \xE2\x80\x94 click one to "
-        "review its commits and diff in the Git view");
+        "open it in the Git view, where its history and its diff against the "
+        "base branch show side by side");
     setOcticon(m_branchesButton, "git-branch", 16);
     connect(m_branchesButton, &QPushButton::clicked, this, [this] {
         // Branches has no top-level tab anymore: its panel lives inside the Code
