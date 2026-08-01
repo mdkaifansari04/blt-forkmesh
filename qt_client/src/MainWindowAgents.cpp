@@ -7095,11 +7095,9 @@ void MainWindow::openAgentSessionFromIssue()
         switchToAgentsTab(session->id);
 }
 
-// Open an agent session's branch in the Git view (adhoc #131): its commits, its
-// changed files and its diff, laid out exactly as the Git view lays out a branch
-// — the changed-files list in the left column's CHANGES slot with the scope list
-// (all changes / uncommitted / per-commit) below it, and the source graph handing
-// its slot over for the duration.
+// Open an agent session's branch in the Git view: its complete worktree changes
+// fill the shared range diff while the universal source-control composer,
+// working changes, and branch graph remain visible on the left.
 //
 // switchToBranch() does that render, but it drives the repo-detail widgets of
 // whichever repository the detail view currently holds, and the sessions list is
