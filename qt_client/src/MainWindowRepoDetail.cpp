@@ -4735,6 +4735,9 @@ QWidget *MainWindow::createGlobalSearchBox()
         if (t.trimmed().isEmpty()) {
             m_globalSearchTimer->stop();
             hideGlobalSearchPopup();
+            // Clearing the box unfilters the commit graph straight away; a query
+            // waits for the debounce below, since filtering deepens the history.
+            syncGitCommitFilter();
         } else {
             m_globalSearchTimer->start();
         }
@@ -4746,6 +4749,9 @@ void MainWindow::rebuildGlobalSearchResults()
 {
     if (!m_globalSearch || !m_globalSearchPopup)
         return;
+    // Same debounce drives the Git page's commit filter (the box doubles as that
+    // page's search), so a fast typist doesn't deepen the history per keystroke.
+    syncGitCommitFilter();
     const QString needle = m_globalSearch->text().trimmed().toLower();
     if (needle.isEmpty()) {
         hideGlobalSearchPopup();
@@ -6954,19 +6960,22 @@ void MainWindow::showInsightsContributorMenu(const QPoint &pos)
 }
 
 // Jump from an Insights contributor row to the commits panel, filtered to that
-// author. Drives the existing commit search box (which deepens the list to the
-// whole history and re-applies on textChanged); filterCommits matches the author
-// column too, so the list narrows to that contributor's commits.
+// author. Types the name into the top-bar search — the Git page's search field —
+// which deepens the list to the whole history and re-applies on textChanged;
+// filterCommits matches the author column too, so the list narrows to that
+// contributor's commits.
 void MainWindow::openCommitsForContributor(const QString &author)
 {
     const QString name = author.trimmed();
     if (name.isEmpty())
         return;
     showOverviewCommits();
-    if (m_commitSearch) {
-        m_commitSearch->setText(name);
-        m_commitSearch->setFocus();
+    if (m_globalSearch) {
+        m_globalSearch->setText(name);
+        m_globalSearch->setFocus();
     }
+    if (m_commitSearch)
+        m_commitSearch->setText(name);
 }
 
 // Rewrite history so every commit authored (or committed) by `oldName` is
@@ -8706,6 +8715,31 @@ void MainWindow::updateRepoActivityRail()
     m_railGitButton->setChecked(onChanges);
     if (m_agentsNavButton)
         m_agentsNavButton->setChecked(onAgents);
+    // The Git page has no search box of its own: the top bar's field is the one
+    // place to search from, and here it searches this repo's history, so say so.
+    if (m_globalSearch)
+        m_globalSearch->setPlaceholderText(
+            onChanges ? QString::fromUtf8("Search commits\xE2\x80\xA6")
+                      : QString::fromUtf8("Search\xE2\x80\xA6"));
+    // Arriving on the page applies whatever is typed up there to the graph;
+    // leaving it clears the filter so the list is whole again next time.
+    syncGitCommitFilter();
+}
+
+// Mirror the top-bar search into the commit-list filter while the Git page is
+// on screen (the page's own search box was folded into that one field). Off the
+// page the filter is cleared, so a query typed for something else never leaves
+// the history quietly narrowed.
+void MainWindow::syncGitCommitFilter()
+{
+    if (!m_commitSearch)
+        return;
+    const bool onGit = m_railGitButton && m_railGitButton->isChecked();
+    const QString query =
+        onGit && m_globalSearch ? m_globalSearch->text().trimmed() : QString();
+    if (m_commitSearch->text() == query)
+        return;
+    m_commitSearch->setText(query); // textChanged -> filterCommits
 }
 
 
@@ -8723,6 +8757,12 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsTable = new QTableWidget(0, 9);
     m_commitsTable->setObjectName("commitsList");
     enableHoverRowHighlight(m_commitsTable); // green outline selection (issue #252)
+    // No outline around the source graph: the lanes read as one continuous
+    // drawing, and a box around them only fenced off the column. Keyed on the
+    // object name so the per-widget rule beats the app-wide #commitsList one.
+    m_commitsTable->setFrameShape(QFrame::NoFrame);
+    m_commitsTable->setStyleSheet(m_commitsTable->styleSheet() +
+                                  QStringLiteral("#commitsList{border:none;}"));
     m_commitsTable->horizontalHeader()->setVisible(false);
     m_commitsTable->verticalHeader()->setVisible(false);
     // Tight, fixed row height so the graph reads compact like the VS Code / GitLens
@@ -8820,17 +8860,14 @@ QWidget *MainWindow::buildRepoCommitsTab()
     });
     m_commitsUnsyncedBanner->hide();
 
-    // Search box: type a hash (full or abbreviated) or words from the message to
-    // filter the list; clearing it shows every commit again.
-    m_commitSearch = new QLineEdit;
-    m_commitSearch->setObjectName("issueSearch"); // reuse the search-field styling
-    m_commitSearch->setClearButtonEnabled(true);
-    m_commitSearch->setPlaceholderText(
-        "Search commits by hash, message, or author\xE2\x80\xA6");
-    // A line edit's own minimum is sized for a sensible amount of text; here it
-    // would be one more thing holding the left column open (adhoc #74). It still
-    // takes every spare pixel in the row via the stretch below.
-    m_commitSearch->setMinimumWidth(72);
+    // Commit search has no box of its own on this page any more: the top bar's
+    // search field takes the job over while the Git page is up — it relabels
+    // itself "Search commits" there and pushes what you type into this line edit
+    // (see syncGitCommitFilter). It stays as the hidden filter-state carrier
+    // every commit-filtering path already drives, parented to the page so it can
+    // never float off as a window of its own.
+    m_commitSearch = new QLineEdit(listPage);
+    m_commitSearch->hide();
     connect(m_commitSearch, &QLineEdit::textChanged, this,
             &MainWindow::filterCommits);
 
@@ -8873,8 +8910,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     auto *searchRow = new QHBoxLayout;
     searchRow->setSpacing(8);
-    searchRow->addWidget(m_commitsBranchButton);
-    searchRow->addWidget(m_commitSearch, 1);
+    searchRow->addWidget(m_commitsBranchButton, 1);
     searchRow->addWidget(m_commitsFetchButton);
     searchRow->addWidget(m_commitsPullButton);
 
@@ -9161,6 +9197,12 @@ QWidget *MainWindow::buildRepoCommitsTab()
     leftSplit->setChildrenCollapsible(false);
     leftSplit->addWidget(m_gitFilesSlot);
     leftSplit->addWidget(m_gitHistorySlot);
+    // The history pane can be dragged up until only the compose box, the commit
+    // buttons and the CHANGES heading are left above it. Without an explicit
+    // minimum the changes pane's own contents set that floor, and the handle
+    // stopped well short of where the graph wants to start.
+    constexpr int kGitFilesSlotMinHeight = 130;
+    m_gitFilesSlot->setMinimumHeight(kGitFilesSlotMinHeight);
     leftSplit->setStretchFactor(0, 2);
     leftSplit->setStretchFactor(1, 3);
     leftSplit->setSizes({320, 520});
@@ -9174,6 +9216,13 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_scmDiff = new QTextBrowser;
     m_scmDiff->setObjectName("diffView");
     registerDiffView(m_scmDiff);
+    // Borderless: this pane fills the whole right-hand side of the Git page, so
+    // its outline only drew a second box just inside the window edge — most
+    // obvious around the "(no working-tree changes)" note. Keyed on the object
+    // name so the per-widget rule beats the app-wide #diffView one.
+    m_scmDiff->setFrameShape(QFrame::NoFrame);
+    m_scmDiff->setStyleSheet(m_scmDiff->styleSheet() +
+                             QStringLiteral("#diffView{border:none;}"));
     // Sticky per-file header + read-progress tracking over the combined
     // working-tree diff (adhoc #399).
     setupScmDiffPane();
