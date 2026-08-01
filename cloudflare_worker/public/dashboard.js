@@ -9404,6 +9404,63 @@
     }
   }
 
+  // "Copy MCP prompt" on the issue detail page: one paste block that points an
+  // MCP-capable coding agent at the forkmesh MCP server so it pulls this issue,
+  // works it on a dedicated branch, submits the pull request, and reports back
+  // which model it ran as and its thinking setting. The prompt embeds no
+  // credential — the agent's own connector token (desktop Settings -> MCP)
+  // authorizes the signed writes.
+  function issueMcpPrompt(repo, number, values) {
+    const repoSlug = `${repo.owner || "owner"}/${repo.name || "repo"}`;
+    const title = String(values?.title || "").trim();
+    const titleSlug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    const branch = titleSlug ? `issue-${number}-${titleSlug}` : `issue-${number}`;
+    const issueUrl = `${location.origin}${repoPathUrl(repo)}/issues/${number}`;
+    return [
+      `Work ForkMesh issue #${number} in ${repoSlug} end to end through the "forkmesh" MCP server.`,
+      "",
+      `Issue: ${title || `#${number}`}`,
+      `Issue page: ${issueUrl}`,
+      "",
+      "1. Use the forkmesh MCP server for every ForkMesh read and write. If it is not connected, stop and ask me to connect it first: the ForkMesh desktop app mints the connector token and the exact configuration block under Settings -> MCP.",
+      `2. Call whoami to confirm the connector reaches ${repoSlug} with write access, then pull this issue with search_issues and read every file it references with read_file before planning.`,
+      `3. Work in the local checkout of ${repoSlug} that the connector exposes. Create a dedicated branch named ${branch} from the latest main; never commit to main directly.`,
+      `4. Implement the smallest complete fix, run the repository's tests and required checks, and commit with a clear message referencing issue #${number}.`,
+      `5. Submit the work with open_pr_from_branch: branch ${branch}, base main, a title referencing issue #${number}, and a description that summarizes the change and the test results.`,
+      `6. Report back with comment_on_issue on issue #${number}: link the new pull request, then state exactly which model you ran as (model name/id) and your thinking setting (extended thinking on or off, or the reasoning-effort level). Repeat the same model and thinking report in the pull request description. Do not skip this report.`,
+      "",
+      "If the connector is read-only, tests fail, or anything else blocks a safe submission, stop and report the blocker instead of forcing the pull request.",
+    ].join("\n");
+  }
+
+  async function copyIssueMcpPrompt(button) {
+    const detail = state.repoRecordDetail;
+    const repo = state.selectedRepo;
+    if (!button || !repo || detail?.kind !== "issues") return false;
+    // The button renders for signed-out visitors too; the prompt itself is
+    // only handed out to an authenticated account. Bounce through login and
+    // land back on this exact issue.
+    if (!state.session?.sessionToken) {
+      location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
+      return false;
+    }
+    const prompt = issueMcpPrompt(repo, detail.number, detail.parsed?.values);
+    const copied = await copyTextToClipboard(prompt);
+    if (!copied) {
+      button.title = "Could not access the clipboard";
+      return false;
+    }
+    const original = button.innerHTML;
+    button.innerHTML = '<i data-lucide="check" class="h-3.5 w-3.5"></i>Prompt copied';
+    window.lucide?.createIcons();
+    window.setTimeout(() => {
+      if (!document.body.contains(button)) return;
+      button.innerHTML = original;
+      window.lucide?.createIcons();
+    }, 1600);
+    return true;
+  }
+
   function renderRepoRecordDetail(repo, kind, number, parsed) {
     const options = parsed.options || {};
     const config = repoCollectionConfig[kind] || repoCollectionConfig.issues;
@@ -9428,6 +9485,12 @@
     const marketingInitiativeAction =
       isIssues && !options.pending
         ? `<button type="button" data-repo-marketing-initiative class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="megaphone" class="h-3.5 w-3.5 text-primary"></i>Move to Marketing initiatives</button>`
+        : "";
+    // Always rendered, signed in or not: a signed-out click bounces through
+    // /login and returns here, so the visitor discovers the workflow either way.
+    const mcpPromptAction =
+      isIssues && !options.pending
+        ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
         : "";
     const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
     // Always mount the timeline container for issues so a comment posted from
@@ -9489,6 +9552,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <button type="button" data-repo-record-back="${escapeHtml(kind)}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to ${escapeHtml(config.label)}</button>
           <div class="flex flex-wrap items-center justify-end gap-2">
+            ${mcpPromptAction}
             ${marketingInitiativeAction}
             <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · ${recordLabel}</span>
           </div>
@@ -15753,6 +15817,14 @@
       );
       if (marketingInitiativeButton) {
         void moveIssueToMarketingInitiatives(marketingInitiativeButton);
+        return;
+      }
+
+      const issueMcpPromptButton = event.target.closest(
+        "[data-repo-issue-mcp-prompt]",
+      );
+      if (issueMcpPromptButton) {
+        void copyIssueMcpPrompt(issueMcpPromptButton);
         return;
       }
 

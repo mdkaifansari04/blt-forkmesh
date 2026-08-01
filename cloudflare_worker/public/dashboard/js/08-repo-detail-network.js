@@ -2047,6 +2047,14 @@
         return;
       }
 
+      const issueMcpPromptButton = event.target.closest(
+        "[data-repo-issue-mcp-prompt]",
+      );
+      if (issueMcpPromptButton) {
+        void copyIssueMcpPrompt(issueMcpPromptButton);
+        return;
+      }
+
       const pullViewedButton = event.target.closest("[data-repo-pull-viewed]");
       if (pullViewedButton && state.selectedRepo) {
         toggleRepoPullViewed(
