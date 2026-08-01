@@ -37,6 +37,7 @@
 #include <QSharedPointer>
 #include <QStandardPaths>
 #include <QTabWidget>
+#include <QUrlQuery>
 #include <QUuid>
 
 #include <algorithm>
@@ -464,10 +465,11 @@ QWidget *MainWindow::buildChatPage()
     // railItemWidth() x kRailItemHeight — so icons, words, hover and the
     // checked accent line all read identically down the rail.
     //
-    // Agents heads the rail (adhoc #70) — a regular destination like the rest,
-    // badged with the running-session count. Only its fleet matrix stayed on the
-    // window-chrome line (see buildBreadcrumb). The contextual Code and Git
-    // entries are inserted directly below it by buildRepoDetail().
+    // Agents is a regular destination like the rest, badged with the
+    // running-session count; only its fleet matrix stayed on the window-chrome
+    // line (see buildBreadcrumb). The contextual Code entry is inserted above
+    // it and Git directly below it by buildRepoDetail() (adhoc #6 put Code at
+    // the head of the rail).
     // Log and Tasks live in the bottom utility group instead of here; Tasks sits
     // directly above Pings there (adhoc #97).
     for (QPushButton *button :
@@ -3378,6 +3380,10 @@ void MainWindow::updateFooterDiagnostics()
 
 void MainWindow::refreshRepositoryStats()
 {
+    // The trend charts and Ratchet toggle live on the Code overview's mode row
+    // (adhoc #6), which is built lazily with the repo detail's Code tab.
+    if (!m_repoSizeChart || !m_repoLinesChart || !m_repoFilesChart)
+        return;
     const QString dir = repoGitDir();
     const bool available = !dir.isEmpty() && repoHasWorkingTree();
     const QList<QWidget *> statsWidgets{m_repoSizeChart, m_repoLinesChart,
@@ -5530,26 +5536,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_memChart = memChart;
     m_diskChart = diskChart;
 
-    // Thirty-day repository trends are deliberately a little larger than the
-    // live host-resource squares: each point represents a day, not a second.
-    auto *repoSizeChart = new ResourceSparkline(QStringLiteral("SIZE"), nullptr, 44, 30);
-    auto *repoLinesChart = new ResourceSparkline(QStringLiteral("LOC"), nullptr, 44, 30);
-    auto *repoFilesChart = new ResourceSparkline(QStringLiteral("FILES"), nullptr, 44, 30);
-    repoSizeChart->setObjectName(QStringLiteral("repoSizeChart"));
-    repoLinesChart->setObjectName(QStringLiteral("repoLinesChart"));
-    repoFilesChart->setObjectName(QStringLiteral("repoFilesChart"));
-    m_repoSizeChart = repoSizeChart;
-    m_repoLinesChart = repoLinesChart;
-    m_repoFilesChart = repoFilesChart;
-    m_repoRatchetButton = new QToolButton;
-    m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
-    m_repoRatchetButton->setText(QStringLiteral("Ratchet mode"));
-    m_repoRatchetButton->setCheckable(true);
-    m_repoRatchetButton->setToolTip(
-        QStringLiteral("Keep each commit at or below today's tracked size and require "
-                       "at least as many removed lines as added lines."));
-    connect(m_repoRatchetButton, &QToolButton::toggled, this,
-            &MainWindow::toggleRepositoryRatchet);
+    // The thirty-day SIZE/LOC/FILES repository trends and the Ratchet mode
+    // toggle no longer live on the chrome line (adhoc #6): they're built into
+    // the Code overview's mode row (buildRepoFilesPanel), beside the toolbar
+    // counts they describe.
 
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -5578,6 +5568,11 @@ QWidget *MainWindow::buildBreadcrumb()
     // left-hand group because that group never scrolls out of a narrow window.
     chromeRow->addWidget(m_navSignInButton);
     chromeRow->addWidget(m_relayJoinApproveButton);
+    // The owner/repo switcher sits between the instance logo and the SOL
+    // balance (adhoc #6) — repository identity now reads on the chrome line
+    // instead of heading the repo-detail page. updateRepoSwitcher still owns
+    // its text, icon and visibility.
+    chromeRow->addWidget(m_repoMenuButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);
@@ -5602,10 +5597,6 @@ QWidget *MainWindow::buildBreadcrumb()
     // The relay radar used to sit here too (adhoc #87); it is gone (adhoc
     // #124) — its colour moved to the dot above the instance logo and its
     // node blips to the node dots beside the agent fleet.
-    chromeRow->addWidget(repoSizeChart);
-    chromeRow->addWidget(repoLinesChart);
-    chromeRow->addWidget(repoFilesChart);
-    chromeRow->addWidget(m_repoRatchetButton);
     // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
     // to the minimize/maximize/close buttons (adhoc #33).
     chromeRow->addWidget(cpuChart);
@@ -7379,12 +7370,22 @@ bool MainWindow::relayPublishRepo(const RepositoryRecord &repo,
 
 // Keep the open repo's sync-derived indicators in step after anything that may
 // have changed the push state (a new local commit, a completed publish/sync).
-// The floating "Sync (N)" pill this used to paint above the Code tab is gone
-// (adhoc #374), and with it the off-thread ahead/behind walks that fed only its
-// label and tooltip — what's left is the activity rail's spinning Git glyph and
-// the commit list's "waiting to sync" markers.
+// The old floating "Sync (N)" pill above Code remains gone (adhoc #374). Its
+// replacement is scoped to Source Control's Outgoing Changes group, alongside
+// the activity rail's spinning Git glyph and commit pending-sync markers.
 void MainWindow::refreshRepoSyncIndicators()
 {
+    // The Source Control pane owns the user-facing outgoing count and Sync
+    // Changes action. Refresh it on every push/publish transition so the button
+    // enters its busy state immediately and disappears once the mirror catches
+    // up.
+    // Also refresh while Git is closed: the activity-rail upload marker is the
+    // affordance that tells the user there is something waiting inside it.
+    if (m_scmPanel)
+        refreshSourceControlOutgoing();
+    else if (m_railGitButton)
+        m_railGitButton->setPendingSyncCount(0);
+
     // Only while the commit list is on screen; a cheap no-op otherwise.
     refreshCommitMarkersIfStale();
 
@@ -11415,8 +11416,17 @@ enum NodeCol {
     kNodeColRam,
     kNodeColDisk,
     kNodeColId,
+    kNodeColActions,
     kNodeColCount,
 };
+// Names the mesh refuses to delete, mirrored from the worker's protected list
+// so the button is never offered for a node the relay would answer 409 for.
+bool isProtectedMeshNode(const QString &node)
+{
+    const QString key = node.trimmed().toLower();
+    return key.isEmpty() || key == QLatin1String("forkmesh") ||
+           key == QLatin1String("forkmesh-mainnode");
+}
 } // namespace
 
 QWidget *MainWindow::buildNodesSection()
@@ -11487,7 +11497,7 @@ QWidget *MainWindow::buildNodesSection()
          QStringLiteral("Platform"), QStringLiteral("Repos"),
          QStringLiteral("Mirrors"), QStringLiteral("CPU"),
          QStringLiteral("RAM"), QStringLiteral("Disk"),
-         QStringLiteral("Node id")});
+         QStringLiteral("Node id"), QStringLiteral("Actions")});
     m_nodesTable->verticalHeader()->setVisible(false);
     m_nodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_nodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -11508,6 +11518,15 @@ QWidget *MainWindow::buildNodesSection()
         m_nodesTable->setItemDelegateForColumn(col, resourceBars);
     connect(m_nodesTable, &QTableWidget::cellClicked, this,
             [this](int row, int) { showNodeDetailForRow(row); });
+    // Sorting moves the items, so the action column's buttons have to be laid
+    // down again against the new row order — otherwise a re-sort would leave a
+    // Delete button sitting on a different node's row. Deferred so the view has
+    // finished the sort before its cell widgets are replaced.
+    connect(m_nodesTable->horizontalHeader(),
+            &QHeaderView::sortIndicatorChanged, this, [this] {
+                QTimer::singleShot(0, this,
+                                   &MainWindow::refreshNodeActionButtons);
+            });
     split->addWidget(m_nodesTable, 2);
 
     m_nodeDetailScroll = new QScrollArea;
@@ -11851,8 +11870,19 @@ void MainWindow::refreshNodesTable()
         if (!nodeId.isEmpty())
             idItem->setToolTip(nodeId);
         m_nodesTable->setItem(i, kNodeColId, idItem);
+
+        // The action cell's own item carries the node id the Delete button
+        // sends as an alias, so refreshNodeActionButtons() can rebuild the
+        // buttons after a re-sort without re-deriving the roster.
+        auto *actionItem = new QTableWidgetItem;
+        actionItem->setData(Qt::UserRole, e.name);
+        actionItem->setData(Qt::UserRole + 1, nodeId);
+        actionItem->setData(Qt::UserRole + 2, e.self);
+        actionItem->setFlags(Qt::ItemIsEnabled);
+        m_nodesTable->setItem(i, kNodeColActions, actionItem);
     }
     m_nodesTable->setSortingEnabled(true);
+    refreshNodeActionButtons();
 
     if (m_nodesStatus) {
         m_nodesStatus->setText(visible.isEmpty()
@@ -11878,6 +11908,453 @@ void MainWindow::refreshNodesTable()
     } else {
         showNodeDetailForRow(-1);
     }
+}
+
+void MainWindow::refreshNodeActionButtons()
+{
+    if (!m_nodesTable)
+        return;
+    // Deleting a node is a platform-admin action — the relay answers not_admin
+    // to everyone else — so the whole column is hidden rather than offering a
+    // button that could only ever fail.
+    m_nodesTable->setColumnHidden(kNodeColActions, !m_isAdmin);
+    if (!m_isAdmin)
+        return;
+    const QString actor = accountOwner().trimmed();
+    int buttonHeight = 0;
+    for (int row = 0; row < m_nodesTable->rowCount(); ++row) {
+        QTableWidgetItem *item = m_nodesTable->item(row, kNodeColActions);
+        const QString node =
+            item ? item->data(Qt::UserRole).toString().trimmed() : QString();
+        const QString nodeId =
+            item ? item->data(Qt::UserRole + 1).toString() : QString();
+        const bool self =
+            item && (item->data(Qt::UserRole + 2).toBool() ||
+                     (!actor.isEmpty() &&
+                      node.compare(actor, Qt::CaseInsensitive) == 0));
+        // This machine and the mesh's own reserved names are the two things the
+        // relay refuses to delete; offer nothing rather than a 409.
+        if (node.isEmpty() || self || isProtectedMeshNode(node)) {
+            m_nodesTable->removeCellWidget(row, kNodeColActions);
+            continue;
+        }
+        auto *deleteButton = new QPushButton(QStringLiteral("Delete"));
+        deleteButton->setObjectName(QStringLiteral("dangerButton"));
+        deleteButton->setCursor(Qt::PointingHandCursor);
+        // Same "sm" sizing the Hosts action cell needs: a default-padded button
+        // is taller than a table row, and the view then drops its label
+        // (adhoc #376).
+        deleteButton->setProperty("buttonSize", "sm");
+        setOcticon(deleteButton, "trash", 12);
+        deleteButton->setToolTip(QString::fromUtf8(
+            "Delete \"%1\" for good: destroy its Vultr server, remove its DNS "
+            "record, erase it from the relay (account, mirrors, agent jobs and "
+            "the /status history) and forget the saved SSH host here.")
+                                     .arg(node));
+        connect(deleteButton, &QPushButton::clicked, this,
+                [this, node, nodeId] {
+                    // Next tick: the deletion re-lists this table and destroys
+                    // this very button, so let the click signal unwind first.
+                    QTimer::singleShot(0, this, [this, node, nodeId] {
+                        deleteMeshNodeCompletely(node, nodeId);
+                    });
+                });
+        m_nodesTable->setCellWidget(row, kNodeColActions, deleteButton);
+        buttonHeight = qMax(buttonHeight, deleteButton->sizeHint().height());
+    }
+    // Rows still have to be tall enough for the widget the view lays out inside
+    // the item rect minus #issueTable::item's padding (adhoc #376).
+    if (buttonHeight > 0) {
+        for (int row = 0; row < m_nodesTable->rowCount(); ++row) {
+            if (m_nodesTable->rowHeight(row) < buttonHeight + 12)
+                m_nodesTable->setRowHeight(row, buttonHeight + 12);
+        }
+    }
+}
+
+void MainWindow::setNodeDeleteStatus(const QString &text)
+{
+    if (m_nodesStatus)
+        m_nodesStatus->setText(text);
+    logSystem(text);
+}
+
+void MainWindow::deleteMeshNodeCompletely(const QString &node,
+                                          const QString &nodeId)
+{
+    // The relay canonicalizes on the lowercased name and checks the
+    // confirmation string against it byte for byte, so settle on that form here
+    // and use it for the prompt, the proof and the request alike.
+    const QString target = node.trimmed().toLower();
+    if (target.isEmpty() || isProtectedMeshNode(target))
+        return;
+    if (!m_isAdmin) {
+        flashMessage(QStringLiteral(
+            "Only a platform admin can delete a node from the mesh."), true);
+        return;
+    }
+    const bool canSign = m_profileIdentity.isValid() &&
+                         hasOwnerSigningCapability(accountOwner());
+    if (m_accountSessionToken.trimmed().isEmpty() && !canSign) {
+        flashMessage(QStringLiteral(
+            "Sign in to your admin account from Settings first: deleting a "
+            "node needs either an account session or this desktop's account "
+            "key."), true);
+        return;
+    }
+
+    // The same typed confirmation the World panel requires, and the exact
+    // string the relay checks. Nothing is destroyed until it matches.
+    const QString required = QStringLiteral("DELETE ") + target;
+    bool accepted = false;
+    const QString typed = QInputDialog::getText(
+        this, QStringLiteral("Delete node"),
+        QString::fromUtf8(
+            "This permanently deletes \"%1\" everywhere:\n\n"
+            "\xE2\x80\xA2 its Vultr server is destroyed and billing stops\n"
+            "\xE2\x80\xA2 its DNS record is removed\n"
+            "\xE2\x80\xA2 its account, mirrors, agent jobs and status-page "
+            "history are erased from the relay\n"
+            "\xE2\x80\xA2 the saved SSH host is forgotten on this machine\n\n"
+            "This cannot be undone. Type %2 to confirm.")
+            .arg(target, required),
+        QLineEdit::Normal, QString(), &accepted);
+    if (!accepted || typed.trimmed() != required)
+        return;
+
+    setNodeDeleteStatus(
+        QString::fromUtf8("Deleting \"%1\"\xE2\x80\xA6").arg(target));
+    // Provider teardown first (it is the step that costs money to skip), then
+    // DNS, then the mesh. Both provider steps report what they did and hand
+    // control on regardless: a node this app never provisioned still has to
+    // disappear from the relay.
+    destroyVultrServerForNode(target, [this, target, nodeId](QString outcome) {
+        if (!outcome.isEmpty())
+            setNodeDeleteStatus(outcome);
+        removeVultrMirrorDns(target, [this, target, nodeId](QString dnsOutcome) {
+            if (!dnsOutcome.isEmpty())
+                setNodeDeleteStatus(dnsOutcome);
+            sendMeshNodeDeleteRequest(target, nodeId);
+        });
+    });
+}
+
+void MainWindow::destroyVultrServerForNode(
+    const QString &node, std::function<void(QString outcome)> onDone)
+{
+    if (!m_networkAccess) {
+        onDone(QStringLiteral("No network access — skipped the Vultr server."));
+        return;
+    }
+    // Same key resolution as the create/destroy flows on Hosts: the field
+    // first, then a device-local Actions variable.
+    QString apiKey =
+        m_vultrApiKeyEdit ? m_vultrApiKeyEdit->text().trimmed() : QString();
+    if (apiKey.isEmpty()) {
+        apiKey = forkmesh::control::vultrApiKeyFromVariables(
+            ActionStore::variables());
+    }
+    if (apiKey.isEmpty()) {
+        onDone(QString::fromUtf8(
+            "No Vultr API key is available (store one as VULTR_API_KEY), so "
+            "no server was destroyed for \"%1\" \xE2\x80\x94 continuing with "
+            "the mesh removal.").arg(node));
+        return;
+    }
+
+    // A host this app provisioned recorded its instance id; anything else is
+    // resolved from Vultr by label/hostname or saved address.
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    QString recorded;
+    QString address;
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString().trimmed().compare(
+                node, Qt::CaseInsensitive) != 0)
+            continue;
+        recorded = forkmesh::control::savedHostVultrInstanceId(host);
+        address = host.value(QStringLiteral("ip")).toString().trimmed();
+        break;
+    }
+    if (!recorded.isEmpty()) {
+        sendNodeVultrDestroy(apiKey, recorded, node, std::move(onDone));
+        return;
+    }
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances?per_page=500"),
+        QByteArrayLiteral("GET"), {},
+        [this, apiKey, node, address, onDone](QJsonObject result,
+                                              QString error) mutable {
+            if (!error.isEmpty()) {
+                onDone(QString::fromUtf8(
+                    "Could not reach Vultr to destroy \"%1\" (%2) \xE2\x80\x94 "
+                    "continuing with the mesh removal.").arg(node, error));
+                return;
+            }
+            const QJsonArray instances =
+                result.value(QStringLiteral("instances")).toArray();
+            // The node name is the label and hostname a provisioned mirror
+            // carries; an ambiguous match resolves to nothing rather than
+            // destroying a guess (vultrInstanceIdForAddress fails closed).
+            QString instanceId =
+                forkmesh::control::vultrInstanceIdForAddress(instances, node);
+            if (instanceId.isEmpty() && !address.isEmpty()) {
+                instanceId = forkmesh::control::vultrInstanceIdForAddress(
+                    instances, address);
+            }
+            if (instanceId.isEmpty()) {
+                onDone(QString::fromUtf8(
+                    "No single Vultr instance matches \"%1\", so no server was "
+                    "destroyed \xE2\x80\x94 continuing with the mesh removal.")
+                           .arg(node));
+                return;
+            }
+            sendNodeVultrDestroy(apiKey, instanceId, node, onDone);
+        });
+}
+
+void MainWindow::sendNodeVultrDestroy(
+    const QString &apiKey, const QString &instanceId, const QString &node,
+    std::function<void(QString outcome)> onDone)
+{
+    const QString invalid =
+        forkmesh::control::validateVultrDestroyRequest(apiKey, instanceId);
+    if (!invalid.isEmpty()) {
+        onDone(invalid);
+        return;
+    }
+    setNodeDeleteStatus(
+        QString::fromUtf8("Destroying the Vultr server behind \"%1\"\xE2\x80\xA6")
+            .arg(node));
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances/") + instanceId,
+        QByteArrayLiteral("DELETE"), {},
+        [node, instanceId, onDone](QJsonObject, QString error) mutable {
+            if (!error.isEmpty()) {
+                onDone(QString::fromUtf8(
+                    "Vultr refused to destroy %1 (%2) \xE2\x80\x94 continuing "
+                    "with the mesh removal.").arg(instanceId, error));
+                return;
+            }
+            onDone(QString::fromUtf8("Destroyed Vultr instance %1 (\"%2\").")
+                       .arg(instanceId, node));
+        });
+}
+
+void MainWindow::removeVultrMirrorDns(
+    const QString &node, std::function<void(QString outcome)> onDone)
+{
+    auto skip = [onDone](const QString &reason) {
+        onDone(QStringLiteral("Left the DNS record alone: ") + reason);
+    };
+    if (!m_networkAccess) {
+        skip(QStringLiteral("network access is unavailable"));
+        return;
+    }
+    const QMap<QString, QString> variables = ActionStore::variables();
+    const QString apiToken =
+        forkmesh::control::cloudflareApiTokenFromVariables(variables);
+    if (apiToken.isEmpty()) {
+        skip(QStringLiteral("no CLOUDFLARE_API_TOKEN device variable"));
+        return;
+    }
+    QSettings settings;
+    QString zone = settings.value(QStringLiteral("control/cloudflareZone"))
+                       .toString()
+                       .trimmed();
+    if (zone.isEmpty())
+        zone = forkmesh::control::cloudflareZoneNameFromVariables(variables);
+    const QString hostname =
+        forkmesh::control::vultrMirrorDnsHostname(node, zone);
+    if (hostname.isEmpty()) {
+        skip(zone.isEmpty() ? QStringLiteral("no Cloudflare zone is configured")
+                            : QStringLiteral("\"%1\" and \"%2\" do not form a "
+                                             "valid hostname")
+                                  .arg(node, zone));
+        return;
+    }
+    cloudflareApiCall(
+        apiToken,
+        QStringLiteral("/zones?name=%1")
+            .arg(QString::fromLatin1(QUrl::toPercentEncoding(zone))),
+        QByteArrayLiteral("GET"), {},
+        [this, apiToken, zone, hostname, skip, onDone](QJsonObject result,
+                                                       QString error) mutable {
+            if (!error.isEmpty()) {
+                skip(error);
+                return;
+            }
+            const QString zoneId = forkmesh::control::cloudflareZoneId(
+                result.value(QStringLiteral("result")).toArray(), zone);
+            if (zoneId.isEmpty()) {
+                skip(QStringLiteral(
+                         "this API token does not see exactly one \"%1\" zone")
+                         .arg(zone));
+                return;
+            }
+            cloudflareApiCall(
+                apiToken,
+                QStringLiteral("/zones/%1/dns_records?type=A&name=%2")
+                    .arg(zoneId, QString::fromLatin1(
+                                     QUrl::toPercentEncoding(hostname))),
+                QByteArrayLiteral("GET"), {},
+                [this, apiToken, zoneId, hostname, skip, onDone](
+                    QJsonObject existing, QString listError) mutable {
+                    if (!listError.isEmpty()) {
+                        skip(listError);
+                        return;
+                    }
+                    const QString recordId =
+                        forkmesh::control::cloudflareDnsRecordId(
+                            existing.value(QStringLiteral("result")).toArray(),
+                            hostname, QStringLiteral("A"));
+                    if (recordId.isEmpty()) {
+                        onDone(QStringLiteral("No %1 DNS record to remove.")
+                                   .arg(hostname));
+                        return;
+                    }
+                    cloudflareApiCall(
+                        apiToken,
+                        QStringLiteral("/zones/%1/dns_records/%2")
+                            .arg(zoneId, recordId),
+                        QByteArrayLiteral("DELETE"), {},
+                        [hostname, skip, onDone](QJsonObject,
+                                                 QString deleteError) mutable {
+                            if (!deleteError.isEmpty()) {
+                                skip(deleteError);
+                                return;
+                            }
+                            onDone(QStringLiteral("Removed the %1 DNS record.")
+                                       .arg(hostname));
+                        });
+                });
+        });
+}
+
+void MainWindow::sendMeshNodeDeleteRequest(const QString &node,
+                                           const QString &nodeId)
+{
+    if (!m_networkAccess)
+        return;
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/world/admin/nodes/delete"));
+    url.setQuery(QString());
+    QNetworkRequest request;
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    if (!m_accountSessionToken.trimmed().isEmpty()) {
+        request.setRawHeader(
+            "Authorization",
+            QByteArrayLiteral("Bearer ") + m_accountSessionToken.toUtf8());
+    } else {
+        // The ordinary launch is authenticateSilently(): this install owns the
+        // account's key and holds no session token, so sign the proof the relay
+        // accepts for this one deletion. It names the target node, so it cannot
+        // be replayed to delete a different one. Must match
+        // _world_node_delete_signed_actor's canonical string byte for byte.
+        const QString actor = accountOwner().trimmed().toLower();
+        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QString canonical =
+            QStringLiteral("forkmesh-world-node-delete-v1\n") + actor +
+            QLatin1Char('\n') + node + QLatin1Char('\n') + ts;
+        const QString sig = m_profileIdentity.signData(canonical.toUtf8());
+        if (actor.isEmpty() || sig.isEmpty()) {
+            setNodeDeleteStatus(QString::fromUtf8(
+                "Could not sign the deletion of \"%1\" with this desktop's "
+                "account key.").arg(node));
+            return;
+        }
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("node"), actor);
+        query.addQueryItem(QStringLiteral("ts"), ts);
+        query.addQueryItem(QStringLiteral("sig"), sig);
+        url.setQuery(query);
+    }
+    request.setUrl(url);
+
+    const QJsonObject body{
+        {QStringLiteral("nodeName"), node},
+        {QStringLiteral("nodeId"), nodeId},
+        {QStringLiteral("confirmation"), QStringLiteral("DELETE ") + node},
+    };
+    setNodeDeleteStatus(
+        QString::fromUtf8("Removing \"%1\" from the mesh\xE2\x80\xA6").arg(node));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, node] {
+        const QByteArray payload = reply->readAll();
+        const bool ok = reply->error() == QNetworkReply::NoError;
+        const QString transportError = reply->errorString();
+        reply->deleteLater();
+        const QJsonObject response = QJsonDocument::fromJson(payload).object();
+        if (!ok || !response.value(QStringLiteral("ok")).toBool()) {
+            QString detail =
+                response.value(QStringLiteral("error")).toString().trimmed();
+            if (detail.isEmpty())
+                detail = transportError;
+            setNodeDeleteStatus(
+                QString::fromUtf8("Could not delete \"%1\": %2")
+                    .arg(node, detail));
+            flashMessage(QString::fromUtf8("Could not delete \"%1\": %2")
+                             .arg(node, detail), true);
+            return;
+        }
+        forgetSavedHostNamed(node);
+        // Drop the node from this client's caches so the row goes immediately,
+        // instead of lingering until the (throttled, edge-cached) directory and
+        // live-set reads catch up with the relay.
+        m_relayOnlineNodes.remove(node);
+        for (int i = m_nodeMenuEntries.size() - 1; i >= 0; --i) {
+            if (m_nodeMenuEntries.at(i).name.trimmed().compare(
+                    node, Qt::CaseInsensitive) == 0)
+                m_nodeMenuEntries.removeAt(i);
+        }
+        for (MemberInfo &user : m_chatDirectoryUsers) {
+            QStringList nodes = user.nodeName.split(QStringLiteral(", "),
+                                                    Qt::SkipEmptyParts);
+            nodes.removeIf([&node](const QString &name) {
+                return name.trimmed().compare(node, Qt::CaseInsensitive) == 0;
+            });
+            user.nodeName = nodes.join(QStringLiteral(", "));
+        }
+        refreshChatUserDirectory();
+        fetchRelayOnlineNodes(true);
+        refreshNodesTable();
+        // After refreshNodesTable, which re-stamps the summary line.
+        setNodeDeleteStatus(
+            QString::fromUtf8("Deleted \"%1\" \xE2\x80\x94 no trace of it is "
+                              "left in the mesh, mirrors or status page.")
+                .arg(node));
+        flashMessage(QString::fromUtf8("Deleted node \"%1\".").arg(node));
+    });
+}
+
+void MainWindow::forgetSavedHostNamed(const QString &node)
+{
+    QSettings settings;
+    QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    bool changed = false;
+    for (int i = hosts.size() - 1; i >= 0; --i) {
+        const QJsonObject host = hosts.at(i).toObject();
+        if (host.value(QStringLiteral("name")).toString().trimmed().compare(
+                node, Qt::CaseInsensitive) != 0)
+            continue;
+        const QString credentialKey = forkmesh::control::savedHostCredentialKey(
+            host.value(QStringLiteral("name")).toString(),
+            host.value(QStringLiteral("ip")).toString(),
+            host.value(QStringLiteral("user")).toString());
+        QString oldPassword = m_hostSessionPasswords.take(credentialKey);
+        oldPassword.fill(QChar::Null);
+        hosts.removeAt(i);
+        changed = true;
+    }
+    if (!changed)
+        return;
+    forkmesh::control::saveSavedHosts(settings, kHostsSetting, hosts);
+    refreshHostsTable();
 }
 
 void MainWindow::showNodeDetailForRow(int row)
