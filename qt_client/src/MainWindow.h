@@ -2123,6 +2123,10 @@ private:
     // commit the fix to the PR's own branch (no new PR). The work is surfaced as a
     // live agent session so the user can watch it. provider is "claude" | "openai".
     void fixCurrentPullConflictsWithAi(const QString &provider);
+    // The PR header's "Fix" button (adhoc #7): writes a ready-made
+    // conflict-resolution task into the footer prompt box instead of launching a
+    // provider straight away, so the user can edit it before sending.
+    void fillPromptWithPullConflictFix();
     // Continue the agent session that originally authored this PR's branch,
     // asking it to merge the base branch in and resolve conflicts itself — the
     // same flow as the agent detail view's "Fix conflicts with agent" button.
@@ -6034,14 +6038,11 @@ private:
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
     QPushButton *m_pullResolveButton = nullptr; // opens the conflict merge editor
-    // "Fix with agent" split button: a dropdown that rolls the Claude API,
-    // OpenAI API and Claude Code conflict resolvers into one control (issue #150).
+    // "Fix": on a conflicted PR, drops a ready-made conflict-resolution task
+    // into the footer prompt box (adhoc #7 — the provider dropdown it used to
+    // carry is gone; the prompt bar picks the agent).
     QPushButton *m_pullFixButton = nullptr;
-    QMenu *m_pullFixMenu = nullptr;
-    QAction *m_pullFixClaudeAction = nullptr;   // resolve via the Claude API
-    QAction *m_pullFixOpenAiAction = nullptr;   // resolve via the OpenAI API
-    QAction *m_pullFixClaudeCodeAction = nullptr; // resolve via the Claude Code CLI
-    // Shown alongside "Fix with agent" only when an agent session authored this
+    // Shown alongside "Fix" only when an agent session authored this
     // PR's branch: continues that same session rather than spinning up a fresh,
     // isolated conflict-only run.
     QPushButton *m_pullFixConflictsButton = nullptr;
