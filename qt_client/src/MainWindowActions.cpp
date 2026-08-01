@@ -1784,37 +1784,13 @@ void MainWindow::updateNotificationButton()
     m_notificationButton->setToolTip(
         tips.isEmpty() ? QStringLiteral("Pings")
                        : tips.join(QString::fromUtf8(" \xC2\xB7 ")));
-    // The button keeps its "topNavButton" identity (so it stays uniform and
-    // shows its checked state); the pending-approval accent rides on a dynamic
-    // property instead of swapping the object name.
-    m_notificationButton->setProperty("alert", pending > 0);
-    m_notificationButton->style()->unpolish(m_notificationButton);
-    m_notificationButton->style()->polish(m_notificationButton);
-    if (m_notificationRailBadge) {
-        if (pending > 0) {
-            const QString text =
-                pending > 99 ? QStringLiteral("99+") : QString::number(pending);
-            m_notificationRailBadge->setText(text);
-            const int height = 14; // matches #chatUnreadBadge's 7px radius
-            const int width =
-                qMax(height, m_notificationRailBadge->fontMetrics()
-                                 .horizontalAdvance(text) + 8);
-            // Ride the bell's own top-right corner, the way every other rail
-            // item paints its count (ActivityRailButton), instead of the
-            // button's far right edge — a badge parked out there forced the
-            // rail to reserve a whole empty column for it (adhoc #19).
-            const int buttonWidth = m_notificationButton->width();
-            const int iconRight = (buttonWidth + kNotificationBellIconPx) / 2;
-            m_notificationRailBadge->resize(width, height);
-            m_notificationRailBadge->move(
-                qBound(0, iconRight - width + height / 2 + 2,
-                       qMax(0, buttonWidth - width)),
-                0);
-            m_notificationRailBadge->show();
-            m_notificationRailBadge->raise();
-        } else {
-            m_notificationRailBadge->hide();
-        }
+    // The bell is a regular rail item; it paints the pending count on the
+    // icon's corner itself (red "needs you" style, set at construction) and
+    // tints the glyph amber while anything waits.
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_notificationButton)) {
+        railButton->setAlertTint(pending > 0);
+        railButton->setBadgeCount(pending);
     }
 }
 

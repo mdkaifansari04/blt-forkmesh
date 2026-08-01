@@ -1190,6 +1190,42 @@ QString MainWindow::testNetworkRepoMirrorHeader() const
         return QString();
     return m_networkReposTable->horizontalHeaderItem(2)->text();
 }
+
+QStringList MainWindow::testNetworkRepoColumns() const
+{
+    QStringList labels;
+    if (!m_networkReposTable)
+        return labels;
+    for (int column = 0; column < m_networkReposTable->columnCount(); ++column) {
+        if (QTableWidgetItem *item =
+                m_networkReposTable->horizontalHeaderItem(column))
+            labels.append(item->text());
+    }
+    return labels;
+}
+
+QString MainWindow::testNetworkRepoCellText(int row,
+                                            const QString &header) const
+{
+    if (!m_networkReposTable || row < 0 ||
+        row >= m_networkReposTable->rowCount())
+        return QString();
+    for (int column = 0; column < m_networkReposTable->columnCount(); ++column) {
+        QTableWidgetItem *label =
+            m_networkReposTable->horizontalHeaderItem(column);
+        if (!label || label->text() != header)
+            continue;
+        QTableWidgetItem *item = m_networkReposTable->item(row, column);
+        return item ? item->text() : QString();
+    }
+    return QString();
+}
+
+int MainWindow::testReposNavBadgeCount() const
+{
+    auto *railButton = dynamic_cast<ActivityRailButton *>(m_reposNavButton);
+    return railButton ? railButton->badgeCount() : -1;
+}
 #endif
 
 void MainWindow::setHeadlessMode(bool headless)
