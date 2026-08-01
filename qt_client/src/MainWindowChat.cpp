@@ -11411,6 +11411,7 @@ enum NodeCol {
     kNodeColPlatform,
     kNodeColRepos,
     kNodeColMirrors,
+    kNodeColHealth,
     kNodeColCpu,
     kNodeColRam,
     kNodeColDisk,
@@ -11485,7 +11486,8 @@ QWidget *MainWindow::buildNodesSection()
         {QStringLiteral("Node"), QStringLiteral("Status"),
          QStringLiteral("Owner"), QStringLiteral("Version"),
          QStringLiteral("Platform"), QStringLiteral("Repos"),
-         QStringLiteral("Mirrors"), QStringLiteral("CPU"),
+         QStringLiteral("Mirrors"), QStringLiteral("Health"),
+         QStringLiteral("CPU"),
          QStringLiteral("RAM"), QStringLiteral("Disk"),
          QStringLiteral("Node id")});
     m_nodesTable->verticalHeader()->setVisible(false);
@@ -11754,6 +11756,7 @@ void MainWindow::refreshNodesTable()
     // Populate with sorting off so inserted rows don't reshuffle mid-fill.
     m_nodesTable->setSortingEnabled(false);
     m_nodesTable->setRowCount(visible.size());
+    const qint64 tableNowMs = QDateTime::currentMSecsSinceEpoch();
     int online = 0;
     for (int i = 0; i < visible.size(); ++i) {
         const NodeMenuEntry &e = visible.at(i);
@@ -11831,6 +11834,13 @@ void MainWindow::refreshNodesTable()
 
         // CPU / RAM / disk usage bars from the node's advertised telemetry
         // (empty bar cell when the node didn't advertise the metric).
+        // Health: what the node's own periodic self-check found and pushed to
+        // us — the trends and failures the three gauges beside it can't show
+        // (adhoc #27). Hover for the findings themselves.
+        m_nodesTable->setItem(
+            i, kNodeColHealth,
+            makeNodeHealthCell(mi.diagnostics, mi.diagnosticsMs, tableNowMs));
+
         m_nodesTable->setItem(i, kNodeColCpu, makeCpuUsageCell(mi.cpuPercent));
         m_nodesTable->setItem(i, kNodeColRam,
             makeByteUsageCell(QStringLiteral("RAM"), mi.memUsedBytes,
@@ -12030,6 +12040,45 @@ void MainWindow::showNodeDetailForRow(int row)
                QStringLiteral("%1 / %2").arg(
                    SystemStats::formatBytes(mi.diskUsedBytes),
                    SystemStats::formatBytes(mi.diskTotalBytes)));
+
+    // Self-diagnostics: the node's own periodic health check, pushed to us with
+    // its heartbeat (adhoc #27). Always shown — "no problems found" and "never
+    // reported" are different answers and an operator needs to tell them apart.
+    auto *healthLbl = new QLabel(QStringLiteral("Self-diagnostics"));
+    QFont hlf = healthLbl->font();
+    hlf.setBold(true);
+    healthLbl->setFont(hlf);
+    healthLbl->setContentsMargins(0, 8, 0, 0);
+    col->addWidget(healthLbl);
+
+    if (mi.diagnosticsMs <= 0) {
+        auto *none = new QLabel(QStringLiteral(
+            "This node has not reported a self-check yet â an older "
+            "build, or self-diagnostics turned off in its settings."));
+        none->setObjectName("mutedLabel");
+        none->setWordWrap(true);
+        col->addWidget(none);
+    } else if (mi.diagnostics.isEmpty()) {
+        auto *ok = new QLabel(QStringLiteral(
+            "<span style='color:%1'>No problems found.</span>")
+                                  .arg(nodeHealthColor(NodeDiagnostics::Ok)));
+        ok->setTextFormat(Qt::RichText);
+        ok->setWordWrap(true);
+        col->addWidget(ok);
+    } else {
+        for (const NodeDiagnostics::Finding &finding :
+             std::as_const(mi.diagnostics)) {
+            auto *f = new QLabel(
+                QStringLiteral("â¢ <b style='color:%1'>%2</b> %3")
+                    .arg(nodeHealthColor(finding.severity),
+                         NodeDiagnostics::severityName(finding.severity)
+                             .toHtmlEscaped(),
+                         finding.message.toHtmlEscaped()));
+            f->setTextFormat(Qt::RichText);
+            f->setWordWrap(true);
+            col->addWidget(f);
+        }
+    }
 
     // Repositories hosted by this node.
     auto *reposLbl = new QLabel(QStringLiteral("Repositories"));

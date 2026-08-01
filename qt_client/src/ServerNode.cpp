@@ -1,6 +1,7 @@
 #include "ForkMeshVersion.h"
 #include "ChatHistoryLimits.h"
 #include "ChatVisitorPresence.h"
+#include "NodeDiagnostics.h"
 #include "ServerNode.h"
 #include "SystemStats.h"
 
@@ -606,6 +607,9 @@ void ServerNode::handleLinkLost()
     // half-open socket never emits disconnected on its own).
     if (!m_attemptActive && !m_wsReady)
         return;
+    // A link that keeps coming back looks perfectly healthy in a snapshot; the
+    // self-check counts the drops so a flapping node says so itself.
+    NodeDiagnostics::hostCollector().noteRelayDrop();
     m_attemptActive = false;
     if (m_pingTimer)
         m_pingTimer->stop();
@@ -964,6 +968,14 @@ QJsonObject ServerNode::makeMessage(const QString &type) const
             sys.insert("cpu", m_cpuPercent);
         message.insert("sys", sys);
     }
+    // Self-diagnostics ride the heartbeats only (hello/presence): they are a few
+    // hundred bytes when something is wrong, which is fine once every ~30s but
+    // not on every chat send. An all-clear node still reports — an empty "dg"
+    // array is what tells a node list "checked, nothing wrong" instead of
+    // "never reported" (adhoc #27).
+    if ((type == QLatin1String("hello") || type == QLatin1String("presence")) &&
+        m_diagnosticsMs > 0)
+        message.insert("dg", NodeDiagnostics::toJson(m_diagnostics));
     return message;
 }
 
@@ -1037,6 +1049,33 @@ void ServerNode::sampleSystemStats()
     }
 
     m_cpuPercent = showCpu ? SystemStats::hostCpuPercent() : -1.0;
+
+    sampleDiagnostics();
+}
+
+void ServerNode::sampleDiagnostics()
+{
+    // Opt-out (on by default): a node that reports nothing is indistinguishable
+    // from a node that has never been checked, so the toggle clears the cached
+    // findings and stops stamping heartbeats entirely rather than sending an
+    // "all clear" it didn't earn.
+    if (!QSettings()
+             .value(TelemetrySettings::kReportDiagnostics, true)
+             .toBool()) {
+        m_diagnostics.clear();
+        m_diagnosticsMs = 0;
+        return;
+    }
+    NodeDiagnostics::Collector &collector = NodeDiagnostics::hostCollector();
+    // The volume the checks watch is the one the mirrors live on — the same
+    // path the disk gauge measures, so the trend and the bar agree.
+    QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (dataDir.isEmpty() || !QDir(dataDir).exists())
+        dataDir = QDir::homePath();
+    collector.setDataDir(dataDir);
+    collector.noteBackpressureDrops(m_backpressureDrops);
+    m_diagnostics = collector.run();
+    m_diagnosticsMs = QDateTime::currentMSecsSinceEpoch();
 }
 
 void ServerNode::sendHello(bool force, bool showActivity)
@@ -1635,6 +1674,26 @@ void ServerNode::handlePlain(const QJsonObject &message)
             peer.cpuPercent = qBound(0.0, sys.value("cpu").toDouble(), 100.0);
     }
 
+    // Self-diagnostics the sender pushed with its heartbeat. Stamped with our
+    // own receive time, not the sender's clock — a node with a drifted clock is
+    // exactly the case this feature exists to surface.
+    if (!senderId.isEmpty() && message.contains("dg") &&
+        m_peers.contains(senderId)) {
+        Peer &peer = m_peers[senderId];
+        peer.diagnostics =
+            NodeDiagnostics::fromJson(message.value("dg").toArray());
+        peer.diagnosticsMs = QDateTime::currentMSecsSinceEpoch();
+    }
+    // Every stamped frame is a clock sample: our time minus the sender's. A
+    // drifting clock gets caught here rather than when signed requests start
+    // being rejected.
+    if (!senderId.isEmpty() && senderId != m_nodeId) {
+        const qint64 peerMs = qint64(message.value("ts").toDouble());
+        if (peerMs > 0)
+            NodeDiagnostics::hostCollector().notePeerTimestamp(
+                peerMs, QDateTime::currentMSecsSinceEpoch());
+    }
+
     if (type == "hello") {
         bool changed = false;
         for (const auto &value : message.value("channels").toArray()) {
@@ -1991,6 +2050,8 @@ void ServerNode::flushRosterAndStatus()
     self.diskUsedBytes = m_diskUsedBytes;
     self.diskTotalBytes = m_diskTotalBytes;
     self.cpuPercent = m_cpuPercent;
+    self.diagnostics = m_diagnostics;
+    self.diagnosticsMs = m_diagnosticsMs;
     QList<MemberInfo> members{self};
     int onlineCount = 0;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -2019,6 +2080,8 @@ void ServerNode::flushRosterAndStatus()
         member.diskUsedBytes = it->diskUsedBytes;
         member.diskTotalBytes = it->diskTotalBytes;
         member.cpuPercent = it->cpuPercent;
+        member.diagnostics = it->diagnostics;
+        member.diagnosticsMs = it->diagnosticsMs;
         members.append(member);
         ++onlineCount;
     }

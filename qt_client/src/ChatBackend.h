@@ -1,5 +1,7 @@
 #pragma once
 
+#include "NodeDiagnostics.h"
+
 #include <QByteArray>
 #include <QJsonObject>
 #include <QList>
@@ -87,6 +89,14 @@ struct MemberInfo {
     qint64 diskUsedBytes = 0;
     qint64 diskTotalBytes = 0;
     double cpuPercent = -1.0; // whole-host CPU utilization, 0..100
+    // Self-diagnostics the node ran on itself and pushed with its heartbeat
+    // (adhoc #27) — disk trends, inode/descriptor pressure, log errors, link
+    // flapping, clock drift: the failures the three gauges above cannot show.
+    // diagnosticsMs is when this client last received a set; 0 means the node
+    // never reported any (older build, or reporting turned off), which node
+    // lists render as unknown rather than as healthy.
+    QList<NodeDiagnostics::Finding> diagnostics;
+    qint64 diagnosticsMs = 0;
 };
 
 // How long a chat message is kept before it's treated as expired: pruned from

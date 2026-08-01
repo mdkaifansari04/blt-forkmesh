@@ -276,6 +276,8 @@ set(FORKMESH_APP_SOURCES
     src/StallWatchdog.cpp
     src/SystemStats.h
     src/SystemStats.cpp
+    src/NodeDiagnostics.h
+    src/NodeDiagnostics.cpp
     src/LocalBackupStore.h
     src/LocalBackupStore.cpp
     src/McpConnector.h
@@ -574,6 +576,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ChatVisitorPresence.h
         src/SystemStats.h
         src/SystemStats.cpp
+        src/NodeDiagnostics.h
+        src/NodeDiagnostics.cpp
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network Qt6::Concurrent OpenSSL::Crypto)
     if(APPLE)
@@ -612,6 +616,8 @@ if(FORKMESH_BUILD_TESTS)
         src/RoomCrypto.cpp
         src/SystemStats.h
         src/SystemStats.cpp
+        src/NodeDiagnostics.h
+        src/NodeDiagnostics.cpp
         src/ServerNode.h
         src/ServerNode.cpp
         src/OfficeChannelMirror.h

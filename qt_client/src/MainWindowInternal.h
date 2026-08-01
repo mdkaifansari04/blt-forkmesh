@@ -28,6 +28,7 @@
 #include "MarkdownEditor.h"
 #include "MessageRow.h"
 #include "MainnodeRoom.h"
+#include "NodeDiagnostics.h"
 #include "PullReviewModel.h"
 #include "RepoHost.h"
 #include "RepoSecurity.h"
@@ -2627,6 +2628,53 @@ inline SortTableWidgetItem *makeByteUsageCell(const QString &label, qint64 used,
             .arg(pct)
             .arg(formatByteSize(total - used));
     return makeResourceBarCell(pct, tip);
+}
+
+// The colour a self-diagnostics severity paints in a node list.
+inline QString nodeHealthColor(int severity)
+{
+    switch (severity) {
+    case NodeDiagnostics::Critical:
+        return QStringLiteral("#f85149");
+    case NodeDiagnostics::Warning:
+        return QStringLiteral("#d29922");
+    case NodeDiagnostics::Info:
+        return QStringLiteral("#58a6ff");
+    default:
+        return QStringLiteral("#3fb950"); // all clear
+    }
+}
+
+// The Health cell every node list shows (adhoc #27): what the node's own
+// periodic self-check found, pushed to us in its heartbeat. Sorts worst-first
+// (unknown below "OK"), colours by severity, and puts the full findings — plus
+// how long ago the node ran them — in the hover tooltip.
+inline SortTableWidgetItem *makeNodeHealthCell(
+    const QList<NodeDiagnostics::Finding> &findings, qint64 diagnosticsMs,
+    qint64 nowMs)
+{
+    const bool reported = diagnosticsMs > 0;
+    auto *item = new SortTableWidgetItem(
+        NodeDiagnostics::summaryLabel(findings, reported));
+    const int severity =
+        reported ? NodeDiagnostics::worstSeverity(findings) : -1;
+    item->setData(kTableSortRole, double(severity));
+    if (!reported) {
+        item->setToolTip(QStringLiteral(
+            "This node has not reported a self-check — an older build, or "
+            "self-diagnostics turned off in its settings."));
+        return item;
+    }
+    item->setForeground(QColor(nodeHealthColor(severity)));
+    QString tip = findings.isEmpty()
+                      ? QStringLiteral("Self-check found no problems.")
+                      : NodeDiagnostics::detailText(findings);
+    const qint64 ageMs = nowMs > 0 ? nowMs - diagnosticsMs : 0;
+    if (ageMs > 60 * 1000)
+        tip += QStringLiteral("\n\nLast reported %1 min ago")
+                   .arg(ageMs / (60 * 1000));
+    item->setToolTip(tip);
+    return item;
 }
 
 // A CPU usage bar cell from a 0..100 host-CPU percentage (< 0 == unknown).
