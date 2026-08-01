@@ -285,6 +285,7 @@ NOTIFICATION_KINDS = frozenset({
     "organization_task_started",
     "organization_task_activity",
     "account_email_sent",
+    "operational_alert",
     # First sighting of an operational error group (adhoc #77). Admin-only.
     "error_group",
 })
@@ -2702,12 +2703,14 @@ async def _installer_delivery_status(env, now):
 
 # Platform operational-alert state. It uses the flagship repository identity
 # as a stable storage key, but only the is_admin console may mutate it.
-# Everything defaults to OFF so nobody silently inherits the alert pager.
+# Inbox pings are on by default so a fresh deployment has visible operational
+# feedback without requiring mail credentials. Email remains an explicit opt-in.
 REPO_ALERT_SETTING_DEFAULTS = {
     # "[ForkMesh outage]" / "[ForkMesh recovered]" mail for the systems on
     # /status and the independent cron watchdog. One switch covers both
     # directions: a recovery notice only makes sense to whoever got the outage.
     "statusEmails": False,
+    "statusPings": True,
 }
 
 
@@ -2755,6 +2758,55 @@ async def _status_alert_emails_enabled(env):
     owner, _, repo = FLAGSHIP_MONITOR_ID.partition("/")
     settings = await _repo_alert_settings_get(env, owner, repo)
     return bool(settings["statusEmails"])
+
+
+async def _status_alert_pings_enabled(env):
+    """Should outage and recovery transitions enter administrators' Pings?"""
+    owner, _, repo = FLAGSHIP_MONITOR_ID.partition("/")
+    settings = await _repo_alert_settings_get(env, owner, repo)
+    return bool(settings["statusPings"])
+
+
+async def _enqueue_operational_alert_pings(env, alerts, now):
+    """Best-effort, deduplicated operational alerts for every platform admin."""
+    if not alerts or not await _status_alert_pings_enabled(env):
+        return False
+    rows = await d1_all(
+        env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+    delivered = False
+    for row in rows or []:
+        try:
+            record = await decrypt_row(env, row.get("data", "")) or {}
+        except Exception:
+            continue
+        admin = clean_string(
+            record.get("name", ""), MAX_NODE_NAME).strip().lower()
+        if not valid_node_name(admin):
+            continue
+        for alert in alerts:
+            recovered = bool(alert.get("is_up"))
+            system_id = clean_string(alert.get("system", ""), 120)
+            label = clean_string(alert.get("label", ""), 160)
+            outage_started_at = int(alert.get("outage_started_at") or now)
+            title = (
+                label + " recovered" if recovered else
+                label + " needs attention")
+            body = (
+                "The current /status probe is green again." if recovered else
+                clean_string(alert.get("reason", ""), 240)
+                or "The current /status health check failed.")
+            await enqueue_notification(
+                env, admin, "operational_alert", title, body=body,
+                href="/status", source="operational-status",
+                dedupe="operational-status:%s:%s:%s" % (
+                    system_id, "up" if recovered else "down",
+                    outage_started_at),
+                ts=now,
+                meta={"system": system_id,
+                      "state": "up" if recovered else "down"},
+            )
+            delivered = True
+    return delivered
 
 
 async def _repository_monitor_admin_emails(env):
@@ -3029,6 +3081,20 @@ async def _send_cron_watchdog_email(
     # Suppressed reports delivered: the caller must record the transition and
     # stop re-arming its retry alarm, otherwise turning the setting off would
     # leave the watchdog retrying a send it will never make.
+    alert = {
+        "system": "scheduled-jobs",
+        "label": "Scheduled jobs",
+        "is_up": bool(recovered),
+        "reason": (
+            "Scheduled jobs are completing again." if recovered else
+            "No successful cron completion heartbeat arrived within the "
+            "three-minute watchdog window."),
+        "outage_started_at": int(outage_started_at or now),
+    }
+    try:
+        await _enqueue_operational_alert_pings(env, [alert], now)
+    except BaseException:
+        pass
     try:
         if not await _status_alert_emails_enabled(env):
             return True
@@ -3159,6 +3225,12 @@ async def _record_status_monitor_transitions(
     )
     if not pending:
         return
+    try:
+        await _enqueue_operational_alert_pings(env, pending, now)
+    except BaseException:
+        # Pings are a secondary delivery channel and must never block status
+        # sampling or the independently configured email path.
+        pass
     # notified_state is deliberately left untouched while alert mail is off:
     # whatever is red when an admin turns it on gets one email then, instead
     # of the switch silently swallowing the transition that is still current.
@@ -39527,22 +39599,26 @@ def _render_admin_stats(stats):
 
 
 def _render_admin_operational_alerts(
-        enabled, csrf_field="", admin_query=""):
-    checked = " checked" if enabled else ""
+        settings, csrf_field="", admin_query=""):
+    settings = settings if isinstance(settings, dict) else {}
+    email_checked = " checked" if settings.get("statusEmails") else ""
+    ping_checked = " checked" if settings.get("statusPings", True) else ""
     return (
         '<section id="operational-alerts" class="admin-setting" '
         'tabindex="-1"><div><h2>Operational alerts</h2>'
-        '<p>Email platform administrators when a ForkMesh system check '
-        'fails, and again when it recovers. Attention emails include a '
+        '<p>Ping platform administrators when a ForkMesh system check fails, '
+        'and again when it recovers. Optional attention emails include a '
         'redacted two-minute Cloudflare log excerpt when credentials are '
         'configured.</p></div>'
         '<form method="post" action="%s">' %
         _admin_href(admin_query, action="set_operational_alerts") +
         csrf_field +
-        '<label><input type="checkbox" name="enabled" value="1"%s> '
+        '<label><input type="checkbox" name="pings_enabled" value="1"%s> '
+        'Send outage and recovery alerts to Pings</label>'
+        '<label><input type="checkbox" name="email_enabled" value="1"%s> '
         'Send outage and recovery email</label>'
         '<button type="submit">Save alert setting</button></form></section>'
-        % checked
+        % (ping_checked, email_checked)
     )
 
 
@@ -39598,7 +39674,7 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
 
 def render_admin_html(env_stats, tables, active_table, table_html, banner="",
                       counts=None, csrf_field="", admin_query="",
-                      sort_records=False, operational_alerts_enabled=False):
+                      sort_records=False, operational_alert_settings=None):
     banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -39640,7 +39716,7 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "Solana payment-reference status.</div></header>"
         + _render_admin_stats(env_stats)
         + _render_admin_operational_alerts(
-            operational_alerts_enabled, csrf_field, admin_query)
+            operational_alert_settings, csrf_field, admin_query)
         + _render_admin_repo_terms_flags(csrf_field, admin_query)
         + '<div class="tools"><form method="post" action="%s" '
           'onsubmit="return confirm(\'Show legacy custody migration status?\')">'
@@ -43060,11 +43136,15 @@ class Default(WorkerEntrypoint):
                     banner = "Ownership request failed: " + repr(error)
             elif action == "set_operational_alerts":
                 try:
-                    enabled = form.get("enabled", [""])[0] == "1"
+                    email_enabled = (
+                        form.get("email_enabled", [""])[0] == "1")
+                    pings_enabled = (
+                        form.get("pings_enabled", [""])[0] == "1")
                     current_alerts = await _repo_alert_settings_get(
                         self.env, *FLAGSHIP_MONITOR_ID.split("/", 1))
                     updated_alerts = dict(current_alerts)
-                    updated_alerts["statusEmails"] = enabled
+                    updated_alerts["statusEmails"] = email_enabled
+                    updated_alerts["statusPings"] = pings_enabled
                     await d1_run(
                         self.env,
                         "INSERT INTO repo_alert_settings "
@@ -43076,9 +43156,11 @@ class Default(WorkerEntrypoint):
                             *FLAGSHIP_MONITOR_ID.split("/", 1)),
                         json.dumps(updated_alerts), int(Date.now()))
                     banner = (
-                        "Operational alert email is now " +
-                        ("enabled." if enabled else "disabled."))
-                    audit_details = {"enabled": enabled}
+                        "Operational alert delivery settings saved.")
+                    audit_details = {
+                        "emailEnabled": email_enabled,
+                        "pingsEnabled": pings_enabled,
+                    }
                 except Exception as error:
                     banner = (
                         "Operational alert update failed: " + repr(error))
@@ -43387,8 +43469,8 @@ class Default(WorkerEntrypoint):
             except Exception:
                 counts[t] = 0
         stats = await admin_stats(self.env)
-        operational_alerts_enabled = await _status_alert_emails_enabled(
-            self.env)
+        operational_alert_settings = await _repo_alert_settings_get(
+            self.env, *FLAGSHIP_MONITOR_ID.split("/", 1))
         # Default the table browser to most-records-first; ?sort=name opts back
         # into the A–Z ordering.
         sort_records = params.get("sort", [""])[0] != "name"
@@ -43396,8 +43478,8 @@ class Default(WorkerEntrypoint):
             render_admin_html(stats, tables, active, table_html, banner, counts,
                               csrf_field=csrf_field, admin_query=admin_query,
                               sort_records=sort_records,
-                              operational_alerts_enabled=(
-                                  operational_alerts_enabled)),
+                              operational_alert_settings=(
+                                  operational_alert_settings)),
             status=200,
             headers={"content-type": "text/html; charset=utf-8"},
         )
