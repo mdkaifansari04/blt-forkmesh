@@ -79,13 +79,17 @@ bool canDescend(const QFileInfo &info)
 void scanInto(const QString &path, int depth,
               const DirectorySizeScanOptions &options,
               DirectorySizeScanResult &result, SunburstNode &node,
-              ProgressEmitter &progress)
+              ProgressEmitter &progress, const DirectorySizeScanCancel &canceled)
 {
+    if (canceled && canceled())
+        return; // Stop was clicked: unwind without descending further
     progress.enter(path);
     const QFileInfoList entries = QDir(path).entryInfoList(
         QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden |
         QDir::System | QDir::NoSymLinks);
     for (const QFileInfo &info : entries) {
+        if (canceled && canceled())
+            return;
         const QString absolute = info.absoluteFilePath();
         if (!options.pruned.isEmpty() && options.pruned.contains(absolute))
             continue;
@@ -95,7 +99,8 @@ void scanInto(const QString &path, int depth,
             SunburstNode child;
             child.name = info.fileName();
             if (canDescend(info)) {
-                scanInto(absolute, depth + 1, options, result, child, progress);
+                scanInto(absolute, depth + 1, options, result, child, progress,
+                         canceled);
             } else {
                 // Counted, not descended: the rescan-as-administrator offer is
                 // built from exactly these.
@@ -179,7 +184,8 @@ QString unescapeMountField(const QString &field)
 
 DirectorySizeScanResult
 scanDirectorySizes(const QString &path, const DirectorySizeScanOptions &options,
-                   const DirectorySizeScanProgress &progress)
+                   const DirectorySizeScanProgress &progress,
+                   const DirectorySizeScanCancel &canceled)
 {
     DirectorySizeScanResult result;
     result.root.name = QFileInfo(path).fileName();
@@ -189,7 +195,7 @@ scanDirectorySizes(const QString &path, const DirectorySizeScanOptions &options,
         return result;
     }
     ProgressEmitter emitter(progress);
-    scanInto(path, 0, options, result, result.root, emitter);
+    scanInto(path, 0, options, result, result.root, emitter, canceled);
     return result;
 }
 
