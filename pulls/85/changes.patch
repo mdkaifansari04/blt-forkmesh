@@ -1,0 +1,647 @@
+diff --git a/qt_client/CMakeLists.txt b/qt_client/CMakeLists.txt
+index a11dca0fa..0ca4af337 100644
+--- a/qt_client/CMakeLists.txt
++++ b/qt_client/CMakeLists.txt
+@@ -197,6 +197,8 @@ set(FORKMESH_APP_SOURCES
+     src/RepoContributionSnapshot.h
+     src/RepoContributionSnapshotInternal.h
+     src/RepoContributionSnapshot.cpp
++    src/RepoStatsStore.h
++    src/RepoStatsStore.cpp
+     src/StrictGitReader.h
+     src/StrictGitReader.cpp
+     src/RepoSecurity.h
+@@ -840,6 +842,14 @@ if(FORKMESH_BUILD_TESTS)
+         target_link_libraries(forkmesh-window-tests PRIVATE util Qt6::DBus)
+         target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_HAVE_PORTAL)
+     endif()
++
++    qt_add_executable(forkmesh-repo-stats-tests
++        tests/test_repo_stats.cpp
++        src/RepoStatsStore.h
++        src/RepoStatsStore.cpp
++    )
++    target_link_libraries(forkmesh-repo-stats-tests PRIVATE Qt6::Core)
++    target_include_directories(forkmesh-repo-stats-tests PRIVATE src)
+     target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_WINDOW_TESTS)
+     # Recompiles every heavy app source: same throttle as the app target.
+     set_target_properties(forkmesh-window-tests PROPERTIES
+@@ -887,7 +897,7 @@ if(FORKMESH_BUILD_TESTS)
+         forkmesh-public-mirror-tests
+         forkmesh-upstream-sync-tests
+         forkmesh-e2e-stub-agent forkmesh-e2e
+-        forkmesh-window-tests forkmesh-perf-tests
++        forkmesh-window-tests forkmesh-perf-tests forkmesh-repo-stats-tests
+         PROPERTIES EXCLUDE_FROM_ALL TRUE)
+ 
+     # Register all suites with CTest so they run independently of the app:
+@@ -896,6 +906,7 @@ if(FORKMESH_BUILD_TESTS)
+     # The headless smoke tests need an offscreen Qt platform.
+     enable_testing()
+     add_test(NAME forkmesh-tests COMMAND forkmesh-tests)
++    add_test(NAME forkmesh-repo-stats-tests COMMAND forkmesh-repo-stats-tests)
+     find_program(FORKMESH_PYTHON_EXECUTABLE NAMES python3 python)
+     if(FORKMESH_PYTHON_EXECUTABLE)
+         add_test(
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index ca1b3bf9e..44743a4d1 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -165,6 +165,7 @@ class QImage;
+ class QProgressBar;
+ class QPropertyAnimation;
+ class QPushButton;
++class QToolButton;
+ class QScrollArea;
+ class QSpinBox;
+ class QStackedWidget;
+@@ -1185,6 +1186,8 @@ private:
+     // the path to the user check for that.
+     static QString stallLogPath();
+     void updateFooterDiagnostics();
++    void refreshRepositoryStats();
++    void toggleRepositoryRatchet(bool enabled);
+     void onUiStall(qint64 peakMs, const QString &blockingCall, const QString &backtrace);
+     // If "auto-create an agent task for new stalls" is on, hand a freshly-detected
+     // stall's backtrace to a coding agent so the freeze gets fixed (adhoc #205).
+@@ -5255,6 +5258,11 @@ private:
+     // QWidget* and poked via static_cast since ResourceSparkline is private to
+     // MainWindowChat.cpp.
+     QWidget *m_cpuChart = nullptr;
++    QWidget *m_repoSizeChart = nullptr;
++    QWidget *m_repoLinesChart = nullptr;
++    QWidget *m_repoFilesChart = nullptr;
++    QToolButton *m_repoRatchetButton = nullptr;
++    qint64 m_repoStatsLastRefreshMs = 0;
+     QWidget *m_memChart = nullptr;
+     QWidget *m_diskChart = nullptr;
+     StallWatchdog *m_stallWatchdog = nullptr;
+diff --git a/qt_client/src/MainWindowAgents.cpp b/qt_client/src/MainWindowAgents.cpp
+index eeb1f77ad..433b8a513 100644
+--- a/qt_client/src/MainWindowAgents.cpp
++++ b/qt_client/src/MainWindowAgents.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include "MainWindow.h"
+ #include "MainWindowInternal.h"
++#include "RepoStatsStore.h"
+ #include "AgentJail.h"
+ #include "AgentPromptImages.h"
+ #include "KebabHeaderView.h"
+@@ -6220,6 +6221,9 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider)
+     config.maxOutputTokens =
+         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
+     config.promptPreamble = agentPromptPreamble();
++    const QString ratchetGuidance = RepoStatsStore::agentGuidance(repoGitDir());
++    if (!ratchetGuidance.isEmpty())
++        config.promptPreamble += QStringLiteral("\n\n") + ratchetGuidance;
+     config.mode = QSettings()
+                       .value(kAgentModeSetting,
+                              QSettings().value(kClaudeAutoModeSetting, true).toBool()
+diff --git a/qt_client/src/MainWindowChat.cpp b/qt_client/src/MainWindowChat.cpp
+index a813f99ec..0bdb6ba55 100644
+--- a/qt_client/src/MainWindowChat.cpp
++++ b/qt_client/src/MainWindowChat.cpp
+@@ -8,6 +8,7 @@
+ #include "ForkMeshVersion.h"
+ #include "MainWindow.h"
+ #include "MainWindowInternal.h"
++#include "RepoStatsStore.h"
+ #include "ActionStore.h"
+ #include "ControlNode.h"
+ #include "CurrentPageStack.h"
+@@ -3263,6 +3264,11 @@ void MainWindow::updateFooterDiagnostics()
+ {
+     if (!m_footerDiagnostics)
+         return;
++    const qint64 statsNow = QDateTime::currentMSecsSinceEpoch();
++    if (statsNow - m_repoStatsLastRefreshMs >= 60000) {
++        m_repoStatsLastRefreshMs = statsNow;
++        refreshRepositoryStats();
++    }
+     double cpuPct = -1.0;
+     long rssMb = -1;
+ #if defined(__linux__)
+@@ -3370,6 +3376,67 @@ void MainWindow::updateFooterDiagnostics()
+     }
+ }
+ 
++void MainWindow::refreshRepositoryStats()
++{
++    const QString dir = repoGitDir();
++    const bool available = !dir.isEmpty() && repoHasWorkingTree();
++    const QList<QWidget *> statsWidgets{m_repoSizeChart, m_repoLinesChart,
++                                        m_repoFilesChart, m_repoRatchetButton};
++    for (QWidget *widget : statsWidgets)
++        if (widget) widget->setVisible(available);
++    if (!available) return;
++
++    QString error;
++    const QVector<RepoStatsSample> days = RepoStatsStore::captureDaily(dir, &error);
++    if (days.isEmpty()) {
++        if (!error.isEmpty()) logSystem(QStringLiteral("Repository stats: %1").arg(error));
++        return;
++    }
++    QVector<double> sizes, lines, files;
++    double maxSize = 1, maxLines = 1, maxFiles = 1;
++    for (const RepoStatsSample &day : days) {
++        sizes << double(day.bytes); lines << double(day.lines); files << double(day.files);
++        maxSize = qMax(maxSize, double(day.bytes));
++        maxLines = qMax(maxLines, double(day.lines));
++        maxFiles = qMax(maxFiles, double(day.files));
++    }
++    const RepoStatsSample &latest = days.last();
++    static_cast<ResourceSparkline *>(m_repoSizeChart)->setSamples(
++        sizes, maxSize, SystemStats::formatBytes(latest.bytes));
++    static_cast<ResourceSparkline *>(m_repoLinesChart)->setSamples(
++        lines, maxLines, QString::number(latest.lines));
++    static_cast<ResourceSparkline *>(m_repoFilesChart)->setSamples(
++        files, maxFiles, QString::number(latest.files));
++    const QString span = days.size() == 1
++                             ? QStringLiteral("today")
++                             : QStringLiteral("%1 to %2").arg(days.first().day,
++                                                               days.last().day);
++    m_repoSizeChart->setToolTip(QStringLiteral("Tracked repository size, %1").arg(span));
++    m_repoLinesChart->setToolTip(QStringLiteral("Tracked lines of code, %1").arg(span));
++    m_repoFilesChart->setToolTip(QStringLiteral("Tracked files, %1").arg(span));
++    if (m_repoRatchetButton) {
++        QSignalBlocker blocker(m_repoRatchetButton);
++        m_repoRatchetButton->setChecked(RepoStatsStore::ratchetEnabled(dir));
++    }
++}
++
++void MainWindow::toggleRepositoryRatchet(bool enabled)
++{
++    const QString dir = repoGitDir();
++    QString error;
++    if (dir.isEmpty() || !RepoStatsStore::setRatchetEnabled(dir, enabled, &error)) {
++        if (m_repoRatchetButton) {
++            QSignalBlocker blocker(m_repoRatchetButton);
++            m_repoRatchetButton->setChecked(!enabled);
++        }
++        flashMessage(QStringLiteral("Could not update Ratchet Mode: %1").arg(error), true);
++        return;
++    }
++    flashMessage(enabled ? QStringLiteral("Ratchet Mode enabled: commits must shrink or stay flat.")
++                         : QStringLiteral("Ratchet Mode disabled."));
++    refreshRepositoryStats();
++}
++
+ // A UI stall ended: record it, surface it in the system log, and reflect the
+ // running count in the footer. The full backtrace is kept for the detail dialog.
+ void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
+@@ -5456,6 +5523,27 @@ QWidget *MainWindow::buildBreadcrumb()
+     m_memChart = memChart;
+     m_diskChart = diskChart;
+ 
++    // Thirty-day repository trends are deliberately a little larger than the
++    // live host-resource squares: each point represents a day, not a second.
++    auto *repoSizeChart = new ResourceSparkline(QStringLiteral("SIZE"), nullptr, 44, 30);
++    auto *repoLinesChart = new ResourceSparkline(QStringLiteral("LOC"), nullptr, 44, 30);
++    auto *repoFilesChart = new ResourceSparkline(QStringLiteral("FILES"), nullptr, 44, 30);
++    repoSizeChart->setObjectName(QStringLiteral("repoSizeChart"));
++    repoLinesChart->setObjectName(QStringLiteral("repoLinesChart"));
++    repoFilesChart->setObjectName(QStringLiteral("repoFilesChart"));
++    m_repoSizeChart = repoSizeChart;
++    m_repoLinesChart = repoLinesChart;
++    m_repoFilesChart = repoFilesChart;
++    m_repoRatchetButton = new QToolButton;
++    m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
++    m_repoRatchetButton->setText(QStringLiteral("Ratchet mode"));
++    m_repoRatchetButton->setCheckable(true);
++    m_repoRatchetButton->setToolTip(
++        QStringLiteral("Keep each commit at or below today's tracked size and require "
++                       "at least as many removed lines as added lines."));
++    connect(m_repoRatchetButton, &QToolButton::toggled, this,
++            &MainWindow::toggleRepositoryRatchet);
++
+     auto *layout = new QVBoxLayout(bar);
+     layout->setContentsMargins(0, 0, 0, 0);
+     layout->setSpacing(0);
+@@ -5507,6 +5595,10 @@ QWidget *MainWindow::buildBreadcrumb()
+     // The relay radar used to sit here too (adhoc #87); it is gone (adhoc
+     // #124) — its colour moved to the dot above the instance logo and its
+     // node blips to the node dots beside the agent fleet.
++    chromeRow->addWidget(repoSizeChart);
++    chromeRow->addWidget(repoLinesChart);
++    chromeRow->addWidget(repoFilesChart);
++    chromeRow->addWidget(m_repoRatchetButton);
+     // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
+     // to the minimize/maximize/close buttons (adhoc #33).
+     chromeRow->addWidget(cpuChart);
+diff --git a/qt_client/src/MainWindowInternal.h b/qt_client/src/MainWindowInternal.h
+index 5ad845937..de32305dc 100644
+--- a/qt_client/src/MainWindowInternal.h
++++ b/qt_client/src/MainWindowInternal.h
+@@ -1209,11 +1209,12 @@ private:
+ class ResourceSparkline : public QWidget
+ {
+ public:
+-    explicit ResourceSparkline(const QString &label, QWidget *parent = nullptr)
+-        : QWidget(parent), m_label(label)
++    explicit ResourceSparkline(const QString &label, QWidget *parent = nullptr,
++                               int side = 34, int maxPoints = 60)
++        : QWidget(parent), m_label(label), m_maxPoints(qMax(2, maxPoints))
+     {
+         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+-        setFixedSize(kSide, kSide); // a little button-sized square
++        setFixedSize(side, side); // a little button-sized square
+         setCursor(Qt::PointingHandCursor);
+     }
+ 
+@@ -1226,11 +1227,20 @@ public:
+         m_max = maxValue > 0 ? maxValue : 100.0;
+         m_value = valueText;
+         m_history.append(value);
+-        while (m_history.size() > kMaxPoints)
++        while (m_history.size() > m_maxPoints)
+             m_history.removeFirst();
+         update();
+     }
+ 
++    void setSamples(const QVector<double> &values, double maxValue,
++                    const QString &valueText)
++    {
++        m_max = maxValue > 0 ? maxValue : 1.0;
++        m_value = valueText;
++        m_history = values.mid(qMax(0, values.size() - m_maxPoints));
++        update();
++    }
++
+     std::function<void()> onClicked; // invoked on a left-click
+ 
+ protected:
+@@ -1265,7 +1275,7 @@ protected:
+             p.save();
+             p.setClipPath(cardPath);
+             const QColor line = gaugeColor(m_history.last() / m_max * 100.0);
+-            const double step = area.width() / double(kMaxPoints - 1);
++            const double step = area.width() / double(m_maxPoints - 1);
+             const int n = m_history.size();
+             QPolygonF curve;
+             for (int i = 0; i < n; ++i) {
+@@ -1334,12 +1344,11 @@ private:
+         return QColor("#3fb950");     // green: light load
+     }
+ 
+-    static constexpr int kSide = 34;      // button-sized square (w == h)
+-    static constexpr int kMaxPoints = 60; // ~1 minute of history at 1 Hz
+     QString m_label;
+     QString m_value;
+     double m_max = 100.0;
+     QVector<double> m_history;
++    int m_maxPoints = 60;
+ };
+ 
+ // A row-sized memory trend square for one process in the "High memory usage"
+diff --git a/qt_client/src/MainWindowSourceControl.cpp b/qt_client/src/MainWindowSourceControl.cpp
+index d1af39283..1fb580f54 100644
+--- a/qt_client/src/MainWindowSourceControl.cpp
++++ b/qt_client/src/MainWindowSourceControl.cpp
+@@ -7,6 +7,7 @@
+ 
+ #include "MainWindow.h"
+ #include "MainWindowInternal.h"
++#include "RepoStatsStore.h"
+ #include "KebabHeaderView.h"
+ #include "PacmanProgress.h"
+ 
+@@ -1555,6 +1556,11 @@ bool MainWindow::performScmCommit()
+             return false;
+         }
+     }
++    QString ratchetReason;
++    if (!RepoStatsStore::stagedCommitAllowed(dir, &ratchetReason)) {
++        QMessageBox::warning(this, QStringLiteral("Ratchet Mode"), ratchetReason);
++        return false;
++    }
+     QString err;
+     if (!runGitCapture(dir, {"commit", "-m", msg}, nullptr, &err)) {
+         QMessageBox::warning(this, "Commit",
+diff --git a/qt_client/src/RepoStatsStore.cpp b/qt_client/src/RepoStatsStore.cpp
+new file mode 100644
+index 000000000..24a441a91
+--- /dev/null
++++ b/qt_client/src/RepoStatsStore.cpp
+@@ -0,0 +1,196 @@
++#include "RepoStatsStore.h"
++
++#include <QDate>
++#include <QDir>
++#include <QFile>
++#include <QFileInfo>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QProcess>
++#include <QSaveFile>
++
++namespace {
++QJsonObject readDocument(const QString &path)
++{
++    QFile file(path);
++    if (!file.open(QIODevice::ReadOnly))
++        return {};
++    return QJsonDocument::fromJson(file.readAll()).object();
++}
++
++bool writeDocument(const QString &path, const QJsonObject &object, QString *error)
++{
++    QDir().mkpath(QFileInfo(path).absolutePath());
++    QSaveFile file(path);
++    if (!file.open(QIODevice::WriteOnly)) {
++        if (error) *error = file.errorString();
++        return false;
++    }
++    file.write(QJsonDocument(object).toJson(QJsonDocument::Indented));
++    if (!file.commit()) {
++        if (error) *error = file.errorString();
++        return false;
++    }
++    return true;
++}
++
++QByteArray git(const QString &repo, const QStringList &args, bool *ok = nullptr)
++{
++    QProcess process;
++    process.setWorkingDirectory(repo);
++    process.start(QStringLiteral("git"), args);
++    const bool finished = process.waitForFinished(30000);
++    const bool success = finished && process.exitStatus() == QProcess::NormalExit &&
++                         process.exitCode() == 0;
++    if (ok) *ok = success;
++    return success ? process.readAllStandardOutput() : QByteArray();
++}
++}
++
++QString RepoStatsStore::statsPath(const QString &repoDir)
++{
++    return QDir(repoDir).filePath(QStringLiteral(".forkmesh/stats/repository.json"));
++}
++
++RepoStatsSample RepoStatsStore::measure(const QString &repoDir, QString *error)
++{
++    RepoStatsSample sample;
++    sample.day = QDate::currentDate().toString(Qt::ISODate);
++    bool ok = false;
++    const QList<QByteArray> paths = git(repoDir, {QStringLiteral("ls-files"),
++                                                 QStringLiteral("-z")}, &ok)
++                                      .split('\0');
++    if (!ok) {
++        if (error) *error = QStringLiteral("git ls-files failed");
++        return {};
++    }
++    for (const QByteArray &encoded : paths) {
++        if (encoded.isEmpty()) continue;
++        if (encoded.startsWith(".forkmesh/stats/")) continue;
++        QFile file(QDir(repoDir).filePath(QString::fromUtf8(encoded)));
++        if (!file.open(QIODevice::ReadOnly)) continue;
++        const QByteArray data = file.readAll();
++        sample.bytes += data.size();
++        ++sample.files;
++        if (!data.contains('\0')) {
++            sample.lines += data.count('\n');
++            if (!data.isEmpty() && !data.endsWith('\n')) ++sample.lines;
++        }
++    }
++    return sample;
++}
++
++QVector<RepoStatsSample> RepoStatsStore::load(const QString &repoDir, QString *error)
++{
++    QVector<RepoStatsSample> result;
++    const QJsonObject root = readDocument(statsPath(repoDir));
++    for (const QJsonValue &value : root.value(QStringLiteral("days")).toArray()) {
++        const QJsonObject item = value.toObject();
++        RepoStatsSample sample;
++        sample.day = item.value(QStringLiteral("day")).toString();
++        sample.bytes = qint64(item.value(QStringLiteral("bytes")).toDouble());
++        sample.lines = qint64(item.value(QStringLiteral("lines")).toDouble());
++        sample.files = qint64(item.value(QStringLiteral("files")).toDouble());
++        if (!sample.day.isEmpty()) result.append(sample);
++    }
++    if (result.size() > 30) result = result.mid(result.size() - 30);
++    Q_UNUSED(error);
++    return result;
++}
++
++QVector<RepoStatsSample> RepoStatsStore::captureDaily(const QString &repoDir,
++                                                       QString *error)
++{
++    QVector<RepoStatsSample> days = load(repoDir, error);
++    const QString today = QDate::currentDate().toString(Qt::ISODate);
++    if (!days.isEmpty() && days.last().day == today)
++        return days;
++    RepoStatsSample current = measure(repoDir, error);
++    if (current.day.isEmpty()) return days;
++    QJsonObject root = readDocument(statsPath(repoDir));
++    days.append(current);
++    while (days.size() > 30) days.removeFirst();
++    QJsonArray encoded;
++    for (const RepoStatsSample &sample : days)
++        encoded.append(QJsonObject{{QStringLiteral("day"), sample.day},
++                                   {QStringLiteral("bytes"), double(sample.bytes)},
++                                   {QStringLiteral("lines"), double(sample.lines)},
++                                   {QStringLiteral("files"), double(sample.files)}});
++    root.insert(QStringLiteral("days"), encoded);
++    // Each new day lowers the ceiling to the repository's new size. It never
++    // rises during that day while Ratchet Mode remains enabled.
++    if (root.value(QStringLiteral("ratchet")).toBool()) {
++        root.insert(QStringLiteral("ceilingDay"), current.day);
++        root.insert(QStringLiteral("ceilingBytes"), double(current.bytes));
++        root.insert(QStringLiteral("ceilingLines"), double(current.lines));
++    }
++    if (!writeDocument(statsPath(repoDir), root, error)) return {};
++    return days;
++}
++
++bool RepoStatsStore::ratchetEnabled(const QString &repoDir)
++{
++    return readDocument(statsPath(repoDir)).value(QStringLiteral("ratchet")).toBool();
++}
++
++bool RepoStatsStore::setRatchetEnabled(const QString &repoDir, bool enabled,
++                                       QString *error)
++{
++    QJsonObject root = readDocument(statsPath(repoDir));
++    root.insert(QStringLiteral("ratchet"), enabled);
++    if (enabled) {
++        const RepoStatsSample now = measure(repoDir, error);
++        if (now.day.isEmpty()) return false;
++        root.insert(QStringLiteral("ceilingDay"), now.day);
++        root.insert(QStringLiteral("ceilingBytes"), double(now.bytes));
++        root.insert(QStringLiteral("ceilingLines"), double(now.lines));
++    }
++    return writeDocument(statsPath(repoDir), root, error);
++}
++
++bool RepoStatsStore::stagedCommitAllowed(const QString &repoDir, QString *reason)
++{
++    if (!ratchetEnabled(repoDir)) return true;
++    bool ok = false;
++    const QByteArray numstat = git(repoDir, {QStringLiteral("diff"),
++                                            QStringLiteral("--cached"),
++                                            QStringLiteral("--numstat")}, &ok);
++    if (!ok) {
++        if (reason) *reason = QStringLiteral("Ratchet could not inspect staged changes.");
++        return false;
++    }
++    qint64 added = 0, removed = 0;
++    for (const QByteArray &line : numstat.split('\n')) {
++        const QList<QByteArray> fields = line.split('\t');
++        if (fields.size() < 2 || fields.at(0) == "-" || fields.at(1) == "-") continue;
++        added += fields.at(0).toLongLong();
++        removed += fields.at(1).toLongLong();
++    }
++    if (added > removed) {
++        if (reason) *reason = QStringLiteral("Ratchet Mode blocked this commit: %1 lines "
++                                             "added but only %2 removed.")
++                                 .arg(added).arg(removed);
++        return false;
++    }
++    const QJsonObject root = readDocument(statsPath(repoDir));
++    const qint64 ceiling = qint64(root.value(QStringLiteral("ceilingBytes")).toDouble());
++    const RepoStatsSample now = measure(repoDir, nullptr);
++    if (ceiling > 0 && now.bytes > ceiling) {
++        if (reason) *reason = QStringLiteral("Ratchet Mode blocked this commit: tracked "
++                                             "size is %1 bytes over today's ceiling.")
++                                 .arg(now.bytes - ceiling);
++        return false;
++    }
++    return true;
++}
++
++QString RepoStatsStore::agentGuidance(const QString &repoDir)
++{
++    if (!ratchetEnabled(repoDir)) return {};
++    const QJsonObject root = readDocument(statsPath(repoDir));
++    return QStringLiteral("Ratchet Mode is enabled for this repository. Do not add more "
++                          "lines than you remove in any commit, and keep tracked size at "
++                          "or below today's %1-byte ceiling. Refactor or delete existing "
++                          "code before committing if necessary.")
++        .arg(qint64(root.value(QStringLiteral("ceilingBytes")).toDouble()));
++}
+diff --git a/qt_client/src/RepoStatsStore.h b/qt_client/src/RepoStatsStore.h
+new file mode 100644
+index 000000000..984baa0aa
+--- /dev/null
++++ b/qt_client/src/RepoStatsStore.h
+@@ -0,0 +1,34 @@
++#pragma once
++
++#include <QJsonObject>
++#include <QString>
++#include <QVector>
++
++struct RepoStatsSample {
++    QString day;
++    qint64 bytes = 0;
++    qint64 lines = 0;
++    qint64 files = 0;
++};
++
++class RepoStatsStore
++{
++public:
++    // Reads tracked files only, records at most one sample per local day and
++    // retains the latest 30 days in .forkmesh/stats/repository.json.
++    static QVector<RepoStatsSample> captureDaily(const QString &repoDir,
++                                                 QString *error = nullptr);
++    static QVector<RepoStatsSample> load(const QString &repoDir,
++                                         QString *error = nullptr);
++    static bool ratchetEnabled(const QString &repoDir);
++    static bool setRatchetEnabled(const QString &repoDir, bool enabled,
++                                  QString *error = nullptr);
++    // Enforces both parts of Ratchet Mode for a staged commit: added LOC may
++    // not exceed removed LOC, and today's tracked-byte ceiling may not grow.
++    static bool stagedCommitAllowed(const QString &repoDir, QString *reason);
++    static QString agentGuidance(const QString &repoDir);
++
++private:
++    static RepoStatsSample measure(const QString &repoDir, QString *error);
++    static QString statsPath(const QString &repoDir);
++};
+diff --git a/qt_client/tests/test_repo_stats.cpp b/qt_client/tests/test_repo_stats.cpp
+new file mode 100644
+index 000000000..b081c03f6
+--- /dev/null
++++ b/qt_client/tests/test_repo_stats.cpp
+@@ -0,0 +1,60 @@
++#include "RepoStatsStore.h"
++
++#include <QCoreApplication>
++#include <QDir>
++#include <QFile>
++#include <QProcess>
++#include <QTemporaryDir>
++
++#include <iostream>
++
++static bool run(const QString &dir, const QStringList &args)
++{
++    QProcess p;
++    p.setWorkingDirectory(dir);
++    p.start(QStringLiteral("git"), args);
++    return p.waitForFinished() && p.exitCode() == 0;
++}
++
++int main(int argc, char **argv)
++{
++    QCoreApplication app(argc, argv);
++    QTemporaryDir tmp;
++    if (!tmp.isValid() || !run(tmp.path(), {QStringLiteral("init"),
++                                            QStringLiteral("-q")})) return 1;
++    run(tmp.path(), {QStringLiteral("config"), QStringLiteral("user.email"),
++                     QStringLiteral("test@example.invalid")});
++    run(tmp.path(), {QStringLiteral("config"), QStringLiteral("user.name"),
++                     QStringLiteral("Test")});
++    QFile source(QDir(tmp.path()).filePath(QStringLiteral("source.cpp")));
++    source.open(QIODevice::WriteOnly);
++    source.write("one\ntwo\n");
++    source.close();
++    if (!run(tmp.path(), {QStringLiteral("add"), QStringLiteral("source.cpp")}) ||
++        !run(tmp.path(), {QStringLiteral("commit"), QStringLiteral("-qm"),
++                          QStringLiteral("seed")})) return 1;
++
++    QString error;
++    const QVector<RepoStatsSample> first = RepoStatsStore::captureDaily(tmp.path(), &error);
++    if (first.size() != 1 || first.last().files != 1 || first.last().lines != 2 ||
++        !QFileInfo::exists(QDir(tmp.path()).filePath(
++            QStringLiteral(".forkmesh/stats/repository.json")))) return 1;
++    if (!RepoStatsStore::setRatchetEnabled(tmp.path(), true, &error) ||
++        RepoStatsStore::agentGuidance(tmp.path()).isEmpty()) return 1;
++
++    source.open(QIODevice::Append);
++    source.write("three\n");
++    source.close();
++    run(tmp.path(), {QStringLiteral("add"), QStringLiteral("source.cpp")});
++    QString reason;
++    if (RepoStatsStore::stagedCommitAllowed(tmp.path(), &reason) ||
++        !reason.contains(QStringLiteral("added"))) return 1;
++
++    source.open(QIODevice::WriteOnly | QIODevice::Truncate);
++    source.write("one\n");
++    source.close();
++    run(tmp.path(), {QStringLiteral("add"), QStringLiteral("source.cpp")});
++    if (!RepoStatsStore::stagedCommitAllowed(tmp.path(), &reason)) return 1;
++    std::cout << "repo stats tests passed\n";
++    return 0;
++}
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index 3f90d5eda..b7cc40a33 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -2253,6 +2253,14 @@ int main(int argc, char *argv[])
+                   !genieButton->toolTip().contains(QStringLiteral("agent"),
+                                                    Qt::CaseInsensitive),
+               QStringLiteral("the composer task button files a General task"));
++        auto *repoSizeChart = seeded.findChild<QWidget *>(QStringLiteral("repoSizeChart"));
++        auto *repoLinesChart = seeded.findChild<QWidget *>(QStringLiteral("repoLinesChart"));
++        auto *repoFilesChart = seeded.findChild<QWidget *>(QStringLiteral("repoFilesChart"));
++        auto *ratchet = seeded.findChild<QToolButton *>(QStringLiteral("repoRatchetButton"));
++        check(repoSizeChart && repoLinesChart && repoFilesChart && ratchet &&
++                  repoSizeChart->width() > 34 && repoLinesChart->width() > 34 &&
++                  repoFilesChart->width() > 34 && ratchet->isCheckable(),
++              QStringLiteral("repository trends and Ratchet Mode live in the top bar"));
+         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
+         // the composer (adhoc #120): the only Enter indicator is the green
+         // outline on whichever send button Enter activates.
