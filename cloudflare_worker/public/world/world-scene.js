@@ -3580,9 +3580,7 @@ function worldQaCardTexture(THREE, snapshot = {}) {
           ? view === "detail"
             ? "QA RESULT DETAIL · REVIEW OR RETURN"
             : `CARD ${Math.min(total, currentIndex + 1)} OF ${total} · ONE AT A TIME`
-          : total
-            ? `ALL ${total} CARDS REVIEWED · TAP TO RECHECK`
-            : authorized
+          : authorized
               ? "NO QA TASKS ARE WAITING"
               : "QUALITY-ASSURANCE TEAM ACCESS REQUIRED"
         : `${view.toUpperCase()} HISTORY · PAGE ${page + 1}/${pages}`,
@@ -3752,9 +3750,9 @@ function worldQaCardTexture(THREE, snapshot = {}) {
     context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
     context.textAlign = "center";
     context.fillText(
-      `${Number(globalStats.testers) || 0} TESTERS · YOUR CARDS ${
-        Number(stats.reviewed) || 0
-      }/${total}${view === "cards" ? " · GRAB + SWIPE" : " · SHARED HISTORY"}`,
+      `${Number(globalStats.testers) || 0} TESTERS · ${total} CARDS WAITING${
+        view === "cards" ? " · GRAB + SWIPE" : " · SHARED HISTORY"
+      }`,
       600,
       1010,
     );
