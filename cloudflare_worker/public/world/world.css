@@ -1268,6 +1268,53 @@ forkmesh-world {
   color: #ffffff;
 }
 
+.world-admin-status-light {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  margin-inline: 4px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: #ff7b72;
+  text-decoration: none;
+}
+
+.world-admin-status-light[hidden] {
+  display: none;
+}
+
+.world-admin-status-light:hover,
+.world-admin-status-light:focus-visible {
+  color: #ffa198;
+  outline: none;
+}
+
+.world-admin-status-light-orb {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background:
+    linear-gradient(#da3633, #da3633) padding-box,
+    conic-gradient(from 0deg, #ff7b72, transparent 38%, #ff7b72) border-box;
+  box-shadow: 0 0 0 2px rgb(248 81 73 / 0.18), 0 0 12px rgb(248 81 73 / 0.8);
+  animation: world-admin-status-spin 900ms linear infinite;
+}
+
+@keyframes world-admin-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-admin-status-light-orb {
+    animation: none;
+  }
+}
+
 forkmesh-world.world-admin-error-arrival::after {
   position: fixed;
   z-index: 80;
