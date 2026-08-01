@@ -108,7 +108,8 @@ QString endpointDisplay(const QUrl &url)
 bool isDurableMainnodeType(const QString &type)
 {
     static const QSet<QString> kDurableTypes = {
-        QStringLiteral("chat"), QStringLiteral("edit"),
+        QStringLiteral("chat"), QStringLiteral("thread-reply"),
+        QStringLiteral("edit"),
         QStringLiteral("delete"), QStringLiteral("reaction"),
         QStringLiteral("admin-delete")};
     return kDurableTypes.contains(type);
@@ -251,6 +252,7 @@ bool messageHasSafePayload(const QJsonObject &message)
            message.value("version").toString().size() <= kMaxVersionChars &&
            message.value("fileName").toString().size() <= kMaxFileNameChars &&
            message.value("fileMime").toString().size() <= kMaxMimeChars &&
+           message.value("rootId").toString().size() <= 96 &&
            message.value("file").toString().size() <= kMaxBase64FileChars &&
            message.value("png").toString().size() <= 4 * kMaxAvatarBytes / 3 + 8;
 }
@@ -1238,6 +1240,26 @@ void ServerNode::sendChat(const QString &channel, const QString &text)
     emitChat(message);
 }
 
+void ServerNode::sendThreadReply(const QString &channel,
+                                 const QString &rootMessageId,
+                                 const QString &text)
+{
+    const QString rootId = rootMessageId.trimmed().left(96);
+    if (channel.trimmed().isEmpty() || rootId.isEmpty() ||
+        text.trimmed().isEmpty())
+        return;
+    QJsonObject message = makeMessage("thread-reply");
+    message.insert("channel", channel);
+    message.insert("rootId", rootId);
+    message.insert("text", text.left(kMaxTextChars));
+    if (m_privateChannels.contains(channel))
+        message.insert("private", true);
+    markSeen(message.value("id").toString());
+    storeHistory(message);
+    sendEncrypted(message, true);
+    emitChat(message);
+}
+
 void ServerNode::setAccountKind(const QString &kind)
 {
     m_accountKind = kind.trimmed().left(16);
@@ -1659,10 +1681,13 @@ void ServerNode::handlePlain(const QJsonObject &message)
                 sendEncrypted(reply, false);
             }
         }
-    } else if (type == "chat") {
+    } else if (type == "chat" || type == "thread-reply") {
         const QString channel = message.value("channel").toString();
-
-
+        if (type == "thread-reply" &&
+            message.value("rootId").toString().trimmed().isEmpty())
+            return;
+        // A private-room message from a room we weren't invited to is ignored,
+        // the same honour-model as a direct message addressed to someone else.
         if (message.value("private").toBool() && !m_channels.contains(channel))
             return;
 
@@ -1859,6 +1884,7 @@ void ServerNode::emitChat(const QJsonObject &message)
     ChatMessage out;
     out.id = message.value("id").toString();
     out.conversation = message.value("channel").toString();
+    out.threadRootId = message.value("rootId").toString().left(96);
     out.senderId = message.value("senderId").toString();
     out.senderName = boundedText(message, "sender", kMaxDisplayNameChars);
     out.text = boundedText(message, "text", kMaxTextChars);

@@ -2373,29 +2373,52 @@ void MainWindow::deleteRepositoryAt(int index, bool reopenRepoDetail)
                                    : "Deleted repository.");
 }
 
-
+// Per-repo Settings tab: flip visibility (public/private) and delete the repo.
+// Split into sub-tabs (adhoc #5) so a narrow window shows one compact section
+// at a time instead of one long two-margin scroll.
 QWidget *MainWindow::buildRepoSettingsTab()
 {
     auto *page = new QWidget;
     auto *outer = new QVBoxLayout(page);
     outer->setContentsMargins(24, 22, 24, 22);
-    outer->setSpacing(14);
+    outer->setSpacing(10);
 
     auto *heading = new QLabel("Repository settings");
     heading->setObjectName("channelTitle");
     outer->addWidget(heading);
 
+    auto *tabs = new QTabWidget;
+    tabs->setObjectName("repoSettingsTabs");
+    tabs->setDocumentMode(true);
+    // Wrap a tab's content widget in a frameless, vertically-scrolling page so
+    // each section scrolls on its own rather than the whole page at once.
+    auto addTab = [tabs](QWidget *body, const QString &name) {
+        auto *scroll = new QScrollArea;
+        scroll->setObjectName("repoSettingsTabScroll");
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidgetResizable(true);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setWidget(body);
+        tabs->addTab(scroll, name);
+    };
+    outer->addWidget(tabs, 1);
 
+    auto *generalTab = new QWidget;
+    auto *generalCol = new QVBoxLayout(generalTab);
+    generalCol->setContentsMargins(2, 12, 2, 12);
+    generalCol->setSpacing(8);
+
+    // --- About --------------------------------------------------------------
     auto *aboutHeading = new QLabel("About");
     aboutHeading->setObjectName("sectionLabel");
-    outer->addWidget(aboutHeading);
+    generalCol->addWidget(aboutHeading);
 
     auto *aboutHint = new QLabel(
         "The description, website link and topics shown on this repository's "
         "overview (and on its public ForkMesh page).");
     aboutHint->setObjectName("statusLine");
     aboutHint->setWordWrap(true);
-    outer->addWidget(aboutHint);
+    generalCol->addWidget(aboutHint);
 
     auto *aboutEditBtn = new QPushButton("Edit description & website\xE2\x80\xA6");
     aboutEditBtn->setProperty("buttonSize", "sm");
@@ -2405,14 +2428,14 @@ QWidget *MainWindow::buildRepoSettingsTab()
     aboutRow->setContentsMargins(0, 0, 0, 0);
     aboutRow->addWidget(aboutEditBtn);
     aboutRow->addStretch();
-    outer->addLayout(aboutRow);
+    generalCol->addLayout(aboutRow);
 
-    outer->addSpacing(10);
+    generalCol->addSpacing(6);
 
 
     auto *visHeading = new QLabel("Visibility");
     visHeading->setObjectName("sectionLabel");
-    outer->addWidget(visHeading);
+    generalCol->addWidget(visHeading);
 
     m_repoPrivateCheck = new QCheckBox("Private repository");
     m_repoPrivateCheck->setCursor(Qt::PointingHandCursor);
@@ -2447,14 +2470,14 @@ QWidget *MainWindow::buildRepoSettingsTab()
         refreshRepositoryList();
         refreshRepoSettings();
     });
-    outer->addWidget(m_repoPrivateCheck);
+    generalCol->addWidget(m_repoPrivateCheck);
 
     m_repoVisibilityHint = new QLabel;
     m_repoVisibilityHint->setObjectName("statusLine");
     m_repoVisibilityHint->setWordWrap(true);
-    outer->addWidget(m_repoVisibilityHint);
+    generalCol->addWidget(m_repoVisibilityHint);
 
-    outer->addSpacing(10);
+    generalCol->addSpacing(6);
 
 
 
@@ -2512,13 +2535,19 @@ QWidget *MainWindow::buildRepoSettingsTab()
             removeRepoCollaborator(m_collabList->currentItem()->text());
     });
 
-    outer->addWidget(m_collabSection);
-    outer->addSpacing(10);
+    generalCol->addWidget(m_collabSection);
+    generalCol->addStretch();
+    addTab(generalTab, "General");
+
+    auto *gitTab = new QWidget;
+    auto *gitCol = new QVBoxLayout(gitTab);
+    gitCol->setContentsMargins(2, 12, 2, 12);
+    gitCol->setSpacing(8);
 
 
     auto *sourceHeading = new QLabel("Source");
     sourceHeading->setObjectName("sectionLabel");
-    outer->addWidget(sourceHeading);
+    gitCol->addWidget(sourceHeading);
 
     m_repoSourceEdit = new QLineEdit;
     m_repoSourceEdit->setPlaceholderText(
@@ -2536,12 +2565,12 @@ QWidget *MainWindow::buildRepoSettingsTab()
     auto *sourceRow = new QHBoxLayout;
     sourceRow->addWidget(m_repoSourceEdit, 1);
     sourceRow->addWidget(sourceUpdateBtn);
-    outer->addLayout(sourceRow);
+    gitCol->addLayout(sourceRow);
 
     m_repoSourceHint = new QLabel;
     m_repoSourceHint->setObjectName("statusLine");
     m_repoSourceHint->setWordWrap(true);
-    outer->addWidget(m_repoSourceHint);
+    gitCol->addWidget(m_repoSourceHint);
 
     m_repoForkLocation = new QLabel;
     m_repoForkLocation->setObjectName("statusLine");
@@ -2559,17 +2588,17 @@ QWidget *MainWindow::buildRepoSettingsTab()
     forkLocationRow->setContentsMargins(0, 0, 0, 0);
     forkLocationRow->addWidget(m_repoForkLocation, 1);
     forkLocationRow->addWidget(forkLocationButton);
-    outer->addLayout(forkLocationRow);
+    gitCol->addLayout(forkLocationRow);
 
     m_repoMirrorLocation = new QLabel;
     m_repoMirrorLocation->setObjectName("statusLine");
     m_repoMirrorLocation->setWordWrap(true);
     m_repoMirrorLocation->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    outer->addWidget(m_repoMirrorLocation);
+    gitCol->addWidget(m_repoMirrorLocation);
 
     auto *remotesHeading = new QLabel("Git remotes");
     remotesHeading->setObjectName("sectionLabel");
-    outer->addWidget(remotesHeading);
+    gitCol->addWidget(remotesHeading);
 
     m_repoRemotesTable = new QTableWidget(0, 3);
     installColumnHeaderMenu(m_repoRemotesTable);
@@ -2581,7 +2610,7 @@ QWidget *MainWindow::buildRepoSettingsTab()
     m_repoRemotesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_repoRemotesTable->setMaximumHeight(150);
     makeColumnsResizable(m_repoRemotesTable);
-    outer->addWidget(m_repoRemotesTable);
+    gitCol->addWidget(m_repoRemotesTable);
 
     auto *remoteAddButton = new QPushButton("Add");
     auto *remoteEditButton = new QPushButton("Edit");
@@ -2604,7 +2633,7 @@ QWidget *MainWindow::buildRepoSettingsTab()
     remoteButtonRow->addWidget(remoteEditButton);
     remoteButtonRow->addWidget(remoteDeleteButton);
     remoteButtonRow->addStretch();
-    outer->addLayout(remoteButtonRow);
+    gitCol->addLayout(remoteButtonRow);
 
     auto *gitIdentityBtn = new QPushButton("Use ForkMesh git identity");
     gitIdentityBtn->setProperty("buttonSize", "sm");
@@ -2618,14 +2647,20 @@ QWidget *MainWindow::buildRepoSettingsTab()
     gitIdentityRow->setContentsMargins(0, 0, 0, 0);
     gitIdentityRow->addWidget(gitIdentityBtn);
     gitIdentityRow->addStretch();
-    outer->addLayout(gitIdentityRow);
+    gitCol->addLayout(gitIdentityRow);
 
-    outer->addSpacing(10);
+    gitCol->addStretch();
+    addTab(gitTab, "Git");
+
+    auto *automationTab = new QWidget;
+    auto *automationCol = new QVBoxLayout(automationTab);
+    automationCol->setContentsMargins(2, 12, 2, 12);
+    automationCol->setSpacing(8);
 
 
     auto *actionsHeading = new QLabel("Actions");
     actionsHeading->setObjectName("sectionLabel");
-    outer->addWidget(actionsHeading);
+    automationCol->addWidget(actionsHeading);
 
     m_settingsActionsCheck = new QCheckBox("Run actions on push");
     m_settingsActionsCheck->setCursor(Qt::PointingHandCursor);
@@ -2635,21 +2670,21 @@ QWidget *MainWindow::buildRepoSettingsTab()
         "require your approval before they run.");
     connect(m_settingsActionsCheck, &QCheckBox::toggled, this,
             [this](bool on) { setRepoActionsEnabled(on); });
-    outer->addWidget(m_settingsActionsCheck);
+    automationCol->addWidget(m_settingsActionsCheck);
 
     auto *actionsHint = new QLabel(
         "Mirrored repositories start with actions disabled. Enable this only for "
         "repos whose workflows you trust to run on this machine.");
     actionsHint->setObjectName("statusLine");
     actionsHint->setWordWrap(true);
-    outer->addWidget(actionsHint);
+    automationCol->addWidget(actionsHint);
 
-    outer->addSpacing(10);
+    automationCol->addSpacing(10);
 
 
     auto *secretHeading = new QLabel("Secret scanning");
     secretHeading->setObjectName("sectionLabel");
-    outer->addWidget(secretHeading);
+    automationCol->addWidget(secretHeading);
 
     m_secretScanCheck = new QCheckBox("Block push if secrets are detected");
     m_secretScanCheck->setCursor(Qt::PointingHandCursor);
@@ -2659,26 +2694,35 @@ QWidget *MainWindow::buildRepoSettingsTab()
         "will be warned and can cancel or push anyway.");
     connect(m_secretScanCheck, &QCheckBox::toggled, this,
             [this](bool on) { setRepoSecretScanningEnabled(on); });
-    outer->addWidget(m_secretScanCheck);
+    automationCol->addWidget(m_secretScanCheck);
 
     auto *secretHint = new QLabel(
         "Detects GitHub tokens, AWS access keys, Slack tokens, and PEM private "
         "keys. Rotate any exposed credentials immediately.");
     secretHint->setObjectName("statusLine");
     secretHint->setWordWrap(true);
-    outer->addWidget(secretHint);
+    automationCol->addWidget(secretHint);
 
-    outer->addSpacing(10);
+    automationCol->addStretch();
+    addTab(automationTab, "Automation");
 
+    auto *covesTab = new QWidget;
+    auto *covesCol = new QVBoxLayout(covesTab);
+    covesCol->setContentsMargins(2, 12, 2, 12);
+    covesCol->setSpacing(8);
+    covesCol->addWidget(buildCoveSection());
+    covesCol->addStretch();
+    addTab(covesTab, "Coves");
 
-    outer->addWidget(buildCoveSection());
-
-    outer->addSpacing(10);
+    auto *dangerTab = new QWidget;
+    auto *dangerCol = new QVBoxLayout(dangerTab);
+    dangerCol->setContentsMargins(2, 12, 2, 12);
+    dangerCol->setSpacing(8);
 
 
     auto *dangerHeading = new QLabel("Danger zone");
     dangerHeading->setObjectName("sectionLabel");
-    outer->addWidget(dangerHeading);
+    dangerCol->addWidget(dangerHeading);
 
     auto *deleteHint = new QLabel(
         "Delete this repository from this machine completely. Your working "
@@ -2689,7 +2733,7 @@ QWidget *MainWindow::buildRepoSettingsTab()
         "repository from ForkMesh.");
     deleteHint->setObjectName("statusLine");
     deleteHint->setWordWrap(true);
-    outer->addWidget(deleteHint);
+    dangerCol->addWidget(deleteHint);
 
     auto *deleteBtn = new QPushButton("Delete repository");
     deleteBtn->setObjectName("dangerButton");
@@ -2700,9 +2744,11 @@ QWidget *MainWindow::buildRepoSettingsTab()
     auto *deleteRow = new QHBoxLayout;
     deleteRow->addWidget(deleteBtn);
     deleteRow->addStretch();
-    outer->addLayout(deleteRow);
+    dangerCol->addLayout(deleteRow);
 
-    outer->addStretch();
+    dangerCol->addStretch();
+    addTab(dangerTab, "Danger zone");
+
     return page;
 }
 
@@ -4127,7 +4173,12 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
             QStringLiteral("dependency-scan"));
     QString contributionSnapshotKey;
     QJsonObject contributionLogoPayload;
-    if (repo.isPrivate) {
+    // Headless fleet mirrors publish availability/integrity state, not a
+    // contributor attribution snapshot. Rebuilding the full contribution
+    // graph on a small unattended node can consume all RAM and delay the
+    // catalog write that makes the mirror eligible for routing. Desktop source
+    // owners still prepare and sign the complete contribution projection.
+    if (repo.isPrivate || m_headless) {
         const QString previousScanKey =
             m_catalogContributionScanKey.take(publishKey);
         const QString previousSnapshotKey =
@@ -4589,6 +4640,9 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         owner, QDateTime::currentMSecsSinceEpoch());
     QNetworkReply *reply =
         m_networkAccess->post(request, QJsonDocument(metadata).toJson(QJsonDocument::Compact));
+    qInfo().noquote()
+        << "Catalog publish request:" << owner << name
+        << stateHash.left(12) << repo.lastSyncMs;
     logSystem("Catalog: publishing " + repo.owner + "/" + repo.name + " to " +
               request.url().toString() + ".");
 
@@ -4599,6 +4653,9 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 const int status =
                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 const QNetworkReply::NetworkError error = reply->error();
+                qInfo().noquote()
+                    << "Catalog publish response:" << publishKey << status
+                    << int(error);
                 const int priorFailures =
                     m_catalogPublishConsecutiveFailures.value(publishKey, 0);
                 const qint64 retryDelayMs =
@@ -6157,6 +6214,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
 
     const bool reopeningSealedArchive =
         PublicMirrorRuntime::isArchiveId(existingArchiveId) &&
+        !m_publicMirrorMaterializations.contains(existingArchiveId) &&
         (legacyMirrorPath.trimmed().isEmpty() ||
          !QDir(legacyMirrorPath).exists());
     if (reopeningSealedArchive)
@@ -6190,15 +6248,20 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
         "plaintext is limited to owner-only temporary storage.")
                   .arg(repo.owner, repo.name));
 
-
-
-
-
-
-
+    // A headless fleet node seals from its service-managed agent checkout
+    // (repositorySource prefers localPath), so that checkout must itself keep
+    // tracking the relay or the node serves its install-time snapshot forever.
+    // Resolve the upstream URL here; the fetch/fast-forward runs on the worker
+    // thread just before sealing. Owned repos and desktop working copies never
+    // qualify: their local state IS the source of truth.
+    const bool managedCheckoutSource =
+        m_headless && serviceManagedCheckout(repo.localPath);
+    qInfo().noquote()
+        << "Public mirror sync mode:"
+        << (managedCheckoutSource ? "managed-origin" : "ordinary")
+        << (source.isEmpty() ? "archive-reopen" : "source-clone");
     QString upstreamUrl;
-    if (m_headless && source == repo.localPath.trimmed() &&
-        serviceManagedCheckout(repo.localPath)) {
+    if (managedCheckoutSource && !source.isEmpty()) {
         const QUrl upstream(repo.cloneUrl.trimmed());
         if (upstream.isValid() && !upstream.host().isEmpty() &&
             upstream.host().compare(catalogApiUrl().host(),
@@ -6212,7 +6275,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     const QString owner = repo.owner;
     const QString name = repo.name;
     QThread *worker = QThread::create(
-        [result, source, upstreamUrl, archiveRoot, vaultPath,
+        [result, source, upstreamUrl, managedCheckoutSource, archiveRoot, vaultPath,
          mutableVaultSecret = std::move(vaultSecret), existingArchiveId,
          legacyMirrorPath, managedMirrorRoot]() mutable {
             if (!upstreamUrl.isEmpty()) {
@@ -6240,10 +6303,21 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                 }
             } else {
                 PublicMirrorRuntime::SyncResult sync =
-                    PublicMirrorRuntime::syncSource(
-                        source, {}, archiveRoot, vaultPath,
-                        mutableVaultSecret, existingArchiveId,
-                        PublicMirrorRuntime::Tools(), &result->error);
+                    managedCheckoutSource
+                        ? PublicMirrorRuntime::syncManagedCheckout(
+                              source, archiveRoot, vaultPath,
+                              mutableVaultSecret, existingArchiveId,
+                              PublicMirrorRuntime::Tools(), &result->error)
+                        : PublicMirrorRuntime::syncSource(
+                              source, {}, archiveRoot, vaultPath,
+                              mutableVaultSecret, existingArchiveId,
+                              PublicMirrorRuntime::Tools(), &result->error);
+                qInfo().noquote()
+                    << "Public mirror sync result:"
+                    << (managedCheckoutSource ? "managed-origin" : "ordinary")
+                    << (sync.metadata.isValid()
+                            ? sync.metadata.expectedRefsSha256.left(12)
+                            : QStringLiteral("failed"));
                 result->metadata = sync.metadata;
                 result->created = sync.created;
                 if (sync.materialization) {
@@ -6312,6 +6386,11 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                 !result->materialization ||
                 !result->materialization->isValid()) {
                 refreshRepositoryList();
+                qWarning().noquote()
+                    << "Public mirror encrypted sync failed:"
+                    << (result->error.isEmpty()
+                            ? QStringLiteral("unknown safe failure")
+                            : result->error);
                 logSystem(QStringLiteral(
                               "Public mirror: encrypted sync failed for %1/%2. "
                               "No new durable plaintext mirror was created.")

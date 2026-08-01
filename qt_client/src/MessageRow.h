@@ -21,7 +21,8 @@ public:
 
     MessageRow(const ChatMessage &message, const QString &nameColor,
                const QHash<QString, MemberInfo> &mentionProfiles,
-               bool canModerate = false, QWidget *parent = nullptr);
+               bool canModerate = false, QWidget *parent = nullptr,
+               int threadReplyCount = 0, bool threadContext = false);
 
     QString messageId() const { return m_message.id; }
     QString senderId() const { return m_message.senderId; }
@@ -32,6 +33,7 @@ public:
 
 signals:
     void reactionToggled(const QString &messageId, const QString &emoji);
+    void threadRequested(const QString &messageId);
     void editRequested(const QString &messageId, const QString &currentText);
 
 

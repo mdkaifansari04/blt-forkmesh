@@ -4,6 +4,7 @@
 import ast
 import asyncio
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -39,7 +40,7 @@ class _Request:
         self.same_origin = same_origin
 
 
-def _handler_runtime():
+def _handler_runtime(task_rows=None):
     tree = ast.parse(ENTRY, filename=str(ENTRY_PATH))
     wanted_assignments = {
         "WORLD_QA_DECK_REVISION", "WORLD_QA_MAX_CARDS",
@@ -55,8 +56,7 @@ def _handler_runtime():
             if names & wanted_assignments:
                 selected.append(node)
         elif isinstance(node, ast.AsyncFunctionDef) \
-                and node.name in (
-                    "_organization_qa_access", "world_qa_handler"):
+                and node.name == "world_qa_handler":
             selected.append(node)
     assert any(
         isinstance(node, ast.AsyncFunctionDef) for node in selected)
@@ -79,8 +79,8 @@ def _handler_runtime():
     async def org_role(_env, _org_bi, actor):
         return "owner" if actor == "alice" else "member"
 
-    async def org_permission(_env, _org_bi, _actor):
-        return "admin"
+    async def org_permission(_env, _org_bi, actor):
+        return "admin" if actor == "alice" else "read"
 
     async def d1_run(_env, _sql, account_bi, key, verdict, reviewed_at):
         rows[(account_bi, key)] = {
@@ -91,6 +91,10 @@ def _handler_runtime():
 
     async def d1_all(_env, sql, *params):
         if "FROM world_qa_items" in sql:
+            return []
+        if "FROM organization_tasks" in sql:
+            return list(task_rows or [])
+        if "FROM organization_task_qa_reviews" in sql:
             return []
         if "GROUP BY item_key,verdict" in sql:
             totals = {}
@@ -127,6 +131,7 @@ def _handler_runtime():
         "Date": _Date,
         "MAX_NODE_NAME": 80,
         "RequestBodyTooLarge": RequestBodyTooLarge,
+        "re": re,
         "ensure_schema": ensure_schema,
         "method_name": lambda request: request.method,
         "_request_same_origin": lambda request: request.same_origin,
@@ -138,6 +143,7 @@ def _handler_runtime():
         "d1_run": d1_run,
         "d1_all": d1_all,
         "d1_first": d1_first,
+        "decrypt_row": lambda _env, value: _async_value(value),
         "clean_string": lambda value, limit: str(value or "")[:limit],
         "json_response": response,
     }
@@ -147,6 +153,10 @@ def _handler_runtime():
         "exec",
     ), namespace)
     return namespace["world_qa_handler"], rows
+
+
+async def _async_value(value):
+    return value
 
 
 def test_qa_schema_is_account_scoped_and_bounded():
@@ -175,7 +185,8 @@ def test_qa_votes_are_per_account_with_global_aggregate_totals():
     assert anonymous["payload"]["authenticated"] is False
     assert anonymous["payload"]["reviews"] == {}
     assert anonymous["payload"]["authorized"] is False
-    assert anonymous["payload"]["requiredTeam"] == "quality-assurance"
+    assert anonymous["payload"]["requiredTeam"] == ""
+    assert anonymous["payload"]["requiresAuthentication"] is True
     assert anonymous["payload"]["cards"] == []
 
     saved = _run(handler(None, _Request(
@@ -199,12 +210,19 @@ def test_qa_votes_are_per_account_with_global_aggregate_totals():
     assert bob["payload"]["reviews"] == {}
     assert bob["payload"]["stats"]["reviewed"] == 0
     assert bob["payload"]["globalStats"]["pass"] == 1
+    reviewed = next(
+        card for card in bob["payload"]["cards"]
+        if card["key"] == "office-doorway"
+    )
+    assert reviewed["reviewedByAnyone"] is True
 
     non_qa = _run(handler(None, _Request(account="bi:charlie")))
     assert non_qa["payload"]["authenticated"] is True
-    assert non_qa["payload"]["authorized"] is False
-    assert non_qa["payload"]["cards"] == []
-    assert non_qa["payload"]["canViewPrivateTasks"] is False
+    assert non_qa["payload"]["authorized"] is True
+    assert non_qa["payload"]["cards"]
+    assert non_qa["payload"]["canViewPrivateTasks"] is True
+    assert non_qa["payload"]["requiredTeam"] == ""
+    assert non_qa["payload"]["requiresAuthentication"] is True
 
 
 def test_qa_write_rejects_cross_origin_unknown_items_and_bad_verdicts():
@@ -222,6 +240,54 @@ def test_qa_write_rejects_cross_origin_unknown_items_and_bad_verdicts():
         response = _run(handler(None, _Request(method="POST", data=data)))
         assert response["status"] == 400
     assert rows == {}
+
+
+def test_logged_in_non_qa_user_can_review_a_card():
+    handler, rows = _handler_runtime()
+    response = _run(handler(None, _Request(
+        method="POST",
+        account="bi:charlie",
+        data={"key": "office-doorway", "verdict": "unsure"},
+    )))
+    assert response["status"] == 200
+    assert response["payload"]["authorized"] is True
+    assert response["payload"]["reviews"]["office-doorway"][
+        "verdict"] == "unsure"
+    assert rows[("bi:charlie", "office-doorway")]["verdict"] == "unsure"
+
+    route = _run(handler(None, _Request(
+        method="POST",
+        account="bi:charlie",
+        data={"key": "office-doorway", "action": "route_issue"},
+    )))
+    assert route["status"] == 403
+    assert route["payload"]["error"] == "forbidden"
+
+
+def test_completed_organization_task_is_marked_globally_reviewed():
+    task_id = "a" * 32
+    handler, _rows = _handler_runtime([{
+        "task_id": task_id,
+        "department": "Engineering",
+        "team": "quality-assurance",
+        "qa_status": "passed",
+        "qa_reviewed_at": 1_699_999_999_000,
+        "data": {
+            "title": "Already checked task",
+            "howToTest": "Confirm the completed behavior.",
+            "qaReviewer": "bob",
+        },
+    }])
+    response = _run(handler(None, _Request(account="bi:alice")))
+    card = next(
+        item for item in response["payload"]["cards"]
+        if item["key"] == f"task:{task_id}"
+    )
+    assert card["reviewedByAnyone"] is True
+    assert card["global"] == {
+        "pass": 1, "fail": 0, "unsure": 0, "total": 1,
+    }
+    assert response["payload"]["globalStats"]["pass"] == 1
 
 
 def test_world_has_one_direct_physical_card_with_swipes_and_stats():
@@ -271,6 +337,42 @@ def test_world_has_one_direct_physical_card_with_swipes_and_stats():
     assert ".world-qa-playing-card" not in CSS
 
 
+def test_cards_stack_only_deals_tasks_that_nobody_has_reviewed():
+    for contract in (
+        '"reviewedByAnyone": (',
+        'int(global_reviews.get(key, {}).get("total") or 0) > 0',
+        "include_private_task_reviews(global_reviews, global_stats)",
+    ):
+        assert contract in ENTRY
+    for contract in (
+        "const stack = cards.filter((card) => !card.reviewedByAnyone);",
+        "stack,",
+        "total: stack.length,",
+        "this.qaDeck.stack[this.qaCardIndex]",
+        "Math.min(previousStackIndex, stack.length - 1)",
+    ):
+        assert contract in WORLD
+    assert "NO QA TASKS ARE WAITING" in SCENE
+    assert "SIGN IN TO WORK ON QA" in SCENE
+    assert "CARDS WAITING" in SCENE
+
+
+def test_shared_qa_deck_refreshes_while_world_remains_open():
+    for contract in (
+        "const WORLD_QA_POLL_MS = 15 * 1000;",
+        "this.qaTimer = window.setInterval(() => {",
+        "void this.refreshQaDeck({ quiet: true });",
+        "}, WORLD_QA_POLL_MS);",
+        "window.clearInterval(this.qaTimer);",
+    ):
+        assert contract in WORLD
+    visibility = WORLD[
+        WORLD.index("handleVisibility = () => {"):
+        WORLD.index("handleStorage = (event) => {")
+    ]
+    assert "void this.refreshQaDeck({ quiet: true });" in visibility
+
+
 def test_qa_catalog_is_not_truncated_to_the_first_64_cards():
     handler = ENTRY[
         ENTRY.index("async def world_qa_handler"):
@@ -281,7 +383,13 @@ def test_qa_catalog_is_not_truncated_to_the_first_64_cards():
     assert "deck_cards = deck_cards[:128]" not in handler
     assert "LIMIT 64" not in handler
     assert handler.count("WORLD_QA_MAX_CARDS") >= 6
-
+    qa_client = WORLD[
+        WORLD.index("applyQaDeck(payload"):
+        WORLD.index("qaDeckCardsForView(")
+    ]
+    assert ".slice(0, 64)" not in qa_client
+    assert ".slice(0, 4096)" in qa_client
+    # The 3D desk remains constant-cost even when the catalog grows.
     assert "const pageSize = 5;" in WORLD
     assert "Math.ceil(filtered.length / pageSize)" in WORLD
 

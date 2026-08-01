@@ -32,6 +32,7 @@ inline constexpr int kSenderPaletteSize = 8;
 inline const char *iconColorForButton(const QString &objectName, bool dark)
 {
     if (objectName == QStringLiteral("primaryButton") ||
+        objectName == QStringLiteral("scmSyncButton") ||
         objectName == QStringLiteral("toolbarPrimaryButton") ||
 
 
@@ -151,24 +152,21 @@ QPushButton#primaryButton {
 }
 QPushButton#primaryButton:hover { background-color: #2ea043; }
 QPushButton#primaryButton:pressed { background-color: #1f7a31; }
+QPushButton#scmSyncButton {
+    background-color: #1f6feb; border: 1px solid #388bfd; color: #ffffff;
+    padding: 6px 12px;
+}
+QPushButton#scmSyncButton:hover { background-color: #388bfd; }
+QPushButton#scmSyncButton:pressed { background-color: #1158c7; }
+QPushButton#scmSyncButton:disabled {
+    background-color: #1f4b87; border-color: #315f91; color: #c9d1d9;
+}
 QPushButton#ghostButton {
     background: transparent; border: none; color: #8b949e;
     font-weight: 500; padding: 4px 8px; text-align: left;
 }
 QPushButton#ghostButton:hover { color: #e6edf3; }
-
-
-QPushButton#commitsToggle {
-    background: transparent; border: 1px solid transparent; color: #8b949e;
-    font-weight: 500; padding: 4px 8px; text-align: left; border-radius: 6px;
-}
-QPushButton#commitsToggle:hover { color: #e6edf3; }
-QPushButton#commitsToggle:checked {
-    color: #e6edf3; background: rgba(46,160,67,0.18);
-    border: 1px solid #2ea043;
-}
-
-
+/* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
 QPushButton#logFilterChip {
@@ -246,14 +244,14 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #fileTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
-#settingsTabs::pane, #networkTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
-#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab {
+#settingsTabs::pane, #networkTabs::pane, #repoSettingsTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
+#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab, #repoSettingsTabs QTabBar::tab {
     background: #0d1117; color: #8b949e; padding: 7px 16px;
     border: 1px solid transparent; border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }
-#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover { color: #e6edf3; }
-#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected {
+#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover, #repoSettingsTabs QTabBar::tab:hover { color: #e6edf3; }
+#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected, #repoSettingsTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
 #codeEditor {
@@ -1450,24 +1448,21 @@ QPushButton#primaryButton {
 }
 QPushButton#primaryButton:hover { background-color: #1a7f37; }
 QPushButton#primaryButton:pressed { background-color: #187733; }
+QPushButton#scmSyncButton {
+    background-color: #0969da; border: 1px solid #0969da; color: #ffffff;
+    padding: 6px 12px;
+}
+QPushButton#scmSyncButton:hover { background-color: #0867c4; }
+QPushButton#scmSyncButton:pressed { background-color: #0759ad; }
+QPushButton#scmSyncButton:disabled {
+    background-color: #8cbae8; border-color: #8cbae8; color: #ffffff;
+}
 QPushButton#ghostButton {
     background: transparent; border: none; color: #656d76;
     font-weight: 500; padding: 4px 8px; text-align: left;
 }
 QPushButton#ghostButton:hover { color: #1f2328; }
-
-
-QPushButton#commitsToggle {
-    background: transparent; border: 1px solid transparent; color: #656d76;
-    font-weight: 500; padding: 4px 8px; text-align: left; border-radius: 6px;
-}
-QPushButton#commitsToggle:hover { color: #1f2328; }
-QPushButton#commitsToggle:checked {
-    color: #1f2328; background: rgba(31,136,61,0.14);
-    border: 1px solid #1f883d;
-}
-
-
+/* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
 QPushButton#logFilterChip {
@@ -1514,14 +1509,14 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #fileTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
-#settingsTabs::pane, #networkTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
-#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab {
+#settingsTabs::pane, #networkTabs::pane, #repoSettingsTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
+#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab, #repoSettingsTabs QTabBar::tab {
     background: #ffffff; color: #656d76; padding: 7px 16px;
     border: 1px solid transparent; border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }
-#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover { color: #1f2328; }
-#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected {
+#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover, #repoSettingsTabs QTabBar::tab:hover { color: #1f2328; }
+#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected, #repoSettingsTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
 #codeEditor {

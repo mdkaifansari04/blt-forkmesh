@@ -491,11 +491,8 @@ void MainWindow::reloadProjects()
     const bool writable = store.canWrite();
     if (m_projectNewButton)
         m_projectNewButton->setEnabled(writable);
-    if (m_repoProjectsTab)
-        m_repoProjectsTab->setText(
-            m_currentProjects.isEmpty()
-                ? QStringLiteral("Projects")
-                : QStringLiteral("Projects (%1)").arg(m_currentProjects.size()));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoProjectsTab))
+        b->setBadgeCount(m_currentProjects.size());
 
     if (m_projectMilestoneCombo) {
         QSignalBlocker blocker(m_projectMilestoneCombo);

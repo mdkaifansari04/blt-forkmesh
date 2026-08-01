@@ -1179,6 +1179,23 @@ def test_worker_exposes_repo_mirrors_route_and_uses_payload_builder():
     assert '"/mirrors"' in ENTRY_TEXT or "mirrors_match" in ENTRY_TEXT
 
 
+def test_worker_exposes_exact_node_readme_reachability_probe():
+    assert "REPO_MIRROR_REACHABILITY_RE = re.compile" in URLS_TEXT
+    assert "repo_mirror_reachability_handler" in ENTRY_TEXT
+    assert 'node not in context.get("nodes", set())' in ENTRY_TEXT
+    assert 'WHERE node_name=?' in ENTRY_TEXT
+    assert '"blob", {"path": "README.md"}' in ENTRY_TEXT
+    assert '"readmeLoaded": bool(reachable)' in ENTRY_TEXT
+    assert "REPO_MIRROR_REACHABILITY_RE.match(original_url.path)" in ENTRY_TEXT
+    assert 'context["routeOwner"] = route_owner' in ENTRY_TEXT
+    assert "await _org_repo_node(env, route_owner, route_repo) == owner" in ENTRY_TEXT
+    probe_start = ENTRY_TEXT.index("async def repo_mirror_reachability_handler")
+    probe_end = ENTRY_TEXT.index("\n\ndef _https_mirror_merge_body", probe_start)
+    probe = ENTRY_TEXT[probe_start:probe_end]
+    assert "for endpoint in" not in probe
+    assert "_https_mirror_route_advance" not in probe
+
+
 def test_hydrate_live_host_probes_capped_concurrent_and_memoized():
 
 

@@ -101,6 +101,10 @@ constexpr qint64 kChatMessageRetentionMs = qint64(7) * 24 * 60 * 60 * 1000;
 struct ChatMessage {
     QString id;
     QString conversation;
+    // Empty for a top-level message. A non-empty value identifies the
+    // top-level message this record replies to. The wire field is `rootId`,
+    // shared with web chat and World's embedded chat.
+    QString threadRootId;
     QString senderId;
     QString senderName;
     QString text;
@@ -124,7 +128,17 @@ public:
     using QObject::QObject;
 
     virtual void sendChat(const QString &channel, const QString &text) = 0;
-
+    // Reply inside an existing channel thread. Backends that predate threads
+    // can safely ignore this; ServerNode implements the shared thread-reply
+    // envelope used by every first-party client.
+    virtual void sendThreadReply(const QString &channel,
+                                 const QString &rootMessageId,
+                                 const QString &text) {
+        Q_UNUSED(channel);
+        Q_UNUSED(rootMessageId);
+        Q_UNUSED(text);
+    }
+    // Direct (one-to-one) message to the member with the given id.
     virtual void sendDirect(const QString &targetId, const QString &text) = 0;
 
     virtual void sendFile(const QString &conversation, const QString &fileName,

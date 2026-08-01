@@ -1103,8 +1103,31 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDetailTabs->setObjectName("agentDetailTabs");
     m_issueDetailTabs->addTab(detailSplit, QStringLiteral("Issue"));
     m_issueFilesTabIndex =
-        m_issueDetailTabs->addTab(issueFilesPage, QStringLiteral("Files changed"));
+        m_issueDetailTabs->addTab(issueFilesPage, QStringLiteral("Changes in Git"));
     m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, false);
+    connect(m_issueDetailTabs, &QTabWidget::currentChanged, this,
+            [this](int index) {
+                if (index != m_issueFilesTabIndex || m_currentIssueNumber <= 0)
+                    return;
+                // Issues keep their discussion and metadata here; their linked
+                // repository changes open in the one Git range pane. Put the tab
+                // selection back before navigating so returning to the issue
+                // never exposes the legacy duplicate diff widget.
+                {
+                    QSignalBlocker block(m_issueDetailTabs);
+                    m_issueDetailTabs->setCurrentIndex(0);
+                }
+                if (const AgentSession *session =
+                        latestAgentSessionForIssue(m_currentIssueNumber)) {
+                    if (!session->branchName.isEmpty()) {
+                        switchToAgentBranch(session->id);
+                        return;
+                    }
+                }
+                const QList<int> pulls = pullsLinkedToIssue(m_currentIssueNumber);
+                if (!pulls.isEmpty())
+                    openPullDiffInGitView(pulls.constLast());
+            });
 
     auto *detailLayout = new QVBoxLayout(issueDetailView);
     detailLayout->setContentsMargins(0, 0, 0, 0);

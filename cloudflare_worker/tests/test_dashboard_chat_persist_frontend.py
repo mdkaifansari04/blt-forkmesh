@@ -96,8 +96,10 @@ def test_world_embed_chat_reads_oldest_first_newest_last():
 
 
 def test_durable_type_set_matches_the_node():
-
-    for kind in ("chat", "edit", "delete", "reaction", "admin-delete"):
+    # Same set as the desktop node's kDurableTypes (ServerNode.cpp).
+    for kind in (
+        "chat", "thread-reply", "edit", "delete", "reaction", "admin-delete"
+    ):
         assert f'"{kind}"' in CHAT[CHAT.index("DURABLE_TYPES") : CHAT.index("function send(")]
         assert f'"{kind}"' in PUBLIC_CHAT[
             PUBLIC_CHAT.index("DURABLE_TYPES"):PUBLIC_CHAT.index("function send(")

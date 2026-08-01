@@ -62,6 +62,9 @@ public:
 #endif
 
     void sendChat(const QString &channel, const QString &text) override;
+    void sendThreadReply(const QString &channel,
+                         const QString &rootMessageId,
+                         const QString &text) override;
     void setAccountKind(const QString &kind) override;
     void setRoomPassphrase(const QString &passphrase) override;
     void sendBotChat(const QString &channel, const QString &text) override;

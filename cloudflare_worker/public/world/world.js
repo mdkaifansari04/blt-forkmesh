@@ -227,7 +227,12 @@ const WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000;
 
 
 const WORLD_STATUS_POLL_MS = 60 * 1000;
+const WORLD_STATUS_ISSUE_WINDOW_MS = 60 * 1000;
 const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
+// QA is a shared work queue. Keep already-open Worlds close enough to the
+// server's authoritative first-review state that two testers are not dealt the
+// same card for the rest of a long session.
+const WORLD_QA_POLL_MS = 15 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS = 15 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_BASE_MS = 5 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_MAX_MS = 30 * 60 * 1000;
@@ -1107,6 +1112,28 @@ function validWorldSession() {
     sessionToken.length <= 2048
     ? { ...session, nodeName, sessionToken }
     : null;
+}
+
+function statusPayloadHasRecentIssue(payload, now = Date.now()) {
+  const systems = Array.isArray(payload?.systems) ? payload.systems : [];
+  const payloadNow = Number(payload?.now);
+  const referenceNow = Number.isFinite(payloadNow) && payloadNow > 0
+    ? payloadNow
+    : now;
+  const cutoff = referenceNow - WORLD_STATUS_ISSUE_WINDOW_MS;
+  return systems.some((system) =>
+    (Array.isArray(system?.minutes) ? system.minutes : []).some((minute) => {
+      const minuteTs = Number(minute?.minuteTs);
+      const status = String(minute?.status || "").toLowerCase();
+      return (
+        Number.isFinite(minuteTs) &&
+        minuteTs >= cutoff &&
+        minuteTs <= referenceNow &&
+        status !== "operational" &&
+        status !== "future"
+      );
+    }),
+  );
 }
 
 async function copyWorldText(value) {
@@ -4144,6 +4171,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </a>
 
           <nav class="world-top-actions" data-world-top-actions aria-label="World tools">
+            <a
+              class="world-admin-status-light"
+              data-world-admin-status-light
+              href="/status"
+              aria-label="A system status issue was recorded in the past minute"
+              title="A system status issue was recorded in the past minute — open status"
+              hidden
+            >
+              <span class="world-admin-status-light-orb" aria-hidden="true"></span>
+            </a>
             ${
               identity.accountStatus === "Supporting member"
                 ? ""
@@ -5123,15 +5160,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <button type="button" data-world-element-master="on">Everything on</button>
                 <button type="button" data-world-element-master="off">Everything off</button>
               </div>
-              <label class="world-element-sort">
-                <span>Sort by</span>
-                <select data-world-element-sort aria-label="Sort world elements">
-                  <option value="drawables">Drawn</option>
-                  <option value="triangles">Triangles</option>
-                  <option value="interactives">Clicks</option>
-                </select>
-              </label>
-              <div class="world-element-list" data-world-element-list>
+              <div class="world-element-table" data-world-element-list role="table" aria-label="World elements">
                 <p class="world-setting-note">World element controls appear once the scene is ready.</p>
               </div>
               <p class="world-office-panel-status" data-world-element-status role="status" aria-live="polite"></p>
@@ -5416,6 +5445,7 @@ class ForkMeshWorld extends HTMLElement {
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.buildBoardTimer = 0;
     this.buildBoardLoad = null;
+    this.qaTimer = 0;
     this.orgAgentTimer = 0;
     this.sessionWatchTimer = 0;
     this.sessionWatchActive = false;
@@ -5563,6 +5593,7 @@ class ForkMeshWorld extends HTMLElement {
     this.qaDeck = {
       authenticated: false,
       cards: [],
+      stack: [],
       reviews: {},
       stats: { pass: 0, fail: 0, unsure: 0, reviewed: 0, total: 0 },
     };
@@ -5581,6 +5612,7 @@ class ForkMeshWorld extends HTMLElement {
 
     this.disabledWorldElements = storedDisabledWorldElements();
     this.worldElementSort = "drawables";
+    this.worldElementSortAscending = false;
     this.worldTicketResolved = false;
     this.settingsUpdatedAt = 0;
     this.worldPreferencesLoaded = false;
@@ -5622,11 +5654,13 @@ class ForkMeshWorld extends HTMLElement {
     this.eventsTimer = 0;
     this.instanceDirectoryTimer = 0;
     this.instanceCelebrationTimer = 0;
+    this.installCelebrationTimer = 0;
     this.notificationsTimer = 0;
     this.adminErrorTimer = 0;
     this.adminErrorLatestId = 0;
     this.adminErrorCount = 0;
     this.adminErrorEffectTimer = 0;
+    this.adminStatusIssueActive = false;
     this.adminErrors = [];
     this.adminErrorGroups = [];
     this.adminErrorsState = "idle";
@@ -6836,6 +6870,11 @@ class ForkMeshWorld extends HTMLElement {
         () => void this.refreshBuildBoard({ quiet: true }),
         WORLD_BUILD_BOARD_POLL_MS,
       );
+      this.qaTimer = window.setInterval(() => {
+        if (!this.destroyed && !document.hidden) {
+          void this.refreshQaDeck({ quiet: true });
+        }
+      }, WORLD_QA_POLL_MS);
       void this.refreshOrgAgentBots();
       this.orgAgentTimer = window.setInterval(
         () => void this.refreshOrgAgentBots(),
@@ -7384,6 +7423,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   applyQaDeck(payload = {}, { afterKey = "" } = {}) {
+    const previousStackIndex = afterKey
+      ? (Array.isArray(this.qaDeck?.stack) ? this.qaDeck.stack : [])
+          .findIndex((card) => card?.key === afterKey)
+      : -1;
     const reviews =
       payload?.reviews && typeof payload.reviews === "object"
         ? payload.reviews
@@ -7417,6 +7460,8 @@ class ForkMeshWorld extends HTMLElement {
               howToTest,
               verdict,
               global,
+              reviewedByAnyone:
+                card?.reviewedByAnyone === true || global.total > 0,
               organizationTask: card?.organizationTask === true,
               department: sanitizePresenceText(
                 card?.department, "", 64),
@@ -7441,7 +7486,8 @@ class ForkMeshWorld extends HTMLElement {
           : null;
       })
       .filter(Boolean)
-      .slice(0, 64);
+      .slice(0, 4096);
+    const stack = cards.filter((card) => !card.reviewedByAnyone);
     const counts = { pass: 0, fail: 0, unsure: 0 };
     cards.forEach((card) => {
       if (card.verdict) counts[card.verdict] += 1;
@@ -7450,9 +7496,10 @@ class ForkMeshWorld extends HTMLElement {
       authenticated: payload?.authenticated === true,
       authorized: payload?.authorized === true,
       requiredTeam: sanitizePresenceText(
-        payload?.requiredTeam, "quality-assurance", 64),
+        payload?.requiredTeam, "", 64),
       revision: sanitizePresenceText(payload?.revision, "", 80),
       cards,
+      stack,
       reviews,
       globalReviews:
         payload?.globalReviews && typeof payload.globalReviews === "object"
@@ -7470,20 +7517,14 @@ class ForkMeshWorld extends HTMLElement {
       stats: {
         ...counts,
         reviewed: cards.filter((card) => card.verdict).length,
-        total: cards.length,
+        total: stack.length,
       },
     };
-    const previousIndex = cards.findIndex((card) => card.key === afterKey);
-    const unreviewed = cards
-      .map((card, index) => ({ card, index }))
-      .filter(({ card }) => !card.verdict);
-    if (unreviewed.length) {
+    if (stack.length) {
       this.qaCardIndex =
-        unreviewed.find(({ index }) => index > previousIndex)?.index ??
-        unreviewed[0].index;
-    } else if (cards.length) {
-      this.qaCardIndex =
-        previousIndex >= 0 ? (previousIndex + 1) % cards.length : 0;
+        previousStackIndex >= 0
+          ? Math.min(previousStackIndex, stack.length - 1)
+          : 0;
     } else {
       this.qaCardIndex = 0;
     }
@@ -7497,7 +7538,12 @@ class ForkMeshWorld extends HTMLElement {
     return this.qaDeck.cards.filter(
       (card) =>
         (Number(card?.global?.[verdict]) || 0) > 0 ||
-        String(card?.verdict || "") === verdict,
+        String(card?.verdict || "") === verdict ||
+        (card?.organizationTask === true &&
+          Number(card?.lastReviewedAt) > 0 &&
+          ({ passed: "pass", failed: "fail", unknown: "unsure" }[
+            String(card?.taskQaStatus || "")
+          ] === verdict)),
     );
   }
 
@@ -7529,7 +7575,7 @@ class ForkMeshWorld extends HTMLElement {
               (card) => card.key === this.qaDeckSelectedKey,
             )
           : null) ||
-        this.qaDeck.cards[this.qaCardIndex] ||
+        this.qaDeck.stack[this.qaCardIndex] ||
         null,
       currentIndex: this.qaCardIndex,
       stats: this.qaDeck.stats,
@@ -7559,7 +7605,6 @@ class ForkMeshWorld extends HTMLElement {
       const index = this.qaDeck.cards.findIndex((card) => card.key === key);
       if (index < 0) return;
       this.qaDeckSelectedKey = key;
-      this.qaCardIndex = index;
       this.qaDeckView = "detail";
       this.renderQaDeck();
       return;
@@ -7805,7 +7850,12 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return false;
     }
-    const card = this.qaDeck.cards[this.qaCardIndex];
+    const card =
+      this.qaDeckView === "detail" && this.qaDeckSelectedKey
+        ? this.qaDeck.cards.find(
+            (entry) => entry.key === this.qaDeckSelectedKey,
+          )
+        : this.qaDeck.stack[this.qaCardIndex];
     if (!card) return false;
     if (!this.qaDeck.authenticated || !validWorldSession()) {
       this.toast("Sign in to save QA results to your account.");
@@ -7870,7 +7920,7 @@ class ForkMeshWorld extends HTMLElement {
         );
       }
       await this.refreshQaDeck({ quiet: true });
-      const index = this.qaDeck.cards.findIndex((card) => card.key === key);
+      const index = this.qaDeck.stack.findIndex((card) => card.key === key);
       if (index < 0 || !this.qaDeck.authorized) {
         this.toast(
           "Join the Quality Assurance team to review completed tasks.",
@@ -8068,8 +8118,11 @@ class ForkMeshWorld extends HTMLElement {
 
 
     void this.refreshMemberDirectory();
-
-
+    // Reviews made in another browser while this tab was hidden must be
+    // removed before the tester handles the next card.
+    void this.refreshQaDeck({ quiet: true });
+    // Coming back to this tab is itself the request to bring the account's
+    // one avatar here, so a takeover by another device stops holding it off.
     this.reclaimPresenceHere();
     if (!this.socket) {
       this.refreshWorldTicket();
@@ -9275,6 +9328,19 @@ class ForkMeshWorld extends HTMLElement {
       this.world?.updateFederatedInstances?.(instances);
       this.celebrateRecentInstance(instances);
     } catch (_) {}
+    try {
+      const payload = await this.fetchJSON(
+        `/api/world/installs?refresh=${Math.floor(Date.now() / 30_000)}`,
+        {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        },
+      );
+      this.celebrateRecentInstall(
+        Array.isArray(payload?.installs) ? payload.installs : [],
+      );
+    } catch (_) {}
   }
 
   startInstanceDirectoryPolling() {
@@ -9350,6 +9416,79 @@ class ForkMeshWorld extends HTMLElement {
     this.instanceCelebrationTimer = window.setTimeout(() => {
       layer.remove();
       this.instanceCelebrationTimer = 0;
+    }, remaining);
+  }
+
+  // A fresh desktop install — the one-line installer's final successful
+  // "done" report, surfaced through /api/world/installs — gets the same
+  // ten-minute firework treatment as a federated instance joining. The
+  // world-instance-* classes are reused so both celebrations share one look.
+  celebrateRecentInstall(installs = []) {
+    const now = Date.now();
+    const celebrationMs = 10 * 60 * 1000;
+    const newest = [...(Array.isArray(installs) ? installs : [])]
+      .filter(
+        (install) =>
+          install?.installedAt > 0 &&
+          now >= install.installedAt &&
+          now - install.installedAt < celebrationMs,
+      )
+      .sort((left, right) => right.installedAt - left.installedAt)[0];
+    if (!newest) return;
+    // The federated-instance celebration owns the overlay when both fire.
+    if (this.$("[data-world-instance-celebration]")) return;
+    const existing = this.$("[data-world-install-celebration]");
+    if (existing?.dataset.installId === newest.id) return;
+    existing?.remove();
+    window.clearTimeout(this.installCelebrationTimer);
+    const remaining = Math.max(
+      1000,
+      celebrationMs - (now - Number(newest.installedAt)),
+    );
+    const layer = document.createElement("section");
+    layer.className = "world-instance-celebration";
+    layer.dataset.worldInstallCelebration = "true";
+    layer.dataset.installId = newest.id;
+    layer.setAttribute("aria-label", "New ForkMesh desktop install celebration");
+    const fireworks = document.createElement("div");
+    fireworks.className = "world-instance-fireworks";
+    fireworks.setAttribute("aria-hidden", "true");
+    if (
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      for (let index = 0; index < 54; index += 1) {
+        const particle = document.createElement("i");
+        particle.style.setProperty("--x", `${5 + Math.random() * 90}%`);
+        particle.style.setProperty("--y", `${5 + Math.random() * 62}%`);
+        particle.style.setProperty("--delay", `${Math.random() * -4}s`);
+        particle.style.setProperty("--duration", `${1.8 + Math.random() * 2.7}s`);
+        particle.style.setProperty("--hue", `${Math.floor(Math.random() * 360)}`);
+        fireworks.append(particle);
+      }
+    }
+    const announcement = document.createElement("div");
+    announcement.className = "world-instance-announcement";
+    const eyebrow = document.createElement("p");
+    eyebrow.textContent = "NEW FORKMESH DESKTOP · NODE INSTALLED";
+    const title = document.createElement("strong");
+    const platform = [newest.os, newest.arch].filter(Boolean).join(" · ");
+    title.textContent = platform || "A new ForkMesh desktop";
+    const copy = document.createElement("span");
+    copy.textContent =
+      "Someone just installed the ForkMesh desktop with the one-line installer. Fireworks run for ten minutes.";
+    const link = document.createElement("a");
+    link.href = "/desktop.html";
+    link.textContent = "Get the desktop app →";
+    announcement.append(eyebrow, title, copy, link);
+    layer.append(fireworks, announcement);
+    this.append(layer);
+    this.toast("🎆 A new ForkMesh desktop was just installed.", {
+      priority: 2,
+      lockMs: 8000,
+    });
+    this.installCelebrationTimer = window.setTimeout(() => {
+      layer.remove();
+      this.installCelebrationTimer = 0;
     }, remaining);
   }
 
@@ -10578,6 +10717,18 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
+      const elementSort = event.target.closest("[data-world-element-sort]");
+      if (elementSort) {
+        const key = elementSort.dataset.worldElementSort;
+        if (this.worldElementSort === key) {
+          this.worldElementSortAscending = this.worldElementSortAscending !== true;
+        } else {
+          this.worldElementSort = key;
+          this.worldElementSortAscending = key === "label" || key === "category";
+        }
+        this.renderWorldElementsPane();
+        return;
+      }
       if (event.target.closest("[data-world-debug-copy]")) {
         void this.copyDiagnosticsSnapshot();
         return;
@@ -11090,16 +11241,6 @@ class ForkMeshWorld extends HTMLElement {
           elementToggle.dataset.worldElementToggle,
           elementToggle.checked,
         );
-        return;
-      }
-      const elementSort = event.target.closest("[data-world-element-sort]");
-      if (elementSort) {
-        this.worldElementSort = ["drawables", "triangles", "interactives"].includes(
-          elementSort.value,
-        )
-          ? elementSort.value
-          : "drawables";
-        this.renderWorldElementsPane();
         return;
       }
       const emojiCategory = event.target.closest(
@@ -12473,6 +12614,21 @@ class ForkMeshWorld extends HTMLElement {
   applyAdminElementsAccess() {
     const elementsTab = this.$("[data-world-elements-tab]");
     if (elementsTab) elementsTab.hidden = false;
+    this.renderAdminStatusLight(this.adminStatusIssueActive);
+  }
+
+  renderAdminStatusLight(active = false) {
+    const light = this.$("[data-world-admin-status-light]");
+    if (!light) return;
+    this.adminStatusIssueActive = active === true;
+    const visible = this.identity?.isAdmin === true && this.adminStatusIssueActive;
+    light.hidden = !visible;
+    light.setAttribute(
+      "aria-label",
+      visible
+        ? "A system status issue was recorded in the past minute"
+        : "No recent system status issues",
+    );
   }
 
   adminErrorStorageKey() {
@@ -13122,6 +13278,7 @@ class ForkMeshWorld extends HTMLElement {
     this.statusBoardRequestedAt = Date.now();
     this.statusBoardLastCheckAt =
       Math.max(0, Number(payload?.current?.lastCronSampleTs) || 0);
+    this.renderAdminStatusLight(statusPayloadHasRecentIssue(payload));
     this.world?.updateSystemStatusBoard?.(payload);
     this.syncSystemStatusBoardTimer();
   }
@@ -23306,69 +23463,69 @@ class ForkMeshWorld extends HTMLElement {
         '<p class="world-setting-note">The world is still loading — element controls appear once the scene is built.</p>';
       return;
     }
-    const categoryOrder = [
-      "Systems",
-      "Terrain",
-      "Districts",
-      "Boards & kiosks",
-      "Scenery",
-      "Recreation",
-      "Vehicles & rides",
-      "Avatars & bots",
-      "Infrastructure",
+    const columns = [
+      { key: "label", heading: "Element" },
+      { key: "category", heading: "Group" },
+      { key: "drawables", heading: "Drawn" },
+      { key: "triangles", heading: "Tri" },
+      { key: "interactives", heading: "Click" },
     ];
-    const grouped = new Map();
-    elements.forEach((element) => {
-      const category = String(element.category || "Other");
-      if (!grouped.has(category)) grouped.set(category, []);
-      grouped.get(category).push(element);
-    });
-    const orderedCategories = [
-      ...categoryOrder.filter((category) => grouped.has(category)),
-      ...[...grouped.keys()].filter(
-        (category) => !categoryOrder.includes(category),
-      ),
-    ];
-    const sort = ["drawables", "triangles", "interactives"].includes(
-      this.worldElementSort,
-    )
+    const sort = columns.some((column) => column.key === this.worldElementSort)
       ? this.worldElementSort
       : "drawables";
-    const compareElements = (left, right) =>
-      Number(right[sort]) - Number(left[sort]) ||
-      left.label.localeCompare(right.label);
-    list.innerHTML = orderedCategories
-      .map((category) => {
-        const rows = grouped
-          .get(category)
-          .sort(compareElements)
-          .map((element) => {
-            const stats = element.system
-              ? "per-frame system"
-              : `${compactCountLabel(element.drawables)} drawn · ${compactCountLabel(element.triangles)} tri · ${compactCountLabel(element.interactives)} click`;
+    const textSort = sort === "label" || sort === "category";
+    const ascending = this.worldElementSortAscending === true;
+    const compareElements = (left, right) => {
+      const delta = textSort
+        ? String(left[sort]).localeCompare(String(right[sort]))
+        : Number(right[sort]) - Number(left[sort]);
+      return (
+        (textSort === ascending ? delta : -delta) ||
+        left.label.localeCompare(right.label)
+      );
+    };
+    const header = `
+      <div class="world-element-head" role="row">
+        <span aria-hidden="true"></span>
+        ${columns
+          .map((column) => {
+            const active = column.key === sort;
             return `
-            <label class="world-element-row" data-enabled="${element.enabled}">
-              <input
-                type="checkbox"
-                data-world-element-toggle="${escapeHTML(element.id)}"
-                ${element.enabled ? "checked" : ""}
-              />
-              <span class="world-element-copy">
-                <strong>${escapeHTML(element.label)}</strong>
-                <small>${escapeHTML(stats)}</small>
-              </span>
-            </label>`;
+            <button
+              type="button"
+              role="columnheader"
+              data-world-element-sort="${column.key}"
+              aria-sort="${active ? (ascending ? "ascending" : "descending") : "none"}"
+            >${column.heading}${active ? (ascending ? " ▲" : " ▼") : ""}</button>`;
           })
-          .join("");
+          .join("")}
+      </div>`;
+    const rows = elements
+      .sort(compareElements)
+      .map((element) => {
+        const count = (value) =>
+          element.system ? "—" : compactCountLabel(value);
         return `
-        <section class="world-element-category">
-          <h4>${escapeHTML(category)}</h4>
-          ${rows}
-        </section>`;
+        <label
+          class="world-element-row"
+          role="row"
+          data-enabled="${element.enabled}"
+          ${element.system ? 'title="Per-frame system — no geometry of its own"' : ""}
+        >
+          <input
+            type="checkbox"
+            data-world-element-toggle="${escapeHTML(element.id)}"
+            ${element.enabled ? "checked" : ""}
+          />
+          <strong>${escapeHTML(element.label)}</strong>
+          <span class="world-element-group">${escapeHTML(element.category)}</span>
+          <span class="world-element-count">${escapeHTML(count(element.drawables))}</span>
+          <span class="world-element-count">${escapeHTML(count(element.triangles))}</span>
+          <span class="world-element-count">${escapeHTML(count(element.interactives))}</span>
+        </label>`;
       })
       .join("");
-    const sortControl = this.$("[data-world-element-sort]");
-    if (sortControl) sortControl.value = sort;
+    list.innerHTML = header + rows;
   }
 
   renderWorldSessions(message = "", tone = "") {
@@ -23649,7 +23806,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=0e8a0f7e3b4b";
+    script.src = "/dashboard-chat.js?v=f73f6d2a300f";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {
@@ -26451,6 +26608,7 @@ class ForkMeshWorld extends HTMLElement {
       this.identity.nodes = [];
     }
     this.stopAdminErrorPolling();
+    this.renderAdminStatusLight(false);
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.resetWorldActivity();
@@ -28463,6 +28621,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.adminErrorTimer);
     window.clearTimeout(this.adminErrorEffectTimer);
     window.clearTimeout(this.instanceCelebrationTimer);
+    window.clearTimeout(this.installCelebrationTimer);
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
@@ -28472,6 +28631,9 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.mastodonRefreshTimer);
     window.clearInterval(this.socialFeedsTimer);
     window.clearInterval(this.sessionWatchTimer);
+    window.clearInterval(this.buildBoardTimer);
+    window.clearInterval(this.orgAgentTimer);
+    window.clearInterval(this.qaTimer);
     window.clearInterval(this.instanceDirectoryTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     window.clearTimeout(this.viewportSyncTimer);

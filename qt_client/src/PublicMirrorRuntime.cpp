@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QMap>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
@@ -277,7 +278,8 @@ bool isLocalSource(const QString &source)
 
 bool cloneSource(const QString &source, const QStringList &gitPrefixArgs,
                  const QString &destination,
-                 const PublicMirrorRuntime::Tools &tools, QString *error)
+                 const PublicMirrorRuntime::Tools &tools, QString *error,
+                 bool originBranchesOnly = false)
 {
     const bool local = isLocalSource(source);
     if (!local && (!safeHttpsSource(source) ||
@@ -299,6 +301,13 @@ bool cloneSource(const QString &source, const QStringList &gitPrefixArgs,
         return false;
     }
     QStringList arguments;
+    arguments << QStringLiteral("-c") << QStringLiteral("pack.threads=1")
+              << QStringLiteral("-c")
+              << QStringLiteral("core.deltaBaseCacheLimit=16m")
+              << QStringLiteral("-c")
+              << QStringLiteral("pack.deltaCacheSize=16m")
+              << QStringLiteral("-c")
+              << QStringLiteral("pack.windowMemory=16m");
     if (!local) {
         arguments << QStringLiteral("-c") << QStringLiteral("protocol.allow=never")
                   << QStringLiteral("-c") << QStringLiteral("protocol.https.allow=always")
@@ -308,19 +317,6 @@ bool cloneSource(const QString &source, const QStringList &gitPrefixArgs,
                   << QStringLiteral("-c")
                   << QStringLiteral("core.hooksPath=") + QProcess::nullDevice()
                   << QStringLiteral("-c") << QStringLiteral("http.followRedirects=false")
-
-
-
-
-
-
-                  << QStringLiteral("-c") << QStringLiteral("pack.threads=1")
-                  << QStringLiteral("-c")
-                  << QStringLiteral("core.deltaBaseCacheLimit=16m")
-                  << QStringLiteral("-c")
-                  << QStringLiteral("pack.deltaCacheSize=16m")
-                  << QStringLiteral("-c")
-                  << QStringLiteral("pack.windowMemory=16m")
                   << gitPrefixArgs;
     } else {
         arguments << QStringLiteral("-c") << QStringLiteral("protocol.allow=never")
@@ -330,10 +326,91 @@ bool cloneSource(const QString &source, const QStringList &gitPrefixArgs,
     }
     arguments << QStringLiteral("clone") << QStringLiteral("--mirror")
               << QStringLiteral("--no-local") << source << destination;
-    return runProcess(
+    if (!runProcess(
         git, arguments, nullptr,
         QStringLiteral("The public mirror Git operation failed."), error,
-        hardenedGitEnvironment());
+        hardenedGitEnvironment()))
+        return false;
+    if (!originBranchesOnly)
+        return true;
+
+    QByteArray listing;
+    if (!runProcess(
+            git,
+            {QStringLiteral("-C"), destination,
+             QStringLiteral("for-each-ref"),
+             QStringLiteral("refs/remotes/origin"),
+             QStringLiteral("--format=%(objectname) %(refname:lstrip=3)")},
+            &listing,
+            QStringLiteral("The managed public mirror refs are unavailable."),
+            error, hardenedGitEnvironment()))
+        return false;
+    QMap<QString, QString> originBranches;
+    static const QRegularExpression oidPattern(
+        QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+    for (const QByteArray &rawLine : listing.split('\n')) {
+        const QByteArray line = rawLine.trimmed();
+        const qsizetype space = line.indexOf(' ');
+        if (space <= 0 || space + 1 >= line.size())
+            continue;
+        const QString oid = QString::fromLatin1(line.left(space));
+        const QString name = QString::fromUtf8(line.mid(space + 1));
+        if (name == QLatin1String("HEAD") ||
+            !oidPattern.match(oid).hasMatch())
+            continue;
+        if (!runProcess(
+                git,
+                {QStringLiteral("check-ref-format"),
+                 QStringLiteral("--branch"), name},
+                nullptr,
+                QStringLiteral("The managed public mirror branch is invalid."),
+                error, hardenedGitEnvironment()))
+            return false;
+        originBranches.insert(name, oid);
+    }
+    if (originBranches.isEmpty()) {
+        setError(error, QStringLiteral(
+                            "The managed checkout has no fetched origin branches."));
+        return false;
+    }
+
+    listing.clear();
+    if (!runProcess(
+            git,
+            {QStringLiteral("-C"), destination,
+             QStringLiteral("for-each-ref"), QStringLiteral("refs/heads"),
+             QStringLiteral("--format=%(refname:lstrip=2)")},
+            &listing,
+            QStringLiteral("The managed public mirror refs are unavailable."),
+            error, hardenedGitEnvironment()))
+        return false;
+    for (const QByteArray &rawLine : listing.split('\n')) {
+        const QString name = QString::fromUtf8(rawLine.trimmed());
+        if (name.isEmpty() || originBranches.contains(name))
+            continue;
+        if (!runProcess(
+                git,
+                {QStringLiteral("-C"), destination,
+                 QStringLiteral("update-ref"), QStringLiteral("-d"),
+                 QStringLiteral("refs/heads/") + name},
+                nullptr,
+                QStringLiteral("The managed public mirror ref cleanup failed."),
+                error, hardenedGitEnvironment()))
+            return false;
+    }
+    for (auto it = originBranches.constBegin();
+         it != originBranches.constEnd(); ++it) {
+        if (!runProcess(
+                git,
+                {QStringLiteral("-C"), destination,
+                 QStringLiteral("update-ref"),
+                 QStringLiteral("refs/heads/") + it.key(), it.value()},
+                nullptr,
+                QStringLiteral("The managed public mirror ref update failed."),
+                error, hardenedGitEnvironment()))
+            return false;
+    }
+    return true;
 }
 
 bool isBareRepository(const QString &path,
@@ -1199,6 +1276,30 @@ PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncRepository(
 {
     return syncSource(repositoryPath, {}, archiveRoot, vaultPath,
                       vaultSecret, existingArchiveId, tools, error);
+}
+
+PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncManagedCheckout(
+    const QString &repositoryPath, const QString &archiveRoot,
+    const QString &vaultPath, const QByteArray &vaultSecret,
+    const QString &existingArchiveId, const Tools &tools, QString *error)
+{
+    if (!toolingAvailable(tools, error))
+        return {};
+    std::unique_ptr<QTemporaryDir> directory =
+        std::make_unique<QTemporaryDir>();
+    if (!directory->isValid() ||
+        !prepareOwnerDirectory(directory->path(), error)) {
+        setError(error, QStringLiteral(
+                            "Could not create the temporary public-mirror directory."));
+        return {};
+    }
+    const QString repository =
+        QDir(directory->path()).filePath(QStringLiteral("repository.git"));
+    if (!cloneSource(repositoryPath, {}, repository, tools, error, true))
+        return {};
+    return sealTemporaryRepository(
+        std::move(directory), repository, archiveRoot, vaultPath,
+        vaultSecret, existingArchiveId, tools, error);
 }
 
 PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncSource(

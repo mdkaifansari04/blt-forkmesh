@@ -1022,6 +1022,56 @@ void MainWindow::createOrganizationTask()
         });
 }
 
+// File the prompt-bar text as an ordinary shared task. It is deliberately
+// unassigned and routed to General: pressing "task" must not launch a genie (or
+// any other agent) as a side effect. An operator can assign/start it from the
+// Tasks page when it is ready.
+void MainWindow::createQuickAddOrganizationTask()
+{
+    if (!m_issueQuickAdd)
+        return;
+    const QString prompt = m_issueQuickAdd->toPlainText().trimmed();
+    if (prompt.isEmpty()) {
+        flashMessage(QStringLiteral("Type a task first."), true);
+        m_issueQuickAdd->setFocus();
+        return;
+    }
+
+    QString title = prompt.section(QLatin1Char('\n'), 0, 0).simplified();
+    if (title.size() > 160)
+        title = title.left(159).trimmed() + QString::fromUtf8("\xE2\x80\xA6");
+    QString repository;
+    const int repoIndex = issuesRepoIndex();
+    if (repoIndex >= 0 && repoIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(repoIndex);
+        repository = repo.owner + QLatin1Char('/') + repo.name;
+    }
+    const QJsonObject body{
+        {QStringLiteral("title"), title},
+        {QStringLiteral("details"), prompt},
+        {QStringLiteral("department"), QStringLiteral("general")},
+        {QStringLiteral("destination"), QStringLiteral("department")},
+        {QStringLiteral("assigneeKind"), QStringLiteral("unassigned")},
+        {QStringLiteral("repository"), repository},
+        {QStringLiteral("priority"), 50},
+    };
+    requestOrganizationTasks(
+        QByteArrayLiteral("POST"), QStringLiteral("/api/tasks"), body,
+        [this, prompt](bool ok, const QJsonObject &, const QString &error) {
+            if (!ok) {
+                flashMessage(QStringLiteral("Task creation failed: %1").arg(error),
+                             true);
+                return;
+            }
+            recordQuickAddHistory(prompt);
+            m_issueQuickAdd->clear();
+            clearQuickAddImages();
+            showSection(kOrganizationTasksSectionIndex);
+            refreshOrganizationTasks();
+            flashMessage(QStringLiteral("Task added to General."));
+        });
+}
+
 void MainWindow::createOrganizationTaskFollowUp()
 {
     const QJsonObject parent = selectedOrganizationTask(

@@ -324,6 +324,13 @@ function mountForkMeshDashboardChat() {
   let orgAgentAccessLoaded = false;
   const seen = new Set();
   const rows = new Map();
+  // Shared `thread-reply` records keyed independently from top-level rows.
+  // World mounts this same controller, so this store is the interoperable
+  // thread model for both the dashboard and the in-world CHAT terminal.
+  const threadRepliesById = new Map();
+  const threadReplyIdsByRoot = new Map();
+  let activeThreadRootId = "";
+  let threadDialog = null;
   const HISTORY_INITIAL_MESSAGES = 5;
   const HISTORY_BATCH_MESSAGES = 5;
   const historyRowIds = [];
@@ -1653,11 +1660,18 @@ function mountForkMeshDashboardChat() {
     const reactionsEl = document.createElement("div");
     reactionsEl.className = "chat-reactions";
     content?.append(reactionsEl);
+    const threadSummary = document.createElement("button");
+    threadSummary.type = "button";
+    threadSummary.className =
+      "mt-1 hidden text-[11px] font-semibold text-primary hover:underline";
+    threadSummary.addEventListener("click", () => openThread(record));
+    content?.append(threadSummary);
     record.el = row;
     record.avatarEl = avatarEl;
     record.textEl = textEl?.parentNode ? textEl : null;
     record.contentEl = content;
     record.reactionsEl = reactionsEl;
+    record.threadSummaryEl = threadSummary;
     if (record.history && !simpleWorldComposer) {
       insertHistoryRow(record);
     } else if (simpleWorldComposer) {
@@ -1675,6 +1689,7 @@ function mountForkMeshDashboardChat() {
       renderReactions(record.id);
       if (record.editedAt) markEdited(record, record.editedAt);
     }
+    renderThreadSummary(record.id);
     return row;
   }
 
@@ -1800,12 +1815,171 @@ function mountForkMeshDashboardChat() {
     pinFullLogToNewest();
   }
 
+  // ---- message threads ---------------------------------------------------
+  // The full /chat client already uses this exact portable envelope:
+  //   { type:"thread-reply", rootId, channel, id, senderId, sender, ts, ... }
+  // Keep replies out of the top-level timeline and render them in a focused
+  // dialog that also works inside World's compact CHAT terminal.
 
+  function threadReplies(rootId) {
+    return [...(threadReplyIdsByRoot.get(String(rootId || "")) || [])]
+      .map((id) => threadRepliesById.get(id))
+      .filter(Boolean)
+      .sort((left, right) => left.tsMs - right.tsMs ||
+        String(left.id).localeCompare(String(right.id)));
+  }
 
+  function renderThreadSummary(rootId) {
+    const record = rows.get(String(rootId || ""));
+    const summary = record?.threadSummaryEl;
+    if (!summary) return;
+    const count = threadReplies(rootId).length;
+    summary.hidden = count === 0;
+    summary.classList.toggle("hidden", count === 0);
+    summary.textContent = `${count} ${count === 1 ? "reply" : "replies"}`;
+    summary.setAttribute("aria-label", `Open thread with ${summary.textContent}`);
+  }
 
+  function threadCard(record, root = false) {
+    const card = document.createElement("article");
+    card.className =
+      "rounded-lg border border-border bg-background/80 px-3 py-2" +
+      (root ? " ring-1 ring-primary/20" : "");
+    const head = document.createElement("div");
+    head.className = "mb-1 flex items-baseline gap-2";
+    const author = document.createElement("strong");
+    author.className = "text-xs text-foreground";
+    author.textContent = record.who;
+    const time = document.createElement("span");
+    time.className = "text-[10px] text-muted-foreground";
+    time.textContent = fmtChatTime(record.tsMs);
+    head.append(author, time);
+    card.append(head);
+    if (record.text) {
+      const body = document.createElement("p");
+      body.className = "whitespace-pre-wrap break-words text-sm text-foreground";
+      appendMentionText(body, record.text);
+      card.append(body);
+    }
+    const attachment = renderAttachment(record.attachment, true);
+    if (attachment) card.append(attachment);
+    return card;
+  }
 
+  function ensureThreadDialog() {
+    if (threadDialog?.isConnected) return threadDialog;
+    const dialog = document.createElement("dialog");
+    dialog.className =
+      "w-[min(94vw,38rem)] max-h-[88vh] rounded-xl border border-border " +
+      "bg-background p-0 text-foreground shadow-2xl backdrop:bg-black/60";
+    dialog.innerHTML = `
+      <form method="dialog" class="flex items-center justify-between border-b border-border px-4 py-3">
+        <div><strong>Thread</strong> <span data-chat-thread-count class="ml-2 text-xs text-muted-foreground"></span></div>
+        <button type="submit" class="rounded border border-border px-2 py-1" aria-label="Close thread">×</button>
+      </form>
+      <div data-chat-thread-list class="grid max-h-[62vh] gap-2 overflow-y-auto p-4"></div>
+      <div class="flex gap-2 border-t border-border p-3">
+        <textarea data-chat-thread-input rows="2" maxlength="16000" class="min-w-0 flex-1 resize-y rounded-md border border-border bg-background px-3 py-2" placeholder="Reply in thread…" aria-label="Reply in thread"></textarea>
+        <button data-chat-thread-send type="button" class="self-end rounded-md bg-primary px-3 py-2 font-semibold text-primary-foreground">Reply</button>
+      </div>`;
+    dialog.querySelector("[data-chat-thread-send]")?.addEventListener(
+      "click", sendThreadReply,
+    );
+    dialog.querySelector("[data-chat-thread-input]")?.addEventListener(
+      "keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          sendThreadReply();
+        }
+      },
+    );
+    dialog.addEventListener("close", () => {
+      activeThreadRootId = "";
+    });
+    document.body.append(dialog);
+    threadDialog = dialog;
+    return dialog;
+  }
 
+  function renderThreadDialog() {
+    if (!activeThreadRootId || !threadDialog) return;
+    const list = threadDialog.querySelector("[data-chat-thread-list]");
+    const count = threadDialog.querySelector("[data-chat-thread-count]");
+    if (!list) return;
+    list.textContent = "";
+    const root = rows.get(activeThreadRootId);
+    if (root) list.append(threadCard(root, true));
+    else {
+      const missing = document.createElement("p");
+      missing.className = "text-sm text-muted-foreground";
+      missing.textContent = "The root message is no longer available.";
+      list.append(missing);
+    }
+    const replies = threadReplies(activeThreadRootId);
+    for (const reply of replies) list.append(threadCard(reply));
+    if (count) {
+      count.textContent = `${replies.length} ${replies.length === 1 ? "reply" : "replies"}`;
+    }
+    list.scrollTop = list.scrollHeight;
+  }
 
+  function openThread(record) {
+    const rootId = String(record?.rootId || record?.id || "").slice(0, 96);
+    if (!rootId) return;
+    activeThreadRootId = rootId;
+    const dialog = ensureThreadDialog();
+    renderThreadDialog();
+    if (!dialog.open) dialog.showModal();
+    dialog.querySelector("[data-chat-thread-input]")?.focus();
+  }
+
+  function sendThreadReply() {
+    if (!activeThreadRootId || !canJoinChat() || !threadDialog) return;
+    const input = threadDialog.querySelector("[data-chat-thread-input]");
+    const text = String(input?.value || "").trim().slice(0, MAX_TEXT);
+    if (!text) return;
+    const plain = makePlain("thread-reply", {
+      rootId: activeThreadRootId,
+      channel: CHANNEL,
+      text,
+    });
+    if (input) input.value = "";
+    renderThreadEntry(plain, "self", true);
+    runWhenConnected(() => send(plain));
+  }
+
+  function renderThreadEntry(entry, kind = "peer", live = false) {
+    if (!entry || !allowedChatAccountKind(entry.accountKind)) return;
+    entry = normalizedPublicWorldFrame(entry);
+    const rootId = String(entry.rootId || "").slice(0, 96);
+    if (!rootId || entry.channel !== CHANNEL || !once(entry.id)) return;
+    const record = {
+      id: entry.id,
+      rootId,
+      who: String(entry.sender || "peer").slice(0, MAX_NAME),
+      senderId: String(entry.senderId || ""),
+      tsMs: Number(entry.ts) || Date.now(),
+      text: String(entry.text || "").slice(0, MAX_TEXT),
+      attachment: attachmentFromEntry(entry),
+      self: entry.senderId === selfId || kind === "self",
+    };
+    threadRepliesById.set(record.id, record);
+    const ids = threadReplyIdsByRoot.get(rootId) || new Set();
+    ids.add(record.id);
+    threadReplyIdsByRoot.set(rootId, ids);
+    renderThreadSummary(rootId);
+    if (activeThreadRootId === rootId) renderThreadDialog();
+    if (live && entry.senderId !== selfId) {
+      rememberMentionPerson(record.who, Date.now());
+    }
+  }
+
+  // ---- edit / delete own messages ----------------------------------------
+  // The relay already replays "edit"/"delete" frames (handlePlain below, and
+  // the desktop client's kDurableTypes), so the dashboard only needs the
+  // author-side controls. Both frames are honoured by peers only when the
+  // sender id matches the original message's, so the same guard is applied
+  // here before anything is broadcast.
 
   function messageActionButton(label, onClick, { danger = false, ariaLabel } = {}) {
     const button = document.createElement("button");
@@ -1826,6 +2000,11 @@ function mountForkMeshDashboardChat() {
 
 
     actions.className = "chat-message-actions ml-auto flex shrink-0 items-center gap-1";
+    actions.append(
+      messageActionButton("Reply", () => openThread(record), {
+        ariaLabel: "Reply in thread",
+      }),
+    );
     actions.append(
       messageActionButton("☺", (event) =>
         showReactionPicker(record, event.currentTarget), {
@@ -2048,9 +2227,14 @@ function mountForkMeshDashboardChat() {
       editedAt,
     });
     record.text = text;
-    renderMessageText(record.textEl, text);
-    markEdited(record, editedAt);
-    closeMessageEditor(record);
+    if (record.rootId) {
+      record.editedAt = editedAt;
+      renderThreadDialog();
+    } else {
+      renderMessageText(record.textEl, text);
+      markEdited(record, editedAt);
+      closeMessageEditor(record);
+    }
     const sideEntry = sideEntries.find((entry) => entry.id === record.id);
     if (sideEntry) {
       sideEntry.text = text;
@@ -2384,6 +2568,18 @@ function mountForkMeshDashboardChat() {
   }
 
   function removeMessage(id, { deferRender = false } = {}) {
+    const threadReply = threadRepliesById.get(id);
+    if (threadReply) {
+      threadRepliesById.delete(id);
+      const ids = threadReplyIdsByRoot.get(threadReply.rootId);
+      ids?.delete(id);
+      if (ids && !ids.size) threadReplyIdsByRoot.delete(threadReply.rootId);
+      if (threadReply.attachment) releaseAttachment(threadReply.attachment);
+      reactions.delete(id);
+      renderThreadSummary(threadReply.rootId);
+      if (activeThreadRootId === threadReply.rootId) renderThreadDialog();
+      return;
+    }
     const rec = rows.get(id);
     if (activeReactionPicker?.element && rec?.el?.contains(
         activeReactionPicker.element)) {
@@ -2730,6 +2926,8 @@ function mountForkMeshDashboardChat() {
       if (plain.channel === CHANNEL) {
         renderChatEntry(plain, "peer", !historyReplay);
       }
+    } else if (type === "thread-reply") {
+      renderThreadEntry(plain, "peer", !historyReplay);
     } else if (type === "history") {
       const entries = Array.isArray(plain.entries) ? plain.entries : [];
       for (const entry of entries) {
@@ -2751,11 +2949,13 @@ function mountForkMeshDashboardChat() {
     } else if (type === "reaction") {
       if (once(plain.id)) applyReaction(plain);
     } else if (type === "edit") {
-      const rec = rows.get(plain.target);
+      const rec = rows.get(plain.target) || threadRepliesById.get(plain.target);
       if (rec && rec.senderId === plain.senderId) {
         rec.text = plain.text || "";
         rec.editedAt = plain.editedAt || plain.ts;
-        if (rec.textEl) {
+        if (rec.rootId) {
+          if (activeThreadRootId === rec.rootId) renderThreadDialog();
+        } else if (rec.textEl) {
           renderMessageText(rec.textEl, rec.text);
           markEdited(rec, rec.editedAt);
         }
@@ -2766,7 +2966,7 @@ function mountForkMeshDashboardChat() {
         }
       }
     } else if (type === "delete") {
-      const rec = rows.get(plain.target);
+      const rec = rows.get(plain.target) || threadRepliesById.get(plain.target);
       if (rec && rec.senderId === plain.senderId) {
         removeMessage(plain.target, { deferRender: historyReplay });
       }
@@ -2848,13 +3048,15 @@ function mountForkMeshDashboardChat() {
     await queued;
   }
 
-
-
-
-
-
-
-  const DURABLE_TYPES = new Set(["chat", "edit", "delete", "reaction", "admin-delete"]);
+  // Durable message types the relay should retain (still encrypted) and replay
+  // to clients that join later — the same set the desktop node tags via
+  // kDurableTypes (ServerNode::sendEncrypted). Without this flag the relay's
+  // _maybe_retain drops the frame, so a message typed on the website is relayed
+  // live but never becomes part of the shared history nodes and other web
+  // visitors see on connect — leaving the website out of the shared chat.
+  const DURABLE_TYPES = new Set([
+    "chat", "thread-reply", "edit", "delete", "reaction", "admin-delete",
+  ]);
 
   function send(plain) {
     if (!canJoinChat()) {

@@ -209,7 +209,7 @@ struct GitResult {
 
 const QTimeZone &utcTimeZone()
 {
-    static const QTimeZone zone(QTimeZone::UTC);
+    static const QTimeZone zone = QTimeZone::utc();
     return zone;
 }
 

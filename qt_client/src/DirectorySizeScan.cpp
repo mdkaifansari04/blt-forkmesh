@@ -9,7 +9,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QUrl>
+#include <QtConcurrent/QtConcurrentMap>
 
 #include <algorithm>
 
@@ -42,6 +45,7 @@ public:
 
     void countFile(qint64 size)
     {
+        QMutexLocker lock(&m_mutex);
         m_bytes += size;
         ++m_files;
     }
@@ -51,6 +55,7 @@ public:
     {
         if (!m_callback)
             return;
+        QMutexLocker lock(&m_mutex);
         const qint64 now = m_clock.elapsed();
         if (m_reported && now - m_lastMs < kProgressIntervalMs)
             return;
@@ -66,6 +71,7 @@ private:
     qint64 m_bytes = 0;
     int m_files = 0;
     bool m_reported = false;
+    QMutex m_mutex;
 };
 
 
@@ -195,7 +201,67 @@ scanDirectorySizes(const QString &path, const DirectorySizeScanOptions &options,
         return result;
     }
     ProgressEmitter emitter(progress);
-    scanInto(path, 0, options, result, result.root, emitter, canceled);
+    emitter.enter(path);
+    const QFileInfoList entries = QDir(path).entryInfoList(
+        QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden |
+        QDir::System | QDir::NoSymLinks);
+
+    // A scan of / has several independent, very large top-level trees. Walking
+    // them serially left most cores idle. Map those immediate children through
+    // Qt's bounded global thread pool, then reduce their self-contained results
+    // on this worker. Recursion below each child stays serial, avoiding an
+    // unbounded task per directory and preserving filesystem locality.
+    struct Partial {
+        SunburstNode node;
+        int unreadableDirs = 0;
+        QStringList unreadableSample;
+        bool include = false;
+    };
+    const QList<Partial> partials = QtConcurrent::blockingMapped(
+        entries, [&](const QFileInfo &info) {
+            Partial partial;
+            if (canceled && canceled())
+                return partial;
+            const QString absolute = info.absoluteFilePath();
+            if ((!options.pruned.isEmpty() && options.pruned.contains(absolute)) ||
+                (info.isDir() && info.fileName() == QLatin1String(".git")))
+                return partial;
+            partial.node.name = info.fileName();
+            if (info.isDir()) {
+                if (canDescend(info)) {
+                    DirectorySizeScanResult childResult;
+                    scanInto(absolute, 1, options, childResult, partial.node,
+                             emitter, canceled);
+                    partial.unreadableDirs = childResult.unreadableDirs;
+                    partial.unreadableSample = childResult.unreadableSample;
+                } else {
+                    partial.unreadableDirs = 1;
+                    partial.unreadableSample.append(absolute);
+                }
+            } else {
+                partial.node.size = info.size();
+                partial.node.fileCount = 1;
+                emitter.countFile(info.size());
+            }
+            partial.include = options.maxDepth > 0 && partial.node.size > 0;
+            return partial;
+        });
+    for (const Partial &partial : partials) {
+        result.root.size += partial.node.size;
+        result.root.fileCount += partial.node.fileCount;
+        result.unreadableDirs += partial.unreadableDirs;
+        for (const QString &sample : partial.unreadableSample) {
+            if (result.unreadableSample.size() >= kUnreadableSampleLimit)
+                break;
+            result.unreadableSample.append(sample);
+        }
+        if (partial.include)
+            result.root.children.append(partial.node);
+    }
+    std::sort(result.root.children.begin(), result.root.children.end(),
+              [](const SunburstNode &a, const SunburstNode &b) {
+                  return a.size > b.size;
+              });
     return result;
 }
 

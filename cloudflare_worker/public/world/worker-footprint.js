@@ -1,17 +1,17 @@
 export const WORKER_FOOTPRINT = Object.freeze({
   "measurement": "uncompressed source bytes on disk",
-  "attachedPythonBytes": 2688862,
-  "estimatedStartupSourceBytes": 2568508,
-  "onDemandSourceBytes": 120354,
-  "vendoredBytes": 0,
-  "moduleCount": 48,
-  "staticAssetBytes": 102764937,
+  "attachedPythonBytes": 3200216,
+  "estimatedStartupSourceBytes": 3076102,
+  "onDemandSourceBytes": 124114,
+  "vendoredBytes": 91974,
+  "moduleCount": 74,
+  "staticAssetBytes": 103327798,
   "staticAssetCount": 383,
   "largestStaticAsset": {
     "name": "assets/video/forkmesh-forever.mp4",
     "bytes": 23562112
   },
-  "initialWorldModuleBytes": 2303848,
+  "initialWorldModuleBytes": 2496126,
   "initialWorldModuleCount": 13,
   "initialWorldModules": [
     "qr.js",
@@ -31,7 +31,12 @@ export const WORKER_FOOTPRINT = Object.freeze({
   "modules": [
     {
       "name": "entry.py",
-      "bytes": 1726648,
+      "bytes": 2037647,
+      "phase": "startup"
+    },
+    {
+      "name": "schema.py",
+      "bytes": 136195,
       "phase": "startup"
     },
     {
@@ -130,18 +135,28 @@ export const WORKER_FOOTPRINT = Object.freeze({
       "phase": "startup"
     },
     {
-      "name": "pull_badge.py",
-      "bytes": 14808,
+      "name": "catalog.py",
+      "bytes": 15442,
+      "phase": "startup"
+    },
+    {
+      "name": "urls.py",
+      "bytes": 14761,
+      "phase": "startup"
+    },
+    {
+      "name": "events.py",
+      "bytes": 14284,
+      "phase": "startup"
+    },
+    {
+      "name": "ssh_keys.py",
+      "bytes": 13249,
       "phase": "startup"
     },
     {
       "name": "chat_direct_messages_api.py",
       "bytes": 13118,
-      "phase": "startup"
-    },
-    {
-      "name": "ssh_keys.py",
-      "bytes": 13022,
       "phase": "startup"
     },
     {
@@ -273,7 +288,7 @@ export const WORKER_FOOTPRINT = Object.freeze({
   "components": [
     {
       "name": "Worker routing + runtime",
-      "bytes": 1726648
+      "bytes": 2037647
     },
     {
       "name": "World + Office",
@@ -285,7 +300,7 @@ export const WORKER_FOOTPRINT = Object.freeze({
     },
     {
       "name": "Platform + build",
-      "bytes": 133539
+      "bytes": 190334
     },
     {
       "name": "Organizations + chat",

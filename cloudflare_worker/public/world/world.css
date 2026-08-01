@@ -1268,6 +1268,53 @@ forkmesh-world {
   color: #ffffff;
 }
 
+.world-admin-status-light {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  margin-inline: 4px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: #ff7b72;
+  text-decoration: none;
+}
+
+.world-admin-status-light[hidden] {
+  display: none;
+}
+
+.world-admin-status-light:hover,
+.world-admin-status-light:focus-visible {
+  color: #ffa198;
+  outline: none;
+}
+
+.world-admin-status-light-orb {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background:
+    linear-gradient(#da3633, #da3633) padding-box,
+    conic-gradient(from 0deg, #ff7b72, transparent 38%, #ff7b72) border-box;
+  box-shadow: 0 0 0 2px rgb(248 81 73 / 0.18), 0 0 12px rgb(248 81 73 / 0.8);
+  animation: world-admin-status-spin 900ms linear infinite;
+}
+
+@keyframes world-admin-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-admin-status-light-orb {
+    animation: none;
+  }
+}
+
 forkmesh-world.world-admin-error-arrival::after {
   position: fixed;
   z-index: 80;
@@ -6758,7 +6805,8 @@ forkmesh-world.world-office-active .world-quick-dock {
   outline: none;
 }
 
-
+/* Elements tab: one single-line row per registered world element, in a flat
+   table sorted by clicking its column headers. */
 .world-element-master {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -6784,47 +6832,55 @@ forkmesh-world.world-office-active .world-quick-dock {
   outline: none;
 }
 
-.world-element-sort {
-  display: flex;
+.world-element-table {
+  margin-top: 10px;
+}
+
+.world-element-head,
+.world-element-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 96px 50px 54px 44px;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 10px 0;
+  gap: 8px;
+}
+
+.world-element-head {
+  border-bottom: 1px solid var(--world-line);
+}
+
+.world-element-head button {
+  padding: 4px 0;
+  border: 0;
+  background: none;
   color: var(--world-muted);
-  font: 0.62rem "ForkMesh Mono", monospace;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.world-element-sort select {
-  border: 1px solid var(--world-line);
-  background: #0a1915;
-  color: var(--world-copy);
-  padding: 7px 9px;
-  font: inherit;
-}
-
-.world-element-category {
-  margin-top: 12px;
-}
-
-.world-element-category h4 {
-  margin: 0 0 2px;
-  color: var(--world-muted);
+  cursor: pointer;
+  text-align: left;
   font: 700 0.6rem "ForkMesh Mono", monospace;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.world-element-head button:hover,
+.world-element-head button:focus-visible {
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-element-head button[aria-sort="ascending"],
+.world-element-head button[aria-sort="descending"] {
+  color: var(--world-copy);
 }
 
 .world-element-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  min-height: 38px;
+  min-height: 26px;
   border-top: 1px solid var(--world-line);
-  padding: 4px 0;
+  padding: 2px 0;
   cursor: pointer;
+}
+
+.world-element-row:first-of-type {
+  border-top: 0;
 }
 
 .world-element-row input {
@@ -6833,23 +6889,37 @@ forkmesh-world.world-office-active .world-quick-dock {
   accent-color: var(--world-mint);
 }
 
-.world-element-copy {
-  display: grid;
+.world-element-row strong {
   min-width: 0;
-}
-
-.world-element-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--world-copy);
   font-size: 0.74rem;
   font-weight: 600;
 }
 
-.world-element-copy small {
+.world-element-group {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--world-muted);
   font-size: 0.62rem;
 }
 
-.world-element-row[data-enabled="false"] .world-element-copy strong {
+.world-element-count,
+.world-element-head button:nth-of-type(n + 3) {
+  text-align: right;
+}
+
+.world-element-count {
+  color: var(--world-muted);
+  font: 0.62rem "ForkMesh Mono", monospace;
+  white-space: nowrap;
+}
+
+.world-element-row[data-enabled="false"] strong {
   color: var(--world-muted);
   text-decoration: line-through;
 }
@@ -7591,11 +7661,8 @@ forkmesh-world.world-office-active .world-quick-dock {
 .world-aquarium-control-panel {
   position: absolute;
   z-index: 18;
-  display: grid;
-  min-width: min(340px, calc(100vw - 28px));
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px;
-  transform: translate(calc(-100% - 8px), calc(-100% - 8px));
+  width: min(190px, calc(100vw - 28px));
+  transform: translate(calc(-100% - 8px), 7px);
   border: 1px solid rgb(113 239 255 / 0.74);
   border-radius: 8px;
   background:
@@ -7603,7 +7670,6 @@ forkmesh-world.world-office-active .world-quick-dock {
   box-shadow:
     0 12px 30px rgb(0 8 12 / 0.4),
     inset 0 1px rgb(214 253 255 / 0.16);
-  padding: 7px;
   color: #e3fcff;
   font: 750 0.58rem/1 "ForkMesh Mono", ui-monospace, monospace;
   letter-spacing: 0.025em;
@@ -7615,13 +7681,67 @@ forkmesh-world.world-office-active .world-quick-dock {
   display: none;
 }
 
-.world-aquarium-control-title {
-  grid-column: 1 / -1;
-  border-bottom: 1px solid rgb(113 239 255 / 0.24);
-  padding: 1px 3px 5px;
+.world-aquarium-control-toggle {
+  display: flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  padding: 9px 11px;
   color: #87eaf5;
-  font-size: 0.52rem;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.56rem;
   letter-spacing: 0.12em;
+  text-align: left;
+}
+
+.world-aquarium-control-toggle::after {
+  content: "+";
+  color: var(--world-mint);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.world-aquarium-control-toggle[aria-expanded="true"]::after {
+  content: "−";
+}
+
+.world-aquarium-control-toggle:hover,
+.world-aquarium-control-toggle:focus-visible {
+  background: rgb(15 51 55 / 0.98);
+}
+
+.world-aquarium-control-toggle:focus-visible {
+  outline: 2px solid var(--world-mint);
+  outline-offset: 2px;
+}
+
+.world-aquarium-control-actions {
+  position: absolute;
+  right: -1px;
+  bottom: calc(100% + 7px);
+  display: grid;
+  width: min(340px, calc(100vw - 28px));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  border: 1px solid rgb(113 239 255 / 0.74);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgb(9 35 40 / 0.97), rgb(4 17 21 / 0.99));
+  box-shadow:
+    0 12px 30px rgb(0 8 12 / 0.4),
+    inset 0 1px rgb(214 253 255 / 0.16);
+  padding: 7px;
+  backdrop-filter: blur(10px);
+}
+
+.world-aquarium-control-actions[hidden] {
+  display: none;
 }
 
 .world-aquarium-control-button {
@@ -13130,6 +13250,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-chat-terminal[open][data-show-feed="true"] {
+  --world-chat-dock-clearance: max(12px, env(safe-area-inset-bottom));
   height: min(
     55dvh,
     620px,
@@ -13624,6 +13745,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-chat-terminal[open][data-show-feed="true"] {
+    --world-chat-dock-clearance: max(8px, env(safe-area-inset-bottom));
     height: min(
       70dvh,
       700px,

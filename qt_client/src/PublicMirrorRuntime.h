@@ -84,10 +84,19 @@ public:
         const QString &existingArchiveId = QString(),
         const Tools &tools = Tools(), QString *error = nullptr);
 
+    // A service-managed headless checkout may contain local agent branches.
+    // Seal only its fetched origin branch view so those in-flight refs remain
+    // private to the working checkout and cannot invalidate the source pin.
+    static SyncResult syncManagedCheckout(
+        const QString &repositoryPath, const QString &archiveRoot,
+        const QString &vaultPath, const QByteArray &vaultSecret,
+        const QString &existingArchiveId = QString(),
+        const Tools &tools = Tools(), QString *error = nullptr);
 
-
-
-
+    // The remote form accepts only credential-free HTTPS URLs and deliberately
+    // restricted `-c http.extraHeader=Authorization: Basic ...` arguments.
+    // Ambient Git credential helpers, URL rewrites, hooks, redirects, and
+    // non-HTTPS protocols are disabled.
     static SyncResult syncSource(
         const QString &source, const QStringList &gitPrefixArgs,
         const QString &archiveRoot, const QString &vaultPath,

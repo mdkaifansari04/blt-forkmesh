@@ -1708,7 +1708,7 @@ void MainWindow::openNotificationLink(const NotificationLink &link)
         if (link.number > 0)
             showDiscussion(link.number);
     } else if (link.kind == QLatin1String("commit")) {
-        showOverviewCommits();
+        showOverviewCommits(); // the universal Git workspace
         if (!link.ref.isEmpty())
             showCommit(link.ref);
     } else if (link.kind == QLatin1String("release")) {
@@ -2796,18 +2796,20 @@ void MainWindow::updateActionsTabIndicator()
     if (!tab)
         return;
 
-
-
-
-
-
-
-
-
-
-
-    tab->setText(QStringLiteral("Actions (%1)")
-                     .arg(formatCount(m_repoWorkflows.size())));
+    // The tab label just carries the workflow count. The live activity readout
+    // used to be a floating strip of draining bars above the tab (adhoc #105),
+    // removed along with the rest of that band (adhoc #420); the Actions tab
+    // itself lists queued and running runs.
+    //
+    // m_repoWorkflows, not the list widget's row count: the widget is built once
+    // per window and keeps the last-visited repo's rows, so it reported that
+    // repo's count for every repo opened afterwards. m_repoWorkflows is per-repo
+    // — cleared on open, then filled by refreshRepoActions() or, when the panel
+    // stays lazy, by reloadWorkflowCountInBackground() (adhoc #116).
+    // The workflow count rides the icon's corner as a rail-style badge
+    // (adhoc #6) rather than living in the caption.
+    if (auto *b = dynamic_cast<VerticalIconButton *>(tab))
+        b->setBadgeCount(m_repoWorkflows.size());
 }
 
 
