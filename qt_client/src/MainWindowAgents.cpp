@@ -1475,6 +1475,26 @@ QWidget *MainWindow::buildAgentsTab()
         m_agentMetaPopup->show();
     });
 
+    // "Start" (adhoc #20): resume the session this page is showing without
+    // typing anything. It is the single-session twin of "Start all" and does
+    // exactly what the composer's "add" button does with an empty prompt box —
+    // stash the composer's provider/model/mode choice on the session, then
+    // continue it — so the run picks up with whatever is selected below rather
+    // than whatever it last ran with (adhoc #372). Green beside the red Stop.
+    m_agentStartButton = new QPushButton("Start");
+    m_agentStartButton->setObjectName("successButton");
+    m_agentStartButton->setCursor(Qt::PointingHandCursor);
+    m_agentStartButton->setToolTip(
+        "Resume this agent session where it left off, using the agent, model "
+        "and mode selected in the prompt bar");
+    setOcticon(m_agentStartButton, "rocket", 16);
+    connect(m_agentStartButton, &QPushButton::clicked, this, [this] {
+        if (m_selectedAgentSessionId <= 0)
+            return;
+        applyComposerSelectionToAgentSession(m_selectedAgentSessionId);
+        continueSelectedAgentSession();
+    });
+
     m_agentStopButton = new QPushButton("Stop");
     m_agentStopButton->setObjectName("dangerButton");
     m_agentStopButton->setCursor(Qt::PointingHandCursor);
@@ -1599,7 +1619,8 @@ QWidget *MainWindow::buildAgentsTab()
             switchToWorktree(s->branchName);
     });
 
-    // Session actions: "+ issue", View PR, Stop, Delete, Branch and Worktree.
+    // Session actions: "+ issue", View PR, Start, Stop, Delete, Branch and
+    // Worktree.
     // Each already manages its own visibility (they appear per session), so they
     // are only laid out here. adhoc #35 moved them off the header onto the output
     // toolbar so a long ad-hoc title could have its row to itself; adhoc #84
@@ -1611,6 +1632,7 @@ QWidget *MainWindow::buildAgentsTab()
     actionRow->setSpacing(6);
     actionRow->addWidget(m_agentCreateIssueButton);
     actionRow->addWidget(m_agentViewPrButton);
+    actionRow->addWidget(m_agentStartButton);
     actionRow->addWidget(m_agentStopButton);
     actionRow->addWidget(m_agentDeleteAllButton);
     actionRow->addWidget(m_agentBranchButton);
@@ -11126,6 +11148,17 @@ void MainWindow::updateAgentActionState()
         externalIsLive(m_externalSurfaced.value(m_selectedAgentSessionId).uuid);
     if (m_agentStopButton)
         m_agentStopButton->setEnabled(running || externalRunning);
+    // "Start" (adhoc #20) is Stop's counterpart on the detail page: live for one
+    // of our own sessions that isn't already in flight. External (watch-only)
+    // rows belong to another process, and a queued session is already on its
+    // way — continueAgentSession() would drop both on the floor.
+    if (m_agentStartButton) {
+        const AgentSession *startable =
+            selected ? findAgentSession(m_selectedAgentSessionId) : nullptr;
+        m_agentStartButton->setEnabled(
+            startable && !running && !externalSelected &&
+            startable->status != AgentStatus::Queued);
+    }
     // "Stop all" doesn't depend on the selection — it's live whenever any
     // ForkMesh session is running, waiting or queued anywhere (adhoc #433).
     if (m_agentStopAllButton)
