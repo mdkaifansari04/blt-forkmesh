@@ -32,6 +32,7 @@ from js import WebSocketPair
 from js import caches as js_caches
 from js import crypto as js_crypto
 from js import fetch as js_fetch
+from pyodide.ffi import jsnull
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
 
@@ -11465,6 +11466,10 @@ def js_nullish(value):
     return value is None or type(value).__name__ in ("JsNull", "JsUndefined")
 
 
+def d1_bind_args(args):
+    return tuple(jsnull if js_nullish(value) else value for value in args)
+
+
 def d1_row_to_dict(row):
     if js_nullish(row):
         return None
@@ -11509,7 +11514,7 @@ async def _d1_read(env, sql, args, first):
     for attempt in range(2):
         stmt = env.DB.prepare(sql)
         if args:
-            stmt = stmt.bind(*args)
+            stmt = stmt.bind(*d1_bind_args(args))
         try:
             return await (stmt.first() if first else stmt.all())
         except Exception as error:
@@ -11539,7 +11544,7 @@ async def d1_first(env, sql, *args):
 async def d1_run(env, sql, *args):
     stmt = env.DB.prepare(sql)
     if args:
-        stmt = stmt.bind(*args)
+        stmt = stmt.bind(*d1_bind_args(args))
     await stmt.run()
 
 

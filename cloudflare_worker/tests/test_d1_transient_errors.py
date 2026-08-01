@@ -21,7 +21,7 @@ ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 
 READ_FUNCS = {
     "_is_transient_d1_error", "_d1_read", "d1_all", "d1_first",
-    "d1_row_to_dict", "js_nullish", "_safe_error_text",
+    "d1_bind_args", "d1_row_to_dict", "js_nullish", "_safe_error_text",
 }
 ROUTER_FUNCS = {
     "_is_transient_d1_error", "_is_d1_platform_error", "_safe_error_text",
