@@ -3111,9 +3111,9 @@ private:
     void noteActionRunWaiting(int runId, const QString &detail);
     int repoIndexFor(const QString &owner, const QString &name) const;
     // Settings: global variables/secrets editor.
-    void reloadVariablesTable();
-    void addOrEditVariable(bool editSelected);
-    void deleteSelectedVariable();
+    void reloadVariablesList();
+    void addOrEditVariable(const QString &name = QString());
+    void deleteVariable(const QString &name);
     void exportVariables();
     void importVariables();
     void toggleVariablesRevealed();
@@ -3643,14 +3643,15 @@ private:
 
     // --- Coves: encrypted, password-shared file vaults inside a repo ----------
     // A cove is .forkmesh/coves/<slug>.cove (AES-256-GCM, see CoveStore). The team
-    // shares one password out-of-band; entered in repo or global Settings, it
-    // unlocks matching coves. Opening a cove logs it locally and (if the creator
+    // shares one password out-of-band; entered in repo settings, it unlocks
+    // matching legacy coves. Account-scoped coves live in the repository explorer.
+    // Opening a cove logs it locally and (if the creator
     // asked) sends a best-effort live alert back to the creator's node.
     CoveStore coveStoreForRepo(int repoIndex) const;
     QString coveRepoSettingsPrefix(int repoIndex) const; // QSettings key prefix
-    QString rememberedCovePassword(int repoIndex) const; // repo pw, else global
-    bool coveAutoOpenEnabled(int repoIndex) const;       // repo OR global toggle
-    // Try the session cache, then the remembered repo/global passwords. On success
+    QString rememberedCovePassword(int repoIndex) const; // repo password
+    bool coveAutoOpenEnabled(int repoIndex) const;       // repo toggle
+    // Try the session cache, then the remembered repo password. On success
     // fills cove (documents/accessLog), caches the working password, and returns it.
     bool tryUnlockCove(Cove &cove, int repoIndex, QString *passwordOut) const;
     void logCoveAccessLocal(const Cove &cove);           // "log yourself" — local
@@ -3661,9 +3662,8 @@ private:
     void promptCreateCove(int repoIndex);
     void rebuildRepoCovesList();                         // repo Settings list
     QWidget *buildCoveSection();                         // repo Settings "Coves"
-    QWidget *buildCoveGlobalSection();                   // global Settings "Coves"
-    void applyCovePasswordFromSettings(int repoIndex, bool global,
-                                       const QString &password, bool remember);
+    void applyCovePasswordFromSettings(int repoIndex, const QString &password,
+                                       bool remember);
     static QByteArray coveOpenCanonical(const QString &coveId, const QString &creatorKey,
                                         const QString &openerKey, qint64 ts);
     // Apply an edited source/fork URL to the open repo: persist it and repoint
@@ -6646,8 +6646,6 @@ private:
     QPushButton *m_covePwRevealBtn = nullptr;// reveal pw (source-of-truth only)
     QCheckBox *m_coveAutoOpenCheck = nullptr;// per-repo auto-open toggle
     QLabel *m_coveEmptyHint = nullptr;
-    QLineEdit *m_coveGlobalPasswordEdit = nullptr; // global Settings password
-    QCheckBox *m_coveGlobalAutoOpenCheck = nullptr;
     // Cove id -> the password that unlocked it this session (memory only). Lets
     // "auto-show" reveal a cove without re-prompting and re-encrypt on save.
     QHash<QString, QString> m_coveSessionPasswords;
@@ -6971,10 +6969,11 @@ private:
     QPushButton *m_actionFixButton = nullptr;
     QComboBox *m_actionFixAgentCombo = nullptr;
     QComboBox *m_actionFixModelCombo = nullptr;
-    // Settings: variables/secrets table.
-    QTableWidget *m_varsTable = nullptr;
-    // When true, the variables table shows secret values in clear text instead
-    // of the masked bullets. Toggled by the Reveal/Hide button.
+    // Settings: full-width variables/secrets list.
+    QWidget *m_varsList = nullptr;
+    QVBoxLayout *m_varsListLayout = nullptr;
+    // When true, the variables list shows secret values in clear text instead
+    // of password masking. Toggled by the Reveal/Hide button.
     bool m_varsRevealed = false;
     QPushButton *m_varsRevealButton = nullptr;
     // Per-repo "run actions on push" toggle. Mirrored repos default off; the
