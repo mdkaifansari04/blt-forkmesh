@@ -1244,6 +1244,64 @@ QString PublicMirrorRuntime::keyReference(const QString &archiveId)
                : QString();
 }
 
+int PublicMirrorRuntime::cleanupStaleTemporaryDirectories(
+    const QString &temporaryRoot, QString *error)
+{
+    const QFileInfo rootInfo(temporaryRoot);
+    const QString root = rootInfo.canonicalFilePath();
+    if (temporaryRoot.trimmed().isEmpty() || !rootInfo.isAbsolute() ||
+        !rootInfo.isDir() || rootInfo.isSymLink() || root.isEmpty()) {
+        setError(error, QStringLiteral(
+                            "The mirror temporary cleanup root is unsafe."));
+        return -1;
+    }
+
+    static const QRegularExpression ownedName(
+        QStringLiteral(
+            "^(?:forkmesh-mirror-runtime-[A-Za-z0-9_]+|"
+            "forkmesh-public-mirror-[A-Za-z0-9]{6}|"
+            "forkmesh-private-(?:sync|open)-[A-Za-z0-9]{6})$"));
+    // PublicMirrorRuntime used Qt's generic template before the dedicated
+    // prefix above was introduced. Only treat one of those old names as ours
+    // when it also contains the exact repository.git layout this class made.
+    static const QRegularExpression legacyName(
+        QStringLiteral("^ForkMesh-[A-Za-z0-9]{6}$"));
+
+    int removed = 0;
+    const QFileInfoList candidates =
+        QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot,
+                                 QDir::Name);
+    for (const QFileInfo &candidate : candidates) {
+        const QString name = candidate.fileName();
+        const bool legacy = legacyName.match(name).hasMatch();
+        if (!ownedName.match(name).hasMatch() && !legacy)
+            continue;
+        if (legacy &&
+            !QFileInfo(QDir(candidate.absoluteFilePath())
+                           .filePath(QStringLiteral("repository.git")))
+                 .isDir()) {
+            continue;
+        }
+        if (candidate.isSymLink() || !candidate.isDir() ||
+            candidate.canonicalPath() != root) {
+            setError(error, QStringLiteral(
+                                "A mirror temporary directory is unsafe."));
+            return -1;
+        }
+        QDir directory(candidate.absoluteFilePath());
+        if (!directory.removeRecursively()) {
+            setError(error, QStringLiteral(
+                                "A stale mirror temporary directory could not "
+                                "be removed."));
+            return -1;
+        }
+        ++removed;
+    }
+    if (error)
+        error->clear();
+    return removed;
+}
+
 bool PublicMirrorRuntime::toolingAvailable(const Tools &tools, QString *error)
 {
     if (resolveProgram(tools.age).isEmpty()) {
@@ -1286,7 +1344,9 @@ PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncManagedCheckout(
     if (!toolingAvailable(tools, error))
         return {};
     std::unique_ptr<QTemporaryDir> directory =
-        std::make_unique<QTemporaryDir>();
+        std::make_unique<QTemporaryDir>(
+            QDir::tempPath() +
+            QStringLiteral("/forkmesh-public-mirror-XXXXXX"));
     if (!directory->isValid() ||
         !prepareOwnerDirectory(directory->path(), error)) {
         setError(error, QStringLiteral(
@@ -1311,7 +1371,9 @@ PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncSource(
     if (!toolingAvailable(tools, error))
         return {};
     std::unique_ptr<QTemporaryDir> directory =
-        std::make_unique<QTemporaryDir>();
+        std::make_unique<QTemporaryDir>(
+            QDir::tempPath() +
+            QStringLiteral("/forkmesh-public-mirror-XXXXXX"));
     if (!directory->isValid() ||
         !prepareOwnerDirectory(directory->path(), error)) {
         setError(error, QStringLiteral("Could not create the temporary public-mirror directory."));
@@ -1418,7 +1480,9 @@ PublicMirrorRuntime::materialize(
         return {};
     }
     std::unique_ptr<QTemporaryDir> directory =
-        std::make_unique<QTemporaryDir>();
+        std::make_unique<QTemporaryDir>(
+            QDir::tempPath() +
+            QStringLiteral("/forkmesh-public-mirror-XXXXXX"));
     if (!directory->isValid() ||
         !prepareOwnerDirectory(directory->path(), error) ||
         !decryptInto(ciphertextPath(archiveRoot, archiveId), entry,

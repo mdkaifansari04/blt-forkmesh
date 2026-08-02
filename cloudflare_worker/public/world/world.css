@@ -4747,6 +4747,50 @@ forkmesh-world.world-office-active .world-quick-dock {
   font: 0.72rem "ForkMesh Mono", monospace;
 }
 
+.world-node-delete-progress {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin: 4px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.world-node-delete-progress li {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  border-top: 2px solid #59332d;
+  padding-top: 7px;
+  color: #8f7773;
+  font: 0.62rem "ForkMesh Mono", monospace;
+  text-align: center;
+}
+
+.world-node-delete-progress b {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.world-node-delete-progress li[data-state="active"] {
+  border-color: #ff9a89;
+  color: #ffb0a3;
+}
+
+.world-node-delete-progress li[data-state="complete"] {
+  border-color: #55c68b;
+  color: #75d9a5;
+}
+
+.world-node-delete-progress li[data-state="error"] {
+  border-color: #ff4f4f;
+  color: #ff7777;
+}
+
 .world-danger-action {
   min-height: 36px;
   border: 1px solid #ff745f;
