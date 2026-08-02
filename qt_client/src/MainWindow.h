@@ -6479,6 +6479,7 @@ private:
     QPushButton *m_scmRefreshButton = nullptr;
     QPushButton *m_scmPrevButton = nullptr;   // jump to previous changed file
     QPushButton *m_scmNextButton = nullptr;   // jump to next changed file
+    QPushButton *m_scmAutoViewedButton = nullptr;
     QLabel *m_scmEmptyNote = nullptr;
     // Last `git status` output, so a focus/tab-click rescan can skip the (flickery)
     // full tree rebuild when nothing in the working tree actually changed.

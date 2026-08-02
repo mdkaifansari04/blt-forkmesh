@@ -597,6 +597,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     header->addStretch();
     header->addWidget(m_scmPrevButton);
     header->addWidget(m_scmNextButton);
+    header->addWidget(m_scmAutoViewedButton);
     root->addLayout(header);
 
     m_scmTree = new QTreeWidget;
