@@ -4817,7 +4817,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                     <select data-dashboard-task-department aria-label="Task department"><option value="general">General</option><option value="engineering">Engineering</option><option value="product-design">Product + design</option><option value="quality-assurance">Quality assurance</option></select>
                     <select data-dashboard-task-team aria-label="Task team"><option value="">Choose a team</option></select>
                     <select data-dashboard-task-destination aria-label="Task destination"><option value="department">Department board</option><option value="personal">Personal work</option><option value="repository">Repository</option><option value="qa">QA board</option></select>
-                    <select data-dashboard-task-assignee aria-label="Task assignee"><option value="agent" selected>Bot</option><option value="unassigned">Unassigned</option></select>
+                    <select data-dashboard-task-assignee aria-label="Task assignee"><option value="unassigned" selected>Unassigned</option></select>
                   </div>
                 </div>
                 <div data-dashboard-chat-compose-row>
@@ -4838,7 +4838,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                   </span>
                   <span class="world-quick-actions" role="group" aria-label="Enter key action">
                     <button id="fullChatSend" type="button" title="Enter will send to #general" aria-pressed="true"><span data-dashboard-chat-send-label>Chat</span></button>
-                    <button id="fullChatTaskSend" type="button" title="Enter will send this task to the bot" aria-pressed="false">Task</button>
+                    <button id="fullChatTaskSend" type="button" title="Create an unassigned task in General" aria-pressed="false">Task</button>
                   </span>
                 </div>
                 <span class="world-quick-composer-status" data-dashboard-chat-composer-status role="status" aria-live="polite"></span>
@@ -25351,7 +25351,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=f73f6d2a300f";
+    script.src = "/dashboard-chat.js?v=9c7a246e1652";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {
