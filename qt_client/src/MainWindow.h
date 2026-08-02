@@ -6867,6 +6867,10 @@ private:
     // Website ping ids already surfaced as immediate error pings, so a poll
     // that returns the same inbox again never re-flashes them (adhoc #77).
     QSet<QString> m_flashedWebAlertIds;
+    // The first website-inbox response is a startup baseline.  Its unread
+    // pings happened before this app run and belong in the Pings page, not as
+    // fresh desktop alerts.  Later responses may surface newly-arrived pings.
+    bool m_webAlertsBaselineLoaded = false;
     QPushButton *m_notificationButton = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     // The website's alert inbox, mirrored onto that page (adhoc #59).
