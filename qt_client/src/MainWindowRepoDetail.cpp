@@ -5223,6 +5223,11 @@ void MainWindow::captureNavSubPlace(NavPlace &place) const
             place.subTab = m_settingsTabs->currentIndex();
         return;
     }
+    if (place.section == kControlNodeSectionIndex) {
+        if (m_controlNodeTabs)
+            place.subTab = m_controlNodeTabs->currentIndex();
+        return;
+    }
     if (place.section == kNetworkDiagnosticsSectionIndex ||
         place.section == kNodesSectionIndex) {
         // Both sections are views onto the same tab widget (Nodes is one of its
@@ -5255,7 +5260,13 @@ void MainWindow::captureNavSubPlace(NavPlace &place) const
         if (m_pullSubStack && m_currentPullNumber > 0)
             place.subTab = m_pullSubStack->currentIndex();
         break;
+    case 5: // Discussions
+        place.itemNumber = m_currentDiscussionNumber;
+        break;
     default:
+        // Projects sits at a runtime index, so it can't be a case label.
+        if (place.detailTab == m_projectsTabIndex && m_projectViewStack)
+            place.subTab = m_projectViewStack->currentIndex(); // List / Gantt
         break;
     }
 }
@@ -5273,6 +5284,12 @@ void MainWindow::applyNavSubPlace(const NavPlace &place)
         if (m_settingsTabs && place.subTab >= 0 &&
             place.subTab < m_settingsTabs->count())
             m_settingsTabs->setCurrentIndex(place.subTab);
+        return;
+    }
+    if (place.section == kControlNodeSectionIndex) {
+        if (m_controlNodeTabs && place.subTab >= 0 &&
+            place.subTab < m_controlNodeTabs->count())
+            m_controlNodeTabs->setCurrentIndex(place.subTab);
         return;
     }
     if (place.section == kNetworkDiagnosticsSectionIndex ||
@@ -5325,7 +5342,16 @@ void MainWindow::applyNavSubPlace(const NavPlace &place)
                 m_pullSubTabs->button(place.subTab)->click();
         }
         break;
+    case 5: // Discussions
+        if (place.itemNumber > 0 && m_currentDiscussionNumber != place.itemNumber)
+            showDiscussion(place.itemNumber);
+        break;
     default:
+        if (place.detailTab == m_projectsTabIndex && place.subTab >= 0 &&
+            m_projectViewStack &&
+            m_projectViewStack->currentIndex() != place.subTab && m_projectViewTabs &&
+            m_projectViewTabs->button(place.subTab))
+            m_projectViewTabs->button(place.subTab)->click();
         break;
     }
 }
@@ -5487,6 +5513,9 @@ QString MainWindow::navPlaceLabel(const NavPlace &place) const
                     destination = m_issueTabGroup->button(place.subTab)->text();
                 if (place.itemNumber > 0)
                     destination = QStringLiteral("Issue #%1").arg(place.itemNumber);
+            } else if (place.detailTab == 5 && place.itemNumber > 0) { // Discussions
+                destination =
+                    QStringLiteral("Discussion #%1").arg(place.itemNumber);
             } else if (place.detailTab == 4 && place.itemNumber > 0) { // Pulls
                 destination = QStringLiteral("PR #%1").arg(place.itemNumber);
                 if (place.subTab > 0 && m_pullSubTabs &&
@@ -5522,6 +5551,13 @@ QString MainWindow::navPlaceLabel(const NavPlace &place) const
             }
             break;
         }
+        case kControlNodeSectionIndex:
+            destination = QStringLiteral("Control node");
+            if (m_controlNodeTabs && place.subTab >= 0 &&
+                place.subTab < m_controlNodeTabs->count())
+                destination = QStringLiteral("Control node · %1")
+                                  .arg(m_controlNodeTabs->tabText(place.subTab));
+            break;
         case kNetworkDiagnosticsSectionIndex:
         case kNodesSectionIndex:
             destination = QStringLiteral("Network");
@@ -5570,6 +5606,19 @@ QString MainWindow::testNavBackToolTip() const
 QString MainWindow::testNavForwardToolTip() const
 {
     return m_navForwardButton ? m_navForwardButton->toolTip() : QString();
+}
+
+int MainWindow::testFilesStackPage() const
+{
+    return m_filesStack ? m_filesStack->currentIndex() : -1;
+}
+
+QString MainWindow::testOpenCommitHash() const
+{
+    return (m_commitsStack &&
+            m_commitsStack->currentIndex() == kCommitWorkspaceCommitPage)
+               ? m_currentCommitHash
+               : QString();
 }
 #endif
 
