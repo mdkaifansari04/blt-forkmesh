@@ -3458,10 +3458,11 @@ int main(int argc, char *argv[])
     // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
     // run), and confirm the Status cell flips from the run status to "merged".
     {
+        window.testOpenRepository(repoIdx);
         AgentSession mergeSession;
         mergeSession.id = 2910;
         mergeSession.owner = QStringLiteral("me");
-        mergeSession.name = QStringLiteral("mergerepo");
+        mergeSession.name = QStringLiteral("r");
         mergeSession.branchName = QStringLiteral("agent/issue-291-merge-note");
         mergeSession.issueNumber = 291;
         mergeSession.issueTitle = QStringLiteral("note a task merging into main");
@@ -3532,6 +3533,38 @@ int main(int argc, char *argv[])
     {
         window.testOpenRepository(repoIdx); // "me/r", the Agents tab's repo
         window.testOpenAgentsOverview();
+
+        // A PR opened from an Agent branch persists the number on that exact
+        // repo's session. Same-number PRs and same-named branches in another
+        // repository must never cross-link.
+        AgentSession prAgent;
+        prAgent.id = 7391;
+        prAgent.owner = QStringLiteral("me");
+        prAgent.name = QStringLiteral("r");
+        prAgent.branchName = QStringLiteral("agent/adhoc-7391-pr-link");
+        prAgent.status = AgentStatus::Success;
+        window.testAddAgentSession(prAgent);
+        AgentSession foreignPrAgent = prAgent;
+        foreignPrAgent.id = 7392;
+        foreignPrAgent.owner = QStringLiteral("someone-else");
+        window.testAddAgentSession(foreignPrAgent);
+        check(window.testBindAgentSessionsToPull(
+                  739, QStringLiteral("agent/adhoc-7391-pr-link")) &&
+                  window.testAgentSessionPullNumber(7391) == 739 &&
+                  window.testAgentSessionPullNumber(7392) == 0,
+              QStringLiteral("PR creation durably binds only the matching "
+                             "repo's Agent session"));
+        check(window.testAgentSessionForPullId(
+                  739, QStringLiteral("agent/adhoc-7391-pr-link")) == 7391,
+              QStringLiteral("PR lookup is repository-scoped by number and "
+                             "branch"));
+
+        check(window.testBindAgentSessionsToPull(
+                  740, QStringLiteral("manual/pr-740")) &&
+                  window.testAgentSessionForPullId(
+                      740, QStringLiteral("manual/pr-740")) > 0,
+              QStringLiteral("a manual PR receives a provenance-only Agent "
+                             "association"));
         QApplication::processEvents();
 
         AgentSession titled;

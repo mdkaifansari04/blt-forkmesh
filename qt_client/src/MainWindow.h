@@ -700,6 +700,10 @@ public:
     // issue/agent a branch is attached to (adhoc #191).
     void testAddAgentSession(const AgentSession &session)
     {
+        // Test fixtures must survive the same delayed reloads as production
+        // sessions; keeping them memory-only made timer timing erase rows.
+        if (m_agentStore)
+            m_agentStore->saveSession(session);
         for (AgentSession &existing : m_agentSessions) {
             if (existing.id == session.id) {
                 existing = session;
@@ -707,6 +711,22 @@ public:
             }
         }
         m_agentSessions.append(session);
+    }
+    int testAgentSessionForPullId(int prNumber, const QString &headBranch) const
+    {
+        const AgentSession *session = agentSessionForPull(prNumber, headBranch);
+        return session ? session->id : 0;
+    }
+    bool testBindAgentSessionsToPull(int prNumber, const QString &headBranch)
+    {
+        return bindAgentSessionsToPull(prNumber, headBranch);
+    }
+    int testAgentSessionPullNumber(int sessionId) const
+    {
+        for (const AgentSession &session : m_agentSessions)
+            if (session.id == sessionId)
+                return session.prNumber;
+        return 0;
     }
     // Take the nav strip's route to the Agents tab, so a test can read that
     // lazily-built list back the way a user reaches it (adhoc #119).
@@ -2461,6 +2481,10 @@ private:
     // a like-named branch in another repo.
     const AgentSession *agentSessionForPull(int prNumber,
                                             const QString &headBranch = QString()) const;
+    // Persist the PR number on every existing Agent session that produced this
+    // repo-scoped source branch. This turns the branch fallback into a durable
+    // PR association without inventing an Agent for a manual branch.
+    bool bindAgentSessionsToPull(int prNumber, const QString &headBranch);
     // Issue #291: flag agent sessions whose worktree/PR has landed in the base
     // branch. markAgentSessionsMerged() records it eagerly when ForkMesh merges
     // a PR/worktree; refreshAgentMergeState() is the catch-all run on reload (it

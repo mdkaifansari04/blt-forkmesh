@@ -2026,12 +2026,12 @@ QWidget *MainWindow::buildAgentsTab()
             return;
         mergeAgentBranchIntoBase(ri, s->branchName, /*deleteAgent=*/false);
     });
-    // Same merge, but also tear down this agent session once its branch is in main
-    // (mirrors the Worktrees tab's "Merge & delete agent").
+    // Same merge, with source worktree/branch cleanup. The completed Agent record
+    // remains as durable branch/PR provenance after its runtime checkout is gone.
     m_agentMergeDeleteButton = railActionButton(
-        QStringLiteral("check-circle"), QStringLiteral("Merge & del"),
+        QStringLiteral("check-circle"), QStringLiteral("Merge & clean"),
         "Merge this session's branch into the default branch, then delete the "
-        "worktree, its branch and its agent session");
+        "worktree and source branch while retaining the Agent record");
     connect(m_agentMergeDeleteButton, &QPushButton::clicked, this, [this] {
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
         if (!s || s->branchName.isEmpty())
@@ -5551,9 +5551,13 @@ const AgentSession *MainWindow::latestAgentSessionForIssue(int issueNumber) cons
 const AgentSession *MainWindow::agentSessionForPull(int prNumber,
                                                     const QString &headBranch) const
 {
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return nullptr;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     if (prNumber > 0) {
         for (const AgentSession &session : m_agentSessions) {
-            if (session.prNumber == prNumber)
+            if (session.prNumber == prNumber && session.owner == repo.owner &&
+                session.name == repo.name)
                 return &session;
         }
     }
@@ -5563,7 +5567,6 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber,
     // PR, and prefer the most recent matching session.
     if (!headBranch.isEmpty() && m_repoDetailIndex >= 0 &&
         m_repoDetailIndex < m_repositories.size()) {
-        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         for (auto it = m_agentSessions.crbegin(); it != m_agentSessions.crend();
              ++it) {
             if (it->branchName == headBranch && it->owner == repo.owner &&
@@ -5573,6 +5576,72 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber,
         }
     }
     return nullptr;
+}
+
+bool MainWindow::bindAgentSessionsToPull(int prNumber,
+                                         const QString &headBranch)
+{
+    if (!m_agentStore || prNumber <= 0 || headBranch.trimmed().isEmpty() ||
+        m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return false;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    bool changed = false;
+    bool linked = false;
+    for (AgentSession &session : m_agentSessions) {
+        if (session.owner != repo.owner || session.name != repo.name)
+            continue;
+        if (session.prNumber == prNumber) {
+            linked = true;
+            continue;
+        }
+        if (session.branchName != headBranch)
+            continue;
+        // Never steal a run already bound to another pull request.
+        if (session.prNumber > 0)
+            continue;
+        session.prNumber = prNumber;
+        m_agentStore->saveSession(session);
+        m_agentStore->appendLog(
+            session,
+            QStringLiteral("\n==> Branch %1 linked to PR #%2.")
+                .arg(headBranch)
+                .arg(prNumber));
+        linked = true;
+        changed = true;
+    }
+    if (!linked) {
+        // Manual and imported branches still need an Agent entry, but this record
+        // is deliberately provenance-only: it links the branch and PR without
+        // claiming that an agent authored the code.
+        AgentSession association;
+        association.owner = repo.owner;
+        association.name = repo.name;
+        association.issueTitle =
+            QStringLiteral("PR #%1 branch association").arg(prNumber);
+        association.prompt =
+            QStringLiteral("Track branch %1 and PR #%2 as durable provenance. "
+                           "No Agent code run was performed.")
+                .arg(headBranch)
+                .arg(prNumber);
+        association.associationOnly = true;
+        association.prNumber = prNumber;
+        association.status = AgentStatus::Success;
+        association.branchName = headBranch;
+        association.baseBranch = repoDefaultBranch(repoBranches());
+        association.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+        association = m_agentStore->createSession(association);
+        m_agentStore->appendLog(
+            association,
+            QStringLiteral("Branch %1 linked to PR #%2. This is a provenance-only "
+                           "record; no Agent code run was performed.")
+                .arg(headBranch)
+                .arg(prNumber));
+        m_agentSessions.append(association);
+        changed = true;
+    }
+    if (changed)
+        scheduleAgentSessionsPush();
+    return changed;
 }
 
 // Issue #291: has this branch's work landed in the repo's base branch? The
@@ -5625,12 +5694,14 @@ AgentDiffStat MainWindow::agentDiffStat(const AgentSession &session,
 // session was newly marked.
 bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
 {
-    if (!m_agentStore)
+    if (!m_agentStore || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
         return false;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     bool changed = false;
     QList<int> mergedIds;
     for (AgentSession &s : m_agentSessions) {
-        if (s.merged)
+        if (s.merged || s.owner != repo.owner || s.name != repo.name)
             continue;
         const bool byPr = prNumber > 0 && s.prNumber == prNumber;
         const bool byBranch =
@@ -6749,10 +6820,12 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     session = m_agentStore->createSession(session);
-    // A descriptive, short branch name: agent/issue-<n>-<title-slug>.
+    // Include the immutable session id: rerunning one issue must never reuse an
+    // earlier Agent's branch or let two PRs claim the same source branch.
     session.branchName =
-        QStringLiteral("agent/issue-%1-%2")
+        QStringLiteral("agent/issue-%1-s%2-%3")
             .arg(session.issueNumber)
+            .arg(session.id)
             .arg(agentBranchSlug(session.issueTitle, provider));
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
@@ -7240,6 +7313,11 @@ void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
     AgentSession *session = findAgentSession(sessionId);
     if (!session)
         return;
+    if (session->associationOnly) {
+        flashMessage(QStringLiteral("This is a provenance-only Agent record and "
+                                    "cannot be started."));
+        return;
+    }
     // Already running (in its own runner) or queued — nothing to do. Other
     // sessions may run in parallel, so we don't block on a global "busy".
     if (session->status == AgentStatus::Running ||
@@ -7334,6 +7412,12 @@ bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree)
         return true; // already gone — nothing to delete
 
     const AgentSession snapshot = *session;
+    if (snapshot.associationOnly && snapshot.prNumber > 0) {
+        flashMessage(QStringLiteral("This Agent record is retained while PR #%1 "
+                                    "exists.")
+                         .arg(snapshot.prNumber));
+        return false;
+    }
     if (AgentRunner *runner = runnerForSession(snapshot.id)) {
         runner->stop();
         if (runner->busy()) {
@@ -11552,6 +11636,7 @@ void MainWindow::updateAgentActionState()
             selected ? findAgentSession(m_selectedAgentSessionId) : nullptr;
         m_agentStartButton->setEnabled(
             startable && !running && !externalSelected &&
+            !startable->associationOnly &&
             startable->status != AgentStatus::Queued);
     }
     // "Stop all" doesn't depend on the selection — it's live whenever any

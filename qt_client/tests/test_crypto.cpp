@@ -6192,14 +6192,16 @@ int main(int argc, char *argv[])
         session = store.createSession(session);
         check(!session.yolo, "a session defaults to no auto-merge");
         session.yolo = true;
+        session.associationOnly = true;
         session.branchName = "agent/adhoc-1-yolo";
         check(store.saveSession(session), "saving a YOLO session succeeds");
 
         AgentStore reopened(tmp.path());
         const QList<AgentSession> sessions = reopened.loadAllSessions();
         check(sessions.size() == 1 && sessions.first().yolo &&
+                  sessions.first().associationOnly &&
                   !sessions.first().merged,
-              "the YOLO flag reloads intact after a restart, still unmerged");
+              "session behavior flags reload intact after a restart");
 
         // Sessions written before the flag existed must read back as opt-out —
         // an absent "yolo" key can never turn into an unattended merge.
@@ -6207,6 +6209,9 @@ int main(int argc, char *argv[])
         legacy.remove("yolo");
         check(!AgentSession::fromJson(legacy).yolo,
               "a session JSON without the yolo key never auto-merges");
+        legacy.remove("associationOnly");
+        check(!AgentSession::fromJson(legacy).associationOnly,
+              "legacy session JSON never becomes a provenance-only record");
 
         // Genie (adhoc #38) is stamped the same way: the launch attaches the MCP
         // connector because the run was started as a genie, so the flag has to

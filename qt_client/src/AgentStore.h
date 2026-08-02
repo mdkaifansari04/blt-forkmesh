@@ -39,6 +39,10 @@ struct AgentSession {
     // today (see agentModeSkipsPermissions).
     QString mode;
     bool createPr = false;
+    // A durable branch/PR association created for work that did not originate
+    // in an Agent run. It is provenance only: it must never be resumed or claim
+    // that an agent authored the branch's commits.
+    bool associationOnly = false;
     // "YOLO" (adhoc #12): merge this session's branch straight into the repo's
     // default branch as soon as the run finishes successfully, with no review
     // step. Captured from the quick-add bar's checkbox when the session starts.

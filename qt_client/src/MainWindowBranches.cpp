@@ -382,15 +382,15 @@ QWidget *MainWindow::buildWorktreesTab()
         if (!m_worktreeSelectedBranch.isEmpty())
             mergeWorktreeIntoMain(m_worktreeSelectedBranch, m_worktreeSelectedPath);
     });
-    // Same merge, but also tear down the agent session that produced the branch.
-    m_worktreeMergeDeleteAgentButton = new QPushButton("Merge & delete agent");
+    // Same merge, with runtime checkout cleanup while durable Agent provenance stays.
+    m_worktreeMergeDeleteAgentButton = new QPushButton("Merge & clean up");
     m_worktreeMergeDeleteAgentButton->setObjectName("ghostButton");
     m_worktreeMergeDeleteAgentButton->setProperty("buttonSize", "sm");
     m_worktreeMergeDeleteAgentButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_worktreeMergeDeleteAgentButton, "check-circle", 14);
     m_worktreeMergeDeleteAgentButton->setToolTip(
         "Merge the selected worktree's branch into the default branch, then delete "
-        "the worktree, its branch and its agent session");
+        "the worktree and source branch while retaining its Agent record");
     m_worktreeMergeDeleteAgentButton->setEnabled(false);
     connect(m_worktreeMergeDeleteAgentButton, &QPushButton::clicked, this, [this] {
         if (!m_worktreeSelectedBranch.isEmpty())
@@ -1637,19 +1637,18 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         // it up (silently; the merge was already confirmed). Delete the branch too:
         // its work is preserved in the merge commit, so leaving it behind only
         // clutters the Worktrees/Branches tabs.
-        QList<int> deletedAgents;
+        QList<int> retainedAgents;
         if (deleteAgent && !branch.isEmpty()
             && m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
-            // Tear down any agent session(s) that produced this branch first, so no
-            // runner is left holding the worktree open while we remove it.
+            // The branch/worktree may be cleaned after landing, but the Agent
+            // session is durable provenance for its branch and any PR it opened.
             const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
             for (const AgentSession &s : std::as_const(m_agentSessions)) {
                 if (s.owner == repo.owner && s.name == repo.name
                     && s.branchName == branch && !isExternalSession(s.id))
-                    deletedAgents.append(s.id);
+                    retainedAgents.append(s.id);
             }
-            for (int id : std::as_const(deletedAgents))
-                deleteStoredAgentSession(id);
+            markAgentSessionsMerged(0, branch);
         }
         bool removed = false;
         if (!worktreePath.isEmpty() &&
@@ -1666,12 +1665,12 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             branchDeleted = runGitCapture(dir, {"branch", "-D", branch}, nullptr, nullptr);
         }
         const QString agentNote =
-            deletedAgents.isEmpty()
+            retainedAgents.isEmpty()
                 ? QString()
-                : (deletedAgents.size() == 1
-                       ? QStringLiteral(" and deleted its agent session")
-                       : QStringLiteral(" and deleted its %1 agent sessions")
-                             .arg(deletedAgents.size()));
+                : (retainedAgents.size() == 1
+                       ? QStringLiteral(" and retained its Agent record")
+                       : QStringLiteral(" and retained its %1 Agent records")
+                             .arg(retainedAgents.size()));
         setRepoDetailNotice(
             (removed ? QStringLiteral("Merged %1 into %2, removed its worktree and "
                                       "deleted its branch")
@@ -1682,15 +1681,9 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                            : QStringLiteral("Merged %1 into %2").arg(branch, base))
                 + agentNote + QStringLiteral("."),
             false);
-        if (deletedAgents.isEmpty()) {
-            // Issue #291: flag any agent session that produced this branch.
-            markAgentSessionsMerged(0, branch);
-        } else {
-            reloadAgents();
-            reloadIssues();
-            refreshIssueList();
-            updateIssueActionState();
-        }
+        // Issue #291: flag any agent session that produced this branch. This is
+        // idempotent when the cleanup path marked it above.
+        markAgentSessionsMerged(0, branch);
         // adhoc #250: with the "Auto after merge" toggle on, bring every other
         // branch up to date with the just-merged base in the same step. It runs
         // without a confirmation prompt and sets its own detail notice
@@ -2960,12 +2953,12 @@ QWidget *MainWindow::buildBranchRangePane()
             closeBranchDiffAfterMerge();
     });
 
-    // Same merge, but nothing of the branch survives it: its worktree, the branch
-    // itself and any agent session that produced it all go once the work is in the
-    // base branch (adhoc #428). The one-click end of a finished agent run, without
+    // Same merge, but nothing of the source checkout survives it: its worktree and
+    // branch go once the work is in the base branch, while its Agent provenance
+    // remains durable. The one-click end of a finished agent run, without
     // hopping to the Agents/Worktrees tabs to clean up by hand. Runs straight from
     // the click — mergeWorktreeIntoMain no longer confirms (adhoc #441).
-    m_branchMergeDeleteButton = new QPushButton("Merge & delete all");
+    m_branchMergeDeleteButton = new QPushButton("Merge & clean up");
     m_branchMergeDeleteButton->setObjectName("primaryButton");
     m_branchMergeDeleteButton->setProperty("buttonSize", "sm");
     m_branchMergeDeleteButton->setCursor(Qt::PointingHandCursor);
@@ -4917,6 +4910,7 @@ void MainWindow::createPullFromBranch(const QString &branch)
             error.isEmpty() ? "Could not create the pull request." : error, true);
         return;
     }
+    bindAgentSessionsToPull(number, branch);
     logSystem(QStringLiteral("Opened pull #%1 from %2 into %3.")
                   .arg(number)
                   .arg(branch, base));
