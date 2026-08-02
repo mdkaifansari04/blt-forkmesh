@@ -2,7 +2,9 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QChildEvent>
 #include <QCursor>
+#include <QEvent>
 #include <QEventLoop>
 #include <QFontMetricsF>
 #include <QGuiApplication>
@@ -92,6 +94,7 @@ StartupSplash::StartupSplash(bool dark, const QString &version,
     : QWidget(nullptr,
               Qt::SplashScreen | Qt::FramelessWindowHint |
                   Qt::WindowStaysOnTopHint),
+      m_dark(dark),
       m_version(version),
       m_commit(commit.left(7))
 {
@@ -150,10 +153,17 @@ StartupSplash::StartupSplash(bool dark, const QString &version,
                     dismiss();
                     return;
                 }
-                setWindowOpacity(fade);
+                // Painter opacity, not setWindowOpacity(): attached, we are a
+                // child widget and have no window of our own to fade. The scrim
+                // fades with the card, so the whole overlay has to repaint.
+                m_opacity = fade;
+                update();
+                return;
             }
         }
-        update();
+        // Steady state: only the card animates, so leave the rest of the
+        // overlay (and the window under it) alone.
+        update(damageRect());
     });
     m_animation->start();
 
@@ -163,6 +173,71 @@ StartupSplash::StartupSplash(bool dark, const QString &version,
     QObject::connect(m_deadline, &QTimer::timeout, this,
                      [this] { dismiss(); });
     m_deadline->start();
+}
+
+// --- Living inside the main window
+
+void StartupSplash::attachTo(QWidget *host)
+{
+    if (!host || m_host == host)
+        return;
+    m_host = host;
+
+    // setParent() with Qt::Widget drops the SplashScreen/StaysOnTop flags and
+    // makes this an ordinary child of the window — no separate top-level for a
+    // compositor to stack, so the card cannot end up behind the app. It also
+    // hides us, hence the show() below.
+    setParent(host, Qt::Widget);
+    // The constructor pinned us to the card's own size; as an overlay we take
+    // the whole window and centre the card in it.
+    setMinimumSize(0, 0);
+    setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+    // WA_TranslucentBackground is a top-level attribute. What it bought us here
+    // was WA_NoSystemBackground, which is what actually keeps Qt from erasing
+    // our rect and lets the window paint through the parts we leave alone; ask
+    // for that directly now.
+    setAttribute(Qt::WA_NoSystemBackground, true);
+    setAutoFillBackground(false);
+
+    host->installEventFilter(this);
+    followHost();
+    show();
+    raise();
+}
+
+void StartupSplash::followHost()
+{
+    if (!m_host)
+        return;
+    setGeometry(m_host->rect());
+}
+
+bool StartupSplash::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_host) {
+        switch (event->type()) {
+        case QEvent::Resize:
+        case QEvent::Show:
+            followHost();
+            raise();
+            break;
+        case QEvent::ChildAdded: {
+            // The window keeps building itself while we hover over it; stay on
+            // top of any widget it adds. Plain QObject children (timers,
+            // backends — most of what a starting MainWindow parents to itself)
+            // stack nothing, and raise() is not free.
+            // isWidgetType(), not qobject_cast: the child is mid-construction
+            // here, so its metaobject is still a base class's.
+            const QObject *child = static_cast<QChildEvent *>(event)->child();
+            if (child && child->isWidgetType())
+                raise();
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 // --- Step model
@@ -262,6 +337,8 @@ void StartupSplash::dismiss()
         m_animation->stop();
     if (m_deadline)
         m_deadline->stop();
+    if (m_host)
+        m_host->removeEventFilter(this);
     hide();
     if (g_splash == this)
         g_splash = nullptr;
@@ -292,6 +369,17 @@ void StartupSplash::pump()
 {
     if (!isVisible())
         return;
+    if (m_host) {
+        // Attached, the reason for a synchronous repaint is gone — the handover
+        // happens after the constructor, so there is an event loop to deliver a
+        // posted update — and doing one would be actively wrong: the finish()
+        // handover is called from inside MainWindow's own paintEvent, and
+        // repainting a child from there re-enters the window's paint on the
+        // same backing store. Post it, and only for the card: everything
+        // outside it is a static scrim.
+        update(damageRect());
+        return;
+    }
     // repaint(), not update(): update() only posts an event, and during the
     // MainWindow constructor nothing is ever going to deliver it.
     repaint();
@@ -306,7 +394,10 @@ void StartupSplash::pumpEvents()
 {
     if (!isVisible())
         return;
-    repaint();
+    if (m_host)
+        update(damageRect()); // never synchronously; see pump()
+    else
+        repaint();
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 4);
 }
 
@@ -317,6 +408,24 @@ void StartupSplash::mousePressEvent(QMouseEvent *event)
 }
 
 // --- Painting
+
+QRectF StartupSplash::cardRect() const
+{
+    // Free-standing, the widget is exactly the card plus its shadow margin, so
+    // this lands on that margin; attached, it centres the card in the window.
+    // A window smaller than the card clips it evenly on both sides rather than
+    // pinning it to one corner.
+    return QRectF(std::round((qreal(width()) - kCardWidth) / 2.0),
+                  std::round((qreal(height()) - kCardHeight) / 2.0), kCardWidth,
+                  kCardHeight);
+}
+
+QRect StartupSplash::damageRect() const
+{
+    return cardRect()
+        .adjusted(-kShadowMargin, -kShadowMargin, kShadowMargin, kShadowMargin)
+        .toAlignedRect();
+}
 
 qreal StartupSplash::rowHeight(const Row &row) const
 {
@@ -362,11 +471,22 @@ void StartupSplash::paintEvent(QPaintEvent *event)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
+    // The whole overlay fades together, and painter opacity is the one way that
+    // works both as a window and as a child widget.
+    if (m_opacity < 1.0)
+        p.setOpacity(m_opacity);
 
-    const QRectF card(kShadowMargin, kShadowMargin, kCardWidth, kCardHeight);
+    const QRectF card = cardRect();
+    if (m_host) {
+        // Attached: dim the app under the card, so the overlay reads as one
+        // thing hovering over the window rather than a panel lost in the UI.
+        p.fillRect(rect(), alpha(QColor(0, 0, 0), m_dark ? 130 : 96));
+    }
     ensureShadow();
     if (!m_shadow.isNull())
-        p.drawPixmap(0, 0, m_shadow);
+        p.drawPixmap(QPointF(card.left() - kShadowMargin,
+                             card.top() - kShadowMargin),
+                     m_shadow);
 
     QPainterPath cardPath;
     cardPath.addRoundedRect(card, kCardRadius, kCardRadius);
@@ -439,7 +559,10 @@ void StartupSplash::ensureShadow()
     const qreal dpr = devicePixelRatioF();
     if (!m_shadow.isNull() && qFuzzyCompare(m_shadowDpr, dpr))
         return;
-    m_shadow = QPixmap(int(width() * dpr), int(height() * dpr));
+    // Card plus its margin, not the widget: attached, the widget is the whole
+    // window and rasterising a shadow that size would be absurd.
+    m_shadow = QPixmap(int((kCardWidth + 2 * kShadowMargin) * dpr),
+                       int((kCardHeight + 2 * kShadowMargin) * dpr));
     m_shadow.setDevicePixelRatio(dpr);
     m_shadow.fill(Qt::transparent);
     QPainter shadow(&m_shadow);
@@ -865,6 +988,12 @@ StartupSplash *showStartupSplash(bool headless, const QString &version,
     splash->pumpEvents();
     splash->pumpEvents();
     return splash;
+}
+
+void attachStartupSplashTo(QWidget *host)
+{
+    if (g_splash)
+        g_splash->attachTo(host);
 }
 
 void startupStep(const QString &label)
