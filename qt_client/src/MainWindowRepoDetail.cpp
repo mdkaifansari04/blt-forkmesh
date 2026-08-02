@@ -9452,7 +9452,9 @@ void MainWindow::updateRepoActivityRail()
     // unrelated navigation on screen. The Agents tab gets the same treatment: its
     // session list is a workspace of its own, and the repo switcher, repo actions
     // and Code/Issues/PRs… tabs only pushed it down the page. The rail's Code/Git
-    // entries stay the way back out of both.
+    // entries stay the way back out of both. The footer prompt is intentionally
+    // not part of that chrome: it stays available in Git so a change can be sent
+    // straight to an agent without leaving the diff.
     if (m_repoDetailChrome)
         m_repoDetailChrome->setVisible(!onChanges && !onAgents);
     if (m_repoFilesModeBar)
@@ -9460,7 +9462,7 @@ void MainWindow::updateRepoActivityRail()
     if (m_repoOverviewChrome)
         m_repoOverviewChrome->setVisible(!onChanges && !onBranches);
     if (m_footerDock)
-        m_footerDock->setVisible(!onChanges);
+        m_footerDock->show();
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
     if (m_agentsNavButton)

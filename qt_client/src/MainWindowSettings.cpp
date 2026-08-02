@@ -4444,15 +4444,19 @@ static constexpr int kToastSlideOutMs = 320;
 // The composer-to-bubble arrival, restored on the shared geometry animation
 // whenever a new bubble is shown (the slide-out retunes it).
 static constexpr int kToastFlightMs = 260;
+// Routine notifications enter from just below their final position. Keeping
+// this shorter than the prompt-send flight makes bursts feel responsive without
+// the queue cards popping into place.
+static constexpr int kToastEntryMs = 180;
+static constexpr int kToastEntryOffset = 18;
 
 // Cap the visible notification backlog. A runaway retry loop firing messages
 // faster than they can be read should not grow the queue without bound; the
 // oldest queued message is dropped once the cap is hit.
 static constexpr int kToastQueueLimit = 20;
 
-// The Git workspace hides the footer composer to give the diff the full window
-// height. Keep the bubble usable there by falling back to the lower-right
-// corner instead of anchoring to a hidden prompt.
+// The footer composer remains visible in the Git workspace, so notification
+// bubbles always have a prompt to anchor to.
 bool MainWindow::topMessageDockVisible() const
 {
     return m_promptWrapper && m_promptWrapper->isVisible();
@@ -4467,7 +4471,8 @@ void MainWindow::queueTopMessage(const QString &text, bool error,
     const QString trimmed = text.simplified();
     if (trimmed.isEmpty())
         return;
-    m_topMessageQueue.append({trimmed, error, clickHref});
+    const int durationSeconds = error ? kToastErrorSeconds : kToastSuccessSeconds;
+    m_topMessageQueue.append({trimmed, error, clickHref, durationSeconds});
     while (m_topMessageQueue.size() > kToastQueueLimit)
         m_topMessageQueue.removeFirst();
     renderTopMessageQueue();
@@ -4509,6 +4514,12 @@ void MainWindow::renderTopMessageQueue()
         label->setText(QStringLiteral("<span style='color:%1'>%2 %3</span>")
                            .arg(color, glyph, entry.text.toHtmlEscaped()));
         row->addWidget(label);
+        auto *timer = new QLabel(
+            QStringLiteral("%1s timer when it reaches the top")
+                .arg(entry.durationSeconds), card);
+        timer->setObjectName("topMessageQueueMeta");
+        timer->setFocusPolicy(Qt::NoFocus);
+        row->addWidget(timer);
         m_topMessageQueueLayout->addWidget(card);
     }
 
@@ -4522,7 +4533,7 @@ bool MainWindow::topMessageBusy() const
 {
     return m_topMessage && m_topMessage->isVisible() &&
            ((m_topMessageTimer && m_topMessageTimer->isActive()) ||
-            m_topMessageSlidingOut);
+            m_topMessageSlidingOut || m_topMessageEntering);
 }
 
 // (Re)paint the prompt-anchored bubble from m_topMessageRaw. Every message is
@@ -4635,7 +4646,7 @@ void MainWindow::positionTopMessageBubble()
 {
     if (!m_topMessageContainer)
         return;
-    if (m_topMessageSlidingOut)
+    if (m_topMessageSlidingOut || m_topMessageEntering)
         return; // the exit animation owns the geometry until it lands
     const QRect bubble = topMessageBubbleRect();
     m_topMessageContainer->setGeometry(bubble);
@@ -4661,6 +4672,7 @@ void MainWindow::setTopMessagePaused(bool paused)
             m_topMessageTimer->stop();
     } else if (m_topMessageContainer && m_topMessageContainer->isVisible() &&
                !m_loadStatusShowing && !m_topMessageSlidingOut &&
+               !m_topMessageEntering &&
                m_topMessageSecondsLeft > 0) {
         if (m_topMessageTimer)
             m_topMessageTimer->start(1000);
@@ -4684,6 +4696,7 @@ void MainWindow::slideTopMessageOut()
     }
     if (m_topMessageSlidingOut)
         return; // already on its way out
+    m_topMessageEntering = false;
     m_topMessageSlidingOut = true;
     // Drop the countdown as it leaves, so the last thing on screen is the message
     // itself rather than a stale "0s".
@@ -4712,6 +4725,9 @@ void MainWindow::showPromptBubble(const QString &prompt)
     m_topMessageIsPromptBubble = true;
     m_topMessageRaw = sent;
     m_topMessageHovering = false;
+    m_topMessageEntering = false;
+    if (m_topMessageTimer)
+        m_topMessageTimer->stop();
     renderTopMessage();
     m_topMessage->show(); // a previous dismiss hid the label
     if (m_topMessageCopy)
@@ -4736,6 +4752,7 @@ void MainWindow::showPromptBubble(const QString &prompt)
     if (m_topMessageFlight) {
         m_topMessageFlight->stop();
         m_topMessageSlidingOut = false;
+        m_topMessageEntering = true;
         m_topMessageFlight->setDuration(kToastFlightMs);
         m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
         m_topMessageFlight->setStartValue(source);
@@ -4755,7 +4772,8 @@ void MainWindow::showPromptBubble(const QString &prompt)
             renderTopMessageCountdown();
         });
     }
-    m_topMessageTimer->start(1000);
+    if (!m_topMessageEntering)
+        m_topMessageTimer->start(1000);
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
@@ -4770,7 +4788,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 }
 
 void MainWindow::flashMessage(const QString &text, bool error,
-                              const QString &clickHref)
+                              const QString &clickHref, int durationSeconds)
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
     m_loadStatusShowing = false;
@@ -4822,7 +4840,10 @@ void MainWindow::flashMessage(const QString &text, bool error,
     }
     // Every bubble offers copy + prompt hand-off; errors receive a longer window
     // but otherwise behave exactly like a regular notification.
-    m_topMessageSecondsLeft = error ? kToastErrorSeconds : kToastSuccessSeconds;
+    m_topMessageSecondsLeft = durationSeconds > 0
+                                  ? durationSeconds
+                                  : (error ? kToastErrorSeconds
+                                           : kToastSuccessSeconds);
     if (m_topMessageCopy)
         m_topMessageCopy->show();
     if (m_topMessageSendToPrompt)
@@ -4834,18 +4855,31 @@ void MainWindow::flashMessage(const QString &text, bool error,
         m_topMessageActions->show();
 
     if (m_topMessageContainer) {
-        // A previous bubble may have been mid-slide; cancel it and put this one
-        // back at the anchored position at full opacity. Positioned only now that
-        // the text and the action row are both in place — the bubble is sized
-        // around them.
+        // A previous bubble may have been mid-slide. Start just below the final
+        // dock and glide up once its text and actions have been measured. This
+        // also makes the next card in a burst load smoothly after the card above
+        // it leaves.
         if (m_topMessageFlight)
             m_topMessageFlight->stop();
         m_topMessageSlidingOut = false;
-        positionTopMessageBubble();
+        m_topMessageEntering = false;
+        const QRect target = topMessageBubbleRect();
+        const QRect source = target.translated(
+            0, qMin(kToastEntryOffset, qMax(0, height() - target.bottom() - 1)));
+        m_topMessageContainer->setGeometry(source);
         m_topMessageContainer->show();
         m_topMessageContainer->raise();
+        if (m_topMessageFlight && source != target) {
+            m_topMessageEntering = true;
+            m_topMessageFlight->setDuration(kToastEntryMs);
+            m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
+            m_topMessageFlight->setStartValue(source);
+            m_topMessageFlight->setEndValue(target);
+            m_topMessageFlight->start();
+        }
     }
-    m_topMessageTimer->start(1000);
+    if (!m_topMessageEntering)
+        m_topMessageTimer->start(1000);
 }
 
 // Repaint the dim countdown line on the action row under the message. It used to
@@ -4887,6 +4921,7 @@ void MainWindow::dismissTopMessage()
     if (m_topMessageFlight)
         m_topMessageFlight->stop();
     m_topMessageSlidingOut = false;
+    m_topMessageEntering = false;
     if (m_topMessage)
         m_topMessage->hide();
     if (m_topMessageContainer)
@@ -4923,7 +4958,7 @@ void MainWindow::advanceTopMessageQueue()
         m_topMessage->hide();
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
-    flashMessage(next.text, next.error, next.clickHref);
+    flashMessage(next.text, next.error, next.clickHref, next.durationSeconds);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)

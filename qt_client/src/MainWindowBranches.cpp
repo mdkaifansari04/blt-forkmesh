@@ -1273,7 +1273,7 @@ bool MainWindow::testGitWorkspaceIsExclusive() const
         return false;
     if (!m_railGitButton->isChecked() || m_railCodeButton->isChecked() ||
         !m_repoDetailChrome->isHidden() || !m_repoFilesModeBar->isHidden() ||
-        !m_repoOverviewChrome->isHidden() || !m_footerDock->isHidden())
+        !m_repoOverviewChrome->isHidden() || m_footerDock->isHidden())
         return false;
     for (QTextEdit *view : m_diffViews) {
         if (view && view->isVisibleTo(this) &&
