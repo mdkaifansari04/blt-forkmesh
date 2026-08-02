@@ -9559,4 +9559,15 @@ test("World logo opens a dashboard switcher instead of silently reloading", asyn
   await expect(menu).toHaveAttribute("data-open", "true");
   await page.locator("[data-world-canvas-wrap]").click({ position: { x: 40, y: 300 } });
   await expect(menu).toHaveAttribute("data-open", "false");
+
+  // A keyboard opening lands on the first destination, but a pointer opening
+  // leaves focus on the logo so a mouse user is never pulled out of the
+  // canvas. This is why the panel's visibility is stepped rather than
+  // transitioned: focus() on a still-hidden element is a silent no-op.
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await expect(nav.locator("[data-world-brand-nav-link]").first()).toBeFocused();
+  await page.keyboard.press("Escape");
+  await trigger.click();
+  await expect(trigger).toBeFocused();
 });

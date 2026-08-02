@@ -11699,11 +11699,16 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   opacity: 0;
   pointer-events: none;
   transform: translateY(-6px);
+  /* Closed keeps the destinations out of the tab order, not merely faded.
+     Visibility is stepped rather than transitioned in both directions: a
+     transitioned visibility still reads "hidden" on the transition's first
+     frame, and the open handler focuses the first link synchronously — a
+     focus() on a hidden element is a silent no-op. */
   visibility: hidden;
   transition:
     opacity 130ms ease,
     transform 130ms ease,
-    visibility 130ms;
+    visibility 0s linear 130ms;
 }
 
 .world-brand-menu[data-open="true"] .world-brand-nav {
@@ -11711,6 +11716,12 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   pointer-events: auto;
   transform: translateY(0);
   visibility: visible;
+  /* Opening drops the closing delay so the panel is focusable immediately;
+     the fade still plays through opacity and transform. */
+  transition:
+    opacity 130ms ease,
+    transform 130ms ease,
+    visibility 0s;
 }
 
 .world-brand-nav-heading {
@@ -11832,6 +11843,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 @media (prefers-reduced-motion: reduce) {
   .world-online-dropdown,
   .world-brand-nav,
+  .world-brand-menu[data-open="true"] .world-brand-nav,
   .world-brand-menu::after {
     transition: none;
   }
