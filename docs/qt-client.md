@@ -58,7 +58,7 @@ Available commands:
 
 ```sh
 ./run.sh run       # incremental build and launch; "run" is optional
-./run.sh test      # build and run the main headless/window test suites
+./run.sh test      # build and run the sub-minute critical contracts
 ./run.sh clean     # delete qt_client/build
 ./run.sh rebuild   # clean, build, and launch
 ```

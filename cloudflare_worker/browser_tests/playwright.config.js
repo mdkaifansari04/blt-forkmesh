@@ -3,6 +3,7 @@ const path = require("node:path");
 
 module.exports = defineConfig({
   testDir: path.join(__dirname, "tests"),
+  globalTimeout: 55_000,
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
@@ -21,6 +22,6 @@ module.exports = defineConfig({
     cwd: __dirname,
     url: "http://127.0.0.1:4179/world",
     reuseExistingServer: !process.env.CI,
-    timeout: 120_000,
+    timeout: 45_000,
   },
 });
