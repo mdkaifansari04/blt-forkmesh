@@ -664,8 +664,8 @@ QString MainWindow::backupRoot() const
 
 bool MainWindow::autoBackupEnabled() const
 {
-    // Unset means "whatever this kind of node should do": on for control nodes
-    // (a Cloudflare API token is what makes one), off for everything else.
+    // Unset is off on every node. A stored deploy credential must not silently
+    // opt a machine into a recurring multi-gigabyte disk workload.
     return QSettings()
         .value(kAutoBackupEnabledSetting,
                forkmesh::autoBackupDefault(resolvedCloudflareApiToken()))
