@@ -2258,6 +2258,10 @@ STATUS_MINUTES_SHOWN = 60  # width of the per-minute strip on /status
 STATUS_MINUTE_RETAIN_MS = 90 * 60 * 1000
 STATUS_MIRROR_PREFIX = "mirror:"
 STATUS_MIRROR_MAX = 50
+# These nodes have been intentionally retired and are being removed from the
+# fleet. Keep historical D1 rows from resurrecting them on the public status
+# page while their registrations age out.
+STATUS_RETIRED_MIRRORS = frozenset(("mirror6", "mirror7", "mirror8"))
 FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
 FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
 INSTALLER_MONITOR_ID = "installer-delivery"
@@ -2269,6 +2273,15 @@ STATUS_DEPLOY_GRACE_MS = 5 * 60 * 1000
 # deploy.sh refreshes started_at for every rollout, so anything older than this
 # is a stale semaphore and monitoring fails open.
 STATUS_DEPLOY_MAX_MS = 30 * 60 * 1000
+
+EMAIL_STATUS_LOOKBACK_MS = 24 * 60 * 60 * 1000
+EMAIL_DELIVERY_GRACE_MS = 30 * 60 * 1000
+EMAIL_DELIVERY_FAILURE_STATES = {
+    "failed", "soft bounce", "bounce", "suspension", "reject",
+}
+EMAIL_DELIVERY_CONFIRMED_STATES = {
+    "delivery", "open", "click", "unsubscribe", "spam",
+}
 
 STATUS_MONITOR_GUIDANCE = {
     "website": (
@@ -3386,21 +3399,28 @@ async def _record_status_monitor_transitions(
             notified, pinged,
         ])
 
-    n = len(status_systems)
-    await d1_run(
-        env,
-        "INSERT INTO repository_monitor_state "
-        "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
-        "notified_state,pinged_state) VALUES "
-        + ", ".join(["(?,?,?,?,?,?,?,?)"] * n) + " "
-        "ON CONFLICT(monitor_id) DO UPDATE SET "
-        "is_up=excluded.is_up,changed_at=excluded.changed_at,"
-        "outage_started_at=excluded.outage_started_at,"
-        "checked_at=excluded.checked_at,reason=excluded.reason,"
-        "notified_state=excluded.notified_state,"
-        "pinged_state=excluded.pinged_state",
-        *values,
-    )
+    # Eight parameters per system crosses D1's ~100-bound-parameter ceiling as
+    # soon as the public fleet grows beyond twelve rows. The status samples are
+    # intentionally persisted before this follow-up, so that failure looked
+    # like a healthy sampler with mysteriously absent outage pings. Keep each
+    # transition upsert to ten systems / eighty parameters.
+    for offset in range(0, len(values), 80):
+        batch = values[offset:offset + 80]
+        count = len(batch) // 8
+        await d1_run(
+            env,
+            "INSERT INTO repository_monitor_state "
+            "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
+            "notified_state,pinged_state) VALUES "
+            + ", ".join(["(?,?,?,?,?,?,?,?)"] * count) + " "
+            "ON CONFLICT(monitor_id) DO UPDATE SET "
+            "is_up=excluded.is_up,changed_at=excluded.changed_at,"
+            "outage_started_at=excluded.outage_started_at,"
+            "checked_at=excluded.checked_at,reason=excluded.reason,"
+            "notified_state=excluded.notified_state,"
+            "pinged_state=excluded.pinged_state",
+            *batch,
+        )
     if ping_pending:
         try:
             if await _enqueue_operational_alert_pings(env, ping_pending, now):
@@ -3738,6 +3758,40 @@ async def _claim_status_sample_minute(env, now):
     return (not winner) or winner == claim
 
 
+async def _email_delivery_status(env, now):
+    """Return the bounded Mailtrap sending and delivery health signal."""
+    token = str(getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
+    webhook_secret = str(
+        getattr(env, "MAILTRAP_WEBHOOK_SECRET", "") or "").strip()
+    if not token or token == "CHANGE-ME":
+        return False, "Mailtrap sending API is not configured"
+    if not webhook_secret or webhook_secret == "CHANGE-ME":
+        return False, "Mailtrap delivery webhook is not configured"
+    row = await d1_first(
+        env,
+        "SELECT accepted,status,sent_at,status_at "
+        "FROM mailtrap_email_sends WHERE sent_at>=? "
+        "ORDER BY sent_at DESC LIMIT 1",
+        int(now) - EMAIL_STATUS_LOOKBACK_MS,
+    )
+    if not row:
+        return True, ""
+    accepted = int(row.get("accepted") or 0) == 1
+    status = clean_string(row.get("status") or "", 40).strip().lower()
+    sent_at = max(0, int(row.get("sent_at") or 0))
+    if not accepted:
+        return False, "Mailtrap sending API rejected the most recent email"
+    if status in EMAIL_DELIVERY_FAILURE_STATES:
+        return False, "Mailtrap reported the most recent email as " + status
+    if status in EMAIL_DELIVERY_CONFIRMED_STATES:
+        return True, ""
+    if sent_at and int(now) - sent_at >= EMAIL_DELIVERY_GRACE_MS:
+        return False, (
+            "The most recent accepted email has no delivery event after "
+            "30 minutes")
+    return True, ""
+
+
 async def record_status_sample(env):
     # Called once a minute by the platform Cron Trigger (scheduled()) and by
     # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
@@ -3965,6 +4019,7 @@ async def record_status_sample(env):
             mirror_name = str(row.get("node_name") or "").strip().lower()
             if (
                 mirror_name in seen_mirrors
+                or mirror_name in STATUS_RETIRED_MIRRORS
                 or not mirror_name.startswith("mirror")
                 or not re.fullmatch(
                     r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
@@ -4170,6 +4225,7 @@ async def status_history(env, view="full"):
             mirror_name = str(row.get("node_name") or "").strip().lower()
             if (
                 mirror_name.startswith("mirror")
+                and mirror_name not in STATUS_RETIRED_MIRRORS
                 and re.fullmatch(
                     r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
             ):
@@ -4181,7 +4237,7 @@ async def status_history(env, view="full"):
         if not system_id.startswith(STATUS_MIRROR_PREFIX):
             continue
         mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
-        if not re.fullmatch(
+        if mirror_name in STATUS_RETIRED_MIRRORS or not re.fullmatch(
                 r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name):
             continue
         mirror_systems.append(
@@ -41767,7 +41823,10 @@ HTTPS_MIRROR_RETRY_STATUSES = frozenset({
 # missing-route responses are definitive for this public control endpoint and
 # therefore still fail closed immediately.
 HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES = frozenset({
-    408, 425, 429, 500, 502, 503, 504,
+    # Cloudflare returns 530 with error 1033 while a named-tunnel connector is
+    # briefly reconnecting. That is a transport outage, not evidence that the
+    # node's signed repository identity or integrity proof became invalid.
+    408, 425, 429, 500, 502, 503, 504, 530,
 })
 HTTPS_MIRROR_REPO_PROOF_TTL_MS = 60 * 1000
 HTTPS_MIRROR_REPO_PROOF_MEMO_MAX = 500
@@ -43259,15 +43318,27 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
     # those byte-identical copies as equally current so this preference sort
     # does not undo the cursor rotation and pin every request to one node.
     current_nodes = https_routing.equivalent_current_endpoint_nodes(
-        selected, current_nodes, context.get("currentPins", set())
+        records, current_nodes, context.get("currentPins", set())
     )
-    if current_nodes:
-        selected.sort(
-            key=lambda item: (
-                0 if str(item.get("node") or "").lower()
-                in current_nodes else 1
-            )
-        )
+    # Select current-generation mirrors before applying the bounded failover
+    # limit. Selecting from the whole historical set first could truncate all
+    # current mirrors and leave only stale archive generations.
+    current_records = [
+        record for record in records
+        if str(record.get("node") or "").lower() in current_nodes
+    ]
+    historical_records = [
+        record for record in records
+        if str(record.get("node") or "").lower() not in current_nodes
+    ]
+    now = int(Date.now())
+    selected = https_routing.select_endpoints(
+        current_records, now,
+        preferred_region=preferred_region, cursor=cursor)
+    selected.extend(https_routing.select_endpoints(
+        historical_records, now,
+        preferred_region=preferred_region, cursor=cursor))
+    selected = selected[:https_routing.MAX_FAILOVER_ATTEMPTS]
     sticky = str(sticky or "").lower()
     if sticky:
         selected.sort(key=lambda item: 0 if item["node"] == sticky else 1)
@@ -43463,8 +43534,6 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
         valid = False
         operations = []
     if not valid:
-        if status == 0 or status in HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES:
-            await _https_mirror_mark_transient_failure(env, endpoint["node"])
         return False
     if len(_HTTPS_MIRROR_REPO_PROOF_MEMO) >= HTTPS_MIRROR_REPO_PROOF_MEMO_MAX:
         _HTTPS_MIRROR_REPO_PROOF_MEMO.clear()
@@ -44359,10 +44428,10 @@ async def _https_mirror_proxy(
             safe_segment(original_match.group(2)) if original_match else "")
         if (
             route_owner
-            and route_repo == context["repo"]
-            and route_owner != context["owner"]
+            and route_repo.lower() == repo.lower()
+            and route_owner != owner
             and await _org_repo_node(
-                env, route_owner, route_repo) == context["owner"]
+                env, route_owner, route_repo) == owner
         ):
             context = dict(context)
             context["routeOwner"] = route_owner
@@ -44500,9 +44569,6 @@ async def _https_mirror_proxy(
                         int(Date.now()), endpoint["node"])
                 except Exception:
                     pass
-            elif upstream is None or status in HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES:
-                await _https_mirror_mark_transient_failure(
-                    env, endpoint["node"])
             continue
         raw_headers = {}
         for name in (
