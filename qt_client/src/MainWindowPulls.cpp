@@ -1899,8 +1899,9 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     m_branchDiffPullNumber = pullNumber;
     showOverviewCommits();
     const QString dir = repoGitDir();
-    const bool liveBranch =
-        !pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head);
+    const QString reviewHead = resolvablePullHead(pr);
+    const bool liveBranch = !reviewHead.isEmpty() && !dir.isEmpty() &&
+                            localBranchExists(dir, reviewHead);
     // The graph browses the PR's head branch when it still exists, so the view
     // reads as one "<head> -> <base>" comparison (adhoc #16). With the branch
     // gone there is nothing to browse, so the graph stays on the default branch.
@@ -1908,13 +1909,13 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     m_branchCompareBase =
         pr.base.trimmed().isEmpty() || pr.base == defaultBase ? QString()
                                                                : pr.base;
-    const QString graphRef = liveBranch ? pr.head : defaultBase;
+    const QString graphRef = liveBranch ? reviewHead : defaultBase;
     if (!graphRef.isEmpty() && m_repoBranch != graphRef)
         setRepoBranch(graphRef);
     setCommitWorkspacePage(kCommitWorkspaceRangePage);
     if (liveBranch) {
         // Live branch: diff the PR's whole range against the repo's refs.
-        showBranchDiff(pr.head);
+        showBranchDiff(reviewHead);
     } else {
         // Branch gone: render the PR's stored patch directly. Mirror the reset
         // showBranchDiff does, minus the git reads that need the branch.
@@ -3149,9 +3150,10 @@ void MainWindow::renderPullCommits(PullRequest pr)
             return QString::fromUtf8("\xE2\x97\x8B "); // hollow circle
         return QString();
     };
-    if (!dir.isEmpty() && !pr.base.isEmpty() && !pr.head.isEmpty()) {
+    const QString reviewHead = resolvablePullHead(pr);
+    if (!dir.isEmpty() && !pr.base.isEmpty() && !reviewHead.isEmpty()) {
         PullRangeSnapshot range;
-        if (pullRangeSnapshot(pr.base, pr.head, &range) &&
+        if (pullRangeSnapshot(pr.base, reviewHead, &range) &&
             !range.detailedLog.trimmed().isEmpty()) {
             for (const QString &line : QString::fromUtf8(range.detailedLog)
                                            .split('\n', Qt::SkipEmptyParts)) {
@@ -3290,6 +3292,26 @@ void MainWindow::renderPullCommits(PullRequest pr)
     }
 }
 
+QString MainWindow::resolvablePullHead(PullRequest pr) const
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || pr.number <= 0)
+        return QString();
+    auto resolves = [&](const QString &ref) {
+        return !ref.trimmed().isEmpty() &&
+               runGitCapture(dir,
+                             {QStringLiteral("rev-parse"),
+                              QStringLiteral("--verify"),
+                              QStringLiteral("--quiet"),
+                              ref + QStringLiteral("^{commit}")},
+                             nullptr, nullptr);
+    };
+    if (resolves(pr.head))
+        return pr.head;
+    const QString canonical = QStringLiteral("pr/%1").arg(pr.number);
+    return resolves(canonical) ? canonical : QString();
+}
+
 // The base..head range walks for a PR, reused while neither ref has moved.
 //
 // Both walks are `git log` over a branch range — the single most common blocking
@@ -3358,8 +3380,10 @@ bool MainWindow::pullRangeSnapshot(const QString &base, const QString &head,
 // in the open repo. Used to tie action runs to the PR and to count commits.
 QStringList MainWindow::pullCommitShas(const PullRequest &pr) const
 {
+    const PullRequest snapshot = pr;
     PullRangeSnapshot range;
-    if (!pullRangeSnapshot(pr.base, pr.head, &range))
+    const QString reviewHead = resolvablePullHead(snapshot);
+    if (!pullRangeSnapshot(snapshot.base, reviewHead, &range))
         return {};
     return range.shas;
 }
@@ -3385,16 +3409,17 @@ QList<int> MainWindow::runIdsForPull(PullRequest pr) const
     // Also include the head tip in case base..head couldn't be enumerated. The
     // snapshot already resolved it, so this no longer costs a second rev-parse.
     PullRangeSnapshot range;
-    if (pullRangeSnapshot(pr.base, pr.head, &range)) {
+    const QString reviewHead = resolvablePullHead(pr);
+    if (pullRangeSnapshot(pr.base, reviewHead, &range)) {
         shas = QSet<QString>(range.shas.cbegin(), range.shas.cend());
         if (!range.headSha.isEmpty())
             shas.insert(range.headSha);
     } else if (const QString dir = repoGitDir();
-               !dir.isEmpty() && !pr.head.isEmpty()) {
+               !dir.isEmpty() && !reviewHead.isEmpty()) {
         // The range did not resolve (typically a cross-node PR whose base is not
         // here); the head alone may still be, and it is what run records point at.
         QByteArray tip;
-        if (runGitCapture(dir, {"rev-parse", pr.head}, &tip, nullptr))
+        if (runGitCapture(dir, {"rev-parse", reviewHead}, &tip, nullptr))
             shas.insert(QString::fromUtf8(tip).trimmed());
     }
     if (shas.isEmpty())
@@ -3544,14 +3569,15 @@ void MainWindow::runChecksForCurrentPull()
     for (const PullRequest &p : std::as_const(m_currentPulls))
         if (p.number == m_currentPullNumber)
             pr = p;
-    if (pr.number <= 0 || pr.head.isEmpty())
+    if (pr.number <= 0)
         return;
     const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
     // Resolve the PR head to a concrete commit the runner can check out.
     const QString dir = repoGitDir();
+    const QString reviewHead = resolvablePullHead(pr);
     QByteArray tip;
-    if (dir.isEmpty() ||
-        !runGitCapture(dir, {"rev-parse", pr.head}, &tip, nullptr) ||
+    if (dir.isEmpty() || reviewHead.isEmpty() ||
+        !runGitCapture(dir, {"rev-parse", reviewHead}, &tip, nullptr) ||
         tip.trimmed().isEmpty()) {
         setRepoDetailNotice(
             "Could not resolve the pull request's head commit to run checks.", true);
@@ -3559,7 +3585,7 @@ void MainWindow::runChecksForCurrentPull()
     }
     queueWorkflowsForCommit(m_repoDetailIndex, repo.owner, repo.name,
                             QString::fromUtf8(tip).trimmed(),
-                            QStringLiteral("refs/heads/") + pr.head);
+                            QStringLiteral("refs/heads/") + reviewHead);
     renderPullChecks(pr);
     renderPullChecksSummary(pr);
     renderPullReviewSummary(pr);
@@ -3575,15 +3601,21 @@ void MainWindow::buildAndPreviewCurrentPull()
     for (const PullRequest &p : std::as_const(m_currentPulls))
         if (p.number == m_currentPullNumber)
             pr = &p;
-    if (!pr || pr->head.isEmpty()) {
+    if (!pr) {
         setRepoDetailNotice("This pull request has no head branch to build.", true);
         return;
     }
     // Copy what we need out of the PR now: runGitCapture below pumps the GUI
     // event loop, and a reloadPulls() serviced during the pump reassigns
     // m_currentPulls, dangling `pr` (git-pump UAF family, adhoc #149).
-    const QString head = pr->head;
-    const int number = pr->number;
+    const PullRequest snapshot = *pr;
+    const int number = snapshot.number;
+    const QString head = resolvablePullHead(snapshot);
+    if (head.isEmpty()) {
+        setRepoDetailNotice(
+            "Could not resolve this pull request's reviewed code branch.", true);
+        return;
+    }
     const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
     const QString gitDir = repoGitDir();
     if (gitDir.isEmpty()) {
