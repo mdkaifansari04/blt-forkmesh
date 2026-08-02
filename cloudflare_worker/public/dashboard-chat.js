@@ -3926,7 +3926,7 @@ function mountForkMeshDashboardChat() {
       if (fullSendLabel) fullSendLabel.textContent = "Chat";
       if (fullComposerHint) {
         fullComposerHint.textContent =
-          "Chat posts to #general · Task sends private work to the bot";
+          "Chat posts to #general · Task adds unassigned work to General";
       }
       fullInput.placeholder = "Message #general…";
       if (taskRouting) taskRouting.hidden = true;
@@ -4199,7 +4199,11 @@ function mountForkMeshDashboardChat() {
       fullRepository?.focus();
       return;
     }
-    if (action === "task" && !String(taskTeam?.value || "")) {
+    if (
+      action === "task" &&
+      !simpleWorldComposer &&
+      !String(taskTeam?.value || "")
+    ) {
       setComposerStatus("Choose the team responsible for this task.", "bad");
       taskTeam?.focus();
       return;
@@ -4461,10 +4465,17 @@ function mountForkMeshDashboardChat() {
     if (!fullTaskSend || !fullAction || !fullInput) return;
     fullTaskSend.addEventListener("click", () => {
       if (simpleWorldComposer) {
-        fullAction.value = "agent";
-        if (taskAssignee) taskAssignee.value = "agent";
+        // The compact World composer has no routing controls, so its task
+        // action always creates an unassigned task on the General board.
+        // Keep this separate from the dashboard's explicit bot-assignment
+        // flow; clicking "Task" must never dispatch work to a bot.
+        fullAction.value = "task";
+        if (taskDepartment) taskDepartment.value = "general";
+        if (taskTeam) taskTeam.value = "";
+        if (taskDestination) taskDestination.value = "department";
+        if (taskAssignee) taskAssignee.value = "unassigned";
         syncFullComposerAction();
-        setComposerStatus("Dispatching task instantly…", "good");
+        setComposerStatus("Creating an unassigned task in General…", "good");
         const attachmentControl = attachmentControls.find(
           (control) => control.inputEl === fullInput,
         );
