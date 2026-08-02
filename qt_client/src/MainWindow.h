@@ -4918,6 +4918,9 @@ private:
     void refreshNodeDotMatrix();
     void updateChromeDotDivider();
     ActionRunStrip *m_actionRunStrip = nullptr;
+    // The matching hairline between the node dots and the action runs, so the
+    // three groups on the chrome line are separated the same way.
+    QWidget *m_chromeActionDivider = nullptr;
     // Last status tally rendered into the matrix's tooltip, so the scanner tick
     // can skip rebuilding an unchanged string ~20x a second.
     QString m_agentDotTooltipKey;

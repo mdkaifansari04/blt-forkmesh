@@ -454,12 +454,13 @@ QWidget *MainWindow::buildChatPage()
     rail->setObjectName(QStringLiteral("appNavigationRailContent"));
     rail->setMinimumWidth(railItemWidth());
     m_appNavigationRailLayout = new QVBoxLayout(rail);
-    // No top inset (adhoc #421). The rail and the repo tab row start at the
-    // same y — both begin at the top of the content area below the chrome — and
-    // the tab row's buttons are pinned to its top edge, so a zero margin here
-    // puts the rail's first icon and caption on exactly the two lines the tab
-    // row draws its own on. Any inset re-introduces the skew.
-    m_appNavigationRailLayout->setContentsMargins(0, 0, 0, 4);
+    // The rail and the repo tab row start at the same y — both begin at the top
+    // of the content area below the chrome — and the tab row's buttons are
+    // pinned to its top edge, so the rail's top inset has to be exactly the tab
+    // row's (kRepoTabRowTopInset) for the rail's first icon and caption to land
+    // on the two lines the tab row draws its own on (adhoc #421). Any other
+    // value re-introduces the skew.
+    m_appNavigationRailLayout->setContentsMargins(0, kRepoTabRowTopInset, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
     // Every rail destination is the same item (adhoc #117): one
     // ActivityRailButton — a 16px octicon SVG over a 10px caption at
@@ -5540,13 +5541,17 @@ QWidget *MainWindow::buildBreadcrumb()
     // Immediately right of the fleet, behind a faint divider: one dot per node
     // on the network (adhoc #124), so the machines read on the same line as the
     // agents. Kept current by refreshNodeDotMatrix().
-    m_chromeDotDivider = new QWidget;
-    m_chromeDotDivider->setObjectName(QStringLiteral("chromeDotDivider"));
-    // A bare QWidget ignores a stylesheet background unless it opts in.
-    m_chromeDotDivider->setAttribute(Qt::WA_StyledBackground, true);
-    m_chromeDotDivider->setFixedWidth(1);
-    m_chromeDotDivider->setFixedHeight(15); // a hairline inside the 21px grids
-    m_chromeDotDivider->hide();
+    auto makeChromeDotDivider = [] {
+        auto *divider = new QWidget;
+        divider->setObjectName(QStringLiteral("chromeDotDivider"));
+        // A bare QWidget ignores a stylesheet background unless it opts in.
+        divider->setAttribute(Qt::WA_StyledBackground, true);
+        divider->setFixedWidth(1);
+        divider->setFixedHeight(15); // a hairline inside the 21px grids
+        divider->hide();
+        return divider;
+    };
+    m_chromeDotDivider = makeChromeDotDivider();
     m_nodeDotMatrix = new NodeDotMatrix;
     m_nodeDotMatrix->onDotClicked = [this](const QString &node) {
         showNetworkTab(kNetworkNodesTab);
@@ -5562,9 +5567,10 @@ QWidget *MainWindow::buildBreadcrumb()
         }
     };
 
-    // Immediately right of the node dots: the most recent action runs and their
-    // status (adhoc #70), so CI reads on the same line as the agents. Kept
-    // current by refreshActionRunStrip().
+    // Immediately right of the node dots, behind a divider of its own: the most
+    // recent action runs and their status (adhoc #70), so CI reads on the same
+    // line as the agents. Kept current by refreshActionRunStrip().
+    m_chromeActionDivider = makeChromeDotDivider();
     m_actionRunStrip = new ActionRunStrip;
     m_actionRunStrip->onCellClicked = [this](int runId) {
         // Past the last square there is nothing specific to open, so fall back
@@ -5787,6 +5793,7 @@ QWidget *MainWindow::buildBreadcrumb()
     identityBalanceRow->addWidget(m_agentDotMatrix);
     identityBalanceRow->addWidget(m_chromeDotDivider, 0, Qt::AlignVCenter);
     identityBalanceRow->addWidget(m_nodeDotMatrix);
+    identityBalanceRow->addWidget(m_chromeActionDivider, 0, Qt::AlignVCenter);
     identityBalanceRow->addWidget(m_actionRunStrip);
     chromeRow->addLayout(identityBalanceRow);
     chromeRow->addStretch();
@@ -6434,18 +6441,21 @@ void MainWindow::refreshNodeDotMatrix()
     m_nodeDotMatrix->setToolTip(tip);
 }
 
-// The hairline between the agent squares and the node dots only earns its place
-// when there are dots on both sides of it (adhoc #124).
+// Each hairline on the chrome line — agents | nodes | actions — only earns its
+// place when there are dots on both sides of it (adhoc #124).
 void MainWindow::updateChromeDotDivider()
 {
-    if (!m_chromeDotDivider)
-        return;
     // isHidden(), not isVisible(): the window itself may not be up yet when the
-    // first roster lands, and the divider still needs to be laid out.
-    m_chromeDotDivider->setVisible(m_agentDotMatrix &&
-                                   !m_agentDotMatrix->isHidden() &&
-                                   m_nodeDotMatrix &&
-                                   !m_nodeDotMatrix->isHidden());
+    // first roster lands, and the dividers still need to be laid out.
+    const bool agents = m_agentDotMatrix && !m_agentDotMatrix->isHidden();
+    const bool nodes = m_nodeDotMatrix && !m_nodeDotMatrix->isHidden();
+    const bool actions = m_actionRunStrip && !m_actionRunStrip->isHidden();
+    if (m_chromeDotDivider)
+        m_chromeDotDivider->setVisible(agents && nodes);
+    // The runs' divider stands in for whichever group actually precedes them, so
+    // it still separates the agents from CI on a machine with no node roster.
+    if (m_chromeActionDivider)
+        m_chromeActionDivider->setVisible((agents || nodes) && actions);
 }
 
 // Repo-scoped sync/integrity state for the node dots, published by the
