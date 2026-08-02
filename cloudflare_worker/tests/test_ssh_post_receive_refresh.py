@@ -56,6 +56,10 @@ def _b64url(value):
     return base64.urlsafe_b64encode(value).decode().rstrip("=")
 
 
+def _operation(command):
+    return command[1] if command[0] == "/usr/bin/systemctl" else command[-1]
+
+
 def test_notify_discards_ref_input_and_creates_only_fixed_marker(tmp_path, monkeypatch):
     config = _config(tmp_path)
     monkeypatch.setattr(
@@ -74,7 +78,7 @@ def test_notify_discards_ref_input_and_creates_only_fixed_marker(tmp_path, monke
     assert sorted(path.name for path in tmp_path.iterdir()) == ["pending"]
 
 
-def test_run_uses_only_fixed_refresh_restart_health_register_order(
+def test_run_serializes_renewal_around_fixed_refresh_restart_health_order(
     tmp_path, monkeypatch
 ):
     config = _config(tmp_path)
@@ -93,14 +97,25 @@ def test_run_uses_only_fixed_refresh_restart_health_register_order(
         refresh_sleeper=lambda seconds: events.append(["sleep", seconds]),
     )
     assert result["ok"] is True
-    assert events[0][-1] == "refresh"
-    assert events[1] == [
+    assert events[0] == [
+        "/usr/bin/systemctl",
+        "stop",
+        bridge.RENEW_TIMER,
+        bridge.RENEW_SERVICE,
+    ]
+    assert events[1][-1] == "refresh"
+    assert events[2] == [
         "/usr/bin/systemctl",
         "restart",
         "forkmesh-mirror.service",
     ]
-    assert events[2] == ["signed-health"]
-    assert events[3][-1] == "register"
+    assert events[3] == ["signed-health"]
+    assert events[4][-1] == "renew"
+    assert events[5] == [
+        "/usr/bin/systemctl",
+        "start",
+        bridge.RENEW_TIMER,
+    ]
     assert not config.trigger_path.exists()
 
 
@@ -116,11 +131,7 @@ def test_run_gives_every_child_only_the_fixed_disk_backed_tmpdir(
     children = []
 
     def runner(command, **kwargs):
-        operation = (
-            "restart"
-            if command[0] == "/usr/bin/systemctl"
-            else command[-1]
-        )
+        operation = _operation(command)
         children.append((operation, kwargs["env"]))
         return SimpleNamespace(returncode=0)
 
@@ -134,9 +145,11 @@ def test_run_gives_every_child_only_the_fixed_disk_backed_tmpdir(
     )
 
     assert [operation for operation, _environment in children] == [
+        "stop",
         "refresh",
         "restart",
-        "register",
+        "renew",
+        "start",
     ]
     expected = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -164,11 +177,7 @@ def test_run_retries_only_refresh_once_then_publishes_in_exact_order(
     refresh_attempts = [0]
 
     def runner(command, **kwargs):
-        operation = (
-            "restart"
-            if command[0] == "/usr/bin/systemctl"
-            else command[-1]
-        )
+        operation = _operation(command)
         events.append(operation)
         if operation == "refresh":
             refresh_timeouts.append(kwargs["timeout"])
@@ -193,12 +202,14 @@ def test_run_retries_only_refresh_once_then_publishes_in_exact_order(
 
     assert result["ok"] is True
     assert events == [
+        "stop",
         "refresh",
         ("sleep", bridge.REFRESH_RETRY_DELAY_SECONDS),
         "refresh",
         "restart",
         "signed-health",
-        "register",
+        "renew",
+        "start",
     ]
     assert refresh_timeouts == [
         bridge.REFRESH_TIMEOUT_SECONDS,
@@ -217,7 +228,10 @@ def test_run_stops_after_two_refresh_failures(tmp_path, monkeypatch):
     events = []
 
     def runner(command, **kwargs):
-        assert command[-1] == "refresh"
+        operation = _operation(command)
+        if operation != "refresh":
+            events.append(operation)
+            return SimpleNamespace(returncode=0)
         events.append(("refresh", kwargs["timeout"]))
         return SimpleNamespace(returncode=1)
 
@@ -240,6 +254,7 @@ def test_run_stops_after_two_refresh_failures(tmp_path, monkeypatch):
         )
 
     assert events == [
+        "stop",
         ("refresh", bridge.REFRESH_TIMEOUT_SECONDS),
         ("sleep", bridge.REFRESH_RETRY_DELAY_SECONDS),
         (
@@ -247,6 +262,7 @@ def test_run_stops_after_two_refresh_failures(tmp_path, monkeypatch):
             bridge.REFRESH_TIMEOUT_SECONDS
             - bridge.REFRESH_RETRY_DELAY_SECONDS,
         ),
+        "start",
     ]
     assert not config.trigger_path.exists()
     status = bridge.refresh_status(config)
@@ -269,6 +285,8 @@ def test_run_does_not_retry_refresh_without_remaining_deadline(
     sleeps = []
 
     def runner(command, **kwargs):
+        if _operation(command) != "refresh":
+            return SimpleNamespace(returncode=0)
         calls.append((command[-1], kwargs["timeout"]))
         now[0] += bridge.REFRESH_TIMEOUT_SECONDS
         return SimpleNamespace(returncode=1)
@@ -289,7 +307,7 @@ def test_run_does_not_retry_refresh_without_remaining_deadline(
     assert not config.trigger_path.exists()
 
 
-@pytest.mark.parametrize("failure_phase", ["restart", "health", "register"])
+@pytest.mark.parametrize("failure_phase", ["restart", "health", "renew"])
 def test_run_never_retries_later_publication_phases(
     tmp_path, monkeypatch, failure_phase
 ):
@@ -300,11 +318,7 @@ def test_run_never_retries_later_publication_phases(
     sleeps = []
 
     def runner(command, **_kwargs):
-        operation = (
-            "restart"
-            if command[0] == "/usr/bin/systemctl"
-            else command[-1]
-        )
+        operation = _operation(command)
         events.append(operation)
         return SimpleNamespace(
             returncode=1 if operation == failure_phase else 0
@@ -324,20 +338,24 @@ def test_run_never_retries_later_publication_phases(
         )
 
     expected = {
-        "restart": ["refresh", "restart"],
-        "health": ["refresh", "restart", "health"],
-        "register": ["refresh", "restart", "health", "register"],
+        "restart": ["stop", "refresh", "restart", "start"],
+        "health": ["stop", "refresh", "restart", "health", "start"],
+        "renew": [
+            "stop", "refresh", "restart", "health", "renew", "start",
+        ],
     }
     assert events == expected[failure_phase]
     assert events.count("refresh") == 1
     assert events.count("restart") == 1
     assert events.count("health") <= 1
-    assert events.count("register") <= 1
+    assert events.count("renew") <= 1
     assert sleeps == []
     assert not config.trigger_path.exists()
     status = bridge.refresh_status(config)
     assert status["status"] == "retry-pending"
-    assert status["phase"] == failure_phase
+    assert status["phase"] == (
+        "register" if failure_phase == "renew" else failure_phase
+    )
 
 
 def test_failed_publication_is_durable_deferred_then_retried(
@@ -348,8 +366,10 @@ def test_failed_publication_is_durable_deferred_then_retried(
     monkeypatch.setattr(bridge.os, "geteuid", lambda: 0)
     now_ms = [1_000_000]
 
-    def failing_runner(_command, **_kwargs):
-        return SimpleNamespace(returncode=1)
+    def failing_runner(command, **_kwargs):
+        return SimpleNamespace(
+            returncode=1 if _operation(command) == "refresh" else 0
+        )
 
     with pytest.raises(bridge.RefreshBridgeError):
         bridge.run(
@@ -393,9 +413,7 @@ def test_failed_publication_is_durable_deferred_then_retried(
     events = []
 
     def successful_runner(command, **_kwargs):
-        events.append(
-            "restart" if command[0] == "/usr/bin/systemctl" else command[-1]
-        )
+        events.append(_operation(command))
         return SimpleNamespace(returncode=0)
 
     published = bridge.run(
@@ -409,7 +427,9 @@ def test_failed_publication_is_durable_deferred_then_retried(
         reconcile=True,
     )
     assert published["event"] == "ssh_push_refresh_published"
-    assert events == ["refresh", "restart", "health", "register"]
+    assert events == [
+        "stop", "refresh", "restart", "health", "renew", "start",
+    ]
     assert not retry_path.exists()
     status = bridge.refresh_status(
         config, clock_ms=lambda: now_ms[0] + 60_000)
@@ -429,9 +449,7 @@ def test_reconcile_recovers_processing_marker_left_by_killed_service(
     events = []
 
     def runner(command, **_kwargs):
-        events.append(
-            "restart" if command[0] == "/usr/bin/systemctl" else command[-1]
-        )
+        events.append(_operation(command))
         return SimpleNamespace(returncode=0)
 
     result = bridge.run(
@@ -441,7 +459,9 @@ def test_reconcile_recovers_processing_marker_left_by_killed_service(
         reconcile=True,
     )
     assert result["event"] == "ssh_push_refresh_published"
-    assert events == ["refresh", "restart", "health", "register"]
+    assert events == [
+        "stop", "refresh", "restart", "health", "renew", "start",
+    ]
     assert not processing.exists()
 
 
@@ -451,9 +471,7 @@ def test_periodic_reconcile_runs_without_a_push_marker(tmp_path, monkeypatch):
     events = []
 
     def runner(command, **_kwargs):
-        events.append(
-            "restart" if command[0] == "/usr/bin/systemctl" else command[-1]
-        )
+        events.append(_operation(command))
         return SimpleNamespace(returncode=0)
 
     result = bridge.run(
@@ -463,7 +481,9 @@ def test_periodic_reconcile_runs_without_a_push_marker(tmp_path, monkeypatch):
         reconcile=True,
     )
     assert result["event"] == "ssh_push_refresh_published"
-    assert events == ["refresh", "restart", "health", "register"]
+    assert events == [
+        "stop", "refresh", "restart", "health", "renew", "start",
+    ]
 
 
 def test_signed_health_binds_both_origins_to_nonce_node_key_and_signature(tmp_path):
@@ -986,6 +1006,8 @@ def test_signed_health_renewal_timer_is_bounded_and_gateway_coupled():
     assert timer_directives["AccuracySec"] == "15s"
     assert timer_directives["RandomizedDelaySec"] == "30s"
     assert service_directives["TimeoutStartSec"] == "5min"
+    assert service_directives["Restart"] == "on-failure"
+    assert service_directives["RestartSec"] == "20s"
     # Conservatively include a complete service timeout after the maximum
     # scheduled interval. Repository requests also require a separate signed
     # proof whose production cache lifetime is only 60 seconds.

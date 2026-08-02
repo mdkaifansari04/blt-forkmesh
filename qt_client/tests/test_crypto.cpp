@@ -5974,6 +5974,56 @@ int main(int argc, char *argv[])
               "clearEvents starts the next run with a clean transcript");
     }
 
+    // Live transcript search: the search bar filters the session list by what a
+    // run actually said, so the store has to find a query across both the raw log
+    // and the stream-json events, count the hits, and hand back the surrounding
+    // text for the matching row's tooltip.
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "transcript search temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session = store.createSession(session);
+
+        check(store.searchTranscript(session, "recovery") == 0,
+              "an empty transcript matches nothing");
+
+        store.appendLog(session, "only seeing RECOVERY pings here");
+        store.appendEvent(session,
+                          QJsonObject{{"type", "assistant"},
+                                      {"text", "failure pings need recovery"}});
+
+        QString snippet;
+        check(store.searchTranscript(session, "recovery", &snippet) == 2,
+              "hits are counted across the raw log and the event stream");
+        check(snippet.contains("seeing RECOVERY pings"),
+              "the snippet carries the text around the first hit");
+        check(store.searchTranscript(session, "Recovery") == 2,
+              "transcript search is case-insensitive");
+        check(store.searchTranscript(session, "nowhere in here") == 0,
+              "a query the run never said matches nothing");
+        check(store.searchTranscript(session, "   ") == 0,
+              "a blank query never claims a match");
+
+        // Only the tail of a long-running session is read, so scanning every
+        // session on each keystroke stays cheap.
+        AgentSession chatty;
+        chatty.owner = "octo";
+        chatty.name = "demo";
+        chatty = store.createSession(chatty);
+        store.appendLog(chatty, "needle at the very start");
+        store.appendLog(chatty,
+                        QString(AgentStore::kTranscriptSearchTailBytes + 4096,
+                                QLatin1Char('x')));
+        check(store.searchTranscript(chatty, "needle") == 0,
+              "text older than the search tail is out of scope");
+        store.appendLog(chatty, "needle again at the end");
+        check(store.searchTranscript(chatty, "needle") == 1,
+              "the tail of a long transcript is still searched");
+    }
+
     // The Claude Code run summary the CLI reports on finish ("done · N turns ·
     // Ms · $X") is stored on the session and survives a restart (issue #296).
     {
