@@ -16,6 +16,7 @@
 
 #include <QTextLayout>
 #include <QTextOption>
+#include <QUrl>
 
 using namespace forkmesh::ui;
 
@@ -34,6 +35,119 @@ QString MainWindow::agentProviderName(const QString &provider) const
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
+}
+
+void MainWindow::openAgentTranscriptReference(const QString &href)
+{
+    const QString branchPrefix = QStringLiteral("forkmesh-branch:");
+    if (href.startsWith(branchPrefix)) {
+        const QString branch = QUrl::fromPercentEncoding(
+                                   href.mid(branchPrefix.size()).toUtf8())
+                                   .trimmed();
+        const QString dir = repoGitDir();
+        if (dir.isEmpty()) {
+            flashMessage(QStringLiteral("Open this Agent's repository to view %1.")
+                             .arg(branch),
+                         true);
+            return;
+        }
+        if (!localBranchExists(dir, branch)) {
+            flashMessage(QStringLiteral("Branch %1 is not available in this repository.")
+                             .arg(branch),
+                         true);
+            return;
+        }
+        switchToBranch(branch);
+        return;
+    }
+
+    const QString filePrefix = QStringLiteral("forkmesh-file:");
+    if (href.startsWith(filePrefix)) {
+        QString encoded = href.mid(filePrefix.size());
+        int line = 0;
+        const int queryAt = encoded.indexOf(QStringLiteral("?line="));
+        if (queryAt >= 0) {
+            bool ok = false;
+            line = encoded.mid(queryAt + 6).toInt(&ok);
+            if (!ok || line < 1)
+                line = 0;
+            encoded.truncate(queryAt);
+        }
+        QString path = QUrl::fromPercentEncoding(encoded.toUtf8()).trimmed();
+        const QString dir = repoGitDir();
+        if (dir.isEmpty()) {
+            flashMessage(QStringLiteral("Open this Agent's repository to view %1.")
+                             .arg(path),
+                         true);
+            return;
+        }
+
+        const QString repoRoot = QDir(dir).absolutePath();
+        QString fileRoot = repoRoot;
+        QString agentBranch;
+        if (const AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
+            if (localBranchExists(dir, session->branchName)) {
+                agentBranch = session->branchName;
+                const QString worktree =
+                    worktreePathForBranch(dir, session->branchName);
+                if (!worktree.isEmpty())
+                    fileRoot = QDir(worktree).absolutePath();
+            }
+        }
+        if (QDir::isAbsolutePath(path)) {
+            const QString absolute = QDir::cleanPath(path);
+            const QString repoPrefix = repoRoot + QLatin1Char('/');
+            const QString filePrefixPath = fileRoot + QLatin1Char('/');
+            if (absolute.startsWith(filePrefixPath))
+                path = absolute.mid(filePrefixPath.size());
+            else if (absolute.startsWith(repoPrefix))
+                path = absolute.mid(repoPrefix.size());
+            else {
+                flashMessage(QStringLiteral("That file is outside the open repository."),
+                             true);
+                return;
+            }
+        }
+        while (path.startsWith(QStringLiteral("./")))
+            path.remove(0, 2);
+        if (path.startsWith(QStringLiteral("a/")) ||
+            path.startsWith(QStringLiteral("b/")))
+            path.remove(0, 2);
+        path = QDir::cleanPath(path);
+        if (path.isEmpty() || path == QLatin1String(".") ||
+            path == QLatin1String("..") || path.startsWith(QStringLiteral("../"))) {
+            flashMessage(QStringLiteral("That transcript file reference is not valid."),
+                         true);
+            return;
+        }
+
+        const bool workingFile = QFileInfo(QDir(fileRoot).filePath(path)).isFile();
+        QByteArray ignored;
+        QString gitError;
+        const QString ref = !agentBranch.isEmpty()
+                                ? agentBranch
+                                : (currentRef().isEmpty() ? QStringLiteral("HEAD")
+                                                          : currentRef());
+        const bool trackedFile = runGitCapture(
+            dir, {QStringLiteral("cat-file"), QStringLiteral("-e"),
+                  QStringLiteral("%1:%2").arg(ref, path)},
+            &ignored, &gitError);
+        if (!workingFile && !trackedFile) {
+            flashMessage(QStringLiteral("File %1 is not available in this repository.")
+                             .arg(path),
+                         true);
+            return;
+        }
+        if (!agentBranch.isEmpty() && currentRef() != agentBranch)
+            setRepoBranch(agentBranch);
+        if (line > 0)
+            openRepoFileAtLine(path, line);
+        else
+            openRepoFile(path);
+        return;
+    }
+
+    openBodyReference(href);
 }
 
 namespace {
@@ -1946,6 +2060,8 @@ QWidget *MainWindow::buildAgentsTab()
         QSettings().value(kClaudeDiffSplitSetting, false).toBool());
     m_agentTranscript->setMinimumHeight(320); // never collapse to a thin strip
     m_agentTranscript->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    connect(m_agentTranscript, &ClaudeTranscriptView::referenceActivated, this,
+            &MainWindow::openAgentTranscriptReference);
     connect(m_agentTranscript, &ClaudeTranscriptView::usageChanged, this,
             [this](const QString &kind, const QString &text, int percent) {
                 Q_UNUSED(text);

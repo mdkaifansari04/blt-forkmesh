@@ -2073,6 +2073,10 @@ private:
     // forkmesh-commit:SHA → commit) and forkmesh:// permalinks (issue/pull/commit);
     // anything else opens externally.
     void openBodyReference(const QString &href);
+    // Resolve links emitted by ClaudeTranscriptView. Repository-local branch and
+    // file targets stay inside ForkMesh; issue, PR, commit and web links reuse
+    // the conversation reference resolver above.
+    void openAgentTranscriptReference(const QString &href);
     // Copy a forkmesh://<kind>/<owner>/<repo>/<id> permalink for the open PR or
     // commit to the clipboard (owner/repo from the repo detail view). Pasting it
     // into a comment renders a link via autolinkReferences() (issue #154).
