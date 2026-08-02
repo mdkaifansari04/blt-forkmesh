@@ -1,0 +1,3342 @@
+diff --git a/cloudflare_worker/browser_tests/tests/world.spec.js b/cloudflare_worker/browser_tests/tests/world.spec.js
+index 085e3c763..dbebceb1a 100644
+--- a/cloudflare_worker/browser_tests/tests/world.spec.js
++++ b/cloudflare_worker/browser_tests/tests/world.spec.js
+@@ -17,6 +17,7 @@ const THREE_MODULE_PATH = path.resolve(
+   "build",
+   "three.module.min.js",
+ );
++const CHAT_HTML_PATH = path.resolve(__dirname, "..", "..", "public", "chat.html");
+ 
+ const PRIVATE_SETTINGS = {
+   theme: "world",
+@@ -47,6 +48,8 @@ async function prepareWorldPage(
+     notifications = [],
+     events = [],
+     chatPassphrase = "",
++    chatChannels = [],
++    chatChannelStatus = 200,
+   } = {},
+ ) {
+   let mentionState = "review";
+@@ -84,6 +87,12 @@ async function prepareWorldPage(
+       contentType: "text/javascript; charset=utf-8",
+     }),
+   );
++  await page.route("**/chat?embed=office", (route) =>
++    route.fulfill({
++      path: CHAT_HTML_PATH,
++      contentType: "text/html; charset=utf-8",
++    }),
++  );
+   await page.route("**/api/**", (route) => {
+     const url = new URL(route.request().url());
+     let status = 200;
+@@ -126,6 +135,10 @@ async function prepareWorldPage(
+                 passphrase: chatPassphrase,
+               }
+             : ((status = 401), { error: "unauthorized" })
++        : url.pathname === "/api/chat/channels"
++          ? chatChannelStatus === 200
++            ? { ok: true, channels: chatChannels }
++            : ((status = chatChannelStatus), { error: "invalid_session" })
+         : url.pathname === "/api/world/events"
+           ? { events }
+           : url.pathname === "/api/notifications"
+@@ -471,7 +484,7 @@ test("signed-in World receives private and global notifications", async ({
+   await expect(panel).toContainText("Sign in to receive");
+ });
+ 
+-test("World chat stays embedded without navigating or opening a tab", async ({
++test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
+   page,
+   context,
+ }) => {
+@@ -497,6 +510,13 @@ test("World chat stays embedded without navigating or opening a tab", async ({
+       socket.onMessage((message) => {
+         chatFrames.push(JSON.parse(String(message)));
+       });
++      if (chatSocketURLs.length > 1) {
++        setTimeout(() => {
++          chatFrames
++            .filter((frame) => frame.persist === true)
++            .forEach((frame) => socket.send(JSON.stringify(frame)));
++        }, 50);
++      }
+     },
+   );
+   await prepareWorldPage(page, "world-chat", {
+@@ -506,16 +526,29 @@ test("World chat stays embedded without navigating or opening a tab", async ({
+ 
+   const worldURL = page.url();
+   const pageCount = context.pages().length;
+-  await page.locator("[data-world-chat-open]").first().click();
++  expect(chatSocketURLs).toHaveLength(0);
++  await page.locator("[data-world-office-focus]").first().click();
++  expect(chatSocketURLs).toHaveLength(0);
+ 
+-  const chat = page.locator("[data-world-chat]");
++  await page.locator("forkmesh-world").evaluate((shell) => {
++    shell.world.player.position.set(11, 0.38, -17.7);
++  });
++  const entry = page.locator("[data-world-office-enter]");
++  await expect(entry).toBeVisible();
++  expect(chatSocketURLs).toHaveLength(0);
++  await page.evaluate(() => document.activeElement?.blur());
++  await page.keyboard.press("e");
++
++  const chat = page.locator("[data-world-office-chat]");
+   await expect(chat).toBeVisible();
+-  const chatFrame = page.frameLocator("[data-world-chat-frame]");
+-  const chatInput = chatFrame.locator("#fullChatInput");
++  const officeFrame = page.locator("[data-world-office-frame]");
++  await expect(officeFrame).toHaveAttribute("src", "/chat?embed=office");
++  const chatFrame = page.frameLocator("[data-world-office-frame]");
++  const chatInput = chatFrame.locator("#chat-input");
+   await expect(chatInput).toBeVisible();
+-  await expect(
+-    chatFrame.locator("[data-dashboard-chat-status]").first(),
+-  ).toHaveText("Connected · public World #general");
++  await expect(chatFrame.locator("#chat-status")).toHaveText(
++    "Connected · public World #general",
++  );
+   publicChatSocket.send(JSON.stringify(encryptChatEnvelope(
+     {
+       type: "chat",
+@@ -530,14 +563,17 @@ test("World chat stays embedded without navigating or opening a tab", async ({
+     passphrase,
+     "world-general",
+   )));
+-  await expect(chatFrame.locator("#fullChatMessages")).toContainText(
++  await expect(chatFrame.locator("#chat-log")).toContainText(
+     "World visitor · Verified Admin",
+   );
+-  await expect(chatFrame.locator("#fullChatMessages")).toContainText(
++  await expect(chatFrame.locator("#chat-log")).toContainText(
+     "This identity claim is not verified.",
+   );
+   await chatInput.fill("Hello from the public World");
+-  await chatFrame.locator("#fullChatSend").click();
++  await chatInput.press("Enter");
++  await expect(chatFrame.locator("#chat-log")).toContainText(
++    "Hello from the public World",
++  );
+   await expect.poll(
+     () => chatFrames.filter((frame) => frame.persist === true).length,
+   ).toBe(1);
+@@ -555,6 +591,38 @@ test("World chat stays embedded without navigating or opening a tab", async ({
+     accountKind: "guest",
+   });
+   expect(message.sender).toMatch(/^World visitor · /);
++
++  await chatInput.evaluate((input) => {
++    const png = Uint8Array.from(atob(
++      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
++    ), (char) => char.charCodeAt(0));
++    const transfer = new DataTransfer();
++    transfer.items.add(new File([png], "office-clipboard.png", {
++      type: "image/png",
++    }));
++    input.dispatchEvent(new ClipboardEvent("paste", {
++      bubbles: true,
++      cancelable: true,
++      clipboardData: transfer,
++    }));
++  });
++  await expect(chatFrame.locator(".chat-attachment-image")).toHaveAttribute(
++    "alt",
++    "office-clipboard.png",
++  );
++  await chatFrame.locator("#chat-attachment-input").setInputFiles({
++    name: "office-notes.txt",
++    mimeType: "text/plain",
++    buffer: Buffer.from("retained Office document"),
++  });
++  await expect(chatFrame.locator(".chat-attachment-card", {
++    hasText: "office-notes.txt",
++  })).toBeVisible();
++  await expect.poll(
++    () => chatFrames.filter((frame) => frame.persist === true).length,
++  ).toBe(3);
++  expect(chatFrames.map((frame) => JSON.stringify(frame)).join("\n"))
++    .not.toContain("office-notes.txt");
+   expect(roomKeyRequests).toContainEqual({
+     room: "world-general",
+     authorization: "",
+@@ -566,19 +634,126 @@ test("World chat stays embedded without navigating or opening a tab", async ({
+   expect(page.url()).toBe(worldURL);
+   expect(context.pages()).toHaveLength(pageCount);
+ 
+-  await page.locator("forkmesh-world").evaluate((shell) => {
+-    shell.openWorldChat("/dashboard/chat?space=sky-campus");
++  await chat.getByRole("button", {
++    name: "Collapse ForkMesh Office chat",
++  }).click();
++  await expect(chat).toBeHidden();
++  await expect(officeFrame).not.toHaveAttribute("src", /.+/, {
++    timeout: 3500,
+   });
+-  const restrictedFrame = page.frameLocator("[data-world-chat-frame]");
+-  await expect(restrictedFrame.locator("#fullChatInput")).toBeDisabled();
+-  await expect(
+-    restrictedFrame.locator("[data-dashboard-chat-status]").first(),
+-  ).toHaveText("User login required for this channel");
++  await page.waitForTimeout(250);
+   expect(chatSocketURLs).toHaveLength(1);
++  expect(page.url()).toBe(worldURL);
++
++  await page.evaluate(() => document.activeElement?.blur());
++  await page.keyboard.press("e");
++  await expect(chat).toBeVisible();
++  await expect.poll(() => chatSocketURLs.length).toBe(2);
++  const reopenedFrame = page.frameLocator("[data-world-office-frame]");
++  await expect(reopenedFrame.locator("#chat-log")).toContainText(
++    "Hello from the public World",
++  );
++  await expect(reopenedFrame.locator(".chat-attachment-image")).toHaveAttribute(
++    "alt",
++    "office-clipboard.png",
++  );
++  await expect(reopenedFrame.locator(".chat-attachment-card", {
++    hasText: "office-notes.txt",
++  })).toBeVisible();
+ 
+-  await chat.getByRole("button", { name: "Close World chat" }).click();
++  await page.locator("forkmesh-world").evaluate((shell) => {
++    shell.world.player.position.set(0, 0.38, 0);
++  });
+   await expect(chat).toBeHidden();
+-  expect(page.url()).toBe(worldURL);
++  await expect(officeFrame).not.toHaveAttribute("src", /.+/, {
++    timeout: 3500,
++  });
++  await page.locator("forkmesh-world").evaluate((shell) => {
++    shell.world.player.position.set(11, 0.38, -17.7);
++  });
++  await expect(entry).toBeVisible();
++  await expect(chat).toBeHidden();
++});
++
++test("ForkMesh Office preserves registered channel authorization", async ({
++  page,
++}) => {
++  await page.routeWebSocket(
++    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
++    () => {},
++  );
++  await prepareWorldPage(page, "office-admin", {
++    session: {
++      kind: "user",
++      nodeName: "admin",
++      email: "admin@example.test",
++      sessionToken: "admin-token",
++      isAdmin: true,
++    },
++    chatPassphrase: "playwright-office-admin-passphrase",
++    chatChannels: [
++      {
++        id: "a".repeat(32),
++        name: "announcements",
++        visibility: "public",
++        canManage: true,
++        keyVersion: 1,
++        updatedAt: FIXED_NOW,
++      },
++      {
++        id: "b".repeat(32),
++        name: "leadership",
++        visibility: "private",
++        canManage: true,
++        keyVersion: 1,
++        updatedAt: FIXED_NOW,
++      },
++    ],
++  });
++  await waitForWorld(page);
++  await page.locator("forkmesh-world").evaluate((shell) => {
++    shell.world.player.position.set(11, 0.38, -17.7);
++  });
++  await page.locator("[data-world-office-enter]").click();
++
++  const office = page.frameLocator("[data-world-office-frame]");
++  await expect(office.locator("#chat-rooms")).toContainText("#general");
++  await expect(office.locator("#chat-rooms")).toContainText("#announcements");
++  await expect(office.locator("#chat-rooms")).toContainText("#leadership");
++  await expect(office.locator("#chat-office-manage")).toBeVisible();
++  await expect(office.locator("#chat-channel-create")).toBeHidden();
++  await expect(office.locator("#chat-channel-manage")).toBeHidden();
++});
++
++test("ForkMesh Office explains an expired authorized session", async ({
++  page,
++}) => {
++  await page.routeWebSocket(
++    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
++    () => {},
++  );
++  await prepareWorldPage(page, "office-expired", {
++    session: {
++      kind: "user",
++      nodeName: "alice",
++      email: "alice@example.test",
++      sessionToken: "expired-token",
++    },
++    chatPassphrase: "playwright-office-expired-passphrase",
++    chatChannelStatus: 401,
++  });
++  await waitForWorld(page);
++  await page.locator("forkmesh-world").evaluate((shell) => {
++    shell.world.player.position.set(11, 0.38, -17.7);
++  });
++  await page.locator("[data-world-office-enter]").click();
++
++  const office = page.frameLocator("[data-world-office-frame]");
++  await expect(office.locator("#chat-office-alert")).toContainText(
++    "Your session expired. Log in again to use authorized channels.",
++  );
++  await expect(office.locator("#chat-office-login")).toBeVisible();
++  await expect(office.locator("#chat-rooms")).toContainText("#general");
+ });
+ 
+ test("reward-program links deep-link to the self-custodial fountain controls", async ({
+diff --git a/cloudflare_worker/docs/superpowers/plans/2026-07-24-forkmesh-office-world-chat.md b/cloudflare_worker/docs/superpowers/plans/2026-07-24-forkmesh-office-world-chat.md
+new file mode 100644
+index 000000000..b3525af0d
+--- /dev/null
++++ b/cloudflare_worker/docs/superpowers/plans/2026-07-24-forkmesh-office-world-chat.md
+@@ -0,0 +1,998 @@
++# ForkMesh Office World Chat Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
++> Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Add a spatial `ForkMesh Office` landmark to ForkMesh World that opens the existing encrypted chat only after explicit entry, preserves the visible world in a compact dock, and keeps authorization and private chat data inside the chat client.
++
++**Architecture:** Keep Three.js geometry and proximity in `world-scene.js`, put prompt and iframe lifecycle in a focused `world-office.js` controller, and render the same `/chat` client in a compact `embed=office` mode.
++The world presence service gains only the consent-aware coarse activity `visiting-office`; it never receives chat content, private room identity, or membership.
++
++**Tech Stack:** Python Cloudflare Worker, vanilla JavaScript custom elements, Three.js, Web Crypto, WebSocket, pytest, Node syntax checks, and Playwright.
++
++---
++
++## Preconditions and Working Rules
++
++- Work on branch `feat/chat-world`.
++- Run every command from the repository root, the directory that contains `cloudflare_worker`.
++- Preserve the existing unrelated `wrangler.toml` modification.
++- Do not run `no-mistakes axi` unless the user explicitly asks for it.
++- Use the approved design in `cloudflare_worker/docs/superpowers/specs/2026-07-24-forkmesh-office-world-chat-design.md` as the product contract.
++- Start every behavior change with a failing end-user-oriented test or the closest isolated browser contract.
++- Keep every bridge payload free of message content, encryption material, session material, attachment data, and private room identifiers.
++- Inspect every updated desktop, landscape, and portrait screenshot before accepting it.
++
++## Task 1: Add Office Landmark and Presence Metadata
++
++**Files:**
++
++- Modify: `cloudflare_worker/tests/test_world_backend.py`
++- Modify: `cloudflare_worker/tests/test_world_frontend.py`
++- Modify: `cloudflare_worker/src/world.py`
++- Modify: `cloudflare_worker/public/world/world-data.js`
++- Modify: `cloudflare_worker/public/world/index.html`
++
++- [ ] **Step 1: Write failing presence allowlist coverage.**
++
++Add a test beside the existing activity allowlisting cases in `tests/test_world_backend.py`:
++
++```python
++def test_world_presence_allows_the_consent_aware_office_activity():
++    current = world.default_presence("peer", 1000)
++    _, result = world.sanitize_message({
++        "type": "presence",
++        "activityCategory": "visiting-office",
++    }, current, 2000)
++
++    assert result["activityCategory"] == "visiting-office"
++```
++
++- [ ] **Step 2: Write failing world metadata and fallback coverage.**
++
++Extend `tests/test_world_frontend.py` with exact contracts:
++
++```python
++def test_forkmesh_office_is_a_navigable_world_landmark():
++    assert 'id: "office"' in DATA
++    assert 'label: "ForkMesh Office"' in DATA
++    assert 'shortLabel: "Office"' in DATA
++    assert "position: [11, 0, -21]" in DATA
++    assert 'id: "visiting-office"' in DATA
++
++
++def test_static_world_fallback_links_to_chat():
++    assert 'href="/chat"' in INDEX
++    assert "Open ForkMesh chat" in INDEX
++```
++
++- [ ] **Step 3: Run the focused tests and confirm they fail for the missing feature.**
++
++Run:
++
++```bash
++python -m pytest cloudflare_worker/tests/test_world_backend.py cloudflare_worker/tests/test_world_frontend.py -q
++```
++
++Expected: the new assertions fail because `office`, `visiting-office`, and the fallback chat link do not exist yet.
++
++- [ ] **Step 4: Add the bounded presence value.**
++
++Add `visiting-office` to `WORLD_ACTIVITY_VALUES` in `src/world.py`.
++Do not add a world WebSocket message type or any chat field.
++
++- [ ] **Step 5: Add the landmark and activity metadata.**
++
++Add this entry to `LANDMARKS` in `public/world/world-data.js` using the same complete metadata schema as its neighboring landmarks:
++
++```javascript
++{
++  id: "office",
++  label: "ForkMesh Office",
++  shortLabel: "Office",
++  eyebrow: "COLLABORATION / 14",
++  icon: "⌁",
++  color: "#9ef7c6",
++  position: [11, 0, -21],
++  summary: "Meet collaborators through ForkMesh's existing encrypted channel system.",
++  metaphor: "An open office lobby where the chat terminal becomes available after deliberate entry.",
++  reality:
++    "The office embeds the normal authorized chat client. Avatar position never grants room access or exposes private membership.",
++  status: "Encrypted chat available",
++  statusTone: "live",
++  bullets: [
++    "Guests can use only public World #general.",
++    "Registered users see only public and authorized private channels.",
++    "Messages, room keys, tokens, and attachments never enter world presence.",
++    "The hidden chat iframe disconnects after leaving the office.",
++  ],
++  primary: { label: "Walk to the office", action: "office" },
++  secondary: { label: "Open full chat", href: "/chat" },
++}
++```
++
++Add the matching `visiting-office` option to `ACTIVITY_OPTIONS`.
++Place the Office in the guided tour and navigation using the established data-derived behavior rather than a duplicate hard-coded list.
++
++- [ ] **Step 6: Add the non-WebGL fallback destination.**
++
++Add this link to the fallback navigation in `public/world/index.html`:
++
++```html
++<a href="/chat">Open ForkMesh chat</a>
++```
++
++- [ ] **Step 7: Run the focused tests and confirm they pass.**
++
++Run:
++
++```bash
++python -m pytest cloudflare_worker/tests/test_world_backend.py cloudflare_worker/tests/test_world_frontend.py -q
++```
++
++Expected: all selected tests pass.
++
++- [ ] **Step 8: Commit the metadata slice.**
++
++```bash
++git add cloudflare_worker/tests/test_world_backend.py cloudflare_worker/tests/test_world_frontend.py cloudflare_worker/src/world.py cloudflare_worker/public/world/world-data.js cloudflare_worker/public/world/index.html
++git commit -m "feat: add ForkMesh Office world metadata"
++```
++
++## Task 2: Build the Testable Office Interaction Controller
++
++**Files:**
++
++- Create: `cloudflare_worker/tests/test_world_office_frontend.py`
++- Create: `cloudflare_worker/public/world/world-office.js`
++
++- [ ] **Step 1: Write a failing Node contract for proximity hysteresis.**
++
++Create `tests/test_world_office_frontend.py` with a helper that imports the ES module through Node and asserts JSON output.
++Cover these transitions:
++
++```javascript
++[
++  nextOfficeZoneState("distant", 6.6),
++  nextOfficeZoneState("distant", 6.5),
++  nextOfficeZoneState("nearby", 7.4),
++  nextOfficeZoneState("nearby", 7.6),
++]
++```
++
++Expected output:
++
++```json
++["distant", "nearby", "nearby", "distant"]
++```
++
++- [ ] **Step 2: Write failing static security and lifecycle contracts.**
++
++Add assertions that the new controller source will contain:
++
++```python
++assert 'const OFFICE_CHAT_PATH = "/chat?embed=office"' in OFFICE
++assert 'event.origin !== window.location.origin' in OFFICE
++assert 'event.source !== frame.contentWindow' in OFFICE
++assert 'type: "office-chat-suspend"' in OFFICE
++assert "window.setTimeout" in OFFICE
++assert "2000" in OFFICE
++```
++
++Also assert the controller does not contain bridge fields named `text`, `plaintext`, `roomKey`, `token`, `attachment`, or `privateChannelId`.
++Parse bridge object literals narrowly so ordinary UI copy such as `textContent` does not cause a false positive.
++
++- [ ] **Step 3: Run the controller tests and confirm the missing module failure.**
++
++Run:
++
++```bash
++python -m pytest cloudflare_worker/tests/test_world_office_frontend.py -q
++```
++
++Expected: failure because `public/world/world-office.js` does not exist.
++
++- [ ] **Step 4: Implement pure proximity behavior.**
++
++Start `public/world/world-office.js` with:
++
++```javascript
++export const OFFICE_ENTER_DISTANCE = 6.5;
++export const OFFICE_EXIT_DISTANCE = 7.5;
++const OFFICE_CHAT_PATH = "/chat?embed=office";
++const OFFICE_UNLOAD_DELAY_MS = 2000;
++
++export function nextOfficeZoneState(currentState, distance) {
++  const threshold = currentState === "nearby"
++    ? OFFICE_EXIT_DISTANCE
++    : OFFICE_ENTER_DISTANCE;
++  return Number.isFinite(distance) && distance <= threshold
++    ? "nearby"
++    : "distant";
++}
++```
++
++- [ ] **Step 5: Implement the controller factory.**
++
++Export `createWorldOfficeController({ root, world, chatPath = OFFICE_CHAT_PATH })`.
++The returned API must include:
++
++```javascript
++{
++  setProximity,
++  focusOffice,
++  enterOffice,
++  collapse,
++  destroy,
++}
++```
++
++Implement these invariants:
++
++- `setProximity("nearby")` reveals the real entry button but does not assign iframe `src`.
++- `setProximity("distant")` immediately hides the prompt and collapses an active console.
++- `focusOffice()` calls `world.focusLandmark("office")` and records the triggering control for focus restoration.
++- `enterOffice()` returns early unless proximity is `nearby` and `world.enterOffice()` succeeds.
++- Successful entry assigns only the same-origin `/chat?embed=office` URL and focuses the console heading.
++- `collapse()` sends `{ type: "office-chat-suspend" }`, hides the console immediately, restores focus, and removes the iframe source after 2,000 milliseconds.
++- `E` enters only when nearby and when the event target is not an input, textarea, select, button, or editable element.
++- `Escape` collapses only an active console.
++- `destroy()` clears the unload timer and removes every installed event listener.
++
++- [ ] **Step 6: Validate parent-child messages.**
++
++Accept `office-chat-ready` and `office-chat-room-changed` only when both checks pass:
++
++```javascript
++if (event.origin !== window.location.origin) return;
++if (event.source !== frame.contentWindow) return;
++```
++
++Use `office-chat-ready` only to clear the bounded loading state.
++Do not retain or expose the room identifier from `office-chat-room-changed` in the world shell.
++
++- [ ] **Step 7: Run unit and syntax checks.**
++
++Run:
++
++```bash
++python -m pytest cloudflare_worker/tests/test_world_office_frontend.py -q
++node --check cloudflare_worker/public/world/world-office.js
++```
++
++Expected: all checks pass.
++
++- [ ] **Step 8: Commit the controller slice.**
++
++```bash
++git add cloudflare_worker/tests/test_world_office_frontend.py cloudflare_worker/public/world/world-office.js
++git commit -m "feat: add world office interaction controller"
++```
++
++## Task 3: Construct the Three.js Office Landmark
++
++**Files:**
++
++- Modify: `cloudflare_worker/tests/test_world_office_frontend.py`
++- Modify: `cloudflare_worker/public/world/world-scene.js`
++
++- [ ] **Step 1: Add failing scene contracts.**
++
++Assert the scene source includes:
++
++```python
++assert "function createForkMeshOffice(" in SCENE
++assert 'office: createForkMeshOffice' in SCENE
++assert 'userData.landmark = "office"' in SCENE
++assert "onOfficeProximity" in SCENE
++assert "enterOffice()" in SCENE
++```
++
++Also use a small Node test for `nextOfficeZoneState` rather than duplicating threshold math inside the scene test.
++
++- [ ] **Step 2: Run the test and confirm the missing scene behavior.**
++
++Run:
++
++```bash
++python -m pytest cloudflare_worker/tests/test_world_office_frontend.py -q
++```
++
++Expected: the new scene assertions fail.
++
++- [ ] **Step 3: Import the shared office state primitives.**
++
++Add this import to `public/world/world-scene.js`:
++
++```javascript
++import {
++  nextOfficeZoneState,
++} from "./world-office.js";
++```
++
++Accept an `onOfficeProximity = () => {}` callback in the existing scene factory options.
++
++- [ ] **Step 4: Build the office using the existing low-poly scene language.**
++
++Implement `createForkMeshOffice(THREE, position, interactive, animated)` with:
++
++- A charcoal concrete shell.
++- Dark green structural metal.
++- Mint-tinted glazing.
++- Warm emissive desk lighting.
++- An open front and visible entrance.
++- A reception desk, shared worktable, wall display, and chat terminal.
++- A canvas-texture sign whose exact text is `FORKMESH OFFICE`.
++- Shadow participation consistent with neighboring buildings.
++
++Every clickable office mesh must set:
++
++```javascript
++mesh.userData.landmark = "office";
++interactive.push(mesh);
++```
++
++Register the factory in the existing landmark factory map as `office: createForkMeshOffice`.
++
++- [ ] **Step 5: Add scene-level proximity and entry APIs.**
++
++Track the current office zone and calculate horizontal distance from the avatar to the office entrance during the existing landmark-distance update.
++Call `onOfficeProximity(nextState)` only when the state changes.
++
++Expose this method in the returned scene API:
++
++```javascript
++enterOffice() {
++  if (officeZoneState !== "nearby") return false;
++  cameraFocus = "office";
++  moveTarget.set(office.position[0], currentFloorY, office.position[2] + 2.2);
++  return true;
++}
++```
++
++Adapt names to the existing vector and movement types.
++Respect the existing reduced-motion setting when framing the office.
++
++- [ ] **Step 6: Preserve deliberate entry on building click.**
++
++Keep the existing interactive landmark click behavior focused on `focusLandmark("office")` and movement toward the entrance.
++Do not call `enterOffice()` from the raycast click handler.
++
++- [ ] **Step 7: Run the focused contracts and JavaScript syntax check.**
++
++Run:
++
++```bash
++python -m pytest cloudflare_worker/tests/test_world_office_frontend.py cloudflare_worker/tests/test_world_frontend.py -q
++node --check cloudflare_worker/public/world/world-scene.js
++```
++
++Expected: all checks pass.
++
++- [ ] **Step 8: Commit the scene slice.**
++
++```bash
++git add cloudflare_worker/tests/test_world_office_frontend.py cloudflare_worker/public/world/world-scene.js
++git commit -m "feat: build ForkMesh Office landmark"
++```
++
++## Task 4: Replace the Global World Chat Modal With Spatial Office UI
++
++**Files:**
++
++- Modify: `cloudflare_worker/tests/test_world_frontend.py`
++- Modify: `cloudflare_worker/tests/test_world_office_frontend.py`
++- Modify: `cloudflare_worker/public/world/world.js`
++- Modify: `cloudflare_worker/public/world/world.css`
++
++- [ ] **Step 1: Replace the old modal contract with failing Office contracts.**
++
++Replace `test_chat_opens_inside_the_world_without_popup_permission` in `tests/test_world_frontend.py`.
++Assert that:
++
++```python
++assert "data-world-office-focus" in APP
++assert "data-world-office-enter" in APP
++assert "data-world-office-chat" in APP
++assert "data-world-office-frame" in APP
++assert "Visit ForkMesh Office" in APP
++assert "ForkMesh Office chat" in APP
++assert 'office: "visiting-office"' in APP
++assert "/chat?embed=office" not in APP
++assert "data-world-chat-open" not in APP
++assert "data-world-chat-frame" not in APP
++assert "/dashboard/chat" not in APP
++```
++
++The negative embed URL assertion guarantees that the iframe source is not present in initial markup.
++
++- [ ] **Step 2: Run the tests and confirm the legacy modal causes failure.**
++
++Run:
++
++```bash
++python -m pytest cloudflare_worker/tests/test_world_frontend.py cloudflare_worker/tests/test_world_office_frontend.py -q
++```
++
++Expected: failures identify the current global chat modal and missing Office UI.
++
++- [ ] **Step 3: Add semantic prompt and console markup.**
++
++In the world component template in `public/world/world.js`, add:
++
++```html
++<section class="world-office-prompt" data-world-office-prompt hidden>
++  <p>ForkMesh Office is open</p>
++  <button type="button" data-world-office-enter>
++    Enter ForkMesh Office <kbd>E</kbd>
++  </button>
++</section>
++
++<section
++  class="world-office-chat"
++  data-world-office-chat
++  aria-hidden="true"
++  aria-labelledby="world-office-chat-title"
++>
++  <header class="world-office-chat__heading">
++    <div>
++      <span>Encrypted workspace</span>
++      <h2 id="world-office-chat-title" tabindex="-1">ForkMesh Office</h2>
++    </div>
++    <button type="button" data-world-office-close aria-label="Collapse ForkMesh Office chat">×</button>
++  </header>
++  <p data-world-office-loading role="status">Opening encrypted chat...</p>
++  <iframe
++    data-world-office-frame
++    title="ForkMesh Office chat"
++    sandbox="allow-forms allow-same-origin allow-scripts"
++    referrerpolicy="same-origin"
++  ></iframe>
++</section>
++```
++
++Keep the iframe without `src` in initial markup.
++
++- [ ] **Step 4: Redirect both Chat shortcuts.**
++
++Replace top-bar and quick-dock links with controls carrying `data-world-office-focus` and accessible text `Visit ForkMesh Office`.
++They must call `officeController.focusOffice()` and must not navigate or open a panel immediately.
++Route the landmark detail action `office` through the same focus method after closing the detail panel.
++
++- [ ] **Step 5: Wire the controller to the scene.**
++
++Import `createWorldOfficeController` in `world.js`.
++Declare `let officeController = null`, create the scene with `onOfficeProximity: (state) => officeController?.setProximity(state)`, and create the controller immediately after the scene API exists.
++Destroy the controller in the custom element teardown path.
++
++Extend `updateLocation()` with `office: "visiting-office"` in its automatic activity map.
++The existing `presenceActivity()` privacy gate must continue returning `hidden` whenever activity sharing is disabled.
++
++Remove:
++
++- The old `.world-chat-backdrop` markup.
++- The old `.world-chat` markup.
++- `openWorldChat()`.
++- `closeWorldChat()`.
++- Delegated `[data-world-chat-open]` and `[data-world-chat-close]` behavior.
++- The `/dashboard/chat` iframe path handling.
++
++- [ ] **Step 6: Add precise responsive styling.**
++
++Desktop requirements in `world.css`:
++
++```css
++.world-office-chat {
++  position: fixed;
++  inset-block: var(--world-topbar-height) 0;
++  inset-inline-end: 0;
++  width: min(420px, calc(100vw - 24px));
++  transform: translateX(100%);
++}
++
++.world-office-chat[data-open="true"] {
++  transform: translateX(0);
++}
++```
++
++Mobile requirements:
++
++```css
++@media (max-width: 720px) {
++  .world-office-chat {
++    inset: auto 0 0;
++    width: 100%;
++    max-width: none;
++    height: min(58svh, 560px);
++    transform: translateY(100%);
++    padding-bottom: env(safe-area-inset-bottom);
++  }
++
++  .world-office-chat[data-open="true"] {
++    transform: translateY(0);
++  }
++}
++```
++
++Fit these declarations to existing custom properties and stacking contexts.
++Do not add a full-screen backdrop.
++Add `min-width: 0` on grid and flex children, and verify no horizontal overflow at 320 CSS pixels.
++
++- [ ] **Step 7: Add reduced-motion and focus-visible behavior.**
++
++Disable prompt, dock, and camera transition animation under `prefers-reduced-motion: reduce`.
++Give the entry, collapse, and full-chat controls visible keyboard focus rings.
++
++- [ ] **Step 8: Run contracts and syntax checks.**
++
++Run:
++
++```bash
++python -m pytest cloudflare_worker/tests/test_world_frontend.py cloudflare_worker/tests/test_world_office_frontend.py -q
++node --check cloudflare_worker/public/world/world.js
++node --check cloudflare_worker/public/world/world-scene.js
++```
++
++Expected: all checks pass and no legacy world chat modal marker remains.
++
++- [ ] **Step 9: Commit the world shell slice.**
++
++```bash
++git add cloudflare_worker/tests/test_world_frontend.py cloudflare_worker/tests/test_world_office_frontend.py cloudflare_worker/public/world/world.js cloudflare_worker/public/world/world.css
++git commit -m "feat: open chat through the ForkMesh Office"
++```
++
++## Task 5: Add the Compact Office Mode to the Encrypted Chat Client
++
++**Files:**
++
++- Create: `cloudflare_worker/tests/test_chat_office_embed_frontend.py`
++- Modify: `cloudflare_worker/public/chat.html`
++- Modify: `cloudflare_worker/public/chat.js`
++
++- [ ] **Step 1: Write failing static embed contracts.**
++
++Create `tests/test_chat_office_embed_frontend.py` with assertions for:
++
++```python
++assert 'chatQuery.get("embed") === "office"' in CHAT
++assert 'type: "office-chat-ready"' in CHAT
++assert 'message.type !== "office-chat-suspend"' in CHAT
++assert "chatSuspended" in CHAT
++assert "if (chatSuspended) return" in CHAT
++assert 'target="_top"' in HTML
++assert '[data-chat-embed="office"]' in HTML
++```
++
++Assert that the embed CSS hides the site header, people pane, explanatory footer, and administrator mutation controls while retaining the room pane, main message pane, status, composer, attachment picker, and paste behavior.
++
++- [ ] **Step 2: Add failing error-message contracts.**
++
++Assert exact actionable strings:
++
++```python
++assert "Your session expired. Log in again to use authorized channels." in CHAT
++assert "Chat relay unavailable" in CHAT
++```
++
++Add a Node-executed or narrowly extracted function test that maps HTTP 401 and invalid-session failures to the expired-session message.
++
++- [ ] **Step 3: Run the new and existing chat tests and confirm only new behavior fails.**
++
++Run:
++
++```bash
++python -m pytest cloudflare_worker/tests/test_chat_office_embed_frontend.py cloudflare_worker/tests/test_private_chat_channels_frontend.py cloudflare_worker/tests/test_chat_attachments_frontend.py cloudflare_worker/tests/test_dashboard_chat_persist_frontend.py -q
++```
++
++Expected: only Office embed and newly explicit error contracts fail.
++
++- [ ] **Step 4: Detect embed mode before first paint.**
++
++Set an early root attribute from the query string so full-page chrome does not flash:
++
++```html
++<script>
++  if (new URLSearchParams(location.search).get("embed") === "office") {
++    document.documentElement.dataset.chatEmbed = "office";
++  }
++</script>
++```
++
++Define the same state once in `chat.js`:
++
++```javascript
++const chatQuery = new URLSearchParams(window.location.search);
++const isOfficeEmbed = chatQuery.get("embed") === "office";
++let chatSuspended = false;
++```
++
++- [ ] **Step 5: Add compact layout rules without changing normal `/chat`.**
++
++Scope every layout override under `html[data-chat-embed="office"]`.
++Hide:
++
++- `.chat-site-header`.
++- `.chat-people-pane`.
++- The explanatory footer or note.
++- Create-channel and membership mutation controls.
++
++Keep:
++
++- `.chat-rooms-pane`.
++- `.chat-main-pane`.
++- Room heading and connection status.
++- `#chat-log`.
++- `#chat-input` and `#chat-send`.
++- Clipboard image handling.
++- Attachment picker and previews.
++
++Make the embed fill `100dvh`, use `min-width: 0`, and avoid nested page scrolling.
++
++- [ ] **Step 6: Expose full chat management only to administrators.**
++
++Add a hidden `Manage channels in full chat` link with `target="_top"`.
++Reveal it only when `isOfficeEmbed && userSession()?.isAdmin` is true.
++Do not show channel create, invite, remove-member, or delete controls inside the embed.
++
++- [ ] **Step 7: Implement suspend-safe socket lifecycle.**
++
++Add these guards:
++
++```javascript
++function scheduleReconnect() {
++  if (chatSuspended) return;
++  // Existing reconnect behavior follows.
++}
++
++async function connect() {
++  if (chatSuspended) return;
++  // Existing connect behavior follows.
++}
++```
++
++On a valid same-origin parent message of type `office-chat-suspend`:
++
++- Set `chatSuspended = true`.
++- Clear the reconnect timer.
++- Close the active socket.
++- Do not clear retained room preference or message UI.
++- Do not send chat data back to the parent.
++
++Validate `event.origin === window.location.origin` and `event.source === window.parent`.
++
++- [ ] **Step 8: Notify the parent only after initialization.**
++
++At the end of successful UI initialization, send:
++
++```javascript
++if (isOfficeEmbed && window.parent !== window) {
++  window.parent.postMessage({ type: "office-chat-ready" }, window.location.origin);
++}
++```
++
++If room-change notification is retained, send only the event type or a public display label.
++Do not send internal private channel identifiers.
++
++- [ ] **Step 9: Make expired sessions and relay failures actionable.**
++
++Normalize 401 and invalid-session responses before `privateChannelErrorMessage()`.
++Map them to:
++
++```text
++Your session expired. Log in again to use authorized channels.
++```
++
++Map transport and 5xx relay failures to:
++
++```text
++Chat relay unavailable. Try again.
++```
++
++Keep the existing fallback to public World `#general` when a stored channel is no longer authorized.
++Add a same-origin login link for the expired-session state and an explicit retry action for relay failure.
++
++- [ ] **Step 10: Run all affected chat tests and syntax checks.**
++
++Run:
++
++```bash
++python -m pytest cloudflare_worker/tests/test_chat_office_embed_frontend.py cloudflare_worker/tests/test_private_chat_channels_frontend.py cloudflare_worker/tests/test_chat_attachments_frontend.py cloudflare_worker/tests/test_dashboard_chat_persist_frontend.py -q
++node --check cloudflare_worker/public/chat.js
++```
++
++Expected: all selected tests pass and ordinary `/chat` contracts remain unchanged.
++
++- [ ] **Step 11: Commit the chat embed slice.**
++
++```bash
++git add cloudflare_worker/tests/test_chat_office_embed_frontend.py cloudflare_worker/public/chat.html cloudflare_worker/public/chat.js
++git commit -m "feat: add compact office chat embed"
++```
++
++## Task 6: Cover the Real Office Journey in Playwright
++
++**Files:**
++
++- Modify: `cloudflare_worker/browser_tests/tests/world.spec.js`
++
++- [ ] **Step 1: Replace the legacy modal E2E with the explicit-entry journey.**
++
++Rename the test to:
++
++```javascript
++test("ForkMesh Office opens encrypted chat only after explicit entry", async ({
++  page,
++  context,
++}) => {
++```
++
++Keep the real encrypted-envelope assertions from the existing test.
++Change the setup and assertions to cover:
++
++1. Initial world load creates zero chat WebSockets.
++2. Clicking `Visit ForkMesh Office` focuses or moves toward the Office but creates zero chat WebSockets.
++3. Entering the proximity zone reveals `Enter ForkMesh Office` but creates zero chat WebSockets.
++4. Pressing `E` opens the dock and loads `/chat?embed=office`.
++5. Exactly one chat WebSocket connects to World `#general`.
++6. Sending text produces one encrypted persistent frame.
++7. The page URL and tab count do not change.
++8. Pressing `Escape` collapses the dock.
++9. After 2,000 milliseconds, the iframe is unloaded and reconnect does not occur.
++
++Use a deterministic scene test hook or direct scene movement rather than timing avatar keyboard movement.
++The hook must exercise the same proximity callback and controller used by production.
++
++- [ ] **Step 2: Add a real attachment and retention journey.**
++
++Within the Office frame:
++
++- Paste a generated PNG through `ClipboardEvent` and assert one encrypted attachment envelope is sent.
++- Select a small text or PDF fixture through the file input and assert its encrypted attachment metadata is sent.
++- Echo retained encrypted frames from the mocked room socket.
++- Collapse and re-enter the Office.
++- Assert text, image, and document entries return from retained history.
++
++Never inspect plaintext in the outer world frame.
++
++- [ ] **Step 3: Add room authorization journeys.**
++
++Add focused tests or a parameterized table for:
++
++- Guest sees only World `#general`.
++- Registered user sees World `#general` and authorized public channels.
++- Invited user sees the invited private channel.
++- Uninvited user does not see a private channel.
++- Administrator sees authorized channels and the `Manage channels in full chat` link.
++- Expired session sees the exact actionable login message.
++
++Mock the existing `/api/chat/channels`, membership, room-key, and WebSocket routes.
++Do not invent an Office-only authorization endpoint.
++
++- [ ] **Step 4: Add lifecycle and bridge rejection coverage.**
++
++Assert that:
++
++- Leaving beyond 7.5 units collapses the dock.
++- Re-entering within 6.5 units does not automatically reopen it.
++- A message from another origin is ignored.
++- A message from a same-origin sibling frame is ignored.
++- `office-chat-ready` from the Office frame clears loading state.
++
++- [ ] **Step 5: Run the new E2E tests and observe the initial red result.**
++
++Run:
++
++```bash
++cd cloudflare_worker/browser_tests
++npx playwright test tests/world.spec.js --grep "ForkMesh Office|office chat|authorized channels"
++```
++
++Expected before final integration adjustments: failures identify missing selectors, lifecycle details, or mock endpoints.
++
++- [ ] **Step 6: Fix only integration defects revealed by the E2E.**
++
++Keep fixes inside the ownership boundaries defined by the design:
++
++- Scene issues in `world-scene.js`.
++- Prompt and iframe issues in `world-office.js`.
++- Shell wiring issues in `world.js`.
++- Chat behavior issues in `chat.js` and `chat.html`.
++
++Do not move encryption or authorization logic into the world controller.
++
++- [ ] **Step 7: Run the E2E tests again.**
++
++Run:
++
++```bash
++cd cloudflare_worker/browser_tests
++npx playwright test tests/world.spec.js --grep "ForkMesh Office|office chat|authorized channels"
++```
++
++Expected: all Office journey tests pass.
++
++- [ ] **Step 8: Commit the E2E slice and any integration fixes.**
++
++```bash
++git add cloudflare_worker/browser_tests/tests/world.spec.js cloudflare_worker/public/world cloudflare_worker/public/chat.html cloudflare_worker/public/chat.js
++git commit -m "test: cover spatial office chat journeys"
++```
++
++## Task 7: Update and Inspect Responsive World Snapshots
++
++**Files:**
++
++- Modify: `cloudflare_worker/browser_tests/tests/world.spec.js`
++- Modify: `cloudflare_worker/browser_tests/tests/world.spec.js-snapshots/world-desktop-linux.png`
++- Modify: `cloudflare_worker/browser_tests/tests/world.spec.js-snapshots/world-landscape-linux.png`
++- Modify: `cloudflare_worker/browser_tests/tests/world.spec.js-snapshots/world-portrait-linux.png`
++
++- [ ] **Step 1: Make the screenshot state intentionally show the landmark and dock.**
++
++For each existing viewport snapshot, deterministically focus the camera on the Office.
++Capture one stable closed state that clearly shows the `FORKMESH OFFICE` banner.
++Add an Office-open snapshot assertion where the current suite structure permits descriptive filenames without replacing unrelated baselines.
++
++- [ ] **Step 2: Add explicit responsive geometry assertions.**
++
++At desktop width, assert the open dock width is at most 420 CSS pixels and the canvas remains visible.
++At mobile width, assert the open sheet height is at most 58 percent of the small viewport height.
++At 320 CSS pixels, assert:
++
++```javascript
++expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320);
++```
++
++Allow for the actual device viewport width rather than hard-coding 320 when the project helper provides it.
++
++- [ ] **Step 3: Generate updated snapshots.**
++
++Run:
++
++```bash
++cd cloudflare_worker/browser_tests
++npx playwright test tests/world.spec.js --grep "snapshot|responsive" --update-snapshots
++```
++
++Expected: Playwright writes only the intended world baseline changes.
++
++- [ ] **Step 4: Inspect every generated image manually.**
++
++Open desktop, landscape, and portrait snapshots and reject them if any of these are present:
++
++- The Office banner is illegible or clipped.
++- Floating landmark labels collide with the banner.
++- The dock hides the entire world.
++- The mobile sheet exceeds its bound or ignores the safe area.
++- Controls clip, overflow, or become too small to tap.
++- The palette or geometry looks inconsistent with the existing low-poly world.
++
++Fix visual defects and regenerate until all three states are deliberate and pixel-clean.
++
++- [ ] **Step 5: Run the complete world browser file without snapshot updates.**
++
++Run:
++
++```bash
++cd cloudflare_worker/browser_tests
++npx playwright test tests/world.spec.js
++```
++
++Expected: the full world browser suite passes with no snapshot diff.
++
++- [ ] **Step 6: Commit the visual baselines.**
++
++```bash
++git add cloudflare_worker/browser_tests/tests/world.spec.js cloudflare_worker/browser_tests/tests/world.spec.js-snapshots
++git commit -m "test: add ForkMesh Office visual baselines"
++```
++
++## Task 8: Final Verification and Security Audit
++
++**Files:**
++
++- Verify all files changed by Tasks 1 through 7.
++- Do not modify: `cloudflare_worker/wrangler.toml`.
++
++- [ ] **Step 1: Run all focused Python frontend and backend tests.**
++
++Run:
++
++```bash
++python -m pytest \
++  cloudflare_worker/tests/test_world_backend.py \
++  cloudflare_worker/tests/test_world_frontend.py \
++  cloudflare_worker/tests/test_world_office_frontend.py \
++  cloudflare_worker/tests/test_chat_office_embed_frontend.py \
++  cloudflare_worker/tests/test_private_chat_channels_frontend.py \
++  cloudflare_worker/tests/test_chat_attachments_frontend.py \
++  cloudflare_worker/tests/test_dashboard_chat_persist_frontend.py \
++  -q
++```
++
++Expected: all selected tests pass.
++
++- [ ] **Step 2: Run syntax checks for every changed JavaScript module.**
++
++Run:
++
++```bash
++node --check cloudflare_worker/public/world/world-data.js
++node --check cloudflare_worker/public/world/world-office.js
++node --check cloudflare_worker/public/world/world-scene.js
++node --check cloudflare_worker/public/world/world.js
++node --check cloudflare_worker/public/chat.js
++```
++
++Expected: every command exits with status 0.
++
++- [ ] **Step 3: Run the complete world Playwright suite.**
++
++Run:
++
++```bash
++cd cloudflare_worker/browser_tests
++npx playwright test tests/world.spec.js
++```
++
++Expected: all tests and all snapshot assertions pass.
++
++- [ ] **Step 4: Audit the privacy boundary with source searches.**
++
++Run:
++
++```bash
++rg -n "office-chat|visiting-office|privateChannelId|roomKey|plaintext|attachment|token" cloudflare_worker/public/world cloudflare_worker/src/world.py
++```
++
++Expected:
++
++- World files contain only Office lifecycle message types and the coarse activity.
++- No world bridge object contains plaintext, token, key, attachment, or private room data.
++- `src/world.py` contains `visiting-office` only as an allowlisted activity value.
++
++- [ ] **Step 5: Confirm the old modal and dashboard chat iframe are gone.**
++
++Run:
++
++```bash
++rg -n "data-world-chat|openWorldChat|closeWorldChat|/dashboard/chat" cloudflare_worker/public/world cloudflare_worker/tests/test_world_frontend.py cloudflare_worker/browser_tests/tests/world.spec.js
++```
++
++Expected: no matches.
++
++- [ ] **Step 6: Check formatting, diff scope, and unrelated work preservation.**
++
++Run:
++
++```bash
++git diff --check
++git status --short
++git diff --stat HEAD~7..HEAD
++```
++
++Expected:
++
++- `git diff --check` reports no whitespace errors.
++- `wrangler.toml` remains modified but uncommitted and unchanged by this feature.
++- No generated changelog is modified.
++- Every implementation commit contains only its intended slice.
++
++- [ ] **Step 7: Review the acceptance criteria line by line.**
++
++Confirm all acceptance criteria from the approved design specification are backed by a passing test or inspected screenshot.
++Pay special attention to explicit entry, the 6.5 and 7.5 hysteresis thresholds, iframe unloading, guest and private-room authorization, clipboard images, documents, refresh retention, actionable failure states, and 320-pixel overflow.
++
++- [ ] **Step 8: Report completion with evidence.**
++
++Summarize:
++
++- The user-visible Office journey.
++- The security and privacy boundary.
++- Exact test commands and pass counts.
++- Screenshot viewports inspected.
++- The preserved unrelated `wrangler.toml` change.
++- The fact that `no-mistakes axi` was not run.
++
++Do not claim completion until all commands above have run successfully and the visual baselines have been inspected.
+diff --git a/cloudflare_worker/docs/superpowers/specs/2026-07-24-forkmesh-office-world-chat-design.md b/cloudflare_worker/docs/superpowers/specs/2026-07-24-forkmesh-office-world-chat-design.md
+new file mode 100644
+index 000000000..75888979b
+--- /dev/null
++++ b/cloudflare_worker/docs/superpowers/specs/2026-07-24-forkmesh-office-world-chat-design.md
+@@ -0,0 +1,191 @@
++# ForkMesh Office World Chat Design
++
++## Summary
++
++ForkMesh World will gain a new Three.js landmark named `ForkMesh Office`.
++The office turns chat from a global utility overlay into a place visitors intentionally approach and enter.
++When a visitor reaches the office entrance, the world reveals an explicit entry action.
++After entry, a compact office chat console opens while the Three.js world remains visible and interactive.
++The console reuses the existing encrypted chat client, channel authorization, retained history, clipboard image sharing, and document sharing.
++
++## Current State
++
++The world currently exposes Chat links in the top bar and quick dock from every location.
++Those links open a large modal containing an iframe for `/dashboard/chat`.
++The modal covers most of the world and has no relationship to avatar position or a world landmark.
++The world-presence WebSocket carries movement, coarse presence, and limited interactions, while chat uses a separate encrypted room transport.
++That separation is correct and must remain intact.
++
++## Experience Goal
++
++Chat should feel like entering a shared office without becoming harder to use or less secure.
++The visitor should see a recognizable building, deliberately enter it, and continue seeing the world while chatting.
++Proximity may reveal an action, but it must never open a panel, connect a chat socket, or steal keyboard focus automatically.
++The feature must work for mouse, keyboard, touch, reduced-motion, and non-WebGL visitors.
++
++## Office Landmark
++
++The new landmark identifier is `office`.
++Its label is `ForkMesh Office`, its short label is `Office`, and its initial scene coordinate is `[11, 0, -21]`.
++This parcel is outside the interaction radii of the Organization Quarter and Security Workshop while remaining reachable from Town Square.
++The landmark appears in the world map, object-label layer, quick navigation, distance display, technical detail panel, and guided tour.
++
++The building uses the existing low-poly architectural language.
++Its primary materials are charcoal concrete, dark green metal, mint glazing, and warm desk lighting.
++The front remains visually open so visitors can understand that it is enterable.
++A canvas-texture sign above the entrance reads `FORKMESH OFFICE`.
++Interior geometry contains a reception desk, shared worktable, wall display, and chat terminal, but no decorative element may imply access to data that the current visitor cannot obtain.
++
++Every interactive office mesh receives `userData.landmark = "office"`.
++The landmark factory participates in the existing interactive mesh, shadow, label, and focus systems.
++
++## Spatial Interaction State Machine
++
++The office experience has five states.
++
++1. `distant`: The landmark and map entry are visible, but no office-specific UI or chat connection exists.
++2. `nearby`: The avatar is within 6.5 horizontal world units of the office entrance, so an `Enter ForkMesh Office` action appears.
++3. `entering`: The visitor activates the action by clicking, tapping, or pressing `E`, and the camera frames the office interior.
++4. `active`: The compact office console is visible and its chat iframe is allowed to connect.
++5. `exiting`: The avatar crosses beyond 7.5 units, the console collapses immediately, and the iframe is unloaded after a two-second grace period.
++
++Separate enter and exit thresholds provide hysteresis so small avatar movements do not flicker the console.
++The `nearby` state never activates the chat connection by itself.
++Clicking the building focuses the landmark and moves the avatar toward the entrance, but still requires the explicit entry action.
++Pressing `Escape` collapses the console without moving the avatar.
++After a manual collapse, the console stays closed until the visitor activates the entry action again or leaves and re-enters the zone.
++Every collapse sends the suspend event and unloads the iframe after the same two-second grace period so a hidden chat socket does not remain connected.
++
++## Navigation Changes
++
++The top-bar and quick-dock Chat controls no longer open the global chat modal.
++They focus the `ForkMesh Office` landmark and move the avatar toward its entrance.
++Their accessible names become `Visit ForkMesh Office`.
++The existing large chat modal, backdrop, `/dashboard/chat` iframe, and associated open and close methods are removed from the world shell.
++The normal full `/chat` page remains available outside the world.
++
++## Office Chat Console
++
++The office console loads `/chat?embed=office` in a same-origin sandboxed iframe only after explicit entry.
++The standalone chat client remains the owner of channel listing, room access, key derivation, encrypted WebSockets, retained history, attachments, and error mapping.
++The world shell does not reimplement or import cryptographic chat logic.
++
++The `embed=office` presentation keeps the room selector, selected-room heading, message history, composer, clipboard paste, attachment picker, and connection status.
++It hides the global site header, full people directory, explanatory footer, and administrator channel-creation controls.
++Administrators receive a `Manage channels in full chat` link rather than mutation controls inside the compact console.
++That link targets the top-level browsing context so the full chat page does not open inside the office iframe.
++
++On desktop, the console is a 420-pixel right-side dock that does not add a full-screen backdrop.
++On narrow screens, it becomes a bottom sheet capped at 58 percent of the small viewport height.
++The sheet exposes a clear collapse handle and keeps a meaningful portion of the world visible.
++The console must not create horizontal overflow at 320 CSS pixels.
++
++The parent and iframe communicate only through same-origin `postMessage` events with explicit message types.
++The child may send `office-chat-ready` and `office-chat-room-changed`.
++The parent may send `office-chat-suspend` before unloading the iframe.
++Neither side sends plaintext messages, encryption keys, session tokens, private channel identifiers, or attachment bytes through this bridge.
++
++## Room and Identity Rules
++
++Guests may use only the existing public World `#general` room and retain the current `World visitor` identity behavior.
++Active registered users may see World `#general` plus every administrator-created public channel and private channel they are authorized to access.
++Current administrators retain implicit access under the existing server authorization model.
++The office console never grants access based on avatar position.
++Every room list, room-access request, and WebSocket handshake continues through the existing chat authorization path.
++
++The selected room is restored using the existing chat client local preference.
++If the stored room is no longer authorized, the client removes it from the selector and returns to World `#general`.
++The world-presence stream may expose the coarse activity `visiting-office` only when the visitor has enabled public activity sharing.
++It must never expose the selected channel name, channel identifier, private membership, message activity, or typing state.
++
++## Security and Privacy Boundaries
++
++Chat frames continue to use the existing AES-256-GCM client transport and versioned room authorization.
++The world-presence WebSocket must not accept or broadcast chat messages.
++Office proximity is a presentation condition, not an authorization condition.
++Guests cannot discover administrator-created channels.
++Uninvited registered users cannot discover private channels.
++Leaving the office unloads the iframe so its WebSocket is not kept alive invisibly.
++
++The iframe sandbox remains limited to `allow-forms allow-same-origin allow-scripts`.
++The embed URL must be same-origin and restricted to `/chat`.
++The parent rejects bridge events from any other origin or source window.
++The office scene and presence state never receive decrypted message content.
++
++## Failure Behavior
++
++If the chat iframe is still loading, the world remains interactive and the console shows a bounded loading state.
++If the chat relay is unavailable, the office remains explorable and the console shows `Chat relay unavailable` with a retry action.
++If the account session expired, the console shows `Your session expired. Log in again to use authorized channels.` and provides a same-origin login link.
++If a room becomes unauthorized, the console returns to World `#general` without exposing the denied room in world UI.
++If WebGL initialization fails, the static fallback contains a normal `Open ForkMesh chat` link.
++If the visitor has reduced motion enabled, camera framing changes immediately without tweened movement.
++
++## Accessibility
++
++The office is present in the semantic world map independently of the WebGL canvas.
++The entry prompt is a real button with visible text and an `E` keyboard hint.
++Keyboard focus moves to the office console heading only after explicit entry.
++Collapsing the console returns focus to the entry action or the control that focused the office.
++The iframe has the title `ForkMesh Office chat`.
++All entry, loading, connected, disconnected, and session-expired states have text equivalents and do not rely on color.
++The interface respects existing safe-area insets and reduced-motion preferences.
++
++## Architecture and File Boundaries
++
++`public/world/world-data.js` owns the office landmark metadata, position, tour entry, and the consent-aware `visiting-office` activity option.
++`public/world/world-scene.js` owns office geometry, interactive meshes, proximity calculation, camera framing, and office entry and exit callbacks.
++`public/world/world-office.js` is a new focused controller for the entry prompt, console lifecycle, iframe bridge, responsive state, and focus restoration.
++`public/world/world.js` wires the scene callbacks to the office controller and redirects existing Chat controls to the landmark.
++`public/world/world.css` owns the entry prompt and office console presentation.
++`public/world/index.html` adds the non-WebGL fallback chat destination and loads the focused office controller through the world module graph.
++`public/chat.html` and `public/chat.js` own the `embed=office` presentation mode while retaining their existing chat responsibilities.
++`src/world.py` extends the bounded activity allowlist with `visiting-office` and makes no chat-protocol changes.
++
++The world controller must not gain encryption, room-access, retained-history, or attachment code.
++The chat client must not gain Three.js position or proximity knowledge.
++The office controller is the only module that knows about both world entry state and iframe lifecycle.
++
++## Compatibility and Migration
++
++No D1 schema migration is required.
++No existing chat channel, key, membership, retention, or message format changes.
++Existing `/chat` visitors receive the unchanged full-page layout when `embed=office` is absent.
++Existing world URLs and landmark deep links remain valid.
++The old world chat modal is replaced rather than supported in parallel, preventing two hidden chat iframes from connecting simultaneously.
++
++## Testing Strategy
++
++Scene-level contract tests verify the `office` landmark factory, coordinate, interactive metadata, proximity thresholds, hysteresis, and callback surface.
++Frontend contract tests verify that `embed=office` hides only nonessential chrome while preserving rooms, messages, composer, paste, attachments, and status.
++World Playwright tests walk or focus the avatar toward the office, confirm no chat connection in `distant` or `nearby`, enter explicitly, and verify the console opens without navigation or a new tab.
++Authorization journeys verify guest, registered-public, invited-private, uninvited-private, administrator, and expired-session behavior.
++Messaging journeys send text, paste an image, attach a document, refresh or re-enter the office, and confirm encrypted retained history returns.
++Lifecycle tests leave the office and confirm the panel collapses, the iframe unloads after the grace period, and re-entry restores the last authorized room.
++Desktop, landscape, and portrait snapshots verify the building banner, label placement, console proportions, safe areas, and absence of horizontal overflow.
++
++## Acceptance Criteria
++
++- ForkMesh World contains an interactive building visibly labeled `FORKMESH OFFICE`.
++- The world map and accessible landmark navigation include the Office.
++- Chat does not open or connect merely because the visitor approaches the building.
++- An explicit click, tap, or `E` action enters the office and opens the compact console.
++- The world remains visible while the office console is open.
++- Desktop uses a right-side dock and mobile uses a bounded bottom sheet.
++- Guests can use only World `#general`.
++- Active registered users see only public and authorized private channels.
++- Administrators manage channels through the full chat page rather than the office console.
++- Text, clipboard images, and selected documents work and survive refresh or re-entry.
++- Walking beyond the exit threshold closes the console and unloads its iframe.
++- No chat content or private room identity enters the world-presence WebSocket.
++- Expired sessions and relay failures produce actionable messages instead of the generic channel-request error.
++- Existing full-page `/chat` behavior remains unchanged outside `embed=office`.
++- Desktop, landscape, and portrait E2E snapshots pass without label collisions or overflow.
++
++## Explicit Exclusions
++
++Voice chat is not part of this feature.
++Chat text does not appear as 3D speech bubbles above avatars.
++There is no new chat protocol or world-socket message type.
++The office does not add channel creation, membership mutation, or moderation controls.
++The office does not infer chat presence, typing state, private-room membership, or activity from avatar location.
+diff --git a/cloudflare_worker/public/chat.html b/cloudflare_worker/public/chat.html
+index a370f7957..7159fd9de 100644
+--- a/cloudflare_worker/public/chat.html
++++ b/cloudflare_worker/public/chat.html
+@@ -2,6 +2,11 @@
+ <html lang="en" class="dark h-full">
+   <head>
+     <meta charset="utf-8" />
++    <script>
++      if (new URLSearchParams(location.search).get("embed") === "office") {
++        document.documentElement.dataset.chatEmbed = "office";
++      }
++    </script>
+     <script src="/posthog.js"></script>
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>ForkMesh Community Chat</title>
+@@ -1005,6 +1010,85 @@
+         box-shadow: 0 0 6px var(--accent-dim);
+       }
+ 
++      .chat-office-alert {
++        display: flex;
++        align-items: center;
++        gap: 8px;
++        border-bottom: 1px solid var(--border);
++        background: var(--accent-dim);
++        padding: 8px 12px;
++        color: var(--fg);
++        font-size: 12px;
++      }
++
++      .chat-office-alert span {
++        flex: 1;
++        min-width: 0;
++      }
++
++      .chat-office-alert a,
++      .chat-office-alert button,
++      #chat-office-manage {
++        flex: 0 0 auto;
++        border: 1px solid var(--border);
++        border-radius: 6px;
++        background: var(--surface2);
++        color: var(--fg);
++        padding: 5px 8px;
++        cursor: pointer;
++        font: inherit;
++        text-decoration: none;
++      }
++
++      html[data-chat-embed="office"],
++      html[data-chat-embed="office"] body {
++        min-width: 0;
++        height: 100dvh;
++        overflow: hidden;
++      }
++
++      html[data-chat-embed="office"] .chat-shell {
++        width: 100%;
++        min-width: 0;
++        max-width: none;
++        height: 100dvh;
++      }
++
++      html[data-chat-embed="office"] .chat-panes {
++        min-width: 0;
++        grid-template-columns: 118px minmax(0, 1fr);
++      }
++
++      html[data-chat-embed="office"] .chat-site-header { display: none; }
++      html[data-chat-embed="office"] .chat-people-pane { display: none; }
++      html[data-chat-embed="office"] .chat-e2e-note { display: none; }
++      html[data-chat-embed="office"] .chat-admin-action { display: none; }
++      html[data-chat-embed="office"] #chat-channel-dialog { display: none; }
++
++      html[data-chat-embed="office"] .chat-rooms-pane,
++      html[data-chat-embed="office"] .chat-main-pane,
++      html[data-chat-embed="office"] .chat-main-head,
++      html[data-chat-embed="office"] .chat-main-controls {
++        min-width: 0;
++      }
++
++      html[data-chat-embed="office"] .chat-room {
++        padding-inline: 10px;
++      }
++
++      html[data-chat-embed="office"] .chat-name-wrap,
++      html[data-chat-embed="office"] #chat-clear {
++        display: none;
++      }
++
++      html[data-chat-embed="office"] #chat-status {
++        display: inline;
++        max-width: 150px;
++        overflow: hidden;
++        text-overflow: ellipsis;
++        white-space: nowrap;
++      }
++
+       /* ── responsive ── */
+       @media (max-width: 980px) {
+         .chat-panes { grid-template-columns: 200px minmax(0, 1fr); }
+@@ -1032,6 +1116,15 @@
+         }
+         .chat-main-controls { flex-shrink: 0; gap: 6px; }
+         #chat-status { display: none; }
++
++        html[data-chat-embed="office"] .chat-panes {
++          grid-template-columns: minmax(0, 1fr);
++          grid-template-rows: auto minmax(0, 1fr);
++        }
++
++        html[data-chat-embed="office"] #chat-status {
++          display: none;
++        }
+       }
+ 
+       @media (max-width: 480px) {
+@@ -1072,6 +1165,7 @@
+             </span>
+             <div class="chat-main-controls">
+               <button id="chat-channel-manage" class="chat-admin-action" type="button" hidden>Members</button>
++              <a id="chat-office-manage" href="/chat" target="_top" hidden>Manage channels in full chat</a>
+               <span id="chat-status">Waiting to connect…</span>
+               <div class="chat-name-wrap">
+                 <label class="chat-name-label" for="chat-name">Name</label>
+@@ -1081,6 +1175,12 @@
+             </div>
+           </div>
+ 
++          <div id="chat-office-alert" class="chat-office-alert" role="alert" hidden>
++            <span id="chat-office-alert-copy"></span>
++            <a id="chat-office-login" href="/login?next=%2Fchat%3Fembed%3Doffice" target="_top" hidden>Log in</a>
++            <button id="chat-office-retry" type="button" hidden>Retry</button>
++          </div>
++
+           <div id="chat-log" aria-live="polite" aria-label="Chat messages">
+             <div class="chat-empty">
+               <svg class="chat-empty-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+diff --git a/cloudflare_worker/public/chat.js b/cloudflare_worker/public/chat.js
+index cc54710d1..52bdbc67b 100644
+--- a/cloudflare_worker/public/chat.js
++++ b/cloudflare_worker/public/chat.js
+@@ -63,6 +63,11 @@ const PEER_STALE_MS = 180000;
+ const GROUP_WINDOW_MS = 5 * 60 * 1000; // same-sender messages collapse under one header
+ const REACTION_EMOJI = ["👍", "❤️", "😂", "🎉", "👀", "🚀"];
+ const ACTIVE_CHANNEL_KEY = "forkmesh.chat.channel";
++const OFFICE_SESSION_EXPIRED =
++  "Your session expired. Log in again to use authorized channels.";
++const OFFICE_RELAY_UNAVAILABLE = "Chat relay unavailable. Try again.";
++const chatQuery = new URLSearchParams(window.location.search);
++const isOfficeEmbed = chatQuery.get("embed") === "office";
+ 
+ const logEl = document.querySelector("#chat-log");
+ const nameInput = document.querySelector("#chat-name");
+@@ -97,6 +102,11 @@ const channelMembersTitle = document.querySelector("#chat-channel-members-title"
+ const channelInviteForm = document.querySelector("#chat-channel-invite-form");
+ const channelUsernameInput = document.querySelector("#chat-channel-username");
+ const channelMembersEl = document.querySelector("#chat-channel-members");
++const officeManageLink = document.querySelector("#chat-office-manage");
++const officeAlert = document.querySelector("#chat-office-alert");
++const officeAlertCopy = document.querySelector("#chat-office-alert-copy");
++const officeLoginLink = document.querySelector("#chat-office-login");
++const officeRetryBtn = document.querySelector("#chat-office-retry");
+ 
+ const enc = new TextEncoder();
+ const dec = new TextDecoder();
+@@ -130,6 +140,8 @@ let openCallbacks = [];
+ let cachedUserSession = null;
+ let reconnectDelayMs = 2000;
+ let reconnectTimer = null;
++let chatSuspended = false;
++let officeAuthorizationExpired = false;
+ const seen = new Set();
+ // messageId -> message record { id, channel, ts, senderId, sender, text, self,
+ // el, body, reactionsEl }. `el`/`body` reference the on-screen row while the
+@@ -377,15 +389,23 @@ async function privateChannelRequest(path, options = {}) {
+   headers.set("accept", "application/json");
+   headers.set("Authorization", `Bearer ${session.sessionToken}`);
+   if (options.body) headers.set("content-type", "application/json");
+-  const response = await fetch(path, {
+-    ...options,
+-    headers,
+-    cache: "no-store",
+-  });
++  let response;
++  try {
++    response = await fetch(path, {
++      ...options,
++      headers,
++      cache: "no-store",
++    });
++  } catch (_) {
++    const error = new Error("unavailable");
++    error.code = "unavailable";
++    throw error;
++  }
+   const data = await response.json().catch(() => ({}));
+   if (!response.ok) {
+     const error = new Error(data.error || "unavailable");
+-    error.code = data.error || "unavailable";
++    error.code = response.status === 401 ? "auth" :
++      data.error || (response.status >= 500 ? "unavailable" : "request_failed");
+     error.status = response.status;
+     throw error;
+   }
+@@ -548,6 +568,22 @@ function setStatus(text) {
+   if (statusEl) statusEl.textContent = text;
+ }
+ 
++function showOfficeFailure(kind = "") {
++  if (!isOfficeEmbed || !officeAlert) return;
++  const expired = kind === "auth";
++  const relay = kind === "relay";
++  officeAlert.hidden = !expired && !relay;
++  if (officeAlertCopy) {
++    officeAlertCopy.textContent = expired
++      ? OFFICE_SESSION_EXPIRED
++      : relay
++        ? OFFICE_RELAY_UNAVAILABLE
++        : "";
++  }
++  if (officeLoginLink) officeLoginLink.hidden = !expired;
++  if (officeRetryBtn) officeRetryBtn.hidden = !relay;
++}
++
+ function lockChatForNonUser() {
+   setStatus("User login required for this channel");
+   [input, sendBtn, nameInput, attachmentBtn, attachmentInput].forEach((el) => {
+@@ -987,6 +1023,9 @@ function updateChannelHeading() {
+ function updateAdminChannelControls() {
+   const session = userSession();
+   const channel = privateChannelForKey(activeChannel);
++  if (officeManageLink) {
++    officeManageLink.hidden = !(isOfficeEmbed && userSession()?.isAdmin);
++  }
+   if (channelCreateBtn) channelCreateBtn.hidden = !session?.isAdmin;
+   if (channelManageBtn) {
+     channelManageBtn.hidden = !(
+@@ -1026,6 +1065,12 @@ function setActiveChannel(name, options = {}) {
+   updateAdminChannelControls();
+   renderRooms();
+   renderActiveChannel();
++  if (isOfficeEmbed && window.parent !== window) {
++    window.parent.postMessage(
++      { type: "office-chat-room-changed" },
++      window.location.origin,
++    );
++  }
+   if (options.connect !== false && previousScope !== roomScopeForChannel(activeChannel)) {
+     switchChatRoom();
+   }
+@@ -1095,9 +1140,17 @@ async function refreshPrivateChannels(options = {}) {
+   }
+   try {
+     const data = await privateChannelRequest(PRIVATE_CHANNELS_ENDPOINT);
++    officeAuthorizationExpired = false;
++    showOfficeFailure("");
+     reconcilePrivateChannels(data.channels || [], options);
+   } catch (error) {
+-    if (error?.code === "auth") reconcilePrivateChannels([], options);
++    if (error?.code === "auth") {
++      officeAuthorizationExpired = true;
++      reconcilePrivateChannels([], options);
++      showOfficeFailure("auth");
++    } else {
++      showOfficeFailure("relay");
++    }
+   }
+ }
+ 
+@@ -1112,6 +1165,10 @@ function privateChannelErrorMessage(error) {
+     invalid_members: "Choose registered users from the list.",
+     members_not_allowed: "Public channels do not use member invitations.",
+     admin_required: "Administrator access is required.",
++    auth: OFFICE_SESSION_EXPIRED,
++    invalid_session: OFFICE_SESSION_EXPIRED,
++    unavailable: OFFICE_RELAY_UNAVAILABLE,
++    request_failed: OFFICE_RELAY_UNAVAILABLE,
+   };
+   return messages[error?.code] || "The channel request could not be completed.";
+ }
+@@ -2152,6 +2209,7 @@ function switchChatRoom() {
+ }
+ 
+ function scheduleReconnect() {
++  if (chatSuspended) return;
+   if (reconnectTimer || !canJoinChannel()) return;
+   setStatus("Disconnected · reconnecting…");
+   reconnectTimer = setTimeout(() => {
+@@ -2162,6 +2220,7 @@ function scheduleReconnect() {
+ }
+ 
+ async function connect() {
++  if (chatSuspended) return;
+   if (socket || connecting) return;
+   const scope = roomScopeForChannel();
+   if (!canJoinChannel()) {
+@@ -2197,9 +2256,9 @@ async function connect() {
+     connecting = false;
+     // An expired/absent session token 401s the room-key fetch; point the user
+     // at re-authenticating instead of blaming the browser's crypto.
+-    setStatus(error && error.code === "auth"
+-      ? "Sign in again to join chat"
+-      : "Encryption unavailable in this browser");
++    const expired = error && error.code === "auth";
++    setStatus(expired ? OFFICE_SESSION_EXPIRED : OFFICE_RELAY_UNAVAILABLE);
++    showOfficeFailure(expired ? "auth" : "relay");
+     return;
+   }
+   if (scope !== roomScopeForChannel()) {
+@@ -2213,7 +2272,15 @@ async function connect() {
+   const socketUrl = /^wss?:\/\//i.test(webSocketPath)
+     ? webSocketPath
+     : `${scheme}//${RELAY_HOST}${webSocketPath}`;
+-  const roomSocket = new WebSocket(socketUrl);
++  let roomSocket;
++  try {
++    roomSocket = new WebSocket(socketUrl);
++  } catch (_) {
++    connecting = false;
++    setStatus(OFFICE_RELAY_UNAVAILABLE);
++    showOfficeFailure("relay");
++    return;
++  }
+   socket = roomSocket;
+ 
+   roomSocket.addEventListener("open", () => {
+@@ -2223,6 +2290,7 @@ async function connect() {
+     }
+     connecting = false;
+     reconnectDelayMs = 2000;
++    if (!officeAuthorizationExpired) showOfficeFailure("");
+     setStatus(
+       scope === "public-world-general"
+         ? "Connected · public World #general"
+@@ -2252,6 +2320,8 @@ async function connect() {
+     scheduleReconnect();
+   });
+   roomSocket.addEventListener("error", () => {
++    setStatus(OFFICE_RELAY_UNAVAILABLE);
++    showOfficeFailure("relay");
+     if (socket === roomSocket) roomSocket.close();
+   });
+ }
+@@ -2353,6 +2423,38 @@ function sendCurrentMessage() {
+   });
+ }
+ 
++function suspendOfficeChat() {
++  if (!isOfficeEmbed || chatSuspended) return;
++  chatSuspended = true;
++  if (reconnectTimer) {
++    clearTimeout(reconnectTimer);
++    reconnectTimer = null;
++  }
++  const previous = socket;
++  socket = null;
++  socketScope = "";
++  roomKey = null;
++  connecting = false;
++  openCallbacks = [];
++  try {
++    previous?.close(1000, "left ForkMesh Office");
++  } catch (_) {}
++  setStatus("Chat paused outside ForkMesh Office");
++}
++
++function receiveOfficeMessage(event) {
++  if (!isOfficeEmbed) return;
++  if (event.origin !== window.location.origin) return;
++  if (event.source !== window.parent) return;
++  const message = event.data;
++  if (!message || message.type !== "office-chat-suspend") return;
++  suspendOfficeChat();
++}
++
++if (isOfficeEmbed) {
++  window.addEventListener("message", receiveOfficeMessage);
++}
++
+ async function initChat() {
+   await hydrateUserSession();
+   ensureChannel("#general");
+@@ -2401,6 +2503,10 @@ async function initChat() {
+     event.preventDefault();
+     inviteChannelMember(channelUsernameInput?.value || "");
+   });
++  officeRetryBtn?.addEventListener("click", () => {
++    showOfficeFailure("");
++    connect();
++  });
+   if (attachmentBtn && attachmentInput) {
+     attachmentBtn.addEventListener("click", () => attachmentInput.click());
+     attachmentInput.addEventListener("change", () => {
+@@ -2466,6 +2572,12 @@ async function initChat() {
+   }, PRESENCE_INTERVAL_MS);
+   // Re-evaluate online dots as peers go stale even with no traffic.
+   setInterval(renderPeople, 30000);
++  if (isOfficeEmbed && window.parent !== window) {
++    window.parent.postMessage(
++      { type: "office-chat-ready" },
++      window.location.origin,
++    );
++  }
+ }
+ 
+ if (logEl && input && sendBtn) {
+diff --git a/cloudflare_worker/public/world/index.html b/cloudflare_worker/public/world/index.html
+index 0aa614772..ef911a0a8 100644
+--- a/cloudflare_worker/public/world/index.html
++++ b/cloudflare_worker/public/world/index.html
+@@ -58,6 +58,7 @@
+         </p>
+         <nav aria-label="ForkMesh destinations">
+           <a href="/dashboard">Open operations console</a>
++          <a href="/chat">Open ForkMesh chat</a>
+           <a href="/docs">Read the technical docs</a>
+           <a href="/network">Inspect the live network</a>
+         </nav>
+diff --git a/cloudflare_worker/public/world/world-data.js b/cloudflare_worker/public/world/world-data.js
+index 6d690b920..7bf374435 100644
+--- a/cloudflare_worker/public/world/world-data.js
++++ b/cloudflare_worker/public/world/world-data.js
+@@ -278,7 +278,7 @@ export const LANDMARKS = [
+       "Video rooms use official embeds and preserve each provider’s controls and terms.",
+     ],
+     primary: { label: "Open media controls", action: "broadcast" },
+-    secondary: { label: "Open community chat", href: "/dashboard/chat" },
++    secondary: { label: "Open community chat", href: "/chat" },
+   },
+   {
+     id: "support",
+@@ -303,6 +303,31 @@ export const LANDMARKS = [
+     primary: { label: "Compare support options", action: "support" },
+     secondary: { label: "Contribute code", href: "/dashboard/repos" },
+   },
++  {
++    id: "office",
++    label: "ForkMesh Office",
++    shortLabel: "Office",
++    eyebrow: "COLLABORATION / 14",
++    icon: "⌁",
++    color: "#9ef7c6",
++    position: [11, 0, -21],
++    summary:
++      "Meet collaborators through ForkMesh's existing encrypted channel system.",
++    metaphor:
++      "An open office lobby where the chat terminal becomes available after deliberate entry.",
++    reality:
++      "The office embeds the normal authorized chat client. Avatar position never grants room access or exposes private membership.",
++    status: "Encrypted chat available",
++    statusTone: "live",
++    bullets: [
++      "Guests can use only public World #general.",
++      "Registered users see only public and authorized private channels.",
++      "Messages, room keys, tokens, and attachments never enter world presence.",
++      "The hidden chat iframe disconnects after leaving the office.",
++    ],
++    primary: { label: "Walk to the office", action: "office" },
++    secondary: { label: "Open full chat", href: "/chat" },
++  },
+ ];
+ 
+ export const TOUR_STEPS = [
+@@ -331,6 +356,11 @@ export const TOUR_STEPS = [
+     title: "Trust stays inspectable",
+     copy: "Every metaphor has a technical panel. Scan results, mirror health, and reward visuals disclose their scope and limitations.",
+   },
++  {
++    landmark: "office",
++    title: "Collaboration has a place",
++    copy: "Enter the Office deliberately to use the same encrypted, authorization-aware chat available outside the World.",
++  },
+ ];
+ 
+ export const THEME_OPTIONS = [
+@@ -360,6 +390,7 @@ export const ACTIVITY_OPTIONS = [
+   { id: "viewing-repository", label: "Viewing a repository" },
+   { id: "reading-documentation", label: "Reading documentation" },
+   { id: "visiting-organization", label: "Visiting an organization" },
++  { id: "visiting-office", label: "Visiting the ForkMesh Office" },
+   { id: "browsing-code-visualization", label: "Browsing a code visualization" },
+ ];
+ 
+diff --git a/cloudflare_worker/public/world/world-office.js b/cloudflare_worker/public/world/world-office.js
+new file mode 100644
+index 000000000..19c481e3f
+--- /dev/null
++++ b/cloudflare_worker/public/world/world-office.js
+@@ -0,0 +1,200 @@
++export const OFFICE_ENTER_DISTANCE = 6.5;
++export const OFFICE_EXIT_DISTANCE = 7.5;
++const OFFICE_CHAT_PATH = "/chat?embed=office";
++const OFFICE_UNLOAD_DELAY_MS = 2000;
++
++export function nextOfficeZoneState(currentState, distance) {
++  const threshold = currentState === "nearby"
++    ? OFFICE_EXIT_DISTANCE
++    : OFFICE_ENTER_DISTANCE;
++  return Number.isFinite(distance) && distance <= threshold
++    ? "nearby"
++    : "distant";
++}
++
++function isTypingTarget(target) {
++  if (!(target instanceof Element)) return false;
++  return Boolean(
++    target.closest("input, textarea, select, button, [contenteditable='true']"),
++  );
++}
++
++export function createWorldOfficeController({
++  root,
++  world,
++  chatPath = OFFICE_CHAT_PATH,
++}) {
++  const prompt = root.querySelector("[data-world-office-prompt]");
++  const enterButton = root.querySelector("[data-world-office-enter]");
++  const panel = root.querySelector("[data-world-office-chat]");
++  const heading = root.querySelector("#world-office-chat-title");
++  const loading = root.querySelector("[data-world-office-loading]");
++  const frame = root.querySelector("[data-world-office-frame]");
++  let proximity = "distant";
++  let active = false;
++  let returnFocus = null;
++  let unloadTimer = null;
++  let frameSuspended = false;
++
++  const resolvedChatURL = new URL(chatPath, window.location.origin);
++  if (
++    resolvedChatURL.origin !== window.location.origin ||
++    resolvedChatURL.pathname !== "/chat" ||
++    resolvedChatURL.searchParams.get("embed") !== "office"
++  ) {
++    throw new Error("ForkMesh Office chat must use the same-origin /chat embed.");
++  }
++  const safeChatPath = `${resolvedChatURL.pathname}${resolvedChatURL.search}`;
++
++  function clearUnloadTimer() {
++    if (!unloadTimer) return;
++    window.clearTimeout(unloadTimer);
++    unloadTimer = null;
++  }
++
++  function renderPrompt() {
++    if (!prompt) return;
++    prompt.hidden = proximity !== "nearby" || active;
++  }
++
++  function setProximity(nextState) {
++    proximity = nextState === "nearby" ? "nearby" : "distant";
++    if (proximity === "distant" && active) collapse();
++    renderPrompt();
++  }
++
++  function focusOffice(trigger = null) {
++    if (trigger instanceof HTMLElement) returnFocus = trigger;
++    world.focusLandmark("office");
++  }
++
++  function enterOffice(trigger = null) {
++    if (proximity !== "nearby" || active) return false;
++    if (!world.enterOffice()) return false;
++    if (trigger instanceof HTMLElement) returnFocus = trigger;
++    else if (!returnFocus) returnFocus = enterButton;
++    clearUnloadTimer();
++    active = true;
++    if (panel) {
++      panel.dataset.open = "true";
++      panel.setAttribute("aria-hidden", "false");
++    }
++    if (loading) loading.hidden = false;
++    if (frameSuspended) {
++      frame?.removeAttribute("src");
++      frameSuspended = false;
++    }
++    if (frame && frame.getAttribute("src") !== safeChatPath) {
++      frame.setAttribute("src", safeChatPath);
++    }
++    renderPrompt();
++    window.requestAnimationFrame(() => heading?.focus());
++    return true;
++  }
++
++  function collapse() {
++    if (!active) return false;
++    active = false;
++    if (panel) {
++      panel.dataset.open = "false";
++      panel.setAttribute("aria-hidden", "true");
++    }
++    if (frame?.contentWindow && frame.hasAttribute("src")) {
++      frameSuspended = true;
++      frame.contentWindow.postMessage(
++        { type: "office-chat-suspend" },
++        window.location.origin,
++      );
++    }
++    clearUnloadTimer();
++    unloadTimer = window.setTimeout(() => {
++      frame?.removeAttribute("src");
++      frameSuspended = false;
++      unloadTimer = null;
++    }, OFFICE_UNLOAD_DELAY_MS);
++    renderPrompt();
++    const focusTarget = returnFocus?.isConnected ? returnFocus : enterButton;
++    window.requestAnimationFrame(() => focusTarget?.focus());
++    return true;
++  }
++
++  function onClick(event) {
++    const focusControl = event.target.closest("[data-world-office-focus]");
++    if (focusControl) {
++      event.preventDefault();
++      focusOffice(focusControl);
++      return;
++    }
++    const enterControl = event.target.closest("[data-world-office-enter]");
++    if (enterControl) {
++      event.preventDefault();
++      enterOffice(enterControl);
++      return;
++    }
++    if (event.target.closest("[data-world-office-close]")) {
++      event.preventDefault();
++      collapse();
++    }
++  }
++
++  function onKeyDown(event) {
++    if (event.key === "Escape" && active) {
++      event.preventDefault();
++      collapse();
++      return;
++    }
++    if (
++      event.key.toLowerCase() === "e" &&
++      proximity === "nearby" &&
++      !active &&
++      !event.repeat &&
++      !isTypingTarget(event.target)
++    ) {
++      event.preventDefault();
++      enterOffice(enterButton);
++    }
++  }
++
++  function onMessage(event) {
++    if (event.origin !== window.location.origin) return;
++    if (event.source !== frame.contentWindow) return;
++    const type = String(event.data?.type || "");
++    if (type === "office-chat-ready" && loading) loading.hidden = true;
++    if (type !== "office-chat-ready" && type !== "office-chat-room-changed") {
++      return;
++    }
++  }
++
++  function destroy() {
++    clearUnloadTimer();
++    root.removeEventListener("click", onClick);
++    window.removeEventListener("keydown", onKeyDown);
++    window.removeEventListener("message", onMessage);
++    if (frame?.contentWindow && frame.hasAttribute("src")) {
++      frame.contentWindow.postMessage(
++        { type: "office-chat-suspend" },
++        window.location.origin,
++      );
++    }
++    frame?.removeAttribute("src");
++  }
++
++  root.addEventListener("click", onClick);
++  window.addEventListener("keydown", onKeyDown);
++  window.addEventListener("message", onMessage);
++  renderPrompt();
++
++  return {
++    setProximity,
++    focusOffice,
++    enterOffice,
++    collapse,
++    destroy,
++    get active() {
++      return active;
++    },
++    get proximity() {
++      return proximity;
++    },
++  };
++}
+diff --git a/cloudflare_worker/public/world/world-scene.js b/cloudflare_worker/public/world/world-scene.js
+index e464a661f..4346e4446 100644
+--- a/cloudflare_worker/public/world/world-scene.js
++++ b/cloudflare_worker/public/world/world-scene.js
+@@ -5,6 +5,7 @@ import {
+   landmarkById,
+   worldClock,
+ } from "./world-data.js";
++import { nextOfficeZoneState } from "./world-office.js";
+ 
+ const WORLD_RADIUS = 36;
+ const PLAYER_SPEED = 6.2;
+@@ -1310,6 +1311,163 @@ function createSupportCenter(THREE, position, interactive, animated) {
+   return group;
+ }
+ 
++function createForkMeshOffice(THREE, position, interactive, animated) {
++  const group = new THREE.Group();
++  const concrete = makeMaterial(THREE, "#18231f", {
++    metalness: 0.08,
++    roughness: 0.88,
++  });
++  const structure = makeMaterial(THREE, "#163f32", {
++    metalness: 0.48,
++    roughness: 0.42,
++  });
++  const glass = makeMaterial(THREE, "#9ef7c6", {
++    transparent: true,
++    opacity: 0.42,
++    metalness: 0.08,
++    roughness: 0.22,
++  });
++  const wood = makeMaterial(THREE, "#7b5a38", {
++    roughness: 0.72,
++  });
++  const warm = makeMaterial(THREE, "#ffd18a", {
++    emissive: "#e28b35",
++    emissiveIntensity: 0.85,
++    roughness: 0.4,
++  });
++
++  const slab = new THREE.Mesh(
++    new THREE.BoxGeometry(8.4, 0.46, 7.4),
++    concrete,
++  );
++  slab.position.y = 0.23;
++  group.add(slab);
++
++  const rearWall = new THREE.Mesh(
++    new THREE.BoxGeometry(8.4, 5.7, 0.36),
++    concrete,
++  );
++  rearWall.position.set(0, 3.05, -3.45);
++  group.add(rearWall);
++
++  for (const x of [-4.02, 4.02]) {
++    const sideWall = new THREE.Mesh(
++      new THREE.BoxGeometry(0.36, 5.7, 7.1),
++      concrete,
++    );
++    sideWall.position.set(x, 3.05, 0);
++    group.add(sideWall);
++    const frontColumn = new THREE.Mesh(
++      new THREE.BoxGeometry(0.42, 6.3, 0.42),
++      structure,
++    );
++    frontColumn.position.set(x, 3.25, 3.3);
++    group.add(frontColumn);
++  }
++
++  const roof = new THREE.Mesh(
++    new THREE.BoxGeometry(8.7, 0.38, 7.5),
++    structure,
++  );
++  roof.position.y = 6.05;
++  group.add(roof);
++
++  for (const x of [-2.9, 2.9]) {
++    const window = new THREE.Mesh(
++      new THREE.BoxGeometry(1.9, 3.7, 0.12),
++      glass,
++    );
++    window.position.set(x, 3.15, 3.34);
++    group.add(window);
++  }
++
++  const reception = new THREE.Mesh(
++    new THREE.BoxGeometry(3.15, 1.18, 0.95),
++    wood,
++  );
++  reception.position.set(-1.9, 1.05, 1.35);
++  reception.rotation.y = -0.12;
++  group.add(reception);
++
++  const sharedTable = new THREE.Mesh(
++    new THREE.BoxGeometry(3.8, 0.28, 1.5),
++    wood,
++  );
++  sharedTable.position.set(0.65, 1.55, -0.65);
++  group.add(sharedTable);
++  for (const x of [-0.75, 2.05]) {
++    for (const z of [-1.05, -0.25]) {
++      const leg = new THREE.Mesh(
++        new THREE.BoxGeometry(0.18, 1.25, 0.18),
++        structure,
++      );
++      leg.position.set(x, 0.9, z);
++      group.add(leg);
++    }
++  }
++
++  const terminal = new THREE.Mesh(
++    new THREE.BoxGeometry(1.3, 0.82, 0.16),
++    warm,
++  );
++  terminal.position.set(0.65, 2.22, -0.78);
++  terminal.rotation.x = -0.12;
++  group.add(terminal);
++
++  const wallDisplay = new THREE.Mesh(
++    new THREE.BoxGeometry(3.5, 1.65, 0.14),
++    glass,
++  );
++  wallDisplay.position.set(1.6, 3.55, -3.22);
++  group.add(wallDisplay);
++
++  for (const x of [-2.55, 0, 2.55]) {
++    const light = new THREE.Mesh(
++      new THREE.BoxGeometry(1.2, 0.08, 0.22),
++      warm,
++    );
++    light.position.set(x, 5.72, 0.25);
++    group.add(light);
++  }
++
++  const signTexture = canvasTexture(THREE, 1024, 192, (context) => {
++    context.fillStyle = "#0b1713";
++    context.fillRect(0, 0, 1024, 192);
++    context.strokeStyle = "#9ef7c6";
++    context.lineWidth = 10;
++    context.strokeRect(8, 8, 1008, 176);
++    context.textAlign = "center";
++    context.textBaseline = "middle";
++    context.font = '800 72px "ForkMesh Mono", ui-monospace, monospace';
++    context.fillStyle = "#d9ffea";
++    context.fillText("FORKMESH OFFICE", 512, 96);
++  });
++  const sign = new THREE.Mesh(
++    new THREE.PlaneGeometry(6.4, 1.2),
++    new THREE.MeshBasicMaterial({
++      map: signTexture,
++      transparent: false,
++      toneMapped: false,
++    }),
++  );
++  sign.position.set(0, 6.15, 3.73);
++  group.add(sign);
++
++  group.position.set(...position);
++  group.userData.landmark = "office";
++  group.traverse((child) => {
++    if (!child.isMesh) return;
++    child.userData.landmark = "office";
++    interactive.push(child);
++  });
++  setShadows(group);
++  sign.castShadow = false;
++  animated.push((time) => {
++    terminal.material.emissiveIntensity = 0.72 + Math.sin(time * 0.002) * 0.13;
++  });
++  return group;
++}
++
+ function createSkyOffice(THREE, animated) {
+   const group = new THREE.Group();
+   const cloudMaterial = makeMaterial(THREE, "#d8edf2", {
+@@ -1584,6 +1742,7 @@ export function createWorldScene({
+   identity,
+   reducedMotion = false,
+   onLandmarkSelect = () => {},
++  onOfficeProximity = () => {},
+   onLocationChange = () => {},
+   onRegionChange = () => {},
+   onMovement = () => {},
+@@ -1697,6 +1856,7 @@ export function createWorldScene({
+     workshops: createCodeWorkshops,
+     broadcast: createBroadcastGarden,
+     support: createSupportCenter,
++    office: createForkMeshOffice,
+   };
+   LANDMARKS.forEach((landmark) => {
+     const object = landmarkFactories[landmark.id](
+@@ -1787,6 +1947,7 @@ export function createWorldScene({
+   let lastMovementEmit = 0;
+   let lastPosition = player.position.clone();
+   let cameraFocus = null;
++  let officeZoneState = "distant";
+   let pointerDown = false;
+   let clockOffset = 0;
+   const weather = createWeather(THREE, scene);
+@@ -1909,6 +2070,10 @@ export function createWorldScene({
+     if (
+       !["town-square", "east", "central", "west"].includes(currentSpace)
+     ) {
++      if (officeZoneState !== "distant") {
++        officeZoneState = "distant";
++        onOfficeProximity(officeZoneState);
++      }
+       return;
+     }
+     let nearest = null;
+@@ -1923,6 +2088,19 @@ export function createWorldScene({
+         distance = next;
+       }
+     });
++    const office = landmarkById("office");
++    const officeEntranceDistance = Math.hypot(
++      player.position.x - office.position[0],
++      player.position.z - (office.position[2] + 3.3),
++    );
++    const nextOfficeState = nextOfficeZoneState(
++      officeZoneState,
++      officeEntranceDistance,
++    );
++    if (nextOfficeState !== officeZoneState) {
++      officeZoneState = nextOfficeState;
++      onOfficeProximity(officeZoneState);
++    }
+     const nextLocation = distance < 7.5 ? nearest.label : "Town Square";
+     if (nextLocation !== currentLocation) {
+       currentLocation = nextLocation;
+@@ -2027,6 +2205,33 @@ export function createWorldScene({
+     hasMoveTarget = options.move !== false;
+   }
+ 
++  function enterOffice() {
++    if (officeZoneState !== "nearby") return false;
++    const office = landmarkById("office");
++    selectedLandmark = "office";
++    currentSpace = "town-square";
++    currentFloorY = 0.38;
++    cameraFocus = new THREE.Vector3(
++      office.position[0],
++      2.5,
++      office.position[2] - 0.4,
++    );
++    moveTarget.set(
++      office.position[0],
++      currentFloorY,
++      office.position[2] + 2.2,
++    );
++    hasMoveTarget = true;
++    if (reducedMotion) {
++      const target = cameraFocus.clone();
++      camera.position.copy(target.clone().add(
++        new THREE.Vector3(9.5, 8.2, 11.5),
++      ));
++      camera.lookAt(target);
++    }
++    return true;
++  }
++
+   function clearFocus() {
+     cameraFocus = null;
+   }
+@@ -2132,7 +2337,8 @@ export function createWorldScene({
+         CAMERA_OFFSET[2] * zoom,
+       ),
+     );
+-    camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
++    if (reducedMotion) camera.position.copy(desired);
++    else camera.position.lerp(desired, 1 - Math.pow(0.0008, delta));
+     camera.lookAt(target);
+   }
+ 
+@@ -3244,6 +3450,7 @@ export function createWorldScene({
+       const element = landmarkLabels.get(landmark.id);
+       const height =
+         landmark.id === "organizations" ? 10.2 :
++        landmark.id === "office" ? 8.1 :
+         landmark.id === "repositories" ? 7.6 :
+         landmark.id === "fountain" ? 6.9 : 6.5;
+       updateScreenLabel(THREE, object, element, camera, rect.width, rect.height, height);
+@@ -3301,6 +3508,7 @@ export function createWorldScene({
+     player,
+     renderer,
+     focusLandmark,
++    enterOffice,
+     clearFocus,
+     setTheme,
+     setClockOffset,
+diff --git a/cloudflare_worker/public/world/world.css b/cloudflare_worker/public/world/world.css
+index c7836746c..ab535a104 100644
+--- a/cloudflare_worker/public/world/world.css
++++ b/cloudflare_worker/public/world/world.css
+@@ -1320,75 +1320,107 @@ forkmesh-world {
+   padding: 24px 24px max(32px, var(--safe-bottom));
+ }
+ 
+-.world-chat-backdrop {
++.world-office-prompt {
+   position: absolute;
+-  z-index: 31;
+-  inset: 0;
+-  border: 0;
+-  background: rgb(0 0 0 / 0.62);
+-  opacity: 0;
+-  visibility: hidden;
+-  transition: opacity 180ms ease, visibility 180ms ease;
+-  pointer-events: none;
++  z-index: 28;
++  bottom: calc(var(--safe-bottom) + 84px);
++  left: 50%;
++  display: flex;
++  align-items: center;
++  gap: 14px;
++  width: max-content;
++  max-width: calc(100vw - var(--safe-left) - var(--safe-right));
++  border: 1px solid var(--world-line-strong);
++  background: rgb(7 17 15 / 0.96);
++  box-shadow: 0 18px 55px rgb(0 0 0 / 0.42);
++  padding: 10px;
++  transform: translateX(-50%);
+ }
+ 
+-.world-chat-backdrop[data-open="true"] {
+-  opacity: 1;
+-  visibility: visible;
+-  pointer-events: auto;
++.world-office-prompt[hidden] {
++  display: none;
++}
++
++.world-office-prompt p {
++  margin: 0 4px;
++  color: var(--world-copy);
++  font-size: 0.78rem;
++}
++
++.world-office-prompt p span {
++  color: var(--world-mint);
+ }
+ 
+-.world-chat {
++.world-office-prompt button {
++  min-height: 42px;
++  border: 1px solid var(--world-mint);
++  background: var(--world-mint);
++  color: var(--world-ink);
++  padding: 0 14px;
++  cursor: pointer;
++  font-weight: 700;
++}
++
++.world-office-prompt kbd {
++  margin-left: 8px;
++  border: 1px solid rgb(7 17 15 / 0.35);
++  padding: 2px 5px;
++  font-family: "ForkMesh Mono", monospace;
++  font-size: 0.62rem;
++}
++
++.world-office-chat {
+   position: absolute;
+   z-index: 32;
+-  top: max(18px, var(--safe-top));
+-  bottom: max(18px, var(--safe-bottom));
+-  left: 50%;
++  top: max(68px, calc(var(--safe-top) + 54px));
++  right: 0;
++  bottom: 0;
+   display: grid;
+   grid-template-rows: auto minmax(0, 1fr);
+-  width: min(960px, calc(100vw - 36px));
++  width: min(420px, calc(100vw - 24px));
++  min-width: 0;
+   overflow: hidden;
+-  border: 1px solid var(--world-line-strong);
++  border-top: 1px solid var(--world-line-strong);
++  border-left: 1px solid var(--world-line-strong);
+   background: #081511;
+-  box-shadow: 0 30px 100px rgb(0 0 0 / 0.55);
+-  transform: translate(-50%, 18px);
++  box-shadow: -22px 0 70px rgb(0 0 0 / 0.42);
++  transform: translateX(100%);
+   opacity: 0;
+   visibility: hidden;
+-  transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease;
++  transition: opacity 180ms ease, transform 220ms ease, visibility 220ms ease;
+   pointer-events: none;
+ }
+ 
+-.world-chat[data-open="true"] {
+-  transform: translate(-50%, 0);
++.world-office-chat[data-open="true"] {
++  transform: translateX(0);
+   opacity: 1;
+   visibility: visible;
+   pointer-events: auto;
+ }
+ 
+-.world-chat-heading {
++.world-office-chat__heading {
+   display: flex;
+-  align-items: start;
++  align-items: center;
+   justify-content: space-between;
+   gap: 18px;
++  min-width: 0;
+   border-bottom: 1px solid var(--world-line);
+   padding: 14px 18px;
+ }
+ 
+-.world-chat-heading h2 {
++.world-office-chat__heading > div {
++  min-width: 0;
++}
++
++.world-office-chat__heading h2 {
+   margin: 3px 0 0;
+   font-family: "ForkMesh Favorit", sans-serif;
+-  font-size: 1.65rem;
++  font-size: 1.35rem;
+   letter-spacing: -0.04em;
+ }
+ 
+-.world-chat-heading span {
+-  display: block;
+-  margin-top: 3px;
+-  color: var(--world-muted);
+-  font-size: 0.64rem;
+-}
+-
+-.world-chat-heading button {
++.world-office-chat__heading button {
++  flex: 0 0 auto;
+   width: 38px;
+   height: 38px;
+   border: 1px solid var(--world-line);
+@@ -1398,16 +1430,35 @@ forkmesh-world {
+   font-size: 1.1rem;
+ }
+ 
+-.world-chat-heading button:hover,
+-.world-chat-heading button:focus-visible {
++.world-office-chat__heading button:hover,
++.world-office-chat__heading button:focus-visible,
++.world-office-prompt button:focus-visible {
+   border-color: var(--world-mint);
+-  color: var(--world-mint);
+-  outline: none;
++  outline: 2px solid var(--world-mint);
++  outline-offset: 2px;
++}
++
++.world-office-chat__loading {
++  position: absolute;
++  z-index: 1;
++  top: 50%;
++  left: 50%;
++  margin: 0;
++  color: var(--world-muted);
++  transform: translate(-50%, -50%);
++  font-family: "ForkMesh Mono", monospace;
++  font-size: 0.68rem;
++  text-align: center;
++}
++
++.world-office-chat__loading[hidden] {
++  display: none;
+ }
+ 
+-.world-chat-frame {
++.world-office-chat__frame {
+   width: 100%;
+   height: 100%;
++  min-width: 0;
+   min-height: 0;
+   border: 0;
+   background: #081511;
+@@ -3051,18 +3102,39 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
+ }
+ 
+ @media (max-width: 720px) {
+-  .world-chat {
+-    top: var(--safe-top);
+-    bottom: var(--safe-bottom);
++  .world-office-chat {
++    top: auto;
++    right: 0;
++    bottom: 0;
++    left: 0;
+     width: 100%;
+-    border-right: 0;
++    max-width: none;
++    height: min(58svh, 560px);
++    padding-bottom: env(safe-area-inset-bottom);
++    border-top: 1px solid var(--world-line-strong);
+     border-left: 0;
++    transform: translateY(100%);
++  }
++
++  .world-office-chat[data-open="true"] {
++    transform: translateY(0);
+   }
+ 
+-  .world-chat-heading {
++  .world-office-chat__heading {
+     padding: 10px 12px;
+   }
+ 
++  .world-office-prompt {
++    bottom: calc(var(--safe-bottom) + 72px);
++    flex-direction: column;
++    gap: 8px;
++    width: min(310px, calc(100vw - var(--safe-left) - var(--safe-right)));
++  }
++
++  .world-office-prompt button {
++    width: 100%;
++  }
++
+   .world-topbar {
+     gap: 8px;
+   }
+@@ -3215,6 +3287,13 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
+   }
+ }
+ 
++@media (prefers-reduced-motion: reduce) {
++  .world-office-chat,
++  .world-office-prompt {
++    transition: none;
++  }
++}
++
+ /* Touch capability, not portrait width, determines whether an on-screen
+    movement pad is required. This keeps controls available on landscape phones
+    and tablets wider than the narrow-screen breakpoint. */
+diff --git a/cloudflare_worker/public/world/world.js b/cloudflare_worker/public/world/world.js
+index d3f0caf95..22df3ba24 100644
+--- a/cloudflare_worker/public/world/world.js
++++ b/cloudflare_worker/public/world/world.js
+@@ -15,6 +15,7 @@ import {
+   worldClock,
+ } from "./world-data.js";
+ import { buildRepositoryGraphEntities } from "./world-repository-graph.js";
++import { createWorldOfficeController } from "./world-office.js";
+ import { createWorldScene } from "./world-scene.js";
+ 
+ const THREE_MODULE_URL =
+@@ -1712,7 +1713,7 @@ function worldTemplate(identity, settings, mode) {
+         <button type="button" data-world-landmark="information"><span aria-hidden="true">i</span><span>Start</span></button>
+         <button type="button" data-world-landmark="repositories"><span aria-hidden="true">{ }</span><span>Code</span></button>
+         <button type="button" data-world-landmark="workshops"><span aria-hidden="true">⌘</span><span>Workshops</span></button>
+-        <a href="/dashboard/chat" data-world-chat-open><span aria-hidden="true">⌁</span><span>Chat</span></a>
++        <button type="button" data-world-office-focus aria-label="Visit ForkMesh Office"><span aria-hidden="true">⌁</span><span>Office</span></button>
+         <button type="button" data-world-landmark="support"><span aria-hidden="true">♥</span><span>Support</span></button>
+       </nav>
+ 
+@@ -1749,9 +1750,9 @@ function worldTemplate(identity, settings, mode) {
+               <span aria-hidden="true">◫</span><span>Alerts</span>
+               <strong data-world-notification-count aria-hidden="true" hidden>0</strong>
+             </button>
+-            <a class="world-top-link" href="/dashboard/chat" data-world-chat-open title="Open chat inside the World">
+-              <span aria-hidden="true">⌁</span><span>Chat</span>
+-            </a>
++            <button class="world-top-link" type="button" data-world-office-focus title="Visit ForkMesh Office" aria-label="Visit ForkMesh Office">
++              <span aria-hidden="true">⌁</span><span>Office</span>
++            </button>
+             <a class="world-top-link" href="/dashboard" title="Open operations console">
+               <span aria-hidden="true">▦</span><span>Console</span>
+             </a>
+@@ -1863,33 +1864,35 @@ function worldTemplate(identity, settings, mode) {
+           aria-hidden="true"
+         ></aside>
+ 
+-        <button
+-          class="world-chat-backdrop"
+-          type="button"
+-          data-world-chat-close
+-          aria-label="Close World chat"
+-          tabindex="-1"
+-        ></button>
+         <section
+-          class="world-chat"
+-          data-world-chat
+-          role="dialog"
+-          aria-modal="true"
+-          aria-labelledby="world-chat-title"
++          class="world-office-prompt"
++          data-world-office-prompt
++          aria-label="ForkMesh Office entrance"
++          hidden
++        >
++          <p><span aria-hidden="true">●</span> ForkMesh Office is open</p>
++          <button type="button" data-world-office-enter>
++            Enter ForkMesh Office <kbd>E</kbd>
++          </button>
++        </section>
++        <section
++          class="world-office-chat"
++          data-world-office-chat
++          aria-labelledby="world-office-chat-title"
+           aria-hidden="true"
+         >
+-          <header class="world-chat-heading">
++          <header class="world-office-chat__heading">
+             <div>
+-              <p class="world-eyebrow">LIVE COLLABORATION</p>
+-              <h2 id="world-chat-title">World chat</h2>
+-              <span>Chat stays inside ForkMesh World.</span>
++              <p class="world-eyebrow">ENCRYPTED WORKSPACE</p>
++              <h2 id="world-office-chat-title" tabindex="-1">ForkMesh Office</h2>
+             </div>
+-            <button type="button" data-world-chat-close aria-label="Close World chat">×</button>
++            <button type="button" data-world-office-close aria-label="Collapse ForkMesh Office chat">×</button>
+           </header>
++          <p class="world-office-chat__loading" data-world-office-loading role="status">Opening encrypted chat...</p>
+           <iframe
+-            class="world-chat-frame"
+-            data-world-chat-frame
+-            title="ForkMesh World chat"
++            class="world-office-chat__frame"
++            data-world-office-frame
++            title="ForkMesh Office chat"
+             sandbox="allow-forms allow-same-origin allow-scripts"
+             referrerpolicy="same-origin"
+           ></iframe>
+@@ -2012,7 +2015,7 @@ class ForkMeshWorld extends HTMLElement {
+     this.worldTicket = "";
+     this.worldTicketExpires = 0;
+     this.worldTicketTimer = 0;
+-    this.chatReturnFocus = null;
++    this.officeController = null;
+     const worldQuery = new URLSearchParams(location.search);
+     const requestedSpace = worldQuery.get("space") || "";
+     const requestedLandmark = worldQuery.get("landmark") || "";
+@@ -2106,6 +2109,11 @@ class ForkMeshWorld extends HTMLElement {
+         identity: publicIdentity(this.identity, this.settings),
+         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+         onLandmarkSelect: (id, meta = {}) => {
++          if (id === "office") {
++            this.closeLandmark();
++            this.officeController?.focusOffice();
++            return;
++          }
+           if (id === "repositories" && meta.graphNode) {
+             this.selectRepositoryGraphNode(meta.graphNode);
+             return;
+@@ -2116,10 +2124,17 @@ class ForkMeshWorld extends HTMLElement {
+           }
+           this.openLandmark(id);
+         },
++        onOfficeProximity: (state) => {
++          this.officeController?.setProximity(state);
++        },
+         onLocationChange: (label, id) => this.updateLocation(label, id),
+         onRegionChange: (region) => this.updateRegion(region),
+         onMovement: (movement) => this.handleMovement(movement),
+       });
++      this.officeController = createWorldOfficeController({
++        root: this,
++        world: this.world,
++      });
+       this.world.setTheme(this.settings.theme);
+       await Promise.allSettled([contextPromise, dataPromise]);
+       this.world.setClockOffset(this.serverOffset);
+@@ -2233,7 +2248,10 @@ class ForkMeshWorld extends HTMLElement {
+             This browser could not start the 3D renderer. Use the World Map to
+             inspect every district, or open the standard operations console.
+           </p>
+-          <a class="world-primary-action" href="/dashboard">Open operations console</a>
++          <div class="world-arrival-actions">
++            <a class="world-primary-action" href="/chat">Open ForkMesh chat</a>
++            <a class="world-secondary-action" href="/dashboard">Open operations console</a>
++          </div>
+         </div>
+       </div>`;
+   }
+@@ -3098,26 +3116,14 @@ class ForkMeshWorld extends HTMLElement {
+ 
+   bindUI() {
+     this.addEventListener("click", (event) => {
+-      const chatLink = event.target.closest(
+-        "[data-world-chat-open], a[href^='/dashboard/chat']",
+-      );
+-      if (chatLink) {
+-        event.preventDefault();
+-        this.openWorldChat(
+-          chatLink.getAttribute("href") ||
+-            chatLink.dataset.worldChatOpen ||
+-            "/dashboard/chat",
+-          chatLink,
+-        );
+-        return;
+-      }
+-      if (event.target.closest("[data-world-chat-close]")) {
+-        this.closeWorldChat();
+-        return;
+-      }
+       const landmarkButton = event.target.closest("[data-world-landmark]");
+       if (landmarkButton) {
+         const id = landmarkButton.dataset.worldLandmark;
++        if (id === "office") {
++          this.closeLandmark();
++          this.officeController?.focusOffice(landmarkButton);
++          return;
++        }
+         this.world?.focusLandmark(id);
+         this.openLandmark(id);
+         return;
+@@ -3508,9 +3514,7 @@ class ForkMeshWorld extends HTMLElement {
+ 
+     this.addEventListener("keydown", (event) => {
+       if (event.code !== "Escape") return;
+-      if (this.$("[data-world-chat]")?.dataset.open === "true") {
+-        this.closeWorldChat();
+-      } else if (this.$("[data-world-settings]")?.dataset.open === "true") {
++      if (this.$("[data-world-settings]")?.dataset.open === "true") {
+         this.toggleSettings(false);
+       } else if (this.$("[data-world-detail]")?.dataset.open === "true") {
+         this.closeLandmark();
+@@ -3867,6 +3871,7 @@ class ForkMeshWorld extends HTMLElement {
+       repositories: "viewing-repository",
+       workshops: "browsing-code-visualization",
+       organizations: "visiting-organization",
++      office: "visiting-office",
+       information: "reading-documentation",
+     }[id] || "exploring-town-square";
+     this.sendPresence({ type: "presence" });
+@@ -4387,7 +4392,7 @@ class ForkMeshWorld extends HTMLElement {
+                   String(member.name || "").toLowerCase() ===
+                   String(this.identity.name || "").toLowerCase(),
+               );
+-              const lobbyURL = `/dashboard/chat?org=${encodeURIComponent(name)}`;
++              const lobbyURL = "/chat";
+               const settingsURL = `/dashboard/settings/organizations?org=${encodeURIComponent(
+                 name,
+               )}`;
+@@ -5022,7 +5027,7 @@ class ForkMeshWorld extends HTMLElement {
+           <article><span>Community planets</span><strong>Planet atlas</strong><p>Achievement, event, and community-owned destinations with UTC schedules.</p><button type="button" data-world-travel="planet-atlas">Open planet atlas</button></article>
+           <article><span>Community space</span><strong>Space station</strong><p>Scheduled presentation, chat, and moderated media room.</p><button type="button" data-world-travel="space-station">Board shuttle</button></article>
+         </div>
+-        <p class="world-panel-footnote">Each portal moves your live avatar into the shared 3D destination. Signed-in collaborators can use its dedicated authenticated shared-key channel. The relay derives the default key and can read messages: <a href="/dashboard/chat?space=sky-campus">Sky campus</a> · <a href="/dashboard/chat?space=space-station">Space station</a> · <a href="/dashboard/chat?space=code-planet">Code planet</a> · <a href="/dashboard/chat?space=organization-region">Garden campus</a> · <a href="/dashboard/chat?space=planet-atlas">Planet atlas</a>.</p>
++        <p class="world-panel-footnote">Each portal moves your live avatar into the shared 3D destination. Encrypted conversation remains available through the authorization-aware <a href="/chat">ForkMesh chat</a>; avatar location never grants channel access.</p>
+       </section>`;
+   }
+ 
+@@ -5815,9 +5820,7 @@ class ForkMeshWorld extends HTMLElement {
+               : ""
+           }
+           <div class="world-detail-actions">
+-            <a class="world-primary-action" href="/dashboard/chat?space=${escapeHTML(
+-              this.mediaRoom.id || "broadcast",
+-            )}">Open moderated shared room</a>
++            <a class="world-primary-action" href="/chat">Open moderated shared room</a>
+           </div>
+           <p class="world-panel-footnote">${
+             this.mediaRoom.scheduledAt
+@@ -6949,12 +6952,6 @@ class ForkMeshWorld extends HTMLElement {
+     const resultId = String(
+       context.resultId || session?.results?.[0]?.id || "",
+     );
+-    const chatParams = new URLSearchParams({
+-      space: "workshop",
+-      repo: `${owner}/${repo}`,
+-      run: runId,
+-    });
+-    if (session?.id) chatParams.set("workshopSession", session.id);
+     const agentParams = new URLSearchParams({
+       workshopSession: String(session?.id || ""),
+       workshopResult: resultId,
+@@ -7120,9 +7117,7 @@ class ForkMeshWorld extends HTMLElement {
+         <div class="world-detail-actions">
+           ${
+             liveWorkshopChatAvailable
+-              ? `<a class="world-primary-action" href="/dashboard/chat?${escapeHTML(
+-                  chatParams.toString(),
+-                )}">Open live encrypted collaboration for this run</a>`
++              ? `<a class="world-primary-action" href="/chat">Open live encrypted collaboration for this run</a>`
+               : `<span class="world-status-pill">Private/unresolved workshop · use the authorized participant updates above; live browser chat fails closed.</span>`
+           }
+           ${
+@@ -7671,6 +7666,11 @@ class ForkMeshWorld extends HTMLElement {
+       );
+       return;
+     }
++    if (action === "office") {
++      this.closeLandmark();
++      this.officeController?.focusOffice();
++      return;
++    }
+     const messages = {
+       reward:
+         "Contributions are direct wallet-to-public-pool transfers. Reward plans are signed only in the instance owner’s local Qt client and shown as complete only after on-chain finality.",
+@@ -7704,56 +7704,6 @@ class ForkMeshWorld extends HTMLElement {
+     if (open) window.setTimeout(() => panel.querySelector("button")?.focus(), 80);
+   }
+ 
+-  openWorldChat(href = "/dashboard/chat", returnFocus = null) {
+-    let destination;
+-    try {
+-      destination = new URL(String(href || "/dashboard/chat"), location.origin);
+-    } catch (_) {
+-      return;
+-    }
+-    if (
+-      destination.origin !== location.origin ||
+-      !["/dashboard/chat", "/dashboard/chat/"].includes(destination.pathname)
+-    ) {
+-      return;
+-    }
+-    destination.searchParams.set("worldEmbed", "1");
+-    const panel = this.$("[data-world-chat]");
+-    const backdrop = this.$(".world-chat-backdrop");
+-    const frame = this.$("[data-world-chat-frame]");
+-    if (!panel || !backdrop || !frame) return;
+-    const frameURL = `${destination.pathname}${destination.search}`;
+-    if (frame.dataset.worldChatUrl !== frameURL) {
+-      frame.dataset.worldChatUrl = frameURL;
+-      frame.src = frameURL;
+-    }
+-    this.chatReturnFocus =
+-      returnFocus instanceof HTMLElement ? returnFocus : null;
+-    this.closeLandmark();
+-    this.toggleSettings(false);
+-    if (this.tourIndex >= 0) this.stopTour();
+-    panel.dataset.open = "true";
+-    panel.setAttribute("aria-hidden", "false");
+-    backdrop.dataset.open = "true";
+-    window.setTimeout(
+-      () => panel.querySelector("[data-world-chat-close]")?.focus(),
+-      80,
+-    );
+-  }
+-
+-  closeWorldChat() {
+-    const panel = this.$("[data-world-chat]");
+-    const backdrop = this.$(".world-chat-backdrop");
+-    if (panel) {
+-      panel.dataset.open = "false";
+-      panel.setAttribute("aria-hidden", "true");
+-    }
+-    if (backdrop) backdrop.dataset.open = "false";
+-    const returnFocus = this.chatReturnFocus;
+-    this.chatReturnFocus = null;
+-    window.setTimeout(() => returnFocus?.focus?.(), 0);
+-  }
+-
+   setTheme(theme) {
+     if (!THEME_OPTIONS.some((option) => option.id === theme)) return;
+     this.settings.theme = theme;
+@@ -8226,6 +8176,8 @@ class ForkMeshWorld extends HTMLElement {
+       this.socket?.close(1000, "page closed");
+     } catch (_) {}
+     this.stopRadio(false);
++    this.officeController?.destroy();
++    this.officeController = null;
+     this.world?.dispose();
+     this.world = null;
+     if (this.mode === "public") document.body.classList.remove("world-active");
+diff --git a/cloudflare_worker/src/world.py b/cloudflare_worker/src/world.py
+index cc3611cbc..b2a69eba2 100644
+--- a/cloudflare_worker/src/world.py
++++ b/cloudflare_worker/src/world.py
+@@ -44,7 +44,8 @@ WORLD_STATUS_VALUES = frozenset({
+ })
+ WORLD_ACTIVITY_VALUES = frozenset({
+     "browsing-code-visualization", "exploring-town-square", "hidden",
+-    "reading-documentation", "viewing-repository", "visiting-organization",
++    "reading-documentation", "viewing-repository", "visiting-office",
++    "visiting-organization",
+ })
+ WORLD_DOOR_VALUES = frozenset({"closed", "knock", "open"})
+ WORLD_EMOTE_VALUES = frozenset({"celebrate", "idea", "wave"})
+diff --git a/cloudflare_worker/tests/test_chat_office_embed_frontend.py b/cloudflare_worker/tests/test_chat_office_embed_frontend.py
+new file mode 100644
+index 000000000..39b93bbf4
+--- /dev/null
++++ b/cloudflare_worker/tests/test_chat_office_embed_frontend.py
+@@ -0,0 +1,68 @@
++#!/usr/bin/env python3
++"""Contracts for the compact ForkMesh Office encrypted chat embed."""
++
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++HTML = (ROOT / "public" / "chat.html").read_text(encoding="utf-8")
++CHAT = (ROOT / "public" / "chat.js").read_text(encoding="utf-8")
++
++
++def test_office_embed_is_selected_before_first_paint():
++    assert 'dataset.chatEmbed = "office"' in HTML
++    assert 'chatQuery.get("embed") === "office"' in CHAT
++    assert 'html[data-chat-embed="office"]' in HTML
++
++
++def test_office_embed_keeps_chat_tools_and_hides_full_page_chrome():
++    for selector in (
++        ".chat-site-header",
++        ".chat-people-pane",
++        ".chat-e2e-note",
++        ".chat-admin-action",
++        "#chat-channel-dialog",
++    ):
++        assert f'html[data-chat-embed="office"] {selector}' in HTML
++    for required in (
++        'class="chat-rooms-pane"',
++        'class="chat-main-pane"',
++        'id="chat-status"',
++        'id="chat-log"',
++        'id="chat-input"',
++        'id="chat-attachment-input"',
++        'id="chat-send"',
++        'input.addEventListener("paste"',
++    ):
++        assert required in HTML or required in CHAT
++
++
++def test_office_embed_suspends_hidden_socket_and_notifies_parent():
++    assert 'type: "office-chat-ready"' in CHAT
++    assert 'message.type !== "office-chat-suspend"' in CHAT
++    assert "chatSuspended" in CHAT
++    assert "if (chatSuspended) return" in CHAT
++    assert "event.origin !== window.location.origin" in CHAT
++    assert "event.source !== window.parent" in CHAT
++
++
++def test_office_embed_exposes_full_management_only_through_top_page():
++    assert 'id="chat-office-manage"' in HTML
++    assert 'target="_top"' in HTML
++    assert "Manage channels in full chat" in HTML
++    assert "isOfficeEmbed && userSession()?.isAdmin" in CHAT
++
++
++def test_office_embed_has_actionable_session_and_relay_failures():
++    assert (
++        "Your session expired. Log in again to use authorized channels."
++        in CHAT
++    )
++    assert "Chat relay unavailable. Try again." in CHAT
++    assert 'id="chat-office-login"' in HTML
++    assert 'id="chat-office-retry"' in HTML
++    request = CHAT[
++        CHAT.index("async function privateChannelRequest("):
++        CHAT.index("async function fetchRoomAccess(")
++    ]
++    assert 'response.status === 401 ? "auth"' in request
+diff --git a/cloudflare_worker/tests/test_world_backend.py b/cloudflare_worker/tests/test_world_backend.py
+index 475324144..2c3f149a6 100644
+--- a/cloudflare_worker/tests/test_world_backend.py
++++ b/cloudflare_worker/tests/test_world_backend.py
+@@ -282,6 +282,16 @@ def test_activity_is_generalized_allowlisted_and_never_accepts_urls():
+         assert hidden["activityCategory"] == "hidden"
+ 
+ 
++def test_world_presence_allows_the_consent_aware_office_activity():
++    current = world.default_presence("peer", 1000)
++    _, result = world.sanitize_message({
++        "type": "presence",
++        "activityCategory": "visiting-office",
++    }, current, 2000)
++
++    assert result["activityCategory"] == "visiting-office"
++
++
+ def test_public_door_state_is_explicit_and_allowlisted():
+     current = world.default_presence("peer", 1000)
+     assert current["publicDoor"] == "closed"
+diff --git a/cloudflare_worker/tests/test_world_frontend.py b/cloudflare_worker/tests/test_world_frontend.py
+index 2422d1e3e..1374abc2b 100644
+--- a/cloudflare_worker/tests/test_world_frontend.py
++++ b/cloudflare_worker/tests/test_world_frontend.py
+@@ -103,6 +103,19 @@ def test_world_contains_the_initial_city_districts_and_shared_clock():
+         assert f'id: "{theme}"' in DATA
+ 
+ 
++def test_forkmesh_office_is_a_navigable_world_landmark():
++    assert 'id: "office"' in DATA
++    assert 'label: "ForkMesh Office"' in DATA
++    assert 'shortLabel: "Office"' in DATA
++    assert "position: [11, 0, -21]" in DATA
++    assert 'id: "visiting-office"' in DATA
++
++
++def test_static_world_fallback_links_to_chat():
++    assert 'href="/chat"' in INDEX
++    assert "Open ForkMesh chat" in INDEX
++
++
+ def test_scene_builds_playable_landmarks_and_badged_avatars():
+     for builder in (
+         "createAvatar",
+@@ -237,7 +250,6 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
+     assert "function playRewardEvent" in SCENE
+     assert "syncOperatorBelt" in SCENE
+     assert "this.inactivePlayers" in APP
+-    assert "/dashboard/chat?space=sky-campus" in APP
+     assert "SPACE_CHANNELS" in DASHBOARD_CHAT
+     for channel in (
+         "#world-sky-campus",
+@@ -259,19 +271,20 @@ def test_world_has_consent_aware_activity_events_workshops_and_media():
+     assert "ice5.somafm.com" not in DATA
+ 
+ 
+-def test_chat_opens_inside_the_world_without_popup_permission():
+-    assert "data-world-chat-open" in APP
+-    assert "data-world-chat-frame" in APP
+-    assert 'role="dialog"' in APP
++def test_chat_opens_only_through_the_spatial_forkmesh_office():
++    assert "data-world-office-focus" in APP
++    assert "data-world-office-enter" in APP
++    assert "data-world-office-chat" in APP
++    assert "data-world-office-frame" in APP
++    assert "Visit ForkMesh Office" in APP
++    assert "ForkMesh Office chat" in APP
++    assert 'office: "visiting-office"' in APP
++    assert "/chat?embed=office" not in APP
++    assert "data-world-chat-open" not in APP
++    assert "data-world-chat-frame" not in APP
++    assert "/dashboard/chat" not in APP
+     assert 'sandbox="allow-forms allow-same-origin allow-scripts"' in APP
+     assert "allow-popups" not in APP
+-    assert "openWorldChat(" in APP
+-    assert "closeWorldChat()" in APP
+-    assert "destination.origin !== location.origin" in APP
+-    assert '["/dashboard/chat", "/dashboard/chat/"]' in APP
+-    assert 'destination.searchParams.set("worldEmbed", "1")' in APP
+-    assert 'a[href^=\'/dashboard/chat\']' in APP
+-    assert 'href="/dashboard/chat" target="_blank"' not in APP
+     assert 'playMode: "external"' in DATA
+     assert "does not embed, restream, record" in APP
+     for media_feature in (
+diff --git a/cloudflare_worker/tests/test_world_office_frontend.py b/cloudflare_worker/tests/test_world_office_frontend.py
+new file mode 100644
+index 000000000..2deaa9d4b
+--- /dev/null
++++ b/cloudflare_worker/tests/test_world_office_frontend.py
+@@ -0,0 +1,108 @@
++#!/usr/bin/env python3
++"""Contracts for the spatial ForkMesh Office chat controller."""
++
++import json
++from pathlib import Path
++import re
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[1]
++OFFICE_PATH = ROOT / "public" / "world" / "world-office.js"
++SCENE_PATH = ROOT / "public" / "world" / "world-scene.js"
++
++
++def office_source():
++    return OFFICE_PATH.read_text(encoding="utf-8") if OFFICE_PATH.exists() else ""
++
++
++def test_office_controller_module_exists():
++    assert OFFICE_PATH.exists()
++
++
++def test_office_proximity_uses_enter_and_exit_hysteresis():
++    if not OFFICE_PATH.exists():
++        return
++    script = f"""
++      import {{ nextOfficeZoneState }} from {json.dumps(OFFICE_PATH.as_uri())};
++      process.stdout.write(JSON.stringify([
++        nextOfficeZoneState("distant", 6.6),
++        nextOfficeZoneState("distant", 6.5),
++        nextOfficeZoneState("nearby", 7.4),
++        nextOfficeZoneState("nearby", 7.6),
++      ]));
++    """
++    result = subprocess.run(
++        ["node", "--input-type=module", "-e", script],
++        check=True,
++        text=True,
++        capture_output=True,
++    )
++    assert json.loads(result.stdout) == [
++        "distant",
++        "nearby",
++        "nearby",
++        "distant",
++    ]
++
++
++def test_office_controller_validates_bridge_and_unloads_hidden_chat():
++    source = office_source()
++    if not source:
++        return
++    assert 'const OFFICE_CHAT_PATH = "/chat?embed=office"' in source
++    assert "event.origin !== window.location.origin" in source
++    assert "event.source !== frame.contentWindow" in source
++    assert 'type: "office-chat-suspend"' in source
++    assert "window.setTimeout" in source
++    assert "2000" in source
++
++    bridge_objects = re.findall(
++        r"postMessage\(\s*(\{.*?\})\s*,",
++        source,
++        flags=re.DOTALL,
++    )
++    assert bridge_objects
++    bridge_text = "\n".join(bridge_objects)
++    for forbidden in (
++        "plaintext",
++        "roomKey",
++        "token",
++        "attachment",
++        "privateChannelId",
++    ):
++        assert forbidden not in bridge_text
++
++
++def test_office_controller_exposes_deliberate_entry_lifecycle():
++    source = office_source()
++    if not source:
++        return
++    for contract in (
++        "export function createWorldOfficeController",
++        "function setProximity",
++        "function focusOffice",
++        "function enterOffice",
++        "function collapse",
++        "function destroy",
++        'world.focusLandmark("office")',
++        "world.enterOffice()",
++    ):
++        assert contract in source
++
++
++def test_reentry_reloads_a_chat_frame_suspended_during_the_grace_period():
++    source = office_source()
++    assert "let frameSuspended = false" in source
++    assert "if (frameSuspended)" in source
++    assert "frameSuspended = true" in source
++
++
++def test_world_scene_builds_and_reports_the_interactive_office():
++    source = SCENE_PATH.read_text(encoding="utf-8")
++    assert "function createForkMeshOffice(" in source
++    assert "office: createForkMeshOffice" in source
++    assert 'userData.landmark = "office"' in source
++    assert "onOfficeProximity" in source
++    assert "enterOffice()" in source
++    assert 'fillText("FORKMESH OFFICE"' in source

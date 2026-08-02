@@ -1,0 +1,371 @@
+diff --git a/cloudflare_worker/public/index.html b/cloudflare_worker/public/index.html
+index 76f6715c..32a5ef8f 100644
+--- a/cloudflare_worker/public/index.html
++++ b/cloudflare_worker/public/index.html
+@@ -1661,6 +1661,137 @@
+         right: max(1rem, calc(50% - 31rem));
+       }
+ 
++      #support-forkmesh {
++        position: relative;
++        scroll-margin-top: 6rem;
++        padding: 1rem 1rem 4rem;
++      }
++
++      #support-forkmesh .support-mission-shell {
++        width: min(100%, 72rem);
++        margin-inline: auto;
++      }
++
++      #support-forkmesh .support-mission-card {
++        position: relative;
++        isolation: isolate;
++        display: grid;
++        grid-template-columns: minmax(0, 1fr);
++        overflow: hidden;
++        border: 1px solid rgba(134, 239, 172, 0.28);
++        border-radius: 1.5rem;
++        padding: clamp(1.5rem, 4vw, 3.25rem);
++        background: #0b110d;
++        background-image: radial-gradient(circle at 0% 12%, rgba(34, 197, 94, 0.22), transparent 38%);
++        box-shadow:
++          inset 0 1px 0 rgba(255, 255, 255, 0.15),
++          inset 0 1.5rem 3rem rgba(134, 239, 172, 0.025),
++          0 1.25rem 3rem rgba(0, 0, 0, 0.52);
++      }
++
++      #support-forkmesh .support-mission-card::before {
++        content: "";
++        position: absolute;
++        inset: 0;
++        z-index: -1;
++        pointer-events: none;
++        background: url("/noisy-background.avif");
++        background-size: 270px 270px;
++        opacity: 0.1;
++        mix-blend-mode: soft-light;
++      }
++
++      #support-forkmesh .support-mission-copy {
++        position: relative;
++        z-index: 1;
++        min-width: 0;
++      }
++
++      #support-forkmesh .support-mission-kicker {
++        margin: 0;
++        color: #c9f7d8;
++        font-size: 0.68rem;
++        font-weight: 700;
++        letter-spacing: 0.13em;
++        text-transform: uppercase;
++      }
++
++      #support-forkmesh h2 {
++        margin: 0.8rem 0 0;
++        max-width: 38rem;
++        color: #fff;
++        font-family: var(--landing-hero-font);
++        font-size: clamp(2rem, 4vw, 3.2rem);
++        font-synthesis: none;
++        letter-spacing: -0.045em;
++        line-height: 1.03;
++      }
++
++      #support-forkmesh .support-mission-story {
++        color: rgba(238, 236, 247, 0.78);
++        font-family: var(--landing-body-font);
++        font-size: 0.95rem;
++        line-height: 1.6;
++      }
++
++      #support-forkmesh .support-mission-story {
++        max-width: 38rem;
++        margin: 1.1rem 0 0;
++      }
++
++      #support-forkmesh .support-mission-story + .support-mission-story {
++        margin-top: 0.75rem;
++      }
++
++      #support-forkmesh .support-mission-actions {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 0.75rem;
++        margin-top: 1.5rem;
++      }
++
++      #support-forkmesh .support-mission-cta {
++        display: inline-flex;
++        align-items: center;
++        justify-content: center;
++        min-height: 2.75rem;
++        border-radius: 0.7rem;
++        padding: 0.7rem 1rem;
++        background: #fff;
++        color: #161020;
++        font-family: var(--landing-heading-font);
++        font-size: 0.84rem;
++        font-weight: 700;
++        text-decoration: none;
++        transition: transform 160ms ease, background-color 160ms ease;
++      }
++
++      #support-forkmesh .support-mission-cta:hover {
++        transform: translateY(-1px);
++        background: #f4fff7;
++      }
++
++      #support-forkmesh .support-mission-secondary {
++        display: inline-flex;
++        align-items: center;
++        justify-content: center;
++        min-height: 2.75rem;
++        border: 1px solid rgba(255, 255, 255, 0.24);
++        border-radius: 0.7rem;
++        padding: 0.7rem 1rem;
++        color: rgba(255, 255, 255, 0.9);
++        font-family: var(--landing-heading-font);
++        font-size: 0.84rem;
++        font-weight: 700;
++        text-decoration: none;
++        transition: border-color 160ms ease, background-color 160ms ease;
++      }
++
++      #support-forkmesh .support-mission-secondary:hover {
++        border-color: rgba(255, 255, 255, 0.48);
++        background: rgba(255, 255, 255, 0.08);
++      }
++
+       @media (max-width: 768px) {
+         #faq .faq-title {
+           font-size: 3rem;
+@@ -1803,6 +1934,25 @@
+           justify-content: center;
+           gap: 0.35rem 0;
+         }
++
++        #support-forkmesh {
++          padding: 0 1.25rem 4rem;
++        }
++
++        #support-forkmesh .support-mission-card {
++          border-radius: 1.25rem;
++          padding: 1.5rem;
++        }
++
++        #support-forkmesh h2 {
++          font-size: clamp(2rem, 10vw, 2.7rem);
++        }
++
++        #support-forkmesh .support-mission-story {
++          font-size: 0.94rem;
++          line-height: 1.58;
++        }
++
+       }
+ 
+       @media (max-width: 420px) {
+@@ -2922,6 +3072,34 @@
+         </section>
+       </div>
+ 
++      <section id="support-forkmesh" aria-labelledby="support-forkmesh-title">
++        <div class="support-mission-shell">
++          <div class="support-mission-card">
++            <div class="support-mission-copy">
++              <p class="support-mission-kicker">Support ForkMesh</p>
++              <h2 id="support-forkmesh-title">
++                Help us keep source code alive across machines people control.
++              </h2>
++              <p class="support-mission-story">
++                ForkMesh started after Kaif had 65+ merged open-source contributions become hard to access when a long-running organization was flagged and became unavailable almost overnight.
++              </p>
++              <p class="support-mission-story">
++                Kaif and Jett started ForkMesh so source-code history, repo mirrors, and collaboration records do not have to depend on one fragile place.
++              </p>
++              <div class="support-mission-actions">
++                <a
++                  class="support-mission-cta"
++                  href="https://www.patreon.com/16434219/join"
++                  target="_blank"
++                  rel="noreferrer"
++                >Support ForkMesh on Patreon</a>
++                <a class="support-mission-secondary" href="/dashboard">Browse Instance</a>
++              </div>
++            </div>
++          </div>
++        </div>
++      </section>
++
+       <section id="faq" class="py-16 md:py-24">
+         <div class="mx-auto w-full px-4 md:px-6">
+           <div class="mx-auto max-w-xl text-center">
+diff --git a/cloudflare_worker/tests/test_feature_pricing_section.py b/cloudflare_worker/tests/test_feature_pricing_section.py
+index c71036d4..dae12eeb 100644
+--- a/cloudflare_worker/tests/test_feature_pricing_section.py
++++ b/cloudflare_worker/tests/test_feature_pricing_section.py
+@@ -34,7 +34,7 @@ class _VisibleMediaParser(HTMLParser):
+ 
+ def _pricing_section():
+     start = INDEX_HTML.index('<section id="pricing"')
+-    end = INDEX_HTML.index('<section id="faq"', start)
++    end = INDEX_HTML.index('<section id="support-forkmesh"', start)
+     return INDEX_HTML[start:end]
+ 
+ 
+diff --git a/cloudflare_worker/tests/test_index_pricing_section.py b/cloudflare_worker/tests/test_index_pricing_section.py
+index 344dcefd..c3a656ad 100644
+--- a/cloudflare_worker/tests/test_index_pricing_section.py
++++ b/cloudflare_worker/tests/test_index_pricing_section.py
+@@ -10,7 +10,7 @@ INDEX_HTML = (PUBLIC / "index.html").read_text(encoding="utf-8")
+ 
+ def _pricing_region() -> str:
+     start = INDEX_HTML.index('<div class="pattern-rails relative w-full">')
+-    end = INDEX_HTML.index('<section id="faq"', start)
++    end = INDEX_HTML.index('<section id="support-forkmesh"', start)
+     return INDEX_HTML[start:end]
+ 
+ 
+diff --git a/cloudflare_worker/tests/test_support_forkmesh_section.py b/cloudflare_worker/tests/test_support_forkmesh_section.py
+new file mode 100644
+index 00000000..21404884
+--- /dev/null
++++ b/cloudflare_worker/tests/test_support_forkmesh_section.py
+@@ -0,0 +1,136 @@
++#!/usr/bin/env python3
++"""Static contracts for the ForkMesh Patreon support section."""
++
++from pathlib import Path
++
++
++PUBLIC = Path(__file__).resolve().parents[1] / "public"
++INDEX_HTML = (PUBLIC / "index.html").read_text(encoding="utf-8")
++
++
++def _support_section() -> str:
++    start = INDEX_HTML.index('<section id="support-forkmesh"')
++    end = INDEX_HTML.index('<section id="faq"', start)
++    return INDEX_HTML[start:end]
++
++
++def _mobile_styles() -> str:
++    start = INDEX_HTML.rindex("@media (max-width: 768px)")
++    end = INDEX_HTML.index("@media (max-width: 420px)", start)
++    return INDEX_HTML[start:end]
++
++
++def _support_card_styles() -> str:
++    start = INDEX_HTML.index("#support-forkmesh .support-mission-card {")
++    end = INDEX_HTML.index("#support-forkmesh .support-mission-card::before {", start)
++    return INDEX_HTML[start:end]
++
++
++def _support_cta_styles() -> str:
++    start = INDEX_HTML.index("#support-forkmesh .support-mission-cta {")
++    end = INDEX_HTML.index("#support-forkmesh .support-mission-cta:hover {", start)
++    return INDEX_HTML[start:end]
++
++
++def _support_actions_styles() -> str:
++    start = INDEX_HTML.index("#support-forkmesh .support-mission-actions {")
++    end = INDEX_HTML.index("#support-forkmesh .support-mission-cta {", start)
++    return INDEX_HTML[start:end]
++
++
++def test_support_section_sits_after_pricing_and_before_faq():
++    support_start = INDEX_HTML.index('<section id="support-forkmesh"')
++    pricing_start = INDEX_HTML.index('<section id="pricing" class="forkmesh">')
++    faq_start = INDEX_HTML.index('<section id="faq"', pricing_start)
++
++    assert pricing_start < support_start < faq_start
++    assert '</section>\n      </div>\n\n      <section id="support-forkmesh"' in INDEX_HTML
++
++
++def test_support_section_keeps_the_mission_and_a_minimal_safe_cta():
++    support = _support_section()
++
++    for text in (
++        "Help us keep source code alive across machines people control.",
++        "65+ merged open-source contributions",
++        "flagged and became unavailable almost overnight",
++        "Kaif and Jett started ForkMesh",
++        "Support ForkMesh on Patreon",
++        "Browse Instance",
++        'href="https://www.patreon.com/16434219/join"',
++        'href="/dashboard"',
++        'target="_blank"',
++        'rel="noreferrer"',
++    ):
++        assert text in support
++
++    assert 'class="support-mission-action"' not in support
++    assert "Support is optional, but it helps us build faster and stay focused." not in support
++    assert '<div class="support-mission-actions">' in support
++
++    for removed_text in (
++        "desktop node",
++        "local Git mirroring",
++        "repo browsing",
++        "signed collaboration flows",
++        "self-hosted infrastructure",
++        "source code should not have one fragile heartbeat",
++        "Local Git mirrors",
++        "Self-hosted nodes",
++        "Signed collaboration flows",
++        "Open docs and protocol work",
++    ):
++        assert removed_text not in support
++
++
++def test_support_section_uses_scoped_responsive_card_styling():
++    for marker in (
++        "#support-forkmesh {",
++        "scroll-margin-top: 6rem;",
++        "#support-forkmesh .support-mission-card {",
++        "#support-forkmesh .support-mission-card::before {",
++        "#support-forkmesh .support-mission-actions {",
++        "#support-forkmesh .support-mission-secondary {",
++        "rgba(34, 197, 94, 0.22)",
++        "#support-forkmesh .support-mission-cta {\n        display: inline-flex;",
++        "background: #fff;",
++        "font-family: var(--landing-hero-font);",
++        "font-family: var(--landing-body-font);",
++        "font-family: var(--landing-heading-font);",
++    ):
++        assert marker in INDEX_HTML
++
++    for removed_marker in (
++        "#support-forkmesh .support-mission-funding {",
++        "#support-forkmesh .support-mission-focus {",
++        "#support-forkmesh .support-mission-action {",
++        "#support-forkmesh .support-mission-note {",
++    ):
++        assert removed_marker not in INDEX_HTML
++
++    card_styles = _support_card_styles()
++    assert card_styles.count("gradient(") == 1
++    assert "background: #0b110d;" in card_styles
++    assert "grid-template-columns: minmax(0, 1fr);" in card_styles
++
++    cta_styles = _support_cta_styles()
++    assert "margin-top" not in cta_styles
++    assert "box-shadow" not in cta_styles
++
++    assert "margin-top: 1.5rem;" in _support_actions_styles()
++
++    mobile = _mobile_styles()
++    for marker in (
++        "#support-forkmesh .support-mission-card {",
++        "grid-template-columns: minmax(0, 1fr);",
++    ):
++        assert marker in mobile
++
++    assert "#support-forkmesh .support-mission-cta {" not in mobile
++
++
++def test_support_section_avoids_replacement_and_anti_platform_framing():
++    support = _support_section().lower()
++
++    for prohibited in ("replace", "replacement", "anti-platform", "competitor"):
++        assert prohibited not in support

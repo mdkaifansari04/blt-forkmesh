@@ -1,0 +1,153 @@
+diff --git a/qt_client/src/CodexAppServerSession.cpp b/qt_client/src/CodexAppServerSession.cpp
+index 976c3c92b..bc8ec87f1 100644
+--- a/qt_client/src/CodexAppServerSession.cpp
++++ b/qt_client/src/CodexAppServerSession.cpp
+@@ -3,6 +3,9 @@
+ #include "AgentJail.h"
+ 
+ #include <QCoreApplication>
++#include <QDir>
++#include <QFile>
++#include <QFileInfo>
+ #include <QJsonDocument>
+ #include <QJsonParseError>
+ #include <QProcess>
+@@ -56,7 +59,48 @@ QString sandboxForMode(const QString &mode)
+                : QStringLiteral("workspace-write");
+ }
+ 
+-QJsonObject sandboxPolicyForMode(const QString &mode)
++QStringList gitMetadataRoots(const QString &cwd)
++{
++    // A linked worktree's .git is a file which points outside cwd.  Git needs
++    // to write both that per-worktree directory (index.lock, HEAD.lock) and
++    // its common directory (refs, objects) when committing.  Allow only those
++    // resolved metadata directories; the rest of the checkout remains covered
++    // by the ordinary workspace-write sandbox.
++    const QFileInfo dotGit(QDir(cwd).filePath(QStringLiteral(".git")));
++    if (!dotGit.isFile())
++        return {};
++
++    QFile gitFile(dotGit.absoluteFilePath());
++    if (!gitFile.open(QIODevice::ReadOnly | QIODevice::Text))
++        return {};
++    const QString line = QString::fromUtf8(gitFile.readLine()).trimmed();
++    const QString gitdirPrefix = QStringLiteral("gitdir:");
++    if (!line.startsWith(gitdirPrefix, Qt::CaseInsensitive))
++        return {};
++
++    QString gitDir = line.mid(gitdirPrefix.size()).trimmed();
++    if (QDir::isRelativePath(gitDir))
++        gitDir = QDir(dotGit.absolutePath()).absoluteFilePath(gitDir);
++    gitDir = QFileInfo(gitDir).canonicalFilePath();
++    if (gitDir.isEmpty())
++        return {};
++
++    QStringList roots{gitDir};
++    QFile commonFile(QDir(gitDir).filePath(QStringLiteral("commondir")));
++    if (!commonFile.open(QIODevice::ReadOnly | QIODevice::Text))
++        return roots;
++    QString commonDir = QString::fromUtf8(commonFile.readLine()).trimmed();
++    if (commonDir.isEmpty())
++        return roots;
++    if (QDir::isRelativePath(commonDir))
++        commonDir = QDir(gitDir).absoluteFilePath(commonDir);
++    commonDir = QFileInfo(commonDir).canonicalFilePath();
++    if (!commonDir.isEmpty() && commonDir != gitDir)
++        roots.append(commonDir);
++    return roots;
++}
++
++QJsonObject sandboxPolicyForMode(const QString &mode, const QString &cwd)
+ {
+     if (normalizedMode(mode).contains(QStringLiteral("plan"))) {
+         return QJsonObject{{QStringLiteral("type"), QStringLiteral("readOnly")},
+@@ -64,7 +108,8 @@ QJsonObject sandboxPolicyForMode(const QString &mode)
+     }
+     return QJsonObject{
+         {QStringLiteral("type"), QStringLiteral("workspaceWrite")},
+-        {QStringLiteral("writableRoots"), QJsonArray()},
++        {QStringLiteral("writableRoots"),
++         QJsonArray::fromStringList(gitMetadataRoots(cwd))},
+         {QStringLiteral("networkAccess"), false},
+         {QStringLiteral("excludeTmpdirEnvVar"), false},
+         {QStringLiteral("excludeSlashTmp"), false}};
+@@ -676,7 +721,7 @@ void CodexAppServerSession::beginTurn(const QString &text)
+                        {QStringLiteral("approvalPolicy"),
+                         approvalPolicyForMode(m_mode)},
+                        {QStringLiteral("sandboxPolicy"),
+-                        sandboxPolicyForMode(m_mode)}};
++                        sandboxPolicyForMode(m_mode, m_cwd)}};
+     if (!m_model.isEmpty())
+         params.insert(QStringLiteral("model"), m_model);
+     if (!m_effort.isEmpty())
+diff --git a/qt_client/tests/test_codex_app_server.cpp b/qt_client/tests/test_codex_app_server.cpp
+index af4aabdbd..2ddd95d20 100644
+--- a/qt_client/tests/test_codex_app_server.cpp
++++ b/qt_client/tests/test_codex_app_server.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include <QCoreApplication>
+ #include <QDebug>
++#include <QDir>
+ #include <QElapsedTimer>
+ #include <QEventLoop>
+ #include <QFile>
+@@ -1146,6 +1147,49 @@ void runModeMappingTest(const QString &executable, const QString &mode,
+                          .arg(mode, approval, sandbox)));
+ }
+ 
++void runWorktreeMetadataSandboxTest(const QString &executable)
++{
++    QTemporaryDir temp;
++    check(temp.isValid(), "worktree sandbox temp dir created");
++    const QString repo = temp.filePath(QStringLiteral("repo"));
++    const QString metadata = temp.filePath(QStringLiteral("metadata"));
++    QDir().mkpath(repo);
++    QDir().mkpath(metadata + QStringLiteral("/worktree"));
++    QDir().mkpath(metadata + QStringLiteral("/common"));
++    QFile dotGit(repo + QStringLiteral("/.git"));
++    check(dotGit.open(QIODevice::WriteOnly | QIODevice::Text),
++          "worktree git file can be created");
++    dotGit.write("gitdir: ../metadata/worktree\n");
++    dotGit.close();
++    QFile commonDir(metadata + QStringLiteral("/worktree/commondir"));
++    check(commonDir.open(QIODevice::WriteOnly | QIODevice::Text),
++          "worktree common-dir file can be created");
++    commonDir.write("../common\n");
++    commonDir.close();
++
++    const QString logPath = temp.filePath(QStringLiteral("worktree.jsonl"));
++    CodexAppServerSession session;
++    session.setAppServerCommand(executable,
++                                {QStringLiteral("--codex-stub"),
++                                 QStringLiteral("mode"), logPath});
++    bool finished = false;
++    QObject::connect(&session, &CodexAppServerSession::finished,
++                     [&](int) { finished = true; });
++    session.start(repo, QStringList(), QStringLiteral("commit"), QString(),
++                  QStringLiteral("gpt-test"), QStringLiteral("Auto"), QString());
++    check(pump([&] { return finished; }), "worktree sandbox stub completes");
++    const QJsonObject policy =
++        firstMethod(readMessages(logPath), QStringLiteral("turn/start"))
++            .value(QStringLiteral("params"))
++            .toObject()
++            .value(QStringLiteral("sandboxPolicy"))
++            .toObject();
++    const QJsonArray roots = policy.value(QStringLiteral("writableRoots")).toArray();
++    check(roots.contains(QDir(metadata + QStringLiteral("/worktree")).absolutePath()) &&
++              roots.contains(QDir(metadata + QStringLiteral("/common")).absolutePath()),
++          "Auto mode permits linked-worktree Git metadata writes");
++}
++
+ void runInterruptedTurnTest(const QString &executable)
+ {
+     QTemporaryDir temp;
+@@ -1421,6 +1465,7 @@ int main(int argc, char *argv[])
+     runModeMappingTest(executable, QStringLiteral("Edit automatically"),
+                        QStringLiteral("on-request"),
+                        QStringLiteral("workspace-write"));
++    runWorktreeMetadataSandboxTest(executable);
+     runInterruptedTurnTest(executable);
+     runRejectedSteerTest(executable);
+     runResumeFailureTest(executable);

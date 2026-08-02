@@ -1,0 +1,84 @@
+diff --git a/qt_client/src/MainWindowChat.cpp b/qt_client/src/MainWindowChat.cpp
+index 914d418ef..64ef4bfb1 100644
+--- a/qt_client/src/MainWindowChat.cpp
++++ b/qt_client/src/MainWindowChat.cpp
+@@ -309,9 +309,9 @@ void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
+         m_faviconFetching.contains(host) || m_faviconMissing.contains(host))
+         return;
+ 
+-    // Hosts with a hardcoded mark (api.anthropic.com and friends) never hit the
+-    // network: they answer 404 for /favicon.ico, which showed up in the log as
+-    // an error line per request (adhoc #436).
++    // Hosts with a hardcoded mark (API endpoints such as api.anthropic.com and
++    // api.mainnet-beta.solana.com) never hit the network: their /favicon.ico
++    // requests fail and otherwise appear as error lines in the log.
+     // Cached like a downloaded icon (but never written to the disk cache) so the
+     // breadcrumb rail and both log views pick it up the same way; no breadcrumb
+     // rebuild from here, since this runs while a log line is being rendered.
+diff --git a/qt_client/src/MainWindowInternal.h b/qt_client/src/MainWindowInternal.h
+index 9f1a8df13..4b68abe29 100644
+--- a/qt_client/src/MainWindowInternal.h
++++ b/qt_client/src/MainWindowInternal.h
+@@ -9441,15 +9441,17 @@ inline QPixmap letterFavicon(const QString &host, int side = 36)
+ }
+ 
+ // Hosts that get a hardcoded, locally drawn icon instead of a /favicon.ico
+-// fetch. api.anthropic.com serves no favicon, so every Claude request in the
+-// network log used to spit out a red "GET ERR 404 .../favicon.ico" line of its
+-// own (adhoc #436). Returns an empty string for hosts with no builtin mark.
++// fetch. API endpoints do not serve favicons, so their request lines must not
++// cause an additional failed favicon request in the network log. Returns an
++// empty string for hosts with no builtin mark.
+ inline QString builtinFaviconKey(const QString &host)
+ {
+     const QString h = host.toLower();
+     if (h == QStringLiteral("anthropic.com") || h.endsWith(".anthropic.com") ||
+         h == QStringLiteral("claude.ai") || h.endsWith(".claude.ai"))
+         return QStringLiteral("anthropic");
++    if (h == QStringLiteral("api.mainnet-beta.solana.com"))
++        return QStringLiteral("solana");
+     return {};
+ }
+ 
+@@ -9469,8 +9471,21 @@ inline QPixmap builtinFavicon(const QString &host, int side = 36)
+     QPainter painter(&pixmap);
+     painter.setRenderHint(QPainter::Antialiasing);
+     painter.setPen(Qt::NoPen);
+-    painter.setBrush(QColor("#d97757")); // Anthropic clay
++    painter.setBrush(key == QStringLiteral("solana")
++                         ? QColor("#17172e") // Solana navy
++                         : QColor("#d97757")); // Anthropic clay
+     painter.drawRoundedRect(QRectF(0, 0, side, side), side / 4.0, side / 4.0);
++    if (key == QStringLiteral("solana")) {
++        QPen stroke(QColor("#14f195"));
++        stroke.setWidthF(qMax(1.0, side * 0.11));
++        stroke.setCapStyle(Qt::RoundCap);
++        painter.setPen(stroke);
++        const qreal inset = side * 0.25;
++        const qreal width = side * 0.5;
++        for (const qreal y : {side * 0.32, side * 0.50, side * 0.68})
++            painter.drawLine(QPointF(inset, y), QPointF(inset + width, y));
++        return pixmap;
++    }
+     // Burst mark: rounded strokes radiating from the centre.
+     QPen stroke(QColor("#ffffff"));
+     stroke.setWidthF(qMax(1.0, side * 0.09));
+diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
+index 42d654f58..d865052be 100644
+--- a/qt_client/tests/test_window_resize.cpp
++++ b/qt_client/tests/test_window_resize.cpp
+@@ -2882,6 +2882,14 @@ int main(int argc, char *argv[])
+               QStringLiteral("an Anthropic host resolves its favicon locally, "
+                              "with no network fetch (adhoc #436)"));
+ 
++        window.testLogSystem(
++            QStringLiteral("net GET https://api.mainnet-beta.solana.com 200"));
++        QApplication::processEvents();
++        check(window.testFaviconCached(
++                  QStringLiteral("api.mainnet-beta.solana.com")),
++              QStringLiteral("the Solana RPC host resolves its favicon locally, "
++                             "without requesting its unsupported favicon path"));
++
+         auto leadsWithIcon = [](QTextEdit *view) {
+             if (!view)
+                 return false;

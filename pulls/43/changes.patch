@@ -1,0 +1,1920 @@
+diff --git a/cloudflare_worker/public/dashboard/repo.html b/cloudflare_worker/public/dashboard/repo.html
+index 68fd7acea..d573338e6 100644
+--- a/cloudflare_worker/public/dashboard/repo.html
++++ b/cloudflare_worker/public/dashboard/repo.html
+@@ -5,7 +5,7 @@
+     <script src="/posthog.js"></script>
+     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+     <title>Repository - ForkMesh</title>
+-    <meta name="description" content="Inspect a repository mirrored by ForkMesh desktop nodes: files, issues, pulls, and mirrors." />
++    <meta name="description" content="ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider." />
+     <meta name="application-name" content="ForkMesh" />
+     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+     <meta name="theme-color" content="#090909" />
+diff --git a/cloudflare_worker/public/desktop.html b/cloudflare_worker/public/desktop.html
+index f800a4ba0..476e0d13c 100644
+--- a/cloudflare_worker/public/desktop.html
++++ b/cloudflare_worker/public/desktop.html
+@@ -3,9 +3,10 @@
+   <head>
+     <meta charset="utf-8" />
+     <script src="/posthog.js"></script>
++    <script src="/product-telemetry.js" defer></script>
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Install ForkMesh Desktop · macOS, Windows &amp; Linux</title>
+-    <meta name="description" content="Install the ForkMesh desktop client on macOS, Windows, or Linux — step-by-step download and setup instructions to keep local Git mirrors online and serve live clone traffic." />
++    <meta name="description" content="ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider." />
+     <meta name="application-name" content="ForkMesh" />
+     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+     <meta name="theme-color" content="#090909" />
+@@ -106,7 +107,7 @@
+       <p class="eyebrow">Download</p>
+       <h1>Install ForkMesh Desktop</h1>
+       <p class="install-lede">
+-        The desktop client keeps your local Git mirrors online and serves live
++        ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider. The desktop client keeps your local Git mirrors online and serves live
+         clone traffic to the network. One command installs it on macOS, Windows,
+         and Linux — it autodetects your platform and drops the app in
+         <code class="inline">~/.local/bin</code>.
+@@ -115,7 +116,7 @@
+       <div class="install-cmd-row">
+         <span class="prompt" aria-hidden="true">$</span>
+         <code id="install-cmd">curl -fsSL https://forkmesh.com/install.sh | bash</code>
+-        <button type="button" id="install-copy" aria-label="Copy install command">Copy</button>
++        <button type="button" id="install-copy" data-product-copy-event="forkmesh.install_command_copied" data-product-surface="desktop" aria-label="Copy install command">Copy</button>
+       </div>
+       <p class="install-note">
+         The installer downloads the prebuilt binary for your platform when one is
+@@ -160,7 +161,7 @@
+             <div class="install-cmd-row">
+               <span class="prompt" aria-hidden="true">$</span>
+               <code data-copy>curl -fsSL https://forkmesh.com/install.sh | bash</code>
+-              <button type="button" class="copy-btn" aria-label="Copy install command">Copy</button>
++              <button type="button" class="copy-btn" data-product-copy-event="forkmesh.install_command_copied" data-product-surface="desktop" aria-label="Copy install command">Copy</button>
+             </div>
+           </li>
+           <li>
+@@ -195,7 +196,7 @@
+             <div class="install-cmd-row">
+               <span class="prompt" aria-hidden="true">$</span>
+               <code data-copy>curl -fsSL https://forkmesh.com/install.sh | bash</code>
+-              <button type="button" class="copy-btn" aria-label="Copy install command">Copy</button>
++              <button type="button" class="copy-btn" data-product-copy-event="forkmesh.install_command_copied" data-product-surface="desktop" aria-label="Copy install command">Copy</button>
+             </div>
+           </li>
+           <li>
+@@ -219,7 +220,7 @@
+             <div class="install-cmd-row">
+               <span class="prompt" aria-hidden="true">$</span>
+               <code data-copy>curl -fsSL https://forkmesh.com/install.sh | bash</code>
+-              <button type="button" class="copy-btn" aria-label="Copy install command">Copy</button>
++              <button type="button" class="copy-btn" data-product-copy-event="forkmesh.install_command_copied" data-product-surface="desktop" aria-label="Copy install command">Copy</button>
+             </div>
+           </li>
+           <li>
+@@ -260,26 +261,41 @@
+       // only wires the single #install-copy button, so handle the extra
+       // [data-copy] blocks here.
+       document.querySelectorAll(".install-cmd-row .copy-btn").forEach((btn) => {
+-        btn.addEventListener("click", () => {
++        btn.addEventListener("click", async () => {
+           const code = btn.parentElement.querySelector("[data-copy]");
+           const text = code ? code.textContent.trim() : "";
+           const done = () => {
+             const original = btn.textContent;
+             btn.textContent = "Copied";
+             setTimeout(() => (btn.textContent = original), 1500);
++            window.forkmeshTrackProductEvent?.(btn.dataset.productCopyEvent, {
++              surface: btn.dataset.productSurface,
++            });
+           };
+-          if (navigator.clipboard) {
+-            navigator.clipboard.writeText(text).then(done, done);
+-          } else {
++          const fallbackCopy = () => {
+             const area = document.createElement("textarea");
+             area.value = text;
+             area.style.position = "fixed";
+             area.style.left = "-9999px";
+             document.body.append(area);
+             area.select();
+-            document.execCommand("copy");
++            const copied = document.execCommand("copy");
+             area.remove();
+-            done();
++            return copied;
++          };
++          try {
++            if (navigator.clipboard) {
++              await navigator.clipboard.writeText(text);
++              done();
++            } else if (fallbackCopy()) {
++              done();
++            }
++          } catch (error) {
++            try {
++              if (fallbackCopy()) done();
++            } catch (fallbackError) {
++              // Leave the label unchanged when neither copy path succeeds.
++            }
+           }
+         });
+       });
+diff --git a/cloudflare_worker/public/docs.html b/cloudflare_worker/public/docs.html
+index a53e5c737..4c6560304 100644
+--- a/cloudflare_worker/public/docs.html
++++ b/cloudflare_worker/public/docs.html
+@@ -3,11 +3,12 @@
+   <head>
+     <meta charset="utf-8" />
+     <script src="/posthog.js"></script>
++    <script src="/product-telemetry.js" defer></script>
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Docs · ForkMesh</title>
+     <meta
+       name="description"
+-      content="ForkMesh documentation for desktop mirrors, host tunnels, Git clone, APIs, WebSocket endpoints, issues, pull requests, accounts, and encrypted rooms."
++      content="ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider."
+     />
+     <meta name="application-name" content="ForkMesh" />
+     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+@@ -440,7 +441,7 @@
+           <p
+             class="mt-4 max-w-[820px] text-[1.18rem] leading-8 text-[var(--docs-muted)] sm:text-[1.38rem]"
+           >
+-            Host, mirror, inspect, and collaborate on Git repositories across
++            ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider. Host, mirror, inspect, and collaborate on Git repositories across
+             local desktop nodes, signed inboxes, encrypted rooms, and live clone
+             routes.
+           </p>
+@@ -488,6 +489,80 @@
+           </a>
+         </section>
+ 
++        <section
++          id="proof-path"
++          class="mt-16 scroll-mt-44"
++          data-search-title="Operator proof path"
++          data-search-body="collaborate signed pull request repo room desktop node mirror source host offline clone again mirror failover repository Mirrors tab"
++          aria-labelledby="proof-path-title"
++        >
++          <div class="max-w-[820px]">
++            <p class="text-[0.9rem] font-bold uppercase tracking-[0.12em] text-[var(--docs-muted)]">A short operator proof path</p>
++            <h2 id="proof-path-title" class="mt-3 text-[1.78rem] font-black leading-tight text-[var(--docs-fg)]">Test the route, then verify the mirror.</h2>
++            <p class="mt-4 text-[1.02rem] leading-8 text-[var(--docs-muted)]">This is a practical sequence for checking a mirrored repository. It describes what an operator should verify, not a live production proof.</p>
++          </div>
++          <ol class="mt-8 grid gap-5 md:grid-cols-2" aria-label="Operator proof steps">
++            <li class="doc-card min-w-0 p-6">
++              <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">1. Collaborate</h3>
++              <p class="mt-3 leading-7 text-[var(--docs-muted)]">Open an <a class="font-bold text-[var(--docs-fg)] underline underline-offset-4" href="/docs/#collaboration" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="docs" data-product-proof-step="collaborate" data-product-destination="collaboration">issue, signed PR, or repo room</a> for the repository.</p>
++            </li>
++            <li class="doc-card min-w-0 p-6">
++              <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">2. Add a mirror</h3>
++              <p class="mt-3 leading-7 text-[var(--docs-muted)]"><a class="font-bold text-[var(--docs-fg)] underline underline-offset-4" href="/desktop" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="docs" data-product-proof-step="add_mirror" data-product-destination="desktop">Install a desktop node</a> and mirror the repository on it.</p>
++            </li>
++            <li class="doc-card min-w-0 p-6">
++              <div class="flex flex-wrap items-center gap-3">
++                <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">3. Source host offline</h3>
++                <span class="rounded-full border border-[var(--docs-line-strong)] px-2.5 py-1 text-xs font-bold text-[var(--docs-muted)]">Operator proof required</span>
++              </div>
++              <p class="mt-3 leading-7 text-[var(--docs-muted)]">Disconnect the source desktop node or source host, then review the <a class="font-bold text-[var(--docs-fg)] underline underline-offset-4" href="/docs/#mirror-failover" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="docs" data-product-proof-step="source_host_offline" data-product-destination="mirror_failover">mirror failover guidance</a>.</p>
++            </li>
++            <li class="doc-card min-w-0 p-6">
++              <div class="flex flex-wrap items-center gap-3">
++                <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">4. Clone again</h3>
++                <span class="rounded-full border border-[var(--docs-line-strong)] px-2.5 py-1 text-xs font-bold text-[var(--docs-muted)]">Operator proof required</span>
++              </div>
++              <p class="mt-3 leading-7 text-[var(--docs-muted)]">Clone from the same ForkMesh repo URL. An online mirror can serve the Git data. Review the <a class="font-bold text-[var(--docs-fg)] underline underline-offset-4" href="/docs/#mirror-failover" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="docs" data-product-proof-step="clone_again" data-product-destination="mirror_failover">mirror failover guidance</a>, then <a class="font-bold text-[var(--docs-fg)] underline underline-offset-4" href="/dashboard/repos" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="docs" data-product-proof-step="clone_again" data-product-destination="repositories">Open Repositories</a>, select your repository, then open the Mirrors tab to inspect live host health.</p>
++            </li>
++          </ol>
++        </section>
++
++        <section
++          id="collaboration"
++          class="mt-16 scroll-mt-44"
++          data-search-title="Collaboration routes"
++          data-search-body="issues signed pull requests encrypted rooms repository collaboration records"
++        >
++          <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">Collaboration routes</h2>
++          <div class="mt-6 grid gap-5 text-[0.95rem] leading-7 text-[var(--docs-muted)] md:grid-cols-2">
++            <div class="doc-card min-w-0 p-6">
++              <p>Issues and signed pull requests are portable repository records. A maintainer can verify their signatures, review them, and keep accepted history with the repository.</p>
++            </div>
++            <div class="doc-card min-w-0 p-6">
++              <p>Encrypted rooms are for live repository conversations between invited clients. They complement issue and pull-request records; they do not replace the repository's Git history.</p>
++            </div>
++          </div>
++        </section>
++
++        <section
++          id="mirror-failover"
++          class="mt-16 scroll-mt-44"
++          data-search-title="Mirror failover and operator verification"
++          data-search-body="desktop node mirror failover source host offline clone same repository URL operator verification Git packfiles"
++        >
++          <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">Mirror failover and operator verification</h2>
++          <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">An online desktop node with a local mirror and an active host tunnel can serve Git data. This is an operator verification procedure, not a promise of continuous production availability.</p>
++          <div class="doc-card mt-6 min-w-0 p-6 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
++            <ol class="grid gap-3">
++              <li>Mirror the repository on a desktop node, then confirm that mirror is online.</li>
++              <li>Disconnect the source desktop node or source host.</li>
++              <li>Clone from the same ForkMesh repo URL and confirm an online mirror can serve the Git data.</li>
++              <li>Open Repositories, select the repository, then open the Mirrors tab to inspect live host health.</li>
++            </ol>
++            <p class="mt-5">If no eligible mirror is online, the Worker does not store Git packfiles and cannot substitute for a host.</p>
++          </div>
++        </section>
++
+         <section
+           id="mental-model"
+           class="mt-16 scroll-mt-44"
+diff --git a/cloudflare_worker/public/docs/index.html b/cloudflare_worker/public/docs/index.html
+index 80914c9af..f45216262 100644
+--- a/cloudflare_worker/public/docs/index.html
++++ b/cloudflare_worker/public/docs/index.html
+@@ -3,11 +3,12 @@
+   <head>
+     <meta charset="utf-8" />
+     <script src="/posthog.js"></script>
++    <script src="/product-telemetry.js" defer></script>
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>Docs · ForkMesh</title>
+     <meta
+       name="description"
+-      content="ForkMesh documentation for desktop mirrors, host tunnels, Git clone, APIs, WebSocket endpoints, issues, pull requests, accounts, and encrypted rooms."
++      content="ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider."
+     />
+     <meta name="application-name" content="ForkMesh" />
+     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+@@ -455,7 +456,7 @@
+           <p
+             class="mt-4 max-w-[820px] text-[1.18rem] leading-8 text-[var(--docs-muted)] sm:text-[1.38rem]"
+           >
+-            Host, mirror, inspect, and collaborate on Git repositories across
++            ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider. Host, mirror, inspect, and collaborate on Git repositories across
+             local desktop nodes, signed inboxes, encrypted rooms, and live clone
+             routes.
+           </p>
+@@ -503,6 +504,80 @@
+           </a>
+         </section>
+ 
++        <section
++          id="proof-path"
++          class="mt-16 scroll-mt-44"
++          data-search-title="Operator proof path"
++          data-search-body="collaborate signed pull request repo room desktop node mirror source host offline clone again mirror failover repository Mirrors tab"
++          aria-labelledby="proof-path-title"
++        >
++          <div class="max-w-[820px]">
++            <p class="text-[0.9rem] font-bold uppercase tracking-[0.12em] text-[var(--docs-muted)]">A short operator proof path</p>
++            <h2 id="proof-path-title" class="mt-3 text-[1.78rem] font-black leading-tight text-[var(--docs-fg)]">Test the route, then verify the mirror.</h2>
++            <p class="mt-4 text-[1.02rem] leading-8 text-[var(--docs-muted)]">This is a practical sequence for checking a mirrored repository. It describes what an operator should verify, not a live production proof.</p>
++          </div>
++          <ol class="mt-8 grid gap-5 md:grid-cols-2" aria-label="Operator proof steps">
++            <li class="doc-card min-w-0 p-6">
++              <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">1. Collaborate</h3>
++              <p class="mt-3 leading-7 text-[var(--docs-muted)]">Open an <a class="font-bold text-[var(--docs-fg)] underline underline-offset-4" href="/docs/#collaboration" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="docs" data-product-proof-step="collaborate" data-product-destination="collaboration">issue, signed PR, or repo room</a> for the repository.</p>
++            </li>
++            <li class="doc-card min-w-0 p-6">
++              <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">2. Add a mirror</h3>
++              <p class="mt-3 leading-7 text-[var(--docs-muted)]"><a class="font-bold text-[var(--docs-fg)] underline underline-offset-4" href="/desktop" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="docs" data-product-proof-step="add_mirror" data-product-destination="desktop">Install a desktop node</a> and mirror the repository on it.</p>
++            </li>
++            <li class="doc-card min-w-0 p-6">
++              <div class="flex flex-wrap items-center gap-3">
++                <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">3. Source host offline</h3>
++                <span class="rounded-full border border-[var(--docs-line-strong)] px-2.5 py-1 text-xs font-bold text-[var(--docs-muted)]">Operator proof required</span>
++              </div>
++              <p class="mt-3 leading-7 text-[var(--docs-muted)]">Disconnect the source desktop node or source host, then review the <a class="font-bold text-[var(--docs-fg)] underline underline-offset-4" href="/docs/#mirror-failover" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="docs" data-product-proof-step="source_host_offline" data-product-destination="mirror_failover">mirror failover guidance</a>.</p>
++            </li>
++            <li class="doc-card min-w-0 p-6">
++              <div class="flex flex-wrap items-center gap-3">
++                <h3 class="text-[1.1rem] font-black text-[var(--docs-fg)]">4. Clone again</h3>
++                <span class="rounded-full border border-[var(--docs-line-strong)] px-2.5 py-1 text-xs font-bold text-[var(--docs-muted)]">Operator proof required</span>
++              </div>
++              <p class="mt-3 leading-7 text-[var(--docs-muted)]">Clone from the same ForkMesh repo URL. An online mirror can serve the Git data. Review the <a class="font-bold text-[var(--docs-fg)] underline underline-offset-4" href="/docs/#mirror-failover" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="docs" data-product-proof-step="clone_again" data-product-destination="mirror_failover">mirror failover guidance</a>, then <a class="font-bold text-[var(--docs-fg)] underline underline-offset-4" href="/dashboard/repos" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="docs" data-product-proof-step="clone_again" data-product-destination="repositories">Open Repositories</a>, select your repository, then open the Mirrors tab to inspect live host health.</p>
++            </li>
++          </ol>
++        </section>
++
++        <section
++          id="collaboration"
++          class="mt-16 scroll-mt-44"
++          data-search-title="Collaboration routes"
++          data-search-body="issues signed pull requests encrypted rooms repository collaboration records"
++        >
++          <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">Collaboration routes</h2>
++          <div class="mt-6 grid gap-5 text-[0.95rem] leading-7 text-[var(--docs-muted)] md:grid-cols-2">
++            <div class="doc-card min-w-0 p-6">
++              <p>Issues and signed pull requests are portable repository records. A maintainer can verify their signatures, review them, and keep accepted history with the repository.</p>
++            </div>
++            <div class="doc-card min-w-0 p-6">
++              <p>Encrypted rooms are for live repository conversations between invited clients. They complement issue and pull-request records; they do not replace the repository's Git history.</p>
++            </div>
++          </div>
++        </section>
++
++        <section
++          id="mirror-failover"
++          class="mt-16 scroll-mt-44"
++          data-search-title="Mirror failover and operator verification"
++          data-search-body="desktop node mirror failover source host offline clone same repository URL operator verification Git packfiles"
++        >
++          <h2 class="text-[1.5rem] font-black text-[var(--docs-fg)]">Mirror failover and operator verification</h2>
++          <p class="mt-4 text-[0.95rem] leading-8 text-[var(--docs-muted)]">An online desktop node with a local mirror and an active host tunnel can serve Git data. This is an operator verification procedure, not a promise of continuous production availability.</p>
++          <div class="doc-card mt-6 min-w-0 p-6 text-[0.95rem] leading-7 text-[var(--docs-muted)]">
++            <ol class="grid gap-3">
++              <li>Mirror the repository on a desktop node, then confirm that mirror is online.</li>
++              <li>Disconnect the source desktop node or source host.</li>
++              <li>Clone from the same ForkMesh repo URL and confirm an online mirror can serve the Git data.</li>
++              <li>Open Repositories, select the repository, then open the Mirrors tab to inspect live host health.</li>
++            </ol>
++            <p class="mt-5">If no eligible mirror is online, the Worker does not store Git packfiles and cannot substitute for a host.</p>
++          </div>
++        </section>
++
+         <section
+           id="mental-model"
+           class="mt-16 scroll-mt-44"
+diff --git a/cloudflare_worker/public/index.html b/cloudflare_worker/public/index.html
+index 32a5ef8fd..fcbbd9d8a 100644
+--- a/cloudflare_worker/public/index.html
++++ b/cloudflare_worker/public/index.html
+@@ -4,11 +4,12 @@
+     <link rel="me" href="https://mastodon.social/@forkmesh" />
+     <meta charset="utf-8" />
+     <script src="/posthog.js"></script>
++    <script src="/product-telemetry.js" defer></script>
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+     <title>ForkMesh - Local-first source code preservation</title>
+     <meta
+       name="description"
+-      content="ForkMesh keeps Git repositories portable and resilient with desktop node mirrors, mainnode coordination, live clone routing, signed issues, signed patch PRs, and encrypted repo rooms."
++      content="ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider."
+     />
+     <meta name="application-name" content="ForkMesh" />
+     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+@@ -55,7 +56,7 @@
+     />
+     <meta
+       property="og:description"
+-      content="A distributed Git preservation and collaboration network powered by desktop node mirrors, mainnode coordination, signed collaboration records, and encrypted repo rooms."
++      content="ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider."
+     />
+     <meta property="og:image" content="https://forkmesh.com/assets/blog/intro-to-forkmesh.png" />
+     <meta property="og:image:width" content="1838" />
+@@ -71,7 +72,7 @@
+     />
+     <meta
+       name="twitter:description"
+-      content="Preserve source code with local Git mirrors, live clone routing, signed patch PRs, and encrypted repo rooms."
++      content="ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider."
+     />
+     <meta name="twitter:image" content="https://forkmesh.com/assets/blog/intro-to-forkmesh.png" />
+     <meta
+@@ -88,14 +89,14 @@
+             "name": "ForkMesh",
+             "url": "https://forkmesh.com",
+             "logo": "https://forkmesh.com/logo.png",
+-            "description": "ForkMesh keeps Git repositories portable and resilient with desktop node mirrors, mainnode coordination, live clone routing, signed issues, signed patch PRs, and encrypted repo rooms."
++            "description": "ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider."
+           },
+           {
+             "@type": "WebSite",
+             "@id": "https://forkmesh.com/#website",
+             "url": "https://forkmesh.com",
+             "name": "ForkMesh",
+-            "description": "Local-first source code preservation for Git repositories.",
++            "description": "ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider.",
+             "publisher": {
+               "@id": "https://forkmesh.com/#organization"
+             },
+@@ -110,7 +111,7 @@
+             "applicationCategory": "DeveloperApplication",
+             "applicationSubCategory": "Source code preservation",
+             "operatingSystem": "macOS, Windows, Linux",
+-            "description": "ForkMesh keeps Git repositories portable and resilient with desktop node mirrors, mainnode coordination, live clone routing, signed issues, signed patch PRs, and encrypted repo rooms.",
++            "description": "ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider.",
+             "featureList": [
+               "Desktop nodes keep local Git mirrors",
+               "Mainnodes coordinate discovery and live clone routing",
+@@ -2172,7 +2173,7 @@
+               <p
+                 class="motion-in motion-delay-2 mx-auto mt-8 max-w-2xl text-balance text-lg leading-relaxed text-foreground/90"
+               >
+-                ForkMesh mirrors your Git repositories across a live mesh of
++                ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider. ForkMesh mirrors your Git repositories across a live mesh of
+                 desktop nodes &mdash; so your history, issues, and pull requests
+                 stay portable, verifiable, and always cloneable. Mirror the
+                 projects you rely on, and earn as you help keep them online.
+@@ -2194,6 +2195,8 @@
+                   type="button"
+                   id="hero-install-copy"
+                   data-copy="curl -fsSL https://forkmesh.com/install.sh | bash"
++                  data-product-copy-event="forkmesh.install_command_copied"
++                  data-product-surface="homepage"
+                   class="button-outline h-8 shrink-0 rounded-lg px-3 text-xs"
+                   aria-label="Copy install command"
+                 >
+@@ -2206,17 +2209,23 @@
+                 <div class="rounded-xl bg-white/20 p-1">
+                   <a
+                     href="/signup"
++                    data-product-event="forkmesh.homepage_cta_clicked"
++                    data-product-surface="homepage"
++                    data-product-destination="signup"
+                     class="button-primary rounded-xl px-5 text-base"
+                     >Get Started</a
+                   >
+                 </div>
+                 <a
+                   href="/desktop"
++                  data-product-event="forkmesh.homepage_cta_clicked"
++                  data-product-surface="homepage"
++                  data-product-destination="desktop"
+                   class="button-outline inline-flex h-10 items-center gap-2 rounded-xl px-5 text-base"
+                   >Install Now
+                   <span aria-hidden="true">&rarr;</span></a
+                 >
+-                <a href="/docs" class="button-ghost h-10 rounded-xl px-5"
++                <a href="/docs" data-product-event="forkmesh.homepage_cta_clicked" data-product-surface="homepage" data-product-destination="docs" class="button-ghost h-10 rounded-xl px-5"
+                   >Read docs</a
+                 >
+               </div>
+@@ -2659,6 +2668,58 @@
+         </div>
+       </section>
+ 
++      <section
++        id="proof-path"
++        class="mx-auto max-w-6xl px-5 py-16 lg:px-8 lg:py-24"
++        aria-labelledby="proof-path-title"
++      >
++        <div class="max-w-3xl">
++          <p class="text-sm font-medium text-accent">A short operator proof path</p>
++          <h2
++            id="proof-path-title"
++            class="mt-3 font-favorit text-4xl tracking-tight text-foreground sm:text-5xl"
++          >
++            Test the route, then verify the mirror.
++          </h2>
++          <p class="mt-4 text-lg leading-relaxed text-muted-foreground">
++            This is a practical sequence for checking a mirrored repository. It
++            describes what an operator should verify, not a live production proof.
++          </p>
++        </div>
++        <ol class="mt-10 grid gap-4 md:grid-cols-2" aria-label="Operator proof steps">
++          <li class="min-w-0 rounded-2xl border border-border bg-foreground/[0.03] p-6">
++            <h3 class="font-favorit text-xl text-foreground">1. Collaborate</h3>
++            <p class="mt-3 leading-relaxed text-muted-foreground">
++              Open an <a class="text-foreground underline underline-offset-4" href="/docs/#collaboration" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="homepage" data-product-proof-step="collaborate" data-product-destination="collaboration">issue, signed PR, or repo room</a> for the repository.
++            </p>
++          </li>
++          <li class="min-w-0 rounded-2xl border border-border bg-foreground/[0.03] p-6">
++            <h3 class="font-favorit text-xl text-foreground">2. Add a mirror</h3>
++            <p class="mt-3 leading-relaxed text-muted-foreground">
++              <a class="text-foreground underline underline-offset-4" href="/desktop" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="homepage" data-product-proof-step="add_mirror" data-product-destination="desktop">Install a desktop node</a> and mirror the repository on it.
++            </p>
++          </li>
++          <li class="min-w-0 rounded-2xl border border-border bg-foreground/[0.03] p-6">
++            <div class="flex flex-wrap items-center gap-3">
++              <h3 class="font-favorit text-xl text-foreground">3. Source host offline</h3>
++              <span class="rounded-full border border-amber-300/40 bg-amber-300/10 px-2.5 py-1 text-xs font-semibold text-amber-200">Operator proof required</span>
++            </div>
++            <p class="mt-3 leading-relaxed text-muted-foreground">
++              Disconnect the source desktop node or source host, then review the <a class="text-foreground underline underline-offset-4" href="/docs/#mirror-failover" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="homepage" data-product-proof-step="source_host_offline" data-product-destination="mirror_failover">mirror failover guidance</a>.
++            </p>
++          </li>
++          <li class="min-w-0 rounded-2xl border border-border bg-foreground/[0.03] p-6">
++            <div class="flex flex-wrap items-center gap-3">
++              <h3 class="font-favorit text-xl text-foreground">4. Clone again</h3>
++              <span class="rounded-full border border-amber-300/40 bg-amber-300/10 px-2.5 py-1 text-xs font-semibold text-amber-200">Operator proof required</span>
++            </div>
++            <p class="mt-3 leading-relaxed text-muted-foreground">
++              Clone from the same ForkMesh repo URL. An online mirror can serve the Git data. Review the <a class="text-foreground underline underline-offset-4" href="/docs/#mirror-failover" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="homepage" data-product-proof-step="clone_again" data-product-destination="mirror_failover">mirror failover guidance</a>, then <a class="text-foreground underline underline-offset-4" href="/dashboard/repos" data-product-event="forkmesh.proof_path_link_clicked" data-product-surface="homepage" data-product-proof-step="clone_again" data-product-destination="repositories">Open Repositories</a>, select your repository, then open the Mirrors tab to inspect live host health.
++            </p>
++          </li>
++        </ol>
++      </section>
++
+       <section
+         id="network"
+         class="mx-auto max-w-6xl px-5 py-24 lg:px-8 lg:py-32"
+@@ -3360,20 +3421,30 @@
+         const original = button.textContent.trim();
+         button.addEventListener("click", async () => {
+           const text = button.dataset.copy || "";
++          let copied = false;
+           try {
+             await navigator.clipboard.writeText(text);
++            copied = true;
+           } catch (_) {
+-            const temp = document.createElement("textarea");
+-            temp.value = text;
+-            temp.setAttribute("readonly", "");
+-            temp.style.position = "fixed";
+-            temp.style.opacity = "0";
+-            document.body.appendChild(temp);
+-            temp.select();
+-            document.execCommand("copy");
+-            temp.remove();
++            try {
++              const temp = document.createElement("textarea");
++              temp.value = text;
++              temp.setAttribute("readonly", "");
++              temp.style.position = "fixed";
++              temp.style.opacity = "0";
++              document.body.appendChild(temp);
++              temp.select();
++              copied = document.execCommand("copy");
++              temp.remove();
++            } catch (fallbackError) {
++              copied = false;
++            }
+           }
++          if (!copied) return;
+           button.textContent = "Copied";
++          window.forkmeshTrackProductEvent?.(button.dataset.productCopyEvent, {
++            surface: button.dataset.productSurface,
++          });
+           window.setTimeout(() => {
+             button.textContent = original;
+           }, 1600);
+diff --git a/cloudflare_worker/public/mirror-payouts.html b/cloudflare_worker/public/mirror-payouts.html
+index 5ca03f8b3..d300b65c4 100644
+--- a/cloudflare_worker/public/mirror-payouts.html
++++ b/cloudflare_worker/public/mirror-payouts.html
+@@ -7,7 +7,7 @@
+     <title>Get paid to mirror - ForkMesh</title>
+     <meta
+       name="description"
+-      content="See how ForkMesh nodes get paid to mirror code: live earnings estimates and how each join donation is split across the network."
++      content="ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider."
+     />
+     <meta name="application-name" content="ForkMesh" />
+     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+@@ -114,7 +114,7 @@
+       <span class="join-eyebrow">⬡ Get paid to mirror code</span>
+       <h1 id="mp-title" class="join-title">Get paid to mirror</h1>
+       <p class="join-sub">
+-        Your node mirrors source code, serves live clone data, and keeps projects
++        ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider. Your node mirrors source code, serves live clone data, and keeps projects
+         discoverable. As the network grows, a share of every join donation flows
+         back to the nodes keeping it alive.
+       </p>
+diff --git a/cloudflare_worker/public/posthog.js b/cloudflare_worker/public/posthog.js
+index a86cd5122..37bb9243d 100644
+--- a/cloudflare_worker/public/posthog.js
++++ b/cloudflare_worker/public/posthog.js
+@@ -1,11 +1,15 @@
+ // PostHog product analytics. Loaded from every page's <head> via
+ // <script src="/posthog.js"></script> so the project key lives in one place
+-// instead of being pasted into each HTML file. PostHog auto-captures pageviews,
+-// clicks and other interactions; custom events: posthog.capture('name', {...}).
++// instead of being pasted into each HTML file. Automatic collection is disabled
++// so only allowlisted public interactions can call posthog.capture('name', {...}).
+ !function(t,e){var o,n,p,r;e.__SV||(window.posthog && window.posthog.__loaded)||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="ki Ci init qi Hi pr Bi zi Di capture calculateEventProperties Qi register register_once register_for_session unregister unregister_for_session Ki getFeatureFlag getFeatureFlagPayload getFeatureFlagResult getAllFeatureFlags isFeatureEnabled reloadFeatureFlags updateFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSurveysLoaded onSessionId getSurveys getActiveMatchingSurveys renderSurvey displaySurvey cancelPendingSurvey canRenderSurvey canRenderSurveyAsync Xi identify setPersonProperties unsetPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset shutdown setIdentity clearIdentity get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException addExceptionStep captureLog startExceptionAutocapture stopExceptionAutocapture loadToolbar get_property getSessionProperty Ji Gi createPersonProfile setInternalOrTestUser Yi Ai rn opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing get_explicit_consent_status is_capturing clear_opt_in_out_capturing Vi debug mr it getPageViewId captureTraceFeedback captureTraceMetric Oi".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+ posthog.init('phc_AJQ22WskEYjbe5Qb8VTDczA5KkEQ33aXqShiPo9GdENj', {
+     api_host: 'https://b.forkmesh.com', // your managed reverse proxy domain
+     ui_host: 'https://us.posthog.com', // necessary because you're using a proxy, this way links will point back to PostHog properly
+     defaults: '2026-05-30',
+     person_profiles: 'identified_only', // or 'always' to create profiles for anonymous users as well
++    autocapture: false,
++    capture_pageview: false,
++    capture_pageleave: false,
++    disable_session_recording: true,
+ })
+diff --git a/cloudflare_worker/public/pricing.html b/cloudflare_worker/public/pricing.html
+index d9c5af115..f19b3bffe 100644
+--- a/cloudflare_worker/public/pricing.html
++++ b/cloudflare_worker/public/pricing.html
+@@ -7,7 +7,7 @@
+     <title>ForkMesh Pricing - Coding Reimagined for Teams</title>
+     <meta
+       name="description"
+-      content="ForkMesh pricing for code hosting, encrypted team collaboration, mobile dev workflows, AI agents, and enterprise support."
++      content="ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider."
+     />
+     <meta name="application-name" content="ForkMesh" />
+     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+@@ -25,7 +25,7 @@
+     <meta property="og:title" content="ForkMesh Pricing" />
+     <meta
+       property="og:description"
+-      content="Choose the ForkMesh plan for code hosting, encrypted collaboration, AI agents, and mobile development workflows."
++      content="ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider."
+     />
+     <script src="https://cdn.tailwindcss.com"></script>
+     <script>
+@@ -738,7 +738,7 @@
+             <span class="block text-[#bdbdbd]">For Modern Teams</span>
+           </h1>
+           <p class="mx-auto mt-2 max-w-[28.4rem] text-[0.94rem] leading-[1.36] text-white/90">
+-            Distributed Git hosting, signed collaboration, encrypted team
++            ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider. Distributed Git hosting, signed collaboration, encrypted team
+             channels, releases, mobile workflows, and AI agents in one workspace.
+           </p>
+ 
+diff --git a/cloudflare_worker/public/privacy.html b/cloudflare_worker/public/privacy.html
+index 7deacc784..48bd00bfc 100644
+--- a/cloudflare_worker/public/privacy.html
++++ b/cloudflare_worker/public/privacy.html
+@@ -111,7 +111,7 @@
+         <article class="legal-card rounded-[2rem] px-6 py-8 sm:px-10 lg:px-14 lg:py-12">
+           <p class="font-favorit-mono text-sm uppercase tracking-[0.34em] text-muted-foreground">Privacy</p>
+           <h1 class="font-domine mt-5 text-balance text-5xl leading-[1] tracking-tight text-foreground sm:text-7xl">ForkMesh Privacy</h1>
+-          <p class="mt-5 text-sm text-muted-foreground">Last updated June 20, 2026.</p>
++          <p class="mt-5 text-sm text-muted-foreground">Last updated July 24, 2026.</p>
+           <div class="legal-content mt-8 text-base">
+             <div class="legal-note">
+               <strong class="text-foreground">Short version:</strong>
+@@ -123,6 +123,11 @@
+             <p>ForkMesh stores account records, encrypted account details, repository catalog data, relay presence data, pending verification records, and operational logs needed to keep the service working. Join payment addresses are temporary: unpaid addresses expire after one hour, are hidden with a warning, and are removed after a five-minute grace period.</p>
+             <h2>Install diagnostics</h2>
+             <p>The desktop installer reports anonymous, aggregate diagnostics about each install — which step it reached, whether that step succeeded, and coarse platform facts. Each run uses a fresh random id that is never linked to your account, email, node name, or IP address. Opt out by setting <code>FORKMESH_NO_DIAG=1</code> before running the installer.</p>
++            <h2>Public product telemetry</h2>
++            <p>On the public home, desktop-install, and documentation pages, ForkMesh triggers product events only after someone clicks a marked call to action, successfully copies the install command, or chooses a proof-path link.</p>
++            <p>Automatic click capture, page-view capture, page-leave capture, and session recording are disabled.</p>
++            <p>The custom event properties are limited to an approved surface, destination, or proof-path step.</p>
++            <p>The browser analytics SDK also adds standard device and public-page metadata, including the current page URL and host.</p>
+             <h2>Payments</h2>
+             <p>Solana transactions are public on the Solana network. ForkMesh checks whether a join payment reference has received enough SOL to activate the next signup step. Do not send funds once the signup page says the payment request is expiring.</p>
+             <h2>Third parties</h2>
+@@ -132,6 +137,7 @@
+               <li>A Solana JSON-RPC endpoint is queried for payment-reference status.</li>
+               <li>Bundled open-source font files are served locally by ForkMesh; no remote font service is used.</li>
+               <li>Tailwind Play CDN is loaded by the current home page.</li>
++              <li>PostHog processes the public-product events described above through a ForkMesh proxy.</li>
+               <li>The Solana network processes payment transactions.</li>
+               <li>Git remotes you choose may receive network requests when you mirror or sync repositories.</li>
+             </ul>
+diff --git a/cloudflare_worker/public/product-telemetry.js b/cloudflare_worker/public/product-telemetry.js
+new file mode 100644
+index 000000000..c21bf0e8a
+--- /dev/null
++++ b/cloudflare_worker/public/product-telemetry.js
+@@ -0,0 +1,61 @@
++(() => {
++  const EVENT_PROPERTIES = Object.freeze({
++    "forkmesh.homepage_cta_clicked": Object.freeze({
++      surface: Object.freeze(["homepage"]),
++      destination: Object.freeze(["signup", "desktop", "docs"]),
++    }),
++    "forkmesh.install_command_copied": Object.freeze({
++      surface: Object.freeze(["homepage", "desktop"]),
++    }),
++    "forkmesh.proof_path_link_clicked": Object.freeze({
++      surface: Object.freeze(["homepage", "docs"]),
++      destination: Object.freeze([
++        "collaboration",
++        "desktop",
++        "mirror_failover",
++        "repositories",
++      ]),
++      proof_step: Object.freeze([
++        "collaborate",
++        "add_mirror",
++        "source_host_offline",
++        "clone_again",
++      ]),
++    }),
++  });
++
++  function trackProductEvent(eventName, candidateProperties = {}) {
++    const allowedProperties = EVENT_PROPERTIES[eventName];
++    if (
++      !allowedProperties ||
++      !window.posthog ||
++      typeof window.posthog.capture !== "function"
++    ) {
++      return false;
++    }
++
++    const safeProperties = {};
++    Object.entries(allowedProperties).forEach(([key, values]) => {
++      const value = candidateProperties[key];
++      if (typeof value === "string" && values.includes(value)) {
++        safeProperties[key] = value;
++      }
++    });
++
++    window.posthog.capture(eventName, safeProperties);
++    return true;
++  }
++
++  window.forkmeshTrackProductEvent = trackProductEvent;
++
++  document.addEventListener("click", (event) => {
++    if (!event.target || typeof event.target.closest !== "function") return;
++    const action = event.target.closest("[data-product-event]");
++    if (!action) return;
++    trackProductEvent(action.dataset.productEvent, {
++      surface: action.dataset.productSurface,
++      destination: action.dataset.productDestination,
++      proof_step: action.dataset.productProofStep,
++    });
++  });
++})();
+diff --git a/cloudflare_worker/public/signup.html b/cloudflare_worker/public/signup.html
+index 79fa2d90b..69464378f 100644
+--- a/cloudflare_worker/public/signup.html
++++ b/cloudflare_worker/public/signup.html
+@@ -7,7 +7,7 @@
+     <title>Create account · ForkMesh</title>
+     <meta
+       name="description"
+-      content="Create a ForkMesh account with your email, password, and username. Add payout details later from your dashboard profile."
++      content="ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider."
+     />
+     <meta name="application-name" content="ForkMesh" />
+     <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+@@ -329,7 +329,7 @@
+         <div id="signup-view">
+         <h1 id="signup-title" class="join-title">Join ForkMesh</h1>
+         <p class="join-sub">
+-          Start free with code hosting, live mirrors, and signed collaboration.
++          ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider. Start free with code hosting, live mirrors, and signed collaboration.
+         </p>
+         <form id="signup-form" novalidate>
+           <div class="field">
+diff --git a/cloudflare_worker/public/static-page.js b/cloudflare_worker/public/static-page.js
+index 4e42e8861..986e934da 100644
+--- a/cloudflare_worker/public/static-page.js
++++ b/cloudflare_worker/public/static-page.js
+@@ -16,23 +16,33 @@
+   }
+ 
+   async function copyText(text, button) {
++    let copied = false;
+     try {
+       await navigator.clipboard.writeText(text);
++      copied = true;
+     } catch (error) {
+-      const area = document.createElement("textarea");
+-      area.value = text;
+-      area.style.position = "fixed";
+-      area.style.left = "-9999px";
+-      document.body.append(area);
+-      area.select();
+-      document.execCommand("copy");
+-      area.remove();
++      try {
++        const area = document.createElement("textarea");
++        area.value = text;
++        area.style.position = "fixed";
++        area.style.left = "-9999px";
++        document.body.append(area);
++        area.select();
++        copied = document.execCommand("copy");
++        area.remove();
++      } catch (fallbackError) {
++        copied = false;
++      }
+     }
+-    if (button) {
++    if (copied && button) {
+       const original = button.textContent;
+       button.textContent = "Copied";
+       setTimeout(() => (button.textContent = original), 1500);
++      window.forkmeshTrackProductEvent?.(button.dataset.productCopyEvent, {
++        surface: button.dataset.productSurface,
++      });
+     }
++    return copied;
+   }
+ 
+   function setText(selector, value) {
+diff --git a/cloudflare_worker/src/dashboard_shell.py b/cloudflare_worker/src/dashboard_shell.py
+index a360c3817..d1ac242d3 100644
+--- a/cloudflare_worker/src/dashboard_shell.py
++++ b/cloudflare_worker/src/dashboard_shell.py
+@@ -122,7 +122,7 @@ PAGES = {
+         "route": None,
+         "asset": "dashboard/repo.html",
+         "title": "Repository - ForkMesh",
+-        "description": "Inspect a repository mirrored by ForkMesh desktop nodes: files, issues, pulls, and mirrors.",
++        "description": "ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider.",
+     },
+ }
+ 
+diff --git a/cloudflare_worker/tests/test_canonical_product_promise.py b/cloudflare_worker/tests/test_canonical_product_promise.py
+new file mode 100644
+index 000000000..d26d7a01a
+--- /dev/null
++++ b/cloudflare_worker/tests/test_canonical_product_promise.py
+@@ -0,0 +1,182 @@
++import json
++from html.parser import HTMLParser
++from pathlib import Path
++
++
++PUBLIC = Path(__file__).resolve().parents[1] / "public"
++ROOT = PUBLIC.parent.parent
++PROMISE = (
++    "ForkMesh lets developers collaborate on, mirror, and preserve source-code "
++    "repositories across independent hosts—without relying on any single hosting provider."
++)
++
++
++class MetaParser(HTMLParser):
++    def __init__(self):
++        super().__init__()
++        self.in_head = False
++        self.values = {}
++
++    def handle_starttag(self, tag, attrs):
++        if tag == "head":
++            self.in_head = True
++            return
++        if tag != "meta" or not self.in_head:
++            return
++        values = dict(attrs)
++        key = values.get("name") or values.get("property")
++        if key:
++            self.values.setdefault(key, []).append(values.get("content"))
++
++    def handle_endtag(self, tag):
++        if tag == "head":
++            self.in_head = False
++
++
++class Element:
++    def __init__(self, tag, attrs, parent=None):
++        self.tag = tag
++        self.attrs = dict(attrs)
++        self.parent = parent
++        self.children = []
++        self.parts = []
++
++    def content(self):
++        content = (part.content() if isinstance(part, Element) else part for part in self.parts)
++        return " ".join(" ".join(content).split())
++
++
++class ElementParser(HTMLParser):
++    def __init__(self):
++        super().__init__()
++        self.elements = []
++        self.stack = []
++
++    def handle_starttag(self, tag, attrs):
++        parent = self.stack[-1] if self.stack else None
++        element = Element(tag, attrs, parent)
++        if parent:
++            parent.children.append(element)
++            parent.parts.append(element)
++        self.elements.append(element)
++        if tag not in {"meta", "link", "img", "input", "br", "hr", "source"}:
++            self.stack.append(element)
++
++    def handle_startendtag(self, tag, attrs):
++        self.handle_starttag(tag, attrs)
++        if self.stack and self.stack[-1].tag == tag:
++            self.stack.pop()
++
++    def handle_endtag(self, tag):
++        for index in range(len(self.stack) - 1, -1, -1):
++            if self.stack[index].tag == tag:
++                del self.stack[index:]
++                return
++
++    def handle_data(self, data):
++        if self.stack:
++            self.stack[-1].parts.append(data)
++
++
++def _read(path: Path) -> str:
++    return path.read_text(encoding="utf-8")
++
++
++def _elements(path: Path):
++    parser = ElementParser()
++    parser.feed(_read(path))
++    return parser.elements
++
++
++def _has_class(element, class_name):
++    return class_name in element.attrs.get("class", "").split()
++
++
++def _first_sibling_after(start, predicate):
++    siblings = start.parent.children
++    start_index = siblings.index(start)
++    return next(element for element in siblings[start_index + 1 :] if predicate(element))
++
++
++def _assert_lead_starts_with_promise(path: Path, predicate):
++    lead = next(element for element in _elements(path) if predicate(element))
++    assert lead.content().startswith(PROMISE), path
++
++
++def _assert_following_lead_starts_with_promise(path: Path, heading, predicate):
++    elements = _elements(path)
++    title = next(element for element in elements if element.tag == "h1" and element.content() == heading)
++    lead = _first_sibling_after(title, predicate)
++    assert lead.content().startswith(PROMISE), path
++
++
++def _assert_metadata_uses_promise(path: Path, expected_keys):
++    parser = MetaParser()
++    parser.feed(_read(path))
++    for key in expected_keys:
++        assert parser.values.get(key) == [PROMISE], (path, key, parser.values.get(key))
++
++
++def _json_ld_records(html: str):
++    parser = ElementParser()
++    parser.feed(html)
++    records = []
++    for element in parser.elements:
++        if element.tag != "script" or element.attrs.get("type") != "application/ld+json":
++            continue
++        payload = json.loads(element.content())
++        records.extend(payload.get("@graph", [payload]))
++    return records
++
++
++def test_readme_keeps_the_approved_promise_as_source_reference():
++    assert PROMISE in _read(ROOT / "README.md")
++
++
++def test_every_requested_public_surface_uses_the_promise_as_primary_lead_copy():
++    _assert_lead_starts_with_promise(
++        PUBLIC / "index.html",
++        lambda element: element.tag == "p"
++        and any(_has_class(ancestor, "hero-section") for ancestor in _ancestors(element)),
++    )
++    _assert_following_lead_starts_with_promise(
++        PUBLIC / "signup.html",
++        "Join ForkMesh",
++        lambda element: element.tag == "p" and _has_class(element, "join-sub"),
++    )
++    _assert_lead_starts_with_promise(
++        PUBLIC / "desktop.html",
++        lambda element: element.tag == "p" and _has_class(element, "install-lede"),
++    )
++    _assert_following_lead_starts_with_promise(
++        PUBLIC / "pricing.html", "Coding Reimagined For Modern Teams", lambda element: element.tag == "p"
++    )
++    _assert_following_lead_starts_with_promise(
++        PUBLIC / "mirror-payouts.html",
++        "Get paid to mirror",
++        lambda element: element.tag == "p" and _has_class(element, "join-sub"),
++    )
++    for page in (PUBLIC / "docs.html", PUBLIC / "docs" / "index.html"):
++        _assert_following_lead_starts_with_promise(page, "ForkMesh", lambda element: element.tag == "p")
++
++
++def _ancestors(element):
++    while element.parent:
++        element = element.parent
++        yield element
++
++
++def test_homepage_and_repository_primary_metadata_use_the_promise():
++    _assert_metadata_uses_promise(
++        PUBLIC / "index.html", ("description", "og:description", "twitter:description")
++    )
++    _assert_metadata_uses_promise(PUBLIC / "dashboard" / "repo.html", ("description",))
++
++
++def test_homepage_json_ld_uses_the_promise_for_primary_graph_records():
++    records = _json_ld_records(_read(PUBLIC / "index.html"))
++    descriptions = [record.get("description") for record in records]
++    assert descriptions.count(PROMISE) == 3
++    for record_type in ("Organization", "WebSite", "SoftwareApplication"):
++        record = next(record for record in records if record.get("@type") == record_type)
++        assert record["description"] == PROMISE
+diff --git a/cloudflare_worker/tests/test_product_contract_copy.py b/cloudflare_worker/tests/test_product_contract_copy.py
+new file mode 100644
+index 000000000..ff89b1afd
+--- /dev/null
++++ b/cloudflare_worker/tests/test_product_contract_copy.py
+@@ -0,0 +1,199 @@
++from html.parser import HTMLParser
++from pathlib import Path
++import re
++
++
++ROOT = Path(__file__).resolve().parents[2]
++PUBLIC = ROOT / "cloudflare_worker" / "public"
++PROMISE = (
++    "ForkMesh lets developers collaborate on, mirror, and preserve source-code "
++    "repositories across independent hosts—without relying on any single hosting provider."
++)
++PROMISE_SURFACES = (
++    ROOT / "README.md",
++    PUBLIC / "index.html",
++    PUBLIC / "dashboard" / "repo.html",
++    PUBLIC / "signup.html",
++    PUBLIC / "desktop.html",
++    PUBLIC / "pricing.html",
++    PUBLIC / "mirror-payouts.html",
++)
++PRODUCT_PAGES = PROMISE_SURFACES[1:]
++CONTRADICTORY_PHRASES = (
++    "replacement for GitHub",
++    "central hosting provider",
++    "cloud stores your Git",
++    "Worker stores repositories",
++)
++NEGATED_PREFIXES = {
++    "replacement for github": re.compile(r"\b(?:is not|isn't)\s+(?:an?\s+)?$"),
++    "central hosting provider": re.compile(
++        r"\b(?:is not|isn't|does not depend on|doesn't depend on|does not rely on|doesn't rely on)\s+(?:an?\s+)?$"
++    ),
++}
++SUPPRESSED_TAGS = {"head", "script", "style", "template"}
++VOID_TAGS = {
++    "area",
++    "base",
++    "br",
++    "col",
++    "embed",
++    "hr",
++    "img",
++    "input",
++    "link",
++    "meta",
++    "param",
++    "source",
++    "track",
++    "wbr",
++}
++
++
++class _VisibleTextParser(HTMLParser):
++    def __init__(self) -> None:
++        super().__init__()
++        self.text: list[str] = []
++        self.list_items: list[list[str]] = []
++        self.calc_cells: list[list[str]] = []
++        self.calc_notes: list[list[str]] = []
++        self._body_depth = 0
++        self._ignored_depth = 0
++        self._tag_stack: list[tuple[str, bool, bool, list[str] | None]] = []
++
++    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
++        attributes = dict(attrs)
++        classes = attributes.get("class", "").casefold().split()
++        if tag in VOID_TAGS:
++            return
++        suppressed = (
++            tag in SUPPRESSED_TAGS
++            or "hidden" in attributes
++            or attributes.get("aria-hidden", "").casefold() == "true"
++            or "hidden" in classes
++        )
++        in_body = self._body_depth > 0 or tag == "body"
++        if tag == "body":
++            self._body_depth += 1
++        if suppressed:
++            self._ignored_depth += 1
++
++        capture: list[str] | None = None
++        if in_body and not self._ignored_depth and tag == "li":
++            capture = []
++            self.list_items.append(capture)
++        elif (
++            in_body
++            and not self._ignored_depth
++            and tag == "div"
++            and "calc-cell" in classes
++        ):
++            capture = []
++            self.calc_cells.append(capture)
++        elif in_body and not self._ignored_depth and tag == "p" and "calc-note" in classes:
++            capture = []
++            self.calc_notes.append(capture)
++        self._tag_stack.append((tag, tag == "body", suppressed, capture))
++
++    def handle_endtag(self, tag: str) -> None:
++        for index in range(len(self._tag_stack) - 1, -1, -1):
++            if self._tag_stack[index][0] != tag:
++                continue
++            closed_tags = self._tag_stack[index:]
++            del self._tag_stack[index:]
++            for _, is_body, suppressed, _ in closed_tags:
++                if is_body:
++                    self._body_depth -= 1
++                if suppressed:
++                    self._ignored_depth -= 1
++            return
++
++    def handle_data(self, data: str) -> None:
++        if not self._body_depth or self._ignored_depth:
++            return
++        self.text.append(data)
++        for _, _, _, capture in self._tag_stack:
++            if capture is not None:
++                capture.append(data)
++
++
++def _read(path: Path) -> str:
++    return path.read_text(encoding="utf-8")
++
++
++def _normalized(text: str) -> str:
++    return " ".join(text.split())
++
++
++def _visible_text(content: str) -> _VisibleTextParser:
++    parser = _VisibleTextParser()
++    parser.feed(content)
++    return parser
++
++
++def _is_negated(content: str, phrase: str, phrase_start: int) -> bool:
++    pattern = NEGATED_PREFIXES.get(phrase.casefold())
++    return pattern is not None and bool(pattern.search(content[:phrase_start]))
++
++
++def test_product_contract_promise_is_present_on_every_required_surface():
++    for path in PROMISE_SURFACES:
++        assert PROMISE in _read(path), path
++
++
++def test_product_contract_rejects_known_contradictory_positioning():
++    for path in PRODUCT_PAGES:
++        content = _normalized("".join(_visible_text(_read(path)).text)).casefold()
++        for phrase in CONTRADICTORY_PHRASES:
++            for match in re.finditer(re.escape(phrase.casefold()), content):
++                assert _is_negated(content, phrase, match.start()), (path, phrase)
++
++
++def test_product_contract_negation_and_visible_text_parsing_are_bounded():
++    accepted = (
++        ("ForkMesh does not depend on a central hosting provider", "central hosting provider"),
++        ("ForkMesh doesn't rely on a central hosting provider", "central hosting provider"),
++        ("ForkMesh is not a replacement for GitHub", "replacement for GitHub"),
++        ("ForkMesh is not a central hosting provider", "central hosting provider"),
++    )
++    for content, phrase in accepted:
++        assert _is_negated(
++            content.casefold(), phrase.casefold(), content.casefold().index(phrase.casefold())
++        )
++
++    rejected = (
++        ("ForkMesh relies on a central hosting provider", "central hosting provider"),
++        ("ForkMesh never sleeps and is a central hosting provider", "central hosting provider"),
++        ("ForkMesh is not small but a replacement for GitHub", "replacement for GitHub"),
++        ("ForkMesh does not mirror code and is a central hosting provider", "central hosting provider"),
++    )
++    for content, phrase in rejected:
++        assert not _is_negated(
++            content.casefold(), phrase.casefold(), content.casefold().index(phrase.casefold())
++        )
++
++    parser = _visible_text(
++        "<head><title>Hidden title</title></head>"
++        "<body><template><img><p>Template text</p></template>"
++        "<p hidden>Hidden attribute</p><p aria-hidden=\"true\">Aria hidden</p>"
++        "<p class=\"hidden\">Hidden class</p><p>Rendered text</p></body>"
++    )
++    assert _normalized("".join(parser.text)) == "Rendered text"
++
++
++def test_commercial_pages_keep_non_live_claims_clearly_labeled():
++    pricing = _visible_text(_read(PUBLIC / "pricing.html"))
++    mirror_payouts = _visible_text(_read(PUBLIC / "mirror-payouts.html"))
++
++    assert "Private beta and roadmap access" in {
++        _normalized("".join(item)) for item in pricing.list_items
++    }
++    cells = {_normalized("".join(cell)) for cell in mirror_payouts.calc_cells}
++    assert any("Payout per join" in cell and "illustrative" in cell for cell in cells)
++    assert any("Est. earnings" in cell and "estimate only" in cell for cell in cells)
++    assert any(
++        "Estimates are illustrative while the reward engine is in progress." in _normalized(
++            "".join(note)
++        )
++        for note in mirror_payouts.calc_notes
++    )
+diff --git a/cloudflare_worker/tests/test_product_contract_evidence.py b/cloudflare_worker/tests/test_product_contract_evidence.py
+new file mode 100644
+index 000000000..939fde8e1
+--- /dev/null
++++ b/cloudflare_worker/tests/test_product_contract_evidence.py
+@@ -0,0 +1,56 @@
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[2]
++EVIDENCE = ROOT / "docs" / "product-contract-evidence.md"
++
++
++def _read_evidence() -> str:
++    return EVIDENCE.read_text(encoding="utf-8")
++
++
++def test_product_contract_evidence_map_covers_each_promise_claim():
++    content = _read_evidence()
++
++    assert "# ForkMesh product-contract evidence" in content
++    assert "## Claim-to-evidence map" in content
++    for claim in (
++        "Collaborate",
++        "Mirror",
++        "Preserve",
++        "Independent hosts",
++        "No single hosting provider",
++        "Supported platforms",
++        "Failure paths",
++        "Rollback and recovery",
++        "Telemetry and measurement",
++        "Documentation",
++    ):
++        assert f"| {claim} |" in content
++
++
++def test_evidence_map_links_claims_to_product_actions_or_explicit_gaps():
++    content = _read_evidence()
++
++    for destination in (
++        "/docs/#issues",
++        "/desktop",
++        "/dashboard/repos",
++        "/docs/#mirror-failover",
++        "cloudflare_worker/tests/test_mirror_failover_chaos.py",
++        "cloudflare_worker/tests/test_clone_fallback.py",
++        "/docs/#self-hosting",
++        "cloudflare_worker/tests/test_installer_diag.py",
++        "cloudflare_worker/tests/test_docs_frontend.py",
++    ):
++        assert destination in content
++
++    for status in ("Working product action", "Automated coverage", "Operator proof required", "Roadmap"):
++        assert status in content
++
++
++def test_evidence_map_does_not_present_the_worker_as_canonical_git_storage():
++    content = _read_evidence()
++
++    assert "not canonical Git storage" in content
++    assert "privacy-reviewed aggregate" in content
+diff --git a/cloudflare_worker/tests/test_product_promise_research.py b/cloudflare_worker/tests/test_product_promise_research.py
+new file mode 100644
+index 000000000..4533fe388
+--- /dev/null
++++ b/cloudflare_worker/tests/test_product_promise_research.py
+@@ -0,0 +1,50 @@
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[2]
++TEMPLATE = ROOT / "docs" / "research" / "product-promise-comprehension-template.md"
++
++
++def _read_template() -> str:
++    return TEMPLATE.read_text(encoding="utf-8")
++
++
++def test_comprehension_template_asks_the_required_unprompted_questions():
++    content = _read_template()
++
++    for question in (
++        "In your words, what does ForkMesh do?",
++        "What are the three jobs this sentence promises?",
++        "What does ‘without relying on any single hosting provider’ mean?",
++        "What would you try first to prove it works?",
++    ):
++        assert question in content
++
++
++def test_comprehension_template_defines_the_80_percent_pass_rule():
++    content = _read_template()
++
++    for criterion in (
++        "collaborate",
++        "mirror",
++        "preserve",
++        "no single provider controls availability",
++        "4 of 5",
++        "80%",
++    ):
++        assert criterion in content
++
++
++def test_comprehension_template_provides_anonymized_five_person_cohorts_and_closure_record():
++    content = _read_template()
++
++    for cohort in (
++        "5 maintainers",
++        "5 contributors",
++        "5 operators/node runners",
++    ):
++        assert cohort in content
++
++    assert "Participant ID" in content
++    assert "Do not record names, email addresses, repository names, or other identifying information." in content
++    assert "Do not claim comprehension validation is complete until anonymized results are attached." in content
+diff --git a/cloudflare_worker/tests/test_product_proof_path.py b/cloudflare_worker/tests/test_product_proof_path.py
+new file mode 100644
+index 000000000..4d5109053
+--- /dev/null
++++ b/cloudflare_worker/tests/test_product_proof_path.py
+@@ -0,0 +1,99 @@
++#!/usr/bin/env python3
++"""Static contract for the short public product proof path."""
++
++import html as html_lib
++import re
++from pathlib import Path
++
++
++PUBLIC = Path(__file__).resolve().parents[1] / "public"
++PROOF_PAGES = (
++    PUBLIC / "index.html",
++    PUBLIC / "docs.html",
++    PUBLIC / "docs" / "index.html",
++)
++DOCS_PAGES = PROOF_PAGES[1:]
++
++
++def _read(page: Path) -> str:
++    return page.read_text(encoding="utf-8")
++
++
++def _section_match(html: str, section_id: str) -> re.Match[str]:
++    match = re.search(
++        rf'<section\b(?=[^>]*\bid="{re.escape(section_id)}")[^>]*>(?P<body>.*?)</section>',
++        html,
++        flags=re.DOTALL,
++    )
++    assert match, f"{section_id} section is missing"
++    return match
++
++
++def _proof_section(html: str) -> str:
++    match = _section_match(html, "proof-path")
++    return match.group(0)
++
++
++def _li_texts(section: str) -> list[str]:
++    items = re.findall(r"<li\b[^>]*>(.*?)</li>", section, flags=re.DOTALL)
++    return [
++        re.sub(
++            r"\s+([,.;:!?])",
++            r"\1",
++            " ".join(
++                html_lib.unescape(re.sub(r"<[^>]+>", " ", item)).split(),
++            ),
++        )
++        for item in items
++    ]
++
++
++def test_public_pages_publish_the_short_operator_proof_path():
++    for page in PROOF_PAGES:
++        section = _proof_section(_read(page))
++        steps = _li_texts(section)
++
++        assert steps == [
++            "1. Collaborate Open an issue, signed PR, or repo room for the repository.",
++            "2. Add a mirror Install a desktop node and mirror the repository on it.",
++            "3. Source host offline Operator proof required Disconnect the source desktop node or source host, then review the mirror failover guidance.",
++            "4. Clone again Operator proof required Clone from the same ForkMesh repo URL. An online mirror can serve the Git data. Review the mirror failover guidance, then Open Repositories, select your repository, then open the Mirrors tab to inspect live host health.",
++        ]
++        assert section.count("Operator proof required") == 2
++        assert "Operator proof required" not in steps[0]
++        assert "Operator proof required" not in steps[1]
++        assert steps[2].count("Operator proof required") == 1
++        assert steps[3].count("Operator proof required") == 1
++
++        assert 'href="/docs/#collaboration"' in section
++        assert 'href="/desktop"' in section
++        assert section.count('href="/docs/#mirror-failover"') == 2
++        assert 'href="/dashboard/repos"' in section
++
++
++def test_docs_proof_path_uses_distinct_detailed_sections():
++    docs_html = _read(DOCS_PAGES[0])
++    docs_index_html = _read(DOCS_PAGES[1])
++    proof_match = _section_match(docs_html, "proof-path")
++    docs_section = proof_match.group(0)
++
++    assert docs_section == _proof_section(docs_index_html)
++
++    targets = re.findall(r'href="/docs/#([^"]+)"', docs_section)
++    assert targets == ["collaboration", "mirror-failover", "mirror-failover"]
++
++    for target in ("collaboration", "mirror-failover"):
++        target_match = _section_match(docs_html, target)
++        target_section = target_match.group(0)
++        assert target_match.start() > proof_match.end(), target
++        assert target_section == _section_match(docs_index_html, target).group(0)
++
++    collaboration_section = _section_match(docs_html, "collaboration").group(0)
++    assert "Collaboration routes" in collaboration_section
++    assert "signed pull requests" in collaboration_section
++    assert "encrypted rooms" in collaboration_section
++
++    mirror_failover_section = _section_match(docs_html, "mirror-failover").group(0)
++    assert "Mirror failover and operator verification" in mirror_failover_section
++    assert "same ForkMesh repo URL" in mirror_failover_section
++    assert "does not store Git packfiles" in mirror_failover_section
+diff --git a/cloudflare_worker/tests/test_product_telemetry.py b/cloudflare_worker/tests/test_product_telemetry.py
+new file mode 100644
+index 000000000..834e1ddd2
+--- /dev/null
++++ b/cloudflare_worker/tests/test_product_telemetry.py
+@@ -0,0 +1,130 @@
++from pathlib import Path
++import json
++import subprocess
++
++
++PUBLIC = Path(__file__).resolve().parents[1] / "public"
++ROOT = PUBLIC.parent.parent
++EVENTS = (
++    "forkmesh.homepage_cta_clicked",
++    "forkmesh.install_command_copied",
++    "forkmesh.proof_path_link_clicked",
++)
++ROADMAP_EVENTS = (
++    "forkmesh.desktop_installer_started",
++    "forkmesh.desktop_installer_succeeded",
++    "forkmesh.repo_mirrored_or_published",
++    "forkmesh.clone_route_requested",
++    "forkmesh.clone_fallback_served_by_mirror",
++)
++
++
++def _read(path: Path) -> str:
++    return path.read_text(encoding="utf-8")
++
++
++def test_product_telemetry_uses_a_closed_event_and_property_allowlist():
++    helper = _read(PUBLIC / "product-telemetry.js")
++
++    for event in EVENTS:
++        assert event in helper
++    for property_name in ("surface", "destination", "proof_step"):
++        assert property_name in helper
++    for forbidden_property in ("repository", "repo", "user", "email", "host", "clone_url"):
++        assert f'"{forbidden_property}":' not in helper
++
++
++def test_product_telemetry_runtime_drops_unknown_events_and_non_allowlisted_properties():
++    script = """
++const fs = require("fs");
++const vm = require("vm");
++const calls = [];
++const listeners = {};
++const context = {
++  window: { posthog: { capture: (eventName, properties) => calls.push({ eventName, properties }) } },
++  document: { addEventListener: (name, listener) => { listeners[name] = listener; } },
++};
++vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), context);
++context.window.forkmeshTrackProductEvent("forkmesh.homepage_cta_clicked", {
++  surface: "homepage",
++  destination: "docs",
++  repository: "private-project",
++});
++context.window.forkmeshTrackProductEvent("forkmesh.unknown", { surface: "homepage" });
++listeners.click({ target: { closest: () => ({ dataset: {
++  productEvent: "forkmesh.proof_path_link_clicked",
++  productSurface: "docs",
++  productDestination: "mirror_failover",
++  productProofStep: "clone_again",
++  productRepository: "private-project",
++} }) } });
++console.log(JSON.stringify(calls));
++"""
++    result = subprocess.run(
++        ["node", "-e", script, str(PUBLIC / "product-telemetry.js")],
++        check=True,
++        capture_output=True,
++        text=True,
++    )
++
++    assert json.loads(result.stdout) == [
++        {
++            "eventName": "forkmesh.homepage_cta_clicked",
++            "properties": {"surface": "homepage", "destination": "docs"},
++        },
++        {
++            "eventName": "forkmesh.proof_path_link_clicked",
++            "properties": {
++                "surface": "docs",
++                "destination": "mirror_failover",
++                "proof_step": "clone_again",
++            },
++        },
++    ]
++
++
++def test_posthog_disables_automatic_collection_before_custom_public_events_are_added():
++    posthog = _read(PUBLIC / "posthog.js")
++
++    assert "autocapture: false" in posthog
++    assert "capture_pageview: false" in posthog
++    assert "capture_pageleave: false" in posthog
++    assert "disable_session_recording: true" in posthog
++
++
++def test_public_surfaces_load_the_helper_and_declare_only_safe_actions():
++    pages = (
++        PUBLIC / "index.html",
++        PUBLIC / "desktop.html",
++        PUBLIC / "docs.html",
++        PUBLIC / "docs" / "index.html",
++    )
++    for page in pages:
++        assert '<script src="/product-telemetry.js" defer></script>' in _read(page)
++
++    homepage = _read(PUBLIC / "index.html")
++    for destination in ("signup", "desktop", "docs"):
++        assert (
++            'data-product-event="forkmesh.homepage_cta_clicked"'
++            in homepage
++        )
++        assert f'data-product-destination="{destination}"' in homepage
++
++    desktop = _read(PUBLIC / "desktop.html")
++    assert desktop.count('data-product-copy-event="forkmesh.install_command_copied"') == 4
++    assert 'data-product-surface="desktop"' in desktop
++
++    for page in (PUBLIC / "index.html", PUBLIC / "docs.html", PUBLIC / "docs" / "index.html"):
++        content = _read(page)
++        assert content.count('data-product-event="forkmesh.proof_path_link_clicked"') >= 4
++        for proof_step in ("collaborate", "add_mirror", "source_host_offline", "clone_again"):
++            assert f'data-product-proof-step="{proof_step}"' in content
++
++
++def test_telemetry_evidence_marks_server_side_product_metrics_as_roadmap_until_privacy_reviewed():
++    evidence = _read(ROOT / "docs" / "product-contract-evidence.md")
++
++    for event in ROADMAP_EVENTS:
++        assert event in evidence
++    assert "Roadmap" in evidence
++    assert "privacy-reviewed aggregate" in evidence
+diff --git a/cloudflare_worker/tests/test_qt_chat_user_identity.py b/cloudflare_worker/tests/test_qt_chat_user_identity.py
+index 29df31f58..0f8032d65 100644
+--- a/cloudflare_worker/tests/test_qt_chat_user_identity.py
++++ b/cloudflare_worker/tests/test_qt_chat_user_identity.py
+@@ -25,8 +25,9 @@ def test_chat_backend_starts_with_user_display_name_not_node_name():
+ 
+     assert "QString chatDisplayName() const;" in header
+     assert "QString nodeOwnerDisplayName() const;" in header
++    assert "QString machineNodeName() const;" in header
+     assert "void updateChatIdentity();" in header
+-    assert "new ServerNode(chatDisplayName(), accountOwner()," in setup
++    assert "new ServerNode(chatDisplayName(), machineNodeName()," in setup
+     assert "nodeOwnerDisplayName()," in setup
+     assert "m_profileIdentity.publicKey()" in setup
+ 
+@@ -41,7 +42,7 @@ def test_chat_identity_pushes_user_name_and_user_avatar():
+ 
+     assert "const QString name = chatDisplayName();" in body
+     assert "m_backend->setUserName(name);" in body
+-    assert "m_backend->setNodeIdentity(accountOwner(), nodeOwnerDisplayName());" in body
++    assert "m_backend->setNodeIdentity(machineNodeName(), nodeOwnerDisplayName());" in body
+     assert "const QByteArray avatar = effectiveUserAvatar();" in body
+     assert "m_backend->setAvatar(avatar);" in body
+     assert "effectiveAvatar()" not in body
+diff --git a/cloudflare_worker/tests/test_qt_node_profile_user_card.py b/cloudflare_worker/tests/test_qt_node_profile_user_card.py
+index a992be82f..d0078a2cc 100644
+--- a/cloudflare_worker/tests/test_qt_node_profile_user_card.py
++++ b/cloudflare_worker/tests/test_qt_node_profile_user_card.py
+@@ -29,10 +29,10 @@ def test_node_profile_features_user_card_before_node_details():
+     assert "m_profileUserAvatar" not in header
+     assert "m_profileUserName" not in header
+     assert 'm_profileAccountSection->setObjectName("profileUserCard");' in build
+-    assert 'auto *accountLabel = makeProfileSection("USER PROFILE");' in build
+-    # adhoc #177: the "USER PROFILE" card lists every node linked to the user
+-    # account (not just this node), so it is shown in the right column. It is
+-    # not a redundant identity repeat — it surfaces the user's *other* nodes.
++    assert 'm_profileAccountLabel = makeProfileSection("NODES");' in build
++    # The card lists every node linked to the user account (not just this
++    # machine), so it is shown in the right column without repeating a user
++    # identity heading.
+     assert "rightColumn->addWidget(m_profileAccountSection);" in build
+     assert "layout->addWidget(m_profileAccountSection);" not in build
+ 
+@@ -46,9 +46,9 @@ def test_node_profile_user_card_lists_owned_nodes_with_icons():
+     )
+ 
+     assert "m_profileUserNodesList->clear();" in render
+-    assert "nodeMachineFavicon(nodeName, 28)" in render
+-    assert "roundedRectPixmap(nodeMachineFavicon(nodeName, 28), 28, 8)" in render
+-    assert 'nodeName + QStringLiteral(" (this node)")' in render
++    assert "nodeMachineFavicon(nodeName, 32)" in render
++    assert "roundedRectPixmap(nodeMachineFavicon(nodeName, 32), 32, 8)" in render
++    assert 'QStringLiteral("  (this machine)")' in render
+     assert "m_profileUserNodesList->setFixedHeight" in render
+ 
+ 
+diff --git a/docs/product-contract-evidence.md b/docs/product-contract-evidence.md
+new file mode 100644
+index 000000000..3be006051
+--- /dev/null
++++ b/docs/product-contract-evidence.md
+@@ -0,0 +1,38 @@
++# ForkMesh product-contract evidence
++
++This map records the evidence behind each product-contract claim and distinguishes working product actions, automated coverage, operator proof that still needs to be captured, and roadmap work.
++It must be updated when a claim, route, or evidence source changes.
++
++## Evidence statuses
++
++- **Working product action** means a user can take the linked action in the current product.
++- **Automated coverage** means the linked test exercises the stated behavior, but is not proof of a production deployment.
++- **Operator proof required** means an operator must capture the live result before the claim is presented as fully closed in production.
++- **Roadmap** means the capability or its evidence is not complete and must not be represented as live.
++
++## Claim-to-evidence map
++
++| Claim | Status | Product action and evidence |
++| --- | --- | --- |
++| Collaborate | Working product action and Automated coverage | Open [issues](/docs/#issues), [pull requests](/docs/#pull-requests), or [encrypted rooms](/docs/#chat) on a ForkMesh repository. The public proof path links to these actions and is covered by [test_product_proof_path.py](../cloudflare_worker/tests/test_product_proof_path.py). |
++| Mirror | Working product action and Automated coverage | [Install a desktop node](/desktop), publish or mirror a repository, then open Repositories and select that repository before opening its Mirrors tab at [/dashboard/repos](/dashboard/repos). The documented route is covered by [test_product_proof_path.py](../cloudflare_worker/tests/test_product_proof_path.py). |
++| Preserve | Automated coverage and Operator proof required | Follow the [mirror failover guidance](/docs/#mirror-failover) and clone from the same repository URL after a source host is unavailable. [test_mirror_failover_chaos.py](../cloudflare_worker/tests/test_mirror_failover_chaos.py) and [test_clone_fallback.py](../cloudflare_worker/tests/test_clone_fallback.py) cover the fallback behavior. Capture an operator run as live production evidence before describing this path as fully proven. |
++| Independent hosts | Working product action and Automated coverage | The [repository model](/docs/#repository), [host tunnel](/docs/#host-tunnel), and [self-hosting guide](/docs/#self-hosting) describe local desktop nodes and relay boundaries. The local-node behavior is exercised by [test_mirror_failover_chaos.py](../cloudflare_worker/tests/test_mirror_failover_chaos.py). |
++| No single hosting provider | Working product action and Operator proof required | The Worker coordinates discovery and routing but is **not canonical Git storage**. The [repository model](/docs/#repository) and [self-hosting guide](/docs/#self-hosting) describe the boundary. Record a live multi-host operator proof before treating provider independence as production-closed. |
++| Supported platforms | Working product action and Automated coverage | The [desktop install page](/desktop) lists supported installers. [test_installer_diag.py](../cloudflare_worker/tests/test_installer_diag.py) covers anonymous installer diagnostics and [test_install_diag.py](../cloudflare_worker/tests/test_install_diag.py) covers validation for the install diagnostic route. |
++| Failure paths | Automated coverage and Operator proof required | [Mirror failover guidance](/docs/#mirror-failover) explains the source-unavailable check. [test_mirror_failover_chaos.py](../cloudflare_worker/tests/test_mirror_failover_chaos.py) covers failure and recovery behavior. An operator must retain a real failover run for production proof. |
++| Rollback and recovery | Roadmap | Publish an operator recovery runbook with rollback decisions, ownership, and recovery-time evidence. Add a repeatable recovery test before making a completed recovery claim. |
++| Telemetry and measurement | Working product action, Automated coverage, and Roadmap | Public pages collect only the allowlisted `forkmesh.homepage_cta_clicked`, `forkmesh.install_command_copied`, and `forkmesh.proof_path_link_clicked` interactions. [test_product_telemetry.py](../cloudflare_worker/tests/test_product_telemetry.py), [test_telemetry.py](../cloudflare_worker/tests/test_telemetry.py), [test_installer_diag.py](../cloudflare_worker/tests/test_installer_diag.py), and [test_status_page.py](../cloudflare_worker/tests/test_status_page.py) cover the controls and existing diagnostics. `forkmesh.desktop_installer_started`, `forkmesh.desktop_installer_succeeded`, `forkmesh.repo_mirrored_or_published`, `forkmesh.clone_route_requested`, and `forkmesh.clone_fallback_served_by_mirror` remain Roadmap until a privacy-reviewed aggregate can collect them without repository, user, host, or clone URL data. |
++| Documentation | Working product action and Automated coverage | The public [docs landing page](/docs/) and its [proof path](/docs/#proof-path) are covered by [test_docs_frontend.py](../cloudflare_worker/tests/test_docs_frontend.py) and [test_product_proof_path.py](../cloudflare_worker/tests/test_product_proof_path.py). |
++
++## Closure record
++
++Attach the date, environment, anonymized result, and responsible operator when an Operator proof required item is completed.
++Do not replace a product action or production proof with a test-only claim.
++Do not promote a Roadmap item until its linked action, evidence, and operating guidance are complete.
++
++## Measurement definitions
++
++- Promise comprehension is the percentage of participants who pass the [comprehension template](research/product-promise-comprehension-template.md) for each five-person cohort.
++- Homepage-to-clone conversion begins with `forkmesh.homepage_cta_clicked` and requires the Roadmap `forkmesh.clone_route_requested` aggregate before it can be calculated end to end.
++- Unsupported-claim count is the number of failures in [test_product_contract_copy.py](../cloudflare_worker/tests/test_product_contract_copy.py) and should remain zero on every change.
+diff --git a/docs/research/product-promise-comprehension-template.md b/docs/research/product-promise-comprehension-template.md
+new file mode 100644
+index 000000000..f43a54900
+--- /dev/null
++++ b/docs/research/product-promise-comprehension-template.md
+@@ -0,0 +1,69 @@
++# Product-promise comprehension research template
++
++Use this lightweight, moderated template to measure whether people understand ForkMesh's product promise before a release or major positioning change.
++Run it with the current public product, the proof path, and a consistent moderator script.
++
++## Promise shown to participants
++
++> ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider.
++
++Show the sentence without explaining its terms first.
++Ask the questions below before demonstrating the product or proof path.
++
++## Recommended cohorts
++
++Run a separate five-person session for each of these cohorts:
++
++- 5 maintainers
++- 5 contributors
++- 5 operators/node runners
++
++Record the cohort type and a randomized participant ID only.
++Do not record names, email addresses, repository names, or other identifying information.
++
++## Moderator script
++
++Tell the participant that you are testing the clarity of the product sentence, not their technical knowledge.
++Read each question exactly as written and do not explain, correct, or prompt for missing terms until all answers are recorded.
++After the questions, invite the participant to use the public proof path if they want to explore the product.
++
++## Questions
++
++1. In your words, what does ForkMesh do?
++2. What are the three jobs this sentence promises?
++3. What does ‘without relying on any single hosting provider’ mean?
++4. What would you try first to prove it works?
++
++## Pass rule
++
++A participant passes only when their unprompted response mentions all three jobs: collaborate, mirror, and preserve.
++A participant also must understand the benefit as no single provider controls availability.
++A cohort passes when at least 4 of 5 participants pass, which is 80%.
++Score every intended cohort separately rather than combining answers across cohorts.
++
++## Anonymized session record
++
++Copy this table once per cohort and replace the placeholder IDs with randomized IDs such as `M-01`, `C-01`, or `O-01`.
++
++| Participant ID | Collaborate | Mirror | Preserve | No single provider controls availability | First proof attempt | Pass | Notes without identifiers |
++| --- | --- | --- | --- | --- | --- | --- | --- |
++| `XX-01` |  |  |  |  |  |  |  |
++| `XX-02` |  |  |  |  |  |  |  |
++| `XX-03` |  |  |  |  |  |  |  |
++| `XX-04` |  |  |  |  |  |  |  |
++| `XX-05` |  |  |  |  |  |  |  |
++
++Mark each understanding column as `yes`, `no`, or `unclear`.
++Mark Pass as `yes` only when every required criterion is `yes`.
++Summarize misunderstanding patterns without quoting identifying details.
++
++## Closure record
++
++| Cohort | Participants | Passes | Result | Date | Anonymized findings link |
++| --- | --- | --- | --- | --- | --- |
++| Maintainers | 5 |  |  |  |  |
++| Contributors | 5 |  |  |  |  |
++| Operators/node runners | 5 |  |  |  |  |
++
++Do not claim comprehension validation is complete until anonymized results are attached.
++If any cohort has fewer than 4 of 5 passes, revise the promise or proof path and repeat that cohort with a new five-person sample.
+diff --git a/docs/superpowers/plans/2026-07-23-canonical-product-promise.md b/docs/superpowers/plans/2026-07-23-canonical-product-promise.md
+new file mode 100644
+index 000000000..2d0bd2259
+--- /dev/null
++++ b/docs/superpowers/plans/2026-07-23-canonical-product-promise.md
+@@ -0,0 +1,147 @@
++# Canonical Product Promise Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Make the approved ForkMesh product promise the first primary positioning sentence on every requested public surface.
++
++**Architecture:** This is a static-content change with a static contract test as its guardrail.
++The test names every target page, verifies the exact promise is present, and verifies that homepage metadata and relevant JSON-LD descriptions use the same value.
++
++**Tech Stack:** Python `pytest`, static HTML, JSON-LD, HTML metadata.
++
++---
++
++### Task 1: Define the canonical promise contract
++
++**Files:**
++- Create: `cloudflare_worker/tests/test_canonical_product_promise.py`
++
++- [ ] **Step 1: Write the failing static contract test**
++
++```python
++from html.parser import HTMLParser
++from pathlib import Path
++
++
++PUBLIC = Path(__file__).resolve().parents[1] / "public"
++ROOT = PUBLIC.parent.parent
++PROMISE = (
++    "ForkMesh lets developers collaborate on, mirror, and preserve source-code "
++    "repositories across independent hosts—without relying on any single hosting provider."
++)
++TARGET_PAGES = (
++    PUBLIC / "index.html",
++    PUBLIC / "dashboard" / "repo.html",
++    PUBLIC / "signup.html",
++    PUBLIC / "desktop.html",
++    PUBLIC / "pricing.html",
++    PUBLIC / "mirror-payouts.html",
++    PUBLIC / "docs.html",
++    PUBLIC / "docs" / "index.html",
++)
++
++
++class MetaParser(HTMLParser):
++    def __init__(self):
++        super().__init__()
++        self.values = {}
++
++    def handle_starttag(self, tag, attrs):
++        if tag != "meta":
++            return
++        values = dict(attrs)
++        key = values.get("name") or values.get("property")
++        if key:
++            self.values[key] = values.get("content")
++
++
++def _read(path: Path) -> str:
++    return path.read_text(encoding="utf-8")
++
++
++def test_readme_keeps_the_approved_promise_as_source_reference():
++    assert PROMISE in _read(ROOT / "README.md")
++
++
++def test_every_requested_public_surface_uses_the_exact_promise():
++    for page in TARGET_PAGES:
++        assert PROMISE in _read(page), page
++
++
++def test_homepage_primary_metadata_and_json_ld_use_the_promise():
++    html = _read(PUBLIC / "index.html")
++    parser = MetaParser()
++    parser.feed(html)
++
++    for key in ("description", "og:description", "twitter:description"):
++        assert parser.values[key] == PROMISE
++
++    assert html.count(f'"description": "{PROMISE}"') == 3
++```
++
++- [ ] **Step 2: Run the focused test to verify it fails for missing page copy**
++
++Run: `pytest tests/test_canonical_product_promise.py -q`
++
++Expected: FAIL in `test_every_requested_public_surface_uses_the_exact_promise` because the current target pages do not contain the approved promise.
++
++### Task 2: Put the canonical sentence first on the public entry points
++
++**Files:**
++- Modify: `cloudflare_worker/public/index.html:10-114,2167-2179`
++- Modify: `cloudflare_worker/public/dashboard/repo.html:8`
++- Modify: `cloudflare_worker/public/signup.html:9-11,330-333`
++- Modify: `cloudflare_worker/public/desktop.html:8,107-112`
++- Modify: `cloudflare_worker/public/pricing.html:9-29,736-744`
++- Modify: `cloudflare_worker/public/mirror-payouts.html:9-11,115-121`
++- Modify: `cloudflare_worker/public/docs.html:9-11,435-470`
++- Modify: `cloudflare_worker/public/docs/index.html:9-11,450-485`
++
++- [ ] **Step 1: Update homepage primary content and discoverability metadata**
++
++Set the homepage standard description, OG description, and Twitter description values to `PROMISE`.
++Set the JSON-LD `description` values for the Organization, WebSite, and SoftwareApplication records to `PROMISE`.
++Place `PROMISE` as the first sentence in the hero paragraph after the existing `Never lose the code that matters` headline.
++Keep the current statement about desktop-node mirrors, portable history, issues, pull requests, and earning for uptime after `PROMISE`.
++
++- [ ] **Step 2: Update each page-specific primary surface**
++
++Set the static repository page description to `PROMISE`.
++Set the signup page description to `PROMISE` and begin the `join-sub` paragraph beneath `Join ForkMesh` with `PROMISE` before its current free-account feature copy.
++Set the desktop page description to `PROMISE` and begin the `install-lede` beneath `Install ForkMesh Desktop` with `PROMISE` before its local-mirror installation explanation.
++Set the pricing page standard and OG descriptions to `PROMISE` and begin the paragraph beneath `Coding Reimagined For Modern Teams` with `PROMISE` before the current plan-specific feature list.
++Set the mirror-payouts page description to `PROMISE` and begin the paragraph beneath `Get paid to mirror` with `PROMISE` before the existing operator-reward explanation.
++Set the standard description on both docs landing pages to `PROMISE` and begin each opening lead beneath `ForkMesh` with `PROMISE` before the current documentation overview.
++
++- [ ] **Step 3: Run the focused test to verify the static contract passes**
++
++Run: `pytest tests/test_canonical_product_promise.py -q`
++
++Expected: PASS with 3 tests collected and no failures.
++
++### Task 3: Check regressions and preserve page contracts
++
++**Files:**
++- Test: `cloudflare_worker/tests/test_docs_frontend.py`
++- Test: `cloudflare_worker/tests/test_auth_pages_frontend.py`
++- Test: `cloudflare_worker/tests/test_feature_pricing_section.py`
++- Test: `cloudflare_worker/tests/test_landing_typography.py`
++
++- [ ] **Step 1: Run the page-specific static regression suite**
++
++Run: `pytest tests/test_canonical_product_promise.py tests/test_docs_frontend.py tests/test_auth_pages_frontend.py tests/test_feature_pricing_section.py tests/test_landing_typography.py -q`
++
++Expected: PASS with no failures, confirming that documentation, auth, pricing, and homepage contracts remain intact.
++
++- [ ] **Step 2: Inspect the final diff for promise accuracy and unintended churn**
++
++Run: `git diff --check && git diff -- public/index.html public/dashboard/repo.html public/signup.html public/desktop.html public/pricing.html public/mirror-payouts.html public/docs.html public/docs/index.html tests/test_canonical_product_promise.py`
++
++Expected: no whitespace errors, the exact approved promise at every requested surface, and no removal of supporting feature copy.
++
++- [ ] **Step 3: Commit the implementation**
++
++```bash
++git add public/index.html public/dashboard/repo.html public/signup.html public/desktop.html public/pricing.html public/mirror-payouts.html public/docs.html public/docs/index.html tests/test_canonical_product_promise.py
++git commit -m "fix: make product promise canonical"
++```
+diff --git a/docs/superpowers/specs/2026-07-23-canonical-product-promise-design.md b/docs/superpowers/specs/2026-07-23-canonical-product-promise-design.md
+new file mode 100644
+index 000000000..e209b10a1
+--- /dev/null
++++ b/docs/superpowers/specs/2026-07-23-canonical-product-promise-design.md
+@@ -0,0 +1,35 @@
++# Canonical Product Promise Design
++
++## Goal
++
++Make the approved ForkMesh product promise the first positioning sentence across the public entry points named in the issue.
++
++## Canonical promise
++
++> ForkMesh lets developers collaborate on, mirror, and preserve source-code repositories across independent hosts—without relying on any single hosting provider.
++
++## Scope
++
++The root `README.md` remains the source reference and is not edited.
++
++The homepage uses the promise in its hero description, standard metadata, social metadata, and applicable JSON-LD descriptions.
++
++The repository page uses the promise in its static page metadata without changing repository-specific interface behavior.
++
++The signup, desktop, pricing, and mirror-payouts pages use the promise as their first visible positioning sentence and retain their present feature-specific details afterward.
++
++Both documentation entry points, `public/docs.html` and `public/docs/index.html`, use the promise in their metadata and opening lead copy.
++
++## Content rules
++
++The promise must be reproduced verbatim, including its punctuation.
++
++Existing copy about live mirrors, signed collaboration, encrypted rooms, AI agents, pricing, bounties, and operator rewards remains after the promise as supporting detail.
++
++Existing headlines and task-oriented page copy remain unless they prevent the canonical promise from being the first explanatory product-positioning sentence.
++
++## Verification
++
++A focused static test will require the exact promise in every target HTML page and the homepage metadata and structured data surfaces.
++
++Existing page-specific static tests will be run to ensure that the targeted pages retain their required UI contracts.

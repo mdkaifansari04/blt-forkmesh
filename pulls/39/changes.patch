@@ -1,0 +1,215 @@
+diff --git a/cloudflare_marketing_worker/README.md b/cloudflare_marketing_worker/README.md
+index a80fa9a0..7d63f83d 100644
+--- a/cloudflare_marketing_worker/README.md
++++ b/cloudflare_marketing_worker/README.md
+@@ -46,4 +46,6 @@ read from the relay Worker's gitignored `../cloudflare_worker/.env.production`
+ independent: shipping relay changes does not touch the marketing routes, and
+ vice versa. When a marketing page itself changes (`index.html`, `pricing.html`,
+ `blog.html`, or a `blog/<slug>/index.html`), redeploy **this** Worker to pick up
+-the copy.
++the copy. If the shared environment file contains `SENTRY_DSN`, the deploy also
++installs it as a secret here; unhandled exceptions include their Cloudflare Ray
++ID in Sentry before being rethrown as Error 1101.
+diff --git a/cloudflare_marketing_worker/deploy.sh b/cloudflare_marketing_worker/deploy.sh
+index c8337b03..65c7622e 100755
+--- a/cloudflare_marketing_worker/deploy.sh
++++ b/cloudflare_marketing_worker/deploy.sh
+@@ -22,9 +22,11 @@ cd "$(dirname "$0")"
+ 
+ # Cloudflare credentials live in the relay Worker's gitignored .env.production —
+ # both Workers deploy to the same account/zone, so share it rather than keeping
+-# a second secrets file in sync. Only CLOUDFLARE_* keys are read; everything
+-# else in that file is relay-Worker secrets and never touches this Worker.
++# a second secrets file in sync. CLOUDFLARE_* keys configure wrangler; the
++# SENTRY_DSN is also copied to this Worker so its Error 1101 exceptions reach
++# the same Sentry project. All other values remain relay-only secrets.
+ ENV_FILE="../cloudflare_worker/.env.production"
++MARKETING_SENTRY_DSN=""
+ 
+ # Same pinned wrangler as the relay's pywrangler pipeline (see pywrangler.sh).
+ WRANGLER_NPM_SPEC="${WRANGLER_NPM_SPEC:-wrangler@4.42.1}"
+@@ -45,6 +47,7 @@ if [ -f "$ENV_FILE" ]; then
+         value="$(trim "${line#*=}")"
+         case "$key" in
+             CLOUDFLARE_*) [ -n "$value" ] && export "$key=$value" ;;
++            SENTRY_DSN) MARKETING_SENTRY_DSN="$value" ;;
+         esac
+     done < "$ENV_FILE"
+ fi
+@@ -89,6 +92,14 @@ wrangler_cmd() {
+     npm exec --yes --package "$WRANGLER_NPM_SPEC" -- wrangler "$@"
+ }
+ 
++push_sentry_secret() {
++    if [ -z "$MARKETING_SENTRY_DSN" ]; then
++        echo "note: SENTRY_DSN is unset; marketing Worker exceptions will only appear in Cloudflare logs." >&2
++        return 0
++    fi
++    printf '%s' "$MARKETING_SENTRY_DSN" | wrangler_cmd secret put SENTRY_DSN
++}
++
+ # Prove forkmesh.com/ is actually answered by THIS Worker after the deploy: the
+ # x-forkmesh-worker: marketing header is stamped on every landing response and
+ # on the logged-in 302, so its absence means the exact-match route never took
+@@ -124,6 +135,7 @@ case "${1:-deploy}" in
+         require_cloudflare_auth
+         echo "Deploying ForkMesh marketing Worker (forkmesh.com/) to Cloudflare..."
+         wrangler_cmd deploy
++        push_sentry_secret
+         verify_deploy
+         echo "Done. forkmesh.com/ is served by forkmesh-marketing; everything else stays on forkmesh-relay."
+         ;;
+diff --git a/cloudflare_marketing_worker/src/entry.js b/cloudflare_marketing_worker/src/entry.js
+index 98b396a1..4f72c89d 100644
+--- a/cloudflare_marketing_worker/src/entry.js
++++ b/cloudflare_marketing_worker/src/entry.js
+@@ -65,8 +65,85 @@ function bounceToRelay(url) {
+     "https://forkmesh.com" + url.pathname + url.search, 302);
+ }
+ 
+-export default {
+-  async fetch(request, env) {
++function sentryDsnParts(dsn) {
++  try {
++    const parsed = new URL(dsn || "");
++    const segments = parsed.pathname.split("/").filter(Boolean);
++    const projectId = segments.pop();
++    if (!parsed.username || !projectId || !/^https?:$/.test(parsed.protocol)) {
++      return null;
++    }
++    const prefix = segments.length ? `/${segments.join("/")}` : "";
++    return {
++      dsn,
++      endpoint: `${parsed.origin}${prefix}/api/${projectId}/envelope/`,
++      auth: "Sentry sentry_version=7,sentry_client=forkmesh-marketing/1," +
++        `sentry_key=${encodeURIComponent(parsed.username)}`,
++    };
++  } catch (_err) {
++    return null;
++  }
++}
++
++async function captureSentryException(env, request, error) {
++  try {
++    const parts = sentryDsnParts(env.SENTRY_DSN);
++    if (!parts) return false;
++    const url = new URL(request.url);
++    const ray = request.headers.get("cf-ray") || "";
++    const eventId = crypto.randomUUID().replaceAll("-", "");
++    const message = String(error && (error.stack || error.message || error));
++    const event = {
++      event_id: eventId,
++      timestamp: Date.now() / 1000,
++      platform: "javascript",
++      logger: "forkmesh.cloudflare_marketing_worker",
++      level: "error",
++      message: message.slice(0, 1000) || "Worker threw exception",
++      transaction: url.pathname,
++      tags: {
++        runtime: "cloudflare-worker",
++        service: "forkmesh-marketing",
++        "cloudflare.error_code": "1101",
++        "cloudflare.ray_id": ray,
++      },
++      contexts: {
++        cloudflare: { error_code: "1101", ray_id: ray },
++      },
++      request: {
++        url: url.origin + url.pathname,
++        method: request.method,
++        headers: {
++          "user-agent": request.headers.get("user-agent") || "",
++          "cf-ray": ray,
++        },
++      },
++      exception: {
++        values: [{
++          type: String(error && error.name || "Error"),
++          value: String(error && error.message || error).slice(0, 1000),
++        }],
++      },
++      extra: { stack: message.slice(0, 8000) },
++    };
++    const envelope = JSON.stringify({ event_id: eventId, dsn: parts.dsn }) +
++      "\n" + JSON.stringify({ type: "event" }) +
++      "\n" + JSON.stringify(event) + "\n";
++    const response = await fetch(parts.endpoint, {
++      method: "POST",
++      headers: {
++        "content-type": "application/x-sentry-envelope",
++        "x-sentry-auth": parts.auth,
++      },
++      body: envelope,
++    });
++    return response.ok;
++  } catch (_err) {
++    return false;
++  }
++}
++
++async function handleRequest(request, env) {
+     const url = new URL(request.url);
+     const path = url.pathname;
+ 
+@@ -130,5 +207,17 @@ export default {
+       });
+     }
+     return new Response(asset.body, { status: 200, headers: PAGE_HEADERS });
++}
++
++export default {
++  async fetch(request, env) {
++    try {
++      return await handleRequest(request, env);
++    } catch (error) {
++      // Await ingest before rethrowing: once Cloudflare terminates the failed
++      // invocation there is no remaining lifetime for a background report.
++      await captureSentryException(env, request, error);
++      throw error;
++    }
+   },
+ };
+diff --git a/cloudflare_worker/.env.production.example b/cloudflare_worker/.env.production.example
+index c578061d..2944e380 100644
+--- a/cloudflare_worker/.env.production.example
++++ b/cloudflare_worker/.env.production.example
+@@ -60,10 +60,9 @@ MAILTRAP_API_TOKEN=CHANGE-ME
+ # MAILTRAP_SENDER=no-reply@forkmesh.com
+ # MAILTRAP_SENDER_NAME=ForkMesh
+ 
+-# Optional Sentry DSN. When set as a Worker secret/var, unhandled Worker errors,
+-# returned 5xx responses, and cron failures are reported via direct HTTP ingest
+-# (no Python package or framework plugin). Cron failures also send Sentry Cron
+-# Monitoring check-ins; override the monitor slug if you already created one.
++# Optional Sentry DSN. Both deploy scripts copy this to their Worker, so
++# unhandled relay and marketing-Worker errors, returned relay 5xx responses,
++# and cron failures are reported via direct HTTP ingest (no SDK/plugin).
+ # SENTRY_DSN=https://PUBLIC_KEY@o000000.ingest.sentry.io/000000
+ # SENTRY_CRON_MONITOR_SLUG=forkmesh-relay
+ # SENTRY_CRON_CHECKIN_MARGIN_MINUTES=1
+diff --git a/cloudflare_worker/tests/test_marketing_worker.py b/cloudflare_worker/tests/test_marketing_worker.py
+index 6d7a2eeb..59281fd5 100644
+--- a/cloudflare_worker/tests/test_marketing_worker.py
++++ b/cloudflare_worker/tests/test_marketing_worker.py
+@@ -103,6 +103,21 @@ def test_marketing_responses_are_attributable_and_verified():
+     assert "x-forkmesh-worker:[[:space:]]*marketing" in MARKETING_DEPLOY
+ 
+ 
++def test_marketing_worker_reports_unhandled_1101_exceptions_to_sentry():
++    # The relay already has its own Python Sentry boundary. Marketing routes
++    # run in a separate JS Worker, so that Worker must ingest and rethrow too.
++    assert "async function captureSentryException" in MARKETING_ENTRY
++    assert '"cloudflare.error_code": "1101"' in MARKETING_ENTRY
++    assert '"cloudflare.ray_id": ray' in MARKETING_ENTRY
++    assert "application/x-sentry-envelope" in MARKETING_ENTRY
++    assert "await captureSentryException(env, request, error);" in MARKETING_ENTRY
++    assert "throw error;" in MARKETING_ENTRY
++    # Production deploys share the relay's DSN without exposing it as a
++    # plaintext wrangler var.
++    assert 'SENTRY_DSN) MARKETING_SENTRY_DSN="$value"' in MARKETING_DEPLOY
++    assert "wrangler_cmd secret put SENTRY_DSN" in MARKETING_DEPLOY
++
++
+ def test_relay_keeps_its_homepage_fallback():
+     # The relay still owns / on workers.dev previews and in local dev, where no
+     # route splitting exists — its handler and worker-first entry must survive
