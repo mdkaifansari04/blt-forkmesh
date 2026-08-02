@@ -88,6 +88,14 @@
     if (board.id === "referring-sites") {
       return "Aggregate HTTP referrals";
     }
+    if (board.id === "wallets") {
+      // The published payout address itself, abbreviated the way the rest of
+      // the site shows one. Public profile data, not a claim on any funds.
+      const wallet = String(row.wallet || "");
+      return wallet.length > 10
+        ? `${wallet.slice(0, 4)}…${wallet.slice(-4)}`
+        : wallet;
+    }
     return "";
   }
 
@@ -120,7 +128,12 @@
     if (!rows.length) {
       const empty = document.createElement("p");
       empty.className = "leaderboard-empty";
-      empty.textContent = "No public data yet.";
+      // A board whose source could not be read this rebuild is empty for a
+      // reason the visitor should not have to guess at: the endpoint marks
+      // it, so say "unavailable" rather than "nobody has entered yet".
+      empty.textContent = board.degraded
+        ? "Temporarily unavailable."
+        : "No public data yet.";
       card.appendChild(empty);
       return card;
     }

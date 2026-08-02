@@ -42,6 +42,10 @@ struct PullAgentProvenance {
 // Fold the ForkMesh-Agent trailer out of a PR's commit series. Returns
 // isAgent=false when no commit carries the trailer (a human-authored PR).
 PullAgentProvenance pullAgentProvenance(const PullRequest &pr);
+// Same, over the raw commit series on its own. A PullRequest is tied to the GUI
+// thread's m_currentPulls, so the worker that precomputes the list badges reads
+// the mbox text directly (see MainWindow::applyLoadedPulls).
+PullAgentProvenance pullAgentProvenanceIn(const QString &commits);
 
 // Per-file authorship, keyed by changed-file path: true when at least one
 // agent-stamped commit touched the file. Lets the Files-changed tab filter by

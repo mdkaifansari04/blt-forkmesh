@@ -9,6 +9,7 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "NodeDiagnostics.h"
 #include "QrCode.h"
 #include "WorldSpeechBridge.h"
 
@@ -732,24 +733,9 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kThemeSetting, m_themeCombo->currentData().toString());
         applyTheme();
     });
-    auto *showCurrencyCombo = new QComboBox;
-    showCurrencyCombo->addItem("Show balance in SOL", QStringLiteral("sol"));
-    showCurrencyCombo->addItem("Show balance in USD", QStringLiteral("usd"));
-    showCurrencyCombo->addItem("Show balance in INR (\xE2\x82\xB9)",
-                               QStringLiteral("inr"));
-    showCurrencyCombo->setToolTip(
-        "Currency for your top-bar balance (live SOL price for USD/INR). "
-        "Also switchable by clicking the balance in the top bar.");
-    {
-        const int idx = showCurrencyCombo->findData(solanaDisplayCurrency());
-        showCurrencyCombo->setCurrentIndex(idx < 0 ? 0 : idx);
-    }
-    connect(showCurrencyCombo, &QComboBox::currentIndexChanged, this, [this,
-            showCurrencyCombo](int) {
-        QSettings().setValue(kSolanaDisplayCurrencySetting,
-                             showCurrencyCombo->currentData().toString());
-        updateNavSolanaBalance();
-    });
+    // The SOL/USD/INR balance-currency picker is gone with the balance's move
+    // under the account avatar (adhoc #96): that line is a tiny always-SOL
+    // figure, so there is no display currency left to choose.
     auto *rebuildButtonCheck =
         new QCheckBox("Show a rebuild & restart button in the top bar");
     rebuildButtonCheck->setChecked(
@@ -887,16 +873,29 @@ QWidget *MainWindow::buildSettingsSection()
     struct NodeStatToggle {
         const char *label;
         const QString &key;
+        bool defaultOn;
+        const char *tip;
     };
     const NodeStatToggle nodeStatToggles[] = {
-        {"Report CPU usage", TelemetrySettings::kReportCpu},
-        {"Report memory usage", TelemetrySettings::kReportMemory},
-        {"Report disk usage", TelemetrySettings::kReportDisk},
+        {"Report CPU usage", TelemetrySettings::kReportCpu, false, nullptr},
+        {"Report memory usage", TelemetrySettings::kReportMemory, false, nullptr},
+        {"Report disk usage", TelemetrySettings::kReportDisk, false, nullptr},
+        // On by default, unlike the three gauges: these are the problems nobody
+        // can see from the outside (adhoc #27), and they carry findings rather
+        // than load figures. The one caveat worth stating is the log summary.
+        {"Report self-diagnostics", TelemetrySettings::kReportDiagnostics, true,
+         "Run periodic health checks (disk filling up, inode and file-descriptor "
+         "pressure, defunct processes, relay link flapping, clock drift, errors "
+         "in this node's log) and push the findings to every node list. Includes "
+         "a short excerpt of the newest error line from this node's own log."},
     };
     QList<QCheckBox *> nodeStatChecks;
     for (const NodeStatToggle &toggle : nodeStatToggles) {
         auto *check = new QCheckBox(QString::fromUtf8(toggle.label));
-        check->setChecked(QSettings().value(toggle.key, false).toBool());
+        if (toggle.tip)
+            check->setToolTip(QString::fromUtf8(toggle.tip));
+        check->setChecked(
+            QSettings().value(toggle.key, toggle.defaultOn).toBool());
         const QString key = toggle.key;
         connect(check, &QCheckBox::toggled, this, [this, key](bool enabled) {
             QSettings().setValue(key, enabled);
@@ -1688,7 +1687,6 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addSpacing(6);
     generalCol->addWidget(appearanceLabel);
     generalCol->addWidget(m_themeCombo, 0, Qt::AlignLeft);
-    generalCol->addWidget(showCurrencyCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(rebuildButtonCheck);
     generalCol->addWidget(verboseNetLogCheck);
     generalCol->addSpacing(6);
@@ -1851,6 +1849,10 @@ QWidget *MainWindow::buildSettingsSection()
     addTab(buildDataSection(), "Data");
 
     m_settingsTabs = tabs;
+    // Each settings tab is its own destination on the Back/Forward trail
+    // (adhoc #50), so leaving one and coming back lands where you were.
+    connect(tabs, &QTabWidget::currentChanged, this,
+            [this](int) { scheduleNavRecord(); });
     layout->addWidget(tabs, 1);
     layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);
@@ -4332,6 +4334,29 @@ void MainWindow::saveNetworkLog()
     m_networkLogDiskLines = m_networkLog.size();
 }
 
+void MainWindow::logCapturedMessage(QtMsgType type, const QString &text)
+{
+    QString line = text.trimmed();
+    if (line.isEmpty())
+        return;
+    // Qt's own warnings read as plain statements ("QProcess: Destroyed while
+    // process ("git") is still running."), so without a severity word nothing
+    // in the entry says it wasn't ordinary progress. Say it — "Error" also
+    // earns the red ERROR badge from networkLogStyleFor().
+    switch (type) {
+    case QtWarningMsg:
+        line = QStringLiteral("Warning: ") + line;
+        break;
+    case QtCriticalMsg:
+    case QtFatalMsg:
+        line = QStringLiteral("Error: ") + line;
+        break;
+    default:
+        break;
+    }
+    logSystem(line);
+}
+
 void MainWindow::logSystem(const QString &text)
 {
     // Some callers (e.g. flashMessage("") to dismiss the toast) pass empty or
@@ -4345,6 +4370,10 @@ void MainWindow::logSystem(const QString &text)
     plain.replace(QChar(0x2014), QLatin1Char('-'));
     plain.replace(QChar(0x2026), QStringLiteral("..."));
     const QString line = time + "  " + plain;
+    // Feed the node's self-check (adhoc #27): error lines here are what a
+    // headless node would otherwise only ever tell a terminal nobody reads, and
+    // the running tally is pushed to every node list with the heartbeat.
+    NodeDiagnostics::hostCollector().noteLogLine(plain);
     m_networkLog.append(line);
     bool chipsChanged = false;
     while (m_networkLog.size() > kNetworkLogLimit) {
@@ -4399,153 +4428,342 @@ void MainWindow::logSystem(const QString &text)
     }
 }
 
-// Toast pill caps the inline message at this many characters; longer text is
-// elided to one line and revealed in full via the Expand button. Sized to the
-// footer mini-log panel the pill now fills (see m_topMessageContainer); the
-// label clips rather than elides below that, and Expand is always one click away.
-static constexpr int kToastMaxChars = 160;
-
 // Auto-dismiss windows for the top toast. Every toast counts down visibly so the
 // notification area never flashes a message away unannounced. Success
 // confirmations clear quickly; errors linger far longer (but still show a
-// countdown) so a failure can be read and copied before it fades — its full text
+// countdown) so a failure can be read and copied before it leaves — its full text
 // is also preserved in the network log regardless.
 static constexpr int kToastSuccessSeconds = 5;
 static constexpr int kToastErrorSeconds = 20;
+static constexpr int kPromptBubbleSeconds = 8;
 
-// Cap on how many error toasts can back up in m_topMessageQueue; a runaway
-// retry loop firing errors faster than they can be read shouldn't grow this
-// without bound. The oldest queued message is dropped once the cap is hit.
+// How long the bubble takes to glide off the right edge once its countdown
+// finishes. It stays fully opaque throughout — the exit is the motion, not a fade
+// (adhoc #226), so the message is legible right up to the moment it leaves.
+static constexpr int kToastSlideOutMs = 320;
+// The composer-to-bubble arrival, restored on the shared geometry animation
+// whenever a new bubble is shown (the slide-out retunes it).
+static constexpr int kToastFlightMs = 260;
+
+// Cap the visible notification backlog. A runaway retry loop firing messages
+// faster than they can be read should not grow the queue without bound; the
+// oldest queued message is dropped once the cap is hit.
 static constexpr int kToastQueueLimit = 20;
 
-// The toast is docked in the footer's mini-log panel, and the Git workspace
-// hides that whole footer to give the diff the full window height. Report that
-// so a message raised there still reaches the user (via the floating overlay)
-// instead of being painted into a hidden panel.
+// The Git workspace hides the footer composer to give the diff the full window
+// height. Keep the bubble usable there by falling back to the lower-right
+// corner instead of anchoring to a hidden prompt.
 bool MainWindow::topMessageDockVisible() const
 {
-    return m_footerDock && m_footerDock->isVisible();
+    return m_promptWrapper && m_promptWrapper->isVisible();
 }
 
 // Park a message behind the toast that is currently counting down, dropping the
-// oldest once the queue is full. Used both by a burst of errors and by the
-// stream of pings this area mirrors (adhoc #77).
-void MainWindow::queueTopMessage(const QString &text, bool error)
+// oldest once the queue is full. The queue is rendered beneath the active toast
+// so every pending message remains visible and can be read before its turn.
+void MainWindow::queueTopMessage(const QString &text, bool error,
+                                 const QString &clickHref)
 {
     const QString trimmed = text.simplified();
     if (trimmed.isEmpty())
         return;
-    m_topMessageQueue.append(qMakePair(trimmed, error));
+    m_topMessageQueue.append({trimmed, error, clickHref});
     while (m_topMessageQueue.size() > kToastQueueLimit)
         m_topMessageQueue.removeFirst();
-    renderTopMessageCountdown(); // repaint the "(+N more)" suffix
+    renderTopMessageQueue();
+    positionTopMessageBubble(); // move the active bubble up above the new card
+    renderTopMessageCountdown();
+}
+
+// Unlike the previous "+N more" counter, queued notifications stay on screen
+// in their arrival order. The active toast sits immediately above this list, so
+// each incoming card pushes older notifications upward instead of covering them.
+void MainWindow::renderTopMessageQueue()
+{
+    if (!m_topMessageQueueLayout || !m_topMessageQueueContent ||
+        !m_topMessageQueueScroll)
+        return;
+
+    while (QLayoutItem *item = m_topMessageQueueLayout->takeAt(0)) {
+        delete item->widget();
+        delete item;
+    }
+
+    for (const auto &entry : m_topMessageQueue) {
+        auto *card = new QFrame(m_topMessageQueueContent);
+        card->setObjectName("topMessageQueueCard");
+        card->setAttribute(Qt::WA_StyledBackground, true);
+        auto *row = new QVBoxLayout(card);
+        row->setContentsMargins(12, 8, 10, 8);
+        row->setSpacing(0);
+
+        auto *label = new QLabel(card);
+        label->setObjectName("topMessageQueueText");
+        label->setTextFormat(Qt::RichText);
+        label->setWordWrap(true);
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        const QString color = entry.error ? QStringLiteral("#f85149")
+                                          : QStringLiteral("#3fb950");
+        const QString glyph = entry.error ? QString::fromUtf8("\xE2\x9C\x95")
+                                          : QString::fromUtf8("\xE2\x9C\x93");
+        label->setText(QStringLiteral("<span style='color:%1'>%2 %3</span>")
+                           .arg(color, glyph, entry.text.toHtmlEscaped()));
+        row->addWidget(label);
+        m_topMessageQueueLayout->addWidget(card);
+    }
+
+    m_topMessageQueueContent->adjustSize();
+    m_topMessageQueueScroll->setVisible(!m_topMessageQueue.isEmpty());
 }
 
 // True while a toast is on screen with its countdown still running: a new
 // background event must queue instead of stomping what is being read.
 bool MainWindow::topMessageBusy() const
 {
-    return m_topMessage && m_topMessage->isVisible() && m_topMessageTimer &&
-           m_topMessageTimer->isActive();
+    return m_topMessage && m_topMessage->isVisible() &&
+           ((m_topMessageTimer && m_topMessageTimer->isActive()) ||
+            m_topMessageSlidingOut);
 }
 
-// (Re)paint the toast from m_topMessageRaw, honoring the expand/collapse state.
-// A long message shows as an elided one-liner so it can never widen the window;
-// expanding it wraps the full text so the toast grows in place (no modal).
+// (Re)paint the prompt-anchored bubble from m_topMessageRaw. Every message is
+// shown whole — it wraps across the bubble's full width and the bubble grows to
+// fit, so no notification is ever cut off behind an ellipsis.
 void MainWindow::renderTopMessage()
 {
     if (!m_topMessage)
         return;
-    // Green for success, red for failure; compact pill in the centre of the bar.
+    // Green for success, red for failure.
     const QString fg = m_topMessageError ? "#f85149" : "#3fb950";
     const QString glyph = m_topMessageError ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
                                             : QString::fromUtf8("\xE2\x9C\x93"); // ✓
-    // The inline toast always stays a single elided one-liner; expanding never
-    // wraps or grows it. The full text is revealed in the floating overlay below
-    // instead, so it can't widen the window or push the layout around.
-    QString display = m_topMessageRaw;
-    if (m_topMessageElided)
-        display = display.left(kToastMaxChars - 1).trimmed()
-                  + QString::fromUtf8("\xE2\x80\xA6"); // …
-    m_topMessage->setWordWrap(false);
-    // The base HTML carries the message; auto-dismissing successes append a
-    // ticking countdown suffix on top of it (see renderTopMessageCountdown).
-    // When a click target is set, the message text itself becomes an underlined
-    // link (routed by the m_topMessage linkActivated handler) so e.g. an "agent is
-    // waiting for you" toast is clickable straight through to that agent.
-    QString body = display.toHtmlEscaped();
+    // When a click target is set, the message text itself becomes a link so e.g.
+    // an "agent is waiting for you" bubble jumps straight to that agent.
+    QString body = m_topMessageRaw.toHtmlEscaped();
+    body.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
     if (!m_topMessageHref.isEmpty())
         body = QStringLiteral(
                    "<a href='%1' style='color:%2;text-decoration:underline'>%3</a>")
                    .arg(m_topMessageHref.toHtmlEscaped(), fg, body);
-    m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
-                               .arg(fg, glyph, body);
+    if (m_topMessageIsPromptBubble) {
+        m_topMessageBaseHtml = QStringLiteral(
+                                   "<span style='color:%1'><b>↗ Prompt sent</b></span>"
+                                   "<br><span style='color:%1'>%2</span>")
+                                   .arg(fg, body);
+    } else {
+        m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
+                                   .arg(fg, glyph, body);
+    }
     m_topMessage->setText(m_topMessageBaseHtml);
-    // The expand toggle's glyph tracks the state: chevron-down to reveal more,
-    // chevron-up to collapse back to the one-liner.
-    if (m_topMessageExpand) {
-        setOcticon(m_topMessageExpand,
-                   m_topMessageExpanded ? "chevron-up" : "chevron-down", 14);
-        m_topMessageExpand->setToolTip(m_topMessageExpanded
-                                           ? QStringLiteral("Collapse the message")
-                                           : QStringLiteral("Show the full message"));
-    }
-    // Float the full, wrapped message on top of the layout when expanded — or
-    // whenever the footer that hosts the inline pill is hidden, so a Git-workspace
-    // failure is still seen. Hide the panel again when collapsed and docked.
-    if (m_topMessageOverlay && m_topMessageOverlayText) {
-        if (m_topMessageExpanded || !topMessageDockVisible()) {
-            m_topMessageOverlayText->setText(
-                QStringLiteral("<span style='color:%1'>%2 %3</span>")
-                    .arg(fg, glyph, m_topMessageRaw.toHtmlEscaped()));
-            positionTopMessageOverlay();
-            m_topMessageOverlay->show();
-            m_topMessageOverlay->raise();
-        } else {
-            m_topMessageOverlay->hide();
-        }
-    }
 }
 
-// Size the floating expanded-toast panel to its content (capped to a readable
-// width) and anchor it to the inline toast, centred on it but clamped to stay
-// inside the window. Called on expand and on window resize.
-void MainWindow::positionTopMessageOverlay()
+// Calculate a readable floating-bubble rectangle just above the composer. The
+// fallback is the lower-right corner when the composer is intentionally hidden.
+QRect MainWindow::topMessageBubbleRect()
 {
-    if (!m_topMessageOverlay || !m_topMessageContainer)
-        return;
+    if (!m_topMessageContainer)
+        return {};
     const int margin = 16;
-    const int w = qMin(900, qMax(240, width() - 2 * margin));
-    m_topMessageOverlay->setFixedWidth(w);
-    int h = m_topMessageOverlay->heightForWidth(w);
-    if (h <= 0)
-        h = m_topMessageOverlay->sizeHint().height();
-    h = qMin(h, qMax(120, height() - 2 * margin));
-    m_topMessageOverlay->setFixedHeight(h);
-    // With the footer hidden the pill has no meaningful geometry to anchor to, so
-    // the panel sits where the mini-log would have been: bottom-left of the window.
-    if (!topMessageDockVisible()) {
-        m_topMessageOverlay->move(margin, qMax(margin, height() - h - margin));
+    const bool hasPrompt = topMessageDockVisible();
+    const QRect anchor = hasPrompt
+                             ? QRect(m_promptWrapper->mapTo(this, QPoint()),
+                                     m_promptWrapper->size())
+                             : QRect();
+    const int available = qMax(120, width() - 2 * margin);
+    const int desired = hasPrompt ? qBound(260, anchor.width(), 560) : 460;
+    const int bubbleWidth = qMin(available, desired);
+    m_topMessageContainer->setFixedWidth(bubbleWidth);
+    // The bubble may grow until it would run past the top of the window (or past
+    // the composer it is anchored above); only beyond that does the text scroll.
+    const int roomForBubble = hasPrompt ? anchor.top() - 10 - margin
+                                        : height() - 2 * margin;
+    const int maxBubbleHeight = qBound(40, roomForBubble, qMax(40, height() - 2 * margin));
+    auto *column = m_topMessageContainer->layout();
+    int bubbleHeight = 0;
+    if (column && m_topMessage && m_topMessageScroll) {
+        const QMargins pad = column->contentsMargins();
+        // Chrome is everything the text does not get: the bubble's padding plus
+        // the countdown/actions row stacked underneath it.
+        int chrome = pad.top() + pad.bottom();
+        if (m_topMessageActions &&
+            m_topMessageActions->isVisibleTo(m_topMessageContainer))
+            chrome += m_topMessageActions->sizeHint().height() + column->spacing();
+        const int textWidth = qMax(40, bubbleWidth - pad.left() - pad.right());
+        int textHeight = m_topMessage->heightForWidth(textWidth);
+        if (textHeight <= 0)
+            textHeight = m_topMessage->sizeHint().height();
+        textHeight = qBound(18, textHeight, qMax(18, maxBubbleHeight - chrome));
+        m_topMessageScroll->setFixedHeight(textHeight);
+        column->activate();
+        bubbleHeight = textHeight + chrome;
+    }
+    if (bubbleHeight <= 0)
+        bubbleHeight = m_topMessageContainer->sizeHint().height();
+    bubbleHeight = qBound(40, bubbleHeight, maxBubbleHeight);
+    const int x = hasPrompt
+                      ? qBound(margin, anchor.right() - bubbleWidth + 1,
+                               qMax(margin, width() - bubbleWidth - margin))
+                      : qMax(margin, width() - bubbleWidth - margin);
+    int queueHeight = 0;
+    if (m_topMessageQueueScroll && m_topMessageQueueContent &&
+        !m_topMessageQueue.isEmpty()) {
+        m_topMessageQueueContent->setFixedWidth(bubbleWidth);
+        if (m_topMessageQueueLayout)
+            m_topMessageQueueLayout->activate();
+        m_topMessageQueueContent->adjustSize();
+        const int queueRoom = qMax(0, roomForBubble - bubbleHeight - 8);
+        queueHeight = qMin(m_topMessageQueueContent->sizeHint().height(), queueRoom);
+        m_topMessageQueueScroll->setFixedWidth(bubbleWidth);
+        m_topMessageQueueScroll->setFixedHeight(queueHeight);
+        m_topMessageQueueScroll->setVisible(queueHeight > 0);
+    } else if (m_topMessageQueueScroll) {
+        m_topMessageQueueScroll->hide();
+    }
+    const int above = hasPrompt ? anchor.top() - bubbleHeight - queueHeight -
+                                    (queueHeight > 0 ? 18 : 10)
+                                : height() - bubbleHeight - queueHeight -
+                                      (queueHeight > 0 ? margin + 8 : margin);
+    const int y = hasPrompt && above < margin
+                      ? qMin(qMax(margin, height() - bubbleHeight - margin),
+                             anchor.bottom() + 10)
+                      : qMax(margin, above);
+    return QRect(x, y, bubbleWidth, bubbleHeight);
+}
+
+// Size and anchor the floating bubble. Called whenever its content changes and
+// when the window moves or resizes.
+void MainWindow::positionTopMessageBubble()
+{
+    if (!m_topMessageContainer)
+        return;
+    if (m_topMessageSlidingOut)
+        return; // the exit animation owns the geometry until it lands
+    const QRect bubble = topMessageBubbleRect();
+    m_topMessageContainer->setGeometry(bubble);
+    if (m_topMessageQueueScroll && m_topMessageQueueScroll->isVisible()) {
+        m_topMessageQueueScroll->move(bubble.left(), bubble.bottom() + 9);
+        if (auto *bar = m_topMessageQueueScroll->verticalScrollBar())
+            bar->setValue(bar->maximum()); // keep the newest queued card visible
+        m_topMessageQueueScroll->raise();
+    }
+    m_topMessageContainer->raise();
+}
+
+// A hovered bubble should remain completely stable: stop the visible seconds
+// countdown, then continue it on leave. Nothing else moves while it is up — the
+// bubble only travels once the countdown has run out (slideTopMessageOut).
+void MainWindow::setTopMessagePaused(bool paused)
+{
+    if (m_topMessageHovering == paused)
+        return;
+    m_topMessageHovering = paused;
+    if (paused) {
+        if (m_topMessageTimer && m_topMessageTimer->isActive())
+            m_topMessageTimer->stop();
+    } else if (m_topMessageContainer && m_topMessageContainer->isVisible() &&
+               !m_loadStatusShowing && !m_topMessageSlidingOut &&
+               m_topMessageSecondsLeft > 0) {
+        if (m_topMessageTimer)
+            m_topMessageTimer->start(1000);
+    }
+    renderTopMessageCountdown();
+}
+
+// The countdown reached zero: instead of dimming the text away, keep it fully
+// opaque and glide the whole bubble off the right edge (the parent clips it), then
+// hand over to the next queued message. Called only from the countdown tick — an
+// explicit dismiss (✕) still closes immediately.
+void MainWindow::slideTopMessageOut()
+{
+    if (m_topMessageTimer)
+        m_topMessageTimer->stop();
+    m_topMessageSecondsLeft = 0;
+    if (!m_topMessageContainer || !m_topMessageContainer->isVisible() ||
+        !m_topMessageFlight) {
+        advanceTopMessageQueue();
         return;
     }
-    const QPoint top = m_topMessageContainer->mapTo(this, QPoint(0, 0));
-    int x = top.x() + m_topMessageContainer->width() / 2 - w / 2;
-    x = qBound(margin, x, qMax(margin, width() - w - margin));
-    // Prefer just below the pill, as before — but the toast now lives in the
-    // footer, so there is normally no room down there and the panel opens
-    // upward instead of running off the bottom of the window.
-    const int below = top.y() + m_topMessageContainer->height() + 6;
-    const int y = (below + h + margin <= height()) ? below
-                                                   : qMax(margin, top.y() - h - 6);
-    m_topMessageOverlay->move(x, y);
+    if (m_topMessageSlidingOut)
+        return; // already on its way out
+    m_topMessageSlidingOut = true;
+    // Drop the countdown as it leaves, so the last thing on screen is the message
+    // itself rather than a stale "0s".
+    if (m_topMessageMeta)
+        m_topMessageMeta->clear();
+    const QRect from = m_topMessageContainer->geometry();
+    const QRect to(width() + 12, from.y(), from.width(), from.height());
+    m_topMessageFlight->stop();
+    m_topMessageFlight->setDuration(kToastSlideOutMs);
+    m_topMessageFlight->setEasingCurve(QEasingCurve::InCubic);
+    m_topMessageFlight->setStartValue(from);
+    m_topMessageFlight->setEndValue(to);
+    m_topMessageFlight->start();
+}
+
+// After a footer send clears the editor, leave a copy of the exact prompt in a
+// bubble that begins at the editor and eases into its notification position.
+void MainWindow::showPromptBubble(const QString &prompt)
+{
+    const QString sent = prompt.trimmed();
+    if (sent.isEmpty() || !m_topMessage || !m_topMessageContainer)
+        return;
+    m_loadStatusShowing = false;
+    m_topMessageHref.clear();
+    m_topMessageError = false;
+    m_topMessageIsPromptBubble = true;
+    m_topMessageRaw = sent;
+    m_topMessageHovering = false;
+    renderTopMessage();
+    m_topMessage->show(); // a previous dismiss hid the label
+    if (m_topMessageCopy)
+        m_topMessageCopy->show();
+    if (m_topMessageSendToPrompt)
+        m_topMessageSendToPrompt->show();
+    if (m_topMessageClose)
+        m_topMessageClose->show();
+    m_topMessageSecondsLeft = kPromptBubbleSeconds; // the row is sized with its countdown in place
+    renderTopMessageCountdown();
+    if (m_topMessageActions)
+        m_topMessageActions->show();
+
+    const QRect target = topMessageBubbleRect();
+    QRect source = target;
+    if (m_issueQuickAdd && m_issueQuickAdd->isVisible())
+        source = QRect(m_issueQuickAdd->mapTo(this, QPoint()),
+                       m_issueQuickAdd->size());
+    m_topMessageContainer->setGeometry(source);
+    m_topMessageContainer->show();
+    m_topMessageContainer->raise();
+    if (m_topMessageFlight) {
+        m_topMessageFlight->stop();
+        m_topMessageSlidingOut = false;
+        m_topMessageFlight->setDuration(kToastFlightMs);
+        m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
+        m_topMessageFlight->setStartValue(source);
+        m_topMessageFlight->setEndValue(target);
+        m_topMessageFlight->start();
+    }
+
+    if (!m_topMessageTimer) {
+        m_topMessageTimer = new QTimer(this);
+        connect(m_topMessageTimer, &QTimer::timeout, this, [this] {
+            if (!m_topMessage)
+                return;
+            if (--m_topMessageSecondsLeft <= 0) {
+                slideTopMessageOut();
+                return;
+            }
+            renderTopMessageCountdown();
+        });
+    }
+    m_topMessageTimer->start(1000);
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
-    // Keep the floating expanded-toast panel anchored to the (re-centred) toast.
-    if (m_topMessageOverlay && m_topMessageOverlay->isVisible())
-        positionTopMessageOverlay();
+    // Keep the floating prompt bubble anchored as the footer moves.
+    if (m_topMessageContainer && m_topMessageContainer->isVisible())
+        positionTopMessageBubble();
     // The red error-ping border hugs the window edges (adhoc #77).
     if (m_errorBorderOverlay && m_errorBorderOverlay->isVisible())
         m_errorBorderOverlay->setGeometry(rect());
@@ -4556,10 +4774,6 @@ void MainWindow::flashMessage(const QString &text, bool error,
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
     m_loadStatusShowing = false;
-    // Carry an optional click target so the whole toast can act as a link (e.g. an
-    // "agent is waiting for you" toast jumps to that agent). Cleared by default so
-    // an ordinary toast is never left clickable from a previous message.
-    m_topMessageHref = clickHref;
     // Always keep a copy in the network log for history.
     logSystem(text);
     if (!m_topMessage)
@@ -4570,133 +4784,146 @@ void MainWindow::flashMessage(const QString &text, bool error,
         dismissTopMessage();
         return;
     }
-    // A second error arriving while one is already counting down would otherwise
-    // instantly replace it, so a burst of quick failures (retries, batched
-    // errors) could flash by unread. Queue it instead; advanceTopMessageQueue
-    // shows it with its own full countdown once the current toast finishes.
-    if (error && m_topMessage->isVisible() && m_topMessageError &&
-        m_topMessageTimer && m_topMessageTimer->isActive()) {
-        queueTopMessage(trimmed, true);
+    // Keep every notification visible. A new arrival becomes the bottom card in
+    // the queue and moves the active toast up, rather than replacing a message
+    // that may still be being read.
+    if (topMessageBusy()) {
+        queueTopMessage(trimmed, error, clickHref);
         return;
     }
+    // Carry an optional click target so the whole toast can act as a link (e.g. an
+    // "agent is waiting for you" toast jumps to that agent). Cleared by default so
+    // an ordinary toast is never left clickable from a previous message.
+    m_topMessageHref = clickHref;
     m_topMessageError = error;
+    m_topMessageIsPromptBubble = false;
+    m_topMessageHovering = false;
     m_topMessageRaw = trimmed;
-    // Keep the pill compact: a long message (a multi-line git error, say) must not
-    // stretch the top bar and drag the whole window wide. Show an elided one-liner;
-    // the full text is preserved in m_topMessageRaw and is revealed inline by the
-    // Expand button (see renderTopMessage) or copied via Copy.
-    m_topMessageElided = trimmed.size() > kToastMaxChars;
-    m_topMessageExpanded = false; // every new message starts collapsed
+    // The whole message is shown: it wraps to the bubble's full width and the
+    // bubble grows downward to fit (topMessageBubbleRect), so a long git error is
+    // readable in place instead of being cut off at an ellipsis.
     renderTopMessage();
     m_topMessage->show();
-    if (m_topMessageContainer)
-        m_topMessageContainer->show();
 
     if (!m_topMessageTimer) {
         // Ticks once a second so the countdown is visible; when the count runs out
-        // it dismisses the whole toast (label plus any Copy / ✕ / Expand
-        // affordances) rather than firing a single timeout.
+        // the whole toast (message plus the action row under it) slides off to the
+        // right rather than firing a single timeout.
         m_topMessageTimer = new QTimer(this);
         connect(m_topMessageTimer, &QTimer::timeout, this, [this] {
             if (!m_topMessage)
                 return;
             if (--m_topMessageSecondsLeft <= 0) {
-                advanceTopMessageQueue();
+                slideTopMessageOut();
                 return;
             }
             renderTopMessageCountdown();
         });
     }
-    // Every toast counts down visibly so the notification area never flashes a
-    // message away without the user knowing how long it stayed (or what it was).
-    // Errors keep their Copy / ✕ buttons and get a much longer window, so a
-    // failure stays readable and grabbable for a bug report before it fades; its
-    // full text also remains in the network log (logSystem above) regardless.
-    if (error) {
-        if (m_topMessageCopy)
-            m_topMessageCopy->show();
-        if (m_topMessageClose)
-            m_topMessageClose->show();
-        m_topMessageSecondsLeft = kToastErrorSeconds;
-    } else {
-        if (m_topMessageCopy)
-            m_topMessageCopy->hide();
-        if (m_topMessageClose)
-            m_topMessageClose->hide();
-        m_topMessageSecondsLeft = kToastSuccessSeconds;
-    }
+    // Every bubble offers copy + prompt hand-off; errors receive a longer window
+    // but otherwise behave exactly like a regular notification.
+    m_topMessageSecondsLeft = error ? kToastErrorSeconds : kToastSuccessSeconds;
+    if (m_topMessageCopy)
+        m_topMessageCopy->show();
+    if (m_topMessageSendToPrompt)
+        m_topMessageSendToPrompt->show();
+    if (m_topMessageClose)
+        m_topMessageClose->show();
     renderTopMessageCountdown();
+    if (m_topMessageActions)
+        m_topMessageActions->show();
+
+    if (m_topMessageContainer) {
+        // A previous bubble may have been mid-slide; cancel it and put this one
+        // back at the anchored position at full opacity. Positioned only now that
+        // the text and the action row are both in place — the bubble is sized
+        // around them.
+        if (m_topMessageFlight)
+            m_topMessageFlight->stop();
+        m_topMessageSlidingOut = false;
+        positionTopMessageBubble();
+        m_topMessageContainer->show();
+        m_topMessageContainer->raise();
+    }
     m_topMessageTimer->start(1000);
-    // The Expand affordance appears only when the message was truncated, so the
-    // user can read it in full inline instead of via a popup.
-    if (m_topMessageExpand)
-        m_topMessageExpand->setVisible(m_topMessageElided);
 }
 
-// Repaint the toast as its base message plus a dimmed "· Ns" countdown suffix,
-// reflecting how many seconds remain before an auto-dismissing toast fades.
+// Repaint the dim countdown line on the action row under the message. It used to
+// be appended to the message text itself, which cost the message the very room it
+// needed to be readable; on its own row it can never crowd it out.
 void MainWindow::renderTopMessageCountdown()
 {
-    if (!m_topMessage)
+    if (!m_topMessageMeta)
         return;
+    if (m_topMessageSlidingOut)
+        return; // it already dropped its countdown and is on its way off-screen
+    QStringList parts;
+    if (m_topMessageSecondsLeft > 0)
+        parts << QStringLiteral("%1s").arg(m_topMessageSecondsLeft);
+    // Keep the count alongside the visible stack so a departing toast makes the
+    // queue depth clear, even when the stack has to scroll for a large burst.
+    if (!m_topMessageQueue.isEmpty())
+        parts << QStringLiteral("+%1 more").arg(m_topMessageQueue.size());
+    if (m_topMessageHovering)
+        parts << QStringLiteral("paused");
     // "·" is a byte-escaped glyph, so it must go through fromUtf8 (QStringLiteral
     // would mangle the multibyte sequence).
-    const QString suffix =
-        QString::fromUtf8(" <span style='color:#6e7681'>\xC2\xB7 %1s</span>")
-            .arg(m_topMessageSecondsLeft);
-    // Tell the user more errors are waiting behind this one, so a fading toast
-    // doesn't feel like it silently dropped the rest of a quick burst.
-    QString queuedSuffix;
-    if (!m_topMessageQueue.isEmpty())
-        queuedSuffix = QStringLiteral(" <span style='color:#6e7681'>(+%1 more)</span>")
-                           .arg(m_topMessageQueue.size());
-    m_topMessage->setText(m_topMessageBaseHtml + suffix + queuedSuffix);
+    m_topMessageMeta->setText(parts.join(QString::fromUtf8(" \xC2\xB7 ")));
 }
 
-// Hide the top toast and its error affordances (Expand / Copy / dismiss). This
+// Hide the top toast and its action row (countdown / Copy / dismiss). This
 // is a hard reset: any errors still waiting behind the current one are dropped
 // too (their full text remains in the network log regardless).
 void MainWindow::dismissTopMessage()
 {
     m_loadStatusShowing = false;
-    m_topMessageExpanded = false;
+    m_topMessageHovering = false;
+    m_topMessageIsPromptBubble = false;
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     m_topMessageQueue.clear();
+    renderTopMessageQueue();
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
-    if (m_topMessage) {
+    if (m_topMessageFlight)
+        m_topMessageFlight->stop();
+    m_topMessageSlidingOut = false;
+    if (m_topMessage)
         m_topMessage->hide();
-        m_topMessage->setWordWrap(false); // back to a one-liner for the next toast
-    }
     if (m_topMessageContainer)
         m_topMessageContainer->hide();
-    if (m_topMessageOverlay)
-        m_topMessageOverlay->hide(); // drop the floating expanded panel with the toast
-    if (m_topMessageExpand)
-        m_topMessageExpand->hide();
+    if (m_topMessageQueueScroll)
+        m_topMessageQueueScroll->hide();
+    if (m_topMessageMeta)
+        m_topMessageMeta->clear();
+    if (m_topMessageActions)
+        m_topMessageActions->hide();
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
+    if (m_topMessageSendToPrompt)
+        m_topMessageSendToPrompt->hide();
     if (m_topMessageClose)
         m_topMessageClose->hide();
 }
 
 // Show the next queued message (its own full countdown, per flashMessage), or
-// fully dismiss the toast if nothing is waiting. Called when the current
-// toast's countdown runs out or the user dismisses it early.
+// fully dismiss the toast if nothing is waiting. Called once the current toast
+// has finished sliding out, or when the user dismisses it early.
 void MainWindow::advanceTopMessageQueue()
 {
+    m_topMessageSlidingOut = false;
     if (m_topMessageQueue.isEmpty()) {
         dismissTopMessage();
         return;
     }
-    const QPair<QString, bool> next = m_topMessageQueue.takeFirst();
+    const TopMessageQueueEntry next = m_topMessageQueue.takeFirst();
+    renderTopMessageQueue();
     // Hide first: flashMessage would otherwise see a toast that is still
     // visible and queue this one straight back behind itself.
     if (m_topMessage)
         m_topMessage->hide();
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
-    flashMessage(next.first, next.second);
+    flashMessage(next.text, next.error, next.clickHref);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)

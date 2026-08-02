@@ -512,11 +512,13 @@ class ExternalJSONCommand:
         self,
         command: Iterable[str],
         *,
+        timeout: int = 15,
         runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     ) -> None:
         self.command = tuple(command)
         if not self.command:
             raise GatewayError("external command is required")
+        self.timeout = timeout
         self._runner = runner
 
     def call(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -527,7 +529,7 @@ class ExternalJSONCommand:
                 text=True,
                 capture_output=True,
                 env=_safe_external_environment(),
-                timeout=15,
+                timeout=self.timeout,
                 check=True,
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -1224,7 +1226,13 @@ class ArchiveMaterializer:
             "destination": str(destination),
         }
         helper = ExternalJSONCommand(
-            archive.materialize_command, runner=self._runner
+            archive.materialize_command,
+            # Decrypting and validating a flagship repository on a 1 GB
+            # mirror legitimately takes longer than the 15-second budget used
+            # by signing/verification helpers. It remains bounded, and the
+            # gateway stays unavailable until the archive is authenticated.
+            timeout=5 * 60,
+            runner=self._runner,
         )
         response = helper.call(request)
         if response.get("ok") is not True:

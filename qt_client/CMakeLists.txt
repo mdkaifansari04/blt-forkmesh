@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.9 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.11 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -148,6 +148,8 @@ set(FORKMESH_APP_SOURCES
     src/PlatformLogFilter.cpp
     src/SingleInstance.h
     src/SingleInstance.cpp
+    src/StartupSplash.h
+    src/StartupSplash.cpp
     src/Theme.h
     src/AccountCapability.h
     src/ForkMeshIdentity.h
@@ -179,6 +181,7 @@ set(FORKMESH_APP_SOURCES
     src/NodeEventSocket.h
     src/NodeEventSocket.cpp
     src/BackgroundActivity.h
+    src/GuiPump.h
     src/ActionTelemetry.h
     src/ActionTelemetry.cpp
     src/NetworkBackoff.h
@@ -197,6 +200,8 @@ set(FORKMESH_APP_SOURCES
     src/RepoContributionSnapshot.h
     src/RepoContributionSnapshotInternal.h
     src/RepoContributionSnapshot.cpp
+    src/RepoStatsStore.h
+    src/RepoStatsStore.cpp
     src/StrictGitReader.h
     src/StrictGitReader.cpp
     src/RepoSecurity.h
@@ -258,6 +263,7 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeStreamSession.cpp
     src/CodexAppServerSession.h
     src/CodexAppServerSession.cpp
+    src/CodexTranscriptStyle.h
     src/ClaudeTranscriptView.h
     src/ClaudeTranscriptView.cpp
     src/ClaudeSessionScan.h
@@ -274,10 +280,13 @@ set(FORKMESH_APP_SOURCES
     src/StallWatchdog.cpp
     src/SystemStats.h
     src/SystemStats.cpp
+    src/NodeDiagnostics.h
+    src/NodeDiagnostics.cpp
     src/LocalBackupStore.h
     src/LocalBackupStore.cpp
     src/McpConnector.h
     src/McpConnector.cpp
+    src/StartupTrace.h
     src/MainWindowInternal.h
     src/MainWindow.h
     src/MainWindow.cpp
@@ -296,6 +305,8 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowReleases.cpp
     src/MainWindowShortcuts.cpp
     src/MainWindowSearch.cpp
+    src/GlobalSearchMatch.h
+    src/GlobalSearchMatch.cpp
     src/MainWindowSettings.cpp
     src/MainWindowMcp.cpp
     src/MainWindowData.cpp
@@ -553,6 +564,8 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
+        src/GlobalSearchMatch.h
+        src/GlobalSearchMatch.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/UsageLimitCalendar.h
@@ -572,8 +585,11 @@ if(FORKMESH_BUILD_TESTS)
         src/ChatVisitorPresence.h
         src/SystemStats.h
         src/SystemStats.cpp
+        src/NodeDiagnostics.h
+        src/NodeDiagnostics.cpp
     )
-    target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
+    # Qt6::Concurrent: DirectorySizeScan scans top-level trees in parallel.
+    target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network Qt6::Concurrent OpenSSL::Crypto)
     if(APPLE)
         set_target_properties(forkmesh-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
@@ -610,6 +626,8 @@ if(FORKMESH_BUILD_TESTS)
         src/RoomCrypto.cpp
         src/SystemStats.h
         src/SystemStats.cpp
+        src/NodeDiagnostics.h
+        src/NodeDiagnostics.cpp
         src/ServerNode.h
         src/ServerNode.cpp
         src/OfficeChannelMirror.h
@@ -762,6 +780,7 @@ if(FORKMESH_BUILD_TESTS)
         tests/test_codex_app_server.cpp
         src/CodexAppServerSession.h
         src/CodexAppServerSession.cpp
+        src/CodexTranscriptStyle.h
     )
     target_link_libraries(forkmesh-codex-tests PRIVATE Qt6::Core)
     if(APPLE)
@@ -840,6 +859,14 @@ if(FORKMESH_BUILD_TESTS)
         target_link_libraries(forkmesh-window-tests PRIVATE util Qt6::DBus)
         target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_HAVE_PORTAL)
     endif()
+
+    qt_add_executable(forkmesh-repo-stats-tests
+        tests/test_repo_stats.cpp
+        src/RepoStatsStore.h
+        src/RepoStatsStore.cpp
+    )
+    target_link_libraries(forkmesh-repo-stats-tests PRIVATE Qt6::Core)
+    target_include_directories(forkmesh-repo-stats-tests PRIVATE src)
     target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_WINDOW_TESTS)
     # Recompiles every heavy app source: same throttle as the app target.
     set_target_properties(forkmesh-window-tests PROPERTIES
@@ -887,7 +914,7 @@ if(FORKMESH_BUILD_TESTS)
         forkmesh-public-mirror-tests
         forkmesh-upstream-sync-tests
         forkmesh-e2e-stub-agent forkmesh-e2e
-        forkmesh-window-tests forkmesh-perf-tests
+        forkmesh-window-tests forkmesh-perf-tests forkmesh-repo-stats-tests
         PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
     # Register all suites with CTest so they run independently of the app:
@@ -896,6 +923,7 @@ if(FORKMESH_BUILD_TESTS)
     # The headless smoke tests need an offscreen Qt platform.
     enable_testing()
     add_test(NAME forkmesh-tests COMMAND forkmesh-tests)
+    add_test(NAME forkmesh-repo-stats-tests COMMAND forkmesh-repo-stats-tests)
     find_program(FORKMESH_PYTHON_EXECUTABLE NAMES python3 python)
     if(FORKMESH_PYTHON_EXECUTABLE)
         add_test(
