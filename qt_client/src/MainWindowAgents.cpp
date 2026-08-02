@@ -4675,6 +4675,7 @@ void MainWindow::applyLiveClaudeModelsToCombos()
     if (m_issueAgentModel && m_issueAgentProvider &&
         m_issueAgentProvider->currentData().toString() == claudeCode)
         mergeLiveClaudeModels(m_issueAgentModel, models);
+    refreshQuickAddAgentModelSelector();
 }
 
 // Re-fetch the live claude-code model list from the provider (GET /v1/models)
@@ -9022,6 +9023,10 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                         if (m_codexModelEdit)
                             m_codexModelEdit->setText(selected);
                     }
+                    // The combined menu lists Codex models even while another
+                    // provider is selected, so refresh it for every catalog
+                    // update, not only when its hidden canonical combo is Codex.
+                    refreshQuickAddAgentModelSelector();
                     if (m_branchFixAgentCombo && m_branchFixModelCombo &&
                         agentIsCodexProvider(
                             m_branchFixAgentCombo->currentData().toString()))
