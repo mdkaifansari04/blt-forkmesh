@@ -84,7 +84,13 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR})
 # wipes (run.sh rebuild) and branch switches, so those come back warm.
 find_program(FORKMESH_CCACHE ccache)
 if(FORKMESH_CCACHE)
-    set(CMAKE_CXX_COMPILER_LAUNCHER "${FORKMESH_CCACHE}")
+    # ccache deliberately refuses PCH-backed compilations unless these two
+    # safety assumptions are explicit. CMake force-includes the PCH before any
+    # source-level definitions, and the client does not use the clock macros,
+    # so both assumptions hold here. Pass them per invocation instead of
+    # changing the developer's global ccache configuration.
+    set(CMAKE_CXX_COMPILER_LAUNCHER
+        "${FORKMESH_CCACHE};sloppiness=pch_defines,time_macros")
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
@@ -139,6 +145,38 @@ include(GNUInstallDirs)
 if(UNIX AND NOT APPLE)
     find_package(Qt6 6.4 REQUIRED COMPONENTS DBus)
 endif()
+
+# These feature translation units all begin by parsing MainWindowInternal.h,
+# which currently expands to roughly 900 KB of shared ForkMesh/Qt declarations.
+# Keep the list explicit so the app can precompile that common prefix without
+# forcing the much smaller backend sources to load the MainWindow UI layer.
+set(FORKMESH_MAIN_WINDOW_SOURCES
+    src/MainWindow.cpp
+    src/MainWindowShared.cpp
+    src/MainWindowSetup.cpp
+    src/MainWindowChat.cpp
+    src/MainWindowTasks.cpp
+    src/MainWindowIssues.cpp
+    src/MainWindowSourceControl.cpp
+    src/MainWindowDiscussions.cpp
+    src/MainWindowPulls.cpp
+    src/MainWindowAgents.cpp
+    src/MainWindowRepoDetail.cpp
+    src/MainWindowProjects.cpp
+    src/MainWindowBranches.cpp
+    src/MainWindowReleases.cpp
+    src/MainWindowShortcuts.cpp
+    src/MainWindowSearch.cpp
+    src/MainWindowSettings.cpp
+    src/MainWindowMcp.cpp
+    src/MainWindowData.cpp
+    src/MainWindowMessages.cpp
+    src/MainWindowRepos.cpp
+    src/MainWindowActions.cpp
+    src/MainWindowCoves.cpp
+    src/MainWindowControlNode.cpp
+    src/MainWindowRewardPool.cpp
+)
 
 set(FORKMESH_APP_SOURCES
     resources/icons.qrc
@@ -289,33 +327,9 @@ set(FORKMESH_APP_SOURCES
     src/StartupTrace.h
     src/MainWindowInternal.h
     src/MainWindow.h
-    src/MainWindow.cpp
-    src/MainWindowShared.cpp
-    src/MainWindowSetup.cpp
-    src/MainWindowChat.cpp
-    src/MainWindowTasks.cpp
-    src/MainWindowIssues.cpp
-    src/MainWindowSourceControl.cpp
-    src/MainWindowDiscussions.cpp
-    src/MainWindowPulls.cpp
-    src/MainWindowAgents.cpp
-    src/MainWindowRepoDetail.cpp
-    src/MainWindowProjects.cpp
-    src/MainWindowBranches.cpp
-    src/MainWindowReleases.cpp
-    src/MainWindowShortcuts.cpp
-    src/MainWindowSearch.cpp
     src/GlobalSearchMatch.h
     src/GlobalSearchMatch.cpp
-    src/MainWindowSettings.cpp
-    src/MainWindowMcp.cpp
-    src/MainWindowData.cpp
-    src/MainWindowMessages.cpp
-    src/MainWindowRepos.cpp
-    src/MainWindowActions.cpp
-    src/MainWindowCoves.cpp
-    src/MainWindowControlNode.cpp
-    src/MainWindowRewardPool.cpp
+    ${FORKMESH_MAIN_WINDOW_SOURCES}
     src/HeadlessConsole.h
     src/HeadlessConsole.cpp
 )
@@ -328,6 +342,28 @@ qt_add_executable(forkmesh
 add_dependencies(forkmesh forkmesh-version-header)
 # Heavy app sources: throttle concurrent compiles (see the forkmesh_heavy pool).
 set_target_properties(forkmesh PROPERTIES JOB_POOL_COMPILE forkmesh_heavy)
+
+# Every MainWindow feature source includes MainWindowInternal.h. Parse that
+# shared UI/Qt prefix once, then reuse it across the 25 large translation units.
+# SKIP_PRECOMPILE_HEADERS keeps the PCH narrowly scoped: forcing this UI header
+# into the independent backend sources costs more than it saves and increases
+# their dependency surface.
+target_precompile_headers(forkmesh PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/src/MainWindowInternal.h>")
+# Clang otherwise embeds the PCH creation time in the artifact, preventing
+# ccache from recognizing an identical clean rebuild. GCC PCH files are already
+# deterministic for this purpose.
+if(FORKMESH_CCACHE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(forkmesh PRIVATE -fno-pch-timestamp)
+endif()
+foreach(_forkmesh_source IN LISTS FORKMESH_APP_SOURCES)
+    if(NOT _forkmesh_source IN_LIST FORKMESH_MAIN_WINDOW_SOURCES)
+        set_source_files_properties(${_forkmesh_source} PROPERTIES
+            SKIP_PRECOMPILE_HEADERS ON)
+    endif()
+endforeach()
+set_source_files_properties(src/main.cpp src/forkmesh_autogen.cpp PROPERTIES
+    SKIP_PRECOMPILE_HEADERS ON)
 
 # The app compiles its Qt meta-object code through the single, checked-in
 # src/forkmesh_autogen.cpp above rather than AUTOMOC's machine-generated
