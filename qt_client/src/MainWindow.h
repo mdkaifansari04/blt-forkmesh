@@ -3521,6 +3521,7 @@ private:
     // sha256, store it in the mirror's release CAS, then recurse to the rest.
     void downloadNextReleaseBlob(int index, const QString &mirrorPath,
                                  QMap<QString, QString> pending);
+    void pushReleaseToMirrors(const QString &tag);
     void deleteTag(const QString &tag);
     bool repoHasWorkingTree() const;
     void loadFileSearchIndex();
@@ -4541,6 +4542,8 @@ private:
     // copy (e.g. the ssh.<worker> gateway feeding mirror2/mirror3). Async and
     // best-effort; without it those mirrors only advance on a manual push.
     void pushToSshMirrorRemotes(int index);
+    int pushToSshMirrorRemotes(int index, bool userInitiated,
+                               const QString &releaseTag);
     void syncPublicEncryptedRepository(int index, bool quiet = false);
     void syncPrivateRepository(int index, bool quiet = false);
     void syncPrivateRepositoryWithRecipients(
