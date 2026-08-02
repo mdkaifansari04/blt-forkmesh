@@ -381,7 +381,7 @@ QWidget *MainWindow::buildRepoFilesPanel()
     // activity rail and the repo tabs (adhoc #6), so the whole mode row —
     // toggles, toolbar counts and trends — reads as one line.
     m_filesModeOverviewButton =
-        new VerticalIconButton("Code overview", VerticalIconButton::Tab);
+        new VerticalIconButton("Overview", VerticalIconButton::Tab);
     m_filesModeOverviewButton->setObjectName("repoTab");
     m_filesModeOverviewButton->setCheckable(true);
     m_filesModeOverviewButton->setChecked(true);
@@ -404,7 +404,7 @@ QWidget *MainWindow::buildRepoFilesPanel()
             [this] { showRepoEditor(); });
 
     m_filesModeCoveExplorerButton =
-        new VerticalIconButton("Cove Explorer", VerticalIconButton::Tab);
+        new VerticalIconButton("Coves", VerticalIconButton::Tab);
     m_filesModeCoveExplorerButton->setObjectName("repoTab");
     m_filesModeCoveExplorerButton->setCheckable(true);
     m_filesModeCoveExplorerButton->setCursor(Qt::PointingHandCursor);
@@ -414,29 +414,29 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeCoveExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoCoveExplorer(); });
 
-    // Thirty-day repository trends and the Ratchet mode toggle, moved down
-    // from the window-chrome line onto this row (adhoc #6). Each sparkline
-    // point represents a day; they sit deliberately a little larger than the
-    // chrome's live host-resource squares.
-    auto *repoSizeChart =
-        new ResourceSparkline(QStringLiteral("SIZE"), nullptr, 44, 30);
-    auto *repoLinesChart =
-        new ResourceSparkline(QStringLiteral("LOC"), nullptr, 44, 30);
-    auto *repoFilesChart =
-        new ResourceSparkline(QStringLiteral("FILES"), nullptr, 44, 30);
+    // Thirty-day repository trends and the Ratchet toggle, moved down from the
+    // window-chrome line onto this row (adhoc #6). Each sparkline point
+    // represents a day. They are drawn at exactly the chrome CPU/MEM/DISK
+    // squares' side (adhoc #421) so the two rows of charts read as one family
+    // instead of two sizes of the same card.
+    auto *repoSizeChart = new ResourceSparkline(QStringLiteral("SIZE"), nullptr,
+                                                kResourceSparklineSide, 30);
+    auto *repoLinesChart = new ResourceSparkline(QStringLiteral("LOC"), nullptr,
+                                                 kResourceSparklineSide, 30);
+    auto *repoFilesChart = new ResourceSparkline(
+        QStringLiteral("FILES"), nullptr, kResourceSparklineSide, 30);
     repoSizeChart->setObjectName(QStringLiteral("repoSizeChart"));
     repoLinesChart->setObjectName(QStringLiteral("repoLinesChart"));
     repoFilesChart->setObjectName(QStringLiteral("repoFilesChart"));
     m_repoSizeChart = repoSizeChart;
     m_repoLinesChart = repoLinesChart;
     m_repoFilesChart = repoFilesChart;
-    m_repoRatchetButton = new QToolButton;
+    m_repoRatchetButton = new RatchetToggleButton;
     m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
-    m_repoRatchetButton->setText(QStringLiteral("Ratchet mode"));
-    m_repoRatchetButton->setCheckable(true);
     m_repoRatchetButton->setToolTip(
         QStringLiteral("Hold the repository at or below the tracked size it started "
                        "today at. The ceiling re-bases each day."));
+    m_repoRatchetButton->setAccessibleName(QStringLiteral("Ratchet mode"));
     connect(m_repoRatchetButton, &QToolButton::toggled, this,
             &MainWindow::toggleRepositoryRatchet);
 
@@ -8610,7 +8610,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Commits", "git-branch"},
                                 {"Issues", "issue-opened"},
                                 {"Agents", "terminal"},
-                                {"PRs", "git-pull-request"},
+                                {"Pulls", "git-pull-request"},
                                 {"Discussions", "comment"},
                                 {"Actions", "workflow"},
                                 {"Security", "shield-check"},
@@ -8619,7 +8619,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Branches", "repo-forked"},
                                 {"Worktrees", "worktree"},
                                 {"Releases", "tag"},
-                                {"Mirror nodes", "server"},
+                                {"Mirrors", "server"},
                                 {"Artifacts", "package"},
                                 {"Shortcuts", "rocket"},
                                 {"Settings", "gear"},
@@ -8646,7 +8646,7 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 1 || i == 3 || i == 10 || i == 11)
             continue;
         const TabDef tab = tabs.at(i);
-        // Releases (id 12) lives in the Code overview's mode row next to Tags
+        // Releases (id 12) lives in the Overview's mode row next to Tags
         // (adhoc #180), not the tab row, but takes the same form as every real
         // tab: icon stacked over a small caption (adhoc #91), the same shape
         // as the activity rail, so both rows read compact.
@@ -8679,44 +8679,60 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 17)
             m_repoProjectsTab = b; // handle for the Projects (N) badge
         m_repoDetailTabs->addButton(b, i);
-        if (i == 12)
+        if (i == 0) {
+            // Code (adhoc #421): no top-bar tab. The activity rail already owns a
+            // "Code" destination that runs exactly this click path, and the
+            // Overview / Explorer / Coves row below is the code view's own
+            // navigation — three "Code" affordances stacked on top of each other
+            // read as a duplicate. The button stays in m_repoDetailTabs (id 0),
+            // parented but hidden, so every switchTo*/idClicked path, the checked
+            // state and the stack's index-addressing are untouched.
+            b->setParent(this);
+            b->hide();
+        } else if (i == 12)
             // Releases (adhoc #180): no top-bar tab. Its button is placed in the
-            // Code overview toolbar next to Tags (see buildRepoOverviewPage), so
-            // releases sit beside tags instead of between Insights and Mirror
-            // nodes. It stays in m_repoDetailTabs (id 12) so tab switching, the
+            // Overview toolbar next to Tags (see buildRepoOverviewPage), so
+            // releases sit beside tags instead of between Insights and Mirrors.
+            // It stays in m_repoDetailTabs (id 12) so tab switching, the
             // Releases (N) badge and the Tags button shortcut all keep working.
             (void)b; // added to the toolbar layout below, not the tab row
         else if (i == 17)
-            // Projects sits right after Issues in the row (Code=0, Issues=1
-            // among the visible buttons) despite its appended positional id.
-            tabRow->insertWidget(2, b);
+            // Projects sits right after Issues in the row (Issues is the first
+            // visible button now that Code is rail-only) despite its appended
+            // positional id.
+            tabRow->insertWidget(1, b, 0, Qt::AlignTop);
         else if (i == 18)
             // Size map sits right after Insights. By this point the row holds
-            // Code, Issues, Projects, PRs, Discussions, Actions, Security,
-            // Quality, Insights (indices 0-8), so index 9 drops it between
-            // Insights and Releases; its positional id stays 18.
-            tabRow->insertWidget(9, b);
+            // Issues, Projects, Pulls, Discussions, Actions, Security, Quality,
+            // Insights (indices 0-7), so index 8 drops it between Insights and
+            // Mirrors; its positional id stays 18.
+            tabRow->insertWidget(8, b, 0, Qt::AlignTop);
         else if (i == 14)
-            // Artifacts sits right after Releases (the tag list) instead of
-            // between Mirror nodes and Shortcuts (adhoc #181). By this point the
-            // row holds Code, Issues, PRs, Discussions, Actions, Security,
-            // Quality, Insights, Releases, Mirror nodes (indices 0-9), so index 9
-            // drops Artifacts between Releases and Mirror nodes. Its positional
-            // id stays 14 so the stack-page index-addressing is unchanged.
-            tabRow->insertWidget(9, b);
+            // Artifacts follows Mirrors rather than leading Shortcuts
+            // (adhoc #181). By this point the row holds Issues, Pulls,
+            // Discussions, Actions, Security, Quality, Insights, Mirrors
+            // (indices 0-7) — Projects and Size map are inserted later — so
+            // index 8 lands it just past Mirrors. Its positional id stays 14 so
+            // the stack-page index-addressing is unchanged.
+            tabRow->insertWidget(8, b, 0, Qt::AlignTop);
         else
-            tabRow->addWidget(b);
+            tabRow->addWidget(b, 0, Qt::AlignTop);
     }
     tabRow->addStretch();
     // Repo actions (Notify / Fork / Mirror / Source / Open) on the same line
     // as the tabs (adhoc #6), right-aligned past the stretch. Same
     // icon-over-caption form as everything else in the row; Fork/Mirror carry
     // their counts as corner badges.
-    tabRow->addWidget(notifyButton);
-    tabRow->addWidget(m_forkButton);
-    tabRow->addWidget(m_mirrorButton);
-    tabRow->addWidget(m_sourceButton);
-    tabRow->addWidget(m_repoOpenButton);
+    // Top-aligned like the tabs (adhoc #421). The row lives in a fixed-56px
+    // scroll area that only sometimes shows a horizontal scrollbar, so leaving
+    // these 44px buttons to centre themselves moved the whole line up and down
+    // by 6px with the window width — and with it the line the icons sit on,
+    // which the activity rail is now aligned to.
+    tabRow->addWidget(notifyButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_forkButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_mirrorButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_sourceButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_repoOpenButton, 0, Qt::AlignTop);
     auto *tabBar = new QWidget;
     tabBar->setObjectName("repoTabBar");
     tabBar->setLayout(tabRow);

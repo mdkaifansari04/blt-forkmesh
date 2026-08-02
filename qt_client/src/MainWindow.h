@@ -571,6 +571,7 @@ public:
     void testStopRepoHosts() { stopRepoHosts(); }
     int testRepoTabContentTop(); // y of the tab content within the window
     int testRepoTabGapAroundIssues() const;
+    int testRailTabIconLineSkew() const;
     int testIssueLooperGapFromNewIssueButton() const;
     bool testIssueLooperRowAligned() const;
     int testTopNavTrailingGap() const;
