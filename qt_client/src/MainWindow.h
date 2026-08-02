@@ -1198,22 +1198,20 @@ private:
     void updateChatIdentity();     // push user name/avatar into the chat backend
     void updateUserSwitcher();     // refresh top-bar user label/avatar
     void updateNodeSwitcher();     // refresh top-bar node label / count
-    void updateNavSolanaBalance(); // refresh top-bar balance for the web user
+    // Refresh the rail balance (under the account avatar) for the web user.
+    void updateNavSolanaBalance();
     void refreshWebUserSolanaAddress();
     void cacheWebUserSolanaProfile(const QString &account,
                                    const QJsonObject &profile);
-    void cycleNavSolanaCurrency(); // SOL -> USD -> INR -> SOL on balance click
-    // Re-render the top-bar balance from the cached lamports/fiat rate without
-    // re-hitting the network, so cycling SOL/USD/INR is instant and can't stall
-    // on getBalance / price rate-limits.
+    // Re-render the balance from the cached lamports without re-hitting the
+    // network, so it can't stall on getBalance rate-limits.
     void renderNavSolanaBalance();
-    // Hover-gated getBalance. Every other path (profile hydration, currency
-    // cycling, the web-profile poll) renders from cache; only pointing at the
-    // top-bar balance actually spends a Solana RPC call, and even then only
-    // once per kNavSolanaBalanceTtlMs.
+    // Hover-gated getBalance. Every other path (profile hydration, the
+    // web-profile poll) renders from cache; only pointing at the rail balance
+    // actually spends a Solana RPC call, and even then only once per
+    // kNavSolanaBalanceTtlMs.
     void refreshNavSolanaBalance(bool force = false);
     void queryNavSolanaBalance(const QString &addr, int endpointIndex);
-    void queryNavSolanaUsdPrice(const QString &addr, qint64 lamports);
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
     void updateReposNavBadge();    // rail badge = repos the Repos page lists
@@ -1790,6 +1788,23 @@ private:
     // this account. The API key never travels in argv; once Vultr accepts it,
     // rememberVultrApiKey stores it so no later run has to ask for it again.
     void createVultrMirrorFromForm();
+    // Six-stage durable deployment UI/state. The non-secret checkpoint is
+    // written after every transition and restored when Hosts is rebuilt, so a
+    // restarted desktop resumes boot polling, installation, or public mirror
+    // verification instead of starting another billable instance.
+    void setVultrProvisionStage(int stage, const QString &detail = QString(),
+                                bool failed = false);
+    void renderVultrProvisionProgress(bool failed = false);
+    void persistVultrProvisionState(const QString &state = QStringLiteral("active"),
+                                    const QString &message = QString());
+    void restoreVultrProvision();
+    void resumeVultrProvision();
+    QString vultrProvisionLogPath() const;
+    void saveVultrProvisionLog();
+    void scheduleVultrProvisionLogSave();
+    void findVultrProvisionInstance(
+        const QString &apiKey, const QString &node,
+        std::function<void(QString instanceId, QString error)> onDone);
     // Persist a Vultr API key Vultr itself has just accepted, in the two places
     // this app reads provisioning credentials from: the canonical
     // VULTR_API_KEY device variable (Settings > Variables / Secrets, injected
@@ -4748,9 +4763,10 @@ private:
     // switcher shows its favicon in the dropdown itself instead of a caption).
     QLabel *m_nodeLabel = nullptr;
     QLabel *m_repoLabel = nullptr;
-    // The "user/node" caption ("jett/forkmesh") that used to sit between the
-    // relay switcher and the balance is gone (adhoc #42): the top bar names the
-    // relay and the wallet, not who you are — that's the avatar's job.
+    // Tiny always-SOL public wallet balance, drawn under the account avatar at
+    // the foot of the activity rail (adhoc #96). It headed the top-chrome line
+    // until then; the "user/node" caption that preceded it there went earlier
+    // still (adhoc #42).
     QLabel *m_navSolanaBalance = nullptr;
     // Super-tiny Claude Code and Codex usage charts in the top-right cluster
     // (issue #266): two horizontal bars (5-hour + weekly) sitting beside the
@@ -4772,19 +4788,15 @@ private:
     QLabel *m_nodeUptimeLabel = nullptr;
     QWidget *m_profileOnlineSection = nullptr; // wraps the switch + status lines
     bool m_nodeOffline = false;
-    // Cached balance + fiat rates so cycling the currency view reuses what we
-    // already fetched instead of re-querying getBalance / the price API each
-    // click (which used to rate-limit and leave the figure stuck).
+    // Cached balance, so every re-render reuses what we already fetched instead
+    // of re-querying getBalance (which used to rate-limit and leave the figure
+    // stuck).
     qint64 m_navSolanaLamports = -1; // last known balance, -1 = not yet fetched
     // getBalance is only issued on hover (see refreshNavSolanaBalance); these
     // track when the cached figure was fetched and whether a query is already
     // out, so re-entering the label doesn't queue a second RPC.
     qint64 m_navSolanaFetchedMs = 0;
     bool m_navSolanaFetchInFlight = false;
-    // cur -> {rate, attemptedMs}; a 0 rate records a failed attempt so the
-    // price API is backed off rather than re-asked on every render.
-    QHash<QString, QPair<double, qint64>> m_navFiatRates;
-    bool m_navFiatFetchInFlight = false;
     // The web user's public profile is authoritative for the top-bar wallet.
     // A local node setting is used only until that user profile has resolved.
     QString m_webSolanaAccount;
@@ -5180,7 +5192,22 @@ private:
     QCheckBox *m_vultrAgentClisCheck = nullptr;
     QPushButton *m_vultrCreateButton = nullptr;
     QLabel *m_vultrStatus = nullptr;
+    QWidget *m_vultrProgressPanel = nullptr;
+    QList<QLabel *> m_vultrStageNumbers;
+    QList<QLabel *> m_vultrStageLabels;
+    QLabel *m_vultrLiveBadge = nullptr;
     bool m_vultrProvisionActive = false;
+    bool m_vultrResumeRequested = false;
+    bool m_vultrResumeChain = false;
+    bool m_vultrLogSaveScheduled = false;
+    int m_vultrProvisionStage = 0;
+    QString m_vultrProvisionState;
+    QString m_vultrProvisionDetail;
+    QString m_vultrProvisionMessage;
+    QString m_vultrProvisionNode;
+    QString m_vultrInstanceId;
+    QString m_vultrInstanceIp;
+    QString m_vultrIdentityFile;
     int m_vultrPollCount = 0;        // instance boot polls used this run
     int m_vultrInstallAttempts = 0;  // SSH install attempts used this run
     int m_vultrSshWaitCount = 0;     // SSH reachability probes used this run

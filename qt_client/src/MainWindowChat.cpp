@@ -68,6 +68,9 @@ constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
 // the log is persisted line by line. A pending summary is flushed once its
 // first ticket is this old, or as soon as the strip goes quiet.
 constexpr qint64 kBackgroundTaskFastFlushMs = 2000;
+const QString kVultrProvisionSetting =
+    QStringLiteral("hosts/vultrProvision/v1");
+constexpr int kVultrProvisionStageCount = 6;
 } // namespace
 
 // -------------------------------------------------------------- server rail
@@ -487,17 +490,22 @@ QWidget *MainWindow::buildChatPage()
 
     // The account avatar is intentionally the bottom-most rail destination. It
     // keeps the round user picture (not an octicon), sized and captioned like
-    // every other item.
+    // every other item. The public SOL balance is a third, tinier line beneath
+    // the caption (adhoc #96) — it used to sit on the top-chrome line, far from
+    // the account it describes, so the item is one balance-line taller than the
+    // standard kRailItemHeight.
     auto *accountLabel = new QLabel(QStringLiteral("Account"));
     accountLabel->setObjectName(QStringLiteral("railItemLabel"));
     accountLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
     auto *accountHost = new QWidget;
-    accountHost->setFixedSize(railItemWidth(), kRailItemHeight);
+    accountHost->setFixedSize(railItemWidth(),
+                              kRailItemHeight + navBalanceLineHeight());
     auto *accountLayout = new QVBoxLayout(accountHost);
     accountLayout->setContentsMargins(0, 2, 0, 0);
     accountLayout->setSpacing(2);
     accountLayout->addWidget(m_userAvatarNavButton, 0, Qt::AlignHCenter);
     accountLayout->addWidget(accountLabel, 0, Qt::AlignHCenter);
+    accountLayout->addWidget(m_navSolanaBalance, 0, Qt::AlignHCenter);
     m_appNavigationRailLayout->addWidget(accountHost, 0, Qt::AlignLeft);
     updateNotificationButton();
 
@@ -4973,23 +4981,33 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
 
-    // The public wallet balance heads the top-chrome line right after the relay
-    // switcher. The "user/node" caption that used to precede it was dropped
-    // (adhoc #42) — the avatar already says who is signed in.
-    m_navSolanaBalance = new QLabel(QStringLiteral("0.000000000 SOL"));
+    // The public wallet balance no longer heads the top-chrome line (adhoc #96):
+    // it rides under the account avatar at the foot of the activity rail, with
+    // the identity it belongs to, as a tiny always-SOL figure. Only the tooltip
+    // carries the full nine-decimal amount now.
+    m_navSolanaBalance = new QLabel(QString::fromUtf8("\xE2\x80\x94 SOL"));
     m_navSolanaBalance->setObjectName("navSolanaBalance");
-    m_navSolanaBalance->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_navSolanaBalance->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
     m_navSolanaBalance->setTextFormat(Qt::RichText);
     m_navSolanaBalance->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
     m_navSolanaBalance->setOpenExternalLinks(false);
     m_navSolanaBalance->setCursor(Qt::PointingHandCursor);
+    // The rail item cannot widen, so the label is pinned to it and drawn in the
+    // largest tiny size whose widest figure still fits (navBalanceFont()). That
+    // size has to be declared on the widget itself: Theme.h's QWidget rule sets
+    // a 14px base font, and a stylesheet font beats setFont() — the label would
+    // paint at 14px and run out of its slot. Colour still comes from the theme's
+    // #navSolanaBalance rule, which this doesn't override.
+    m_navSolanaBalance->setFixedWidth(railItemWidth());
+    m_navSolanaBalance->setFont(navBalanceFont());
+    m_navSolanaBalance->setStyleSheet(
+        QStringLiteral("font-size:%1px;").arg(navBalanceFont().pixelSize()));
     m_navSolanaBalance->setToolTip(
-        "Your Solana wallet balance \xE2\x80\x94 click to switch "
-        "currency (SOL / USD / INR).\n"
+        "Your Solana wallet balance.\n"
         "Non-custodial payout address: this client only shares its public "
         "address; its private key stays in the wallet you control.");
-    // Clicking the balance itself cycles its display currency, so the control
-    // sits right on the value instead of needing a separate swap icon.
+    // Pointing at the balance is what spends the getBalance call (see
+    // eventFilter) — everything else renders the cached figure.
     m_navSolanaBalance->installEventFilter(this);
     connect(m_navSolanaBalance, &QLabel::linkActivated, this,
             [this](const QString &) {
@@ -5603,27 +5621,25 @@ QWidget *MainWindow::buildBreadcrumb()
     // icons directly below it (this replaces the old 24px inset from adhoc #91).
     chromeRow->setContentsMargins(0, 0, 8, 0);
     chromeRow->setSpacing(8);
-    // The instance/relay switcher heads the edge-to-edge chrome, with the public
-    // SOL balance immediately to its right. The live fleet matrix sits in this
-    // same left-hand group (adhoc #42), so it reads on the same left edge as the
-    // balance instead of drifting with the search box, and the recent action
-    // runs follow it (adhoc #70). The Agents button that used to head this group
-    // is now a regular rail entry.
+    // The instance/relay switcher heads the edge-to-edge chrome. The live fleet
+    // matrix sits in this same left-hand group (adhoc #42) so it reads on the
+    // window's left edge instead of drifting with the search box, and the recent
+    // action runs follow it (adhoc #70). The Agents button that used to head this
+    // group is now a regular rail entry, and the public SOL balance that used to
+    // sit here moved under the account avatar in the rail (adhoc #96).
     chromeRow->addWidget(m_relayMenuButton);
     // Logged-out only: the sign-in pill sits immediately after the relay switcher
     // so it is the first thing on the bar that isn't chrome, and it lives in the
     // left-hand group because that group never scrolls out of a narrow window.
     chromeRow->addWidget(m_navSignInButton);
     chromeRow->addWidget(m_relayJoinApproveButton);
-    // The owner/repo switcher sits between the instance logo and the SOL
-    // balance (adhoc #6) — repository identity now reads on the chrome line
-    // instead of heading the repo-detail page. updateRepoSwitcher still owns
-    // its text, icon and visibility.
+    // The owner/repo switcher follows the instance logo (adhoc #6) — repository
+    // identity now reads on the chrome line instead of heading the repo-detail
+    // page. updateRepoSwitcher still owns its text, icon and visibility.
     chromeRow->addWidget(m_repoMenuButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);
-    identityBalanceRow->addWidget(m_navSolanaBalance);
     identityBalanceRow->addWidget(m_agentDotMatrix);
     identityBalanceRow->addWidget(m_chromeDotDivider, 0, Qt::AlignVCenter);
     identityBalanceRow->addWidget(m_nodeDotMatrix);
@@ -6565,22 +6581,25 @@ QString formatSolanaBalance(qint64 lamports)
     return QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 9);
 }
 
-// solanaDisplayCurrency() ("sol" | "usd" | "inr") is a shared helper declared in
-// MainWindowInternal.h (used by both this view and the settings panel).
-
-QString fiatCurrencySymbol(const QString &cur)
+// The rail slot under the avatar is one rail item wide, so the nine-decimal
+// figure the chrome line used to carry no longer fits. Print the most precision
+// that stays inside the item and let the tooltip keep the exact amount. Always
+// SOL: the fiat conversion (and its click-to-cycle currency) went away with the
+// move (adhoc #96).
+QString compactSolanaBalance(qint64 lamports)
 {
-    return cur == QLatin1String("inr") ? QString::fromUtf8("\xE2\x82\xB9")
-                                       : QStringLiteral("$");
-}
-
-QString formatFiatBalance(qint64 lamports, double rate, const QString &cur)
-{
-    const double value = (lamports / 1000000000.0) * rate;
-    return QStringLiteral("%1%2 %3")
-        .arg(fiatCurrencySymbol(cur))
-        .arg(value, 0, 'f', 2)
-        .arg(cur.toUpper());
+    const double sol = lamports / 1000000000.0;
+    if (lamports <= 0)
+        return QStringLiteral("0 SOL");
+    if (sol >= 1000.0)
+        return QStringLiteral("%1k SOL").arg(sol / 1000.0, 0, 'f', 1);
+    if (sol >= 100.0)
+        return QStringLiteral("%1 SOL").arg(sol, 0, 'f', 1);
+    if (sol >= 1.0)
+        return QStringLiteral("%1 SOL").arg(sol, 0, 'f', 2);
+    // Dust rounds to "0.0000 SOL", which still reads differently from the
+    // "0 SOL" an empty wallet prints above.
+    return QStringLiteral("%1 SOL").arg(sol, 0, 'f', 4);
 }
 
 QString lastSolanaBalanceSetting(const QString &address)
@@ -6742,24 +6761,6 @@ void MainWindow::refreshWebUserSolanaAddress()
             });
 }
 
-void MainWindow::cycleNavSolanaCurrency()
-{
-    QSettings s;
-    QString cur = s.value(kSolanaDisplayCurrencySetting).toString().toLower();
-    if (cur.isEmpty())
-        cur = s.value(kSolanaDisplayUsdSetting, false).toBool()
-                  ? QStringLiteral("usd")
-                  : QStringLiteral("sol");
-    const QString next = cur == QLatin1String("sol")   ? QStringLiteral("usd")
-                         : cur == QLatin1String("usd") ? QStringLiteral("inr")
-                                                       : QStringLiteral("sol");
-    s.setValue(kSolanaDisplayCurrencySetting, next);
-    // Re-render from the cached balance/rate rather than re-querying the chain +
-    // price API on every click — that re-querying is what made the figure stall
-    // (rate-limited) after a few quick switches.
-    renderNavSolanaBalance();
-}
-
 void MainWindow::updateNavSolanaBalance()
 {
     // The top bar no longer prints "user/node" beside the balance (adhoc #42),
@@ -6790,9 +6791,10 @@ void MainWindow::updateNavSolanaBalance()
     m_navSolanaBalanceAddress = addr;
     if (addr.isEmpty()) {
         m_navSolanaLamports = -1;
+        // One rail item wide: the prompt is the link itself, and the tooltip
+        // says what it does.
         m_navSolanaBalance->setText(
-            QStringLiteral("0.000000000 SOL &nbsp;&middot;&nbsp; "
-                           "<a href=\"settings\">Add address online</a>"));
+            QStringLiteral("<a href=\"settings\">Add SOL</a>"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral(
                 "Add a public self-custodial Solana address to show its balance.")));
@@ -6800,7 +6802,7 @@ void MainWindow::updateNavSolanaBalance()
     }
     if (!isLikelySolanaAddress(addr)) {
         m_navSolanaLamports = -1;
-        m_navSolanaBalance->setText(QStringLiteral("SOL invalid"));
+        m_navSolanaBalance->setText(QStringLiteral("bad addr"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral("Saved public Solana address is invalid.")));
         return;
@@ -6813,9 +6815,10 @@ void MainWindow::updateNavSolanaBalance()
     renderNavSolanaBalance();
 }
 
-// Re-render the balance label from the cached lamports + fiat rate, without
-// touching Solana. Shows a "hover to load" placeholder when nothing is cached
-// yet, and fetches a single price when the fiat rate is stale.
+// Re-render the balance label from the cached lamports, without touching
+// Solana. Shows a "hover to load" placeholder when nothing is cached yet. The
+// figure is always SOL — the tiny rail line has no room for a fiat conversion,
+// and the exact nine-decimal amount lives in the tooltip.
 void MainWindow::renderNavSolanaBalance()
 {
     if (!m_navSolanaBalance)
@@ -6824,55 +6827,17 @@ void MainWindow::renderNavSolanaBalance()
         return; // updateNavSolanaBalance() already painted the empty state
     if (m_navSolanaLamports < 0) {
         if (m_navSolanaFetchInFlight)
-            return; // a hover-triggered query is already painting "SOL ..."
-        m_navSolanaBalance->setText(QString::fromUtf8("SOL \xE2\x80\x94"));
+            return; // a hover-triggered query is already painting "... SOL"
+        m_navSolanaBalance->setText(QString::fromUtf8("\xE2\x80\x94 SOL"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral("Hover to check your public Solana balance.")));
         return;
     }
-    const QString cur = solanaDisplayCurrency();
-    const QString solBalance = formatSolanaBalance(m_navSolanaLamports);
-    if (cur == QLatin1String("sol")) {
-        m_navSolanaBalance->setText(solBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("Your public Solana balance: %1")
-                    .arg(solBalance)));
-        return;
-    }
-    const auto it = m_navFiatRates.constFind(cur);
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const bool fresh = it != m_navFiatRates.constEnd() && it->first > 0.0 &&
-                       now - it->second < 5 * 60 * 1000; // 5-minute rate cache
-    if (fresh) {
-        const QString fiatBalance =
-            formatFiatBalance(m_navSolanaLamports, it->first, cur);
-        m_navSolanaBalance->setText(fiatBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("Your public wallet balance: %1 (%2)")
-                    .arg(fiatBalance, solBalance)));
-        return;
-    }
-    // No fresh rate cached. This function now runs on every profile-hydration
-    // pass, so back off after a recent attempt (successful or not) instead of
-    // re-asking the price API each time; show the SOL figure meanwhile.
-    const bool attemptedRecently =
-        it != m_navFiatRates.constEnd() && now - it->second < 60 * 1000;
-    if (attemptedRecently || m_navFiatFetchInFlight) {
-        m_navSolanaBalance->setText(solBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("SOL/%1 price unavailable. Public balance: %2")
-                    .arg(cur.toUpper(), solBalance)));
-        return;
-    }
-    m_navSolanaBalance->setText(QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
+    m_navSolanaBalance->setText(compactSolanaBalance(m_navSolanaLamports));
     m_navSolanaBalance->setToolTip(
         externalWalletBalanceTooltip(
-            QStringLiteral("Checking SOL/%1 price for %2")
-                .arg(cur.toUpper(), solBalance)));
-    queryNavSolanaUsdPrice(m_navSolanaBalanceAddress, m_navSolanaLamports);
+            QStringLiteral("Your public Solana balance: %1")
+                .arg(formatSolanaBalance(m_navSolanaLamports))));
 }
 
 // Hovering the top-bar balance is the only thing that spends a Solana RPC
@@ -6892,7 +6857,7 @@ void MainWindow::refreshNavSolanaBalance(bool force)
         now - m_navSolanaFetchedMs < kNavSolanaBalanceTtlMs)
         return;
     if (m_navSolanaLamports < 0) {
-        m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
+        m_navSolanaBalance->setText(QStringLiteral("... SOL"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral("Checking your public Solana balance.")));
     }
@@ -6910,7 +6875,7 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
         m_navSolanaFetchedMs = QDateTime::currentMSecsSinceEpoch();
         if (m_navSolanaBalance && m_navSolanaBalanceAddress == addr &&
             m_navSolanaLamports < 0) {
-            m_navSolanaBalance->setText(QStringLiteral("SOL unavailable"));
+            m_navSolanaBalance->setText(QStringLiteral("n/a SOL"));
             m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
                 QStringLiteral("Public Solana balance is temporarily unavailable.")));
         }
@@ -6946,7 +6911,7 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
         m_navSolanaFetchInFlight = false;
         m_navSolanaFetchedMs = QDateTime::currentMSecsSinceEpoch();
         const qint64 lamports = result.value("value").toVariant().toLongLong();
-        m_navSolanaLamports = lamports; // cache so currency switches don't re-query
+        m_navSolanaLamports = lamports; // cache so re-renders don't re-query
         QSettings settings;
         const QString lastBalanceKey = lastSolanaBalanceSetting(addr);
         const QVariant previousValue = settings.value(lastBalanceKey);
@@ -6964,74 +6929,11 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
                              false, QStringLiteral("emblem-default"));
         }
         settings.setValue(lastBalanceKey, QString::number(lamports));
-        const QString cur = solanaDisplayCurrency();
-        if (cur != QLatin1String("sol")) {
-            m_navSolanaBalance->setText(
-                QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
-            m_navSolanaBalance->setToolTip(
-                externalWalletBalanceTooltip(
-                    QStringLiteral("Checking SOL/%1 price for %2")
-                        .arg(cur.toUpper(), balance)));
-            queryNavSolanaUsdPrice(addr, lamports);
-            return;
-        }
-        m_navSolanaBalance->setText(balance);
+        m_navSolanaBalance->setText(compactSolanaBalance(lamports));
         m_navSolanaBalance->setToolTip(
             externalWalletBalanceTooltip(
                 QStringLiteral("Your public Solana balance: %1")
                     .arg(balance)));
-    });
-}
-
-void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
-{
-    const QString cur = solanaDisplayCurrency();
-    if (cur == QLatin1String("sol"))
-        return;
-    if (m_navFiatFetchInFlight)
-        return;
-    m_navFiatFetchInFlight = true;
-    QNetworkRequest request(QUrl(
-        QStringLiteral("https://api.coingecko.com/api/v3/simple/price"
-                       "?ids=solana&vs_currencies=%1").arg(cur)));
-    QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, addr, lamports, cur]() {
-        const QByteArray raw = reply->readAll();
-        const QNetworkReply::NetworkError netError = reply->error();
-        reply->deleteLater();
-        m_navFiatFetchInFlight = false;
-        const double rate =
-            QJsonDocument::fromJson(raw).object()
-                .value(QStringLiteral("solana")).toObject()
-                .value(cur).toDouble();
-        // Stamp the attempt either way: a 0 rate marks "tried and failed" so
-        // renderNavSolanaBalance backs off instead of retrying on every pass.
-        if (netError != QNetworkReply::NoError || rate <= 0.0)
-            m_navFiatRates[cur] = {0.0, QDateTime::currentMSecsSinceEpoch()};
-        if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr ||
-            solanaDisplayCurrency() != cur)
-            return;
-
-        const QString solBalance = formatSolanaBalance(lamports);
-        if (netError != QNetworkReply::NoError || rate <= 0.0) {
-            m_navSolanaBalance->setText(solBalance);
-            m_navSolanaBalance->setToolTip(
-                externalWalletBalanceTooltip(
-                    QStringLiteral("SOL/%1 price unavailable. Public balance: %2")
-                        .arg(cur.toUpper(), solBalance)));
-            return;
-        }
-
-        m_navFiatRates[cur] = {rate, QDateTime::currentMSecsSinceEpoch()};
-        const QString fiatBalance = formatFiatBalance(lamports, rate, cur);
-        m_navSolanaBalance->setText(fiatBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("Your public wallet balance: %1 "
-                               "(%2 at %3%4/SOL)")
-                    .arg(fiatBalance, solBalance, fiatCurrencySymbol(cur),
-                         QString::number(rate, 'f', 2))));
     });
 }
 
@@ -10044,6 +9946,57 @@ QWidget *MainWindow::buildHostsSection()
     vultrHint->setWordWrap(true);
     vultrCol->addWidget(vultrHint);
 
+    // A compact, GitHub-Actions-style deployment rail. Every numbered stage is
+    // backed by the durable checkpoint restored below; the last stage becomes
+    // green only after the public mirror catalog says the endpoint is healthy,
+    // fresh, integrity-approved and clone eligible.
+    m_vultrProgressPanel = new QWidget(vultrCard);
+    m_vultrProgressPanel->setObjectName(
+        QStringLiteral("vultrDeployProgress"));
+    auto *stageRow = new QHBoxLayout(m_vultrProgressPanel);
+    stageRow->setContentsMargins(0, 6, 0, 6);
+    stageRow->setSpacing(5);
+    m_vultrStageNumbers.clear();
+    m_vultrStageLabels.clear();
+    const QStringList stageNames = {
+        QStringLiteral("Credentials"), QStringLiteral("Plan + image"),
+        QStringLiteral("Create server"), QStringLiteral("Boot + connect"),
+        QStringLiteral("Install"), QStringLiteral("Live traffic")};
+    for (int i = 0; i < stageNames.size(); ++i) {
+        auto *stage = new QWidget(m_vultrProgressPanel);
+        stage->setObjectName(QStringLiteral("vultrDeployStage%1").arg(i + 1));
+        auto *col = new QVBoxLayout(stage);
+        col->setContentsMargins(2, 0, 2, 0);
+        col->setSpacing(3);
+        auto *number = new QLabel(QString::number(i + 1), stage);
+        number->setAlignment(Qt::AlignCenter);
+        number->setFixedSize(28, 28);
+        number->setAccessibleName(
+            QStringLiteral("Deployment stage %1").arg(i + 1));
+        auto *label = new QLabel(stageNames.at(i), stage);
+        label->setAlignment(Qt::AlignCenter);
+        label->setWordWrap(true);
+        label->setMinimumWidth(72);
+        col->addWidget(number, 0, Qt::AlignHCenter);
+        col->addWidget(label, 0, Qt::AlignHCenter);
+        m_vultrStageNumbers.append(number);
+        m_vultrStageLabels.append(label);
+        stageRow->addWidget(stage, 1);
+        if (i + 1 < stageNames.size()) {
+            auto *connector = new QFrame(m_vultrProgressPanel);
+            connector->setFrameShape(QFrame::HLine);
+            connector->setObjectName(QStringLiteral("vultrStageConnector"));
+            connector->setMaximumWidth(22);
+            stageRow->addWidget(connector);
+        }
+    }
+    vultrCol->addWidget(m_vultrProgressPanel);
+    m_vultrLiveBadge = new QLabel(vultrCard);
+    m_vultrLiveBadge->setObjectName(QStringLiteral("vultrMirrorLiveBadge"));
+    m_vultrLiveBadge->setAlignment(Qt::AlignCenter);
+    m_vultrLiveBadge->setVisible(false);
+    vultrCol->addWidget(m_vultrLiveBadge);
+
     auto *vultrForm = new QFormLayout;
     vultrForm->setLabelAlignment(Qt::AlignRight);
     vultrForm->setSpacing(6);
@@ -10202,6 +10155,8 @@ QWidget *MainWindow::buildHostsSection()
     outer->addWidget(scroll, 1);
 
     refreshHostsTable();
+    renderVultrProvisionProgress();
+    restoreVultrProvision();
     QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
     return page;
 }
@@ -15449,6 +15404,320 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
 // Every step streams into the shared Live output pane; the API key is captured
 // by value and lives only in these closures and the Authorization headers.
 
+QString MainWindow::vultrProvisionLogPath() const
+{
+    const QString appData =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (appData.isEmpty())
+        return {};
+    const QString dir = QDir(appData).filePath(QStringLiteral("deployments"));
+    if (!QDir().mkpath(dir))
+        return {};
+    return QDir(dir).filePath(QStringLiteral("vultr-mirror-latest.log"));
+}
+
+void MainWindow::saveVultrProvisionLog()
+{
+    if (!m_hostInstallLog)
+        return;
+    const QString path = vultrProvisionLogPath();
+    if (path.isEmpty())
+        return;
+    // Bound the persisted transcript so a noisy SSH process cannot grow the
+    // settings directory without limit. The visible widget still retains the
+    // full current-session output; restart restores the newest 1 MiB.
+    QString plain = m_hostInstallLog->toPlainText();
+    constexpr int kMaxPersistedChars = 1024 * 1024;
+    if (plain.size() > kMaxPersistedChars)
+        plain = plain.right(kMaxPersistedChars);
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return;
+    file.write(plain.toUtf8());
+    file.commit();
+}
+
+void MainWindow::scheduleVultrProvisionLogSave()
+{
+    if (m_vultrLogSaveScheduled)
+        return;
+    m_vultrLogSaveScheduled = true;
+    QTimer::singleShot(250, this, [this] {
+        m_vultrLogSaveScheduled = false;
+        saveVultrProvisionLog();
+    });
+}
+
+void MainWindow::renderVultrProvisionProgress(bool failed)
+{
+    const int current = qBound(0, m_vultrProvisionStage,
+                               kVultrProvisionStageCount);
+    for (int i = 0; i < m_vultrStageNumbers.size(); ++i) {
+        const int stage = i + 1;
+        const bool complete =
+            m_vultrProvisionState == QLatin1String("succeeded") ||
+            (current > stage);
+        const bool active = current == stage &&
+                            m_vultrProvisionState == QLatin1String("active");
+        const bool stageFailed = failed && current == stage;
+        QString background = QStringLiteral("#30363d");
+        QString foreground = QStringLiteral("#8b949e");
+        QString border = QStringLiteral("#484f58");
+        if (complete) {
+            background = QStringLiteral("#238636");
+            foreground = QStringLiteral("#ffffff");
+            border = QStringLiteral("#2ea043");
+        } else if (active) {
+            background = QStringLiteral("#1f6feb");
+            foreground = QStringLiteral("#ffffff");
+            border = QStringLiteral("#58a6ff");
+        } else if (stageFailed) {
+            background = QStringLiteral("#da3633");
+            foreground = QStringLiteral("#ffffff");
+            border = QStringLiteral("#f85149");
+        }
+        m_vultrStageNumbers.at(i)->setStyleSheet(
+            QStringLiteral("QLabel { background:%1; color:%2; border:2px solid %3; "
+                           "border-radius:14px; font-weight:700; }")
+                .arg(background, foreground, border));
+        m_vultrStageLabels.at(i)->setStyleSheet(
+            QStringLiteral("QLabel { color:%1; font-size:11px; %2 }")
+                .arg((complete || active || stageFailed)
+                         ? QStringLiteral("#f0f6fc")
+                         : QStringLiteral("#8b949e"),
+                     active ? QStringLiteral("font-weight:700;") : QString()));
+    }
+    if (m_vultrLiveBadge) {
+        const bool live = m_vultrProvisionState == QLatin1String("succeeded");
+        const bool verifying = m_vultrProvisionState == QLatin1String("active") &&
+                               current == kVultrProvisionStageCount;
+        m_vultrLiveBadge->setVisible(live || verifying);
+        m_vultrLiveBadge->setText(
+            live
+                ? QString::fromUtf8("\xE2\x97\x8F LIVE \xE2\x80\x94 mirror is serving repository traffic")
+                : QString::fromUtf8("\xE2\x97\x8F VERIFYING \xE2\x80\x94 waiting for healthy public traffic"));
+        m_vultrLiveBadge->setStyleSheet(
+            live
+                ? QStringLiteral("QLabel { color:#3fb950; background:#0d2818; "
+                                 "border:1px solid #238636; border-radius:6px; "
+                                 "padding:7px; font-weight:700; }")
+                : QStringLiteral("QLabel { color:#d29922; background:#2d2106; "
+                                 "border:1px solid #9e6a03; border-radius:6px; "
+                                 "padding:7px; font-weight:700; }"));
+    }
+}
+
+void MainWindow::persistVultrProvisionState(const QString &state,
+                                             const QString &message)
+{
+    if (!state.isEmpty())
+        m_vultrProvisionState = state;
+    if (!message.isNull())
+        m_vultrProvisionMessage = message;
+    QJsonObject checkpoint{
+        {QStringLiteral("version"), 1},
+        {QStringLiteral("state"), m_vultrProvisionState},
+        {QStringLiteral("stage"), m_vultrProvisionStage},
+        {QStringLiteral("detail"), m_vultrProvisionDetail},
+        {QStringLiteral("message"), m_vultrProvisionMessage},
+        {QStringLiteral("node"), m_vultrProvisionNode},
+        {QStringLiteral("dnsHostname"), m_vultrDnsHostname},
+        {QStringLiteral("instanceId"), m_vultrInstanceId},
+        {QStringLiteral("ip"), m_vultrInstanceIp},
+        {QStringLiteral("identityFile"), m_vultrIdentityFile},
+        {QStringLiteral("installAgentClis"), m_vultrInstallAgentClis},
+        {QStringLiteral("installUseLocalBinary"),
+         m_vultrInstallUseLocalBinary},
+        {QStringLiteral("pollCount"), m_vultrPollCount},
+        {QStringLiteral("installAttempts"), m_vultrInstallAttempts},
+        {QStringLiteral("hostMetadata"), m_vultrHostMetadata},
+        {QStringLiteral("updatedAt"), QDateTime::currentMSecsSinceEpoch()},
+    };
+    QSettings settings;
+    settings.setValue(
+        kVultrProvisionSetting,
+        QString::fromUtf8(
+            QJsonDocument(checkpoint).toJson(QJsonDocument::Compact)));
+    settings.sync();
+    saveVultrProvisionLog();
+}
+
+void MainWindow::setVultrProvisionStage(int stage, const QString &detail,
+                                        bool failed)
+{
+    const int bounded = qBound(1, stage, kVultrProvisionStageCount);
+    m_vultrProvisionStage = m_vultrResumeChain
+                                ? qMax(m_vultrProvisionStage, bounded)
+                                : bounded;
+    if (!detail.isEmpty())
+        m_vultrProvisionDetail = detail;
+    if (m_vultrStatus && !m_vultrProvisionDetail.isEmpty())
+        m_vultrStatus->setText(m_vultrProvisionDetail);
+    renderVultrProvisionProgress(failed);
+    persistVultrProvisionState(failed ? QStringLiteral("failed")
+                                      : QStringLiteral("active"),
+                                 failed ? m_vultrProvisionDetail : QString());
+}
+
+void MainWindow::restoreVultrProvision()
+{
+    const QJsonObject saved = QJsonDocument::fromJson(
+        QSettings().value(kVultrProvisionSetting).toString().toUtf8()).object();
+    if (saved.value(QStringLiteral("version")).toInt() != 1)
+        return;
+    m_vultrProvisionState = saved.value(QStringLiteral("state")).toString();
+    m_vultrProvisionStage = saved.value(QStringLiteral("stage")).toInt();
+    m_vultrProvisionDetail = saved.value(QStringLiteral("detail")).toString();
+    m_vultrProvisionMessage = saved.value(QStringLiteral("message")).toString();
+    m_vultrProvisionNode = saved.value(QStringLiteral("node")).toString();
+    m_vultrDnsHostname =
+        saved.value(QStringLiteral("dnsHostname")).toString();
+    m_vultrInstanceId = saved.value(QStringLiteral("instanceId")).toString();
+    m_vultrInstanceIp = saved.value(QStringLiteral("ip")).toString();
+    m_vultrIdentityFile =
+        saved.value(QStringLiteral("identityFile")).toString();
+    m_vultrInstallAgentClis =
+        saved.value(QStringLiteral("installAgentClis")).toBool();
+    m_vultrInstallUseLocalBinary =
+        saved.value(QStringLiteral("installUseLocalBinary")).toBool();
+    m_vultrPollCount = saved.value(QStringLiteral("pollCount")).toInt();
+    m_vultrInstallAttempts =
+        saved.value(QStringLiteral("installAttempts")).toInt();
+    m_vultrHostMetadata =
+        saved.value(QStringLiteral("hostMetadata")).toObject();
+    if (m_vultrNameEdit && !m_vultrProvisionNode.isEmpty())
+        m_vultrNameEdit->setText(m_vultrProvisionNode);
+    if (m_vultrAgentClisCheck)
+        m_vultrAgentClisCheck->setChecked(m_vultrInstallAgentClis);
+    const QString logPath = vultrProvisionLogPath();
+    QFile log(logPath);
+    if (m_hostInstallLog && log.open(QIODevice::ReadOnly))
+        m_hostInstallLog->setPlainText(
+            QString::fromUtf8(log.read(1024 * 1024)));
+    const bool failed = m_vultrProvisionState == QLatin1String("failed");
+    renderVultrProvisionProgress(failed);
+    if (m_vultrStatus) {
+        const QString restored = !m_vultrProvisionMessage.isEmpty()
+                                     ? m_vultrProvisionMessage
+                                     : m_vultrProvisionDetail;
+        m_vultrStatus->setText(restored);
+    }
+    if (m_vultrCreateButton) {
+        m_vultrCreateButton->setText(
+            failed ? QStringLiteral("Retry deployment")
+                   : m_vultrProvisionState == QLatin1String("active")
+                         ? QStringLiteral("Resuming deployment…")
+                         : QStringLiteral("Create another mirror"));
+    }
+    m_vultrResumeRequested =
+        m_vultrProvisionState == QLatin1String("active") || failed;
+    if (m_vultrProvisionState == QLatin1String("active")) {
+        QTimer::singleShot(0, this, &MainWindow::resumeVultrProvision);
+    }
+}
+
+void MainWindow::resumeVultrProvision()
+{
+    if (!m_vultrResumeRequested || m_vultrProvisionNode.isEmpty())
+        return;
+    QString apiKey = m_vultrApiKeyEdit
+                         ? m_vultrApiKeyEdit->text().trimmed()
+                         : QString();
+    if (apiKey.isEmpty())
+        apiKey = forkmesh::control::vultrApiKeyFromVariables(
+            ActionStore::variables());
+    const QString invalid = forkmesh::control::validateVultrMirrorRequest(
+        apiKey, m_vultrProvisionNode);
+    if (!invalid.isEmpty()) {
+        m_vultrProvisionActive = false;
+        if (m_vultrStatus)
+            m_vultrStatus->setText(
+                QStringLiteral("Deployment is paused. Enter the saved Vultr "
+                               "API key, then click Resume deployment. %1")
+                    .arg(invalid));
+        if (m_vultrCreateButton) {
+            m_vultrCreateButton->setEnabled(true);
+            m_vultrCreateButton->setText(
+                QStringLiteral("Resume deployment"));
+        }
+        return;
+    }
+    const QMap<QString, QString> variables = ActionStore::variables();
+    m_vultrTunnelApiToken =
+        forkmesh::control::cloudflareApiTokenFromVariables(variables);
+    m_vultrProvisionActive = true;
+    if (m_vultrCreateButton) {
+        m_vultrCreateButton->setEnabled(false);
+        m_vultrCreateButton->setText(QStringLiteral("Deployment running…"));
+    }
+    appendHostInstallLog(QString::fromUtf8(
+        "\n\xE2\x86\xBB Desktop restarted \xE2\x80\x94 resuming Vultr deployment at stage %1.\n")
+        .arg(m_vultrProvisionStage));
+    if (m_vultrProvisionStage >= 6 && !m_vultrProvisionNode.isEmpty()) {
+        const QString address = m_vultrDnsHostname.isEmpty()
+                                    ? m_vultrInstanceIp
+                                    : m_vultrDnsHostname;
+        waitForVultrMirrorPublication(
+            m_vultrProvisionNode,
+            QStringLiteral("Vultr mirror \"%1\" (%2) is installed, linked, "
+                           "and serving traffic.")
+                .arg(m_vultrProvisionNode, address));
+        return;
+    }
+    if (m_vultrProvisionStage >= 5 && !m_vultrInstanceIp.isEmpty() &&
+        !m_vultrIdentityFile.isEmpty()) {
+        m_vultrInstallAttempts = 0;
+        persistVultrProvisionState();
+        QTimer::singleShot(1000, this, [this] {
+            startVultrHostInstall(m_vultrProvisionNode, m_vultrInstanceIp,
+                                  m_vultrIdentityFile);
+        });
+        return;
+    }
+    if (!m_vultrInstanceId.isEmpty() && !m_vultrIdentityFile.isEmpty()) {
+        setVultrProvisionStage(4, QStringLiteral("Resuming server boot checks…"));
+        pollVultrInstance(apiKey, m_vultrInstanceId, m_vultrProvisionNode,
+                          m_vultrIdentityFile);
+        return;
+    }
+    // Pre-instance stages are idempotent. Re-run key/plan/image discovery, and
+    // the create step itself first searches Vultr by label before POSTing so a
+    // restart in the request/response window cannot create a duplicate VPS.
+    m_vultrResumeRequested = false;
+    m_vultrResumeChain = true;
+    m_vultrProvisionActive = false;
+    createVultrMirrorFromForm();
+}
+
+void MainWindow::findVultrProvisionInstance(
+    const QString &apiKey, const QString &node,
+    std::function<void(QString, QString)> onDone)
+{
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances?per_page=500"),
+        QByteArrayLiteral("GET"), {},
+        [node, onDone](QJsonObject result, QString error) {
+            if (!error.isEmpty()) {
+                onDone({}, error);
+                return;
+            }
+            for (const QJsonValue &value :
+                 result.value(QStringLiteral("instances")).toArray()) {
+                const QJsonObject instance = value.toObject();
+                const QString label =
+                    instance.value(QStringLiteral("label")).toString();
+                const QString hostname =
+                    instance.value(QStringLiteral("hostname")).toString();
+                if (label.compare(node, Qt::CaseInsensitive) == 0 ||
+                    hostname.compare(node, Qt::CaseInsensitive) == 0) {
+                    onDone(instance.value(QStringLiteral("id")).toString(), {});
+                    return;
+                }
+            }
+            onDone({}, {});
+        });
+}
+
 void MainWindow::finishVultrProvision(bool ok, const QString &message)
 {
     m_vultrProvisionActive = false;
@@ -15462,7 +15731,8 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
         probe->deleteLater();
     }
     if (m_vultrCreateButton)
-        m_vultrCreateButton->setEnabled(true);
+        m_vultrCreateButton->setText(ok ? QStringLiteral("Create another mirror")
+                                        : QStringLiteral("Retry deployment"));
     if (m_vultrStatus)
         m_vultrStatus->setText(
             (ok ? QString::fromUtf8("\xE2\x9C\x94 ")
@@ -15472,6 +15742,17 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
             (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
                 : QString::fromUtf8("\n\xE2\x9C\x98 ")) +
             message + QStringLiteral("\n"));
+    saveVultrProvisionLog();
+    m_vultrProvisionActive = false;
+    m_vultrResumeRequested = !ok;
+    m_vultrResumeChain = false;
+    persistVultrProvisionState(ok ? QStringLiteral("succeeded")
+                                  : QStringLiteral("failed"),
+                                 message);
+    renderVultrProvisionProgress(!ok);
+    m_vultrTunnelApiToken.clear();
+    if (m_vultrCreateButton)
+        m_vultrCreateButton->setEnabled(true);
 }
 
 void MainWindow::waitForVultrMirrorPublication(
@@ -15480,14 +15761,15 @@ void MainWindow::waitForVultrMirrorPublication(
     constexpr int kMaxPublicationPolls = 90; // fifteen minutes at 10 seconds
     if (!m_vultrProvisionActive)
         return;
-    if (m_vultrStatus) {
-        m_vultrStatus->setText(QString::fromUtf8(
-            "ForkMesh is running on %1 \xE2\x80\x94 waiting for its signed "
-            "Mirror nodes / World catalog record (%2/%3)\xE2\x80\xA6")
+    m_vultrProvisionNode = node;
+    m_vultrResumeChain = false;
+    setVultrProvisionStage(
+        6,
+        QString::fromUtf8(
+            "ForkMesh is running on %1 — verifying healthy public traffic (%2/%3)…")
             .arg(node)
             .arg(attempt + 1)
             .arg(kMaxPublicationPolls));
-    }
 
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/repo/forkmesh/forkmesh/mirrors"));
@@ -15542,16 +15824,26 @@ void MainWindow::waitForVultrMirrorPublication(
         if (published) {
             appendHostInstallLog(QString::fromUtf8(
                 "\n\xE2\x9C\x94 Verified %1 in the public Mirror nodes / World "
-                "catalog.\n").arg(node));
+                "catalog: online, fresh, integrity-approved, clone eligible, "
+                "and serving repository traffic.\n").arg(node));
             finishVultrProvision(true, successMessage);
             return;
         }
         if (attempt + 1 >= kMaxPublicationPolls) {
-            finishVultrProvision(false, QString::fromUtf8(
-                "ForkMesh is installed on %1, but it did not become a healthy, "
-                "integrity-approved, clone-eligible Tunnel endpoint within fifteen "
-                "minutes. The host remains saved and will keep retrying; check "
-                "its Logs before treating the mirror as ready.").arg(node));
+            appendHostInstallLog(QString::fromUtf8(
+                "Still waiting for %1 to become a healthy public mirror after "
+                "fifteen minutes; the server remains installed and verification "
+                "will continue every minute.\n").arg(node));
+            m_vultrProvisionDetail = QString::fromUtf8(
+                "Installed on %1; still waiting for healthy public traffic. "
+                "Verification continues automatically…").arg(node);
+            persistVultrProvisionState(QStringLiteral("active"));
+            renderVultrProvisionProgress();
+            QTimer::singleShot(
+                60000, this,
+                [this, node, successMessage] {
+                    waitForVultrMirrorPublication(node, successMessage, 0);
+                });
             return;
         }
         QTimer::singleShot(
@@ -15928,6 +16220,10 @@ void MainWindow::resolveVultrSshKeyId(
 
 void MainWindow::createVultrMirrorFromForm()
 {
+    if (m_vultrResumeRequested) {
+        resumeVultrProvision();
+        return;
+    }
     if (m_vultrProvisionActive) {
         if (m_vultrStatus)
             m_vultrStatus->setText(
@@ -16035,6 +16331,7 @@ void MainWindow::createVultrMirrorFromForm()
     if (!cloudflareStoreError.isEmpty())
         appendHostInstallLog(cloudflareStoreError + QLatin1Char('\n'));
 
+    const bool resumedPreInstance = m_vultrResumeChain;
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
@@ -16057,18 +16354,23 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname = tunnelHostname;
     m_vultrTunnelApiToken = cloudflareToken;
-    m_vultrHostMetadata = QJsonObject{
-        {QStringLiteral("provider"), QStringLiteral("Vultr")},
-        {QStringLiteral("displayName"), node},
-    };
+    if (!resumedPreInstance) {
+        m_vultrHostMetadata = QJsonObject{
+            {QStringLiteral("provider"), QStringLiteral("Vultr")},
+            {QStringLiteral("displayName"), node},
+        };
+    }
     m_hostInstallAttemptBanner.clear();
-    if (m_vultrCreateButton)
+    if (m_vultrCreateButton) {
         m_vultrCreateButton->setEnabled(false);
-    if (m_hostInstallLog) {
+        m_vultrCreateButton->setText(QStringLiteral("Deployment running…"));
+    }
+    if (m_hostInstallLog && !resumedPreInstance) {
         m_hostInstallLog->clear();
         m_hostInstallLogCarry.clear();
         m_hostInstallLogFg = -1;
         m_hostInstallLogBold = false;
+        saveVultrProvisionLog();
     }
     appendHostInstallLog(QString::fromUtf8(
         "Creating Vultr mirror \"%1\" \xE2\x80\x94 cheapest supported US plan, latest "
@@ -16093,9 +16395,10 @@ void MainWindow::createVultrMirrorFromForm()
                       "Claude Code and Codex will be installed and signed in "
                       "with this device's access (%1).\n").arg(agentAccess));
     }
-    if (m_vultrStatus)
-        m_vultrStatus->setText(
-            QString::fromUtf8("Preparing the managed SSH key\xE2\x80\xA6"));
+    setVultrProvisionStage(
+        1, resumedPreInstance
+               ? QStringLiteral("Resuming credentials and managed SSH key…")
+               : QStringLiteral("Preparing credentials and managed SSH key…"));
 
     ensureVultrManagedKeypair([this, apiKey, node](
                                   QString keyPath, QString publicKey,
@@ -16104,6 +16407,8 @@ void MainWindow::createVultrMirrorFromForm()
             finishVultrProvision(false, keyError);
             return;
         }
+        m_vultrIdentityFile = keyPath;
+        persistVultrProvisionState();
         appendHostInstallLog(
             QStringLiteral("Managed SSH key: %1\n").arg(keyPath));
         if (m_vultrStatus)
@@ -16116,9 +16421,8 @@ void MainWindow::createVultrMirrorFromForm()
                 finishVultrProvision(false, sshError);
                 return;
             }
-            if (m_vultrStatus)
-                m_vultrStatus->setText(QString::fromUtf8(
-                    "Choosing the cheapest supported US plan\xE2\x80\xA6"));
+            setVultrProvisionStage(
+                2, QStringLiteral("Choosing a supported plan and Debian image…"));
             vultrApiCall(
                 apiKey, QStringLiteral("/v2/plans?per_page=500"),
                 QByteArrayLiteral("GET"), {},
@@ -16188,9 +16492,9 @@ void MainWindow::createVultrMirrorFromForm()
                                 QStringLiteral("Operating system: %1\n")
                                     .arg(debian.value(QStringLiteral("name"))
                                              .toString()));
-                            if (m_vultrStatus)
-                                m_vultrStatus->setText(QString::fromUtf8(
-                                    "Creating the instance\xE2\x80\xA6"));
+                            setVultrProvisionStage(
+                                3, QStringLiteral(
+                                       "Checking for an existing server before creation…"));
                             const QJsonObject payload =
                                 forkmesh::control::vultrInstanceCreatePayload(
                                     node,
@@ -16200,45 +16504,75 @@ void MainWindow::createVultrMirrorFromForm()
                                     debian.value(QStringLiteral("id"))
                                         .toInt(),
                                     sshKeyId);
-                            vultrApiCall(
-                                apiKey, QStringLiteral("/v2/instances"),
-                                QByteArrayLiteral("POST"), payload,
-                                [this, apiKey, node, keyPath](
-                                    QJsonObject createResult,
-                                    QString createError) {
-                                    if (!createError.isEmpty()) {
-                                        finishVultrProvision(false,
-                                                             createError);
+                            findVultrProvisionInstance(
+                                apiKey, node,
+                                [this, apiKey, node, keyPath, payload](
+                                    QString existingId, QString findError) {
+                                    if (!findError.isEmpty()) {
+                                        finishVultrProvision(false, findError);
                                         return;
                                     }
-                                    const QString instanceId =
-                                        createResult
-                                            .value(QStringLiteral("instance"))
-                                            .toObject()
-                                            .value(QStringLiteral("id"))
-                                            .toString();
-                                    if (instanceId.isEmpty()) {
-                                        finishVultrProvision(
-                                            false,
-                                            QStringLiteral(
-                                                "Vultr did not return an "
-                                                "instance id."));
+                                    const auto continueWithInstance =
+                                        [this, apiKey, node, keyPath](
+                                            const QString &instanceId,
+                                            bool reused) {
+                                            if (instanceId.isEmpty()) {
+                                                finishVultrProvision(
+                                                    false,
+                                                    QStringLiteral(
+                                                        "Vultr did not return an "
+                                                        "instance id."));
+                                                return;
+                                            }
+                                            m_vultrInstanceId = instanceId;
+                                            m_vultrIdentityFile = keyPath;
+                                            m_vultrHostMetadata.insert(
+                                                QStringLiteral("instanceId"),
+                                                instanceId);
+                                            appendHostInstallLog(
+                                                reused
+                                                    ? QString::fromUtf8(
+                                                          "Found existing instance %1 for %2; resuming instead of creating a duplicate.\n")
+                                                          .arg(instanceId, node)
+                                                    : QString::fromUtf8(
+                                                          "Instance %1 created \xE2\x80\x94 waiting for it to boot\xE2\x80\xA6\n")
+                                                          .arg(instanceId));
+                                            m_vultrResumeChain = false;
+                                            setVultrProvisionStage(
+                                                4, QStringLiteral(
+                                                       "Waiting for the server to boot and accept SSH…"));
+                                            pollVultrInstance(
+                                                apiKey, instanceId, node,
+                                                keyPath);
+                                        };
+                                    if (!existingId.isEmpty()) {
+                                        continueWithInstance(existingId, true);
                                         return;
                                     }
-                                    m_vultrHostMetadata.insert(
-                                        QStringLiteral("instanceId"),
-                                        instanceId);
-                                    appendHostInstallLog(QString::fromUtf8(
-                                        "Instance %1 created \xE2\x80\x94 "
-                                        "waiting for it to boot\xE2\x80\xA6\n")
-                                        .arg(instanceId));
-                                    if (m_vultrStatus)
-                                        m_vultrStatus->setText(
-                                            QString::fromUtf8(
-                                                "Waiting for the instance to "
-                                                "boot\xE2\x80\xA6"));
-                                    pollVultrInstance(apiKey, instanceId,
-                                                      node, keyPath);
+                                    setVultrProvisionStage(
+                                        3, QStringLiteral("Creating the Vultr server…"));
+                                    vultrApiCall(
+                                        apiKey,
+                                        QStringLiteral("/v2/instances"),
+                                        QByteArrayLiteral("POST"), payload,
+                                        [this, continueWithInstance](
+                                            QJsonObject createResult,
+                                            QString createError) {
+                                            if (!createError.isEmpty()) {
+                                                // The next resume re-lists by
+                                                // label before trying POST again.
+                                                finishVultrProvision(
+                                                    false, createError);
+                                                return;
+                                            }
+                                            continueWithInstance(
+                                                createResult
+                                                    .value(QStringLiteral("instance"))
+                                                    .toObject()
+                                                    .value(QStringLiteral("id"))
+                                                    .toString(),
+                                                false);
+                                        });
                                 });
                         });
                 });
@@ -16262,7 +16596,18 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             if (!m_vultrProvisionActive)
                 return;
             if (!error.isEmpty()) {
-                finishVultrProvision(false, error);
+                appendHostInstallLog(
+                    QStringLiteral("Server status check failed: %1; retrying.\n")
+                        .arg(error));
+                setVultrProvisionStage(
+                    4, QStringLiteral(
+                           "Vultr status check was interrupted; retrying automatically…"));
+                QTimer::singleShot(
+                    10000, this,
+                    [this, apiKey, instanceId, node, identityFile] {
+                        pollVultrInstance(apiKey, instanceId, node,
+                                          identityFile);
+                    });
                 return;
             }
             const QJsonObject instance =
@@ -16287,13 +16632,14 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
                         "ForkMesh manually once it is up."));
                     return;
                 }
-                if (m_vultrStatus)
-                    m_vultrStatus->setText(
-                        QString::fromUtf8(
-                            "Waiting for the instance to boot "
-                            "(status: %1)\xE2\x80\xA6")
-                            .arg(instance.value(QStringLiteral("status"))
-                                     .toString()));
+                setVultrProvisionStage(
+                    4,
+                    QString::fromUtf8(
+                        "Waiting for the server to boot (status: %1, check %2/%3)…")
+                        .arg(instance.value(QStringLiteral("status"))
+                                 .toString())
+                        .arg(m_vultrPollCount + 1)
+                        .arg(kMaxPolls));
                 QTimer::singleShot(
                     10000, this,
                     [this, apiKey, instanceId, node, identityFile] {
@@ -16304,6 +16650,9 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             }
             appendHostInstallLog(
                 QStringLiteral("Instance is up at %1.\n").arg(ip));
+            m_vultrInstanceId = instanceId;
+            m_vultrInstanceIp = ip;
+            m_vultrIdentityFile = identityFile;
             // Persist the host with its managed key path before the install
             // so every later SSH action (install, logs, uninstall, Actions)
             // authenticates with that key. Vultr Debian images boot as root.
@@ -16501,6 +16850,9 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
     if (m_hostUploadBinaryCheck)
         m_hostUploadBinaryCheck->setChecked(false);
     ++m_vultrInstallAttempts;
+    m_vultrProvisionNode = node;
+    m_vultrInstanceIp = ip;
+    m_vultrIdentityFile = identityFile;
     const QString attemptLabel =
         QStringLiteral("Attempt %1 of %2 at %3")
             .arg(QString::number(m_vultrInstallAttempts),
@@ -16544,8 +16896,8 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                     ? ip
                     : QStringLiteral("%1, %2").arg(m_vultrDnsHostname, ip);
             const QString done = QString::fromUtf8(
-                "Vultr mirror \"%1\" (%2) is installed, linked, and published "
-                "to Mirror nodes and the World.").arg(node, address);
+                "Vultr mirror \"%1\" (%2) is installed, linked, healthy, and "
+                "serving repository traffic.").arg(node, address);
             if (!m_vultrInstallAgentClis) {
                 waitForVultrMirrorPublication(node, done);
                 return;
@@ -16558,9 +16910,9 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
             const bool copyLogins =
                 !forkmesh::control::agentCliCredentialsAreEmpty(
                     localAgentCliCredentials());
-            if (m_vultrStatus)
-                m_vultrStatus->setText(QString::fromUtf8(
-                    "Installing Claude Code and Codex\xE2\x80\xA6"));
+            setVultrProvisionStage(
+                5, QStringLiteral(
+                       "ForkMesh installed; setting up Claude Code and Codex…"));
             runAgentCliInstall(
                 node, ip, QStringLiteral("root"), QString(), identityFile,
                 copyLogins,
@@ -16810,6 +17162,8 @@ void MainWindow::appendHostInstallLog(const QString &text)
 {
     appendAnsiLog(m_hostInstallLog, m_hostInstallLogCarry, m_hostInstallLogFg,
                   m_hostInstallLogBold, currentThemeIsDark(), text);
+    if (m_vultrProvisionActive)
+        scheduleVultrProvisionLogSave();
 }
 
 void MainWindow::appendHostDeployLog(HostDeploySession *session,
