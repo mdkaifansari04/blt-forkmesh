@@ -882,6 +882,19 @@ public:
     {
         return markAgentSessionsMerged(0, branch);
     }
+    // The "Merge & clean up" buttons (Branches, Worktrees and the agent detail
+    // rail): merge the branch into the default branch, then delete its worktree,
+    // its branch and the agent session(s) that produced it.
+    bool testMergeBranchAndCleanUp(const QString &branch)
+    {
+        return mergeWorktreeIntoMain(branch,
+                                     worktreePathForBranch(repoGitDir(), branch),
+                                     /*deleteAgent=*/true);
+    }
+    bool testHasAgentSession(int sessionId)
+    {
+        return findAgentSession(sessionId) != nullptr;
+    }
     QString testAgentStatusCellText(int sessionId) const;
     QString testAgentDetailTitleText() const;
     bool testAgentDetailTitleWraps() const;
@@ -2594,8 +2607,12 @@ private:
     // it from the run queue, delete it from the store). Returns true once it's
     // gone; false (after flashing why) when it can't go yet — a running agent
     // still stopping, or no host write access to clear the issue. External
-    // (watch-only) sessions aren't handled here.
-    bool deleteStoredAgentSession(int sessionId, bool cleanupWorktree = true);
+    // (watch-only) sessions aren't handled here. force=true also drops a
+    // provenance-only record that would otherwise be kept for its branch/PR — the
+    // "Merge & clean up" paths use it, since the branch it documents is being
+    // deleted in the same step and its entry would just be left dangling.
+    bool deleteStoredAgentSession(int sessionId, bool cleanupWorktree = true,
+                                  bool force = false);
     // Agent-detail "Delete": remove the session from the UI/store first,
     // then clean its worktree, branch, and linked issues asynchronously.
     void deleteWorktreeBranchAndAgentInBackground(
