@@ -69,6 +69,11 @@
     homeOrganizationRepositories: [],
     repoCommitDetail: null,
     repoRecordDetail: null,
+    // Last rendered pull/discussion list per kind, and the last rendered code
+    // tree listing. Both are held so the header search box can re-filter what
+    // is already on screen (adhoc #37) without a second mirror read.
+    repoCollectionItems: {},
+    repoTreeView: null,
     profileContributions: {
       range: null,
       data: null,
@@ -97,6 +102,10 @@
       open: false,
       selectedIndex: 0,
       results: [],
+      // The header search box also filters the page you are on, live, on top of
+      // whatever that page's own filter box holds (adhoc #37). Kept here rather
+      // than read off the input so a re-render after navigation still sees it.
+      pageQuery: "",
     },
   };
 
