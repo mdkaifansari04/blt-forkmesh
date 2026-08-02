@@ -607,6 +607,9 @@ const WORLD_SPACE_IDS = new Set([
   "central",
   "west",
 ]);
+// Rows the HUD "who is online" dropdown draws before it stops and reports the
+// remainder as a count. The panel stays scrollable and readable on a phone.
+const WORLD_ONLINE_ROSTER_LIMIT = 40;
 
 function escapeHTML(value) {
   return String(value ?? "")
@@ -4272,7 +4275,27 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </nav>
         </header>
 
-        <nav class="world-status-actions" aria-label="MCP prompt, notifications, errors, and tasks">
+        <nav class="world-status-actions" aria-label="Who is online, MCP prompt, notifications, errors, and tasks">
+          <div class="world-online-menu" data-world-online-menu data-open="false">
+            <button
+              class="world-online-button"
+              type="button"
+              data-world-online-toggle
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-label="1 person online right now"
+              title="Who is online right now"
+            >
+              <span class="world-status-action-icon" aria-hidden="true">👥</span>
+              <span class="world-tool-count" data-world-online-count>1</span>
+            </button>
+            <div
+              class="world-online-dropdown"
+              data-world-online-list
+              role="group"
+              aria-label="People online in the World right now"
+            ></div>
+          </div>
           <button class="world-prompt-button" type="button" data-world-mcp-prompt aria-label="Copy MCP task prompt" title="Copy a task-scoped MCP prompt">
             <span class="world-prompt-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false">
@@ -5497,6 +5520,9 @@ class ForkMeshWorld extends HTMLElement {
     this.remotePlayers = new Map();
     this.localPeers = new Map();
     this.inactivePlayers = [];
+    // Last roster written into the HUD "who is online" dropdown, so movement
+    // frames that change nobody's name or state never rebuild that list.
+    this.onlineRosterSignature = "";
     // address → {sol, txBucket, fetchedAt, pending} for the chest wallet QR.
     this.walletBadges = new Map();
     this.memberDirectory = [];
@@ -5809,6 +5835,7 @@ class ForkMeshWorld extends HTMLElement {
       this.landmarkCapabilities,
     );
     this.renderSavedViews();
+    this.renderOnlineRoster();
     this.syncViewportHeight();
     window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
     window.visualViewport?.addEventListener("scroll", this.syncViewportHeight);
@@ -10522,6 +10549,13 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         diagnostics.removeAttribute("open");
       }
+      const onlineMenu = this.$("[data-world-online-menu]");
+      if (
+        onlineMenu?.dataset.open === "true" &&
+        !event.target.closest("[data-world-online-menu]")
+      ) {
+        this.setOnlineRosterOpen(false);
+      }
       const settingsPanel = this.$("[data-world-settings]");
       if (
         settingsPanel?.dataset.open === "true" &&
@@ -10690,6 +10724,22 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-instance-snapshot]")) {
         this.downloadInstanceSetupCard();
+        return;
+      }
+      const onlinePerson = event.target.closest("[data-world-online-person]");
+      if (onlinePerson) {
+        this.openOnlineRosterMember(
+          onlinePerson.dataset.worldOnlinePerson,
+          onlinePerson,
+        );
+        return;
+      }
+      // Hover opens the roster in CSS; the click pins it open so touch — which
+      // has no hover at all — reaches the same list.
+      if (event.target.closest("[data-world-online-toggle]")) {
+        this.setOnlineRosterOpen(
+          this.$("[data-world-online-menu]")?.dataset.open !== "true",
+        );
         return;
       }
       const mcpPromptButton = event.target.closest("[data-world-mcp-prompt]");
@@ -11568,7 +11618,10 @@ class ForkMeshWorld extends HTMLElement {
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
       if (this.$("[data-world-chat-terminal]")?.open) return;
-      if (
+      if (this.$("[data-world-online-menu]")?.dataset.open === "true") {
+        this.setOnlineRosterOpen(false);
+        this.$("[data-world-online-toggle]")?.focus();
+      } else if (
         this.$("[data-world-instance-launcher]")?.dataset.open === "true"
       ) {
         this.toggleInstanceLauncher(false);
@@ -27810,6 +27863,171 @@ class ForkMeshWorld extends HTMLElement {
     this.syncWorldFaceImages(players);
     this.syncMemberLounge();
     this.updateSystemCapacityMetrics();
+    this.renderOnlineRoster();
+  }
+
+  // Everyone the live socket says is in the World right now: this visitor
+  // first, then each announced peer by name. Only fields presence already
+  // publishes are read, so the roster can never show more than an avatar does.
+  onlineRoster() {
+    const roster = [];
+    const seen = new Set();
+    if (this.identity && this.settings?.privacy) {
+      const self = publicIdentity(this.identity, this.settings);
+      const selfId = String(this.serverPeerId || this.identity.id || "self");
+      seen.add(selfId);
+      roster.push({
+        id: selfId,
+        self: true,
+        name: self.name,
+        flag: self.flag,
+        countryCode: self.countryCode,
+        accountStatus: self.accountStatus,
+        activity: self.status === "hidden" ? "online" : self.status,
+        statusEmoji: self.statusEmoji,
+        statusNote: self.statusNote,
+      });
+    }
+    const peers = [];
+    this.remotePlayers.forEach((player, id) => {
+      const peerId = String(id || "");
+      if (!player || !peerId || seen.has(peerId)) return;
+      seen.add(peerId);
+      peers.push({
+        id: peerId,
+        self: false,
+        player,
+        name: player.name || "visitor",
+        flag: player.flag || "",
+        countryCode: player.countryCode || "",
+        accountStatus: player.accountStatus || "Guest",
+        activity: player.activity || "online",
+        statusEmoji: player.statusEmoji || "",
+        statusNote: player.statusNote || "",
+      });
+    });
+    peers.sort((left, right) =>
+      left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+    );
+    return [...roster, ...peers];
+  }
+
+  onlineRosterDetail(person) {
+    const status = [person.statusEmoji, person.statusNote]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" ");
+    if (status) return status;
+    return (
+      AVAILABILITY_OPTIONS.find((option) => option.id === person.activity)
+        ?.label || "Online"
+    );
+  }
+
+  // Keeps the HUD count honest on every peer render. The dropdown body is
+  // rewritten only when somebody actually joined, left, or changed state —
+  // movement frames must not yank the list out from under a pointer.
+  renderOnlineRoster() {
+    const badge = this.$("[data-world-online-count]");
+    const list = this.$("[data-world-online-list]");
+    if (!badge && !list) return;
+    const people = this.onlineRoster();
+    const count = people.length;
+    const realtimeOffline = !(
+      this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId)
+    );
+    if (badge) badge.textContent = count > 99 ? "99+" : String(count);
+    this.$("[data-world-online-toggle]")?.setAttribute(
+      "aria-label",
+      count === 1
+        ? "1 person online right now — show who is here"
+        : `${count} people online right now — show who is here`,
+    );
+    if (!list) return;
+    const shown = people.slice(0, WORLD_ONLINE_ROSTER_LIMIT);
+    const remaining = count - shown.length;
+    const signature = [
+      realtimeOffline ? "offline" : "online",
+      remaining,
+      ...shown.map(
+        (person) => `${person.id} ${person.name} ${this.onlineRosterDetail(person)}`,
+      ),
+    ].join("");
+    if (signature === this.onlineRosterSignature) return;
+    this.onlineRosterSignature = signature;
+    list.innerHTML = `
+      <p class="world-online-heading">${
+        count === 1
+          ? "You are the only one here"
+          : `${count} people online now`
+      }</p>
+      <ul class="world-online-people">
+        ${shown
+          .map(
+            (person) => `<li>
+              <button
+                type="button"
+                data-world-online-person="${escapeHTML(person.id)}"
+                title="Open ${escapeHTML(person.name)}’s public profile"
+              >
+                <span class="world-online-flag" aria-hidden="true">${escapeHTML(
+                  person.flag || "◌",
+                )}</span>
+                <span class="world-online-name">${escapeHTML(person.name)}${
+                  person.self ? " (you)" : ""
+                }</span>
+                <span class="world-online-activity">${escapeHTML(
+                  this.onlineRosterDetail(person),
+                )}</span>
+              </button>
+            </li>`,
+          )
+          .join("")}
+      </ul>
+      ${
+        remaining > 0
+          ? `<p class="world-online-more">+${remaining} more online, not listed here</p>`
+          : ""
+      }
+      ${
+        realtimeOffline
+          ? `<p class="world-online-more">Realtime presence is offline, so only you are counted until it reconnects.</p>`
+          : ""
+      }`;
+  }
+
+  setOnlineRosterOpen(open) {
+    const menu = this.$("[data-world-online-menu]");
+    if (!menu) return;
+    menu.dataset.open = open ? "true" : "false";
+    this.$("[data-world-online-toggle]")?.setAttribute(
+      "aria-expanded",
+      open ? "true" : "false",
+    );
+  }
+
+  // A roster row is the same door the avatar itself is: it opens that
+  // member's public detail panel, it never moves or contacts anybody.
+  openOnlineRosterMember(peerId, returnFocus = null) {
+    const id = String(peerId || "");
+    const person = this.onlineRoster().find((entry) => entry.id === id);
+    if (!person) return;
+    this.setOnlineRosterOpen(false);
+    this.openWorldMemberDetail(
+      {
+        ...(person.player || {}),
+        peerId: person.self ? "" : id,
+        self: person.self === true,
+        name: person.name,
+        accountStatus: person.accountStatus,
+        flag: person.flag,
+        countryCode: person.countryCode,
+        status: person.activity,
+        statusEmoji: person.statusEmoji,
+        statusNote: person.statusNote,
+      },
+      { returnFocus },
+    );
   }
 
   // Public balance and transaction-recency bucket for one published wallet
