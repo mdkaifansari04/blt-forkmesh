@@ -112,6 +112,10 @@ REWARD_HEALTH_FRESH_MS = "600000"
 # parseable; the code default (FORKBOT_AI_DEFAULT_MODEL) stays llama-3.1-8b as
 # a conservative fallback when this var is unset.
 FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+# Username moderation uses the same native Workers AI binding with a smaller,
+# JSON-capable classifier model. The local digest lookup runs first; this call
+# catches obfuscated/lookalike variants before a name can be persisted.
+USERNAME_MODERATION_AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
 # Payout relay mesh (canonical routes /api/relay-mesh/*, legacy alias
 # /api/federation/* — unrelated to the ActivityPub fediverse layer at /ap/*).
 # Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com). The relay

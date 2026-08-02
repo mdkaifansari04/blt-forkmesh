@@ -24418,6 +24418,8 @@ class ForkMeshWorld extends HTMLElement {
       const code = String(error?.message || "");
       const messages = {
         node_name_taken: "That username is already taken.",
+        inappropriate_node_name:
+          "Choose a username without offensive language.",
         email_taken: "That email is already registered.",
         password_too_short:
           "Password must contain at least 8 characters.",
