@@ -46,6 +46,7 @@ from solana import (
     _base58_encode,
     _b64url_encode,
     _solana_rpc,
+    _solana_rpc_write,
 )
 
 MAX_ROOM_NAME = 80
@@ -11296,6 +11297,19 @@ async def purge_stale_registered_nodes(env, force=False):
 PBKDF2_ITERS = 100000
 SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+BASE58_INDEX = {ch: i for i, ch in enumerate(BASE58_ALPHABET)}
+SOLANA_SYSTEM_PROGRAM = "11111111111111111111111111111111"
+# Custodial deposit sweep: half of a confirmed deposit goes to the treasury,
+# half is shared between online functioning mirror nodes.
+DEPOSIT_TREASURY_SPLIT_NUMERATOR = 1
+DEPOSIT_TREASURY_SPLIT_DENOMINATOR = 2
+# One legacy Solana transaction must fit the packet limit. With one signer,
+# the treasury, the system program and the transfer instructions, 20 mirror
+# payees still leaves headroom.
+MAX_SWEEP_PAYEES = 20
+SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
+
 # Legacy deposit-record constants remain only for read-only historical status
 # and the offline migration tool. Signup is free; no deployed Worker creates
 # deposit wallets, holds a wallet signing key, or sweeps funds.
@@ -17611,6 +17625,144 @@ def _amount_sol(lamports):
     return "%.9f" % (int(lamports) / LAMPORTS_PER_SOL)
 
 
+# --- Custodial deposit signing ----------------------------------------------
+# These rebuild the write path used by temporary per-purchase deposit
+# addresses. They are reachable only from the deposit sweep, which is gated on
+# _custodial_deposits_enabled(); the direct wallet-to-pool path never touches
+# them and never puts a key on the Worker.
+def _base58_decode(value):
+    n = 0
+    for ch in str(value or ""):
+        if ch not in BASE58_INDEX:
+            return b""
+        n = n * 58 + BASE58_INDEX[ch]
+    raw = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+    pad = 0
+    for ch in str(value or ""):
+        if ch == "1":
+            pad += 1
+        else:
+            break
+    return b"\x00" * pad + raw
+
+
+def _shortvec(n):
+    out = bytearray()
+    while True:
+        elem = n & 0x7F
+        n >>= 7
+        if n:
+            elem |= 0x80
+        out.append(elem)
+        if not n:
+            return bytes(out)
+
+
+def _solana_transfer_message(from_addr, transfers, blockhash):
+    account_addrs = [from_addr]
+    for to_addr, _lamports in transfers:
+        if to_addr not in account_addrs:
+            account_addrs.append(to_addr)
+    if SOLANA_SYSTEM_PROGRAM not in account_addrs:
+        account_addrs.append(SOLANA_SYSTEM_PROGRAM)
+    program_idx = account_addrs.index(SOLANA_SYSTEM_PROGRAM)
+    out = bytearray()
+    out += bytes([1, 0, 1])
+    out += _shortvec(len(account_addrs))
+    for addr in account_addrs:
+        raw = _base58_decode(addr)
+        if len(raw) != 32:
+            return b""
+        out += raw
+    blockhash_raw = _base58_decode(blockhash)
+    if len(blockhash_raw) != 32:
+        return b""
+    out += blockhash_raw
+    out += _shortvec(len(transfers))
+    for to_addr, lamports in transfers:
+        data = struct.pack("<IQ", 2, int(lamports))
+        out += bytes([program_idx])
+        out += _shortvec(2) + bytes([0, account_addrs.index(to_addr)])
+        out += _shortvec(len(data)) + data
+    return bytes(out)
+
+
+async def _solana_sign_message(from_addr, seed_b64url, message):
+    pub = _base58_decode(from_addr)
+    if len(pub) != 32 or not seed_b64url or not message:
+        return b""
+    try:
+        jwk = {
+            "kty": "OKP", "crv": "Ed25519", "x": _b64url_encode(pub),
+            "d": seed_b64url, "ext": True, "key_ops": ["sign"],
+        }
+        key = await js_crypto.subtle.importKey(
+            "jwk", to_js(jwk), to_js({"name": "Ed25519"}), False,
+            _to_js(["sign"]),
+        )
+        sig = await js_crypto.subtle.sign(
+            to_js({"name": "Ed25519"}), key, _to_js(message))
+        return bytes(Uint8Array.new(sig).to_py())
+    except Exception:
+        return b""
+
+
+async def _solana_latest_blockhash(env):
+    resp = await _solana_rpc(env, "getLatestBlockhash", [])
+    if not isinstance(resp, dict):
+        return ""
+    try:
+        return str(resp["result"]["value"]["blockhash"] or "")
+    except Exception:
+        return ""
+
+
+async def _solana_send_transaction(env, tx_bytes):
+    encoded = base64.b64encode(tx_bytes).decode()
+    resp = await _solana_rpc_write(
+        env, "sendTransaction",
+        [encoded, {"encoding": "base64", "skipPreflight": False}],
+    )
+    if not isinstance(resp, dict):
+        return ""
+    result = resp.get("result")
+    return str(result or "") if result else ""
+
+
+async def _solana_send_transfers(env, from_addr, seed_b64url, transfers):
+    transfers = [(to, int(lamports)) for to, lamports in transfers
+                 if SOLANA_RE.match(to or "") and int(lamports) > 0]
+    if not transfers:
+        return ""
+    blockhash = await _solana_latest_blockhash(env)
+    if not blockhash:
+        return ""
+    message = _solana_transfer_message(from_addr, transfers, blockhash)
+    sig = await _solana_sign_message(from_addr, seed_b64url, message)
+    if len(sig) != 64:
+        return ""
+    tx = _shortvec(1) + sig + message
+    return await _solana_send_transaction(env, tx)
+
+
+async def _new_solana_keypair():
+    """Generate a fresh per-purchase deposit keypair.
+
+    A Solana address is an Ed25519 public key. The 32-byte seed (the JWK "d"
+    field) is what the sweep later signs with, so it is stored encrypted and
+    deleted as soon as the sweep succeeds.
+    """
+    pair = await js_crypto.subtle.generateKey(
+        to_js({"name": "Ed25519"}), True, _to_js(["sign", "verify"]))
+    pub_raw = await js_crypto.subtle.exportKey("raw", pair.publicKey)
+    pub = bytes(Uint8Array.new(pub_raw).to_py())
+    jwk = await js_crypto.subtle.exportKey("jwk", pair.privateKey)
+    seed_b64url = str(getattr(jwk, "d", "") or "")
+    if len(pub) != 32 or not seed_b64url:
+        return None, None
+    return _base58_encode(pub), seed_b64url
+
+
 def _solana_pay_uri(address, amount_lamports, reference="", message="Join ForkMesh"):
     uri = ("solana:" + address +
            "?amount=" + _amount_sol(amount_lamports))
@@ -21169,10 +21321,14 @@ async def _grant_purchased_element(env, account_bi, rec, row, signature,
         "source_address": details.get("sourceAddress", ""),
         "confirmed_at": now,
     })
-    intent_ids = await _create_element_store_split_intent(env, row)
-    if intent_ids:
-        row["status"] = "awaiting_distribution"
-        row["distribution_intent_id"] = intent_ids[0]
+    # Only the direct path owes an unsigned mirror-distribution intent. A
+    # custodial deposit pays the mirror half in its own sweep transaction, so
+    # creating an intent here would pay that half a second time.
+    if str(row.get("method") or "direct") != "deposit":
+        intent_ids = await _create_element_store_split_intent(env, row)
+        if intent_ids:
+            row["status"] = "awaiting_distribution"
+            row["distribution_intent_id"] = intent_ids[0]
     await _audit_sensitive_action(
         env, "", "world.element_purchase_confirm", "world_element_purchase",
         str(row.get("purchase_id") or ""), "success", {
@@ -21183,6 +21339,225 @@ async def _grant_purchased_element(env, account_bi, rec, row, signature,
             "transactionSignature": signature,
         })
     return row, owned
+
+
+def _deposit_treasury_address(env):
+    """Public treasury address that receives the custodial deposit's half."""
+    address = clean_string(
+        getattr(env, "TREASURY_SOLANA_ADDRESS", "")
+        or getattr(env, "COMMUNITY_REWARD_POOL_ADDRESS", ""),
+        64,
+    ).strip()
+    return address if SOLANA_RE.match(address) else ""
+
+
+def _custodial_deposits_enabled(env):
+    """Whether the Worker may mint and sweep temporary deposit addresses.
+
+    Off unless a treasury is configured to sweep into, and killable outright
+    with CUSTODIAL_DEPOSITS=0. When this is off the store still sells elements
+    through the direct wallet-to-pool path, which puts no key on the Worker.
+    """
+    flag = str(getattr(env, "CUSTODIAL_DEPOSITS", "") or "").strip().lower()
+    if flag in ("0", "false", "off", "no"):
+        return False
+    return bool(_deposit_treasury_address(env))
+
+
+async def _online_mirror_payout_addresses(env, exclude=""):
+    """Payout addresses of online, functioning, eligible mirror nodes."""
+    snapshot = await _eligible_reward_snapshot(env, int(Date.now()))
+    seen = set()
+    addresses = []
+    for item in snapshot.get("eligible") or []:
+        address = str(item.get("walletAddress") or "").strip()
+        if (not SOLANA_RE.match(address) or address in seen
+                or address == exclude):
+            continue
+        seen.add(address)
+        addresses.append(address)
+        if len(addresses) >= MAX_SWEEP_PAYEES:
+            break
+    return addresses
+
+
+def _deposit_sweep_plan(transferable, treasury, payees):
+    """Split a swept deposit 50/50 between treasury and online mirrors.
+
+    Integer division keeps the remainder with the treasury, so the transfers
+    can never total more than what was actually received.
+    """
+    treasury_lamports = int(transferable)
+    transfers = []
+    if payees:
+        half = (int(transferable) * DEPOSIT_TREASURY_SPLIT_NUMERATOR
+                // DEPOSIT_TREASURY_SPLIT_DENOMINATOR)
+        per_node = (int(transferable) - half) // len(payees)
+        if per_node > 0:
+            transfers = [(payee, per_node) for payee in payees]
+            treasury_lamports = int(transferable) - per_node * len(payees)
+    transfers.insert(0, (treasury, treasury_lamports))
+    merged = []
+    by_addr = {}
+    for addr, lamports in transfers:
+        if addr in by_addr:
+            by_addr[addr] += int(lamports)
+        else:
+            by_addr[addr] = int(lamports)
+            merged.append(addr)
+    return [(addr, by_addr[addr]) for addr in merged if by_addr[addr] > 0]
+
+
+async def _sweep_element_deposit(env, row, balance=None):
+    """Send a confirmed deposit on to the treasury and online mirror nodes.
+
+    Idempotent: once a signature is stored the deposit is never sent again.
+    The signing seed is destroyed as soon as the sweep confirms, so a swept
+    purchase leaves no key on the Worker.
+    """
+    purchase_id = str(row.get("purchase_id") or "")
+    if row.get("sweep_signature"):
+        return str(row.get("sweep_signature"))
+    from_addr = str(row.get("deposit_address") or "")
+    stored = str(row.get("deposit_secret") or "")
+    if not SOLANA_RE.match(from_addr) or not stored:
+        return ""
+    treasury = _deposit_treasury_address(env)
+    if not treasury:
+        await _record_sweep_error(env, purchase_id, "treasury_not_configured")
+        return ""
+    secret = await decrypt_row(env, stored)
+    seed = (secret or {}).get("seed") if isinstance(secret, dict) else ""
+    if not seed:
+        await _record_sweep_error(env, purchase_id, "deposit_key_unreadable")
+        return ""
+    if balance is None:
+        balance = await _solana_balance_lamports(env, from_addr)
+    if balance is None:
+        await _record_sweep_error(env, purchase_id, "balance_unavailable")
+        return ""
+    transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
+    if transferable <= 0:
+        await _record_sweep_error(env, purchase_id, "balance_too_low_for_fee")
+        return ""
+    payees = await _online_mirror_payout_addresses(env, exclude=from_addr)
+    transfers = _deposit_sweep_plan(transferable, treasury, payees)
+    signature = await _solana_send_transfers(env, from_addr, seed, transfers)
+    if not signature:
+        await _record_sweep_error(env, purchase_id, "send_transaction_failed")
+        return ""
+    now = int(Date.now())
+    # Clearing deposit_secret is the point of the whole flow: the Worker holds
+    # a key only for the window between minting the address and sweeping it.
+    await d1_run(
+        env,
+        "UPDATE world_element_purchases SET sweep_signature=?, sweep_at=?, "
+        "sweep_error='', deposit_secret='' WHERE purchase_id=? "
+        "AND sweep_signature=''",
+        signature, now, purchase_id,
+    )
+    await _audit_sensitive_action(
+        env, "", "world.element_deposit_sweep", "world_element_purchase",
+        purchase_id, "success", {
+            "treasuryLamports": next(
+                (l for a, l in transfers if a == treasury), 0),
+            "mirrorPayees": len(payees),
+            "transactionSignature": signature,
+        })
+    return signature
+
+
+async def _record_sweep_error(env, purchase_id, message):
+    await d1_run(
+        env,
+        "UPDATE world_element_purchases SET sweep_error=? WHERE purchase_id=?",
+        message, purchase_id,
+    )
+
+
+async def sweep_pending_element_deposits(env):
+    """Cron: retry sweeps whose first attempt could not complete."""
+    if not _custodial_deposits_enabled(env):
+        return 0
+    rows = await d1_all(
+        env,
+        "SELECT * FROM world_element_purchases WHERE method='deposit' "
+        "AND deposit_secret<>'' AND sweep_signature='' "
+        "AND status IN ('confirmed','awaiting_distribution') "
+        "ORDER BY confirmed_at ASC LIMIT 10",
+    )
+    swept = 0
+    for row in rows or []:
+        if await _sweep_element_deposit(env, row):
+            swept += 1
+    return swept
+
+
+async def _element_deposit_status(env, request, data, account_bi, rec, now):
+    """Poll a temporary deposit address; grant and sweep once it is funded."""
+    purchase_id = clean_string(data.get("purchaseId", ""), 32).lower()
+    if not WORLD_ELEMENT_PURCHASE_RE.fullmatch(purchase_id):
+        return json_response({"error": "invalid_purchase"}, status=400)
+    row = await d1_first(
+        env,
+        "SELECT * FROM world_element_purchases WHERE purchase_id=?",
+        purchase_id,
+    )
+    if (not row or str(row.get("account_bi") or "") != account_bi
+            or str(row.get("method") or "") != "deposit"):
+        return json_response({"error": "not_found"}, status=404)
+    element_id = str(row.get("element_id") or "")
+    required = int(row.get("amount_lamports") or 0)
+    address = str(row.get("deposit_address") or "")
+    status = str(row.get("status") or "")
+    if status in ("confirmed", "awaiting_distribution"):
+        return json_response({
+            "ok": True,
+            "status": status,
+            "elementId": element_id,
+            "depositAddress": address,
+            "sweepSignature": str(row.get("sweep_signature") or ""),
+            "owned": _world_element_library(rec, now),
+        }, cache_control="no-store")
+    if int(row.get("expires_at") or 0) <= now and status == "prepared":
+        # An unfunded deposit expires, but the address is left readable so a
+        # late payment can still be reconciled by the operator.
+        await d1_run(
+            env,
+            "UPDATE world_element_purchases SET status='expired' "
+            "WHERE purchase_id=? AND status='prepared'",
+            purchase_id,
+        )
+        return json_response({"error": "purchase_expired"}, status=410)
+    balance = await _solana_balance_lamports(env, address)
+    if balance is None:
+        return json_response({
+            "ok": True, "status": "balance_unavailable",
+            "depositAddress": address, "requiredLamports": required,
+        }, status=202, cache_control="no-store")
+    if int(balance) < required:
+        return json_response({
+            "ok": True,
+            "status": "awaiting_payment",
+            "depositAddress": address,
+            "requiredLamports": required,
+            "receivedLamports": int(balance),
+            "receivedSol": _amount_sol(int(balance)),
+        }, status=202, cache_control="no-store")
+    row, owned = await _grant_purchased_element(
+        env, account_bi, rec, row, "", {"sourceAddress": ""})
+    signature = await _sweep_element_deposit(env, row, balance=balance)
+    return json_response({
+        "ok": True,
+        "status": row.get("status"),
+        "elementId": element_id,
+        "depositAddress": address,
+        "receivedLamports": int(balance),
+        "sweepSignature": signature,
+        "sweepPending": not signature,
+        "owned": owned,
+        "notice": world_element_store.custody_notice("deposit"),
+    }, cache_control="no-store")
 
 
 async def world_element_store_handler(env, request, path):
@@ -21196,13 +21571,17 @@ async def world_element_store_handler(env, request, path):
     if route.endswith("/catalog"):
         if method != "GET":
             return json_response({"error": "method_not_allowed"}, status=405)
+        deposits = _custodial_deposits_enabled(env)
         return json_response({
             "ok": True,
             "elements": world_element_store.catalog_public(),
             "split": world_element_store.split_policy_public(),
             "poolAddress": (fund or {}).get("address", ""),
             "network": (fund or {}).get("network", ""),
-            "purchasesEnabled": bool(fund),
+            "purchasesEnabled": bool(fund) or deposits,
+            "paymentMethods": world_element_store.payment_methods_public(
+                direct=bool(fund), deposit=deposits),
+            "treasuryAddress": _deposit_treasury_address(env),
         }, cache_control="no-store")
 
     if route.endswith("/library"):
@@ -21255,15 +21634,29 @@ async def world_element_store_handler(env, request, path):
             "ok": True, "elementId": element_id, "element": entry,
         }, cache_control="no-store")
 
-    if not fund:
+    deposits_enabled = _custodial_deposits_enabled(env)
+    if not fund and not deposits_enabled:
         return json_response(
             {"error": "community_pool_not_configured"}, status=503)
+
+    if action == "deposit-status":
+        return await _element_deposit_status(env, request, data, account_bi,
+                                             rec, now)
 
     if action == "prepare":
         element_id = clean_string(data.get("elementId", ""), 64).lower()
         item = world_element_store.element(element_id)
         if not item:
             return json_response({"error": "unknown_element"}, status=404)
+        method = clean_string(data.get("method", "direct"), 16).lower()
+        if method not in ("direct", "deposit"):
+            return json_response({"error": "invalid_method"}, status=400)
+        if method == "deposit" and not deposits_enabled:
+            return json_response(
+                {"error": "custodial_deposits_disabled"}, status=503)
+        if method == "direct" and not fund:
+            return json_response(
+                {"error": "community_pool_not_configured"}, status=503)
         if element_id in _world_element_library(rec, now):
             return json_response(
                 {"error": "element_already_owned"}, status=409)
@@ -21281,30 +21674,48 @@ async def world_element_store_handler(env, request, path):
         purchase_id = _random_bytes(16).hex()
         reference = _base58_encode(_random_bytes(32))
         expires_at = now + world_element_store.PURCHASE_EXPIRES_MS
+        deposit_address = ""
+        deposit_secret = ""
+        if method == "deposit":
+            # A fresh Ed25519 keypair per purchase. The seed is stored
+            # encrypted and destroyed by the sweep; nothing else may read it.
+            deposit_address, seed = await _new_solana_keypair()
+            if not deposit_address or not seed:
+                return json_response(
+                    {"error": "deposit_address_unavailable"}, status=503)
+            deposit_secret = await encrypt_row(env, {"seed": seed})
+        pay_to = deposit_address if method == "deposit" else fund.get(
+            "address", "")
         await d1_run(
             env,
             "INSERT INTO world_element_purchases "
             "(purchase_id,account_bi,element_id,amount_lamports,"
             "treasury_lamports,mirror_lamports,reference_address,status,"
-            "created_at,expires_at) VALUES (?,?,?,?,?,?,?,'prepared',?,?)",
+            "created_at,expires_at,method,deposit_address,deposit_secret) "
+            "VALUES (?,?,?,?,?,?,?,'prepared',?,?,?,?,?)",
             purchase_id, account_bi, element_id, amount,
             split["treasuryLamports"], split["mirrorLamports"], reference,
-            now, expires_at,
+            now, expires_at, method, deposit_address, deposit_secret,
         )
         return json_response({
             "ok": True,
             "purchaseId": purchase_id,
             "elementId": element_id,
+            "method": method,
             "amountLamports": amount,
             "amountSol": _amount_sol(amount),
-            "poolAddress": fund.get("address", ""),
-            "network": fund.get("network", "mainnet-beta"),
+            "payToAddress": pay_to,
+            "poolAddress": fund.get("address", "") if fund else "",
+            "depositAddress": deposit_address,
+            "network": (fund or {}).get("network", _reward_network(env)),
             "referenceAddress": reference,
             "expiresAt": expires_at,
             "uri": _solana_pay_uri(
-                fund.get("address", ""), amount, reference=reference,
+                pay_to, amount,
+                reference="" if method == "deposit" else reference,
                 message=f"ForkMesh world element: {item['label']}",
             ),
+            "custody": world_element_store.custody_notice(method),
             "split": {
                 **world_element_store.split_policy_public(),
                 "treasuryLamports": split["treasuryLamports"],
@@ -43882,6 +44293,9 @@ class Default(WorkerEntrypoint):
             try:
                 await verify_submitted_chain_intents(self.env)
                 await verify_submitted_reward_contributions(self.env)
+                # Retry deposit sweeps whose first attempt could not send, so
+                # a Worker-held key is never left sitting on a funded address.
+                await sweep_pending_element_deposits(self.env)
             except BaseException as error:
                 await log_cron_error(
                     self.env, "/cron/verify-reward-intents",

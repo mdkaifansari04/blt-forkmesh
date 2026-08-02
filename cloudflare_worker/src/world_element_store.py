@@ -199,6 +199,63 @@ def split_policy_public():
     }
 
 
+def custody_notice(method):
+    """State plainly, per method, who holds the money and for how long.
+
+    These two paths have genuinely different custody, so they must never share
+    one blurb. Saying "ForkMesh never receives your key" about a deposit
+    address the Worker generated would be false.
+    """
+    if method == "deposit":
+        return {
+            "method": "deposit",
+            "label": "Pay a temporary ForkMesh deposit address",
+            "forkMeshHoldsDepositKey": True,
+            "custody": "custodial-temporary-worker-held-deposit-address",
+            "keyLifetime": (
+                "The signing key exists from the moment the address is "
+                "created until the sweep confirms, then it is deleted."
+            ),
+            "ownershipInterestGranted": False,
+            "financialReturnPromised": False,
+            "notice": (
+                "This address is generated and held by ForkMesh. Until the "
+                "sweep completes, ForkMesh can move these funds and an "
+                "operator compromise could too. Half is then sent to the "
+                "treasury and half is shared between online mirror nodes. "
+                "Buying an element does not purchase ownership, guaranteed "
+                "rewards, investment returns or any influence over the "
+                "project."
+            ),
+        }
+    return {
+        "method": "direct",
+        "label": "Pay the published pool address from your own wallet",
+        "forkMeshHoldsDepositKey": False,
+        "custody": "direct-self-custodial-wallet-to-public-pool",
+        "keyLifetime": "ForkMesh never receives your wallet key.",
+        "ownershipInterestGranted": False,
+        "financialReturnPromised": False,
+        "notice": (
+            "Your own wallet signs one direct public transfer; ForkMesh never "
+            "receives your wallet key. Half stays with the treasury and half "
+            "becomes a mirror-node payout the instance owner's local signer "
+            "reviews. Buying an element does not purchase ownership, "
+            "guaranteed rewards, investment returns or any influence over the "
+            "project."
+        ),
+    }
+
+
+def payment_methods_public(direct=True, deposit=False):
+    methods = []
+    if direct:
+        methods.append(custody_notice("direct"))
+    if deposit:
+        methods.append(custody_notice("deposit"))
+    return methods
+
+
 def clean_owned(raw, now=0):
     """Normalise the per-account owned-element map stored on the record."""
     source = raw if isinstance(raw, dict) else {}

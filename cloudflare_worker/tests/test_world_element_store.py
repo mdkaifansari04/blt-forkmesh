@@ -148,27 +148,63 @@ def test_split_policy_makes_no_investment_claim():
     assert "does not purchase ownership" in policy["notice"]
 
 
-def test_purchases_stay_non_custodial():
-    # The retired per-signup deposit wallet must not come back: no keypair is
-    # generated, only a Solana Pay reference the buyer's own wallet tags.
+def test_direct_path_stays_non_custodial():
+    # The direct method must keep putting no key on the Worker: it only mints
+    # a Solana Pay reference the buyer's own wallet tags.
     handler = ENTRY.split("async def world_element_store_handler")[1]
     handler = handler.split("\ndef _chain_intent_public")[0]
-    assert "_new_solana_keypair" not in handler
-    assert "donation_secret" not in handler
     assert "reference = _base58_encode(_random_bytes(32))" in handler
     # Confirmation reuses the audited finalized-transfer verifier.
     assert "_solana_contribution_details(" in handler
+    # A keypair is minted only on the deposit branch.
+    assert 'if method == "deposit":' in handler
+    assert "deposit_address, seed = await _new_solana_keypair()" in handler
 
 
-def test_purchase_table_stores_public_references_only():
+def test_deposit_path_is_gated_and_sweeps_fifty_fifty():
+    gate = ENTRY.split("def _custodial_deposits_enabled(env):")[1]
+    gate = gate.split("async def _online_mirror_payout_addresses")[0]
+    # Off unless a treasury exists to sweep into, and killable outright.
+    assert 'flag in ("0", "false", "off", "no")' in gate
+    assert "return bool(_deposit_treasury_address(env))" in gate
+    assert "DEPOSIT_TREASURY_SPLIT_NUMERATOR = 1" in ENTRY
+    assert "DEPOSIT_TREASURY_SPLIT_DENOMINATOR = 2" in ENTRY
+    # The sweep pays online eligible mirrors, not arbitrary presence rows.
+    payees = ENTRY.split("async def _online_mirror_payout_addresses")[1]
+    payees = payees.split("def _deposit_sweep_plan")[0]
+    assert "_eligible_reward_snapshot(env, int(Date.now()))" in payees
+    assert "MAX_SWEEP_PAYEES" in payees
+
+
+def test_deposit_key_is_encrypted_and_destroyed_on_sweep():
+    handler = ENTRY.split("async def world_element_store_handler")[1]
+    assert 'deposit_secret = await encrypt_row(env, {"seed": seed})' in (
+        ENTRY.split("async def world_element_store_handler")[1])
+    sweep = ENTRY.split("async def _sweep_element_deposit")[1]
+    sweep = sweep.split("async def _record_sweep_error")[0]
+    # Idempotent, and the key is cleared the moment the sweep lands.
+    assert 'if row.get("sweep_signature"):' in sweep
+    assert "deposit_secret=''" in sweep
+    assert "sweep_pending_element_deposits(self.env)" in ENTRY
+    del handler
+
+
+def test_deposit_purchase_does_not_also_mint_a_split_intent():
+    # The sweep already pays mirrors on chain; an intent would double-pay.
+    grant = ENTRY.split("async def _grant_purchased_element")[1]
+    grant = grant.split("async def _element_deposit_status")[0]
+    assert 'if str(row.get("method") or "direct") != "deposit":' in grant
+
+
+def test_purchase_table_records_the_custodial_deposit_explicitly():
     assert "CREATE TABLE IF NOT EXISTS world_element_purchases" in SCHEMA
     table = SCHEMA.split("world_element_purchases (")[1].split('"""')[0]
     for column in (
         "reference_address", "tx_signature", "treasury_lamports",
-        "mirror_lamports",
+        "mirror_lamports", "method", "deposit_address", "deposit_secret",
+        "sweep_signature",
     ):
         assert column in table
-    assert "secret" not in table
     assert (ROOT / "migrations" / "0119_world_element_store.sql").is_file()
 
 
@@ -223,8 +259,10 @@ def test_elements_may_only_read_endpoints_their_manifest_declared():
 def test_world_shell_installs_owned_elements_and_offers_the_store():
     for contract in (
         "async refreshStoreLibrary()",
-        "async purchaseStoreElement(elementId)",
+        'async purchaseStoreElement(elementId, method = "direct")',
         "async confirmStoreElementPurchase(transactionSignature)",
+        "async pollElementDeposit()",
+        "startElementDepositPolling()",
         "async configureStoreElement(elementId",
         "renderWorldStorePane(",
         'data-world-settings-tab="store"',
@@ -234,9 +272,28 @@ def test_world_shell_installs_owned_elements_and_offers_the_store():
         assert contract in APP, contract
 
 
-def test_store_pane_discloses_the_split_without_promising_returns():
+def test_store_pane_discloses_each_method_custody_honestly():
     pane = APP.split('data-world-settings-pane="store"')[1]
     pane = pane.split('data-world-settings-pane="elements"')[0]
     assert "half is shared" in pane
-    assert "never receives your wallet key" in pane
-    assert "does not\n                purchase ownership" in pane
+    assert "purchase ownership" in pane
+    # The two methods have different custody and must not share one blurb.
+    assert "never\n                receives your key" in pane
+    assert "holds that address's key" in pane
+    assert "could move them" in pane
+
+
+def test_custody_notice_never_claims_non_custody_for_a_deposit():
+    deposit = store.custody_notice("deposit")
+    direct = store.custody_notice("direct")
+    assert deposit["forkMeshHoldsDepositKey"] is True
+    assert "never" not in deposit["notice"].lower().split("does not")[0]
+    assert "ForkMesh can move these funds" in deposit["notice"]
+    assert direct["forkMeshHoldsDepositKey"] is False
+    assert "never receives your wallet key" in direct["notice"]
+    for notice in (deposit, direct):
+        assert notice["ownershipInterestGranted"] is False
+        assert notice["financialReturnPromised"] is False
+    both = store.payment_methods_public(direct=True, deposit=True)
+    assert [entry["method"] for entry in both] == ["direct", "deposit"]
+    assert store.payment_methods_public(direct=True, deposit=False) == [direct]

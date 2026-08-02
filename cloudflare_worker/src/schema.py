@@ -1425,7 +1425,15 @@ SCHEMA_STATEMENTS = [
         tx_signature TEXT NOT NULL DEFAULT '',
         source_address TEXT NOT NULL DEFAULT '',
         confirmed_at INTEGER NOT NULL DEFAULT 0,
-        distribution_intent_id TEXT NOT NULL DEFAULT '')""",
+        distribution_intent_id TEXT NOT NULL DEFAULT '',
+        method TEXT NOT NULL DEFAULT 'direct',
+        deposit_address TEXT NOT NULL DEFAULT '',
+        deposit_secret TEXT NOT NULL DEFAULT '',
+        sweep_signature TEXT NOT NULL DEFAULT '',
+        sweep_at INTEGER NOT NULL DEFAULT 0,
+        sweep_error TEXT NOT NULL DEFAULT '')""",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_deposit "
+    "ON world_element_purchases(status, method, expires_at)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_world_element_purchase_signature "
     "ON world_element_purchases(tx_signature) WHERE tx_signature<>''",
     "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_account "

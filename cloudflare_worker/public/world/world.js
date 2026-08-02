@@ -238,6 +238,9 @@ const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
 // server's authoritative first-review state that two testers are not dealt the
 // same card for the rest of a long session.
 const WORLD_QA_POLL_MS = 15 * 1000;
+// A custodial deposit address is watched, not confirmed by hand, so this is
+// how quickly a paid deposit turns into an unlocked element.
+const WORLD_ELEMENT_DEPOSIT_POLL_MS = 4 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS = 15 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_BASE_MS = 5 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_MAX_MS = 30 * 60 * 1000;
@@ -5218,12 +5221,19 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 Elements are self-contained plugins. Buy one and it is built
                 into your world with the parameters you set; some read a live
                 ForkMesh endpoint, and every endpoint an element may read is
-                listed before you buy. Your own wallet signs one direct public
-                transfer — ForkMesh never receives your wallet key. Half of
-                each purchase stays with the treasury and half is shared
-                between online mirror nodes. Buying an element does not
-                purchase ownership, guaranteed rewards, investment returns or
-                any influence over the project.
+                listed before you buy. Half of each purchase stays with the
+                treasury and half is shared between online mirror nodes.
+                Buying an element does not purchase ownership, guaranteed
+                rewards, investment returns or any influence over the project.
+              </p>
+              <p class="world-setting-note">
+                Two ways to pay, with different custody. Paying the published
+                pool address from your own wallet means ForkMesh never
+                receives your key. Paying a temporary ForkMesh deposit address
+                means ForkMesh generates and holds that address's key until it
+                sweeps the funds — during that window ForkMesh, or anyone who
+                compromised it, could move them. Each option states its own
+                custody before you confirm.
               </p>
               <div class="world-store-list" data-world-store-list>
                 <p class="world-setting-note">Loading the element store…</p>
@@ -5516,6 +5526,7 @@ class ForkMeshWorld extends HTMLElement {
     this.storeCatalog = null;
     this.storeLibrary = {};
     this.pendingElementPurchase = null;
+    this.elementDepositTimer = 0;
     this.securityScan = null;
     this.securityHistory = [];
     this.securityRepository = "";
@@ -10904,6 +10915,14 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
+      const storeDeposit = event.target.closest("[data-world-store-deposit]");
+      if (storeDeposit) {
+        void this.purchaseStoreElement(
+          storeDeposit.dataset.worldStoreDeposit,
+          "deposit",
+        ).then(() => this.renderWorldStorePane());
+        return;
+      }
       const storeConfirm = event.target.closest("[data-world-store-confirm]");
       if (storeConfirm) {
         const signature = this.$("[data-world-store-signature]")?.value || "";
@@ -10913,6 +10932,7 @@ class ForkMeshWorld extends HTMLElement {
         return;
       }
       if (event.target.closest("[data-world-store-cancel]")) {
+        this.stopElementDepositPolling();
         this.pendingElementPurchase = null;
         this.renderWorldStorePane();
         return;
@@ -13525,7 +13545,7 @@ class ForkMeshWorld extends HTMLElement {
   // Same non-custodial shape as a reward contribution: the visitor's own
   // wallet signs one public transfer to the published pool address, tagged
   // with a per-purchase reference. ForkMesh never holds a key.
-  async purchaseStoreElement(elementId) {
+  async purchaseStoreElement(elementId, method = "direct") {
     if (!this.sessionAuthenticated) {
       this.toast("Log in to buy world elements.");
       return null;
@@ -13533,13 +13553,74 @@ class ForkMeshWorld extends HTMLElement {
     try {
       this.pendingElementPurchase = await this.postJSON(
         "/api/world/store",
-        { action: "prepare", elementId },
+        { action: "prepare", elementId, method },
       );
+      if (method === "deposit") this.startElementDepositPolling();
       return this.pendingElementPurchase;
     } catch (error) {
       this.toast(`Could not start the purchase. ${error?.message || ""}`.trim());
       return null;
     }
+  }
+
+  // A deposit address has no signature for the buyer to paste, so the client
+  // watches the address instead — the same wait-for-the-deposit shape the
+  // desktop escrow dialog used.
+  startElementDepositPolling() {
+    this.stopElementDepositPolling();
+    this.elementDepositTimer = window.setInterval(() => {
+      if (this.destroyed || !this.pendingElementPurchase) {
+        this.stopElementDepositPolling();
+        return;
+      }
+      void this.pollElementDeposit();
+    }, WORLD_ELEMENT_DEPOSIT_POLL_MS);
+  }
+
+  stopElementDepositPolling() {
+    if (this.elementDepositTimer) {
+      window.clearInterval(this.elementDepositTimer);
+      this.elementDepositTimer = 0;
+    }
+  }
+
+  async pollElementDeposit() {
+    const purchase = this.pendingElementPurchase;
+    if (!purchase?.purchaseId) return null;
+    let result = null;
+    try {
+      result = await this.postJSON("/api/world/store", {
+        action: "deposit-status",
+        purchaseId: purchase.purchaseId,
+      });
+    } catch (error) {
+      if (/expired/i.test(error?.message || "")) {
+        this.stopElementDepositPolling();
+        this.pendingElementPurchase = null;
+        this.toast("The deposit window expired.");
+        this.renderWorldStorePane();
+      }
+      return null;
+    }
+    if (result?.status === "awaiting_payment") {
+      this.pendingElementPurchase = { ...purchase, received: result };
+      this.renderWorldStorePane(
+        `Waiting for the deposit — ${result.receivedSol || 0} SOL received.`,
+      );
+      return result;
+    }
+    if (result?.status === "confirmed" || result?.owned) {
+      this.stopElementDepositPolling();
+      this.pendingElementPurchase = null;
+      this.toast(
+        result.sweepPending
+          ? "Element unlocked. The deposit sweep is still pending."
+          : "Element unlocked and the deposit was swept.",
+      );
+      await this.refreshStoreLibrary();
+      this.renderWorldStorePane();
+    }
+    return result;
   }
 
   async confirmStoreElementPurchase(transactionSignature) {
@@ -24000,6 +24081,9 @@ class ForkMeshWorld extends HTMLElement {
     }
     const owned = this.storeLibrary || {};
     const pending = this.pendingElementPurchase;
+    const methods = Array.isArray(catalog?.paymentMethods)
+      ? catalog.paymentMethods
+      : [{ method: "direct" }];
     list.innerHTML = elements
       .map((element) => {
         const entry = owned[element.id];
@@ -24025,11 +24109,31 @@ class ForkMeshWorld extends HTMLElement {
             </div>
             <button type="button" data-world-store-save="${escapeHTML(element.id)}">Save</button>`
           : pending?.elementId === element.id
-            ? `
+            ? pending.method === "deposit"
+              ? `
+            <p class="world-setting-note">
+              Send exactly <strong>${escapeHTML(String(pending.amountSol))} SOL</strong>
+              to this ForkMesh deposit address. It unlocks by itself once the
+              payment lands — no signature to paste.
+              <a href="${escapeHTML(pending.uri)}" rel="noopener">Open in wallet</a>
+            </p>
+            <p class="world-store-address"><code>${escapeHTML(pending.depositAddress)}</code></p>
+            <p class="world-setting-note">
+              ForkMesh generated and holds this address's key until it sweeps
+              the funds, so it controls them during that window.
+              ${escapeHTML(
+                pending.received?.receivedSol
+                  ? `Received ${pending.received.receivedSol} SOL so far.`
+                  : "Waiting for the deposit…",
+              )}
+            </p>
+            <button type="button" data-world-store-cancel>Cancel</button>`
+              : `
             <p class="world-setting-note">
               Send exactly <strong>${escapeHTML(String(pending.amountSol))} SOL</strong>
               to <code>${escapeHTML(pending.poolAddress)}</code> from your own
-              wallet, then paste the transaction signature.
+              wallet, then paste the transaction signature. ForkMesh never
+              receives your wallet key.
               <a href="${escapeHTML(pending.uri)}" rel="noopener">Open in wallet</a>
             </p>
             <label class="world-store-param">
@@ -24038,9 +24142,22 @@ class ForkMeshWorld extends HTMLElement {
             </label>
             <button type="button" data-world-store-confirm="${escapeHTML(element.id)}">Confirm purchase</button>
             <button type="button" data-world-store-cancel>Cancel</button>`
-            : `<button type="button" data-world-store-buy="${escapeHTML(element.id)}">
-                 Buy · ${escapeHTML(String(element.priceSol))} SOL
-               </button>`;
+            : `<div class="world-store-buy">
+                 ${
+                   methods.some((entry) => entry.method === "direct")
+                     ? `<button type="button" data-world-store-buy="${escapeHTML(element.id)}">
+                          Pay from my wallet · ${escapeHTML(String(element.priceSol))} SOL
+                        </button>`
+                     : ""
+                 }
+                 ${
+                   methods.some((entry) => entry.method === "deposit")
+                     ? `<button type="button" data-world-store-deposit="${escapeHTML(element.id)}">
+                          Use a ForkMesh deposit address
+                        </button>`
+                     : ""
+                 }
+               </div>`;
         return `
         <article class="world-store-card" data-owned="${Boolean(entry)}">
           <header>
@@ -29539,6 +29656,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.buildBoardTimer);
     window.clearInterval(this.orgAgentTimer);
     window.clearInterval(this.qaTimer);
+    window.clearInterval(this.elementDepositTimer);
     window.clearInterval(this.instanceDirectoryTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     window.clearTimeout(this.viewportSyncTimer);
