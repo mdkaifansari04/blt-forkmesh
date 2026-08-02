@@ -15253,12 +15253,32 @@ async def repo_mirrors_handler(env, request, owner, repo):
     # the sum is the node's true lifetime contribution.
     serve_counts = {}
     try:
+        # A logical repository can be reached through several public owners:
+        # its organization URL plus each mirror's catalog URL. The router
+        # deliberately stamps the owner that appeared in the routed request,
+        # so filtering counters to only the currently requested owner hides
+        # real traffic served through every other alias (and made a healthy
+        # mirror look idle in the Mirrors table). Aggregate the bounded set of
+        # aliases that this already-verified mirror group exposes, while still
+        # excluding unrelated repositories that merely share its name.
+        serve_owners = {
+            str(public_owner or "").strip().lower(),
+            str(owner or "").strip().lower(),
+        }
+        serve_owners.update(
+            str(mirror.get("node") or "").strip().lower()
+            for mirror in payload.get("mirrors", [])
+        )
+        serve_owners.discard("")
+        owner_placeholders = ",".join("?" for _ in serve_owners)
         count_rows = await d1_all(
             env,
-            "SELECT node_name, clones, website FROM mirror_serve_counters"
-            " WHERE owner=? AND repo=?",
-            str(owner or "").strip().lower(),
+            "SELECT node_name,SUM(clones) AS clones,"
+            " SUM(website) AS website FROM mirror_serve_counters"
+            " WHERE repo=? AND owner IN (%s) GROUP BY node_name"
+            % owner_placeholders,
             str(repo or "").strip().lower(),
+            *sorted(serve_owners),
         )
         for row in count_rows:
             name = str(row.get("node_name") or "").strip().lower()
