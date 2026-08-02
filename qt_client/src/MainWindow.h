@@ -442,6 +442,8 @@ public:
     // test can pin the full catalog field set the page shows (adhoc #118).
     QStringList testNetworkRepoColumns() const;
     QString testNetworkRepoCellText(int row, const QString &header) const;
+    bool testNetworkRepoHasCommitSparkline(int row) const;
+    QString testNetworkRepoCommitActivitySummary(int row) const;
     // Badge riding the activity rail's Repos icon.
     int testReposNavBadgeCount() const;
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
@@ -1878,6 +1880,11 @@ private:
     // verification instead of starting another billable instance.
     void setVultrProvisionStage(int stage, const QString &detail = QString(),
                                 bool failed = false);
+    // File one clear Pings-page outcome for each numbered provisioning stage.
+    // Stage transitions report the completed stage; finishVultrProvision()
+    // reports the active stage's terminal success or failure.
+    void pingVultrProvisionStage(int stage, bool ok,
+                                 const QString &detail = QString());
     void renderVultrProvisionProgress(bool failed = false);
     void persistVultrProvisionState(const QString &state = QStringLiteral("active"),
                                     const QString &message = QString());

@@ -1142,6 +1142,10 @@ int main(int argc, char *argv[])
     // exposes an explicit Switch action.
     const QString rootA(40, QLatin1Char('a'));
     const QString rootB(40, QLatin1Char('b'));
+    QJsonArray widgetActivity;
+    for (int week = 0; week < 52; ++week)
+        widgetActivity.append(0);
+    widgetActivity[51] = 1;
     QJsonArray catalogFixture{
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-a")},
                     {QStringLiteral("name"), QStringLiteral("widget")},
@@ -1150,6 +1154,8 @@ int main(int argc, char *argv[])
                      QStringLiteral("Never shown in the grid")},
                     {QStringLiteral("branch"), QStringLiteral("main")},
                     {QStringLiteral("issueCount"), QStringLiteral("7")},
+                    {QStringLiteral("commitCount"), QStringLiteral("3")},
+                    {QStringLiteral("activityWeeks"), widgetActivity},
                     {QStringLiteral("platform"), QStringLiteral("linux")},
                     {QStringLiteral("source"), QStringLiteral("local-node")}},
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-b")},
@@ -1165,6 +1171,8 @@ int main(int argc, char *argv[])
                      QStringLiteral("Never shown in the grid")},
                     {QStringLiteral("branch"), QStringLiteral("main")},
                     {QStringLiteral("issueCount"), QStringLiteral("7")},
+                    {QStringLiteral("commitCount"), QStringLiteral("1")},
+                    {QStringLiteral("activityWeeks"), widgetActivity},
                     {QStringLiteral("platform"), QStringLiteral("linux")},
                     {QStringLiteral("source"),
                      QStringLiteral("organization-alias")},
@@ -1187,6 +1195,10 @@ int main(int argc, char *argv[])
           QStringLiteral("Repos uses a compact mirror-count column"));
     check(window.testNetworkRepoActionText(0) == QStringLiteral("Switch"),
           QStringLiteral("Repos provides an explicit Switch button"));
+    check(window.testNetworkRepoHasCommitSparkline(0) &&
+              window.testNetworkRepoCommitActivitySummary(0) ==
+                  QStringLiteral("3 commits total; 1 commit in the past 52 weeks"),
+          QStringLiteral("Repos sparkline uses the grouped catalog commit total"));
 
     // adhoc #118: the page shows the full catalog record per repository -- every
     // published field gets its own column, except the description.
