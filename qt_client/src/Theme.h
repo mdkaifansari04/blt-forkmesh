@@ -155,7 +155,11 @@ QPushButton {
     background-color: #21262d;
     border: 1px solid #30363d;
     border-radius: 6px;
-    padding: 8px 16px;
+    /* Compact action-button geometry is the application-wide default. More
+       specialised navigation, icon and primary controls override this where
+       their layout needs a different shape. */
+    padding: 4px 10px;
+    font-size: 12px;
     font-weight: 600;
 }
 QPushButton:hover { background-color: #30363d; }
@@ -1552,7 +1556,10 @@ QPushButton {
     background-color: #f6f8fa;
     border: 1px solid #d0d7de;
     border-radius: 6px;
-    padding: 8px 16px;
+    /* Keep ordinary actions aligned with the compact button system throughout
+       the Qt app; purpose-specific selectors below retain their own geometry. */
+    padding: 4px 10px;
+    font-size: 12px;
     font-weight: 600;
 }
 QPushButton:hover { background-color: #f3f4f6; }
