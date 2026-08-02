@@ -4594,7 +4594,7 @@ private:
     void setTopMessagePaused(bool paused); // hover pauses the countdown
     void slideTopMessageOut(); // countdown finished: ease the bubble off the right edge, then advance
     void showPromptBubble(const QString &prompt); // animate a submitted prompt into a bubble
-    // False while the footer composer is hidden (the Git workspace does that).
+    // True when the footer composer is visible and can anchor notification bubbles.
     bool topMessageDockVisible() const;
     MessageRow *addMessageRow(const ChatMessage &message);
     MessageRow *createMessageRow(const ChatMessage &message,
@@ -5131,8 +5131,8 @@ private:
     // be read while events keep streaming in (adhoc #92).
     QPushButton *m_footerLogPauseButton = nullptr;
     bool m_footerLogScrollPaused = false;
-    // Whole mini-log/background/agent-prompt footer. The focused Git workspace
-    // hides it to give the changes list and diff the full window height.
+    // Whole mini-log/background/agent-prompt footer. It remains available in
+    // every workspace, including Git, so users can prompt an agent from a diff.
     QWidget *m_footerDock = nullptr;
     // Background-activity strip, wedged between the live log and the prompt. One
     // row per open *kind* of work, not per ticket: dozens of concurrent git reads
