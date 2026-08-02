@@ -170,6 +170,8 @@ def test_crash_reports_name_the_device_renderer_and_resident_scene():
         "buffer ${buffer} at dpr ",
         "space ${String(record.space",
         "avatars ${describe(record.avatars)}",
+        "districts resident ${describe(record.residentDistricts)}",
+        "GPU limits texture ${describe(record.maxTextureSize)}",
     ):
         assert reading in report, reading
     # Admin notifications retain only a bounded prefix. Allocation totals and
@@ -206,6 +208,11 @@ def test_crash_reports_name_the_device_renderer_and_resident_scene():
         "materials: complexity",
         "topElements:",
         "canvasTextureScale: output",
+        "residentDistricts: residency",
+        "districtEvictions: residency",
+        "activeDistricts:",
+        "maxTextureSize: output",
+        "maxTextures: output",
     ):
         assert reading in guard
 
@@ -221,6 +228,8 @@ def test_context_loss_report_distinguishes_leaks_from_large_live_assets():
         "estimated GPU resources textures ",
         "heap ${coarseCrashLabel(memory?.heapUsedMB",
         '"next boot compact"',
+        "districts resident ${coarseCrashLabel(residency?.resident)}",
+        "GPU limits texture ${coarseCrashLabel(output?.maxTextureSize)}",
     ):
         assert reading in report, reading
 
