@@ -148,6 +148,8 @@ set(FORKMESH_APP_SOURCES
     src/PlatformLogFilter.cpp
     src/SingleInstance.h
     src/SingleInstance.cpp
+    src/StartupSplash.h
+    src/StartupSplash.cpp
     src/Theme.h
     src/AccountCapability.h
     src/ForkMeshIdentity.h
