@@ -300,11 +300,14 @@ private:
 
     QString pullsDir() const;
     QString pullDir(int number) const;
-    // Point refs/pr/<n>/head at pr's current content: the head branch's own
-    // tip when it resolves locally or from the mirror, otherwise a replayed
-    // commit built from pr.commits/pr.patch in a throwaway detached worktree.
-    // Best-effort — a PR is left without a ref on failure and callers fall
-    // back to the pre-#399 patch/branch-name path.
+    // Point refs/pr/<n>/head at pr's current content and expose the same commit
+    // as the ordinary, visible pr/<n> branch. The visible branch is created or
+    // fast-forwarded with compare-and-swap; a branch that has diverged (for
+    // example because a user or agent committed on it) is never overwritten.
+    // Content is the head branch's own tip when it resolves locally or from the
+    // mirror, otherwise a replayed commit built from pr.commits/pr.patch in a
+    // throwaway detached worktree. Best-effort — callers retain their legacy
+    // patch/branch-name fallbacks when content cannot be materialized.
     bool materializePullRef(const PullRequest &pr, QString *error) const;
     int nextNumber() const;
     bool writePull(const PullRequest &pr, QString *error) const;

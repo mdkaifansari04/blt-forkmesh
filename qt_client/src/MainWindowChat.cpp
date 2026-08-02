@@ -693,7 +693,9 @@ QWidget *MainWindow::buildNetworkLogDock()
             });
     updateQuickAddCharCount();
 
-    m_quickAddAgentProvider = new FullPopupComboBox; // no scroll arrows (issue #348)
+    // Hidden canonical provider state. The user-facing agent + model menu is
+    // built below after this control and the model control are ready.
+    m_quickAddAgentProvider = new FullPopupComboBox;
     m_quickAddAgentProvider->setObjectName("quickAddAgentSelector");
     // "Manual" (adhoc #29): the no-agent choice that replaces the old Agent /
     // Create-issue checkboxes — picking it files an issue from the typed prompt
@@ -728,6 +730,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Show the whole model list at once rather than a scrollable popup, even
     // once the live provider list-up fills in more than a handful (adhoc #99).
     m_quickAddClaudeModel->setMaxVisibleItems(30);
+    m_quickAddAgentModelSelector = new FullPopupComboBox;
+    m_quickAddAgentModelSelector->setObjectName("quickAddAgentModelSelector");
+    m_quickAddAgentModelSelector->setIconSize(QSize(22, 22));
+    m_quickAddAgentModelSelector->view()->setIconSize(QSize(26, 26));
+    m_quickAddAgentModelSelector->setMaxVisibleItems(30);
+    m_quickAddAgentModelSelector->setToolTip(
+        "Choose the agent and model that will handle this prompt.");
     auto refreshQuickAddModelPicker = [this]() {
         if (!m_quickAddAgentProvider || !m_quickAddClaudeModel)
             return;
@@ -772,6 +781,7 @@ QWidget *MainWindow::buildNetworkLogDock()
             if (m_codexModelEdit)
                 m_codexModelEdit->setText(safeModel);
         }
+        refreshQuickAddAgentModelSelector();
     };
     connect(m_quickAddClaudeModel, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [persistQuickAddModel](int) { persistQuickAddModel(); });
@@ -780,12 +790,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Permission/sandbox mode for both structured CLI integrations. Claude maps
     // this to its skip-permissions switch; Codex app-server maps every option to
     // a distinct approval policy and sandbox, including interactive requests.
-    m_quickAddModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
+    m_quickAddModeSelector = new IconOnlyFullPopupComboBox;
     m_quickAddModeSelector->setObjectName("quickAddModeSelector");
-    m_quickAddModeSelector->addItem(kAgentAskModeLabel, false);
-    m_quickAddModeSelector->addItem(QStringLiteral("Edit"), false);
-    m_quickAddModeSelector->addItem(QStringLiteral("Plan"), false);
-    m_quickAddModeSelector->addItem(kClaudeAutoModeLabel, true);
+    m_quickAddModeSelector->addItem(agentControlIcon(7), kClaudeAutoModeLabel, true);
+    m_quickAddModeSelector->addItem(agentControlIcon(8), kAgentAskModeLabel, false);
+    m_quickAddModeSelector->addItem(agentControlIcon(9), QStringLiteral("Plan"), false);
+    m_quickAddModeSelector->addItem(agentControlIcon(10), QStringLiteral("Edit"), false);
+    m_quickAddModeSelector->view()->setIconSize(QSize(26, 26));
     m_quickAddModeSelector->setMaxVisibleItems(30);
     m_quickAddModeSelector->setToolTip(
         "How much freedom the agent has to make changes without asking first.");
@@ -805,14 +816,28 @@ QWidget *MainWindow::buildNetworkLogDock()
                                      m_quickAddModeSelector->currentData().toBool());
                 QSettings().setValue(kAgentModeSetting,
                                      m_quickAddModeSelector->currentText());
+                const QString description =
+                    QStringLiteral("Permission mode: %1")
+                        .arg(m_quickAddModeSelector->currentText());
+                m_quickAddModeSelector->setAccessibleName(description);
+                m_quickAddModeSelector->setToolTip(
+                    description + QStringLiteral(". Click to choose a mode."));
             });
+    {
+        const QString description =
+            QStringLiteral("Permission mode: %1")
+                .arg(m_quickAddModeSelector->currentText());
+        m_quickAddModeSelector->setAccessibleName(description);
+        m_quickAddModeSelector->setToolTip(
+            description + QStringLiteral(". Click to choose a mode."));
+    }
     // Speed (reasoning effort) beside the mode selector (adhoc #38): the same
     // setting the "/" popup's effort dots write, promoted to the composer so the
     // choice is visible where prompts are launched. The item list is per
     // provider — Codex reports supportedReasoningEfforts per model, the `claude`
     // CLI is probed for what it accepts — so filling it lives in
     // refreshQuickAddSpeedSelector() and re-runs whenever either changes.
-    m_quickAddSpeedSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
+    m_quickAddSpeedSelector = new IconOnlyFullPopupComboBox;
     m_quickAddSpeedSelector->setObjectName("quickAddSpeedSelector");
     m_quickAddSpeedSelector->setMaxVisibleItems(30);
     m_quickAddSpeedSelector->setToolTip(
@@ -916,7 +941,11 @@ QWidget *MainWindow::buildNetworkLogDock()
         const QString provider = m_quickAddAgentProvider->currentData().toString();
         const bool claudeCode = provider == QLatin1String("claude-code");
         const bool codex = agentIsCodexProvider(provider);
-        m_quickAddClaudeModel->setVisible(claudeCode || codex);
+        // Provider and model now appear in m_quickAddAgentModelSelector. These
+        // controls retain the canonical state expected by the launch paths.
+        m_quickAddAgentProvider->setVisible(false);
+        m_quickAddClaudeModel->setVisible(false);
+        m_quickAddAgentModelSelector->setVisible(true);
         m_quickAddModeSelector->setVisible(claudeCode || codex);
         if (m_quickAddSpeedSelector) {
             m_quickAddSpeedSelector->setVisible(claudeCode || codex);
@@ -932,7 +961,31 @@ QWidget *MainWindow::buildNetworkLogDock()
                     m_quickAddAgentProvider->currentData().toString());
                 refreshQuickAddModelPicker();
                 syncQuickAddAgentControls();
+                refreshQuickAddAgentModelSelector();
             });
+    connect(m_quickAddAgentModelSelector,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+                if (index < 0 || !m_quickAddAgentProvider ||
+                    !m_quickAddClaudeModel)
+                    return;
+                const QString provider =
+                    m_quickAddAgentModelSelector->itemData(index).toString();
+                const QString model = m_quickAddAgentModelSelector
+                                          ->itemData(index, Qt::UserRole + 1)
+                                          .toString();
+                const QSignalBlocker selectorBlock(m_quickAddAgentModelSelector);
+                const int providerIndex =
+                    m_quickAddAgentProvider->findData(provider);
+                if (providerIndex >= 0 &&
+                    providerIndex != m_quickAddAgentProvider->currentIndex())
+                    m_quickAddAgentProvider->setCurrentIndex(providerIndex);
+                if (!model.isEmpty())
+                    selectModelComboValue(m_quickAddClaudeModel, model);
+                refreshQuickAddSpeedSelector();
+                refreshQuickAddAgentModelSelector();
+            });
+    refreshQuickAddAgentModelSelector();
 
     // Slash-actions button (adhoc #116): a small bordered "/" box, like the
     // Claude Code extension's, that opens the filterable actions popup —
@@ -1015,6 +1068,7 @@ QWidget *MainWindow::buildNetworkLogDock()
             recordQuickAddHistory(typed);
         m_issueQuickAdd->clear();
         clearQuickAddImages();
+        showPromptBubble(prompt);
         sendPromptToSelectedAgent(prompt);
     });
 
@@ -1057,16 +1111,17 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Enter targets "new" until an agent session is opened above.
     updateQuickAddEnterTarget();
 
-    // Agent hand-off controls (adhoc #99): the provider/model/mode dropdowns,
-    // grouped as one unit in the middle of the bottom bar. The provider dropdown
-    // now also carries "Manual (create issue)" (adhoc #29). No border/frame
-    // around them any more (adhoc #111 removed the pill outline) — they just sit
-    // inline in the bar.
+    // Agent hand-off controls: one combined agent/model picker followed by the
+    // icon-only mode and reasoning-effort pickers. No border/frame around the
+    // group; it sits inline in the bottom bar.
     auto *agentBox = new QWidget;
     agentBox->setObjectName("quickAddAgentBox");
     auto *agentBoxRow = new QHBoxLayout(agentBox);
     agentBoxRow->setContentsMargins(6, 1, 4, 1);
     agentBoxRow->setSpacing(2);
+    agentBoxRow->addWidget(m_quickAddAgentModelSelector);
+    // Hidden compatibility state; adding them gives the widgets the same owner
+    // and lifecycle they had before the visible controls were combined.
     agentBoxRow->addWidget(m_quickAddAgentProvider);
     agentBoxRow->addWidget(m_quickAddClaudeModel);
     agentBoxRow->addWidget(m_quickAddModeSelector);
@@ -1143,6 +1198,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // controls read as an overlay along the foot of the prompt input rather
     // than a separate strip above it.
     auto *promptWrapper = new QFrame;
+    m_promptWrapper = promptWrapper;
     promptWrapper->setObjectName("promptWrapper");
     // Horizontal split (adhoc #115): the text area + its bottom toolbar stack in
     // a left column, and the genie/add/new buttons form a full-height column down
@@ -1360,13 +1416,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *logPanelLayout = new QVBoxLayout(logPanel);
     logPanelLayout->setContentsMargins(1, 1, 1, 1);
     logPanelLayout->setSpacing(2);
-    // Errors and successes land at the very top of the mini-log, pushed against
-    // its first line rather than floating up in the window chrome: the toast and
-    // the log lines it summarises are read together. It is hidden by default and
-    // only borrows height from the log while a message is up — the footer's own
-    // height is fixed, so nothing else in the window moves (adhoc #14).
-    // buildBreadcrumb() runs before this dock is built, so the pill already exists.
-    logPanelLayout->addWidget(m_topMessageContainer, 0, Qt::AlignTop);
+    // Notifications deliberately do not live in this layout. They float over
+    // the composer instead, so a long error never steals a line from this log.
     logPanelLayout->addWidget(m_footerUpdateLog, 1);
 
     auto *leftRegion = new QWidget;
@@ -1845,7 +1896,9 @@ void MainWindow::populateSlashActionsList()
         addHeader(QStringLiteral("Model"));
         if (matches(QStringLiteral("Switch model")))
             addRow(QStringLiteral("Switch model\xE2\x80\xA6"),
-                   m_quickAddClaudeModel ? m_quickAddClaudeModel->currentText() : QString(),
+                   m_quickAddAgentModelSelector
+                       ? m_quickAddAgentModelSelector->currentText()
+                       : QString(),
                    QStringLiteral("switchModel"), QString());
         if (matches(QStringLiteral("Effort"))) {
             auto *row = new QFrame;
@@ -1968,20 +2021,9 @@ void MainWindow::activateSlashActionRow(QWidget *row)
         sendIssueContextToSelectedAgent();
     } else if (kind == QLatin1String("switchModel")) {
         closePopup();
-        if (m_quickAddAgentProvider) {
-            const QString provider =
-                m_quickAddAgentProvider->currentData().toString();
-            if (provider != QLatin1String("claude-code") &&
-                !agentIsCodexProvider(provider)) {
-                const int idx = m_quickAddAgentProvider->findData(
-                    QStringLiteral("claude-code"));
-                if (idx >= 0)
-                    m_quickAddAgentProvider->setCurrentIndex(idx);
-            }
-        }
-        if (m_quickAddClaudeModel) {
-            m_quickAddClaudeModel->setFocus();
-            m_quickAddClaudeModel->showPopup();
+        if (m_quickAddAgentModelSelector) {
+            m_quickAddAgentModelSelector->setFocus();
+            m_quickAddAgentModelSelector->showPopup();
         }
     } else if (kind == QLatin1String("effortLevel")) {
         QSettings().setValue(kClaudeEffortSetting, value);
@@ -2083,10 +2125,102 @@ void MainWindow::refreshQuickAddSpeedSelector()
     }
     const QSignalBlocker block(m_quickAddSpeedSelector);
     m_quickAddSpeedSelector->clear();
-    for (const QString &level : levels)
-        m_quickAddSpeedSelector->addItem(agentEffortLabel(level), level);
+    for (int i = 0; i < levels.size(); ++i)
+        m_quickAddSpeedSelector->addItem(
+            agentControlIcon(11 + qMin(i, 4)), agentEffortLabel(levels.at(i)),
+            levels.at(i));
     const int idx = m_quickAddSpeedSelector->findData(current);
     m_quickAddSpeedSelector->setCurrentIndex(idx >= 0 ? idx : 0);
+    const QString description =
+        QStringLiteral("Reasoning effort: %1")
+            .arg(m_quickAddSpeedSelector->currentText());
+    m_quickAddSpeedSelector->setAccessibleName(description);
+    m_quickAddSpeedSelector->setToolTip(
+        description +
+        QStringLiteral(". Higher levels are slower and more thorough."));
+}
+
+// Build the one visible agent/model menu from the canonical hidden provider and
+// model controls. Each row stores provider in UserRole and model in UserRole+1,
+// allowing a single click to update both without changing the launch contract.
+void MainWindow::refreshQuickAddAgentModelSelector()
+{
+    if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
+        !m_quickAddClaudeModel)
+        return;
+    const QString selectedProvider =
+        m_quickAddAgentProvider->currentData().toString();
+    const QString selectedModel =
+        (selectedProvider == QLatin1String("claude-code") ||
+         agentIsCodexProvider(selectedProvider))
+            ? selectedModelComboValue(m_quickAddClaudeModel)
+            : QString();
+    const QSignalBlocker blocker(m_quickAddAgentModelSelector);
+    m_quickAddAgentModelSelector->clear();
+
+    auto addChoice = [this](const QIcon &icon, const QString &label,
+                            const QString &provider, const QString &model) {
+        const int row = m_quickAddAgentModelSelector->count();
+        m_quickAddAgentModelSelector->addItem(icon, label, provider);
+        m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
+    };
+    addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
+              QStringLiteral("manual"), QString());
+
+    QComboBox claudeModels;
+    populateClaudeModelCombo(&claudeModels);
+    if (!m_liveClaudeModels.isEmpty())
+        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
+    for (int i = 0; i < claudeModels.count(); ++i) {
+        const QString id = claudeModels.itemData(i).toString();
+        const QString lower = id.toLower();
+        int icon = 7;
+        if (lower.contains(QLatin1String("opus")))
+            icon = 0;
+        else if (lower.contains(QLatin1String("fable")))
+            icon = 1;
+        else if (lower.contains(QLatin1String("sonnet")))
+            icon = 2;
+        else if (lower.contains(QLatin1String("haiku")))
+            icon = 3;
+        addChoice(agentControlIcon(icon),
+                  QStringLiteral("%1 · Claude Code")
+                      .arg(compactModelName(claudeModels.itemText(i))),
+                  QStringLiteral("claude-code"), id);
+    }
+
+    QComboBox codexModels;
+    populateCodexModelCombo(&codexModels);
+    for (int i = 0; i < codexModels.count(); ++i) {
+        addChoice(agentControlIcon(4 + (i % 3)),
+                  QStringLiteral("%1 · Codex").arg(codexModels.itemText(i)),
+                  kCodexProvider, codexModels.itemData(i).toString());
+    }
+
+    // These API agents do not expose a per-run model chooser in this composer,
+    // but remain first-class choices in the combined menu.
+    addChoice(agentControlIcon(4), QStringLiteral("OpenAI API"),
+              QStringLiteral("openai"), QString());
+    addChoice(agentControlIcon(2), QStringLiteral("Claude API"),
+              QStringLiteral("claude-api"), QString());
+
+    int selected = -1;
+    for (int i = 0; i < m_quickAddAgentModelSelector->count(); ++i) {
+        if (m_quickAddAgentModelSelector->itemData(i).toString() !=
+            selectedProvider)
+            continue;
+        const QString rowModel = m_quickAddAgentModelSelector
+                                     ->itemData(i, Qt::UserRole + 1)
+                                     .toString();
+        if (selectedModel.isEmpty() || rowModel == selectedModel) {
+            selected = i;
+            break;
+        }
+    }
+    m_quickAddAgentModelSelector->setCurrentIndex(selected >= 0 ? selected : 0);
+    m_quickAddAgentModelSelector->setAccessibleName(
+        QStringLiteral("Agent and model: %1")
+            .arg(m_quickAddAgentModelSelector->currentText()));
 }
 
 // Ask the installed `claude` CLI which --effort values it accepts (adhoc #38)
@@ -4968,9 +5102,11 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_relayJoinApproveButton, &QPushButton::clicked, this,
             &MainWindow::showRelayJoinApprovalDialog);
 
-    // Connection speed as a colour, pinned above the instance logo (adhoc
-    // #124): the radar dish that used to carry this on the right of the chrome
-    // line is gone, so the link's health now rides the instance it belongs to.
+    // Connection speed as the colour of the dropdown caret on the instance
+    // logo's corner (adhoc #124, adhoc #224): the radar dish that used to carry
+    // this on the right of the chrome line is gone, so the link's health rides
+    // the instance it belongs to — and rides the mark that says this logo opens
+    // a menu, rather than a separate dot that only looked like a status light.
     // The probe itself is still driven by m_relayLatencyTimer.
     m_relaySpeedDot = new RelaySpeedDot(m_relayMenuButton);
 
@@ -5178,34 +5314,20 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_notificationButton, &QPushButton::clicked, this,
             &MainWindow::showNotifications);
 
-    // Compact success/failure toast. Built here with the rest of the chrome, but
-    // it is docked into the footer's mini-log panel (see buildNetworkLogDock),
-    // pinned to the top of that panel: messages belong with the log they explain,
-    // not in the crowded window-chrome line (adhoc #14).
+    // Compact success/failure bubble. It is parented to the window rather than a
+    // layout, allowing notifications to float just above the composer without
+    // shifting the prompt or the live-log footer.
     m_topMessage = new QLabel;
     m_topMessage->setObjectName("topMessageText");
     m_topMessage->setTextFormat(Qt::RichText);
-    // Left-align the text itself: the toast as a whole still sits centered in the
-    // bar (via the stretches around it below), but when the window is too narrow
-    // to fit the full one-liner, Qt clips the label rather than eliding it, and a
-    // centered label clips from both ends — hiding the start of the message where
-    // the useful detail is. Left alignment keeps that start visible.
+    // Keep the useful start visible when a narrow window clips a one-line bubble.
     m_topMessage->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    // The pill's overall width is capped on m_topMessageContainer below (which
-    // also holds the Expand/Copy/✕ buttons); the label itself just fills it. The
-    // text is elided to one line in flashMessage regardless.
-    // Selectable like before, plus clickable links (e.g. the "jump to agent" toast).
+    // Selectable, plus clickable links (e.g. the "jump to agent" notification).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                           Qt::LinksAccessibleByMouse);
-    // ...but never at the cost of the caret: setTextInteractionFlags() bumps a
-    // QLabel to ClickFocus, and the toast now sits right beside the agent prompt,
-    // so selecting an error would silently steal the keyboard from whatever the
-    // user was typing. Mouse selection and link clicks still work without focus.
+    // A bubble must never steal the caret from the prompt beneath it.
     m_topMessage->setFocusPolicy(Qt::NoFocus);
-    // A one-line QLabel reports its whole text width as its minimum, which would
-    // let a long error force the mini-log panel — and with it the window — wider.
-    // An explicit minimum overrides that hint, so the pill shrinks with the panel
-    // and clips (from the right, per the alignment above) instead.
+    // A one-line QLabel otherwise reports its entire text width as its minimum.
     m_topMessage->setMinimumWidth(1);
     connect(m_topMessage, &QLabel::linkActivated, this, [this](const QString &href) {
         if (href.startsWith(QLatin1String("fm:agent:"))) {
@@ -5220,24 +5342,50 @@ QWidget *MainWindow::buildBreadcrumb()
     });
     m_topMessage->hide();
 
-    // Copy button shown beside the toast for errors only. An error toast counts
-    // down for a long window (kToastErrorSeconds) and keeps this Copy / ✕ pair the
-    // whole time, so a failure can be read and grabbed for a bug report before it
-    // fades on its own.
+    // Every bubble can be copied. A notification is often the quickest useful
+    // context to paste into the next agent prompt, whether it is a failure or a
+    // successful result.
     m_topMessageCopy = new QPushButton(QStringLiteral("Copy"));
     m_topMessageCopy->setObjectName("ghostButton");
     m_topMessageCopy->setCursor(Qt::PointingHandCursor);
-    m_topMessageCopy->setToolTip(QStringLiteral("Copy this message and dismiss it"));
-    m_topMessageCopy->setFocusPolicy(Qt::NoFocus); // a toast never grabs the keyboard
+    m_topMessageCopy->setToolTip(QStringLiteral("Copy this bubble's text"));
+    m_topMessageCopy->setFocusPolicy(Qt::NoFocus);
     setOcticon(m_topMessageCopy, "copy", 14);
     m_topMessageCopy->hide();
     connect(m_topMessageCopy, &QPushButton::clicked, this, [this] {
         if (!m_topMessageRaw.isEmpty())
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
-        advanceTopMessageQueue(); // move on to the next queued error, if any
     });
-    // A plain "x" to dismiss an error toast without copying it — the octicon
-    // SVG, like the Copy/Expand glyphs beside it, not a text glyph.
+
+    m_topMessageSendToPrompt = new QPushButton(QStringLiteral("Send to prompt"));
+    m_topMessageSendToPrompt->setObjectName("topMessageAction");
+    m_topMessageSendToPrompt->setCursor(Qt::PointingHandCursor);
+    m_topMessageSendToPrompt->setToolTip(
+        QStringLiteral("Add this notification to the footer prompt"));
+    m_topMessageSendToPrompt->setFocusPolicy(Qt::NoFocus);
+    setOcticon(m_topMessageSendToPrompt, "paper-airplane", 13);
+    m_topMessageSendToPrompt->hide();
+    connect(m_topMessageSendToPrompt, &QPushButton::clicked, this, [this] {
+        if (!m_issueQuickAdd || m_topMessageRaw.isEmpty())
+            return;
+        QString draft = m_issueQuickAdd->toPlainText();
+        if (!draft.trimmed().isEmpty()) {
+            if (!draft.endsWith(QStringLiteral("\n\n"))) {
+                if (draft.endsWith(QLatin1Char('\n')))
+                    draft += QLatin1Char('\n');
+                else
+                    draft += QStringLiteral("\n\n");
+            }
+        } else {
+            draft.clear();
+        }
+        draft += m_topMessageRaw;
+        m_issueQuickAdd->setPlainText(draft);
+        m_issueQuickAdd->moveCursor(QTextCursor::End);
+        m_issueQuickAdd->setFocus();
+    });
+
+    // A plain "x" to dismiss a bubble without copying it.
     m_topMessageClose = new QPushButton;
     m_topMessageClose->setObjectName("ghostButton");
     setOcticon(m_topMessageClose, "x", 14);
@@ -5248,8 +5396,8 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageClose, &QPushButton::clicked, this,
             [this] { dismissTopMessage(); }); // always fully close, even if another error is queued
 
-    // Shown beside the toast when a message is too long to fit on one line.
-    // Clicking it expands the full message in place (wrapped, growing the toast)
+    // Shown beside a long regular notification. Clicking it expands the full
+    // text in place (wrapped, growing the bubble)
     // and toggles back to the elided one-liner — no modal pops up.
     m_topMessageExpand = new QPushButton;
     m_topMessageExpand->setObjectName("ghostButton");
@@ -5261,52 +5409,48 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageExpand, &QPushButton::clicked, this, [this] {
         m_topMessageExpanded = !m_topMessageExpanded;
         renderTopMessage();
+        positionTopMessageBubble();
         // Keep the live countdown suffix if a success toast is still ticking.
         if (m_topMessageTimer && m_topMessageTimer->isActive())
             renderTopMessageCountdown();
     });
 
-    // Wrap the text and its Expand/Copy/✕ affordances in one bordered pill so
-    // they render (and hit-test) as a single contained unit instead of the
-    // buttons floating loose beside the box, which could leave them squeezed
-    // to almost nothing — and effectively unclickable — once the rest of the
-    // crowded top bar ran short on room (adhoc #16).
-    m_topMessageContainer = new QFrame;
+    // A single floating unit keeps its text and actions together while it fades.
+    m_topMessageContainer = new QFrame(this);
     m_topMessageContainer->setObjectName("topMessage");
     m_topMessageContainer->setFocusPolicy(Qt::NoFocus);
-    // The pill fills the mini-log panel it now lives in, so a long error gets
-    // every pixel the log has; the cap only stops it sprawling on a very wide
-    // window. It can never widen the window itself — see the label's minimum above.
-    m_topMessageContainer->setMaximumWidth(900);
-    m_topMessageContainer->setSizePolicy(QSizePolicy::Preferred,
-                                         QSizePolicy::Fixed);
+    m_topMessageContainer->setAttribute(Qt::WA_StyledBackground, true);
+    m_topMessageContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    m_topMessageContainer->setMouseTracking(true);
+    m_topMessageContainer->installEventFilter(this);
     auto *topMessageRow = new QHBoxLayout(m_topMessageContainer);
-    topMessageRow->setContentsMargins(12, 2, 6, 2);
+    topMessageRow->setContentsMargins(12, 7, 8, 7);
     topMessageRow->setSpacing(4);
     topMessageRow->addWidget(m_topMessage, 1);
     topMessageRow->addWidget(m_topMessageExpand);
     topMessageRow->addWidget(m_topMessageCopy);
+    topMessageRow->addWidget(m_topMessageSendToPrompt);
     topMessageRow->addWidget(m_topMessageClose);
-    m_topMessageContainer->hide();
+    for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
+                            static_cast<QWidget *>(m_topMessageExpand),
+                            static_cast<QWidget *>(m_topMessageCopy),
+                            static_cast<QWidget *>(m_topMessageSendToPrompt),
+                            static_cast<QWidget *>(m_topMessageClose)})
+        widget->installEventFilter(this);
 
-    // The expanded full text lives in this floating panel, parented to the window
-    // (not to any layout) and raised above everything when shown. Revealing it
-    // therefore overlays the UI on top instead of growing the inline toast, so it
-    // never shifts the top bar or the layout below it. See renderTopMessage.
-    m_topMessageOverlay = new QFrame(this);
-    m_topMessageOverlay->setObjectName("topMessageOverlay");
-    m_topMessageOverlay->setFocusPolicy(Qt::NoFocus);
-    auto *overlayLayout = new QVBoxLayout(m_topMessageOverlay);
-    overlayLayout->setContentsMargins(12, 10, 12, 10);
-    m_topMessageOverlayText = new QLabel;
-    m_topMessageOverlayText->setObjectName("topMessageOverlayText");
-    m_topMessageOverlayText->setTextFormat(Qt::RichText);
-    m_topMessageOverlayText->setWordWrap(true);
-    m_topMessageOverlayText->setTextInteractionFlags(Qt::TextSelectableByMouse |
-                                                     Qt::LinksAccessibleByMouse);
-    m_topMessageOverlayText->setFocusPolicy(Qt::NoFocus);
-    overlayLayout->addWidget(m_topMessageOverlayText);
-    m_topMessageOverlay->hide();
+    // One geometry animation drives both the composer-to-bubble arrival and the
+    // slide-off exit. The bubble never fades: it stays fully readable for the
+    // whole countdown and only then leaves, so nothing dims out mid-read.
+    m_topMessageFlight = new QPropertyAnimation(m_topMessageContainer, "geometry", this);
+    m_topMessageFlight->setDuration(260);
+    m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
+    connect(m_topMessageFlight, &QPropertyAnimation::finished, this, [this] {
+        if (!m_topMessageSlidingOut)
+            return; // an arrival flight just landed; nothing to clean up
+        m_topMessageSlidingOut = false;
+        advanceTopMessageQueue();
+    });
+    m_topMessageContainer->hide();
 
     // User avatar, the rail's bottom-most Account item. Clicking it opens
     // Settings for the current user. Sized to sit flush with the rail's 20px
@@ -6506,20 +6650,65 @@ void MainWindow::showRelayMenu()
     menu.addAction(searchAction);
     menu.addSeparator();
 
-    // One checkable action per relay (active one checked), each labelled with
-    // that instance's connection speed (adhoc #124) — the readout the radar
-    // dish used to carry for the active relay only. Cached samples show
-    // instantly; anything stale is re-probed and the label updates in place
-    // while the menu is open.
+    // One row per relay, each labelled with that instance's connection speed
+    // (adhoc #124) — the readout the radar dish used to carry for the active
+    // relay only. Cached samples show instantly; anything stale is re-probed and
+    // the label updates in place while the menu is open.
+    //
+    // Each row is a widget rather than a plain QAction because the name now
+    // carries a link that opens that instance's website in the browser (adhoc
+    // #224) — the "server" link the breadcrumb used to hold before adhoc #91
+    // folded the domain into this menu, back where the domain went. Clicking
+    // anywhere else on the row still switches to the relay, and the active one
+    // is marked with a check the way the checkable action was.
     QList<QAction *> relayActions;
     for (int i = 0; i < m_servers.size(); ++i) {
         const ServerConfig &server = m_servers.at(i);
         const QString host = serverHost(server.url);
-        QAction *act = menu.addAction(QIcon(faviconFor(server)),
-                                      relayMenuEntryText(host));
-        act->setCheckable(true);
-        act->setChecked(i == m_activeServer);
-        connect(act, &QAction::triggered, this, [this, i] { switchToServer(i); });
+        const bool active = i == m_activeServer;
+
+        auto *row = new QWidget(&menu);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(4, 0, 4, 0);
+        rowLayout->setSpacing(2);
+
+        // The check the checkable QAction used to draw, as a leading glyph so
+        // every row's text starts on the same column whether or not it is the
+        // live relay.
+        auto rowText = [active](const QString &entry) {
+            return (active ? QString::fromUtf8("\xE2\x9C\x93  ")
+                           : QStringLiteral("     ")) + entry;
+        };
+        auto *pick = new QPushButton(QIcon(faviconFor(server)),
+                                     rowText(relayMenuEntryText(host)), row);
+        pick->setFlat(true);
+        pick->setCursor(Qt::PointingHandCursor);
+        pick->setStyleSheet(QStringLiteral("text-align:left; padding:4px 6px;"));
+        pick->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        connect(pick, &QPushButton::clicked, &menu, [this, i, &menu] {
+            menu.close();
+            switchToServer(i);
+        });
+
+        auto *open = new QPushButton(row);
+        open->setObjectName(QStringLiteral("issueIconButton"));
+        open->setFlat(true);
+        open->setCursor(Qt::PointingHandCursor);
+        open->setFixedSize(26, 26);
+        open->setToolTip(QStringLiteral("Open %1 in your browser")
+                             .arg(host.isEmpty() ? server.url : host));
+        setOcticon(open, QStringLiteral("link"), 14);
+        connect(open, &QPushButton::clicked, &menu, [this, i, &menu] {
+            menu.close();
+            openServerWebsite(i);
+        });
+
+        rowLayout->addWidget(pick, 1);
+        rowLayout->addWidget(open, 0);
+
+        auto *act = new QWidgetAction(&menu);
+        act->setDefaultWidget(row);
+        menu.addAction(act);
         relayActions.append(act);
 
         const RelayLatencySample sample =
@@ -6527,11 +6716,11 @@ void MainWindow::showRelayMenu()
         if (QDateTime::currentMSecsSinceEpoch() - sample.stampMs <
             kRelaySpeedFreshMs)
             continue;
-        // The action dies with the menu, which the probe can easily outlive.
-        QPointer<QAction> guarded(act);
-        probeRelayHostSpeed(server.url, [this, guarded, host](int) {
+        // The row dies with the menu, which the probe can easily outlive.
+        QPointer<QPushButton> guarded(pick);
+        probeRelayHostSpeed(server.url, [this, guarded, host, rowText](int) {
             if (guarded)
-                guarded->setText(relayMenuEntryText(host));
+                guarded->setText(rowText(relayMenuEntryText(host)));
         });
     }
 

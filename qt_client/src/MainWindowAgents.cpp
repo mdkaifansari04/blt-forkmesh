@@ -45,6 +45,14 @@ struct AgentDiffBatch {
     QSet<int> liveIds;
 };
 
+// One pass of the attachment scan (adhoc #222): which sessions of the open repo
+// still have readable images, and the transcript stamp each answer was read at so
+// the next pass can skip the sessions nothing has been appended to.
+struct AgentImageBatch {
+    QHash<int, QStringList> images;
+    QHash<int, QString> stamps;
+};
+
 void summarizeAgentPatch(const QString &patch, AgentDiffStat *stat)
 {
     if (!stat)
@@ -478,6 +486,60 @@ constexpr int kAgentAddedRole = Qt::UserRole + 39;
 constexpr int kAgentRemovedRole = Qt::UserRole + 40;
 constexpr int kAgentAheadRole = Qt::UserRole + 41;
 constexpr int kAgentBehindRole = Qt::UserRole + 42;
+// Attachments the row's session carries (adhoc #222) and the session to open
+// them for: AgentThumbnailDelegate turns a click on the title cell's little
+// square into "show me that picture", and the square itself is the cell's
+// ordinary decoration, so the style lays it out and the title flows after it.
+constexpr int kAgentImagesRole = Qt::UserRole + 43;
+constexpr int kAgentImagesSessionRole = Qt::UserRole + 44;
+
+// Side of that square, in logical pixels. Small enough to read as a marker
+// beside the title rather than a picture in its own right — the click opens the
+// full-size one — and the row height is held at least this tall (buildAgentsTab)
+// so the square is never clipped.
+constexpr int kAgentThumbnailPx = 20;
+
+// Decode an attachment straight into the row's square: scaled so the short edge
+// covers it, centre-cropped and rounded off, so a wide screenshot reads as a
+// picture rather than a letterboxed sliver. Runs on a worker thread — a 4K
+// screenshot costs hundreds of milliseconds to decode, and the sessions list
+// must not pay that on the GUI thread (the same reasoning as the transcript's
+// own thumbnails, adhoc #90). QImage all the way through for that reason: QPixmap
+// belongs to the GUI thread, so the caller converts once the result lands.
+QImage decodeAgentThumbnail(const QString &path, int side, qreal dpr)
+{
+    const int target = qMax(1, qRound(side * dpr));
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    const QSize src = reader.size(); // header only, no pixel decode
+    if (src.isValid() && src.width() > 0 && src.height() > 0) {
+        // Let the reader do most of the downscale where the format allows it.
+        const double factor = double(target) / qMin(src.width(), src.height());
+        if (factor < 1.0)
+            reader.setScaledSize(QSize(qMax(target, qRound(src.width() * factor)),
+                                       qMax(target, qRound(src.height() * factor))));
+    }
+    QImage img = reader.read();
+    if (img.isNull())
+        return QImage();
+    if (img.width() != target || img.height() != target) {
+        img = img.scaled(target, target, Qt::KeepAspectRatioByExpanding,
+                         Qt::SmoothTransformation);
+        img = img.copy((img.width() - target) / 2, (img.height() - target) / 2,
+                       target, target);
+    }
+    QImage rounded(target, target, QImage::Format_ARGB32_Premultiplied);
+    rounded.fill(Qt::transparent);
+    QPainter p(&rounded);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPainterPath clip;
+    const qreal radius = 4.0 * dpr;
+    clip.addRoundedRect(QRectF(0, 0, target, target), radius, radius);
+    p.setClipPath(clip);
+    p.drawImage(0, 0, img);
+    p.end();
+    return rounded;
+}
 
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
@@ -1021,6 +1083,56 @@ private:
     std::function<void(int)> m_onConflictClick;
 };
 
+// The title column's attachment square (adhoc #222). The square itself is the
+// cell's ordinary decoration — the style draws it and flows the title after it —
+// so all this delegate adds is the click: a press on the picture opens it full
+// size instead of just selecting the row. Subclasses the list's own delegate so
+// the column keeps its green selected-row outline.
+class AgentThumbnailDelegate : public SelectionBorderRowDelegate
+{
+public:
+    AgentThumbnailDelegate(QAbstractItemView *view, std::function<void(int)> onClick)
+        : SelectionBorderRowDelegate(view), m_onClick(std::move(onClick))
+    {
+    }
+
+    bool editorEvent(QEvent *event, QAbstractItemModel *model,
+                     const QStyleOptionViewItem &option,
+                     const QModelIndex &index) override
+    {
+        if (event->type() == QEvent::MouseButtonRelease && m_onClick) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            const int sessionId = index.data(kAgentImagesSessionRole).toInt();
+            if (me->button() == Qt::LeftButton && sessionId > 0 &&
+                !index.data(kAgentImagesRole).toStringList().isEmpty() &&
+                thumbnailRect(option, index).contains(me->pos())) {
+                m_onClick(sessionId);
+                return true;
+            }
+        }
+        return SelectionBorderRowDelegate::editorEvent(event, model, option, index);
+    }
+
+private:
+    // Where the style actually put the decoration, rather than a guess at it: the
+    // list's stylesheet pads its cells, so the square does not start at the cell's
+    // own left edge. Grown by a pixel or two on each side — the square is small,
+    // and a click that lands just off it should still open the picture.
+    QRect thumbnailRect(const QStyleOptionViewItem &option,
+                        const QModelIndex &index) const
+    {
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        const QStyle *style =
+            opt.widget ? opt.widget->style() : QApplication::style();
+        const QRect rect = style->subElementRect(QStyle::SE_ItemViewItemDecoration,
+                                                 &opt, opt.widget);
+        return rect.isValid() ? rect.adjusted(-2, -2, 2, 2) : rect;
+    }
+
+    std::function<void(int)> m_onClick;
+};
+
 QString replyHeader(QNetworkReply *reply, const char *name)
 {
     return QString::fromUtf8(reply->rawHeader(name)).trimmed();
@@ -1229,12 +1341,12 @@ QWidget *MainWindow::buildAgentsTab()
 
     auto *listPane = new QWidget;
     listPane->setMinimumWidth(260);
-    // The heading shares the toolbar row rather than owning a line of its own:
-    // with the repository band hidden on this tab (updateRepoActivityRail) the
-    // session list starts at the top of the page, and a one-line header keeps it
-    // there instead of spending two rows on chrome.
-    auto *heading = new QLabel("Agent sessions");
-    heading->setObjectName("channelTitle");
+    // No heading at all any more (adhoc #224): with the repository band hidden
+    // on this tab (updateRepoActivityRail) and the toolbar moved to the pane's
+    // foot, the session list starts in the page's very top-left corner — the
+    // first row's selection outline begins on the window's left rule. The tab is
+    // already named "Agents" in the rail, so a second "Agent sessions" line only
+    // pushed the list it labels down and in.
 
     m_agentTable = new QTableWidget(0, 2);
     m_agentTable->setObjectName("issueTable");
@@ -1296,6 +1408,26 @@ QWidget *MainWindow::buildAgentsTab()
         new AgentBranchButtonDelegate(
             m_agentTable, [this](int sessionId) { switchToAgentBranch(sessionId); },
             [this](int sessionId) { fixAgentConflictsWithAgent(sessionId); }));
+    // Attachment square on the title cell (adhoc #222): a session started from a
+    // pasted screenshot shows it at the head of its row, and clicking it opens the
+    // picture full size rather than only selecting the row.
+    m_agentTable->setItemDelegateForColumn(
+        kAgentIssueColumn,
+        new AgentThumbnailDelegate(
+            m_agentTable, [this](int sessionId) { showAgentSessionImages(sessionId); }));
+    // The square's slot has to be asked for: a view with no iconSize of its own
+    // hands the delegate QStyleOptionViewItem's 16px default, which caps
+    // (QIcon::actualSize) the 20px thumbnail down to 16 and draws it softened.
+    // The "#" cell's 14px status glyphs are unaffected — actualSize only ever
+    // shrinks, so they keep their own size inside the wider slot.
+    m_agentTable->setIconSize(QSize(kAgentThumbnailPx, kAgentThumbnailPx));
+    // Hold every row tall enough for that square. The rows are a fixed height
+    // (nothing puts the vertical header in ResizeToContents), so without this a
+    // narrow default section would clip the thumbnail on the rows that have one
+    // and leave the list ragged against the ones that don't.
+    QHeaderView *agentRows = m_agentTable->verticalHeader();
+    agentRows->setDefaultSectionSize(
+        qMax(agentRows->defaultSectionSize(), kAgentThumbnailPx + 8));
     // ~22fps timer that advances the per-session output meters and repaints the
     // top-bar fleet lights off them. It is started on demand by noteAgentActivity
     // and self-stops once every session has gone idle.
@@ -1315,8 +1447,10 @@ QWidget *MainWindow::buildAgentsTab()
     m_externalClaudeTimer->start();
 
     auto *listLayout = new QVBoxLayout(listPane);
-    listLayout->setContentsMargins(18, 12, 12, 14);
-    listLayout->setSpacing(8);
+    // The table owns the pane edge-to-edge (adhoc #224); the footer bar built
+    // below carries its own padding, so nothing here insets the list itself.
+    listLayout->setContentsMargins(0, 0, 0, 0);
+    listLayout->setSpacing(0);
 
     // The top-of-list "Start agent" compose row (adhoc #234) was removed from
     // the desktop app (adhoc #271) — starting a new ad-hoc agent now happens
@@ -1328,7 +1462,11 @@ QWidget *MainWindow::buildAgentsTab()
     // whose transcript does, which is scanned in the background as you type.
     m_agentSearch = new QLineEdit;
     m_agentSearch->setObjectName("issueSearch");
-    m_agentSearch->setPlaceholderText(QString::fromUtf8(
+    // Short placeholder now that the box shares the footer with the fleet
+    // buttons (adhoc #224); the full sentence rides the tooltip.
+    m_agentSearch->setPlaceholderText(
+        QString::fromUtf8("Search agents\xE2\x80\xA6"));
+    m_agentSearch->setToolTip(QString::fromUtf8(
         "Search agents and transcripts by issue, agent, status or PR\xE2\x80\xA6"));
     m_agentSearch->setClearButtonEnabled(true);
     connect(m_agentSearch, &QLineEdit::textChanged, this, [this] {
@@ -1338,15 +1476,16 @@ QWidget *MainWindow::buildAgentsTab()
         scheduleAgentTranscriptSearch();
     });
 
-    // "Delete all merged" sits on top of the list and wipes every merged session's
-    // worktree, branch and agent in one batch (adhoc #235). It shares the search
-    // row to keep the toolbar compact and stays disabled until something is merged.
-    m_agentDeleteMergedButton = new QPushButton("Delete all merged");
-    m_agentDeleteMergedButton->setObjectName("dangerButton");
-    m_agentDeleteMergedButton->setCursor(Qt::PointingHandCursor);
-    m_agentDeleteMergedButton->setToolTip(
+    // The fleet buttons below are the same octicon-over-caption tiles as the
+    // detail pane's session actions and the left rail (adhoc #224) — one visual
+    // language for every action on the page — and they sit under the list rather
+    // than over it, so the list itself can start at the top of the pane.
+
+    // "Delete all merged" wipes every merged session's worktree, branch and
+    // agent in one batch (adhoc #235). Disabled until something is merged.
+    m_agentDeleteMergedButton = railActionButton(
+        QStringLiteral("trash"), QStringLiteral("Del merged"),
         "Delete the worktree, branch and session of every merged agent");
-    setOcticon(m_agentDeleteMergedButton, "trash", 16);
     connect(m_agentDeleteMergedButton, &QPushButton::clicked, this,
             &MainWindow::deleteAllMergedAgentSessions);
 
@@ -1379,26 +1518,20 @@ QWidget *MainWindow::buildAgentsTab()
     // "Stop all" halts every ForkMesh-run session in one click (adhoc #433) —
     // the companion to the concurrency cap, since a full queue can otherwise
     // only be drained one Stop at a time. Disabled while nothing is in flight.
-    m_agentStopAllButton = new QPushButton("Stop all");
-    m_agentStopAllButton->setObjectName("dangerButton");
-    m_agentStopAllButton->setCursor(Qt::PointingHandCursor);
-    m_agentStopAllButton->setToolTip(
+    m_agentStopAllButton = railActionButton(
+        QStringLiteral("circle-slash"), QStringLiteral("Stop all"),
         "Stop every running agent and cancel the queued ones. External "
         "Claude Code sessions started outside ForkMesh are left alone.");
-    setOcticon(m_agentStopAllButton, "circle-slash", 16);
     connect(m_agentStopAllButton, &QPushButton::clicked, this,
             &MainWindow::stopAllRunningAgents);
 
     // "Start all" is the way back from "Stop all" (adhoc #136): resume every
     // idle session in one click instead of reopening each row and continuing it.
-    // Green outline beside the red one, and disabled while nothing is resumable.
-    m_agentStartAllButton = new QPushButton("Start all");
-    m_agentStartAllButton->setObjectName("successButton");
-    m_agentStartAllButton->setCursor(Qt::PointingHandCursor);
-    m_agentStartAllButton->setToolTip(
+    // Disabled while nothing is resumable.
+    m_agentStartAllButton = railActionButton(
+        QStringLiteral("rocket"), QStringLiteral("Start all"),
         "Resume every stopped or failed agent. Merged sessions and external "
         "Claude Code sessions started outside ForkMesh are left alone.");
-    setOcticon(m_agentStartAllButton, "rocket", 16);
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
@@ -1437,19 +1570,21 @@ QWidget *MainWindow::buildAgentsTab()
     agentQueueLayout->addWidget(m_agentQueueLimitIncreaseButton);
     refreshAgentQueueControls();
 
+    // Fleet toolbar, now the pane's footer (adhoc #224): the list gets the top
+    // of the page, and the controls that act on the whole fleet sit under the
+    // rows they act on rather than between them and the top of the window.
     auto *agentListToolbar = new QHBoxLayout;
-    agentListToolbar->setContentsMargins(0, 0, 0, 0);
-    agentListToolbar->setSpacing(8);
-    agentListToolbar->addWidget(heading, 0);
-    agentListToolbar->addWidget(m_agentSearch, 1);
+    agentListToolbar->setContentsMargins(10, 2, 10, 8);
+    agentListToolbar->setSpacing(6);
     agentListToolbar->addWidget(m_agentStartAllButton, 0);
-    agentListToolbar->addWidget(agentQueueControl, 0);
+    agentListToolbar->addWidget(agentQueueControl, 0, Qt::AlignVCenter);
     agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
-    agentListToolbar->addWidget(m_agentHideDetailButton, 0);
-    listLayout->addLayout(agentListToolbar);
+    agentListToolbar->addWidget(m_agentSearch, 1, Qt::AlignVCenter);
+    agentListToolbar->addWidget(m_agentHideDetailButton, 0, Qt::AlignVCenter);
 
     listLayout->addWidget(m_agentTable, 1);
+    listLayout->addLayout(agentListToolbar);
 
     auto *detailPane = new QWidget;
     // Keep the whole title on one line; the detail pane's actual right edge is
@@ -1715,23 +1850,25 @@ QWidget *MainWindow::buildAgentsTab()
     actionRow->addWidget(m_agentBranchButton);
     actionRow->addWidget(m_agentWorktreeButton);
 
-    // The title still owns its row outright (adhoc #35): sharing it with the mode
-    // selector left a long, prompt-derived ad-hoc title inside a narrow column
-    // with acres of unused space beside it. The header reads title, then
-    // the status pill with the session's actions beside it, then the meta table.
+    // The header's first line is the run's state and everything you can do about
+    // it, pushed into the pane's top-right corner (adhoc #224): status pill,
+    // Info, the session actions, and — appended further down, once they exist —
+    // the Transcript/Raw view switch. The prompt-derived title reads on the line
+    // underneath them all, where a long ad-hoc title has the width to itself
+    // (which is what adhoc #35 gave it a row of its own for).
     auto *topRow = new QVBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
     topRow->setSpacing(4);
-    topRow->addWidget(m_agentTitle);
     auto *statusRow = new QHBoxLayout;
     statusRow->setContentsMargins(0, 0, 0, 0);
     statusRow->setSpacing(8);
-    statusRow->addWidget(m_agentStatusPill, 0, Qt::AlignLeft);
-    statusRow->addWidget(m_agentInfoButton, 0, Qt::AlignLeft);
+    statusRow->addStretch(1);
+    statusRow->addWidget(m_agentStatusPill, 0, Qt::AlignVCenter);
+    statusRow->addWidget(m_agentInfoButton, 0, Qt::AlignVCenter);
     statusRow->addSpacing(4);
     statusRow->addLayout(actionRow);
-    statusRow->addStretch(1);
     topRow->addLayout(statusRow);
+    topRow->addWidget(m_agentTitle);
 
     m_agentLog = new QPlainTextEdit;
     m_agentLog->setReadOnly(true);
@@ -1849,14 +1986,19 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentOutputStack->addWidget(m_agentTerminal);   // page 1: embedded terminal
     m_agentOutputStack->addWidget(m_agentTranscript); // page 2: rich transcript
 
-    // Transcript | Raw toggle, shown only for Claude Code transcript sessions.
-    m_transcriptModeButton = new QPushButton(QStringLiteral("Transcript"));
-    m_terminalModeButton = new QPushButton(QStringLiteral("Raw"));
-    for (QPushButton *b : {m_transcriptModeButton, m_terminalModeButton}) {
+    // Transcript | Raw switch, shown only for Claude Code transcript sessions.
+    // The same octicon-over-caption tiles as the session actions it now sits
+    // beside in the header (adhoc #224) — the segmented pill it used to be was
+    // the last control on the page with a look of its own. Still checkable, so
+    // the rail button's green accent line marks the view you are on.
+    m_transcriptModeButton =
+        railActionButton(QStringLiteral("comment"), QStringLiteral("Transcript"),
+                         "Show this run as rendered transcript cards");
+    m_terminalModeButton =
+        railActionButton(QStringLiteral("terminal"), QStringLiteral("Raw"),
+                         "Show this run's raw, unformatted output");
+    for (QPushButton *b : {m_transcriptModeButton, m_terminalModeButton})
         b->setCheckable(true);
-        b->setCursor(Qt::PointingHandCursor);
-        b->setObjectName("segButton");
-    }
     m_transcriptModeButton->setChecked(true);
     connect(m_transcriptModeButton, &QPushButton::clicked, this, [this] {
         m_transcriptModeButton->setChecked(true);
@@ -1872,19 +2014,16 @@ QWidget *MainWindow::buildAgentsTab()
     // The unified/split diff-style selector that used to sit here is gone (adhoc
     // #51); the transcript still honours the stored kClaudeDiffSplitSetting.
 
-    // Search the transcript (adhoc #201): a query box with a "3/12" match counter.
-    // Typing highlights every match in the transcript and jumps to the first;
-    // Enter walks the hits (adhoc #51 dropped the prev/next steppers).
-    m_transcriptSearch = new QLineEdit;
-    m_transcriptSearch->setObjectName("issueSearch"); // reuse the styled search look
-    // Placeholder trimmed to just "Search" so the box can be short (adhoc #61) —
-    // it sits inside the transcript toolbar, where what it searches is obvious.
-    m_transcriptSearch->setPlaceholderText(QStringLiteral("Search"));
-    m_transcriptSearch->setClearButtonEnabled(true);
-    m_transcriptSearch->setFixedWidth(120);
-    m_transcriptSearch->setToolTip(QStringLiteral("Search the transcript"));
-    m_transcriptSearchCount = new QLabel;
-    m_transcriptSearchCount->setObjectName("agentFilesHeading"); // small muted text
+    // Transcript search (adhoc #201). The box itself is gone from the toolbar
+    // (adhoc #224) — the window's own top-bar search already mirrors into it
+    // (syncAgentPageSearchFromGlobal), so the detail pane carried a second
+    // search field for a query that is typed up there. The QLineEdit stays as
+    // the query's home so that mirror, its Enter-walks-the-hits behaviour and
+    // reapplyTranscriptSearch() keep working; it is simply never shown.
+    m_transcriptSearch = new QLineEdit(detailPane);
+    m_transcriptSearch->hide();
+    m_transcriptSearchCount = new QLabel(detailPane);
+    m_transcriptSearchCount->hide();
     connect(m_transcriptSearch, &QLineEdit::textChanged, this,
             [this](const QString &t) {
                 if (!m_agentTranscript)
@@ -1910,32 +2049,13 @@ QWidget *MainWindow::buildAgentsTab()
                           : QStringLiteral("%1/%2").arg(current).arg(total));
             });
 
-    // Search box and match counter — the transcript-only half of the output
-    // toolbar, grouped so it can be shown and hidden as one (adhoc #35).
-    auto *transcriptToolsRow = new QHBoxLayout;
-    transcriptToolsRow->setContentsMargins(0, 0, 0, 0);
-    transcriptToolsRow->setSpacing(0);
-    transcriptToolsRow->addWidget(m_transcriptSearch, 1);
-    transcriptToolsRow->addSpacing(6);
-    transcriptToolsRow->addWidget(m_transcriptSearchCount);
-    m_agentTranscriptTools = new QWidget;
-    m_agentTranscriptTools->setLayout(transcriptToolsRow);
-
-    // With the session actions back up in the header (adhoc #84) the toolbar is
-    // just the Transcript | Raw toggle and the search box — so the search takes
-    // the whole remaining width instead of hugging the right edge with a gap
-    // where the buttons used to be.
-    auto *toggleRow = new QHBoxLayout;
-    toggleRow->setContentsMargins(0, 0, 0, 0);
-    toggleRow->setSpacing(0);
-    toggleRow->addWidget(m_transcriptModeButton);
-    toggleRow->addWidget(m_terminalModeButton);
-    toggleRow->addSpacing(12);
-    toggleRow->addWidget(m_agentTranscriptTools, 1);
-    m_agentOutputToggle = new QWidget;
-    m_agentOutputToggle->setLayout(toggleRow);
-    // The toolbar itself always shows; the detail pane it lives in is what stays
-    // hidden until a session is opened.
+    // The output toolbar is gone with the search box it was built around (adhoc
+    // #224): its last two controls, Transcript and Raw, join the actions in the
+    // header's top-right corner, so the transcript starts directly under the
+    // title instead of a row down.
+    statusRow->addSpacing(8);
+    statusRow->addWidget(m_transcriptModeButton, 0, Qt::AlignVCenter);
+    statusRow->addWidget(m_terminalModeButton, 0, Qt::AlignVCenter);
 
     // Edited-files list for the "Files changed" tab: the files this session has
     // touched in its branch (derived from Edit/Write/MultiEdit tool calls, and
@@ -2026,12 +2146,12 @@ QWidget *MainWindow::buildAgentsTab()
             return;
         mergeAgentBranchIntoBase(ri, s->branchName, /*deleteAgent=*/false);
     });
-    // Same merge, but also tear down this agent session once its branch is in main
-    // (mirrors the Worktrees tab's "Merge & delete agent").
+    // Same merge, with source worktree/branch cleanup. The completed Agent record
+    // remains as durable branch/PR provenance after its runtime checkout is gone.
     m_agentMergeDeleteButton = railActionButton(
-        QStringLiteral("check-circle"), QStringLiteral("Merge & del"),
+        QStringLiteral("check-circle"), QStringLiteral("Merge & clean"),
         "Merge this session's branch into the default branch, then delete the "
-        "worktree, its branch and its agent session");
+        "worktree and source branch while retaining the Agent record");
     connect(m_agentMergeDeleteButton, &QPushButton::clicked, this, [this] {
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
         if (!s || s->branchName.isEmpty())
@@ -2085,12 +2205,12 @@ QWidget *MainWindow::buildAgentsTab()
     filesChangedLayout->addLayout(filesActionBar);
     filesChangedLayout->addWidget(filesDiffSplit, 1);
 
-    // Agent tab: the Transcript|Raw toggle over the output stack.
+    // Agent tab: just the output stack now — the Transcript|Raw toggle that used
+    // to head it moved up into the header (adhoc #224).
     auto *agentOutputPage = new QWidget;
     auto *agentOutputLayout = new QVBoxLayout(agentOutputPage);
     agentOutputLayout->setContentsMargins(0, 8, 0, 0);
     agentOutputLayout->setSpacing(6);
-    agentOutputLayout->addWidget(m_agentOutputToggle);
     agentOutputLayout->addWidget(m_agentOutputStack, 1);
 
     // The "Files changed" tab (issue #131) has been removed (adhoc #42): it had
@@ -2287,6 +2407,11 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
 {
     if (prompt.isEmpty() || sessionId < 0)
         return;
+    // A follow-up can carry pictures too (adhoc #28), and they only ever reach
+    // disk as transcript turns — so a steered session has to be re-scanned before
+    // its row can show the square (adhoc #222).
+    if (prompt.contains(QLatin1String("Attached image:")))
+        m_agentImageScanPending = true;
     ClaudeStreamSession *claude = m_streamSessions.value(sessionId);
     CodexAppServerSession *codex = m_codexStreams.value(sessionId);
     if ((claude && claude->running()) || (codex && codex->running())) {
@@ -4550,6 +4675,7 @@ void MainWindow::applyLiveClaudeModelsToCombos()
     if (m_issueAgentModel && m_issueAgentProvider &&
         m_issueAgentProvider->currentData().toString() == claudeCode)
         mergeLiveClaudeModels(m_issueAgentModel, models);
+    refreshQuickAddAgentModelSelector();
 }
 
 // Re-fetch the live claude-code model list from the provider (GET /v1/models)
@@ -4811,6 +4937,10 @@ void MainWindow::reloadAgents()
     // active pass already covers current data.
     if (!m_agentTableRefreshing)
         m_agentDiffRefreshPending = true;
+    // Same idea for the rows' attachment squares (adhoc #222): arm the scan and
+    // let refreshAgentTable() coalesce it, rather than re-reading every session's
+    // prompt and transcript on a reload that changed nothing.
+    m_agentImageScanPending = true;
     refreshAgentTable();
     if (m_selectedAgentSessionId > 0)
         showAgentSession(m_selectedAgentSessionId);
@@ -5068,6 +5198,234 @@ void MainWindow::runAgentTranscriptSearch()
         });
 }
 
+// Re-read which of the open repo's sessions carry an image attachment (adhoc
+// #222). Coalesced and armed the way the per-row diff probes are: an idle refresh
+// does nothing at all, and an armed one costs a stat of each session's two
+// transcript files plus a bounded read of only the ones that have moved. Every
+// input is copied before the worker starts — a queued reload can replace
+// m_agentSessions while the reads are running.
+void MainWindow::scanAgentSessionImages(const QList<AgentSession> &sessions,
+                                        const QString &owner, const QString &name)
+{
+    if (!m_agentImageScanPending || !m_agentStore)
+        return;
+    m_agentImageScanPending = false;
+    if (m_agentImageScanRunning) {
+        m_agentImageScanQueued = true; // re-armed when the running pass lands
+        return;
+    }
+    QList<AgentSession> mine;
+    for (const AgentSession &session : sessions)
+        if (session.owner == owner && session.name == name)
+            mine.append(session);
+    m_agentImageScanRunning = true;
+    const int generation = ++m_agentImageScanGen;
+    const int repoIndex = m_repoDetailIndex;
+    const AgentStore store = *m_agentStore;
+    const QHash<int, QString> knownStamps = m_agentImageStamps;
+    const QHash<int, QStringList> known = m_agentSessionImages;
+    runOffThread<AgentImageBatch>(
+        [store, mine, knownStamps, known] {
+            const forkmesh::BackgroundScope activity(
+                QStringLiteral("agents"),
+                QStringLiteral("scan agent prompt attachments"),
+                forkmesh::ActionTelemetry::Execution::Worker);
+            AgentImageBatch batch;
+            for (const AgentSession &session : mine) {
+                // The prompt is part of the stamp: an ad-hoc session's launch
+                // attachment lives there rather than in a transcript.
+                const QString stamp = store.transcriptStamp(session) +
+                                      QStringLiteral("|%1").arg(session.prompt.size());
+                batch.stamps.insert(session.id, stamp);
+                if (knownStamps.value(session.id) == stamp) {
+                    const QStringList cached = known.value(session.id);
+                    if (!cached.isEmpty())
+                        batch.images.insert(session.id, cached);
+                    continue;
+                }
+                QStringList resolved;
+                const QStringList written = store.attachmentPaths(session);
+                for (const QString &raw : written) {
+                    // An attachment written before adhoc #66 lands in the app's
+                    // data directory, so the path in the prompt is not
+                    // necessarily where the file is now.
+                    const QString path = AgentPromptImages::resolve(raw);
+                    if (!path.isEmpty() && !resolved.contains(path))
+                        resolved.append(path);
+                }
+                if (!resolved.isEmpty())
+                    batch.images.insert(session.id, resolved);
+            }
+            return batch;
+        },
+        [this, generation, repoIndex](AgentImageBatch batch) {
+            m_agentImageScanRunning = false;
+            if (m_agentImageScanQueued) {
+                m_agentImageScanQueued = false;
+                m_agentImageScanPending = true;
+            }
+            // A newer scan, or another repository, already owns the list.
+            if (generation != m_agentImageScanGen || repoIndex != m_repoDetailIndex)
+                return;
+            const bool changed = batch.images != m_agentSessionImages;
+            m_agentImageStamps = std::move(batch.stamps);
+            m_agentSessionImages = std::move(batch.images);
+            // Only redraw when something actually moved: the rows are rewritten
+            // in place and this runs behind every reload, so an unconditional
+            // refresh here would double the cost of a quiet tick.
+            if (changed)
+                refreshAgentTable();
+        });
+}
+
+QStringList MainWindow::agentSessionImages(int sessionId) const
+{
+    return m_agentSessionImages.value(sessionId);
+}
+
+QIcon MainWindow::agentThumbnail(const QString &path)
+{
+    const auto cached = m_agentThumbnails.constFind(path);
+    if (cached != m_agentThumbnails.constEnd())
+        return *cached; // decoded, or null for a file that can't be drawn
+    if (m_agentThumbnailsPending.contains(path))
+        return QIcon(); // decoding; the row fills in when it lands
+    m_agentThumbnailsPending.insert(path);
+    const qreal dpr = iconDevicePixelRatio();
+    runOffThread<QImage>(
+        [path, dpr] {
+            const forkmesh::BackgroundScope activity(
+                QStringLiteral("agents"),
+                QStringLiteral("decode agent attachment thumbnail"),
+                forkmesh::ActionTelemetry::Execution::Worker);
+            return decodeAgentThumbnail(path, kAgentThumbnailPx, dpr);
+        },
+        [this, path, dpr](QImage img) {
+            m_agentThumbnailsPending.remove(path);
+            // A null icon is cached too, and deliberately: it is the record that
+            // this file can't be drawn, so the row asks once rather than
+            // re-decoding an unreadable attachment on every refresh.
+            QIcon square;
+            if (!img.isNull()) {
+                QPixmap pixmap = QPixmap::fromImage(img);
+                pixmap.setDevicePixelRatio(dpr);
+                square = QIcon(pixmap);
+            }
+            m_agentThumbnails.insert(path, square);
+            if (!square.isNull())
+                applyAgentThumbnail(path);
+        });
+    return QIcon();
+}
+
+// Drop a freshly decoded square into the rows that were waiting for it, rather
+// than rebuilding the whole table for a picture.
+void MainWindow::applyAgentThumbnail(const QString &path)
+{
+    if (!m_agentTable)
+        return;
+    const QIcon square = m_agentThumbnails.value(path);
+    if (square.isNull())
+        return;
+    for (int row = 0; row < m_agentTable->rowCount(); ++row) {
+        QTableWidgetItem *cell = m_agentTable->item(row, kAgentIssueColumn);
+        if (!cell)
+            continue;
+        const QStringList images = cell->data(kAgentImagesRole).toStringList();
+        if (!images.isEmpty() && images.first() == path)
+            cell->setIcon(square);
+    }
+}
+
+// Open a session's attachments full size, one under another (adhoc #222) — the
+// same lightbox the composer's own attachment chips use, but for a picture that
+// is already part of a run rather than one still queued to be sent.
+void MainWindow::showAgentSessionImages(int sessionId)
+{
+    const QStringList paths = agentSessionImages(sessionId);
+    if (paths.isEmpty())
+        return;
+
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName("imageDetailDialog");
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowTitle(
+        paths.size() == 1
+            ? QStringLiteral("Agent #%1 \xE2\x80\x94 attached image").arg(sessionId)
+            : QStringLiteral("Agent #%1 \xE2\x80\x94 %2 attached images")
+                  .arg(sessionId)
+                  .arg(paths.size()));
+
+    // Cap the displayed size to most of the available screen so a full-resolution
+    // screenshot doesn't open larger than the monitor.
+    QSize maxSize(1200, 800);
+    if (QScreen *screen = QGuiApplication::primaryScreen()) {
+        const QSize avail = screen->availableSize();
+        maxSize = QSize(avail.width() * 9 / 10, avail.height() * 9 / 10);
+    }
+
+    auto *body = new QWidget;
+    auto *bodyLayout = new QVBoxLayout(body);
+    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setSpacing(12);
+    QSize largest(0, 0);
+    for (const QString &path : paths) {
+        const QPixmap pixmap(path);
+        if (pixmap.isNull())
+            continue; // deleted between the scan and the click
+        QPixmap shown = pixmap;
+        if (pixmap.width() > maxSize.width() || pixmap.height() > maxSize.height())
+            shown = pixmap.scaled(maxSize, Qt::KeepAspectRatio,
+                                  Qt::SmoothTransformation);
+        largest = largest.expandedTo(shown.size());
+        auto *image = new QLabel;
+        image->setAlignment(Qt::AlignCenter);
+        image->setPixmap(shown);
+        bodyLayout->addWidget(image);
+        auto *caption = new QLabel(QStringLiteral("%1  \xC2\xB7  %2 \xC3\x97 %3")
+                                       .arg(QFileInfo(path).fileName())
+                                       .arg(pixmap.width())
+                                       .arg(pixmap.height()));
+        caption->setObjectName("mutedLabel");
+        caption->setAlignment(Qt::AlignCenter);
+        bodyLayout->addWidget(caption);
+    }
+    if (largest.isEmpty()) { // every attachment has gone missing
+        delete body; // not parented to the dialog until the scroll area below
+        delete dialog;
+        logSystem(QStringLiteral(
+            "That agent's attached image is no longer on disk."));
+        return;
+    }
+    bodyLayout->addStretch();
+
+    auto *scroll = new QScrollArea;
+    scroll->setObjectName("messageView");
+    scroll->setWidgetResizable(true);
+    scroll->setAlignment(Qt::AlignCenter);
+    scroll->setWidget(body);
+
+    auto *closeButton = new QPushButton(QStringLiteral("Close"));
+    closeButton->setObjectName("primaryButton");
+    closeButton->setCursor(Qt::PointingHandCursor);
+    connect(closeButton, &QPushButton::clicked, dialog, &QDialog::accept);
+
+    auto *buttonRow = new QHBoxLayout;
+    buttonRow->setContentsMargins(0, 0, 0, 0);
+    buttonRow->addStretch();
+    buttonRow->addWidget(closeButton);
+
+    auto *layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
+    layout->addWidget(scroll, 1);
+    layout->addLayout(buttonRow);
+
+    dialog->resize(qMin(largest.width() + 48, maxSize.width()),
+                   qMin(largest.height() + 120, maxSize.height()));
+    dialog->show();
+}
+
 void MainWindow::refreshAgentTable()
 {
     if (!m_agentTable)
@@ -5258,6 +5616,11 @@ void MainWindow::refreshAgentTable()
     // own sort reorders them afterwards). Also count how many merged sessions the
     // "Delete all merged" batch could act on — across the whole repo, before the
     // search filter, since the batch ignores it (adhoc #235).
+    // Attachment squares (adhoc #222). Armed by the same events as the diff
+    // probes above and coalesced the same way, so a quiet refresh doesn't touch
+    // the disk; the rows below draw whatever the last completed pass found.
+    scanAgentSessionImages(sessions, owner, name);
+
     QList<const AgentSession *> visible;
     int mergedDeletable = 0;
     for (const AgentSession &session : sessions) {
@@ -5401,14 +5764,33 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
     const AgentTranscriptHit hit = agentFilterQuery().isEmpty()
                                        ? AgentTranscriptHit()
                                        : agentTranscriptHit(session.id);
+    QStringList tip;
     if (hit.count > 0) {
         title += QString::fromUtf8("   \xC2\xB7  %1 in transcript")
                      .arg(hit.count);
-        issueCell->setToolTip(hit.snippet);
-    } else if (!issueCell->toolTip().isEmpty()) {
-        issueCell->setToolTip(QString()); // reused row, previous query's hit
+        tip << hit.snippet;
     }
     issueCell->setText(title);
+    // Attachment square (adhoc #222): the picture this session was started from —
+    // or the latest one it was steered with — at the head of the row, click to
+    // open it full size. Written on every pass, images or not: rows are reused in
+    // place (adhoc #74), so a session whose attachment has since been deleted off
+    // disk has to lose its square rather than keep a stale one.
+    const QStringList images = agentSessionImages(session.id);
+    issueCell->setData(kAgentImagesRole, images);
+    issueCell->setData(kAgentImagesSessionRole, session.id);
+    issueCell->setIcon(images.isEmpty() ? QIcon()
+                                        : agentThumbnail(images.first()));
+    if (!images.isEmpty())
+        tip << (images.size() == 1
+                    ? QStringLiteral("1 attached image \xE2\x80\x94 click the "
+                                     "thumbnail to see it")
+                    : QStringLiteral("%1 attached images \xE2\x80\x94 click the "
+                                     "thumbnail to see them")
+                          .arg(images.size()));
+    // A reused row has to be cleared as deliberately as it is set: the previous
+    // query's snippet and a since-removed attachment both live in this tooltip.
+    issueCell->setToolTip(tip.join(QLatin1Char('\n')));
     // The "Updated" column is gone (adhoc #84): the most recent of
     // created/started/finished/merged now reads as the "#" cell's own text, with
     // the full timestamp in that cell's tooltip — see applyAgentStatusCell, which
@@ -5454,6 +5836,32 @@ QStringList MainWindow::testAgentRowTitles() const
         if (QTableWidgetItem *cell = m_agentTable->item(row, kAgentIssueColumn))
             titles << cell->text();
     return titles;
+}
+
+// adhoc #222: read the attachment square back off a session's row — the paths
+// the row is carrying, and whether the decode has actually put a picture there.
+QStringList MainWindow::testAgentRowImages(int sessionId) const
+{
+    if (!m_agentTable)
+        return {};
+    for (int row = 0; row < m_agentTable->rowCount(); ++row) {
+        const QTableWidgetItem *cell = m_agentTable->item(row, kAgentIssueColumn);
+        if (cell && cell->data(kAgentImagesSessionRole).toInt() == sessionId)
+            return cell->data(kAgentImagesRole).toStringList();
+    }
+    return {};
+}
+
+bool MainWindow::testAgentRowHasThumbnail(int sessionId) const
+{
+    if (!m_agentTable)
+        return false;
+    for (int row = 0; row < m_agentTable->rowCount(); ++row) {
+        const QTableWidgetItem *cell = m_agentTable->item(row, kAgentIssueColumn);
+        if (cell && cell->data(kAgentImagesSessionRole).toInt() == sessionId)
+            return !cell->icon().isNull();
+    }
+    return false;
 }
 
 QString MainWindow::testAgentDetailTitleText() const
@@ -5551,9 +5959,13 @@ const AgentSession *MainWindow::latestAgentSessionForIssue(int issueNumber) cons
 const AgentSession *MainWindow::agentSessionForPull(int prNumber,
                                                     const QString &headBranch) const
 {
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return nullptr;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     if (prNumber > 0) {
         for (const AgentSession &session : m_agentSessions) {
-            if (session.prNumber == prNumber)
+            if (session.prNumber == prNumber && session.owner == repo.owner &&
+                session.name == repo.name)
                 return &session;
         }
     }
@@ -5563,7 +5975,6 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber,
     // PR, and prefer the most recent matching session.
     if (!headBranch.isEmpty() && m_repoDetailIndex >= 0 &&
         m_repoDetailIndex < m_repositories.size()) {
-        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         for (auto it = m_agentSessions.crbegin(); it != m_agentSessions.crend();
              ++it) {
             if (it->branchName == headBranch && it->owner == repo.owner &&
@@ -5573,6 +5984,72 @@ const AgentSession *MainWindow::agentSessionForPull(int prNumber,
         }
     }
     return nullptr;
+}
+
+bool MainWindow::bindAgentSessionsToPull(int prNumber,
+                                         const QString &headBranch)
+{
+    if (!m_agentStore || prNumber <= 0 || headBranch.trimmed().isEmpty() ||
+        m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return false;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    bool changed = false;
+    bool linked = false;
+    for (AgentSession &session : m_agentSessions) {
+        if (session.owner != repo.owner || session.name != repo.name)
+            continue;
+        if (session.prNumber == prNumber) {
+            linked = true;
+            continue;
+        }
+        if (session.branchName != headBranch)
+            continue;
+        // Never steal a run already bound to another pull request.
+        if (session.prNumber > 0)
+            continue;
+        session.prNumber = prNumber;
+        m_agentStore->saveSession(session);
+        m_agentStore->appendLog(
+            session,
+            QStringLiteral("\n==> Branch %1 linked to PR #%2.")
+                .arg(headBranch)
+                .arg(prNumber));
+        linked = true;
+        changed = true;
+    }
+    if (!linked) {
+        // Manual and imported branches still need an Agent entry, but this record
+        // is deliberately provenance-only: it links the branch and PR without
+        // claiming that an agent authored the code.
+        AgentSession association;
+        association.owner = repo.owner;
+        association.name = repo.name;
+        association.issueTitle =
+            QStringLiteral("PR #%1 branch association").arg(prNumber);
+        association.prompt =
+            QStringLiteral("Track branch %1 and PR #%2 as durable provenance. "
+                           "No Agent code run was performed.")
+                .arg(headBranch)
+                .arg(prNumber);
+        association.associationOnly = true;
+        association.prNumber = prNumber;
+        association.status = AgentStatus::Success;
+        association.branchName = headBranch;
+        association.baseBranch = repoDefaultBranch(repoBranches());
+        association.finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+        association = m_agentStore->createSession(association);
+        m_agentStore->appendLog(
+            association,
+            QStringLiteral("Branch %1 linked to PR #%2. This is a provenance-only "
+                           "record; no Agent code run was performed.")
+                .arg(headBranch)
+                .arg(prNumber));
+        m_agentSessions.append(association);
+        changed = true;
+    }
+    if (changed)
+        scheduleAgentSessionsPush();
+    return changed;
 }
 
 // Issue #291: has this branch's work landed in the repo's base branch? The
@@ -5625,12 +6102,14 @@ AgentDiffStat MainWindow::agentDiffStat(const AgentSession &session,
 // session was newly marked.
 bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
 {
-    if (!m_agentStore)
+    if (!m_agentStore || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
         return false;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     bool changed = false;
     QList<int> mergedIds;
     for (AgentSession &s : m_agentSessions) {
-        if (s.merged)
+        if (s.merged || s.owner != repo.owner || s.name != repo.name)
             continue;
         const bool byPr = prNumber > 0 && s.prNumber == prNumber;
         const bool byBranch =
@@ -6384,15 +6863,13 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLog->setPlainText(QString());
         m_agentLogSession = -1; // set out-of-band; the async set re-renders
     }
-    // The output toolbar stays put — it carries this session's action buttons now
-    // (adhoc #35) — but its transcript-only controls come and go with the surface
-    // they act on.
+    // The Transcript/Raw switch lives in the header with the session actions
+    // (adhoc #224) and comes and goes with the surface it acts on: a plain
+    // log/terminal session has no transcript to switch to.
     if (m_transcriptModeButton)
         m_transcriptModeButton->setVisible(transcript);
     if (m_terminalModeButton)
         m_terminalModeButton->setVisible(transcript);
-    if (m_agentTranscriptTools)
-        m_agentTranscriptTools->setVisible(transcript);
     // The "Files changed" tab only applies to local transcript sessions (external
     // sessions have no worktree/diff here). Hide it otherwise and fall back to the
     // Agent tab so the user never lands on an empty tab.
@@ -6749,10 +7226,12 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     session = m_agentStore->createSession(session);
-    // A descriptive, short branch name: agent/issue-<n>-<title-slug>.
+    // Include the immutable session id: rerunning one issue must never reuse an
+    // earlier Agent's branch or let two PRs claim the same source branch.
     session.branchName =
-        QStringLiteral("agent/issue-%1-%2")
+        QStringLiteral("agent/issue-%1-s%2-%3")
             .arg(session.issueNumber)
+            .arg(session.id)
             .arg(agentBranchSlug(session.issueTitle, provider));
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
@@ -7240,6 +7719,11 @@ void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
     AgentSession *session = findAgentSession(sessionId);
     if (!session)
         return;
+    if (session->associationOnly) {
+        flashMessage(QStringLiteral("This is a provenance-only Agent record and "
+                                    "cannot be started."));
+        return;
+    }
     // Already running (in its own runner) or queued — nothing to do. Other
     // sessions may run in parallel, so we don't block on a global "busy".
     if (session->status == AgentStatus::Running ||
@@ -7334,6 +7818,16 @@ bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree)
         return true; // already gone — nothing to delete
 
     const AgentSession snapshot = *session;
+    if (snapshot.associationOnly) {
+        flashMessage(
+            snapshot.prNumber > 0
+                ? QStringLiteral("This durable Agent record is retained while PR "
+                                 "#%1 exists.")
+                      .arg(snapshot.prNumber)
+                : QStringLiteral("This durable Agent record is retained with its "
+                                 "branch provenance."));
+        return false;
+    }
     if (AgentRunner *runner = runnerForSession(snapshot.id)) {
         runner->stop();
         if (runner->busy()) {
@@ -8617,6 +9111,10 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                         if (m_codexModelEdit)
                             m_codexModelEdit->setText(selected);
                     }
+                    // The combined menu lists Codex models even while another
+                    // provider is selected, so refresh it for every catalog
+                    // update, not only when its hidden canonical combo is Codex.
+                    refreshQuickAddAgentModelSelector();
                     if (m_branchFixAgentCombo && m_branchFixModelCombo &&
                         agentIsCodexProvider(
                             m_branchFixAgentCombo->currentData().toString()))
@@ -11552,6 +12050,7 @@ void MainWindow::updateAgentActionState()
             selected ? findAgentSession(m_selectedAgentSessionId) : nullptr;
         m_agentStartButton->setEnabled(
             startable && !running && !externalSelected &&
+            !startable->associationOnly &&
             startable->status != AgentStatus::Queued);
     }
     // "Stop all" doesn't depend on the selection — it's live whenever any
@@ -11574,7 +12073,8 @@ void MainWindow::updateAgentActionState()
         m_agentDeleteAllButton->setEnabled(
             !aiFixBusy
             && (externalSelected
-                || (selected && session && !session->branchName.isEmpty())));
+                || (selected && session && !session->associationOnly &&
+                    !session->branchName.isEmpty())));
     updateQuickAddEnterTarget();
 }
 

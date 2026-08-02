@@ -119,23 +119,29 @@ QComboBox QAbstractItemView {
     selection-background-color: #1f6feb; selection-color: #0d1117; color: #e6edf3;
 }
 QComboBox QAbstractItemView::item:selected { color: #0d1117; }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddAgentModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddAgentModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
     border: none;
     background-color: rgba(88, 166, 255, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddAgentModelSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddAgentModelSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
+}
+QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
+    border: none; width: 0px;
+}
+QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
+    image: none; width: 0px; height: 0px;
 }
 
 QPushButton {
@@ -475,6 +481,11 @@ QPushButton#agentsMagicButton:checked {
 #topMessageOverlay { background-color: #161b22; border: 1px solid #30363d;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #c9d1d9; }
+QPushButton#topMessageAction {
+    background: rgba(88,166,255,0.12); border: 1px solid rgba(88,166,255,0.42);
+    border-radius: 6px; color: #58a6ff; font-size: 11px; font-weight: 600; padding: 2px 6px;
+}
+QPushButton#topMessageAction:hover { background: rgba(88,166,255,0.22); color: #79c0ff; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #30363d; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #8b949e;
@@ -1428,23 +1439,29 @@ QComboBox QAbstractItemView {
     selection-background-color: #0969da; selection-color: #1f2328; color: #1f2328;
 }
 QComboBox QAbstractItemView::item:selected { color: #1f2328; }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddAgentModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddAgentModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
     border: none;
     background-color: rgba(9, 105, 218, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddAgentModelSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddAgentModelSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
+}
+QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
+    border: none; width: 0px;
+}
+QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
+    image: none; width: 0px; height: 0px;
 }
 
 QPushButton {
@@ -1764,6 +1781,11 @@ QPushButton#agentsMagicButton:checked {
 #topMessageOverlay { background-color: #ffffff; border: 1px solid #d0d7de;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #1f2328; }
+QPushButton#topMessageAction {
+    background: rgba(9,105,218,0.08); border: 1px solid rgba(9,105,218,0.35);
+    border-radius: 6px; color: #0969da; font-size: 11px; font-weight: 600; padding: 2px 6px;
+}
+QPushButton#topMessageAction:hover { background: rgba(9,105,218,0.16); color: #0550ae; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #656d76;

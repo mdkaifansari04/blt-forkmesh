@@ -43,6 +43,7 @@
 #include "Theme.h"
 
 #include <QAbstractButton>
+#include <QAbstractAnimation>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
@@ -68,6 +69,7 @@
 #include <QFileDialog>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEasingCurve>
 #include <QFileInfo>
 #include <QMimeData>
 #include <QMutex>
@@ -150,6 +152,7 @@
 #include <QStringList>
 #include <QStringListModel>
 #include <QStyle>
+#include <QStylePainter>
 #include <QStyledItemDelegate>
 #include <QStyleHints>
 #include <QStyleOptionComboBox>
@@ -1332,23 +1335,25 @@ private:
     double m_max = 1.0;
 };
 
-// The relay link's speed as a single coloured dot pinned above the instance
-// logo on the window-chrome line (adhoc #124). It is what is left of the
-// spinning radar dish that used to sit beside the CPU/MEM/DISK sparklines
-// (adhoc #87): the dish's node blips became the node dots next to the agent
-// fleet, and its latency grading survives here as the dot's colour — green when
-// the link is snappy, amber when it is sluggish, red when it is very slow or
-// the relay stopped answering. The measured round-trip itself rides the
-// instance button's tooltip and the relay dropdown, so the chrome line stays
-// free of another number.
+// The relay link's speed as a coloured dropdown caret on the corner of the
+// instance logo on the window-chrome line (adhoc #124, reshaped in adhoc #224).
+// It is what is left of the spinning radar dish that used to sit beside the
+// CPU/MEM/DISK sparklines (adhoc #87): the dish's node blips became the node
+// dots next to the agent fleet, and its latency grading survives here as the
+// caret's colour — green when the link is snappy, amber when it is sluggish,
+// red when it is very slow or the relay stopped answering. A plain dot said
+// only "there is a status here"; a caret says the logo it rides on opens the
+// instance menu, which is what clicking either of them has always done. The
+// measured round-trip itself rides the instance button's tooltip and the relay
+// dropdown, so the chrome line stays free of another number.
 class RelaySpeedDot : public QWidget
 {
 public:
     explicit RelaySpeedDot(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setFixedSize(kSide, kSide);
-        // Clicks belong to the logo underneath: the dot is pure indicator, so
-        // pressing it still opens the relay switcher.
+        setFixedSize(kWidth, kHeight);
+        // Clicks belong to the logo underneath: the caret is pure indicator, and
+        // the button it is pinned to is the dropdown it advertises.
         setAttribute(Qt::WA_TransparentForMouseEvents);
         if (parent)
             parent->installEventFilter(this);
@@ -1409,31 +1414,42 @@ protected:
         p.setRenderHint(QPainter::Antialiasing, true);
         const QColor colour = speedColor(m_latencyMs, m_unreachable);
 
-        // Soft halo so the dot reads against the favicon it sits over, then the
-        // dot itself ringed in the chrome background (same treatment as the
-        // avatar's connection dot).
-        QColor halo = colour;
-        halo.setAlpha(60);
+        // A rounded plate in the chrome's own colour so the caret reads against
+        // the favicon it overlaps, washed with the speed colour so the whole
+        // marker — not just the arrow inside it — carries the status.
+        const QRectF plate(rect());
+        const qreal radius = plate.height() / 2.0;
+        QColor wash = colour;
+        wash.setAlpha(52);
         p.setPen(Qt::NoPen);
-        p.setBrush(halo);
-        p.drawEllipse(QRectF(rect()));
+        p.setBrush(palette().color(QPalette::Window));
+        p.drawRoundedRect(plate, radius, radius);
+        p.setBrush(wash);
+        p.drawRoundedRect(plate, radius, radius);
 
-        p.setPen(QPen(palette().color(QPalette::Window), 1.0));
+        // The caret itself: the ordinary "this opens a menu" triangle, in green,
+        // amber or red.
+        const QPointF centre = plate.center();
+        QPolygonF caret;
+        caret << QPointF(centre.x() - 3.0, centre.y() - 1.6)
+              << QPointF(centre.x() + 3.0, centre.y() - 1.6)
+              << QPointF(centre.x(), centre.y() + 2.4);
         p.setBrush(colour);
-        p.drawEllipse(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
+        p.drawPolygon(caret);
     }
 
 private:
-    // Centred on the logo's top edge, so it reads as a status light above the
-    // instance rather than a badge on one of its corners (the pending-join dot
-    // already owns the top-right corner).
+    // Bottom-right of the logo — where a dropdown arrow belongs, and the one
+    // free corner: the pending-join dot owns the top-right.
     void reposition()
     {
         if (QWidget *owner = parentWidget())
-            move(qMax(0, (owner->width() - width()) / 2), 0);
+            move(qMax(0, owner->width() - width()),
+                 qMax(0, owner->height() - height()));
     }
 
-    static constexpr int kSide = 10;
+    static constexpr int kWidth = 14;
+    static constexpr int kHeight = 10;
     int m_latencyMs = -1;       // last measured round-trip; -1 = unknown/probing
     bool m_unreachable = false; // relay failed to answer the last probe
 };
@@ -3472,6 +3488,73 @@ private:
     QString m_hintedText;
 };
 
+// Compact composer controls whose closed state is just the selected icon. The
+// popup still uses the normal combo model, so opening it reveals the full icon
+// + label rows (Auto / Ask / Plan / Edit or the effort ladder). This keeps the
+// prompt chrome quiet without making the choices cryptic once clicked.
+class IconOnlyFullPopupComboBox : public FullPopupComboBox {
+public:
+    explicit IconOnlyFullPopupComboBox(QWidget *parent = nullptr)
+        : FullPopupComboBox(parent)
+    {
+        setIconSize(QSize(22, 22));
+        setFixedWidth(30);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    }
+
+    QSize sizeHint() const override
+    {
+        return QSize(30, qMax(26, FullPopupComboBox::sizeHint().height()));
+    }
+
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QStylePainter painter(this);
+        QStyleOptionComboBox option;
+        initStyleOption(&option);
+        option.currentText.clear();
+        option.iconSize = iconSize();
+        painter.drawComplexControl(QStyle::CC_ComboBox, option);
+        painter.drawControl(QStyle::CE_ComboBoxLabel, option);
+    }
+};
+
+// Named transparent assets keep the source artwork inspectable and reusable
+// outside this control. Cache the QIcons because the combined menu is rebuilt
+// whenever a live provider catalog changes.
+inline QIcon agentControlIcon(int index)
+{
+    static const char *const paths[] = {
+        ":/agent-ui/icons/model-starburst.png",
+        ":/agent-ui/icons/model-book-quill.png",
+        ":/agent-ui/icons/model-feather.png",
+        ":/agent-ui/icons/model-mountain-blossom.png",
+        ":/agent-ui/icons/model-sun.png",
+        ":/agent-ui/icons/model-globe-leaf.png",
+        ":/agent-ui/icons/model-crescent-moon.png",
+        ":/agent-ui/icons/mode-auto.png",
+        ":/agent-ui/icons/mode-ask.png",
+        ":/agent-ui/icons/mode-plan.png",
+        ":/agent-ui/icons/mode-edit.png",
+        ":/agent-ui/icons/effort-low.png",
+        ":/agent-ui/icons/effort-medium.png",
+        ":/agent-ui/icons/effort-high.png",
+        ":/agent-ui/icons/effort-ultra.png",
+        ":/agent-ui/icons/effort-max.png",
+    };
+    if (index < 0 || index >= 16)
+        return QIcon();
+    static QHash<int, QIcon> cache;
+    if (const auto cached = cache.constFind(index); cached != cache.cend())
+        return cached.value();
+    const QIcon icon(QString::fromLatin1(paths[index]));
+    cache.insert(index, icon);
+    return icon;
+}
+
 // "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript
 // launcher routes each task: a free local heuristic pass first, then a triage
 // ladder that asks Haiku whether it can handle the task and escalates through
@@ -3605,6 +3688,10 @@ inline void populateClaudeModelCombo(QComboBox *combo)
     combo->setEditable(false);
     combo->setProperty("allowAutoModel", true);
     combo->addItem(QStringLiteral("Auto"), kClaudeAutoModelId);
+    // Offline/API-key users still need a concrete model list. A live OAuth
+    // catalog replaces these entries later via mergeLiveClaudeModels().
+    for (const ClaudeAutoRung &rung : claudeAutoLadder())
+        combo->addItem(rung.label, rung.id);
 }
 
 inline QString codexChatGptModelId(const QString &model)

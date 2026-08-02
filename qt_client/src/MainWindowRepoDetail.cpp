@@ -1366,6 +1366,12 @@ void MainWindow::openRepoDetail(int repoIndex)
     // seconds on a large repo. Keep the event loop alive across them so the
     // window doesn't freeze (and the WM doesn't flag it "Not Responding").
     GitKeepAlive keepAlive;
+    // Another repository's branch patches are dead weight (and their keys name a
+    // git dir this window is leaving), so let them go here (adhoc #227). Only on
+    // an actual change of repository — reopening the one already on screen must
+    // keep its branches repainting from memory.
+    if (repoIndex != m_repoDetailIndex)
+        clearBranchDiffCache();
     m_repoDetailIndex = repoIndex;
     // Copy by value: the keep-alive pump services queued slots between git reads,
     // and a roster/network callback could mutate (and reallocate) m_repositories
@@ -10299,6 +10305,8 @@ void MainWindow::showLoadStatus(const QString &what)
 {
     if (!m_topMessage || what.isEmpty())
         return;
+    m_topMessageIsPromptBubble = false;
+    m_topMessageHovering = false;
     m_topMessageRaw = what;
     // Blue, persistent progress pill — distinct from the green success / red
     // error toast — naming the current step. The node/repo button spinner and the
@@ -10309,19 +10317,27 @@ void MainWindow::showLoadStatus(const QString &what)
                  what.toHtmlEscaped()));
     m_topMessage->setWordWrap(false);
     m_topMessage->show();
-    if (m_topMessageContainer)
+    if (m_topMessageContainer) {
+        // Cancel a slide-out still in flight and re-anchor, so the progress pill
+        // never inherits a half-departed position.
+        if (m_topMessageFlight)
+            m_topMessageFlight->stop();
+        m_topMessageSlidingOut = false;
+        positionTopMessageBubble();
         m_topMessageContainer->show();
+        m_topMessageContainer->raise();
+    }
     m_loadStatusShowing = true;
     m_topMessageElided = false;
     m_topMessageExpanded = false;
     if (m_topMessageTimer)
-        m_topMessageTimer->stop(); // don't let it fade out mid-load
-    if (m_topMessageOverlay)
-        m_topMessageOverlay->hide(); // drop any leftover expanded panel
+        m_topMessageTimer->stop(); // don't let it slide away mid-load
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
+    if (m_topMessageSendToPrompt)
+        m_topMessageSendToPrompt->hide();
     if (m_topMessageClose)
         m_topMessageClose->hide();
 }

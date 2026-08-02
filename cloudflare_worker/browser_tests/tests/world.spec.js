@@ -6228,6 +6228,101 @@ test("the Debug tab lists every individual object drawing triangles and sorts by
   await expect(rows.first()).toBeVisible();
 });
 
+test("every element in the Elements tab opens into its own pieces, each list sorted on its own", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-element-parts");
+  await waitForWorld(page);
+
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="elements"]').click();
+
+  const officeRow = page.locator(
+    '[data-world-element-expand="office-interior"]',
+  );
+  await expect(officeRow).toBeVisible();
+  await expect(officeRow).toHaveAttribute("aria-expanded", "false");
+
+  // Opening an element lists the pieces inside it, not the element again.
+  await officeRow.click();
+  await expect(officeRow).toHaveAttribute("aria-expanded", "true");
+  const parts = page.locator("[data-world-element-list] .world-element-part");
+  await expect(parts.first()).toBeVisible();
+  const partCount = await parts.count();
+  expect(partCount).toBeGreaterThan(1);
+
+  // The pieces of one element never outweigh the element itself.
+  const totals = await page.locator("forkmesh-world").evaluate((shell) => {
+    const element = shell.world
+      .listWorldElements()
+      .find((entry) => entry.id === "office-interior");
+    const walk = shell.world.listWorldElementParts("office-interior", []);
+    return {
+      elementTriangles: element.triangles,
+      partTriangles: walk.parts.reduce((sum, part) => sum + part.triangles, 0),
+      parts: walk.parts.length,
+      total: walk.total,
+    };
+  });
+  expect(totals.parts).toBeGreaterThan(1);
+  expect(totals.partTriangles).toBe(totals.elementTriangles);
+
+  const scope = "office-interior";
+  const readParts = async () =>
+    page
+      .locator(
+        `[data-world-element-list] .world-element-part:not([style*="depth:2"]) strong`,
+      )
+      .allInnerTexts();
+  const byDrawn = await readParts();
+
+  // Each opened list sorts on its own header.
+  await page
+    .locator(
+      `[data-world-element-part-scope="${scope}"][data-world-element-part-sort="label"]`,
+    )
+    .click();
+  await expect(
+    page.locator(
+      `[data-world-element-part-scope="${scope}"][data-world-element-part-sort="label"]`,
+    ),
+  ).toHaveAttribute("aria-sort", "ascending");
+  const byLabelParts = await readParts();
+  expect(byLabelParts).toEqual(
+    [...byLabelParts].sort((a, b) => a.localeCompare(b)),
+  );
+  expect(byLabelParts).not.toEqual(byDrawn);
+
+  // A piece with pieces of its own opens again, one level deeper.
+  const nested = page
+    .locator('.world-element-part [data-world-element-expand^="office-interior/"]')
+    .first();
+  await expect(nested).toBeVisible();
+  await nested.click();
+  await expect(nested).toHaveAttribute("aria-expanded", "true");
+  await expect(
+    page.locator("[data-world-element-list] .world-element-subhead"),
+  ).toHaveCount(2);
+
+  // The checkbox still switches the whole element off, and the tree survives.
+  await page
+    .locator('[data-world-element-toggle="office-interior"]')
+    .setChecked(false);
+  await expect(
+    page.locator('[data-world-element-toggle="office-interior"]'),
+  ).not.toBeChecked();
+  await expect(officeRow).toHaveAttribute("aria-expanded", "true");
+  await expect(parts.first()).toBeVisible();
+
+  // Collapsing hides every row underneath it.
+  await page
+    .locator('[data-world-element-toggle="office-interior"]')
+    .setChecked(true);
+  await officeRow.click();
+  await expect(officeRow).toHaveAttribute("aria-expanded", "false");
+  await expect(parts).toHaveCount(0);
+});
+
 test("the topbar has no clock or emote actions and local light level survives movement without becoming presence data", async ({
   page,
 }) => {
