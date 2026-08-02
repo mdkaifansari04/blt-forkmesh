@@ -90,7 +90,7 @@ QStringList gitLines(const QString &dir, const QStringList &args, int timeoutMs)
         .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
 }
 
-}
+} // namespace
 
 void MainWindow::openGlobalSearch()
 {
@@ -121,8 +121,8 @@ void MainWindow::openGlobalSearch()
     m_searchList->setUniformItemSizes(false);
     layout->addWidget(m_searchList, 1);
 
-
-
+    // Debounce keystrokes so we don't re-parse the stores and spawn a `git grep`
+    // on every letter — only after the user pauses briefly.
     auto *debounce = new QTimer(&dialog);
     debounce->setSingleShot(true);
     debounce->setInterval(180);
@@ -153,8 +153,8 @@ void MainWindow::openGlobalSearch()
     m_searchInput->setFocus();
     dialog.exec();
 
-
-
+    // The dialog and its child widgets are torn down on return; clear the
+    // dangling pointers so a late off-thread apply (see runGlobalSearch) no-ops.
     ++m_searchGen;
     m_searchWavesPending = 0;
     m_searchHits.clear();

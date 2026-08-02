@@ -393,8 +393,8 @@ def test_failed_publication_is_durable_deferred_then_retried(
         "status": "retry-pending",
         "updatedAt": 1_000_000,
     }
-
-
+    # The periodic service sees the retained work but does not spin before the
+    # capped backoff expires.
     calls = []
     deferred = bridge.run(
         config,
@@ -926,8 +926,8 @@ def test_gateway_startup_uses_fast_integrity_precheck():
     assert "headless_mirror_refresh.py" not in service
     assert precheck[2:5] == start[1:4]
 
-
-
+    # This is the gateway's bounded configuration/manifest/repository/pin
+    # validator, not the refresh command whose active check performs full fsck.
     parser_source = (
         PROJECT_ROOT / "tools" / "mirror_gateway.py"
     ).read_text(encoding="utf-8")

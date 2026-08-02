@@ -115,11 +115,11 @@ bool prepareOwnerDirectory(const QString &path, QString *error)
     return true;
 }
 
-
-
-
-
-
+// Common install locations that a desktop-launched GUI often misses because it
+// inherits a minimal PATH (no login-shell profile). age/age-keygen land here
+// when installed via Homebrew, Go, Cargo, or a per-user prefix, so we fall back
+// to them when the PATH lookup comes up empty. Absolute-path lookups above and
+// the on-PATH lookup are unaffected; this only adds candidate directories.
 QStringList extraProgramSearchDirs()
 {
     QStringList dirs{QStringLiteral("/opt/homebrew/bin"),
@@ -1165,7 +1165,7 @@ bool parseIntegerString(const QJsonValue &value, qint64 *result)
     return true;
 }
 
-}
+} // namespace
 
 QString PublicMirrorRuntime::refsSha256FromForEachRef(
     const QByteArray &output)

@@ -51,11 +51,11 @@ const THREE_MODULE_URL =
   "https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.min.js";
 const SATELLITE_SGP4_MODULE_URL =
   "./vendor/satellite-js-7.1.0.esm.js";
-
-
-
-
-
+// Kick off the heavy 3D runtime download the moment this module evaluates so it
+// streams in parallel with parsing, the initial data fetches, and scene setup
+// rather than only starting once bootstrap() reaches its await. bootstrap()
+// re-awaits this promise (handling any load failure there); the noop catch just
+// keeps a CDN failure from surfacing as an unhandled rejection before then.
 const THREE_MODULE = import(THREE_MODULE_URL);
 THREE_MODULE.catch(() => {});
 let satelliteSgp4ModulePromise = null;
@@ -85,20 +85,20 @@ const WORLD_QA_ENDPOINT = "/api/world/qa";
 const WORLD_PREFERENCES_SYNC_DELAY_MS = 700;
 const GUEST_ID_KEY = "forkmesh.world.guestId.v1";
 const FIRST_VISIT_KEY = "forkmesh.world.firstVisitAt.v1";
-
-
+// The edge-derived country is remembered locally so a signed-out visitor keeps
+// their flag across reloads, and while /api/world/context is slow or offline.
 const COUNTRY_KEY = "forkmesh.world.countryCode.v1";
-
-
+// Fingerprint of the country/browser/OS last saved on the account, so the
+// server write happens once per change instead of once per visit.
 const CLIENT_PROFILE_KEY = "forkmesh.world.clientProfile.v1";
 const VISIT_COUNT_KEY = "forkmesh.world.publicVisitCount.v1";
-
+// Mirrors WORLD_FIRST_SEEN_MAX_MINUTES / WORLD_JOINED_AT_MIN_MS in world.py.
 const FIRST_SEEN_MAX_MINUTES = 10 * 365 * 24 * 60;
 const JOINED_AT_MIN_MS = 1577836800000;
 const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
-
-
-
+// Mirrors FORKBOT_MENTION_RE in chat.js / dashboard-chat.js (the clients that
+// actually forward the mention to /api/forkbot/chat), so the in-world droid
+// gets excited for exactly the messages the bot will answer.
 const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
 const CLAUDE_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@claude\b/i;
 const CODEX_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@codex\b/i;
@@ -109,10 +109,10 @@ const DETAIL_WIDTH_STEP = 48;
 const SETTINGS_WIDTH_KEY = "forkmesh.world.settingsWidth.v1";
 const SETTINGS_WIDTH_MIN = 360;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
-
-
-
-
+// Before the roster finishes building the actual bench ring, start an
+// unplaced visitor beside the fire instead of briefly painting them at the old
+// central arrival grid. syncMemberLounge immediately replaces this preview
+// with their real seated bench pose.
 const FRESH_ARRIVAL_CAMPFIRE_PREVIEW = Object.freeze({
   x: 0,
   y: 0.38,
@@ -123,29 +123,29 @@ const FRESH_ARRIVAL_CAMPFIRE_PREVIEW = Object.freeze({
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
 const SAVED_VIEWS_MAX = 5;
 const RENDERER_RECOVERY_DELAY_MS = 1500;
-
-
-
-
-
-
-
+// A tab that dies abruptly (GPU reset, renderer out-of-memory kill, browser
+// tab discard) never fires pagehide, so a per-tab marker that survives into
+// the next load proves the previous world session crashed and this load is
+// the automatic reload. The marker carries a rolling heartbeat of
+// renderer/socket diagnostics so the crash report describes the moments
+// before the crash, and a per-tab crash counter reboots repeat offenders
+// into the low-memory compact renderer to break GPU crash loops.
 const CRASH_GUARD_KEY = "forkmesh.world.crash-guard.v1";
 const CRASH_COUNT_KEY = "forkmesh.world.crash-count.v1";
 const CRASH_COUNT_MAX = 9;
 const CRASH_GUARD_SNAPSHOT_STALE_MS = 4000;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-
-
+// The Mastodon kiosk refetches the public profile on this cadence; the MM:SS
+// timer on the billboard counts the same window down.
 const MASTODON_REFRESH_MS = 10 * 60 * 1000;
-
-
+// Mastodon has no "replies to my account" endpoint, so the replies section is
+// built from the thread context of the newest toots that report replies.
 const MASTODON_REPLY_THREADS = 4;
 const MASTODON_REPLY_LIMIT = 12;
-
-
-
-
+// Twitter and Reddit have no CORS-open public API, so their banners repaint
+// from the Worker's edge-cached proxy on the same ten-minute cadence. The
+// blog board rides the same snapshot: the Worker reads its own static blog
+// index and folds the feature cards into the payload.
 const SOCIAL_POSTS_URL = "/api/world/social-posts";
 const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 const ADMIN_ERROR_SEEN_KEY = "forkmesh.world.adminErrorsSeen.v1";
@@ -164,23 +164,23 @@ const WORLD_OBJECT_NUMERIC_KEYS = new Set(["triangles", "instances"]);
 const WORLD_OBJECT_ROW_LIMIT = 300;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
-
-
-
-
-
+// Everything a fresh page load pulls in — the relayed chat backlog, the first
+// notification/event read, a mirror doorbell that lands while the scene is
+// still booting — is old news to the visitor. The activity stream stays quiet
+// for the same join grace the chat bubbles use so it only narrates what
+// happens after the World is up.
 const ACTIVITY_JOIN_GRACE_MS = CHAT_BUBBLE_JOIN_GRACE_MS;
-
-
-
-
+// The cardinal campus now reaches the east/west repository and bulletin
+// islands plus the southern member garden. Keep restored/shared positions
+// inside the scene's 340-unit boundary instead of rejecting valid island
+// coordinates with the old town-square-only limit.
 const POSITION_RADIUS = 620;
 const POSITION_FLOOR_TOLERANCE = 0.5;
-
-
+// Mirrors the server's WORLD_ARRIVAL_CLEARANCE: a restored spot this close to
+// another visitor is treated as occupied and the fresh server slot wins.
 const ARRIVAL_CLEARANCE = 0.9;
-
-
+// Mirrors WORLD_SPACE_FLOORS in world-scene.js. The Town Square and three
+// regional campus labels share one walkable floor.
 const POSITION_FLOORS = Object.freeze({
   "town-square": 0.38,
   east: 0.38,
@@ -191,9 +191,9 @@ const SOCKET_RETRY_MAX_MS = 20000;
 const SOCKET_CONNECT_TIMEOUT_MS = 12000;
 const SOCKET_STABLE_MS = 5000;
 const SOCKET_PEER_GRACE_MS = 8000;
-
-
-
+// The relay retired this socket because the same account joined from another
+// device. Reconnecting on the usual ladder would just bounce the avatar
+// between the two, so this browser waits for its owner to come back to it.
 const SOCKET_ACCOUNT_TAKEOVER_CODE = 4009;
 const SOCKET_BUFFER_HIGH_WATER_BYTES = 64 * 1024;
 const PRESENCE_PROFILE_DEBOUNCE_MS = 300;
@@ -201,17 +201,17 @@ const MOVEMENT_SEND_INTERVAL_MS = 1000;
 const PRESENCE_STALE_MS = 22000;
 const WORLD_TICKET_REFRESH_MS = 5 * 60 * 1000;
 const WORLD_ACTIVITY_CONTINUATION_HEADER = "x-forkmesh-world-activity";
-
-
+// Code revisions are offered with an explicit refresh button rather than
+// reloading the visitor out from under an active walk.
 const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const WORLD_DEPLOY_STATUS_POLL_MS = 2500;
 const WORLD_DEPLOY_STATUS_IDLE_MS = 60 * 1000;
 const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
-
-
-
-
-
+// forkmesh/forkmesh opens by default, but its commit pin needs the repository
+// catalog and the mirror snapshot to agree. Mirrors that are mid-sync when the
+// World opens converge moments later, so the automatic load is re-attempted
+// alongside the existing import poll for a bounded window instead of only once
+// at boot. Retries stop the moment a repository is open.
 const FLAGSHIP_PORTAL_RETRY_LIMIT = 20;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
@@ -223,22 +223,22 @@ const WORLD_ATTENTION_PING_ANNOUNCE_LIMIT = 3;
 const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000;
 const MIRROR_ACTIONS_POLL_MS = 20 * 1000;
 const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
-
-
-
-
+// The treasury balance is a public Solana RPC round trip per view, so it is
+// not on a timer at all: the bootstrap seeds the board and hovering the SOL
+// sign refreshes it. Everything in between is answered from the cached copy
+// the board is already showing, and repeated hovers are throttled.
 const WORLD_REWARD_CACHE_MS = 30 * 60 * 1000;
 const WORLD_REWARD_HOVER_MS = 60 * 1000;
 const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
 const WORLD_SOCKET_PING_MS = 40 * 1000;
-
+// One broadcast wave per pose; the local arm still replays on every click.
 const WORLD_WAVE_COOLDOWN_MS = 2000;
-
-
-
+// A handshake offer is a greeting, not a standing request: it stops being
+// offerable (and stops being answerable) a couple of minutes later, so nobody
+// finds a stale hand extended from someone who has long since walked off.
 const WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000;
-
-
+// The status Worker records one sample per minute. Poll on that same cadence;
+// the board's lightweight stand texture counts down every second in between.
 const WORLD_STATUS_POLL_MS = 60 * 1000;
 const WORLD_STATUS_ISSUE_WINDOW_MS = 60 * 1000;
 const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
@@ -253,18 +253,18 @@ const WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS = 15 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_BASE_MS = 5 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_MAX_MS = 30 * 60 * 1000;
 const WORLD_AGENT_BOT_POLL_MS = 8 * 1000;
-
-
-
+// The member directory is refreshed by arrivals rather than by a timer, so
+// the idle throttle is long; a new face at the fire forces it through, no
+// sooner than the endpoint's own edge-cache TTL.
 const WORLD_MEMBER_DIRECTORY_POLL_MS = 5 * 60 * 1000;
 const USERS_DIRECTORY_TTL_MS = 30 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
 const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
-
-
-
-
-
+// Every step the opening sequence walks through, listed on the curtain in this
+// order with its own live seconds counter. Boot work overlaps (the engine
+// streams while the context and world reads are in flight), so more than one
+// row can be running at once; a slow open then names itself instead of sitting
+// behind one frozen headline.
 const WORLD_BOOT_STEPS = [
   { id: "restore", label: "Read saved view" },
   { id: "session", label: "Verify session · edge context" },
@@ -274,8 +274,8 @@ const WORLD_BOOT_STEPS = [
   { id: "populate", label: "Place mirrors, members, boards" },
   { id: "spawn", label: "Take your position" },
 ];
-
-
+// Counters redraw ten times a second: fast enough to read as a stopwatch,
+// cheap enough to stay out of the way of the scene build.
 const WORLD_BOOT_TICK_MS = 100;
 const DEFAULT_FOCUS_MUSIC_TRACK_ID = FOCUS_MUSIC_TRACKS[0].id;
 const DEFAULT_FOCUS_MUSIC_VOLUME = 35;
@@ -283,20 +283,20 @@ const WORLD_LIGHT_LEVEL_MIN = 40;
 const WORLD_LIGHT_LEVEL_MAX = 140;
 const WORLD_LIGHT_LEVEL_DEFAULT = 100;
 const WORLD_DAYLIGHT_MODES = new Set(["auto", "day", "night"]);
-
+// Movement tuning, stored per device as a percentage of the shared defaults.
 const WORLD_MOVE_SPEED_MIN = 50;
 const WORLD_MOVE_SPEED_MAX = 300;
 const WORLD_MOVE_SPEED_DEFAULT = 100;
-
-
+// Swing-ride pumping strength; session-only because the control is only on
+// screen while actually riding one of the town swings.
 const WORLD_SWING_SPEED_MIN = 10;
 const WORLD_SWING_SPEED_MAX = 100;
 const WORLD_SWING_SPEED_DEFAULT = 55;
 const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;
 const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
-
-
-
+// Debug readings are graded green / orange / red so a glance separates a
+// healthy sample from one worth watching. The thresholds are local display
+// heuristics only; nothing about them is measured remotely or transmitted.
 const WORLD_DIAGNOSTICS_THRESHOLDS = {
   fps: { caution: 50, high: 30, lowerIsWorse: true },
   frameTimeMs: { caution: 20, high: 34 },
@@ -319,7 +319,7 @@ const WORLD_DIAGNOSTICS_THRESHOLDS = {
   heapTrendMBPerMin: { caution: 6, high: 24 },
 };
 
-
+// "good" | "caution" | "high" for one reading against its threshold pair.
 function diagnosticLevel(metric, value) {
   const bounds = WORLD_DIAGNOSTICS_THRESHOLDS[metric];
   const number = Number(value);
@@ -332,8 +332,8 @@ function diagnosticLevel(metric, value) {
   return number >= bounds.caution ? "caution" : "good";
 }
 
-
-
+// Graded readings are spans inside the existing text, so the surrounding
+// separators stay plain and the whole line still reads as one sentence.
 function diagnosticReading(text, level) {
   return `<span class="world-diagnostics-value" data-level="${level}">${escapeHTML(
     String(text),
@@ -358,11 +358,11 @@ function compactCountLabel(value) {
   return `${Math.round(count)}`;
 }
 
-
-
-
-
-
+// The admin error view groups rows by their exact text, so a crash report
+// full of raw counters files every crash as its own group of one — no count,
+// no 24-hour frequency, one ping per crash. Rounding the volatile readings to
+// a single significant figure collects equivalent crashes into one group
+// while still saying what the device was doing when it died.
 function coarseCrashReading(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) return NaN;
@@ -376,13 +376,13 @@ function coarseCrashLabel(value, unit = "") {
   return Number.isFinite(reading) ? `${reading}${unit}` : "unknown";
 }
 
-
+// Chromium-only heap reading; NaN elsewhere and the caller omits the figure.
 function heapUsedMB() {
   const bytes = Number(performance?.memory?.usedJSHeapSize);
   return Number.isFinite(bytes) && bytes > 0 ? bytes / (1024 * 1024) : NaN;
 }
 
-
+// Bounded non-negative integer copy for diagnostics pass-through values.
 function clampCount(value, max = 100_000_000) {
   return Math.max(0, Math.min(max, Math.round(Number(value) || 0)));
 }
@@ -394,9 +394,9 @@ function formatEstimatedMB(bytes) {
 
 const WORLD_SPARKLINE_GLYPHS = "▁▂▃▄▅▆▇█";
 
-
-
-
+// Text sparkline over the retained one-second frame-time averages, oldest to
+// newest. The scale is fixed (a full block is 50 ms or worse, ~20 FPS) so two
+// screenshots taken minutes apart stay directly comparable.
 function frameHistorySparkline(history) {
   return history
     .map((sample) => {
@@ -411,9 +411,9 @@ function frameHistorySparkline(history) {
     .join("");
 }
 
-
-
-
+// Turn one diagnostics sample into concrete, ranked advice. Every suggestion
+// names the reading that triggered it and, where the Elements tab can prove
+// the theory, the heaviest currently-enabled candidates to switch off first.
 function worldDebugSuggestions(snapshot, { isAdmin = false, elements = [] } = {}) {
   const suggestions = [];
   const renderer = snapshot?.renderer;
@@ -580,10 +580,10 @@ function worldDebugSuggestions(snapshot, { isAdmin = false, elements = [] } = {}
 const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
 const WORLD_PULL_MERGE_POLL_MS = 400;
 const WORLD_PULL_MERGE_RESPONSE_MAX_BYTES = 16 * 1024;
-
-
-
-
+// The edge router can spend up to 20 seconds on each of two attested mirrors.
+// Keep the browser bound just above that failover envelope; shorter 6-12s
+// aborts made healthy exact-ref reads fail whenever a one-vCPU node was doing
+// integrity maintenance.
 const REPOSITORY_METADATA_TIMEOUT_MS = 45 * 1000;
 const WORLD_ACCOUNT_NAME_RE =
   /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -787,9 +787,9 @@ function createInfrastructureConsoleCapture(onEntries) {
   };
 }
 
-
-
-
+// Coarse "how long ago" reading for the session rows. Deliberately rounded:
+// the exact millisecond a device was last active is not useful here and a
+// bucketed label reads the same in every locale.
 function relativeTimeLabel(timestamp, now = Date.now()) {
   const value = Number(timestamp) || 0;
   if (value <= 0) return "unknown";
@@ -1026,8 +1026,8 @@ function firstVisitTimestamp(now = Date.now()) {
   return now;
 }
 
-
-
+// The last coarse country the edge reported for this browser. Only a plain
+// two-letter code is ever stored; nothing narrower than a country is kept.
 function rememberedCountryCode() {
   try {
     const stored = String(localStorage.getItem(COUNTRY_KEY) || "")
@@ -1058,8 +1058,8 @@ function firstVisitAge(timestamp, now = Date.now()) {
   return "over-a-year";
 }
 
-
-
+// The coarse bucket above still drives the privacy-safe fallback label; this
+// is the exact "first seen 12 minutes ago" reading the chest badge prefers.
 function firstSeenMinutes(timestamp, now = Date.now()) {
   const age = Math.max(0, now - Number(timestamp || now));
   return Math.max(0, Math.min(FIRST_SEEN_MAX_MINUTES, Math.floor(age / 60000)));
@@ -1096,12 +1096,12 @@ function randomId() {
   }
 }
 
-
-
-
-
-
-
+// The stored session carries the account's avatarPng (tens of KB of base64)
+// and hot paths consult the session several times a second, so re-parsing the
+// blob on every read allocated tens of KB per call in heap profiling. Parse
+// once per distinct stored string: writers go through storeWorldSession and
+// cross-tab edits both change the raw string, which misses the memo and
+// re-parses. Callers treat the parsed session as read-only.
 let readSessionMemoRaw;
 let readSessionMemoValue = null;
 function readSession() {
@@ -1230,7 +1230,7 @@ function createPullMergeRequestId() {
       .map((value) => value.toString(16).padStart(2, "0"))
       .join("")}`;
   } catch (_) {
-
+    // A merge request never falls back to a predictable Math.random id.
     return "";
   }
 }
@@ -1260,9 +1260,9 @@ function storeWorldSession(body) {
         ? "cookie"
         : sessionToken
     ),
-
-
-
+    // World-side uploads are compacted to <=64 KiB before this cache write.
+    // Keep the complete small image instead of the old 600-character preview,
+    // which silently broke the face after another session refresh.
     avatarPng: String(body?.avatarPng || "").slice(0, 90_000),
     avatarUpdatedAt: Number(body?.avatarUpdatedAt) || 0,
     profileBio: String(body?.profileBio || "").slice(0, 500),
@@ -1406,9 +1406,9 @@ function accountIdentity(session) {
     ? `account:${String(session.nodeName).toLowerCase()}`
     : `guest:${guestId()}`;
   const suffix = hashSuffix(id);
-
-
-
+  // Login data in localStorage is only a cache and can be edited by the
+  // browser owner. A server-issued world ticket upgrades this guest identity
+  // after the session has actually been verified.
   const rawName = `Guest ${suffix}`;
   const name = sanitizePresenceText(rawName, `Guest ${suffix}`, 24);
 
@@ -1428,11 +1428,11 @@ function accountIdentity(session) {
     visitCount: 0,
     firstVisitAge: "this-session",
     firstSeenMinutes: 0,
-
+    // Filled in from the server-signed world ticket; guests never have one.
     joinedAt: 0,
     activityCategory: "exploring-town-square",
-
-
+    // The published payout address worn as the chest wallet QR; balance and
+    // transaction recency are filled in by applyWalletBadges.
     solana: sessionSolanaAddress(session),
     walletSol: null,
     walletTxBucket: "",
@@ -1585,8 +1585,8 @@ function publicIdentity(identity, settings) {
           minute: "2-digit",
         }).format(new Date())
       : "",
-
-
+    // Only an authenticated, bounded count is represented. Node names never
+    // enter public world presence.
     nodes: settings.privacy.nodes
       ? Array.from(
           { length: Math.min(identity.nodes?.length || 0, 6) },
@@ -1611,9 +1611,9 @@ function publicIdentity(identity, settings) {
       ? Math.max(0, Number(identity.firstSeenMinutes) || 0)
       : 0,
     joinedAt: boundedJoinedAt(identity.joinedAt),
-
-
-
+    // The account's own total active time, from the signed activity ticket, so
+    // the player's chest badge wears the row every other member's does. It is
+    // scene-local: presence frames never carry it.
     totalActiveMs: Number.isFinite(Number(identity.totalActiveMs))
       ? Math.max(0, Number(identity.totalActiveMs))
       : null,
@@ -1632,15 +1632,15 @@ function publicIdentity(identity, settings) {
     faceImage:
       identity.accountStatus !== "Guest" &&
       settings.faceImage === true,
-
-
+    // The wallet chip is public by construction: an address its owner saved
+    // to publish, plus on-chain balance/recency the app fetched for it.
     solana: WORLD_SOLANA_ADDRESS_RE.test(String(identity.solana || ""))
       ? String(identity.solana)
       : "",
     walletSol: identity.walletSol ?? null,
     walletTxBucket: activityLightBucket(identity.walletTxBucket),
-
-
+    // A visitor at this keyboard is by definition active within the hour;
+    // the light itself stays dark until the account is authenticated.
     activityBucket: "hour",
     // The exact stamp from the owner's authenticated read stays on this local
     // scene identity: presence sanitization has no fields for it, so it never
@@ -1711,8 +1711,8 @@ function presenceActivity(settings, automatic = "exploring-town-square") {
     : "exploring-town-square";
 }
 
-
-
+// The server's coarse "active within …" recency ladder for the avatar chest
+// light and the wallet QR's transaction ring; "stale" is past ten days.
 const ACTIVITY_LIGHT_BUCKET_VALUES = new Set([
   "hour",
   "5h",
@@ -1731,12 +1731,12 @@ function activityLightBucket(value) {
 
 const WORLD_SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-
-
+// The chip is decorative and the worker edge-caches per address, so one
+// balance refresh every ten minutes per address is plenty.
 const WALLET_BADGE_TTL_MS = 10 * 60 * 1000;
 
-
-
+// The chest wallet QR wears the Solana payout address the account holder
+// saved on their profile to publish; anything else stays off the avatar.
 function sessionSolanaAddress(session) {
   const address = String(session?.solana || "").trim();
   return WORLD_SOLANA_ADDRESS_RE.test(address) ? address : "";
@@ -1874,13 +1874,13 @@ function remotePlayer(peer) {
     solana: WORLD_SOLANA_ADDRESS_RE.test(String(peer.solana || ""))
       ? String(peer.solana)
       : "",
-
+    // A live presence frame is by definition activity within the hour.
     activityBucket: "hour",
   };
 }
 
-
-
+// The public contribution feed doubles as the account's ForkMesh fediverse
+// timeline: these are exactly the events the relay federates as Notes.
 function worldFediverseFeedLines(recentActivity) {
   const kinds = {
     commits: "COMMITS",
@@ -2344,9 +2344,9 @@ function normalizeMediaSpaces(value) {
     .slice(0, 50);
 }
 
-
-
-
+// Public chat roster directory (user profiles only) doubles as the
+// campfire-circle population: every public registered account gets a bench
+// around the fire, and the roster length sizes the circle.
 function normalizeMemberDirectory(value) {
   return (Array.isArray(value?.users) ? value.users : [])
     .map((user) => ({
@@ -2364,12 +2364,12 @@ function normalizeMemberDirectory(value) {
       emailVerified: user?.emailVerified === true,
       countryCode: sanitizePresenceText(user?.countryCode, "", 2),
       flag: sanitizePresenceText(user?.flag, "", 8),
-
-
+      // The coarse client the account last published, saved server-side so an
+      // away member's bench figure keeps their flag shirt and client badge.
       browser: presenceLabel(user?.browser, "Hidden", "Hidden"),
       os: presenceLabel(user?.os, "Hidden", "Hidden"),
       status: sanitizePresenceText(user?.status, "", 80),
-
+      // Coarse recency bucket for the bench figure's chest activity light.
       activityBucket: activityLightBucket(user?.activityBucket),
       visitCount: Math.max(
         0,
@@ -3275,10 +3275,10 @@ function cleanRepositories(payload) {
         commit: /^[0-9a-f]{40,64}$/.test(commit) ? commit : "",
         stateHash: /^[0-9a-f]{64}$/.test(stateHash) ? stateHash : "",
         rootCommit: immutableGitOid(repo.rootCommit),
-
-
-
-
+        // A repository owner is a user/org identity; nodeId is the machine
+        // identity that signed and serves this particular catalog record.
+        // Keep both so organization alias attestation never compares a user
+        // name (for example jett) with a node name (for example forkmesh).
         nodeId: sanitizePresenceText(repo.nodeId, "", 96),
         pullCount:
           Number.isSafeInteger(pullCount) &&
@@ -3437,14 +3437,14 @@ function mergeHostedRepositoryImports(repositories, externalRepositories) {
       source: "hosted-import",
     };
   });
-
-
-
-
-
-
-
-
+  // The July bulk import predates repository_imports metadata: each imported
+  // repo exists as the same remote clone on mirror2 and mirror3. Recover that
+  // exact 54-repository cohort from its two-node shape, coalesce the duplicate
+  // catalog rows into one portal, and keep the flagship repo out. This is also
+  // the bounded inventory used before any later deletion. The cohort must be
+  // a burst of at least ten two-mirror imports in one ten-minute window, so
+  // single mirror rows, local repos, private repos, and ordinary mirror pairs
+  // are untouched.
   const legacyBulkGroups = new Map();
   native.forEach((record, index) => {
     if (
@@ -3527,11 +3527,11 @@ function mergeHostedRepositoryImports(repositories, externalRepositories) {
 }
 
 function normalizeRepositoryFollowers(value) {
-
-
-
-
-
+  // Public fediverse accounts following the repository actor, exactly as the
+  // relay read them out of ap_followers (joined with the cached remote actor
+  // document). Everything here is remote, attacker-controlled text: names and
+  // bios are flattened to bounded plain text and the avatar must be a public
+  // https media URL before the scene hands it to a texture loader.
   if (!Array.isArray(value)) return [];
   const seen = new Set();
   const followers = [];
@@ -3654,10 +3654,10 @@ function reconcileRepositoryAliases(repositories, mirrorCatalogs) {
       }
       attestedMirrorCommits.get(node).add(commit);
     });
-
-
-
-
+    // A stale/offline repository listing must not erase the immutable pin
+    // unanimously reported by the mirrors that can actually serve the clone.
+    // Conversely, duplicate or disagreeing eligible reports remain ambiguous
+    // and fail closed instead of selecting a majority or freshest timestamp.
     const attestedCandidatesByNode = new Map();
     candidates.forEach((candidate) => {
       const { record } = candidate;
@@ -4056,8 +4056,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
     /^[A-Za-z0-9+/=]+$/.test(String(accountSession.avatarPng))
       ? String(accountSession.avatarPng)
       : "";
-
-
+  // The compact rail only needs the two spatial shortcuts people use while
+  // walking. Repository and reward-pool navigation remain in the scene.
   const mapItems = LANDMARKS.filter((landmark) =>
     new Set(["office", "campfire"]).has(landmark.id),
   ).map(
@@ -4192,6 +4192,11 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <span data-world-loading-progress></span>
         </span>
         <small data-world-loading-percent>8%</small>
+        <!--
+          The per-step ledger ticks ten times a second, so it opts out of the
+          curtain's live region: assistive tech keeps announcing the single
+          stage line above instead of every counter frame.
+        -->
         <ol
           class="world-loading-steps"
           data-world-loading-steps
@@ -5515,9 +5520,9 @@ class ForkMeshWorld extends HTMLElement {
     this.landmarkCapabilities = initialLandmarkCapabilities();
     this.repositories = [];
     this.nativeRepositories = [];
-
-
-
+    // The unreconciled /api/repositories records. The organization alias is
+    // derived from these plus the mirror snapshot, so both halves have to be
+    // kept to re-derive the flagship pin from a fresher mirror report.
     this.rawNativeRepositories = [];
     this.repositoryAliasSignature = null;
     this.externalRepositories = [];
@@ -5531,9 +5536,9 @@ class ForkMeshWorld extends HTMLElement {
     this.visitorStats = null;
     this.activeFediverseMention = null;
     this.organizations = [];
-
-
-
+    // account name -> the team plaque worn on that member's avatar back,
+    // rebuilt whenever the organization spaces reload. Empty for viewers who
+    // do not own or administer any organization.
     this.orgTeamIndex = new Map();
     this.activeOffice = null;
     this.events = [];
@@ -5628,17 +5633,17 @@ class ForkMeshWorld extends HTMLElement {
     this.memberDirectoryFetchedAt = 0;
     this.deletingUnverifiedAccounts = new Set();
     this.chatTaskNotifications = [];
-
-
+    // Lowercased names a completed directory snapshot did not list, so their
+    // next presence frame does not force another fetch (noteDirectoryMembers).
     this.unlistedDirectoryNames = new Set();
     this.worldClientProfileKey = "";
     this.worldSessions = [];
     this.worldSessionsLoadedAt = 0;
     this.settingsTab = "view";
     this.pendingKnocks = new Map();
-
-
-
+    // Handshake offers waiting on this visitor (peer id → offer) and the ones
+    // this visitor has extended (peer id → sent-at). Both are live-socket
+    // state only: leaving the World forgets every open greeting.
     this.pendingHandshakes = new Map();
     this.sentHandshakeOffers = new Map();
     this.serverPeerId = "";
@@ -5689,8 +5694,8 @@ class ForkMeshWorld extends HTMLElement {
       : "";
     this.socket = null;
     this.presenceConnecting = false;
-
-
+    // Set once this account's avatar has been handed to a newer device. It
+    // parks the reconnect ladder until the visitor asks for it back here.
     this.presenceTakenOver = false;
     this.socketRetry = 1000;
     this.socketTimer = 0;
@@ -5708,8 +5713,8 @@ class ForkMeshWorld extends HTMLElement {
     this.diagnosticsInboundSample = 0;
     this.diagnosticsOutboundSample = 0;
     this.lastDiagnosticsSnapshot = null;
-
-
+    // Rolling one-second samples for the Debug tab's frame-history sparkline
+    // and the heap-growth trend; both stay small and device-local.
     this.diagnosticsFrameHistory = [];
     this.diagnosticsHeapHistory = [];
     this.rendererRecoveryTimer = 0;
@@ -5739,8 +5744,8 @@ class ForkMeshWorld extends HTMLElement {
     this.deployObservedRevision = "";
     this.pendingWorldShare = null;
     this.savedViews = [];
-
-
+    // Element ids switched off on this device. Applied to
+    // the scene at construction and edited live from the Elements tab.
     this.disabledWorldElements = storedDisabledWorldElements();
     this.worldElementSort = "drawables";
     this.worldElementSortAscending = false;
@@ -5774,10 +5779,10 @@ class ForkMeshWorld extends HTMLElement {
     this.restoredPosition = null;
     this.spawnSelected = false;
     this.freshArrivalCampfireSeated = false;
-
-
-
-
+    // A server arrival cell may resolve a collision only during the first
+    // welcome. Mobile radios routinely reconnect while somebody is walking;
+    // treating every reconnect like a new arrival used to snap signed-in
+    // visitors back to the entrance and looked exactly like a page refresh.
     this.initialPresenceWelcomePending = true;
     this.statusBoardTimer = 0;
     this.statusBoardRequestedAt = 0;
@@ -5819,9 +5824,9 @@ class ForkMeshWorld extends HTMLElement {
       heavy: false,
       open: false,
     };
-
-
-
+    // GETs from bootstrap, visibility recovery, timers, and socket doorbells
+    // share one request. Successful snapshots can be reused briefly and
+    // repeated failures cool down exponentially instead of becoming a storm.
     this.inflightRequests = new Map();
     this.responseCache = new Map();
     this.requestFailures = new Map();
@@ -5829,7 +5834,7 @@ class ForkMeshWorld extends HTMLElement {
     this.buildBoardRepositoryRetryAt = 0;
     this.buildBoardRepositoryFailures = 0;
     this.mediaTimer = 0;
-
+    // Opening-curtain ledger: step id → {state, startedAt, endedAt, note}.
     this.bootSteps = new Map();
     this.bootStartedAt = 0;
     this.bootTickTimer = 0;
@@ -5855,9 +5860,9 @@ class ForkMeshWorld extends HTMLElement {
     this.activityNoticesEnabledAt = Date.now() + ACTIVITY_JOIN_GRACE_MS;
     this.activityArrivalRecorded = false;
     this.activityArrivalTimer = 0;
-
-
-
+    // Unread badge on the collapsed bottom CHAT bar. Counts live lines from
+    // other people only — replayed history and this browser's own messages
+    // never bump it — and resets whenever the panel is opened.
     this.chatTerminalUnread = 0;
     this.chatTerminalNewestAt = 0;
     this.recentWorldChatMessages = [];
@@ -5877,12 +5882,12 @@ class ForkMeshWorld extends HTMLElement {
   connectedCallback() {
     if (this.dataset.worldReady === "true") return;
     this.dataset.worldReady = "true";
-
-
+    // If the module arrived after the index watchdog already surfaced the
+    // load error, retract it — the world is taking over the page now.
     document.querySelector("[data-world-load-error]")?.remove();
-
-
-
+    // Surface an abrupt end of the previous world session in this tab (the
+    // crash guard is only cleared by pagehide) before anything below can
+    // throw, then decide whether this boot needs the safe-mode renderer.
     this.reportPreviousWorldCrash();
     this.rendererSafeMode = this.worldCrashCount() > 0;
     this.mode = this.dataset.worldMode || "public";
@@ -5929,9 +5934,9 @@ class ForkMeshWorld extends HTMLElement {
       this.restoredPosition = restoredPosition;
       this.currentSpace = restoredPosition.space;
     }
-
-
-
+    // Shared rooms, playlists, roles, and schedules are server-authoritative.
+    // The only additional device-local state is one bounded position record
+    // for this identity. It has no movement history, URLs, or activity labels.
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
     this.innerHTML = worldTemplate(
@@ -6010,18 +6015,18 @@ class ForkMeshWorld extends HTMLElement {
 
   handlePublicInputActivity = (event) => {
     if (this.destroyed || !this.identity) return;
-
-
-
-
+    // A click or keypress is this device asking for the account's avatar back
+    // after a newer device took it. Pointer movement alone is not an ask —
+    // otherwise a mouse drifting across an idle screen would tug the avatar
+    // away from the device its owner is actually using.
     if (["pointerdown", "keydown"].includes(String(event?.type || ""))) {
       this.reclaimPresenceHere();
     }
     this.scheduleActivityArrival();
     if (this.focusMusicAutoplayPending) {
       this.focusMusicAutoplayPending = false;
-
-
+      // A browser that rejected the initial unmuted request can accept this
+      // retry because it is directly caused by the visitor's first input.
       void this.playFocusMusic();
     }
     if (!this.identity.inputActive) {
@@ -6029,9 +6034,9 @@ class ForkMeshWorld extends HTMLElement {
       this.world?.setInputActive?.(this.settings.privacy.activity === true);
       this.scheduleInputActivityPublish();
     }
-
-
-
+    // Pointermove can fire hundreds of times per second while dragging. A
+    // short throttle avoids creating/clearing a timer for every input sample
+    // without changing the 12-second active-presence behavior in practice.
     const inputNow = performance.now();
     if (inputNow - this.lastInputInactiveScheduleAt >= 250) {
       this.lastInputInactiveScheduleAt = inputNow;
@@ -6046,9 +6051,9 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   blockWorldPullToRefresh = (event) => {
-
-
-
+    // iOS WebKit can still begin its native pull-to-refresh gesture despite
+    // touch-action on a descendant. Cancel only gestures owned by the 3D
+    // surface or thumbstick so scrollable sheets and forms remain usable.
     const target =
       event.target instanceof Element ? event.target : null;
     if (
@@ -6083,8 +6088,8 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return;
     }
-
-
+    // Visitor accounting is not part of input handling. Give the renderer a
+    // few frames before creating the request so first movement always wins.
     this.activityArrivalTimer = window.setTimeout(() => {
       this.activityArrivalTimer = 0;
       this.recordActivityArrival();
@@ -6093,8 +6098,8 @@ class ForkMeshWorld extends HTMLElement {
 
   scheduleInputActivityPublish() {
     if (this.inputActivityPublishTimer || this.destroyed) return;
-
-
+    // Socket JSON and cross-tab publication are small but synchronous. Keep
+    // them behind the same short render-first boundary as visitor accounting.
     this.inputActivityPublishTimer = window.setTimeout(() => {
       this.inputActivityPublishTimer = 0;
       if (this.destroyed || !this.identity) return;
@@ -6103,12 +6108,12 @@ class ForkMeshWorld extends HTMLElement {
     }, 64);
   }
 
-
-
-
-
-
-
+  // The native chat controller mirrors every live chat line into the World.
+  // The public chat transport
+  // does not cryptographically bind its sender id to a World peer id, so only
+  // the browser's own line and ForkBot's fixed system identity may create
+  // avatar bubbles. Remote lines remain visible in CHAT without being able to
+  // impersonate a live avatar by copying its display name.
   handleWorldChatMessage = (event) => {
     if (this.destroyed || event.origin !== location.origin) return;
     const chatSources = this.$("[data-world-native-chat]") ? [window] : [];
@@ -6131,8 +6136,8 @@ class ForkMeshWorld extends HTMLElement {
       this.sendWorldEmote(data.emote);
       return;
     }
-
-
+    // The native chat controller already appends system activity to the
+    // transcript; here it only feeds the floating bubble stack.
     if (data.type === "forkmesh:world-activity") {
       if (this.activityNoticesSettled()) {
         this.activityNotice(String(data.text || ""), {
@@ -6223,26 +6228,26 @@ class ForkMeshWorld extends HTMLElement {
         text || `Shared ${attachmentName}`,
       );
     }
-
-
+    // Replayed history updates only the collapsed CHAT bar — never a bubble,
+    // so reconnects do not resurrect old messages above avatars.
     if (data.history === true) return;
-
-
-
+    // The relay also re-sends the tail of the room as ordinary live frames when
+    // the embedded chat connects, so the join grace — not just the history
+    // flag — is what keeps a fresh load from opening on a wall of old lines.
     if (this.activityNoticesSettled()) {
       this.activityNotice(
         `${sender}: ${text || `Shared ${attachmentName}`}`,
         { kind: "chat", sender },
       );
     }
-
-
+    // Own lines never count as unread — `self` is this browser, `own` also
+    // covers the signed-in account talking from another tab or device.
     if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
     if (Date.now() < this.chatBubblesEnabledAt) return;
     if (data.self === true) {
       this.world?.showChatBubble?.(this.identity?.id, text, true);
-
-
+      // Mentioning ForkBot sends the excited droid over to the speaker; its
+      // chest screen echoes the line and thinks until the reply broadcasts.
       if (FORKBOT_MENTION_RE.test(text)) {
         this.world?.exciteForkbot?.(this.identity?.id, text);
       }
@@ -6260,8 +6265,8 @@ class ForkMeshWorld extends HTMLElement {
     }
     const senderName = sender.toLowerCase();
     if (!senderName) return;
-
-
+    // ForkBot replies are broadcast into the room with the fixed sender
+    // "forkbot"; float them over the wandering ForkBot avatar.
     if (senderName === "forkbot") {
       this.world?.showChatBubble?.("forkbot", text);
       return;
@@ -6292,10 +6297,10 @@ class ForkMeshWorld extends HTMLElement {
     });
   };
 
-
-
-
-
+  // ForkBot walks over and welcomes a visitor the first time this browser
+  // shows signs of life — movement (handleMovement) or mouse/keyboard
+  // activity (handlePublicInputActivity). Once ever per browser, so
+  // returning visitors are not re-greeted every session.
   maybeGreetForkbot() {
     if (this.forkbotGreeted || this.destroyed || !this.world?.greetForkbot) {
       return;
@@ -6584,8 +6589,8 @@ class ForkMeshWorld extends HTMLElement {
             stage: "portal-arrived",
             status: "complete",
           });
-
-
+          // Leave enough room for the portal's overshoot-and-settle animation
+          // before the next repository enters the perimeter.
           if (index < urls.length - 1) {
             await new Promise((resolve) => window.setTimeout(resolve, 1150));
           }
@@ -6711,13 +6716,13 @@ class ForkMeshWorld extends HTMLElement {
         this.loadContext(),
         "/api/world/context · /api/world/ticket",
       );
-
-
-
+      // Validate the optional persisted account session before issuing any
+      // private World reads. This prevents an expired local token from
+      // fanning out into a page full of avoidable 401/403 requests.
       const dataPromise = contextPromise.then(() => {
-
-
-
+        // Open the row before the call: loadWorldData counts its fan-out onto
+        // an already-running step, and the argument would otherwise be
+        // evaluated before trackBootStep could start one.
         this.startBootStep("data");
         return this.trackBootStep("data", this.loadWorldData());
       });
@@ -6730,9 +6735,9 @@ class ForkMeshWorld extends HTMLElement {
       if (this.destroyed) return;
       this.setLoadingProgress(46, "Placing the town square…");
       this.startBootStep("scene", "geometry, lighting, labels");
-
-
-
+      // The scene build owns the main thread for its whole run, so hand the
+      // curtain one frame first: the row it is about to freeze on is then
+      // already on screen with a running counter.
       await this.nextBootPaint();
       if (this.destroyed) return;
       this.world = createWorldScene({
@@ -6745,12 +6750,12 @@ class ForkMeshWorld extends HTMLElement {
           (this.currentSpace === "town-square"
             ? FRESH_ARRIVAL_CAMPFIRE_PREVIEW
             : null),
-
-
+        // Applied before the account ticket resolves, and kept local to this
+        // browser so one visitor's performance experiment stays personal.
         initialDisabledElements: this.disabledWorldElements,
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-
-
+        // After a detected crash the same GPU or memory pressure would likely
+        // kill this reload too; boot the low-memory compact renderer instead.
         forceCompactRenderer: this.rendererSafeMode === true,
         onLandmarkSelect: (id, meta = {}) => {
           if (id === "office") {
@@ -6832,8 +6837,8 @@ class ForkMeshWorld extends HTMLElement {
             (controller) => controller?.enterOffice?.(entry),
           );
         },
-
-
+        // The physical wall is now the complete Marketing task view. Selecting
+        // it no longer covers the room with the legacy task drawer.
         onOfficeTaskBoardSelect: () => {},
         onOfficeTaskWallAction: (action) => {
           void this.ensureOfficeRuntime({ userInitiated: true }).then(() =>
@@ -6846,9 +6851,9 @@ class ForkMeshWorld extends HTMLElement {
           );
         },
         onOfficeRooftopLaptopSelect: () => {
-
-
-
+          // ForkMesh does not expose a browser-side arbitrary source writer.
+          // Open the real repository browser and keep write-capable work on
+          // the owner device through desktop / IDE integration.
           window.open(
             "/forkmesh/forkmesh/blob/cloudflare_worker/public/world/world-scene.js",
             "_blank",
@@ -6858,9 +6863,9 @@ class ForkMeshWorld extends HTMLElement {
             this.sessionAuthenticated
               ? "Opening the live ForkMesh source browser. Source edits stay in the desktop app or IDE extension."
               : "Opening public ForkMesh source. Log in for account features. Source edits stay in the desktop app or IDE extension.",
-
-
-
+            // The same first click may satisfy the browser's pending music
+            // autoplay gesture. Keep that asynchronous playback notice from
+            // immediately replacing this interaction-specific explanation.
             { priority: 1, lockMs: 1500 },
           );
         },
@@ -7056,20 +7061,20 @@ class ForkMeshWorld extends HTMLElement {
       this.world.updateFediverseDirectory(this.fediverseDirectory);
       this.world.updateMediaSpaces?.(this.mediaSpaces, this.mediaRoom);
       this.world.updateWorldBulletin?.(this.events);
-
-
-
+      // Stars and planets are already scene-native. Satellite OMM data is one
+      // optional, edge-cached read after the essential World data settles;
+      // orbit propagation then stays entirely local for the life of the page.
       void this.loadSatelliteSky();
-
-
-
-
+      // Populate the Mastodon kiosk billboard on entry; the fetch is public,
+      // credential-free, and cached for ten minutes. When a fresh snapshot
+      // is already cached the load resolves without refetching, so push the
+      // cached profile onto the rebuilt scene explicitly.
       void this.loadMastodonBoard();
       this.syncMastodonKiosk();
       this.startMastodonRefresh();
-
-
-
+      // Same pattern for the Twitter/Reddit/blog banners: push any cached
+      // snapshot onto the rebuilt scene, then keep the ten-minute cadence
+      // (whose one-second tick also drives the stand clocks).
       this.syncSocialBanners();
       this.startSocialBannersRefresh();
       this.syncMemberLounge();
@@ -7078,17 +7083,17 @@ class ForkMeshWorld extends HTMLElement {
       void this.loadLobbyLinkBoard();
       this.syncRepositoryScene();
       void this.hydrateHostedRepositorySizeMaps();
-
-
-
+      // Do not fan out a star request for every perimeter portal at startup.
+      // The active repository hydrates its exact count below; inactive portals
+      // retain any catalog-provided count until the visitor selects them.
       if (this.repositories.length) {
-
-
-
+        // The scene and authenticated live catalog are both ready. Populate
+        // the repository district from the canonical flagship route without
+        // delaying entry into the rest of the World.
         void this.autoLoadFlagshipRepositoryMap();
       } else {
-
-
+        // The portal's construction geometry is decorative, but an empty or
+        // failed live catalog must not leave file icons that look selectable.
         this.syncRepositoryScene();
       }
       this.finishBootStep("populate");
@@ -7097,9 +7102,9 @@ class ForkMeshWorld extends HTMLElement {
         this.restoredPosition ? "restoring saved spot" : "campfire arrival",
       );
       if (this.restoredPosition) {
-
-
-
+        // A reload only persists coordinates, not pose. If those coordinates
+        // are on the campfire bench ring, reconstruct the seated pose instead
+        // of restoring the same location with locked, standing knees.
         const restoredCampfireSeat =
           !this.sharedView &&
           this.world.restoreCampfireSeatIfNearby?.(
@@ -7151,8 +7156,8 @@ class ForkMeshWorld extends HTMLElement {
       this.startEventPolling();
       this.startNotificationPolling();
       this.startMediaPlaybackPolling();
-
-
+      // Start the selected long-form track as the World opens. Browsers that
+      // require a gesture are retried from the first pointer/key activity.
       void this.playFocusMusic({ autoplay: true });
       this.announceWorldNotifications();
       this.distanceTimer = window.setInterval(() => {
@@ -7171,8 +7176,8 @@ class ForkMeshWorld extends HTMLElement {
       }
     } catch (error) {
       console.warn("ForkMesh World could not start WebGL", error);
-
-
+      // Stamp whatever was still running as failed and stop the counters: the
+      // fallback replaces the curtain, so nothing is left to redraw.
       this.completeBootTimeline({ state: "failed" });
       this.renderWebGLFallback();
       await this.loadContext().catch(() => {});
@@ -7202,11 +7207,11 @@ class ForkMeshWorld extends HTMLElement {
     if (count) count.textContent = `${Math.round(value)}%`;
   }
 
-
-
-
-
-
+  // ---------------------------------------------------------------------
+  // Opening-sequence ledger. Each boot step is one row on the curtain with a
+  // state, an optional live note, and a seconds counter that runs while the
+  // step is in flight and freezes at its final duration.
+  // ---------------------------------------------------------------------
 
   formatBootSeconds(ms) {
     const seconds = Math.max(0, Number(ms) || 0) / 1000;
@@ -7274,8 +7279,8 @@ class ForkMeshWorld extends HTMLElement {
     this.tickBootSteps();
   }
 
-
-
+  // Wrap an awaited boot stage so its row starts, stops, and reports a failure
+  // without the call site growing a try/finally around every await.
   trackBootStep(id, work, note = "") {
     this.startBootStep(id, note);
     return Promise.resolve(work).then(
@@ -7293,8 +7298,8 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-
-
+  // Report "n/total requests" while a fan-out settles, so one slow endpoint is
+  // visible instead of a silent multi-second wait on the whole batch.
   countBootRequests(id, requests) {
     const entry = this.bootSteps.get(id);
     if (!entry || entry.state !== "running") return requests;
@@ -7357,8 +7362,8 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-
-
+  // Close the ledger: anything still running is stamped, anything never
+  // reached is marked skipped, and the counters stop.
   completeBootTimeline({ state = "done" } = {}) {
     this.bootSteps.forEach((entry) => {
       if (entry.state === "running") this.finishBootStep(entry.id, { state });
@@ -7380,9 +7385,9 @@ class ForkMeshWorld extends HTMLElement {
     this.stopBootTicker();
   }
 
-
-
-
+  // Yield one paint before a step that blocks the main thread, so the curtain
+  // shows the row as running first. Hidden tabs never fire rAF, so a short
+  // timer races it and the boot can never wedge here.
   nextBootPaint() {
     return new Promise((resolve) => {
       let settled = false;
@@ -7533,9 +7538,9 @@ class ForkMeshWorld extends HTMLElement {
         timeout: 12_000,
         cache: "no-store",
       });
-
-
-
+      // Repository issue enrichment is optional. Its mirror cache and
+      // cooldown outlive this one-minute board poll so a 429/503 cannot turn
+      // proximity checks and the timer into repeated failing requests.
       const repositoryIssues =
         await this.refreshBuildBoardRepositoryIssues();
       const assigned = new Set(
@@ -8310,9 +8315,9 @@ class ForkMeshWorld extends HTMLElement {
     void this.validateActiveWorldSession();
     void this.checkForWorldUpdate();
     this.startDeployStatusWatch();
-
-
-
+    // Nothing refreshes the directory while a tab is hidden — its presence
+    // socket is closed, so no arrival can force it — and accounts signed up
+    // meanwhile are missing from the fire's total. Coming back is the cue.
     void this.refreshMemberDirectory();
     // Reviews made in another browser while this tab was hidden must be
     // removed before the tester handles the next card.
@@ -8345,9 +8350,9 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   syncViewportHeight = (event = null) => {
-
-
-
+    // visualViewport scroll/resize fire continuously while mobile browser
+    // chrome slides or the keyboard animates. Coalesce event-driven calls to
+    // one layout read per animation frame; direct calls stay synchronous.
     if (event?.type) {
       if (this.viewportMetricsFrame) return;
       this.viewportMetricsFrame = window.requestAnimationFrame(() => {
@@ -8380,19 +8385,19 @@ class ForkMeshWorld extends HTMLElement {
         ? this.lastStableViewportHeight
         : 0;
     const layoutHeight = Math.max(
-
-
-
+      // The renderer deliberately keeps a 240px minimum layout surface. Chat
+      // is positioned inside that surface, so account for the covered slice
+      // even when the page first loads into a shorter landscape viewport.
       240,
       visualHeight,
       stableLayoutHeight,
       Math.round(window.innerHeight || document.documentElement.clientHeight || 0),
     );
-
-
-
-
-
+    // The 3D renderer deliberately stays stable while mobile browser chrome
+    // or a software keyboard changes only the visual viewport. Chat still has
+    // to follow the actually visible area, so it owns separate live metrics.
+    // Style writes on the host invalidate the whole HUD subtree, so only
+    // write when a value actually changed.
     const coveredBottom = Math.max(
       0,
       layoutHeight - visualOffsetTop - visualHeight,
@@ -8417,18 +8422,18 @@ class ForkMeshWorld extends HTMLElement {
     if (this.dataset.worldChatMicro !== micro) {
       this.dataset.worldChatMicro = micro;
     }
-
-
-
-
-
+    // Mobile browser chrome can resize visualViewport continuously while a
+    // thumbstick drag is in progress. Resizing the WebGL canvas on every one
+    // of those samples looks like the whole World is refreshing mid-walk.
+    // Hold the last stable viewport until the gesture ends, then reconcile it
+    // once without interrupting movement.
     if (this.mobileMovementActive) return;
     const width = currentViewportWidth;
-
-
-
-
-
+    // On touch devices, address-bar expansion and contraction changes only
+    // the visual viewport height. Resizing the WebGL buffer for that browser
+    // chrome animation clears the frame and looks like a full World refresh.
+    // Keep the mounted buffer stable until the viewport width changes (real
+    // rotation/window resize). Desktop resizes remain fully responsive.
     if (
       this.coarsePointerViewport &&
       this.lastStableViewportWidth > 0 &&
@@ -8460,10 +8465,10 @@ class ForkMeshWorld extends HTMLElement {
       this.style.setProperty("--world-viewport-height", `${height}px`);
     };
     window.clearTimeout(this.viewportSyncTimer);
-
-
-
-
+    // Initial mount and explicit calls commit immediately. Mobile browser
+    // chrome emits a burst of resize events while a finger pans the canvas;
+    // wait for that burst to settle so the WebGL drawing buffer is not
+    // repeatedly cleared underneath an authenticated moving avatar.
     if (!event?.type) {
       commit();
       return;
@@ -8472,9 +8477,9 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   handlePageHide = (event) => {
-
-
-
+    // Every orderly exit (navigation, reload, bfcache entry, tab close)
+    // passes through pagehide; a session that ends while the guard is still
+    // armed therefore crashed.
     this.disarmCrashGuard();
     this.pauseWorldActivity();
     this.captureWorldPosition(true);
@@ -8534,9 +8539,9 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   rendererGpuLabel() {
-
-
-
+    // The unmasked GPU string pins "crashed on which hardware" reports to a
+    // driver family. It is stable for the page's lifetime, so resolve it once
+    // the renderer exists and reuse it afterwards.
     if (this.cachedGpuLabel) return this.cachedGpuLabel;
     let label = "";
     try {
@@ -8551,9 +8556,9 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   deviceProfile() {
-
-
-
+    // "Crashing a lot on mobile" is only actionable with the device class
+    // attached: a 4 GB phone with a dense screen fails where a tablet does
+    // not. All static for the page's lifetime, so resolve them once.
     if (this.cachedDeviceProfile) return this.cachedDeviceProfile;
     const width = Math.max(0, Math.round(Number(window.screen?.width) || 0));
     const height = Math.max(0, Math.round(Number(window.screen?.height) || 0));
@@ -8590,10 +8595,10 @@ class ForkMeshWorld extends HTMLElement {
       frameTimeMs: renderer ? Math.round(renderer.frameTimeMs) : -1,
       longestFrameMs: renderer ? Math.round(renderer.longestFrameMs) : -1,
       triangles: renderer ? Math.round(renderer.triangles) : -1,
-
-
-
-
+      // A mobile tab is killed by what the page is holding, not by the frame
+      // it was drawing: carry the resident GPU resource counts and the
+      // drawing-buffer size so the report can tell memory pressure apart
+      // from a driver fault.
       calls: renderer ? Math.round(renderer.calls) : -1,
       textures: renderer ? Math.round(renderer.textures) : -1,
       geometries: renderer ? Math.round(renderer.geometries) : -1,
@@ -8628,9 +8633,9 @@ class ForkMeshWorld extends HTMLElement {
     this.disarmCrashGuard();
     const beatAt = Number(record?.beatAt);
     if (!record || typeof record !== "object" || !(beatAt > 0)) return;
-
-
-
+    // A browser-initiated discard (memory pressure on a background tab) also
+    // skips pagehide. Report it for visibility, but only real crashes count
+    // toward the safe-mode reboot.
     const discarded = document.wasDiscarded === true;
     if (!discarded) this.recordWorldCrash();
     const describe = (value, unit = "") =>
@@ -8645,10 +8650,10 @@ class ForkMeshWorld extends HTMLElement {
       Number(record.bufferWidth) > 0 && Number(record.bufferHeight) > 0
         ? `${coarseCrashReading(record.bufferWidth)}x${coarseCrashReading(record.bufferHeight)}`
         : "unknown";
-
-
-
-
+    // Everything that identifies the device leads, so the admin ping (which
+    // carries a bounded prefix of this line) always names what crashed. The
+    // volatile readings below are bucketed so equivalent crashes group;
+    // small exact counts (peers, crashes, context losses) stay exact.
     const gpu = String(record.gpu || "").slice(0, 120);
     const parts = [
       discarded
@@ -8683,8 +8688,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   reportWorldClientError(message) {
-
-
+    // Same private operational collector as uncaught exceptions; the Worker
+    // redacts, rate-limits, and stores the row for the admin error HUD.
     try {
       fetch("/api/client-errors", {
         method: "POST",
@@ -8693,9 +8698,9 @@ class ForkMeshWorld extends HTMLElement {
         body: JSON.stringify({
           kind: "crash",
           surface: "world",
-
-
-
+          // The Worker sanitizes and stores up to 900 characters of this; a
+          // crash report that names the device, the renderer, and the
+          // resident scene needs the room.
           message: String(message || "").slice(0, 900),
           stack: "",
           source: "world.js",
@@ -8708,8 +8713,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   reloadForRendererRecovery = () => {
-
-
+    // The context never restored, so this GPU could not sustain the full
+    // renderer; count it like a crash so the reload boots into safe mode.
     this.recordWorldCrash();
     this.preserveWorldPositionForRefresh();
     location.reload();
@@ -8737,8 +8742,8 @@ class ForkMeshWorld extends HTMLElement {
     if (state !== "lost") return;
     this.rendererContextLosses = (this.rendererContextLosses || 0) + 1;
     if (!this.reportedRendererContextLoss) {
-
-
+      // One report per page instance: repeated losses in the same session
+      // add noise, and the rolling crash-guard heartbeat already counts them.
       this.reportedRendererContextLoss = true;
       const renderer = this.lastDiagnosticsSnapshot?.renderer;
       const output = this.lastDiagnosticsSnapshot?.output;
@@ -8985,16 +8990,16 @@ class ForkMeshWorld extends HTMLElement {
     } else {
       this.clearWorldTicketIdentity();
     }
-
-
+    // Only an answered ticket request may demote element toggles: until now
+    // isAdmin === false just means "not verified yet".
     this.worldTicketResolved = true;
     const country = String(context?.country || context?.countryCode || "")
       .trim()
       .toUpperCase()
       .slice(0, 2);
-
-
-
+    // A guest owns no account record, so the coarse country is remembered in
+    // this browser: the flag survives a reload and an unreachable edge context
+    // instead of silently dropping back to "no country".
     this.identity.countryCode = /^[A-Z]{2}$/.test(country)
       ? rememberCountryCode(country)
       : rememberedCountryCode();
@@ -9023,8 +9028,8 @@ class ForkMeshWorld extends HTMLElement {
           .map((table) => {
             const name = String(table?.name || "").trim();
             const rowCount = Number(table?.rowCount);
-
-
+            // Empty and single-row tables count too: the inventory is the
+            // point, and dropping them hid most of the database.
             return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(name) &&
               Number.isSafeInteger(rowCount) &&
               rowCount >= 0
@@ -9053,8 +9058,8 @@ class ForkMeshWorld extends HTMLElement {
             ),
           }
         : {};
-
-
+    // Bindings are discovered by the Worker from its own environment, so a
+    // newly bound Durable Object class appears here without a client change.
     this.systemCapacityDurableObjects = Array.isArray(
       ticket?.systemCapacity?.durableObjects,
     )
@@ -9106,17 +9111,17 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         return;
       }
-
-
-
+      // SGP4 is deliberately outside the initial World dependency graph. The
+      // local pinned module is requested only after the optional edge-cached
+      // OMM snapshot succeeds, then every record is initialized exactly once.
       const sgp4Engine = await loadSatelliteSgp4Module();
       if (!this.destroyed) {
         this.world?.updateSatelliteSky?.(snapshot, sgp4Engine);
       }
     } catch (_) {
-
-
-
+      // The deterministic stars and planets remain available when the public
+      // orbit snapshot has not been seeded yet, CelesTrak is unavailable, or
+      // the deferred local propagator cannot be loaded.
     }
   }
 
@@ -9157,8 +9162,8 @@ class ForkMeshWorld extends HTMLElement {
       visitorsResult,
       statusResult,
     ] =
-
-
+      // The fan-out is counted so the opening curtain can show it settling
+      // request by request instead of one silent multi-second wait.
       await Promise.allSettled(this.countBootRequests("data", [
         this.fetchJSON("/api/network/overview", { auth: false }),
         this.fetchMirrorCatalog({ force: forceMirrors }),
@@ -9248,8 +9253,8 @@ class ForkMeshWorld extends HTMLElement {
           auth: false,
           timeout: 5000,
         }),
-
-
+        // Edge-cached for a minute server-side; no per-visitor variance, so
+        // the browser cache may reuse it too.
         this.fetchJSON("/api/world/visitors", {
           auth: false,
           timeout: 5000,
@@ -9448,7 +9453,7 @@ class ForkMeshWorld extends HTMLElement {
         ? normalizeMemberDirectory(membersResult.value)
         : [];
     this.memberDirectoryFetchedAt = Date.now();
-
+    // Refresh the local avatar's wallet chip alongside the world data poll.
     this.applyWalletBadges();
     this.visitorStats =
       visitorsResult.status === "fulfilled" &&
@@ -10180,7 +10185,7 @@ class ForkMeshWorld extends HTMLElement {
     return spaces.filter((space) => space?.name || space?.org);
   }
 
-
+  // Organizations the viewer owns or administers, keyed by name.
   managedOrganizations() {
     return this.organizations.filter((organization) =>
       ["owner", "admin"].includes(
@@ -10292,9 +10297,9 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-
-
-
+  // Server-authoritative team marks are visible to every organization member
+  // allowed to read the roster. The separate canManage bit controls whether
+  // the owner/admin assignment plaque is interactive.
   rebuildOrgTeamIndex() {
     const index = new Map();
     this.organizations.forEach((organization) => {
@@ -10346,8 +10351,8 @@ class ForkMeshWorld extends HTMLElement {
     return this.orgTeamIndex.get(account) || null;
   }
 
-
-
+  // Re-read one organization's roster and team layout after a team write so
+  // the plaque count and the organization panel reflect the same server state.
   async refreshOrganizationTeams(name) {
     const org = String(name || "").trim().toLowerCase();
     const organization = this.managedOrganization(org);
@@ -10369,11 +10374,11 @@ class ForkMeshWorld extends HTMLElement {
     this.renderPeers();
   }
 
-
-
-
-
-
+  // The team plaque on a member's back opens accessible checkboxes. Team
+  // membership is what raises a member's repository permission, which is what
+  // opens the organization's repository floors and personal offices in the
+  // World — so the dialog says so plainly. Only owners and administrators ever
+  // see the plaque, and the worker re-checks that role on every write.
   openOrgTeamAssignment(target = {}) {
     const org = String(target.org || "").trim().toLowerCase();
     const member = String(target.member || target.name || "")
@@ -10621,11 +10626,11 @@ class ForkMeshWorld extends HTMLElement {
         });
       }
     });
-
-
-
-
-
+    // The account portrait is the World HUD launcher.  It keeps the World
+    // quiet while walking, then fans the fixed-size controls out on hover,
+    // keyboard focus, or the first tap on a touch device.  A launcher stays
+    // open until the player walks again or explicitly clicks away, so moving
+    // from the avatar into a revealed control never makes the row disappear.
     const topActions = this.$("[data-world-top-actions]");
     const rightRail = this.$("[data-world-right-rail]");
     const hudHoverTargets = [topActions, rightRail].filter(Boolean);
@@ -10638,8 +10643,8 @@ class ForkMeshWorld extends HTMLElement {
     hudHoverTargets.forEach((target) => {
       target.addEventListener("focusin", openHud);
     });
-
-
+    // Load the chat frame immediately so the collapsed CHAT bar always shows
+    // the most recent global #general message, not a static placeholder.
     this.loadNativeWorldChat();
     this.restoreQuickComposerChannel();
     this.scheduleQuickComposerIdle();
@@ -10666,9 +10671,9 @@ class ForkMeshWorld extends HTMLElement {
       const settingsPanel = this.$("[data-world-settings]");
       if (
         settingsPanel?.dataset.open === "true" &&
-
-
-
+        // The Debug and Elements tabs exist to be watched while playing, so
+        // clicking back into the world must not dismiss them. They close only
+        // from their × button or Escape.
         !["debug", "elements"].includes(this.settingsTab || "") &&
         !event.target.closest("[data-world-settings]") &&
         !event.target.closest(
@@ -10714,8 +10719,8 @@ class ForkMeshWorld extends HTMLElement {
         !hoverCapable &&
         avatarLauncher.getAttribute("aria-expanded") !== "true"
       ) {
-
-
+        // Touch has no hover: the first press exposes the same launcher
+        // controls and the next press still opens account settings.
         event.preventDefault();
         this.setWorldRightRailExpanded(true);
         return;
@@ -10748,9 +10753,9 @@ class ForkMeshWorld extends HTMLElement {
         void this.shareCurrentWorldView();
         return;
       }
-
-
-
+      // Keep chat inside the World: any /dashboard/chat link (or explicit
+      // opener) opens the embedded panel rather than navigating away. The
+      // spatial Office is a second, equally valid door to the same chat.
       const chatLink = event.target.closest(
         "[data-world-chat-open], a[href^='/dashboard/chat']",
       );
@@ -10877,15 +10882,15 @@ class ForkMeshWorld extends HTMLElement {
           );
           return;
         }
-
-
+        // The campfire spot is a destination rather than a reading panel:
+        // choosing it walks you straight back to your own bench.
         if (id === "campfire") {
           this.returnToCampfireBench();
           return;
         }
-
-
-
+        // Map, alert, and navigation controls open a readable overlay without
+        // moving the player or reframing the camera. Clicking the 3D landmark
+        // itself remains the explicit spatial-focus interaction.
         this.openLandmark(id, { returnFocus: landmarkButton });
         return;
       }
@@ -11766,10 +11771,10 @@ class ForkMeshWorld extends HTMLElement {
         document.removeEventListener("visibilitychange", resetHiddenThumbstick);
         this.thumbstickInputCleanup = null;
       };
-
-
-
-
+      // Some mobile browsers can lose element-level capture when an OS
+      // gesture, browser chrome, or another touch takes over. Keep the
+      // thumbstick's state in sync even when its terminal event lands outside
+      // the control or the page is interrupted.
       window.addEventListener("pointerup", stopThumbstick);
       window.addEventListener("pointercancel", stopThumbstick);
       window.addEventListener("blur", resetInterruptedThumbstick);
@@ -11864,9 +11869,9 @@ class ForkMeshWorld extends HTMLElement {
     const section = this.$("[data-world-saved-views]");
     const list = this.$("[data-world-saved-view-list]");
     if (!section || !list) return;
-
-
-
+    // Saved shortcuts are intentionally always exposed. Retain this method for
+    // older callers and synchronized preference snapshots without allowing a
+    // stale collapsed preference to hide the five thumbnail shortcuts.
     section.dataset.expanded = "true";
     list.hidden = false;
   }
@@ -12072,7 +12077,7 @@ class ForkMeshWorld extends HTMLElement {
         await this.syncWorldPreferences();
         return payload;
       } catch (_) {
-
+        // Local storage remains the offline source until a later ticket refresh.
         return null;
       } finally {
         this.worldPreferencesLoading = null;
@@ -12264,9 +12269,9 @@ class ForkMeshWorld extends HTMLElement {
     return true;
   }
 
-
-
-
+  // Detail panels dock to the right edge, so widening one means dragging its
+  // left border outward. The chosen width is a device-local preference and the
+  // per-panel base width stays the floor.
   detailPanelWidth() {
     const detail = this.$("[data-world-detail]");
     const rendered = Math.round(detail?.getBoundingClientRect().width || 0);
@@ -12290,8 +12295,8 @@ class ForkMeshWorld extends HTMLElement {
       ),
     );
     this.detailWidth = next;
-
-
+    // .fm-world declares the fallback, so the override has to land there and
+    // not on the host element it would otherwise inherit from.
     this.$("[data-world-root]")?.style.setProperty(
       "--world-detail-user-width",
       `${next}px`,
@@ -12493,8 +12498,8 @@ class ForkMeshWorld extends HTMLElement {
     if (noteInput) noteInput.value = next.note;
     this.updateWorldStatusUI();
     if (!changed) return false;
-
-
+    // Profile presence is already coalesced. Status values are deliberately
+    // absent from movement frames, so walking cannot repeatedly republish them.
     this.commitPublicSettings();
     return true;
   }
@@ -12513,10 +12518,10 @@ class ForkMeshWorld extends HTMLElement {
 
   syncInactivePresence() {
     window.clearTimeout(this.inactiveSyncTimer);
-
-
-
-
+    // The coalesced repository-scene rebuild owns its own timer. Cancelling it
+    // from here (without clearing the handle) left a stale non-zero id behind,
+    // and every later refresh then short-circuited on it — so a resolved star
+    // total never reached the 3D portal again.
     this.inactiveSyncTimer = window.setTimeout(async () => {
       const session = readSession();
       if (!session?.sessionToken) return;
@@ -12597,15 +12602,15 @@ class ForkMeshWorld extends HTMLElement {
           : [];
         this.renderPeers();
       } catch (_) {
-
-
+        // Realtime presence continues even if the optional seating record
+        // cannot be updated. Never fabricate a public inactivity state.
       }
     }, 250);
   }
 
   startClock() {
-
-
+    // The World no longer shows a clock. This ticker only keeps the opt-in
+    // "Show local time" presence badge fresh while that privacy setting is on.
     const render = () => {
       if (this.settings?.privacy?.localTime) this.updateIdentityUI();
     };
@@ -12643,8 +12648,8 @@ class ForkMeshWorld extends HTMLElement {
           ?.toUpperCase() || "?";
     }
     if (badge) {
-
-
+      // The badge is the settings entry point; keep the name/status copy that
+      // used to sit beside it reachable as its tooltip and accessible name.
       const copy = `${visible.name} · ${accountBadgeCopy(this.identity, this.settings)}`;
       badge.title = `${copy} — World and privacy settings`;
       badge.setAttribute("aria-label", `${copy} — open World and privacy settings`);
@@ -12657,8 +12662,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   updateSystemCapacityMetrics() {
-
-
+    // Keeps an open table browser in step with each refreshed ticket; it is a
+    // no-op while the panel is closed.
     this.renderSystemCapacityTables();
     if (!this.world?.updateSystemCapacity) return;
     const limits = this.worldLimits;
@@ -12674,8 +12679,8 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     const live = this.systemCapacityLiveConnections();
-
-
+    // The auto-detected binding list is authoritative when the Worker sent
+    // one; the two locally observable services stand in for it otherwise.
     const objects = detected.length
       ? detected.map((record) => ({
           id: record.binding,
@@ -12696,8 +12701,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   systemCapacityLiveConnections() {
-
-
+    // Connection counts the browser can observe for itself, keyed by the
+    // Durable Object binding that serves them.
     const live = new Map();
     const limits = this.worldLimits;
     if (!limits) return live;
@@ -12788,9 +12793,9 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-
-
-
+  // The chest's second tab. Everything shown is public profile data the
+  // account already publishes at /@name and to the fediverse; it is fetched
+  // only when a visitor actually opens the tab, never polled.
   async loadWorldFediverseProfile(target = {}) {
     const peerId = String(target.peerId || "");
     const account = String(target.name || "").trim().toLowerCase();
@@ -12838,8 +12843,8 @@ class ForkMeshWorld extends HTMLElement {
           /^[A-Za-z0-9+/=]+$/.test(String(profile.avatarPng))
             ? `data:image/png;base64,${profile.avatarPng}`
             : "",
-
-
+        // ForkMesh federates repository actors, not accounts, so the fediverse
+        // address is whichever handle the account published on its profile.
         fediverse: sanitizePresenceText(profile.mastodon || "", "", 30),
         bio: sanitizePresenceText(profile.profileBio || "", "", 60),
         followers: Math.max(0, Number(profile.followers) || 0),
@@ -12978,8 +12983,8 @@ class ForkMeshWorld extends HTMLElement {
     );
     if (!animate || total <= 0) return;
     this.classList.remove("world-admin-error-arrival");
-
-
+    // Restart the short HUD flash even when two poll responses arrive close
+    // together; no detail or route is exposed in the public World.
     void this.offsetWidth;
     this.classList.add("world-admin-error-arrival");
     window.clearTimeout(this.adminErrorEffectTimer);
@@ -13009,8 +13014,8 @@ class ForkMeshWorld extends HTMLElement {
         0,
         Number(payload?.latestId) || 0,
       );
-
-
+      // The first successful read establishes the baseline. A historic error
+      // backlog must never be presented as a fresh incident.
       if (seen === null) {
         this.storeAdminErrorSeenId(this.adminErrorLatestId);
         this.adminErrorCount = 0;
@@ -13054,8 +13059,8 @@ class ForkMeshWorld extends HTMLElement {
         );
       }
     } catch (_) {
-
-
+      // This is an operational convenience only. A failed badge poll must not
+      // interfere with movement, rendering, or the existing admin surface.
     }
   }
 
@@ -13858,10 +13863,10 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-
-
-
-
+  // Hovering the SOL treasury board is the refresh gesture for the reward
+  // pool: the scene reports the pointer resting on the sign, and only then is
+  // a fresh balance fetched. Repeated hovers inside WORLD_REWARD_HOVER_MS keep
+  // the cached copy that is already painted on the board.
   async refreshRewardStateOnHover() {
     if (this.destroyed) return;
     const now = Date.now();
@@ -13878,9 +13883,9 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {}
   }
 
-
-
-
+  // The system status board reads the Worker's own cached status view rather
+  // than a chain RPC. A one-second local tick updates its small countdown and
+  // staleness plates; only the minute boundary performs an HTTP read.
   startStatusBoardPolling() {
     window.clearInterval(this.statusBoardTimer);
     this.statusBoardTimer = window.setInterval(() => {
@@ -13949,11 +13954,11 @@ class ForkMeshWorld extends HTMLElement {
     return this.statusBoardLoad;
   }
 
-
-
-
-
-
+  // Normalizing the mirror catalog into live node records walks every
+  // payload, sorts and slices every node's repositories, and clones every
+  // action run — expensive enough that read-only consumers (the activity
+  // ticker, the lounge's mirror lookup) must never trigger it themselves.
+  // Build once here, cache for those readers, and push to the scene.
   pushLiveMirrorNodes() {
     const liveMirrors = liveNodeRecordsWithActions(
       this.network,
@@ -13982,7 +13987,7 @@ class ForkMeshWorld extends HTMLElement {
     this.mirrorTimer = window.setInterval(() => {
       if (this.destroyed || document.hidden) return;
       void this.refreshMirrorCatalogs().catch(() => {
-
+        // Preserve the last verified snapshot during a transient HTTPS failure.
       });
     }, MIRROR_STATUS_POLL_MS);
   }
@@ -14075,8 +14080,8 @@ class ForkMeshWorld extends HTMLElement {
           void this.hydrateHostedRepositorySizeMaps();
         }
       } catch (_) {
-
-
+        // Preserve the most recent visible import catalog through a transient
+        // provider/relay failure; the next bounded poll retries automatically.
       }
       await this.retryFlagshipPortal();
     }, REPOSITORY_IMPORT_POLL_MS);
@@ -14100,10 +14105,10 @@ class ForkMeshWorld extends HTMLElement {
       this.lastMovement.activity !== CAMPFIRE_SEATED_ACTIVITY &&
       this.lastMovement.activity !== SWING_RIDING_ACTIVITY
     ) {
-
-
-
-
+      // Sitting down lands inside the campfire's own label radius, and the
+      // swing set sits inside the Town Square's. The seated and riding
+      // activities are what other visitors render the pose from, so proximity
+      // must not relabel them as merely visiting the area.
       this.lastMovement.activity =
         label === "Town Square" ? "exploring the Town Square" : `visiting ${label}`;
     }
@@ -14165,8 +14170,8 @@ class ForkMeshWorld extends HTMLElement {
   updateDistances() {
     const position = this.world?.getPosition?.();
     if (!position) return;
-
-
+    // The badge elements are static template output; cache them once instead
+    // of running one querySelector per landmark every second.
     if (!this.distanceElements) {
       this.distanceElements = new Map(
         LANDMARKS.map((landmark) => [
@@ -14209,9 +14214,9 @@ class ForkMeshWorld extends HTMLElement {
     detail.setAttribute("aria-hidden", "false");
     backdrop.dataset.open = "true";
     backdrop.setAttribute("aria-hidden", "false");
-
-
-
+    // The panel clips its overflow but is still scrollable programmatically:
+    // any focus()/scrollIntoView() inside it could shove the whole panel
+    // sideways or upward, which reads as clipped text and blank space.
     detail.scrollLeft = 0;
     detail.scrollTop = 0;
     this.syncDetailResizeState();
@@ -14375,10 +14380,10 @@ class ForkMeshWorld extends HTMLElement {
       }
       focusTarget?.focus({ preventScroll: true });
     };
-
-
-
-
+    // Live capability updates can replace a map or mirror control just as its
+    // panel closes. Retry briefly while focus remains on the document body so
+    // the matching replacement control receives focus without stealing it
+    // after the user has moved elsewhere.
     [0, 80, 240].forEach((delay) => window.setTimeout(restoreFocus, delay));
   }
 
@@ -14791,9 +14796,9 @@ class ForkMeshWorld extends HTMLElement {
         ? "Not reported"
         : parsed.toLocaleString();
     };
-
-
-
+    // When the node last answered a clone / repository web request, and the
+    // bounded class of client it answered. "Not reported" covers both a node
+    // that has served none yet and one that never published the stamp.
     const agentLabels = {
       "forkmesh-node": "mesh node",
       "git-client": "git client",
@@ -15105,8 +15110,8 @@ class ForkMeshWorld extends HTMLElement {
         name.trim().toLowerCase(),
     );
     const record = { ...(directory || {}), ...member };
-
-
+    // Handshakes are offered from this panel, so the freshest greeting state
+    // for this peer is resolved every time it renders.
     this.pruneWorldHandshakes();
     const peerId = String(record.peerId || "").slice(0, 96);
     const livePeer =
@@ -15326,7 +15331,7 @@ class ForkMeshWorld extends HTMLElement {
                         .map(
                           (post) =>
                             `<li>${
-                              /^https:\/\
+                              /^https:\/\//i.test(String(post.href || ""))
                                 ? `<a href="${escapeHTML(
                                     post.href,
                                   )}" target="_blank" rel="noopener noreferrer">${escapeHTML(
@@ -15461,7 +15466,7 @@ class ForkMeshWorld extends HTMLElement {
               )}" title="${escapeHTML(displayHandle)}" aria-label="Open ${escapeHTML(
                 displayHandle,
               )}’s profile"${
-                /^https:\/\
+                /^https:\/\//i.test(profileUrl)
                   ? ' target="_blank" rel="noopener noreferrer"'
                   : ""
               }>${
@@ -15762,8 +15767,8 @@ class ForkMeshWorld extends HTMLElement {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 10000);
     try {
-
-
+      // Public read-only Mastodon API. No ForkMesh session material is ever
+      // attached to this cross-origin request.
       const response = await fetch(url, {
         credentials: "omit",
         cache: "no-store",
@@ -15784,8 +15789,8 @@ class ForkMeshWorld extends HTMLElement {
       Date.now() - this.mastodonFetchedAt < MASTODON_REFRESH_MS;
     if (fresh && !force) return Promise.resolve();
     this.mastodonState = "loading";
-
-
+    // The countdown runs from the attempt, not the last success, so a failed
+    // fetch waits out the full window instead of retrying every tick.
     this.mastodonRequestedAt = Date.now();
     this.renderMastodonBoard();
     this.mastodonLoad = (async () => {
@@ -15806,8 +15811,8 @@ class ForkMeshWorld extends HTMLElement {
           .slice(0, MASTODON_STATUS_LIMIT);
         this.mastodonFetchedAt = Date.now();
         this.mastodonState = "ready";
-
-
+        // Threads are walked one per toot, so paint the profile and toots
+        // first and let the replies section fill in behind them.
         this.renderMastodonBoard();
         this.syncMastodonKiosk();
         this.mastodonReplies = await this.fetchMastodonReplies(
@@ -15815,7 +15820,7 @@ class ForkMeshWorld extends HTMLElement {
           this.mastodonStatuses,
         );
       } catch (_) {
-
+        // Keep any previously fetched snapshot on a refresh failure.
         this.mastodonState = this.mastodonProfile ? "ready" : "error";
       } finally {
         this.mastodonLoad = null;
@@ -15828,10 +15833,10 @@ class ForkMeshWorld extends HTMLElement {
     return this.mastodonLoad;
   }
 
-
-
-
-
+  // Public replies other accounts left on the newest toots. Mastodon exposes
+  // them only per-thread, so this walks the context of a bounded number of
+  // toots that report replies and keeps the descendants that are not ours. A
+  // thread that fails to load is skipped rather than blanking the section.
   async fetchMastodonReplies(account, statuses) {
     const threads = statuses
       .filter((status) => status.id && status.repliesCount > 0)
@@ -15855,7 +15860,7 @@ class ForkMeshWorld extends HTMLElement {
       for (const entry of descendants) {
         const reply = normalizeMastodonStatus(entry);
         if (!reply?.id || !reply.text) continue;
-
+        // Our own posts further down a thread are not "replies from users".
         if (reply.authorAcct === account.acct) continue;
         if (seen.has(reply.id)) continue;
         seen.add(reply.id);
@@ -15867,10 +15872,10 @@ class ForkMeshWorld extends HTMLElement {
       .slice(0, MASTODON_REPLY_LIMIT);
   }
 
-
-
-
-
+  // The kiosk billboard reloads on a fixed ten-minute cadence, and the MM:SS
+  // timer on the board is repainted every second so visitors can see when the
+  // next fetch lands. The tick, not a ten-minute interval, drives the refresh
+  // so a manual "Refresh" from the mini-app restarts the same window.
   startMastodonRefresh() {
     window.clearInterval(this.mastodonRefreshTimer);
     this.mastodonRefreshTimer = window.setInterval(() => {
@@ -15879,11 +15884,11 @@ class ForkMeshWorld extends HTMLElement {
     this.syncMastodonCountdown();
   }
 
-
-
-
-
-
+  // The Twitter and Reddit banners repaint from the Worker's proxy snapshot
+  // (/api/world/social-posts). The read is public, credential-free, and
+  // edge-cached for ten minutes, so a scene rebuild can re-request it
+  // cheaply. Remote text is drawn onto a canvas texture, never injected as
+  // markup.
   loadSocialBanners() {
     if (this.socialFeedsLoad) return this.socialFeedsLoad;
     this.socialFeedsRequestedAt = Date.now();
@@ -15902,7 +15907,7 @@ class ForkMeshWorld extends HTMLElement {
         this.socialFeedsSnapshot = await response.json();
         this.syncSocialBanners();
       } catch (_) {
-
+        // Keep the previous snapshot — or the static signs — on failure.
       } finally {
         window.clearTimeout(timeout);
         this.socialFeedsLoad = null;
@@ -15913,10 +15918,10 @@ class ForkMeshWorld extends HTMLElement {
     return this.socialFeedsLoad;
   }
 
-
-
-
-
+  // Like the Mastodon kiosk, a one-second tick drives both the stand clocks
+  // and the ten-minute reload: when the countdown reaches zero the next tick
+  // starts the fetch, so a repaint from a fresh snapshot restarts the same
+  // window the boards were counting down.
   startSocialBannersRefresh() {
     window.clearInterval(this.socialFeedsTimer);
     this.socialFeedsTimer = window.setInterval(() => {
@@ -15933,9 +15938,9 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-
-
-
+  // Milliseconds since the newest post in a proxied feed, or null when the
+  // feed has no dated posts (unfetched, unavailable, or an item that shipped
+  // without a date).
   socialNewestPostAgo(feed) {
     let latest = 0;
     for (const post of Array.isArray(feed?.posts) ? feed.posts : []) {
@@ -15966,11 +15971,11 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
-
-
-
-
-
+  // Feed item images are published as absolute forkmesh.com URLs. The board
+  // draws them onto a canvas texture, so they must load same-origin: keep
+  // only the /assets path and let this page's own origin serve it. Anything
+  // else (an off-site image, a data: URL) is dropped and the card keeps its
+  // placeholder plate.
   socialPostImage(value) {
     const raw = String(value || "").trim();
     if (!raw) return "";
@@ -16034,8 +16039,8 @@ class ForkMeshWorld extends HTMLElement {
     ].join(" · ");
   }
 
-
-
+  // Mirror the proxy snapshot onto the in-world banner boards, reduced to the
+  // bounded display strings the canvas painter draws.
   syncSocialBanners() {
     const snapshot = this.socialFeedsSnapshot;
     if (!snapshot) return;
@@ -16075,9 +16080,9 @@ class ForkMeshWorld extends HTMLElement {
           .filter(Boolean)
           .join(" · "),
       ),
-
-
-
+      // Blog rows include every aggregate reach field already collected for
+      // the public post: views, approximate uniques, referring-site count,
+      // referred visits, and explicit social distribution state.
       blog: bound(
         snapshot.blog,
         (post) => String(post?.meta || ""),
@@ -16101,9 +16106,9 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-
-
-
+  // Milliseconds since the newest fetched toot (boosts included: they keep
+  // the profile timeline alive too), or null before the first successful
+  // fetch. Drives the posting-cadence plate on the kiosk stand.
   mastodonLastPostAgo() {
     let latest = 0;
     for (const status of this.mastodonStatuses || []) {
@@ -16128,9 +16133,9 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
-
-
-
+  // Mirror the mini-app's live profile onto the in-world kiosk billboard so
+  // the header, avatar, counts, and latest toots are visible without opening
+  // the panel. All strings are bounded by normalizeMastodonAccount/Status.
   syncMastodonKiosk() {
     const account = this.mastodonProfile;
     if (!account) return;
@@ -16330,8 +16335,8 @@ class ForkMeshWorld extends HTMLElement {
       </div>`;
     if (focus) {
       window.requestAnimationFrame(() => {
-
-
+        // Scroll the table's own viewport rather than calling scrollIntoView,
+        // which would also scroll the clipped panel around the highlighted row.
         const scroller = detail.querySelector(".world-capacity-scroll");
         const row = detail.querySelector("[data-current='true']");
         if (!scroller || !row) return;
@@ -16572,8 +16577,8 @@ class ForkMeshWorld extends HTMLElement {
       </section>`;
   }
 
-
-
+  // Who replied, with their avatar — the same data the kiosk's REPLIES strip
+  // renders, in full here.
   mastodonRepliesHTML() {
     const replies = this.mastodonReplies;
     const body = replies.length
@@ -17888,10 +17893,10 @@ class ForkMeshWorld extends HTMLElement {
     personalNotifications.forEach((item) =>
       this.seenNotifications.add(item.id),
     );
-
-
-
-
+    // The first reads seed the seen sets so nothing already waiting at load is
+    // announced; only what arrives on a later poll reaches the stream. Each
+    // announcement gets its own bubble so the stack reads like a feed; the
+    // per-poll cap keeps a backlog burst from wiping out the chat stream.
     if (!this.activityNoticesSettled()) return;
     globalEvents.slice(0, 3).forEach((item) => {
       this.toast(`World announcement: ${item.title}`);
@@ -18233,9 +18238,9 @@ class ForkMeshWorld extends HTMLElement {
     return false;
   }
 
-
-
-
+  // A handshake is the two-person greeting: one visitor offers, the other
+  // shakes back. Only the offered peer is told about the offer, and only an
+  // accepted handshake becomes visible to the rest of the room.
   offerWorldHandshake(peerId) {
     const target = String(peerId || "");
     const peer = this.remotePlayers.get(target);
@@ -18243,8 +18248,8 @@ class ForkMeshWorld extends HTMLElement {
       this.toast("That visitor is no longer in the World.");
       return;
     }
-
-
+    // Their hand is already out: offering back is the same thing as accepting,
+    // so the two never end up holding mirrored offers of each other.
     if (this.pendingHandshakes.has(target)) {
       this.answerWorldHandshake(target, true);
       return;
@@ -18272,8 +18277,8 @@ class ForkMeshWorld extends HTMLElement {
     this.pendingHandshakes.delete(target);
     this.sentHandshakeOffers.delete(target);
     if (accepted) {
-
-
+      // The relay broadcasts the accepted pair to everyone else; this browser
+      // is excluded from its own frame, so it plays the pose itself.
       this.playWorldHandshake(this.serverPeerId, target);
     }
     this.refreshWorldMemberDetail(target);
@@ -18284,9 +18289,9 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-
-
-
+  // The scene knows this browser's own avatar by its local identity id, while
+  // the relay speaks in the peer id it assigned this socket. Translate before
+  // handing the pair over so an accepted handshake animates both halves.
   playWorldHandshake(firstId, secondId) {
     const own = String(this.serverPeerId || "");
     const localId = String(this.identity?.id || "");
@@ -18295,8 +18300,8 @@ class ForkMeshWorld extends HTMLElement {
     this.world?.playHandshake?.(resolve(firstId), resolve(secondId));
   }
 
-
-
+  // Drops offers that timed out, plus anything from a peer who has left, so a
+  // stale greeting cannot linger behind an avatar that is already gone.
   pruneWorldHandshakes() {
     const cutoff = Date.now() - WORLD_HANDSHAKE_TTL_MS;
     this.pendingHandshakes.forEach((offer, id) => {
@@ -18311,8 +18316,8 @@ class ForkMeshWorld extends HTMLElement {
     });
   }
 
-
-
+  // Re-renders the open member profile when its handshake state changed. Any
+  // other panel (or none) is left exactly as it is.
   refreshWorldMemberDetail(peerId) {
     const detail = this.$("[data-world-detail]");
     if (
@@ -18325,10 +18330,10 @@ class ForkMeshWorld extends HTMLElement {
     this.openWorldMemberDetail(this.worldMemberDetailRecord || {});
   }
 
-
-
-
-
+  // A wave is the text-free "emote" gesture the relay already broadcasts: the
+  // arm pose plays here immediately and every other visitor receives the same
+  // tiny frame. The cooldown is the length of the pose, so holding the button
+  // down cannot turn one gesture into a stream of socket frames.
   waveToWorld() {
     this.sendWorldEmote("wave");
   }
@@ -18383,12 +18388,12 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-
-
-
+  // The Campfire map spot seats you on the bench that carries your own name;
+  // guests, and members the roster has not seated yet, land on one of the
+  // benches the circle keeps open.
   seatFreshArrivalAtCampfire() {
-
-
+    // A saved pose, shared view, or explicit regional destination always wins.
+    // Only a truly unplaced Town Square arrival starts at the social circle.
     if (
       this.restoredPosition ||
       this.sharedView ||
@@ -19319,9 +19324,9 @@ class ForkMeshWorld extends HTMLElement {
       { path: ".forkmesh/issues/open", state: "open" },
       { path: ".forkmesh/issues/closed", state: "closed" },
     ];
-
-
-
+    // Pulls have their own immutable metadata commit and are required for a
+    // truthful review surface. Resolve that short chain before lower-priority
+    // issue-layout probes can occupy every connection on a small mirror.
     const pullResult =
       options.pullResult?.status === "fulfilled" ||
       options.pullResult?.status === "rejected"
@@ -19347,9 +19352,9 @@ class ForkMeshWorld extends HTMLElement {
                 path,
               )}&ref=${encodeURIComponent(commit)}`,
               {
-
-
-
+                // Issue layout is optional context. Never let its three legacy
+                // probes hold an otherwise complete PR review for the full
+                // two-mirror failover envelope.
                 timeout: 6000,
                 cache: "no-store",
               },
@@ -19469,14 +19474,14 @@ class ForkMeshWorld extends HTMLElement {
               .slice(0, 4);
             record.metadataAvailable = true;
           } catch (_) {
-
-
-
+            // A malformed public issue record remains a numbered, clickable
+            // stub. Never synthesize metadata that the pinned commit did not
+            // actually publish.
           }
         });
       } catch (_) {
-
-
+        // Issue metadata is useful display context, but the commit-matched
+        // number/state list remains truthful when a mirror cannot batch blobs.
       }
     }
     const pullRecords =
@@ -19594,8 +19599,8 @@ class ForkMeshWorld extends HTMLElement {
     if (this.repositoryMapState === "ready" && this.activeRepository) {
       this.renderRepositoryExplorer();
     }
-
-
+    // Star totals often resolve in a burst. Rebuilding the 3D portal layer for
+    // every individual response stalls a drag, so coalesce them into one draw.
     if (this.repositoryStarSceneSyncTimer) return;
     this.repositoryStarSceneSyncTimer = window.setTimeout(() => {
       this.repositoryStarSceneSyncTimer = 0;
@@ -19706,10 +19711,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async loadRepositoryFollowers(owner, name, isPrivate = false, force = false) {
-
-
-
-
+    // WHO follows this repository on the fediverse. The public About card is
+    // already the relay's answer for that question (handle, display name,
+    // avatar, bio, instance, followed-at), so the World reads the same
+    // endpoint instead of adding a second follower query to the free plan.
     const key = this.repositoryStarKey(owner, name);
     if (!key) return null;
     if (isPrivate) {
@@ -19743,8 +19748,8 @@ class ForkMeshWorld extends HTMLElement {
       const reported = Number(fediverse.followers);
       const state = this.applyRepositoryFollowerState(key, {
         status: "ready",
-
-
+        // The list is capped by the relay, so the reported total stays
+        // authoritative for the caption under the repository circle.
         count:
           Number.isSafeInteger(reported) && reported >= 0
             ? reported
@@ -19829,8 +19834,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   refreshRepositoryFollowerUI() {
-
-
+    // Same coalescing as the star totals: one portal-layer rebuild, not one
+    // per resolved response.
     if (this.repositoryFollowerSceneSyncTimer) return;
     this.repositoryFollowerSceneSyncTimer = window.setTimeout(() => {
       this.repositoryFollowerSceneSyncTimer = 0;
@@ -20002,8 +20007,8 @@ class ForkMeshWorld extends HTMLElement {
             this.syncRepositoryScene();
           }
         } catch (_) {
-
-
+          // A failed mirror is retried on the next import-catalog poll. The
+          // successfully hydrated maps stay visible in the meantime.
         }
       }
     };
@@ -20020,12 +20025,12 @@ class ForkMeshWorld extends HTMLElement {
     if (changed && !this.destroyed) this.syncRepositoryScene();
   }
 
-
-
-
-
-
-
+  // The organization alias is derived from two independently refreshed reads:
+  // the repository catalog and the mirror snapshot. Re-derive it whenever
+  // either one arrives so a flagship pin that was ambiguous at boot — mirrors
+  // still mid-sync, so no single healthy commit was attested — can complete
+  // later in the session. Returns whether the derived catalog actually moved,
+  // so a stable poll costs nothing.
   reconcileRepositoryAliasCatalog() {
     const natives = reconcileRepositoryAliases(
       this.rawNativeRepositories,
@@ -20054,10 +20059,10 @@ class ForkMeshWorld extends HTMLElement {
     return true;
   }
 
-
-
-
-
+  // Keep working toward the default open portal after entry. The catalog read
+  // is the same public, thirty-second cacheable document the boot path used, so
+  // most of these ticks are served from cache, and the attempt count is bounded
+  // so a mesh that never converges cannot turn this into an endless fan-out.
   async retryFlagshipPortal() {
     if (
       this.destroyed ||
@@ -20076,9 +20081,9 @@ class ForkMeshWorld extends HTMLElement {
           maxAge: 0,
         }),
       );
-
-
-
+      // An empty or failed answer must not retire the portals the scene is
+      // already showing; the alias is still re-derived from the freshest
+      // mirror snapshot below.
       if (records.length) this.rawNativeRepositories = records;
     } catch (_) {}
     if (this.destroyed) return;
@@ -20130,9 +20135,9 @@ class ForkMeshWorld extends HTMLElement {
       commit: active.commit,
       path: active.path || "",
     });
-
-
-
+    // The open issue box and pull-request review desk beside the portal reuse
+    // the same commit-matched records as the explorer panel; nothing here is
+    // fetched separately or invented for the scene.
     this.world.updateRepositoryRecordDesk?.(
       { owner: active.owner, repo: active.repo },
       {
@@ -20146,10 +20151,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   repositoryTreeSizePreview(entries = []) {
-
-
-
-
+    // The first tree response already contains exact blob sizes for root
+    // files. Paint those immediately while the recursive size tree is still
+    // being calculated; directories with an unknown size stay out of this
+    // preview instead of receiving an invented weight.
     const children = (Array.isArray(entries) ? entries : [])
       .filter((entry) => entry?.type === "file" && Number(entry?.size) > 0)
       .slice(0, 80)
@@ -20216,11 +20221,11 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   repositoriesWithLiveSocialState() {
-
-
-
-
-
+    // The catalog payload carries no star or follower totals, and a periodic
+    // catalog refresh replaces every record object — so the scene is handed the
+    // records with the state the relay actually answered with (repo_stars count
+    // and ap_followers) merged back on, instead of whatever the last catalog
+    // snapshot happened to contain.
     const records = this.repositories.map((repository) => {
       const key = this.repositoryStarKey(repository.owner, repository.name);
       if (!key) return repository;
@@ -20291,8 +20296,8 @@ class ForkMeshWorld extends HTMLElement {
   revealRepositoryScene() {
     this.closeLandmark();
     const active = this.activeRepository;
-
-
+    // Visiting a repository sunburst frames it from the orbital camera; the
+    // camera button is the only way into first person.
     this.world?.setCameraMode?.("third-person");
     const focused =
       active &&
@@ -20329,8 +20334,8 @@ class ForkMeshWorld extends HTMLElement {
     const path =
       externalURL ||
       `/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-
-
+    // `noopener` intentionally makes window.open return null in some browsers,
+    // so do not mistake a safely opened tab for a popup-blocker failure.
     window.open(path, "_blank", "noopener,noreferrer");
     this.toast(`Opening ${owner}/${name} in a new tab…`);
   }
@@ -20349,8 +20354,8 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     if (this.expandedRepositoryIssuePage === number) {
-
-
+      // A second click on the already-expanded page follows the signed issue
+      // thread on the repository website, mirroring the portal base link.
       const path = `/${encodeURIComponent(owner)}/${encodeURIComponent(
         name,
       )}/issues/${number}`;
@@ -20621,10 +20626,10 @@ class ForkMeshWorld extends HTMLElement {
       return false;
     }
     const catalogCommits = this.flagshipCatalogCommits();
-
-
-
-
+    // The tree endpoint is the authoritative shape and responds before the
+    // slower mirror/status fan-out. Render its onTree preview immediately,
+    // even while mirror commit metadata is empty or converging, so the
+    // flagship never collapses into a "MIRRORS SYNCING" placeholder.
     return this.loadRepositoryMap(
       FLAGSHIP_REPOSITORY.owner,
       FLAGSHIP_REPOSITORY.repo,
@@ -20682,9 +20687,9 @@ class ForkMeshWorld extends HTMLElement {
     const entries = normalizeTreeEntries(tree);
     options.onTree?.({ owner: safeOwner, repo: safeRepo, commit, entries });
     const ref = `?ref=${encodeURIComponent(commit)}`;
-
-
-
+    // Start the short immutable PR chain beside sizes/stats, then inject its
+    // result into the entity loader so the browser never repeats
+    // branches/tree/blobs. Optional PR metadata must not delay the first map.
     const pullResultPromise =
       catalogRecord?.isPrivate === true
         ? Promise.resolve({
@@ -20980,9 +20985,9 @@ class ForkMeshWorld extends HTMLElement {
           this.world?.updateRepositorySizeMap?.({}, {});
         }
       } else {
-
-
-
+        // Optional records may be unavailable even though this tree and byte
+        // map are both pinned to the catalog-attested commit. Keep those exact
+        // repository facts visible instead of returning to a blank portal.
         this.previewRepositoryMap(
           safeOwner,
           safeRepo,
@@ -21013,9 +21018,9 @@ class ForkMeshWorld extends HTMLElement {
       this.activeRepository.isPrivate === true,
     );
     if (options.revealScene === true) this.revealRepositoryScene();
-
-
-
+    // The automatic flagship map should not probe four security endpoints
+    // during initial World entry. Hydrate this optional detail only after a
+    // visitor explicitly selects the repository or its Security board.
     if (!automatic) {
       void this.loadRepositorySecurity(safeOwner, safeRepo, false);
     }
@@ -22668,10 +22673,10 @@ class ForkMeshWorld extends HTMLElement {
         candidate.owner.toLowerCase() === String(owner).toLowerCase() &&
         candidate.name.toLowerCase() === String(repo).toLowerCase(),
     );
-
-
-
-
+    // Browser WebSocket handshakes cannot attach the dashboard's Bearer header.
+    // Keep private or unresolved workshops on the persisted participant ACL
+    // event stream until a header-safe private-room handshake is available.
+    // Public workshops can use the repository-scoped room below.
     const liveWorkshopChatAvailable = Boolean(
       repositoryRecord && !repositoryRecord.isPrivate,
     );
@@ -23366,8 +23371,8 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
 
-
-
+    // Exactly one local soundtrack may run at a time. This stops procedural
+    // radio, a hosted station, or a prior focus track before creating this one.
     this.stopRadio(false);
     const element = new AudioElement(track.trackUrl);
     element.preload = "metadata";
@@ -23426,8 +23431,8 @@ class ForkMeshWorld extends HTMLElement {
     if (playback?.kind !== "focus-music") return;
     if (this.focusMusicState === "paused") {
       try {
-
-
+        // Resume is also an explicit user gesture; a saved setting never calls
+        // this path on page load.
         await playback.element.play();
         if (this.activeAudio !== playback) return;
         this.focusMusicState = "playing";
@@ -23458,8 +23463,8 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async playForkmeshSong() {
-
-
+    // The entrance plaque plays the actual ForkMesh song, not a focus track.
+    // Remember a currently playing track so it can return once the song ends.
     const resumeTrackId =
       this.activeAudio?.kind === "focus-music" &&
       this.focusMusicState === "playing"
@@ -23616,9 +23621,9 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-
-
-
+  // First-party ForkMesh audio shipped with the site. The button press is the
+  // consent gesture, so this path never starts on its own and never proxies a
+  // third-party stream.
   async playHostedTrack(station, now) {
     if (!this.soundEnabled) {
       now.innerHTML = `
@@ -23952,7 +23957,7 @@ class ForkMeshWorld extends HTMLElement {
         cache: "no-store",
       });
     } catch (_) {
-
+      // Local logout must still complete if the network is unavailable.
     }
     try {
       const preserved = new Set([
@@ -24014,8 +24019,8 @@ class ForkMeshWorld extends HTMLElement {
       }
       return response.ok;
     } catch (_) {
-
-
+      // An offline visitor remains signed in locally. Only an authoritative
+      // invalid-session response boots the device.
       return false;
     } finally {
       this.sessionWatchActive = false;
@@ -24043,8 +24048,8 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
 
-
-
+    // Move focus before making the panel inaccessible. Chromium rejects
+    // aria-hidden when a focused close button remains inside the subtree.
     const active = document.activeElement;
     if (active instanceof HTMLElement && panel.contains(active)) {
       const preferred = this.settingsReturnFocus;
@@ -24084,12 +24089,12 @@ class ForkMeshWorld extends HTMLElement {
       pane.hidden = pane.dataset.worldSettingsPane !== selected;
     });
     if (selected === "security") {
-
-
+      // The list is small and revocation must never read a stale row, so it is
+      // re-read on entry rather than polled while the panel sits open.
       void this.loadWorldSessions();
     }
     if (selected === "debug") {
-
+      // Paint the readings immediately instead of waiting out the 1s tick.
       this.renderDiagnostics();
       // A fresh scene walk on entry; re-sorting afterwards reuses it.
       this.renderWorldObjectPane({ walk: true });
@@ -24614,8 +24619,8 @@ class ForkMeshWorld extends HTMLElement {
       return false;
     }
     if (payload?.currentRevoked || revokingCurrent) {
-
-
+      // This browser's own token just died; drop the local copy and reload so
+      // the World comes back as a guest instead of retrying a dead session.
       await this.logoutFromWorld();
       return true;
     }
@@ -24673,9 +24678,9 @@ class ForkMeshWorld extends HTMLElement {
     if (!terminal) return;
     const selected = "general";
     try {
-
-
-
+      // The World launcher always opens on its in-place chat stream. Other
+      // entries in the channel rail navigate to their dedicated surfaces, so
+      // do not let an older saved shortcut reopen this panel without chats.
       localStorage.setItem(
         "forkmesh.worldComposer.selectedChannel",
         selected,
@@ -24758,9 +24763,9 @@ class ForkMeshWorld extends HTMLElement {
     document.head.append(script);
   }
 
-
-
-
+  // Open the collapsed bottom-right CHAT bar (not the full chat overlay) and
+  // hand the native composer a starting message so a visitor talking to the
+  // bot can start typing immediately.
   openChatTerminal(prefillText = "", attachment = null) {
     const details = this.$("[data-world-chat-terminal]");
     if (!details) return;
@@ -24793,8 +24798,8 @@ class ForkMeshWorld extends HTMLElement {
     }, 80);
   }
 
-
-
+  // Mirror the newest live chat line into the collapsed CHAT bar so the
+  // bottom strip shows the latest message without opening the panel.
   setChatTerminalLastMessage(sender, text) {
     this.scheduleQuickComposerIdle();
     const label = this.$("[data-world-chat-terminal-last]");
@@ -24841,8 +24846,8 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-
-
+  // Unread pill on the collapsed CHAT bar: on mobile the bar shrinks to the
+  // word CHAT, so the count is the only hint that someone is talking.
   bumpChatTerminalUnread() {
     if (this.$("[data-world-chat-terminal]")?.open) return;
     this.chatTerminalUnread += 1;
@@ -25065,10 +25070,10 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-
-
-
-
+  // Resolve the already-public account avatar for every signed-in member who
+  // opted in to wearing it, then dress their 3D face with it. Only the opt-in
+  // boolean travels over presence; the image comes from the edge-cached
+  // /api/accounts/{name} lookup and is cached here per account for the session.
   syncWorldFaceImages(players) {
     const wearers = (Array.isArray(players) ? players : [])
       .filter(
@@ -25339,8 +25344,8 @@ class ForkMeshWorld extends HTMLElement {
 
   handleWorldCameraMode(state) {
     this.syncWorldCameraModeButton();
-
-
+    // Only the scene's own decisions need announcing here; the toggle button
+    // and the repository visit already narrate their own switch.
     if (state?.reason === "zoom-out") {
       this.toast("Zoomed all the way out — third-person view restored.");
     }
@@ -25362,8 +25367,8 @@ class ForkMeshWorld extends HTMLElement {
   async toggleWorldSound() {
     if (this.soundEnabled) {
       this.soundEnabled = false;
-
-
+      // The toolbar control is the master switch, not only a switch for the
+      // short synthesized cues. Stop every local soundtrack as well.
       this.focusMusicAutoplayPending = false;
       this.stopRadio();
       const context = this.soundContext;
@@ -25379,8 +25384,8 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     try {
-
-
+      // This is the only path that creates the shared cue context, and it runs
+      // directly from the user's sound-button click.
       this.soundContext = new AudioContext();
       await this.soundContext.resume();
       this.soundEnabled = true;
@@ -25490,9 +25495,9 @@ class ForkMeshWorld extends HTMLElement {
     const detailVisibility = detail?.style?.visibility || "";
     const backdropVisibility = backdrop?.style?.visibility || "";
     try {
-
-
-
+      // Keep the public World HUD in the image, but omit the private profile
+      // drawer and its backdrop. Two paint frames ensure the cloned HUD sees
+      // the temporary visibility before rasterization begins.
       if (detail) detail.style.visibility = "hidden";
       if (backdrop) backdrop.style.visibility = "hidden";
       await new Promise((resolve) =>
@@ -25529,9 +25534,9 @@ class ForkMeshWorld extends HTMLElement {
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) return "";
-
-
-
+    // ActivityPub's bounded inline-media path accepts 64 KiB. Encode
+    // asynchronously and progressively reduce the frame so even mobile
+    // captures remain below that limit without stalling the render loop.
     for (const maxSide of [960, 800, 640, 520, 420]) {
       const scale = Math.min(1, maxSide / Math.max(source.width, source.height));
       canvas.width = Math.max(1, Math.round(source.width * scale));
@@ -25562,17 +25567,17 @@ class ForkMeshWorld extends HTMLElement {
     const world = this.world;
     const canvas = world?.renderer?.domElement;
     if (!canvas) return null;
-
-
+    // The assigned-work back plate is self-only and intentionally omitted
+    // from built-in captures so sharing a World screenshot cannot leak it.
     const workBadgeWasVisible = world.setSelfWorkBadgeVisibility?.(false);
     try {
-
-
+      // The renderer runs without preserveDrawingBuffer, so paint a fresh
+      // frame and read it back synchronously before the buffer is cleared.
       world.renderer.render(world.scene, world.camera);
       const root = this.$("[data-world-root]");
       const canvasBounds = canvas.getBoundingClientRect();
-
-
+      // The HUD is DOM painted over the canvas, so the crop is clamped to the
+      // world root — everything the player sees, chrome included.
       const bounds = root ? root.getBoundingClientRect() : canvasBounds;
       const left = Math.max(rect.left, bounds.left);
       const top = Math.max(rect.top, bounds.top);
@@ -25586,8 +25591,8 @@ class ForkMeshWorld extends HTMLElement {
       shot.height = Math.max(1, Math.round((bottom - top) * scaleY));
       const context = shot.getContext("2d");
       if (!context) return null;
-
-
+      // Read the WebGL buffer back before anything awaits — the next paint
+      // clears it.
       context.drawImage(
         canvas,
         0,
@@ -25619,9 +25624,9 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-
-
-
+  // Rasterizes the HUD layers (top bar, rails, labels, panels) so a capture
+  // shows the interface the player is looking at and not a bare 3D frame.
+  // Anything that fails to serialize degrades to a canvas-only screenshot.
   async renderHudImage(root, bounds) {
     const width = Math.max(1, Math.round(bounds.width));
     const height = Math.max(1, Math.round(bounds.height));
@@ -25629,8 +25634,8 @@ class ForkMeshWorld extends HTMLElement {
     try {
       const clone = root.cloneNode(true);
       clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-
-
+      // The 3D canvas is drawn from the live renderer, and the capture
+      // overlay/annotator are capture chrome — neither belongs in the clone.
       clone
         .querySelectorAll(
           "canvas, [data-world-canvas-wrap], .world-shot-overlay, .world-shot-annotator, script",
@@ -25639,10 +25644,10 @@ class ForkMeshWorld extends HTMLElement {
       clone.style.width = `${width}px`;
       clone.style.height = `${height}px`;
       clone.style.margin = "0";
-
-
-
-
+      // The world root paints an opaque backdrop behind the 3D canvas. The HUD
+      // raster is composited *over* the rendered frame, so leaving that fill in
+      // the clone buries the game world and the capture comes back as chrome on
+      // a flat colour.
       clone.style.background = "transparent";
       clone.style.backgroundColor = "transparent";
       await this.inlineHudImages(root, clone);
@@ -25664,8 +25669,8 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-
-
+  // Foreign-object rasterization never fetches subresources, so same-origin
+  // HUD artwork (the brand mark, avatars) is inlined as data URLs first.
   async inlineHudImages(root, clone) {
     this.hudImageCache = this.hudImageCache || new Map();
     const live = Array.from(root.querySelectorAll("img"));
@@ -25701,8 +25706,8 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-
-
+  // Same-origin rules only; a cross-origin sheet throws on cssRules and is
+  // simply skipped.
   hudStylesheetText() {
     if (typeof this.hudStyleText === "string") return this.hudStyleText;
     const parts = [];
@@ -25729,7 +25734,7 @@ class ForkMeshWorld extends HTMLElement {
       ["ellipse", "Ellipse"],
       ["text", "Text"],
     ];
-
+    // Same palette as the desktop Screenshot & Markup window.
     const colors = [
       "#ff3232",
       "#ffa500",
@@ -26207,15 +26212,15 @@ class ForkMeshWorld extends HTMLElement {
       _updatedAt: this.settingsUpdatedAt,
     });
     this.queueWorldPreferencesSync();
-
-
+    // The privacy toggles live here, so a member hiding (or restoring) their
+    // country, browser, or OS updates their away bench figure right away.
     void this.syncWorldClientProfile();
   }
 
-
-
-
-
+  // Save the coarse country/browser/OS on the signed-in account. A member who
+  // is not in the world publishes no presence frame, so without this their
+  // campfire bench figure would sit there with no flag and a hidden client
+  // badge. Written only when the value actually changes.
   async syncWorldClientProfile() {
     if (this.destroyed) return;
     if (!this.identity || this.identity.accountStatus === "Guest") return;
@@ -26245,13 +26250,13 @@ class ForkMeshWorld extends HTMLElement {
     try {
       await this.postJSON("/api/world/client", body, { timeout: 5000 });
       localStorage.setItem(CLIENT_PROFILE_KEY, fingerprint);
-
-
-
+      // The directory endpoint is no-store and its edge copy was invalidated
+      // by the write. Force the same tab to repaint its bench/avatar now,
+      // instead of waiting for the ordinary roster polling interval.
       this.memberDirectoryFetchedAt = 0;
       await this.refreshMemberDirectory(true);
     } catch (_) {
-
+      // Retry on the next ticket refresh or settings change.
       this.worldClientProfileKey = "";
     }
   }
@@ -26284,11 +26289,11 @@ class ForkMeshWorld extends HTMLElement {
     }, Math.max(10_000, Number(lockMs) || 0));
   }
 
-
-
-
-
-
+  // True once the page-load grace has passed. Callers that narrate incoming
+  // world traffic (chat lines, mirror doorbells, the notification/event read)
+  // check this so a fresh load never opens with a stack of replayed cards.
+  // Notices the visitor causes by acting are never gated — those are always
+  // about something that just happened.
   activityNoticesSettled() {
     return Date.now() >= this.activityNoticesEnabledAt;
   }
@@ -26299,14 +26304,14 @@ class ForkMeshWorld extends HTMLElement {
       .trim()
       .slice(0, 280);
     if (!copy) return;
-
-
-
+    // Chat lines already land in the native transcript straight from the
+    // relay socket (and `transcript: false` marks lines that started there),
+    // so forwarding those again would duplicate every message.
     if (kind !== "chat" && transcript) this.notifyChatArea(copy, kind);
     const terminal = this.$("[data-world-chat-terminal]");
     const stream = this.$("[data-world-activity-stream]");
-
-
+    // With the chat panel open the transcript is already on screen and the
+    // panel covers the bubble corner, so skip the floating card entirely.
     if (!stream || terminal?.open) return;
     const article = document.createElement("article");
     article.dataset.kind = ["chat", "error", "success"].includes(kind)
@@ -26500,8 +26505,8 @@ class ForkMeshWorld extends HTMLElement {
 
   async checkForWorldUpdate() {
     if (this.destroyed || this.updateReloadPending || document.hidden) return;
-
-
+    // Visibility flips can arrive in bursts; keep the check to at most one
+    // relay request per minute so hidden/visible churn never adds load.
     const now = Date.now();
     if (now - this.lastUpdateCheckAt < WORLD_UPDATE_CHECK_MIN_GAP_MS) return;
     this.lastUpdateCheckAt = now;
@@ -26511,13 +26516,13 @@ class ForkMeshWorld extends HTMLElement {
         await this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
       );
     } catch (_) {
-      return;
+      return; // Offline or relay backpressure: a later quiet tick retries.
     }
     if (this.destroyed || this.updateReloadPending || !build.revision) return;
     const known = String(this.buildDiagnostics?.revision || "");
     if (!known) {
-
-
+      // The boot fetch failed or has not landed yet: adopt this revision as
+      // the baseline instead of treating it as an update.
       this.buildDiagnostics = { ...this.buildDiagnostics, ...build };
       this.renderDiagnostics();
       return;
@@ -26578,8 +26583,8 @@ class ForkMeshWorld extends HTMLElement {
       this.remotePlayers.size +
       (socketOnline ? 0 : this.localPeers.size);
     const scene = this.world?.getDiagnostics?.(sampleNow) || null;
-
-
+    // Heap growth per minute over up to five minutes of retained samples —
+    // the reading that makes a leak visible long before a crash.
     const heapMB = heapUsedMB();
     if (Number.isFinite(heapMB)) {
       this.diagnosticsHeapHistory.push({ at: sampleNow, mb: heapMB });
@@ -26884,7 +26889,7 @@ class ForkMeshWorld extends HTMLElement {
         };
       })(),
     };
-
+    // Sixty seconds of one-second frame samples back the history sparkline.
     if (snapshot.renderer && !snapshot.renderer.paused) {
       this.diagnosticsFrameHistory.push({
         frameTimeMs: snapshot.renderer.frameTimeMs,
@@ -26905,8 +26910,8 @@ class ForkMeshWorld extends HTMLElement {
     const root = this.$("[data-world-diagnostics]");
     const floatingVisible = Boolean(root && !root.hidden);
     const debugPane = this.settingsDebugPaneElement();
-
-
+    // With the floating pill hidden and the Debug tab closed there is nothing
+    // to paint; rebuilding readouts every second would be pure waste.
     if (!floatingVisible && !debugPane) return;
     const snapshot = this.collectDiagnostics();
     if (debugPane) this.renderDebugSettingsPane(debugPane, snapshot);
@@ -27064,9 +27069,9 @@ class ForkMeshWorld extends HTMLElement {
         level === "high" ? "needs attention" : level === "caution" ? "watch" : "healthy"
       }`;
     }
-
-
-
+    // Everything below lives in the expanded body; while the panel is
+    // collapsed only the summary readouts above are visible, so skip the
+    // nine per-second innerHTML rebuilds until it opens.
     if (!root.open) return;
     const readouts = this.diagnosticsDetailReadouts(snapshot);
     for (const [slot, html] of Object.entries({
@@ -27086,10 +27091,10 @@ class ForkMeshWorld extends HTMLElement {
     if (musicDetail) musicDetail.textContent = readouts.music;
   }
 
-
-
-
-
+  // The detailed one-second readouts, shared verbatim by the floating debug
+  // pill's expanded body and the settings panel's Debug tab. The Debug tab
+  // additionally renders the scene-walk rows (frame history, scene graph,
+  // lights/shadows, top costs, and output) that the compact pill omits.
   diagnosticsDetailReadouts(snapshot) {
     const {
       renderer,
@@ -27182,8 +27187,8 @@ class ForkMeshWorld extends HTMLElement {
     };
   }
 
-
-
+  // The settings panel's Debug tab is live while it is open: this repaints
+  // every diagnostics tick, whether or not the floating pill is shown.
   settingsDebugPaneElement() {
     if (this.settingsTab !== "debug") return null;
     if (this.$("[data-world-settings]")?.dataset.open !== "true") return null;
@@ -27228,9 +27233,9 @@ class ForkMeshWorld extends HTMLElement {
       .join("");
   }
 
-
-
-
+  // One-click capture for bug reports and agent handoffs: the exact snapshot
+  // the readouts render, as pretty-printed JSON on the clipboard, stamped
+  // with wall-clock capture time. Nothing is transmitted.
   async copyDiagnosticsSnapshot() {
     const fresh =
       this.lastDiagnosticsSnapshot &&
@@ -27257,8 +27262,8 @@ class ForkMeshWorld extends HTMLElement {
 
   startActivityTicker() {
     const messages = () => {
-
-
+      // Read the cached records: rebuilding the normalized mirror catalog
+      // every 6.5s tick just to name one node dominated idle allocations.
       const nodes = Array.isArray(this.liveMirrorNodes)
         ? this.liveMirrorNodes
         : [];
@@ -27297,9 +27302,9 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   handleMovement(movement) {
-
-
-
+    // The Office teardown returns the scene to Town Square. During a page
+    // teardown that callback must not overwrite the location captured just
+    // before it with the Office doorway.
     if (this.destroyed) return;
     if (movement?.moving === true) {
       this.setWorldRightRailExpanded(false);
@@ -27391,10 +27396,10 @@ class ForkMeshWorld extends HTMLElement {
     if (WORLD_SPACE_IDS.has(sceneSpace)) {
       return { ...scenePosition, space: sceneSpace };
     }
-
-
-
-
+    // Office rooms are intentionally session-only. The scene keeps a town
+    // avatar parked at the doorway while the interior is open, so storing that
+    // coordinate would make every refresh look like a new Office arrival.
+    // Restore the last actual walkable-world movement instead.
     const previous = this.lastMovement;
     const previousSpace = String(previous?.space || "");
     return WORLD_SPACE_IDS.has(previousSpace)
@@ -27493,19 +27498,19 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityRenderedSecond = -1;
     this.worldActivityRenderedMinute = -1;
     this.worldActivityLoungeRenderedMinute = -1;
-
-
+    // Signing out drops the account's active-time row off the player's own
+    // chest instead of freezing the last reading there.
     if (this.identity) this.identity.totalActiveMs = null;
     this.syncMemberLounge();
   }
 
-
-
-
-
-
-
-
+  // A world ticket is the only account proof peers ever receive: the relay
+  // stamps the signed name and account status onto this connection, and a
+  // browser without a live ticket joins as an anonymous "Guest ####" even
+  // while it is signed in — which also breaks chat bubbles, because they are
+  // matched to an avatar by display name. Applying the identity therefore has
+  // to stand alone; it must never be gated on the optional activity-accounting
+  // fields (applyWorldActivityTicket) that ride along in the same response.
   applyWorldTicketIdentity(ticket) {
     if (
       !this.identity ||
@@ -27538,9 +27543,9 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicketExpires = Number(ticket.expiresAt || 0);
     void this.loadWorldPreferences();
     this.startAdminErrorPolling();
-
-
-
+    // The ticket usually authenticates after the initial loadContext() already
+    // gave up on personal pings ("signed-out"), which stranded the board empty
+    // until the next 60s poll. Fetch them the moment the session proves out.
     if (!wasAuthenticated || this.notificationsState === "signed-out") {
       void this.refreshPersonalNotifications(this.isEventsPanelOpen());
     }
@@ -27580,8 +27585,8 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return false;
     }
-
-
+    // Reset to the new server aggregate. The prior in-page interval is already
+    // represented by this ticket touch, so carrying it over would double count.
     this.worldActivityBaseMs = total;
     this.worldActivityBaseAt = document.hidden ? 0 : performance.now();
     this.worldActivityObservedAt = observedAt;
@@ -27603,9 +27608,9 @@ class ForkMeshWorld extends HTMLElement {
       this.sessionAuthenticated &&
       Boolean(this.worldActivityBaseAt) &&
       !document.hidden;
-
-
-
+    // Quantized to whole minutes: the live counter otherwise changes on every
+    // call, which made the leaderboard repaint (a 2048px canvas + GPU texture
+    // upload) on every peer frame instead of only when a row really moved.
     const currentTotal =
       Math.floor(this.currentWorldActivityMs() / 60_000) * 60_000;
     return this.memberDirectory.map((member) => {
@@ -27638,13 +27643,13 @@ class ForkMeshWorld extends HTMLElement {
     const renderedSecond = Math.floor(this.currentWorldActivityMs() / 1000);
     if (renderedSecond === this.worldActivityRenderedSecond) return;
     this.worldActivityRenderedSecond = renderedSecond;
-
-
-
-
-
-
-
+    // The lounge renders whole-minute activity (leaderboardMembers quantizes
+    // totals), yet this one-second tick was rebuilding it on every call:
+    // hundreds of member-fact derivations, per-avatar badge keys, and the
+    // leaderboard repaint key stringify each second for output that could
+    // not have changed. Membership and presence changes reach the lounge
+    // through their own syncMemberLounge call sites, so this path only needs
+    // to fire when the rendered minute advances.
     const renderedLoungeMinute = Math.floor(renderedSecond / 60);
     if (renderedLoungeMinute !== this.worldActivityLoungeRenderedMinute) {
       this.worldActivityLoungeRenderedMinute = renderedLoungeMinute;
@@ -27653,9 +27658,9 @@ class ForkMeshWorld extends HTMLElement {
     this.syncOwnBadgeActivity();
   }
 
-
-
-
+  // The player's own chest carries the same "ACTIVE … IN WORLD" row every
+  // other member's does. The row reads whole minutes, so the badge canvas is
+  // repainted once a minute rather than on every one-second activity tick.
   syncOwnBadgeActivity() {
     if (!this.identity) return;
     const total = this.currentWorldActivityMs();
@@ -27695,9 +27700,9 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {
       return;
     }
-
-
-
+    // The response is intentionally discarded. This authenticated,
+    // server-timestamped touch closes the visible interval; the browser never
+    // reports an elapsed value. The next visible ticket starts a fresh proof.
     void fetch("/api/world/ticket", {
       method: "GET",
       headers,
@@ -27709,9 +27714,9 @@ class ForkMeshWorld extends HTMLElement {
 
   async refreshWorldTicket() {
     if (this.destroyed || document.hidden) return;
-
-
-
+    // A browser authenticated by the session cookie alone keeps no bearer
+    // token in localStorage, so an already-authenticated page must still be
+    // allowed to renew — otherwise its next reconnect drops to guest.
     if (!readSession()?.sessionToken && !this.sessionAuthenticated) {
       this.clearWorldTicketIdentity();
       return;
@@ -27733,13 +27738,13 @@ class ForkMeshWorld extends HTMLElement {
       const previousStatus = this.identity?.accountStatus;
       if (this.applyWorldTicketIdentity(ticket)) {
         this.applyWorldActivityTicket(ticket);
-
-
+        // A visitor who only became authenticated here (or whose earlier save
+        // failed) still gets their client profile stored for the bench figure.
         void this.syncWorldClientProfile();
-
-
-
-
+        // A ticket that failed (or timed out) during bootstrap leaves a
+        // signed-in visitor stranded under the placeholder guest name. Repair
+        // the presence the moment a later ticket arrives, and republish it so
+        // peers relabel the avatar instead of waiting for a reconnect.
         if (
           this.identity.name !== previousName ||
           this.identity.accountStatus !== previousStatus
@@ -27755,7 +27760,7 @@ class ForkMeshWorld extends HTMLElement {
       }
       this.clearWorldTicketIdentity();
     } catch (_) {
-
+      // Keep a still-valid ticket for reconnect; clear only an expired one.
       if (this.worldTicketExpires <= Date.now()) {
         this.clearWorldTicketIdentity();
       }
@@ -27774,10 +27779,10 @@ class ForkMeshWorld extends HTMLElement {
     }, WORLD_TICKET_REFRESH_MS);
   }
 
-
-
-
-
+  // The relay handed this account's single avatar to a newer device. Stand
+  // down quietly: no reconnect ladder, no error state, and no second figure
+  // in the world. The visitor's own next click, keypress, or return to this
+  // tab brings it back here.
   handlePresenceTakeover() {
     this.presenceTakenOver = true;
     this.socketRecovery.cancelReconnect();
@@ -27854,9 +27859,9 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       await this.refreshWorldTicket();
     }
-
-
-
+    // An expired ticket proves nothing: the relay drops the claim and this
+    // connection would join as a guest under a stale name. Reconnect without
+    // it rather than pinning the guest label onto a signed-in visitor.
     if (this.worldTicket && this.worldTicketExpires <= Date.now()) {
       this.worldTicket = "";
       this.worldTicketExpires = 0;
@@ -28113,9 +28118,9 @@ class ForkMeshWorld extends HTMLElement {
         this.freshArrivalCampfireSeated;
       this.serverPeerId = String(message.id || "");
       const ownPresence = remotePlayer(message.self);
-
-
-
+      // A restored spot may have been handed out as an arrival cell while
+      // this browser was away. If another visitor is standing there, fall
+      // back to the fresh open cell the server just assigned.
       const ownSpace = String(this.lastMovement?.space || this.currentSpace);
       const spawnBlocked =
         this.initialPresenceWelcomePending &&
@@ -28137,9 +28142,9 @@ class ForkMeshWorld extends HTMLElement {
         ownPresence?.id === this.serverPeerId &&
         (!this.spawnSelected || spawnBlocked)
       ) {
-
-
-
+        // A reconnect hands out a fresh outdoor arrival cell. The scene
+        // declines it while this visitor is inside the Office tower, and the
+        // stored position must not drift to a spot the avatar never took.
         const relocated = this.world?.setSpawn?.({
           x: ownPresence.x,
           y: ownPresence.y,
@@ -28172,16 +28177,16 @@ class ForkMeshWorld extends HTMLElement {
           this.remotePlayers.set(player.id, player);
         }
       });
-
-
-
-
+      // The welcome may have replaced a newly seated guest with a collision-
+      // free arrival cell. Rebuild the spare seats with the authoritative peer
+      // list, then put that first-time visitor back down before publishing the
+      // initial movement frame. Reconnects never repeat this.
       if (reseatFreshArrival) {
         this.syncMemberLounge();
         this.world?.returnToCampfireBench?.(this.identity?.name || "");
       }
-
-
+      // Publishing starts only after the server has assigned this connection's
+      // unique row/column arrival slot.
       window.clearTimeout(this.movementSendTimer);
       this.movementSendTimer = 0;
       this.pendingMovement = null;
@@ -28211,9 +28216,9 @@ class ForkMeshWorld extends HTMLElement {
     } else if (message.type === "move" && message.id) {
       const id = String(message.id);
       if (id !== this.serverPeerId) {
-
-
-
+        // A movement delta is meaningful only after this active socket has
+        // announced the peer in its welcome/join stream. Never resurrect an
+        // avatar from a late frame that followed its authoritative leave.
         const current = this.remotePlayers.get(id);
         if (!current) return;
         const next = {
@@ -28223,9 +28228,9 @@ class ForkMeshWorld extends HTMLElement {
           heading: boundedYaw(message.yaw),
         };
         this.remotePlayers.set(id, next);
-
-
-
+        // A move carries no badge, roster, lounge, or capacity data. Update
+        // the existing interpolation target in O(1), falling back to the full
+        // pass only when a just-joined avatar has not been constructed yet.
         if (this.world?.setRemotePlayerMovement?.(id, next) !== true) {
           peersChanged = true;
         }
@@ -28289,8 +28294,8 @@ class ForkMeshWorld extends HTMLElement {
       message.from &&
       message.with
     ) {
-
-
+      // An accepted handshake is public: every browser in the room animates
+      // the same pair, including the visitor who offered it.
       const accepterId = String(message.from);
       const offererId = String(message.with);
       this.playWorldHandshake(accepterId, offererId);
@@ -28339,17 +28344,17 @@ class ForkMeshWorld extends HTMLElement {
     } else if (message.type === "mirror-push") {
       this.handleMirrorPush(message);
     }
-
-
-
+    // Pongs, successful movement fast paths, and targeted interactions do not
+    // change the public roster. Avoid re-walking every avatar and rebuilding
+    // unrelated scene metrics for those high-frequency frames.
     if (peersChanged) this.schedulePeerRender();
   }
 
-
-
-
-
-
+  // A full renderPeers() pass walks the entire member directory (badges,
+  // lounge, aquarium, capacity tables), so running it once per inbound peer
+  // frame scaled O(peers × members) each second. One coalesced pass shortly
+  // after the first frame of a burst keeps avatars fresh — peers only publish
+  // movement about once a second and the scene interpolates between targets.
   schedulePeerRender() {
     if (this.peerRenderTimer) return;
     this.peerRenderTimer = window.setTimeout(() => {
@@ -28359,18 +28364,18 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   handleMirrorPush(message) {
-
-
-
-
-
+    // The relay announces that a mirror node's signed catalog record advanced
+    // to a new head — code was just pushed onto that node. The frame itself is
+    // only a doorbell: the cabinet's displayed state, and the push surge the
+    // scene plays when a cabinet's commit visibly changes, both come from the
+    // re-fetched signed mirror payload, never from unauthenticated frame data.
     const node = sanitizePresenceText(message?.node, "", 40);
     const repo = sanitizePresenceText(message?.repo, "", 60);
     const commit = sanitizePresenceText(message?.commit, "", 12).toLowerCase();
     if (!node || !repo || !/^[0-9a-f]{12}$/.test(commit)) return;
-
-
-
+    // The publisher can be a user-backed source or a mirror node. Neither is
+    // the public repository owner. Keep that internal routing identity out of
+    // visitor-facing copy; the flagship organization remains forkmesh.
     const publicOwner =
       repo.toLowerCase() === FLAGSHIP_REPOSITORY.repo
         ? FLAGSHIP_REPOSITORY.owner
@@ -28389,16 +28394,16 @@ class ForkMeshWorld extends HTMLElement {
           paths.indexOf(path) === index,
       )
       .slice(0, 8);
-
-
-
+    // The scene effect and catalog refresh below still run during the join
+    // grace; only the narration is held back so the load does not open on a
+    // push that happened before the visitor arrived.
     if (this.activityNoticesSettled()) {
       this.toast(
         `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
       );
     }
-
-
+    // This only arms the scene. No frame directly creates an effect: the next
+    // signed catalog payload must confirm the node and commit prefix first.
     this.world?.armMirrorPushEffect?.(
       node,
       commit,
@@ -28406,19 +28411,19 @@ class ForkMeshWorld extends HTMLElement {
       repo,
       changedFiles,
     );
-
-
+    // One coalesced refresh replaces waiting out the steady mirror poll, so
+    // the yard updates near-instantly without adding steady-state traffic.
     window.clearTimeout(this.mirrorPushRefreshTimer);
     this.mirrorPushRefreshTimer = window.setTimeout(() => {
       this.mirrorPushRefreshTimer = 0;
       if (this.destroyed) return;
       void this.refreshMirrorCatalogs({ force: true }).catch(() => {
-
-
+        // Preserve the last verified snapshot during a transient HTTPS
+        // failure; the regular poll retries on its own cadence.
       });
-
-
-
+    // Give the catalog purge/publication transaction a moment to become
+    // visible at the edge. The verified-effect arm remains live through the
+    // regular fallback polls if this eager read is still early.
     }, 1_500);
   }
 
@@ -28456,9 +28461,9 @@ class ForkMeshWorld extends HTMLElement {
         type: "presence",
         ...publicIdentity(this.identity, this.settings),
         ...this.lastMovement,
-
-
-
+        // The same-device fallback follows the exact same privacy choice as
+        // network presence. In particular, the initial movement object must
+        // never reintroduce an activity label after activity sharing is off.
         activity: this.settings.privacy.activity
           ? sanitizePresenceText(this.lastMovement.activity, "online", 64)
           : "online",
@@ -28496,9 +28501,9 @@ class ForkMeshWorld extends HTMLElement {
       });
     }
     const players = [...combined.values()].map((player) => {
-
-
-
+      // Only members of an organization this viewer owns or administers carry
+      // a team plaque; everyone else's back stays bare. A guest may type any
+      // display name, so an unverified name never resolves to a roster entry.
       const orgTeam =
         String(player?.accountStatus || "Guest") === "Guest"
           ? null
@@ -28687,9 +28692,9 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-
-
-
+  // Public balance and transaction-recency bucket for one published wallet
+  // address, refreshed from the edge-cached worker endpoint at most once per
+  // TTL. Returns the cached entry immediately (possibly still pending).
   walletBadgeFor(address) {
     if (!WORLD_SOLANA_ADDRESS_RE.test(String(address || ""))) return null;
     let entry = this.walletBadges.get(address);
@@ -28720,8 +28725,8 @@ class ForkMeshWorld extends HTMLElement {
     return entry;
   }
 
-
-
+  // Pushes the freshest wallet data onto the local avatar and every rendered
+  // peer; called whenever a wallet lookup settles.
   applyWalletBadges() {
     if (this.destroyed) return;
     if (this.identity?.solana && this.settings) {
@@ -29085,7 +29090,7 @@ class ForkMeshWorld extends HTMLElement {
           await navigator.clipboard.writeText("");
         }
       } catch {
-
+        // Desktop clears the handoff immediately; this is only a fallback.
       }
     }, 60_000);
   }
@@ -29150,10 +29155,10 @@ class ForkMeshWorld extends HTMLElement {
     }
     if (submit) submit.disabled = true;
     try {
-
-
-
-
+      // The native URL intentionally contains public topology only. Putting a
+      // token or SSH password in a custom-scheme URL would expose it through
+      // browser history, process arguments, desktop activation logs, and OS
+      // protocol dispatch.
       await navigator.clipboard.writeText(values.cloudflareToken);
       const tokenToClear = values.cloudflareToken;
       const url = new URL("forkmesh://control/cloudflare");
@@ -29401,8 +29406,8 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-
-
+  // The viewer's shareable referral link — only real user accounts (never
+  // node sessions) own one, matching the website's session acceptance rule.
   referralLink() {
     const session = readSession();
     if (!session?.nodeName || session.kind === "node") return "";
@@ -29412,8 +29417,8 @@ class ForkMeshWorld extends HTMLElement {
     )}`;
   }
 
-
-
+  // One edge-cached snapshot keeps every island sign synchronized with the
+  // website hub. Custom referral faces still retain their richer tap actions.
   async loadReferralLeaderboard() {
     if (
       !this.world?.updateLeaderboards &&
@@ -29501,15 +29506,15 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-
-
-
-
-
-
-
-
-
+  // An account created after this tab loaded is missing from the directory
+  // snapshot, so its owner would have no bench until the next refresh. A
+  // presence frame is evidence the snapshot in hand is stale — it forces a
+  // fresh one — but it is never itself a membership: a presence name may
+  // belong to a guest, a bot, or a private profile the directory omits, and
+  // only rows the users table actually returns may sit at the fire or count
+  // in its total (adhoc #427). A name a completed snapshot came back without
+  // is remembered, so a name the directory will never list cannot keep
+  // forcing fetches.
   noteDirectoryMembers(names) {
     const known = new Set(
       this.memberDirectory.map((member) => member.name.toLowerCase()),
@@ -29524,19 +29529,19 @@ class ForkMeshWorld extends HTMLElement {
       missing.push(key);
     });
     if (!missing.length) return false;
-
-
-
-
+    // A brand-new account is exactly the case the refresh throttle must not
+    // swallow: signing up drops the endpoint's edge-cached copy, so a forced
+    // fetch hands back the arrival's own row rather than a snapshot from
+    // before it existed.
     void this.refreshMemberDirectory(true, missing);
     return true;
   }
 
-
-
-
-
-
+  // Shares the edge-cached directory endpoint the chat roster uses. Throttled
+  // well past its server-side TTL so idle tabs cost nothing; an account seen
+  // for the first time in a presence frame forces a fresh snapshot, floored
+  // at the endpoint's own cache TTL because a fetch inside that window would
+  // only hand back the same edge-cached body.
   async refreshMemberDirectory(force = false, probed = []) {
     const now = Date.now();
     const throttle = force
@@ -29548,16 +29553,16 @@ class ForkMeshWorld extends HTMLElement {
       const data = await this.fetchJSON("/api/accounts/users", {
         auth: false,
         timeout: 5000,
-
-
+        // A forced refresh exists to pick up an account the snapshot in hand
+        // is too old to know about, so it must skip the client-side copy.
         maxAge: force ? 0 : WORLD_MEMBER_DIRECTORY_POLL_MS,
         backoff: true,
         staleIfError: true,
       });
       const directory = normalizeMemberDirectory(data);
       if (!directory.length || this.destroyed) return;
-
-
+      // The users table is the only membership: whatever this snapshot lists
+      // is the whole directory, and a name it left out never joins it locally.
       const listed = new Set(
         directory.map((member) => member.name.toLowerCase()),
       );
@@ -29571,10 +29576,10 @@ class ForkMeshWorld extends HTMLElement {
 
   syncMemberLounge() {
     if (!this.world?.updateMemberLounge) return;
-
-
-
-
+    // Seat every public registered account in the circle around the campfire.
+    // Members already rendered as live or opted-in idle avatars keep their
+    // richer presence avatar instead of a duplicate directory figure, leaving
+    // their own named bench visibly empty while they are out and about.
     const present = new Set();
     const registered = [];
     let guests = 0;
@@ -29587,9 +29592,9 @@ class ForkMeshWorld extends HTMLElement {
       const key = clean.toLowerCase();
       present.add(key);
       const status = String(accountStatus || "Guest");
-
-
-
+      // A member who hides their name broadcasts the "Private visitor"
+      // sentinel, and the public directory omits private profiles entirely —
+      // neither owns a named bench.
       if (
         ACCOUNT_STATUS_VALUES.has(status) &&
         status !== "Guest" &&
@@ -29597,9 +29602,9 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         registered.push(clean.slice(0, 32));
       }
-
-
-
+      // The named benches come from the users table, so everyone here without
+      // a row in it — guests, private profiles, bots — needs one of the spare
+      // seats instead, or the ring comes up short (adhoc #427).
       if (!listed.has(key)) guests += 1;
     };
     note(this.identity?.name, this.identity?.accountStatus);
@@ -29644,10 +29649,10 @@ class ForkMeshWorld extends HTMLElement {
               }
             : { name, status: "unknown" };
         }),
-
-
-
-
+        // This assignment was derived from the authenticated viewer's
+        // owner/admin organization roster. Hand it to the directory figure
+        // too, so an administrator can manage a member who is offline just as
+        // they can manage the same member's live presence avatar.
         orgTeam: this.orgTeamAssignmentFor(member.name),
         away: present.has(member.name.toLowerCase()),
       })),

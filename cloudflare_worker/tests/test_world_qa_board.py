@@ -475,6 +475,6 @@ def test_share_and_saved_views_live_in_the_fixed_square_right_rail():
     fixed_rail = CSS.rsplit("/* Fixed launcher geometry.", 1)[1]
     assert "grid-template-columns: 48px;" in fixed_rail
     assert ".world-saved-view-list:empty" in fixed_rail
-
+    # The ordinary right-click menu is untouched.
     assert 'renderer.domElement.addEventListener("contextmenu"' not in SCENE
     assert ".world-share-view-button" in CSS

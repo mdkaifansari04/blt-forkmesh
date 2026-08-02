@@ -78,9 +78,9 @@ function timestampMs(value) {
   return Math.max(0, numeric > 0 && numeric < 10 ** 11 ? numeric * 1000 : numeric);
 }
 
-
-
-
+// Provenance a desktop stamps on a task it opened from a prompt: the bot that
+// launched the run, the bot that reported it finished, and the model,
+// permission mode, and reasoning strength it ran with.
 function normalizedAgentRun(agent) {
   if (!agent || typeof agent !== "object") return null;
   const run = {
@@ -95,7 +95,7 @@ function normalizedAgentRun(agent) {
   return Object.values(run).some(Boolean) ? run : null;
 }
 
-
+// The one-line "how this ran" summary shown under a bot-assigned task.
 function agentRunSummary(run) {
   if (!run) return "";
   return [
@@ -133,8 +133,8 @@ function normalizedTask(task) {
   const id = safeTaskId(task.id);
   const title = text(task.title);
   const assignee = text(task.assignee, 64).toLowerCase();
-
-
+  // One general bot replaced the Claude/Codex choice; legacy rows still
+  // arrive with the old kind and are shown as the same bot.
   const assigneeKind = ["agent", "claude", "codex"].includes(task.assigneeKind)
     ? "agent"
     : ["user", "unassigned"].includes(task.assigneeKind)
@@ -305,8 +305,8 @@ export function createWorldOfficeTasksController({
     "[data-world-office-task-assignees]",
   );
   const checkin = root.querySelector("[data-world-office-task-checkin]");
-
-
+  // The same board is mirrored into the Local controls "Work" tab so an
+  // assignee can start and stop their own work without entering the Office.
   const workList = root.querySelector("[data-world-work-list]");
   const organizationList = root.querySelector(
     "[data-world-organization-task-list]",
@@ -378,9 +378,9 @@ export function createWorldOfficeTasksController({
   let serverNowAtSync = Date.now();
   let lastRefreshAt = 0;
   let refreshPromise = null;
-
-
-
+  // Monotonic read counter. Only the newest read may write the task list, so a
+  // slower reconciliation started before a delete can never resurrect the row
+  // a faster forced read already dropped.
   let refreshSequence = 0;
   let pollTimer = 0;
   let tickTimer = 0;
@@ -436,9 +436,9 @@ export function createWorldOfficeTasksController({
   }
 
   function selfWorkState(state, message = "") {
-
-
-
+    // The owner-only plate on the back of your avatar carries the same work,
+    // narrowed to your assignments plus recent private assignment notices. It
+    // never enters a presence frame, socket, storage record, or analytics.
     const own = ownTasks();
     world.setSelfWorkBoard?.({
       state:
@@ -1026,8 +1026,8 @@ export function createWorldOfficeTasksController({
               ? "Ready for QA"
               : "";
     const checkinState = checkinLabel(task.lastCheckin?.state);
-
-
+    // A bot task waits on a node queue until it reports back. Its author, or
+    // an organization manager, can pull it back onto the task list.
     const botTask = task.assigneeKind === "agent";
     const canReturn =
       botTask && !doneTask && (canManage || task.createdBy === actor);
@@ -1255,8 +1255,8 @@ export function createWorldOfficeTasksController({
     }
   }
 
-
-
+  // Stats only. The per-second tick calls this instead of renderWorkPane so
+  // the row markup — and the Start/Stop button under the pointer — survives.
   function updateWorkStats() {
     const own = ownTasks();
     if (workTotal) workTotal.textContent = String(own.length);
@@ -1469,8 +1469,8 @@ export function createWorldOfficeTasksController({
   function updateElapsedLabels() {
     tasks.forEach((task) => {
       const elapsed = currentElapsed(task);
-
-
+      // The same row can be painted twice (Office board plus Work tab), so
+      // every matching clock is advanced, not just the first one found.
       root
         .querySelectorAll(`[data-world-office-task-elapsed="${task.id}"]`)
         .forEach((node) => {
@@ -1566,10 +1566,10 @@ export function createWorldOfficeTasksController({
     void refresh({ quiet: true }).finally(schedulePoll);
   }
 
-
-
-
-
+  // `force` reconciles right after a confirmed mutation: it may not join a
+  // read that was already in flight before the change (that response predates
+  // the delete and would repaint the removed row), and it runs even while the
+  // low-frequency monitor is paused.
   async function refresh({ quiet = false, force = false } = {}) {
     if ((!monitoring && !force) || typeof fetchJSON !== "function") return false;
     if (refreshPromise && !force) return refreshPromise;
@@ -1697,10 +1697,10 @@ export function createWorldOfficeTasksController({
     return request;
   }
 
-
-
-
-
+  // Drop a task the server has confirmed is gone. The reconciling read below
+  // is authoritative, but it can be slow, superseded, or skipped entirely
+  // while the monitor is paused — the row must leave every list the moment the
+  // delete is acknowledged.
   function dropTask(taskId) {
     const id = safeTaskId(taskId);
     if (!id) return false;
@@ -1728,9 +1728,9 @@ export function createWorldOfficeTasksController({
       busyTaskId = "";
       render();
       if (errorMessage) {
-
-
-
+        // The Office panel's status line is not visible from the Local
+        // controls "Work" tab, where the organization list also lives, so a
+        // rejected change is announced instead of silently doing nothing.
         setStatus(errorMessage, "error");
         toast(errorMessage);
       }
@@ -2227,8 +2227,8 @@ export function createWorldOfficeTasksController({
     tickTimer = 0;
   }
 
-
-
+  // The Local controls "Work" tab is reachable anywhere in the World, so it
+  // drives the same monitoring loop the Office board uses.
   function setPersonalView(open) {
     personalView = open === true;
     if (!personalView) {
@@ -2244,9 +2244,9 @@ export function createWorldOfficeTasksController({
     return true;
   }
 
-
-
-
+  // Populate the private avatar card once at World startup. An idle task list
+  // stops immediately after this request; only an actually running timer keeps
+  // the existing low-frequency reconciliation loop alive.
   function prime() {
     if (!getSession()?.sessionToken) {
       selfWorkState("locked", "Sign in to load assigned work");
@@ -2267,8 +2267,8 @@ export function createWorldOfficeTasksController({
     if (!tickTimer) {
       tickTimer = window.setInterval(updateElapsedLabels, OFFICE_TASKS_TICK_MS);
     }
-
-
+    // Callers use this immediately after creating or changing a task, so it
+    // must read fresh state rather than join a poll that started earlier.
     const result = refresh({ quiet: tasks.length > 0, force: true });
     schedulePoll();
     return result;
@@ -2296,9 +2296,9 @@ export function createWorldOfficeTasksController({
     officeActive = next === true;
     if (!officeActive) {
       close();
-
-
-
+      // An assignee's active timer survives leaving the Office. Keep only its
+      // low-frequency HTTPS poll and private check-in prompt alive; no task
+      // data enters the Town presence socket.
       if (!keepMonitoring()) stopMonitoring();
       return;
     }
@@ -2316,9 +2316,9 @@ export function createWorldOfficeTasksController({
     const sessionToken = String(getSession()?.sessionToken || "");
     if (!sessionToken) return false;
     try {
-
-
-
+      // `keepalive` lets this bounded, same-origin server-time stop finish
+      // while pagehide tears the World down. The token stays in the request
+      // header and no task copy enters the URL, beacon body, or sockets.
       void fetch(`${OFFICE_TASKS_PATH}/stop-active`, {
         method: "POST",
         credentials: "same-origin",

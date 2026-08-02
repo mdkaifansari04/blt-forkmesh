@@ -14,7 +14,7 @@ _SRC = _ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-import dashboard_bundle
+import dashboard_bundle  # noqa: E402
 
 PUBLIC = _ROOT / "public"
 

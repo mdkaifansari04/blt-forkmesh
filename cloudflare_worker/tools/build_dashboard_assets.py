@@ -44,10 +44,10 @@ def site_page_assets():
 
 def main():
     dashboard_js = dashboard_bundle.compose_from_reader(_read)
-
-
-
-
+    # Content-hash every cache-busted bundle into its <script> ?v= query so a
+    # changed deploy always serves fresh JS (see dashboard_shell). Authored
+    # bundles are read off disk; dashboard.js is composed here, so hand it over
+    # in-memory rather than re-reading it.
     versions = dashboard_shell.asset_versions(
         _read, {"dashboard.js": dashboard_js})
     outputs = {
@@ -55,8 +55,8 @@ def main():
             dashboard_shell.compose_page_from_reader(_read, page_id), versions)
         for page_id, meta in dashboard_shell.PAGES.items()
     }
-
-
+    # Same version map for the standalone site pages, so one bundle edit rotates
+    # its ?v= everywhere it is referenced instead of per-page hand bumps.
     for rel in site_page_assets():
         outputs[rel] = dashboard_shell.stamp_asset_versions(_read(rel), versions)
     outputs["dashboard.js"] = dashboard_js

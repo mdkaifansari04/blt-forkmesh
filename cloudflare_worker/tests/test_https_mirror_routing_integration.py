@@ -149,8 +149,8 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
         },
     )
 
-
-
+    # No arbitrary source contents, raw paths, malformed refs, duplicate
+    # amplification, or unattested repository state may enter this cache.
     assert not key(
         first,
         "blobs",
@@ -326,7 +326,7 @@ def test_repository_metadata_cache_round_trips_through_global_kv():
     assert kv.values[cache_key] == '{"ok":true,"entries":[]}'
     assert cache_key in edge.values
 
-
+    # Prove a different colo can refill its local edge from persistent KV.
     edge.values.clear()
     response = asyncio.run(namespace["repository_metadata_cache_get"](
         env, cache_key))
@@ -729,8 +729,8 @@ def test_catalog_health_activation_is_flagship_public_only_and_best_effort():
         {"owner": "mirror2", "name": "forkmesh", "visibility": "private"},
         {"owner": "mirror2", "name": "another-repo", "visibility": "public"},
         {"owner": "not valid", "name": "forkmesh", "visibility": "public"},
-
-
+        # Same repository name, but this account is not the organization's
+        # current canonical backing node and must not trigger a health fetch.
         {"owner": "mirror3", "name": "forkmesh", "visibility": "public"},
     ):
         assert asyncio.run(refresh(object(), record)) is False
@@ -744,8 +744,8 @@ def test_catalog_health_activation_is_flagship_public_only_and_best_effort():
     })) is False
     assert calls == [("mirror2",)]
 
-
-
+    # Once the exact endpoint is selected, a fetch/verifier exception is
+    # swallowed so the already accepted catalog publication is not rolled back.
     endpoint_available = True
     assert asyncio.run(refresh(object(), {
         "owner": "mirror2",
@@ -839,7 +839,7 @@ def test_public_browse_clone_and_release_are_intercepted_before_host_tunnel():
     assert "FORKMESH_HOST" not in browse_fast_path
 
     proxy = _function_source("_https_mirror_proxy")
-    assert "forkmesh-masked-proxy-v1" not in proxy
+    assert "forkmesh-masked-proxy-v1" not in proxy  # canonical lives in policy
     assert "https_routing.request_message" in proxy
     assert "ed25519_sign" in proxy
     assert "JsResponse.new" in proxy

@@ -8,7 +8,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from discord_rate import DiscordRateCoordinator
+from discord_rate import DiscordRateCoordinator  # noqa: E402
 
 
 def test_worker_entry_imports_discord_dependencies_before_using_them():

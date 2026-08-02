@@ -104,22 +104,22 @@ Fixture makeFixture()
     fixture.blockhash = forkmesh::rewards::encodeBase58(blockhashBytes);
 
     QByteArray message;
-    message.append(char(1));
-    message.append(char(0));
-    message.append(char(1));
+    message.append(char(1)); // one required signature
+    message.append(char(0)); // no read-only signed accounts
+    message.append(char(1)); // System Program is read-only
     message += shortVector(3);
     message += fixture.publicKey;
     message += destinationBytes;
-    message += QByteArray(32, '\0');
+    message += QByteArray(32, '\0'); // System Program address
     message += blockhashBytes;
     fixture.instructionCountOffset = 1 + 64 + message.size();
     message += shortVector(1);
-    message.append(char(2));
+    message.append(char(2)); // System Program account index
     message += shortVector(2);
-    message.append(char(0));
-    message.append(char(1));
+    message.append(char(0)); // pool/source
+    message.append(char(1)); // recipient
     message += shortVector(12);
-    appendLittle32(message, 2);
+    appendLittle32(message, 2); // SystemInstruction::Transfer
     appendLittle64(message, fixture.lamports);
     fixture.message = message;
     fixture.transaction = shortVector(1) + QByteArray(64, '\0') + message;
@@ -247,7 +247,7 @@ bool verifySignature(const QByteArray &publicKey, const QByteArray &message,
     return ok;
 }
 
-}
+} // namespace
 
 int main(int argc, char **argv)
 {

@@ -10,9 +10,9 @@
 
 class QTemporaryDir;
 
-
-
-
+// A bare public repository decrypted into an owner-only temporary directory.
+// The gateway and the Qt client keep this object alive only while they need to
+// serve/read the repository; destruction recursively removes the plaintext.
 class PublicMirrorMaterialization
 {
 public:
@@ -34,11 +34,11 @@ private:
     QString m_repositoryPath;
 };
 
-
-
-
-
-
+// Public repositories are public in the authorization sense, but a mirror
+// operator's durable disk still stores only an authenticated age ciphertext.
+// Decryption identities live in an AES-256-GCM vault bound to the local device
+// identity. The official age and age-keygen programs perform all age crypto;
+// ForkMesh never implements a look-alike wire format.
 class PublicMirrorRuntime
 {
 public:
@@ -81,10 +81,10 @@ public:
         }
     };
 
-
-
-
-
+    // Clone a local working tree/bare repository into a temporary canonical
+    // repository.git, stream its tar representation into age, and atomically
+    // replace the durable ciphertext. An existing archive keeps its per-repo
+    // identity and random opaque id.
     static SyncResult syncRepository(
         const QString &repositoryPath, const QString &archiveRoot,
         const QString &vaultPath, const QByteArray &vaultSecret,
@@ -118,16 +118,16 @@ public:
                                  const QString &archiveId,
                                  QString *error = nullptr);
 
-
-
+    // Decrypt and safely extract exactly one repository.git into a mode-0700
+    // temporary directory. No plaintext tar is written to durable storage.
     static std::unique_ptr<PublicMirrorMaterialization> materialize(
         const QString &archiveRoot, const QString &vaultPath,
         const QByteArray &vaultSecret, const QString &archiveId,
         const Tools &tools = Tools(), QString *error = nullptr);
 
-
-
-
+    // Entry point used by mirror_gateway.py's external JSON command. Every
+    // request field is cross-checked against the local metadata and ciphertext
+    // before extraction into the gateway-created owner-only destination.
     static QJsonObject materializeGatewayRequest(
         const QJsonObject &request, const QString &archiveRoot,
         const QString &vaultPath, const QByteArray &vaultSecret,
@@ -136,8 +136,8 @@ public:
     static bool toolingAvailable(const Tools &tools = Tools(),
                                  QString *error = nullptr);
     static bool isArchiveId(const QString &value);
-
-
+    // Hash "<object> <refname>" rows by refname, matching the Python gateway's
+    // canonical heads+tags fingerprint regardless of Git's output order.
     static QString refsSha256FromForEachRef(const QByteArray &output);
     static QString ciphertextPath(const QString &archiveRoot,
                                   const QString &archiveId);

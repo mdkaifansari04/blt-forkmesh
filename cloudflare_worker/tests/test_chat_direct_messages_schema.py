@@ -10,8 +10,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import schema
-import urls
+import schema  # noqa: E402
+import urls  # noqa: E402
 
 ENTRY = (SRC / "entry.py").read_text(encoding="utf-8")
 
