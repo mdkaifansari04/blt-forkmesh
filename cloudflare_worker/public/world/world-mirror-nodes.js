@@ -106,6 +106,20 @@ function commitMetadata(source) {
   });
 }
 
+function changedFiles(source) {
+  return (Array.isArray(source?.changedFiles) ? source.changedFiles : [])
+    .map((value) => text(value, "", 160).replace(/\\/g, "/"))
+    .filter(
+      (path, index, paths) =>
+        path &&
+        !path.startsWith("/") &&
+        path !== ".." &&
+        !path.startsWith("../") &&
+        paths.indexOf(path) === index,
+    )
+    .slice(0, 8);
+}
+
 function repositoryRecency(record) {
   return Math.max(
     0,
@@ -174,6 +188,7 @@ function publicRepositoryRecord(mirror, payload) {
     id: text(mirror?.id, "", 120),
     machineName: text(mirror?.machineName, "", 63) || null,
     ...commitMetadata(mirror),
+    changedFiles: changedFiles(mirror),
     ...serveMetadata(mirror),
   });
 }

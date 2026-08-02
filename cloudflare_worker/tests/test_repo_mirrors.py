@@ -650,6 +650,26 @@ def test_payload_names_the_latest_commit_of_each_mirror():
     assert legacy["lastCommitAt"] is None
 
 
+def test_payload_carries_only_safe_changed_files_from_the_signed_head():
+    now = 1_000_000
+    rows = [
+        _row("a", "mainnode", "forkmesh", root="abc", synced="990000"),
+    ]
+    rows[0]["data"]["changedFiles"] = [
+        "src/world.js",
+        "src/world.js",
+        "../private-key",
+        "/etc/passwd",
+        "docs/onboarding.md",
+        "bad\npath",
+    ]
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    assert payload["mirrors"][0]["changedFiles"] == [
+        "src/world.js", "docs/onboarding.md"]
+
+
 def test_payload_stamps_when_each_mirror_last_served_a_clone_or_web_read():
     # The serve counters on the Mirror node cards each carry "when, and to what
     # kind of client". A node that has served none of a kind, or predates the

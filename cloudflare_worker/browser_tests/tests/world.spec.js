@@ -1272,6 +1272,56 @@ async function waitForWorldReady(page) {
   await page.evaluate(() => document.fonts?.ready);
 }
 
+test("verified code landings show the publisher avatar and commit context", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "code-landing-details");
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate(async (shell) => {
+    const commit = "b".repeat(40);
+    shell.activityNoticesEnabledAt = 0;
+    shell.liveMirrorNodes = [
+      {
+        name: "mirror2",
+        ownerUser: "ada",
+        repositories: [
+          {
+            owner: "forkmesh",
+            name: "forkmesh",
+            commit,
+            branch: "main",
+            lastCommitMessage: "Show richer landing details",
+            lastCommitAuthorName: "Ada Lovelace",
+            changedFiles: ["src/world.js", "docs/onboarding.md"],
+          },
+        ],
+      },
+    ];
+    shell.mirrorPushPublisherProfile = async () => ({
+      name: "ada",
+      avatarPng:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/2QAAAABJRU5ErkJggg==",
+    });
+    await shell.announceMirrorPushLanding({
+      node: "mirror2",
+      owner: "forkmesh",
+      repo: "forkmesh",
+      commit: commit.slice(0, 12),
+    });
+  });
+  const card = page.locator("[data-world-activity-stream] article").first();
+  await expect(card).toContainText("Fresh code landed on “forkmesh/forkmesh”.");
+  await expect(card).toContainText("bbbbbbbbbbbb · main · mirror2");
+  await expect(card).toContainText("Message · Show richer landing details");
+  await expect(card).toContainText("Git author · Ada Lovelace");
+  await expect(card).toContainText("Published by · @ada");
+  await expect(card).toContainText("Changed · src/world.js · docs/onboarding.md");
+  await expect(card.locator(".world-activity-icon img")).toHaveAttribute(
+    "src",
+    /^data:image\/png;base64,/,
+  );
+});
+
 async function moveToOfficeEntrance(page, { unpause = false } = {}) {
   await page.locator("forkmesh-world").evaluate(
     (shell, { position, shouldUnpause }) => {
