@@ -1367,8 +1367,11 @@ void MainWindow::openRepoDetail(int repoIndex)
     // window doesn't freeze (and the WM doesn't flag it "Not Responding").
     GitKeepAlive keepAlive;
     // Another repository's branch patches are dead weight (and their keys name a
-    // git dir this window is leaving), so let them go here (adhoc #227).
-    clearBranchDiffCache();
+    // git dir this window is leaving), so let them go here (adhoc #227). Only on
+    // an actual change of repository — reopening the one already on screen must
+    // keep its branches repainting from memory.
+    if (repoIndex != m_repoDetailIndex)
+        clearBranchDiffCache();
     m_repoDetailIndex = repoIndex;
     // Copy by value: the keep-alive pump services queued slots between git reads,
     // and a roster/network callback could mutate (and reallocate) m_repositories
