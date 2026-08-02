@@ -12250,7 +12250,9 @@ void MainWindow::deleteMeshNodeCompletely(const QString &node,
         return;
 
     setNodeDeleteStatus(
-        QString::fromUtf8("Deleting \"%1\"\xE2\x80\xA6").arg(target));
+        QString::fromUtf8("1/3 \xE2\x80\x94 Destroying the server for "
+                          "\"%1\"\xE2\x80\xA6")
+            .arg(target));
     // Provider teardown first (it is the step that costs money to skip), then
     // DNS, then the mesh. Both provider steps report what they did and hand
     // control on regardless: a node this app never provisioned still has to
@@ -12258,9 +12260,17 @@ void MainWindow::deleteMeshNodeCompletely(const QString &node,
     destroyVultrServerForNode(target, [this, target, nodeId](QString outcome) {
         if (!outcome.isEmpty())
             setNodeDeleteStatus(outcome);
+        setNodeDeleteStatus(
+            QString::fromUtf8("2/3 \xE2\x80\x94 Removing DNS for "
+                              "\"%1\"\xE2\x80\xA6")
+                .arg(target));
         removeVultrMirrorDns(target, [this, target, nodeId](QString dnsOutcome) {
             if (!dnsOutcome.isEmpty())
                 setNodeDeleteStatus(dnsOutcome);
+            setNodeDeleteStatus(
+                QString::fromUtf8("3/3 \xE2\x80\x94 Removing \"%1\" from "
+                                  "the mesh\xE2\x80\xA6")
+                    .arg(target));
             sendMeshNodeDeleteRequest(target, nodeId);
         });
     });
@@ -12353,7 +12363,8 @@ void MainWindow::sendNodeVultrDestroy(
         return;
     }
     setNodeDeleteStatus(
-        QString::fromUtf8("Destroying the Vultr server behind \"%1\"\xE2\x80\xA6")
+        QString::fromUtf8("1/3 \xE2\x80\x94 Destroying the Vultr server "
+                          "behind \"%1\"\xE2\x80\xA6")
             .arg(node));
     vultrApiCall(
         apiKey, QStringLiteral("/v2/instances/") + instanceId,
@@ -12507,7 +12518,9 @@ void MainWindow::sendMeshNodeDeleteRequest(const QString &node,
         {QStringLiteral("confirmation"), QStringLiteral("DELETE ") + node},
     };
     setNodeDeleteStatus(
-        QString::fromUtf8("Removing \"%1\" from the mesh\xE2\x80\xA6").arg(node));
+        QString::fromUtf8("3/3 \xE2\x80\x94 Removing \"%1\" from the "
+                          "mesh\xE2\x80\xA6")
+            .arg(node));
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this, [this, reply, node] {
@@ -12551,8 +12564,9 @@ void MainWindow::sendMeshNodeDeleteRequest(const QString &node,
         refreshNodesTable();
         // After refreshNodesTable, which re-stamps the summary line.
         setNodeDeleteStatus(
-            QString::fromUtf8("Deleted \"%1\" \xE2\x80\x94 no trace of it is "
-                              "left in the mesh, mirrors or status page.")
+            QString::fromUtf8("3/3 complete \xE2\x80\x94 Deleted \"%1\"; no "
+                              "trace of it is left in the mesh, mirrors or "
+                              "status page.")
                 .arg(node));
         flashMessage(QString::fromUtf8("Deleted node \"%1\".").arg(node));
     });

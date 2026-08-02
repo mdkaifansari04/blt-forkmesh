@@ -6259,8 +6259,6 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
         !m_publicMirrorMaterializations.contains(existingArchiveId) &&
         (legacyMirrorPath.trimmed().isEmpty() ||
          !QDir(legacyMirrorPath).exists());
-    if (reopeningSealedArchive)
-        source.clear();
     // During a private→public transition, the authenticated private
     // materialization is the only name-free source. Prefer it over the legacy
     // named relay clone URL, which is intentionally inert for private bytes.
@@ -6270,6 +6268,13 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     }
     if (source.isEmpty() && QDir(legacyMirrorPath).exists())
         source = legacyMirrorPath;
+    // Keep the real source available as a recovery path. The old startup path
+    // discarded it before attempting archive reopen, so an interrupted
+    // ciphertext/metadata rotation produced an authentication error forever:
+    // every retry only reopened the same damaged pair.
+    const QString recoverySource = source;
+    if (reopeningSealedArchive)
+        source.clear();
     if (source.isEmpty() &&
         !PublicMirrorRuntime::isArchiveId(existingArchiveId)) {
         vaultSecret.fill('\0');
@@ -6303,7 +6308,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
         << (managedCheckoutSource ? "managed-origin" : "ordinary")
         << (source.isEmpty() ? "archive-reopen" : "source-clone");
     QString upstreamUrl;
-    if (managedCheckoutSource && !source.isEmpty()) {
+    if (managedCheckoutSource && !recoverySource.isEmpty()) {
         const QUrl upstream(repo.cloneUrl.trimmed());
         if (upstream.isValid() && !upstream.host().isEmpty() &&
             upstream.host().compare(catalogApiUrl().host(),
@@ -6317,13 +6322,14 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     const QString owner = repo.owner;
     const QString name = repo.name;
     QThread *worker = QThread::create(
-        [result, source, upstreamUrl, managedCheckoutSource, archiveRoot, vaultPath,
+        [result, source, recoverySource, upstreamUrl, managedCheckoutSource,
+         archiveRoot, vaultPath,
          mutableVaultSecret = std::move(vaultSecret), existingArchiveId,
          legacyMirrorPath, managedMirrorRoot]() mutable {
             if (!upstreamUrl.isEmpty()) {
                 result->upstreamSummary =
                     forkmesh::upstream::refreshManagedCheckoutFromUpstream(
-                        source, upstreamUrl)
+                        recoverySource, upstreamUrl)
                         .summary();
             }
             if (source.isEmpty()) {
@@ -6343,15 +6349,26 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                                 std::move(materialization));
                     }
                 }
-            } else {
+            }
+
+            // A missing/corrupt archive is recoverable when the repository's
+            // authenticated local/upstream source still exists. Re-seal the
+            // same opaque archive id and replace both durable files, instead
+            // of retrying the broken archive-reopen forever.
+            const QString sealSource =
+                source.isEmpty() ? recoverySource : source;
+            if ((!result->metadata.isValid() || !result->materialization) &&
+                !sealSource.isEmpty()) {
+                const QString reopenError = result->error;
+                result->error.clear();
                 PublicMirrorRuntime::SyncResult sync =
                     managedCheckoutSource
                         ? PublicMirrorRuntime::syncManagedCheckout(
-                              source, archiveRoot, vaultPath,
+                              sealSource, archiveRoot, vaultPath,
                               mutableVaultSecret, existingArchiveId,
                               PublicMirrorRuntime::Tools(), &result->error)
                         : PublicMirrorRuntime::syncSource(
-                              source, {}, archiveRoot, vaultPath,
+                              sealSource, {}, archiveRoot, vaultPath,
                               mutableVaultSecret, existingArchiveId,
                               PublicMirrorRuntime::Tools(), &result->error);
                 qInfo().noquote()
@@ -6366,6 +6383,12 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                     result->materialization =
                         std::shared_ptr<PublicMirrorMaterialization>(
                             std::move(sync.materialization));
+                }
+                if (result->metadata.isValid() && result->materialization &&
+                    !reopenError.isEmpty()) {
+                    result->notice = QStringLiteral(
+                        "The damaged encrypted archive was rebuilt from its "
+                        "authenticated repository source.");
                 }
             }
 
@@ -6488,6 +6511,9 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                     flashMessage(result->notice, true);
                 return;
             }
+
+            if (!result->notice.isEmpty())
+                logSystem(QStringLiteral("Public mirror: ") + result->notice);
 
             logSystem(
                 QStringLiteral(
