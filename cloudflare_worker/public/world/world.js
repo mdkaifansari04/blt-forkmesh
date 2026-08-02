@@ -150,6 +150,9 @@ const SOCIAL_POSTS_URL = "/api/world/social-posts";
 const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 const ADMIN_ERROR_SEEN_KEY = "forkmesh.world.adminErrorsSeen.v1";
 const ADMIN_ERROR_POLL_MS = 15_000;
+// Newly logged errors are announced at most this often; arrivals in between
+// are carried into the next card so nothing is silently dropped.
+const ADMIN_ERROR_ANNOUNCE_GAP_MS = 60_000;
 // Element ids switched off in the Elements tab. Kept on the
 // device (never in account preferences) so a perf experiment on one machine
 // cannot dim the world on every other signed-in device.
@@ -212,6 +215,11 @@ const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
 const FLAGSHIP_PORTAL_RETRY_LIMIT = 20;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
+// One poll can carry a whole incident: several systems failing, then the
+// recoveries that close them. The bubble stack keeps six cards, so the two
+// classes of ping are budgeted separately instead of competing newest-first.
+const WORLD_ROUTINE_PING_ANNOUNCE_LIMIT = 2;
+const WORLD_ATTENTION_PING_ANNOUNCE_LIMIT = 3;
 const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000;
 const MIRROR_ACTIONS_POLL_MS = 20 * 1000;
 const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
@@ -238,6 +246,9 @@ const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
 // server's authoritative first-review state that two testers are not dealt the
 // same card for the rest of a long session.
 const WORLD_QA_POLL_MS = 15 * 1000;
+// A custodial deposit address is watched, not confirmed by hand, so this is
+// how quickly a paid deposit turns into an unlocked element.
+const WORLD_ELEMENT_DEPOSIT_POLL_MS = 4 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS = 15 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_BASE_MS = 5 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_MAX_MS = 30 * 60 * 1000;
@@ -3815,6 +3826,10 @@ function normalizeWorldNotifications(payload) {
         rawNumber <= 1_000_000_000
           ? rawNumber
           : 0;
+      // Operational pings carry the transition they report. Keeping it lets the
+      // stream tell "needs attention" from "recovered" without guessing at the
+      // wording of a title.
+      const rawState = String(item?.meta?.state || "");
       return {
         id,
         kind: sanitizeNotificationText(item?.kind, "Update", 40),
@@ -3822,6 +3837,7 @@ function normalizeWorldNotifications(payload) {
         body: sanitizeNotificationText(item?.body, "", 500),
         repo,
         number,
+        state: rawState === "up" || rawState === "down" ? rawState : "",
         href: safeNotificationURL(item?.href),
         ts: Math.max(0, Number(item?.ts) || 0),
         readAt: Math.max(0, Number(item?.readAt) || 0),
@@ -3829,6 +3845,24 @@ function normalizeWorldNotifications(payload) {
     })
     .filter(Boolean)
     .sort((left, right) => right.ts - left.ts);
+}
+
+// Wording used by pings that report something broken rather than something
+// done. Only consulted when the ping carries no explicit up/down state.
+const WORLD_ATTENTION_PING_RE =
+  /\b(?:needs attention|failed|failing|failure|down|outage|offline|unavailable|unreachable|error|errors|crash(?:ed)?|degraded|rejected)\b/i;
+
+// An outage ping is always followed by the recovery ping that closes it, and
+// the recovery is the newer of the two. Ranked purely by time, one poll's worth
+// of pings therefore showed nothing but "recovered" lines while every "needs
+// attention" line sat behind the "+N more" summary. Attention pings get their
+// own announcement budget instead.
+function worldNotificationNeedsAttention(item) {
+  if (!item) return false;
+  if (String(item.kind || "").toLowerCase() === "error_group") return true;
+  if (item.state === "down") return true;
+  if (item.state === "up") return false;
+  return WORLD_ATTENTION_PING_RE.test(String(item.title || ""));
 }
 
 function liveNodeRecords(network, mirrorCatalogs = []) {
@@ -5014,6 +5048,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="work">Work</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="security">Security</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="debug">Debug</button>
+            <button type="button" role="tab" aria-selected="false" data-world-settings-tab="store">Store</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="elements" data-world-elements-tab hidden>Elements</button>
           </div>
 
@@ -5207,6 +5242,34 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <ol class="world-debug-suggestions" data-world-debug-suggestions>
                 <li data-level="caution">Collecting the first sample…</li>
               </ol>
+            </fieldset>
+          </div>
+
+          <div class="world-settings-pane" data-world-settings-pane="store" hidden>
+            <fieldset class="world-setting-group">
+              <legend>Element store · synced to your account</legend>
+              <p class="world-setting-note">
+                Elements are self-contained plugins. Buy one and it is built
+                into your world with the parameters you set; some read a live
+                ForkMesh endpoint, and every endpoint an element may read is
+                listed before you buy. Half of each purchase stays with the
+                treasury and half is shared between online mirror nodes.
+                Buying an element does not purchase ownership, guaranteed
+                rewards, investment returns or any influence over the project.
+              </p>
+              <p class="world-setting-note">
+                Two ways to pay, with different custody. Paying the published
+                pool address from your own wallet means ForkMesh never
+                receives your key. Paying a temporary ForkMesh deposit address
+                means ForkMesh generates and holds that address's key until it
+                sweeps the funds — during that window ForkMesh, or anyone who
+                compromised it, could move them. Each option states its own
+                custody before you confirm.
+              </p>
+              <div class="world-store-list" data-world-store-list>
+                <p class="world-setting-note">Loading the element store…</p>
+              </div>
+              <p class="world-office-panel-status" data-world-store-status role="status" aria-live="polite"></p>
             </fieldset>
           </div>
 
@@ -5491,6 +5554,10 @@ class ForkMeshWorld extends HTMLElement {
     this.rewardState = {};
     this.pendingRewards = [];
     this.pendingContribution = null;
+    this.storeCatalog = null;
+    this.storeLibrary = {};
+    this.pendingElementPurchase = null;
+    this.elementDepositTimer = 0;
     this.securityScan = null;
     this.securityHistory = [];
     this.securityRepository = "";
@@ -5733,6 +5800,8 @@ class ForkMeshWorld extends HTMLElement {
     this.adminErrorTimer = 0;
     this.adminErrorLatestId = 0;
     this.adminErrorCount = 0;
+    this.adminErrorPendingAnnounce = 0;
+    this.adminErrorAnnouncedAt = 0;
     this.adminErrorEffectTimer = 0;
     this.adminStatusIssueActive = false;
     this.adminErrors = [];
@@ -6942,6 +7011,7 @@ class ForkMeshWorld extends HTMLElement {
       this.syncWorldCameraModeButton();
       void this.refreshBuildBoard();
       void this.refreshQaDeck();
+      void this.refreshStoreLibrary();
       this.buildBoardTimer = window.setInterval(
         () => void this.refreshBuildBoard({ quiet: true }),
         WORLD_BUILD_BOARD_POLL_MS,
@@ -10871,6 +10941,47 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
+      const storeBuy = event.target.closest("[data-world-store-buy]");
+      if (storeBuy) {
+        void this.purchaseStoreElement(storeBuy.dataset.worldStoreBuy).then(
+          () => this.renderWorldStorePane(),
+        );
+        return;
+      }
+      const storeDeposit = event.target.closest("[data-world-store-deposit]");
+      if (storeDeposit) {
+        void this.purchaseStoreElement(
+          storeDeposit.dataset.worldStoreDeposit,
+          "deposit",
+        ).then(() => this.renderWorldStorePane());
+        return;
+      }
+      const storeConfirm = event.target.closest("[data-world-store-confirm]");
+      if (storeConfirm) {
+        const signature = this.$("[data-world-store-signature]")?.value || "";
+        void this.confirmStoreElementPurchase(signature).then(() =>
+          this.renderWorldStorePane(),
+        );
+        return;
+      }
+      if (event.target.closest("[data-world-store-cancel]")) {
+        this.stopElementDepositPolling();
+        this.pendingElementPurchase = null;
+        this.renderWorldStorePane();
+        return;
+      }
+      const storeSave = event.target.closest("[data-world-store-save]");
+      if (storeSave) {
+        const elementId = storeSave.dataset.worldStoreSave;
+        const enabled = this.$(
+          `[data-world-store-enabled="${elementId}"]`,
+        )?.checked;
+        void this.configureStoreElement(elementId, {
+          params: this.collectStoreParams(elementId),
+          enabled: enabled !== false,
+        }).then(() => this.renderWorldStorePane("Saved."));
+        return;
+      }
       const elementSort = event.target.closest("[data-world-element-sort]");
       if (elementSort) {
         const key = elementSort.dataset.worldElementSort;
@@ -12912,9 +13023,41 @@ class ForkMeshWorld extends HTMLElement {
         return;
       }
       const nextCount = Math.max(0, Number(payload?.newCount) || 0);
-      const arrived = nextCount > this.adminErrorCount;
+      const previousCount = this.adminErrorCount;
+      const arrived = nextCount > previousCount;
       this.adminErrorCount = nextCount;
       this.renderAdminErrors(nextCount, arrived);
+      // The badge alone only says a number changed somewhere off screen. New
+      // errors are announced in the same stream as the operational pings, in
+      // the same coarse shape the admin ping uses (status and source, never a
+      // route or a message) so nothing sensitive reaches the HUD. Arrivals
+      // accumulate rather than announce per poll: a storm is one card a minute
+      // carrying the real total, not a card every fifteen seconds.
+      if (arrived) {
+        this.adminErrorPendingAnnounce =
+          (this.adminErrorPendingAnnounce || 0) + (nextCount - previousCount);
+      }
+      const added = this.adminErrorPendingAnnounce || 0;
+      if (
+        added > 0 &&
+        this.activityNoticesSettled() &&
+        Date.now() - (this.adminErrorAnnouncedAt || 0) >=
+          ADMIN_ERROR_ANNOUNCE_GAP_MS
+      ) {
+        const status = Math.max(0, Number(payload?.latestStatus) || 0);
+        const source = /^[A-Za-z]{1,20}$/.test(String(payload?.latestSource))
+          ? String(payload.latestSource)
+          : "";
+        const latest = [status || "", source].filter(Boolean).join(" · ");
+        this.adminErrorPendingAnnounce = 0;
+        this.adminErrorAnnouncedAt = Date.now();
+        this.toast(
+          added === 1
+            ? `New error logged${latest ? ` (${latest})` : ""}`
+            : `${added} new errors logged${latest ? ` (latest ${latest})` : ""}`,
+          { kind: "error" },
+        );
+      }
     } catch (_) {
       // This is an operational convenience only. A failed badge poll must not
       // interfere with movement, rendering, or the existing admin surface.
@@ -13415,6 +13558,183 @@ class ForkMeshWorld extends HTMLElement {
         );
       }
     });
+  }
+
+  // Purchased elements are plugins: the library says which ones this account
+  // owns and with which parameters, and the scene builds each one on demand
+  // from ./elements. Nothing is downloaded for an element nobody bought.
+  async refreshStoreLibrary() {
+    if (!this.sessionAuthenticated || !validWorldSession()) {
+      this.storeLibrary = {};
+      return;
+    }
+    let owned = {};
+    try {
+      const payload = await this.fetchJSON("/api/world/store/library", {
+        timeout: 6000,
+        maxAge: 0,
+        backoff: true,
+      });
+      owned = payload?.owned && typeof payload.owned === "object"
+        ? payload.owned
+        : {};
+    } catch {
+      return;
+    }
+    const previous = this.storeLibrary || {};
+    this.storeLibrary = owned;
+    Object.keys(previous).forEach((id) => {
+      if (!owned[id]) this.world?.removeStoreElement?.(id);
+    });
+    await Promise.allSettled(
+      Object.entries(owned).map(([id, entry]) =>
+        this.world?.installStoreElement?.({ id, ...entry }),
+      ),
+    );
+  }
+
+  async refreshStoreCatalog({ force = false } = {}) {
+    try {
+      this.storeCatalog = await this.fetchJSON("/api/world/store/catalog", {
+        auth: false,
+        timeout: 6000,
+        maxAge: force ? 0 : 60_000,
+        staleIfError: true,
+      });
+    } catch {
+      this.storeCatalog = this.storeCatalog || null;
+    }
+    return this.storeCatalog;
+  }
+
+  // Same non-custodial shape as a reward contribution: the visitor's own
+  // wallet signs one public transfer to the published pool address, tagged
+  // with a per-purchase reference. ForkMesh never holds a key.
+  async purchaseStoreElement(elementId, method = "direct") {
+    if (!this.sessionAuthenticated) {
+      this.toast("Log in to buy world elements.");
+      return null;
+    }
+    try {
+      this.pendingElementPurchase = await this.postJSON(
+        "/api/world/store",
+        { action: "prepare", elementId, method },
+      );
+      if (method === "deposit") this.startElementDepositPolling();
+      return this.pendingElementPurchase;
+    } catch (error) {
+      this.toast(`Could not start the purchase. ${error?.message || ""}`.trim());
+      return null;
+    }
+  }
+
+  // A deposit address has no signature for the buyer to paste, so the client
+  // watches the address instead — the same wait-for-the-deposit shape the
+  // desktop escrow dialog used.
+  startElementDepositPolling() {
+    this.stopElementDepositPolling();
+    this.elementDepositTimer = window.setInterval(() => {
+      if (this.destroyed || !this.pendingElementPurchase) {
+        this.stopElementDepositPolling();
+        return;
+      }
+      void this.pollElementDeposit();
+    }, WORLD_ELEMENT_DEPOSIT_POLL_MS);
+  }
+
+  stopElementDepositPolling() {
+    if (this.elementDepositTimer) {
+      window.clearInterval(this.elementDepositTimer);
+      this.elementDepositTimer = 0;
+    }
+  }
+
+  async pollElementDeposit() {
+    const purchase = this.pendingElementPurchase;
+    if (!purchase?.purchaseId) return null;
+    let result = null;
+    try {
+      result = await this.postJSON("/api/world/store", {
+        action: "deposit-status",
+        purchaseId: purchase.purchaseId,
+      });
+    } catch (error) {
+      if (/expired/i.test(error?.message || "")) {
+        this.stopElementDepositPolling();
+        this.pendingElementPurchase = null;
+        this.toast("The deposit window expired.");
+        this.renderWorldStorePane();
+      }
+      return null;
+    }
+    if (result?.status === "awaiting_payment") {
+      this.pendingElementPurchase = { ...purchase, received: result };
+      this.renderWorldStorePane(
+        `Waiting for the deposit — ${result.receivedSol || 0} SOL received.`,
+      );
+      return result;
+    }
+    if (result?.status === "confirmed" || result?.owned) {
+      this.stopElementDepositPolling();
+      this.pendingElementPurchase = null;
+      this.toast(
+        result.sweepPending
+          ? "Element unlocked. The deposit sweep is still pending."
+          : "Element unlocked and the deposit was swept.",
+      );
+      await this.refreshStoreLibrary();
+      this.renderWorldStorePane();
+    }
+    return result;
+  }
+
+  async confirmStoreElementPurchase(transactionSignature) {
+    const purchase = this.pendingElementPurchase;
+    if (!purchase?.purchaseId) {
+      this.toast("Start a purchase first.");
+      return null;
+    }
+    try {
+      const result = await this.postJSON("/api/world/store", {
+        action: "confirm",
+        purchaseId: purchase.purchaseId,
+        transactionSignature: String(transactionSignature || "").trim(),
+      });
+      if (result?.status === "awaiting_finality") {
+        this.toast("Waiting for the transfer to finalize…");
+        return result;
+      }
+      this.pendingElementPurchase = null;
+      this.toast("Element unlocked. Adding it to your world…");
+      await this.refreshStoreLibrary();
+      return result;
+    } catch (error) {
+      this.toast(`Could not confirm. ${error?.message || ""}`.trim());
+      return null;
+    }
+  }
+
+  async configureStoreElement(elementId, { params, placement, enabled } = {}) {
+    try {
+      const result = await this.postJSON("/api/world/store", {
+        action: "configure",
+        elementId,
+        ...(params ? { params } : {}),
+        ...(placement ? { placement } : {}),
+        ...(typeof enabled === "boolean" ? { enabled } : {}),
+      });
+      if (result?.element) {
+        this.storeLibrary = { ...this.storeLibrary, [elementId]: result.element };
+        await this.world?.installStoreElement?.({
+          id: elementId,
+          ...result.element,
+        });
+      }
+      return result;
+    } catch (error) {
+      this.toast(`Could not save. ${error?.message || ""}`.trim());
+      return null;
+    }
   }
 
   async refreshRewardState({ force = false } = {}) {
@@ -17410,14 +17730,19 @@ class ForkMeshWorld extends HTMLElement {
                 ? rows
                     .map((item) => {
                       const instant = new Date(item.when);
-                      const tone =
-                        item.source === "global"
+                      const attention =
+                        item.source === "personal" &&
+                        worldNotificationNeedsAttention(item);
+                      const tone = attention
+                        ? "danger"
+                        : item.source === "global"
                           ? "success"
                           : item.unread
                             ? "accent"
                             : "cool";
-                      const icon =
-                        item.source === "global"
+                      const icon = attention
+                        ? "⚠"
+                        : item.source === "global"
                           ? "📣"
                           : String(item.kind).toLowerCase().includes("issue")
                             ? "◉"
@@ -17579,12 +17904,33 @@ class ForkMeshWorld extends HTMLElement {
     if (globalEvents.length > 3) {
       this.toast(`World announcement: +${globalEvents.length - 3} more events`);
     }
-    personalNotifications.slice(0, 3).forEach((item) => {
+    // Anything reporting a failure — an outage transition, a new error group —
+    // is announced last so it lands closest to the notification corner and
+    // survives the bubble stack's own six-card limit, and it is never counted
+    // against the routine budget that recoveries and mentions share.
+    const attention = personalNotifications.filter(
+      worldNotificationNeedsAttention,
+    );
+    const routine = personalNotifications.filter(
+      (item) => !worldNotificationNeedsAttention(item),
+    );
+    routine.slice(0, WORLD_ROUTINE_PING_ANNOUNCE_LIMIT).forEach((item) => {
       this.toast(`New ping: ${item.title}`);
     });
-    if (personalNotifications.length > 3) {
+    if (routine.length > WORLD_ROUTINE_PING_ANNOUNCE_LIMIT) {
       this.toast(
-        `New ping: +${personalNotifications.length - 3} more`,
+        `New ping: +${routine.length - WORLD_ROUTINE_PING_ANNOUNCE_LIMIT} more`,
+      );
+    }
+    attention.slice(0, WORLD_ATTENTION_PING_ANNOUNCE_LIMIT).forEach((item) => {
+      this.toast(`New ping: ${item.title}`, { kind: "error" });
+    });
+    if (attention.length > WORLD_ATTENTION_PING_ANNOUNCE_LIMIT) {
+      this.toast(
+        `New ping: +${
+          attention.length - WORLD_ATTENTION_PING_ANNOUNCE_LIMIT
+        } more need attention`,
+        { kind: "error" },
       );
     }
   }
@@ -23756,6 +24102,13 @@ class ForkMeshWorld extends HTMLElement {
     if (selected === "elements") {
       this.renderWorldElementsPane();
     }
+    if (selected === "store") {
+      void this.refreshStoreCatalog().then(() => {
+        if (!this.destroyed && this.settingsTab === "store") {
+          this.renderWorldStorePane();
+        }
+      });
+    }
     if (selected === "work") {
       void this.ensureOfficeRuntime({ userInitiated: true }).then(() => {
         if (this.destroyed || this.settingsTab !== "work") return;
@@ -23801,6 +24154,157 @@ class ForkMeshWorld extends HTMLElement {
         ? "Every element is back in the game."
         : "Every element removed — an empty scene is your renderer baseline.",
     );
+  }
+
+  // One card per purchasable element. An owned element shows its parameter
+  // form; an unowned one shows its price and the endpoints it would read.
+  renderWorldStorePane(statusMessage = "") {
+    const list = this.$("[data-world-store-list]");
+    if (!list) return;
+    const status = this.$("[data-world-store-status]");
+    if (status) status.textContent = String(statusMessage || "").slice(0, 200);
+    const catalog = this.storeCatalog;
+    const elements = Array.isArray(catalog?.elements) ? catalog.elements : [];
+    if (!elements.length) {
+      list.innerHTML =
+        '<p class="world-setting-note">The element store is unavailable right now.</p>';
+      return;
+    }
+    const owned = this.storeLibrary || {};
+    const pending = this.pendingElementPurchase;
+    const methods = Array.isArray(catalog?.paymentMethods)
+      ? catalog.paymentMethods
+      : [{ method: "direct" }];
+    list.innerHTML = elements
+      .map((element) => {
+        const entry = owned[element.id];
+        const network = element.network?.length
+          ? `Reads ${element.network.map((path) => `<code>${escapeHTML(path)}</code>`).join(", ")}`
+          : "Makes no network requests";
+        const body = entry
+          ? `
+            <div class="world-store-params">
+              ${(element.params || [])
+                .map((spec) =>
+                  this.storeParamField(element.id, spec, entry.params?.[spec.key]),
+                )
+                .join("")}
+              <label class="world-store-param">
+                <span>In the world</span>
+                <input
+                  type="checkbox"
+                  data-world-store-enabled="${escapeHTML(element.id)}"
+                  ${entry.enabled === false ? "" : "checked"}
+                />
+              </label>
+            </div>
+            <button type="button" data-world-store-save="${escapeHTML(element.id)}">Save</button>`
+          : pending?.elementId === element.id
+            ? pending.method === "deposit"
+              ? `
+            <p class="world-setting-note">
+              Send exactly <strong>${escapeHTML(String(pending.amountSol))} SOL</strong>
+              to this ForkMesh deposit address. It unlocks by itself once the
+              payment lands — no signature to paste.
+              <a href="${escapeHTML(pending.uri)}" rel="noopener">Open in wallet</a>
+            </p>
+            <p class="world-store-address"><code>${escapeHTML(pending.depositAddress)}</code></p>
+            <p class="world-setting-note">
+              ForkMesh generated and holds this address's key until it sweeps
+              the funds, so it controls them during that window.
+              ${escapeHTML(
+                pending.received?.receivedSol
+                  ? `Received ${pending.received.receivedSol} SOL so far.`
+                  : "Waiting for the deposit…",
+              )}
+            </p>
+            <button type="button" data-world-store-cancel>Cancel</button>`
+              : `
+            <p class="world-setting-note">
+              Send exactly <strong>${escapeHTML(String(pending.amountSol))} SOL</strong>
+              to <code>${escapeHTML(pending.poolAddress)}</code> from your own
+              wallet, then paste the transaction signature. ForkMesh never
+              receives your wallet key.
+              <a href="${escapeHTML(pending.uri)}" rel="noopener">Open in wallet</a>
+            </p>
+            <label class="world-store-param">
+              <span>Transaction signature</span>
+              <input type="text" data-world-store-signature spellcheck="false" />
+            </label>
+            <button type="button" data-world-store-confirm="${escapeHTML(element.id)}">Confirm purchase</button>
+            <button type="button" data-world-store-cancel>Cancel</button>`
+            : `<div class="world-store-buy">
+                 ${
+                   methods.some((entry) => entry.method === "direct")
+                     ? `<button type="button" data-world-store-buy="${escapeHTML(element.id)}">
+                          Pay from my wallet · ${escapeHTML(String(element.priceSol))} SOL
+                        </button>`
+                     : ""
+                 }
+                 ${
+                   methods.some((entry) => entry.method === "deposit")
+                     ? `<button type="button" data-world-store-deposit="${escapeHTML(element.id)}">
+                          Use a ForkMesh deposit address
+                        </button>`
+                     : ""
+                 }
+               </div>`;
+        return `
+        <article class="world-store-card" data-owned="${Boolean(entry)}">
+          <header>
+            <strong>${escapeHTML(element.label)}</strong>
+            <span class="world-element-group">${escapeHTML(element.category)}</span>
+          </header>
+          <p class="world-setting-note">${escapeHTML(element.summary)}</p>
+          <p class="world-setting-note">${network}</p>
+          ${body}
+        </article>`;
+      })
+      .join("");
+  }
+
+  storeParamField(elementId, spec, value) {
+    const current = value === undefined ? spec.default : value;
+    const attributes =
+      `data-world-store-param="${escapeHTML(spec.key)}" ` +
+      `data-world-store-element="${escapeHTML(elementId)}"`;
+    let control = "";
+    if (spec.type === "number") {
+      control =
+        `<input type="number" ${attributes} value="${escapeHTML(String(current))}" ` +
+        `min="${escapeHTML(String(spec.min))}" max="${escapeHTML(String(spec.max))}" ` +
+        `step="${escapeHTML(String(spec.step || 1))}" />`;
+    } else if (spec.type === "select") {
+      control = `<select ${attributes}>${(spec.options || [])
+        .map(
+          (option) =>
+            `<option value="${escapeHTML(option)}"${option === current ? " selected" : ""}>${escapeHTML(option)}</option>`,
+        )
+        .join("")}</select>`;
+    } else if (spec.type === "toggle") {
+      control = `<input type="checkbox" ${attributes}${current ? " checked" : ""} />`;
+    } else {
+      control =
+        `<input type="text" ${attributes} value="${escapeHTML(String(current))}" ` +
+        `maxlength="${escapeHTML(String(spec.maxLength || 80))}" />`;
+    }
+    return `
+      <label class="world-store-param">
+        <span>${escapeHTML(spec.label || spec.key)}</span>
+        ${control}
+      </label>`;
+  }
+
+  collectStoreParams(elementId) {
+    const params = {};
+    this.$$(`[data-world-store-element="${elementId}"]`).forEach((input) => {
+      const key = input.dataset.worldStoreParam;
+      if (!key) return;
+      if (input.type === "checkbox") params[key] = input.checked;
+      else if (input.type === "number") params[key] = Number(input.value);
+      else params[key] = input.value;
+    });
+    return params;
   }
 
   renderWorldElementsPane(statusMessage = "") {
@@ -25757,7 +26261,7 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  toast(message, { priority = 0, lockMs = 0 } = {}) {
+  toast(message, { priority = 0, lockMs = 0, kind = "" } = {}) {
     const now = performance.now();
     const safePriority = Number.isFinite(priority) ? priority : 0;
     if (now < this.toastLockUntil && safePriority < this.toastPriority) return;
@@ -25766,13 +26270,19 @@ class ForkMeshWorld extends HTMLElement {
     this.toastPriority = safePriority;
     this.toastLockUntil = now + Math.max(0, Number(lockMs) || 0);
     const copy = String(message || "").trim();
-    const kind =
+    // Wording is only a fallback. A caller that already knows the card reports
+    // a failure says so: "mirror2 needs attention" reads as neutral status to
+    // any regex, and that is exactly the line that has to stand out.
+    const inferredKind =
       /\b(?:failed|error|unavailable|could not|denied)\b/i.test(copy)
         ? "error"
         : /\b(?:saved|ready|complete|success|online|passed)\b/i.test(copy)
           ? "success"
           : "status";
-    this.activityNotice(copy, { kind, sender: "ForkMesh" });
+    this.activityNotice(copy, {
+      kind: kind || inferredKind,
+      sender: "ForkMesh",
+    });
     this.toastTimer = window.setTimeout(() => {
       this.toastPriority = 0;
       this.toastLockUntil = 0;
@@ -29243,6 +29753,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.buildBoardTimer);
     window.clearInterval(this.orgAgentTimer);
     window.clearInterval(this.qaTimer);
+    window.clearInterval(this.elementDepositTimer);
     window.clearInterval(this.instanceDirectoryTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     window.clearTimeout(this.viewportSyncTimer);

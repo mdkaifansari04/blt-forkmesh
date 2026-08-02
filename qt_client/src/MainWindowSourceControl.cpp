@@ -108,10 +108,20 @@ private:
                 nextX = x + hint.width() + m_hSpace;
                 lineHeight = 0;
             }
+            // Items are laid out at their size hint, which leaves a trailing
+            // status label nothing to elide into. A row that opts in with the
+            // "flowFill" property takes the rest of its line instead, and the
+            // next item wraps below it.
+            QSize size = hint;
+            QWidget *widget = item->widget();
+            if (widget && widget->property("flowFill").toBool()) {
+                size.setWidth(qMax(hint.width(), eff.right() + 1 - x));
+                nextX = x + size.width() + m_hSpace;
+            }
             if (!testOnly)
-                item->setGeometry(QRect(QPoint(x, y), hint));
+                item->setGeometry(QRect(QPoint(x, y), size));
             x = nextX;
-            lineHeight = qMax(lineHeight, hint.height());
+            lineHeight = qMax(lineHeight, size.height());
         }
         return y + lineHeight - rect.y() + m.bottom();
     }
@@ -477,18 +487,34 @@ QWidget *MainWindow::buildSourceControlPanel()
                                       m_scmOutgoingPanel);
     m_scmSyncButton->setObjectName(QStringLiteral("scmSyncButton"));
     m_scmSyncButton->setCursor(Qt::PointingHandCursor);
-    m_scmSyncButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Preferred, not Expanding: inside the sync row the leftover width belongs
+    // to the status line beside it, not to a stretched button.
+    m_scmSyncButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     m_scmSyncButton->setToolTip(
         QStringLiteral("Publish outgoing commits to the network mirror or push "
                        "them to the configured upstream branch"));
     setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
     connect(m_scmSyncButton, &QPushButton::clicked, this,
             &MainWindow::pushCurrentRepoUpstream);
+    // Publishing is several minutes of invisible work on a large repo (secret
+    // scan, clone, seal, encrypt, push). The button says what state it is in and
+    // the label beside it says what that state is *doing* right now, fed live by
+    // git's own progress output and by each stage of the mirror seal.
+    m_scmSyncStatus = new ElidingStatusLabel(m_scmOutgoingPanel);
+    m_scmSyncStatus->setObjectName(QStringLiteral("statusLine"));
+    m_scmSyncStatus->hide();
+    m_scmSyncRow = new QWidget(m_scmOutgoingPanel);
+    m_scmSyncRow->setProperty("flowFill", true); // see FlowLayout::doLayout
+    auto *syncRow = new QHBoxLayout(m_scmSyncRow);
+    syncRow->setContentsMargins(0, 0, 0, 0);
+    syncRow->setSpacing(8);
+    syncRow->addWidget(m_scmSyncButton, 0);
+    syncRow->addWidget(m_scmSyncStatus, 1);
     // The old outgoing card is deliberately not placed in the source-control
     // layout. Its state now has a dotted, linked row at the very top of the
     // commit graph; the action belongs beside the compose controls instead.
-    controlsRow->addWidget(m_scmSyncButton);
-    m_scmSyncButton->hide();
+    controlsRow->addWidget(m_scmSyncRow);
+    m_scmSyncRow->hide();
     m_scmOutgoingPanel->hide();
 
     auto *header = new QHBoxLayout;
@@ -1184,8 +1210,19 @@ void MainWindow::refreshSourceControlOutgoing()
             if (button)
                 button->setVisible(show);
         }
-        if (m_scmSyncButton)
+        if (m_scmSyncRow)
+            m_scmSyncRow->setVisible(!show);
+        else if (m_scmSyncButton)
             m_scmSyncButton->setVisible(!show);
+    };
+    // The live note only belongs to the repo whose sync is actually running.
+    const auto applySyncActivity = [this](int index, bool busy) {
+        if (!m_scmSyncStatus)
+            return;
+        const QString line =
+            busy ? m_repoSyncActivity.value(index).trimmed() : QString();
+        m_scmSyncStatus->setFullText(line);
+        m_scmSyncStatus->setVisible(!line.isEmpty());
     };
     const bool showOutgoingPanel =
         !sourceControlShowsRange() && m_scmPanel && m_scmPanel->isVisible();
@@ -1271,8 +1308,9 @@ void MainWindow::refreshSourceControlOutgoing()
         m_scmOutgoingPanel->hide();
     if (showOutgoingPanel && busy && m_scmOutgoingPanel->isVisible()) {
         m_scmSyncButton->setEnabled(false);
-        m_scmSyncButton->setText(QStringLiteral("Syncing Changes…"));
+        m_scmSyncButton->setText(QStringLiteral("Syncing"));
         setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
+        applySyncActivity(m_repoDetailIndex, true);
         showCommitControls(false);
     }
 
@@ -1282,8 +1320,8 @@ void MainWindow::refreshSourceControlOutgoing()
     const int generation = ++m_scmOutgoingGeneration;
     runGitDetached(
         repo.localPath, countArgs,
-        [this, generation, repoIndex, branch, showCommitControls](bool ok,
-                                                                   const QByteArray &out) {
+        [this, generation, repoIndex, branch, showCommitControls,
+         applySyncActivity](bool ok, const QByteArray &out) {
             if (generation != m_scmOutgoingGeneration ||
                 repoIndex != m_repoDetailIndex)
                 return;
@@ -1325,14 +1363,101 @@ void MainWindow::refreshSourceControlOutgoing()
             m_scmOutgoingPanel->setProperty("branch", branch);
             m_scmSyncButton->setEnabled(!stillBusy && pending > 0);
             m_scmSyncButton->setText(
-                stillBusy ? QStringLiteral("Syncing Changes…")
+                stillBusy ? QStringLiteral("Syncing")
                           : QStringLiteral("Sync Changes %1↑").arg(pending));
             setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
+            applySyncActivity(repoIndex, stillBusy);
             // Outgoing state is rendered as the graph's linked dotted top row,
             // not as a second, disconnected card above CHANGES.
             m_scmOutgoingPanel->hide();
             showCommitControls(false);
         });
+}
+
+// Publish the one-line "what is the sync doing right now" note for a repository
+// row. Publishing is a chain of long, silent steps (secret scan, clone, seal,
+// encrypt, publish, mirror push) and each of them announces itself here, so the
+// button beside it never sits on a bare "Syncing" for minutes. Notes for rows
+// other than the open one are remembered, not painted.
+void MainWindow::setRepoSyncActivity(int index, const QString &line)
+{
+    const QString note = line.simplified();
+    if (note.isEmpty()) {
+        clearRepoSyncActivity(index);
+        return;
+    }
+    if (index < 0)
+        return;
+    if (m_repoSyncActivity.value(index) == note)
+        return;
+    m_repoSyncActivity.insert(index, note);
+    if (index != m_repoDetailIndex || !m_scmSyncStatus)
+        return;
+    m_scmSyncStatus->setFullText(note);
+    // Only reveal the note under a button that is actually in its busy state;
+    // refreshSourceControlOutgoing owns the rest of the row's visibility.
+    if (m_scmSyncRow && m_scmSyncRow->isVisible())
+        m_scmSyncStatus->show();
+}
+
+void MainWindow::clearRepoSyncActivity(int index)
+{
+    if (index < 0 || !m_repoSyncActivity.remove(index))
+        return;
+    if (index == m_repoDetailIndex && m_scmSyncStatus) {
+        m_scmSyncStatus->setFullText(QString());
+        m_scmSyncStatus->hide();
+    }
+}
+
+// git reports its own progress on stderr — "Enumerating objects: 812",
+// "Writing objects:  62% (504/812)" — rewriting a single line with \r. Take the
+// newest frame as the note and keep the whole stream so a failure still has its
+// full message to report (the finished handler can no longer readAll it).
+std::shared_ptr<QString> MainWindow::streamGitProgressActivity(
+    QProcess *process, int index, const QString &prefix)
+{
+    auto buffer = std::make_shared<QString>();
+    if (!process)
+        return buffer;
+    connect(process, &QProcess::readyReadStandardError, this,
+            [this, process, index, prefix, buffer] {
+                const QString chunk =
+                    QString::fromUtf8(process->readAllStandardError());
+                if (chunk.isEmpty())
+                    return;
+                buffer->append(chunk);
+                QString newest;
+                QString normalized = chunk;
+                normalized.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+                for (const QString &frame :
+                     normalized.split(QLatin1Char('\n'))) {
+                    const QString trimmed = frame.trimmed();
+                    if (!trimmed.isEmpty())
+                        newest = trimmed;
+                }
+                if (newest.isEmpty())
+                    return;
+                setRepoSyncActivity(index, prefix + newest);
+            });
+    return buffer;
+}
+
+QString MainWindow::gitErrorsWithoutProgress(const QString &text)
+{
+    static const QRegularExpression progressLine(
+        QStringLiteral("^(remote: )?(Enumerating|Counting|Compressing|Writing|"
+                       "Receiving|Resolving|Unpacking|Total|Updating) "));
+    QString normalized = text;
+    normalized.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    QStringList kept;
+    for (const QString &line : normalized.split(QLatin1Char('\n'))) {
+        const QString trimmed = line.trimmed();
+        if (trimmed.isEmpty() || progressLine.match(trimmed).hasMatch())
+            continue;
+        kept.append(trimmed);
+    }
+    return kept.join(QLatin1Char('\n')).trimmed();
 }
 
 // QSettings context (see loadDiffViewed) for the working-tree diff. One shared
