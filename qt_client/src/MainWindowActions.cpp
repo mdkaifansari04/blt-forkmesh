@@ -218,6 +218,13 @@ void MainWindow::initActions()
         }
     }
 
+    // Auto approval must also apply to runs that were already awaiting review
+    // when the setting was introduced or when the app last shut down. Recheck
+    // their workflow and full repository snapshot before promoting them; a
+    // stale or altered run remains safely parked for manual review.
+    for (const RepositoryRecord &repo : std::as_const(m_repositories))
+        autoApproveAwaitingRuns(repo);
+
     installAllPushHooks();
 
     m_actionSpoolWatcher = new QFileSystemWatcher(this);
@@ -1046,12 +1053,11 @@ void MainWindow::applyWorkflowScan(const QString &owner, const QString &name,
                                snapshotError));
             continue;
         }
-        // Even a release drafted by the owner requires review of the exact
-        // repository snapshot. An unchanged YAML cannot silently run a changed
-        // helper script, Makefile, package hook, or dependency.
-        const bool approved = ActionStore::isApproved(
-            run.repoKey(), path, content, run.repositoryTree,
-            run.executionDigest);
+        // The approval is always bound to the complete repository snapshot, so
+        // an unchanged YAML cannot run a changed helper script, Makefile,
+        // package hook, or dependency. Automatic approval only skips the
+        // human-review pause for repositories where the owner enabled it.
+        const bool approved = resolveActionApproval(repo, run);
         run.status =
             approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
 
@@ -3218,6 +3224,10 @@ void MainWindow::refreshRepoActions()
         QSignalBlocker block(m_actionsEnabledCheck);
         m_actionsEnabledCheck->setChecked(repo.actionsEnabled);
     }
+    if (m_actionsAutoApproveCheck) {
+        QSignalBlocker block(m_actionsAutoApproveCheck);
+        m_actionsAutoApproveCheck->setChecked(repo.actionsAutoApprove);
+    }
 
     auto *all = new QListWidgetItem(QStringLiteral("All workflows"));
     all->setData(Qt::UserRole, QString());
@@ -3538,9 +3548,7 @@ void MainWindow::runSelectedWorkflowManually()
                          .arg(snapshotError));
         return;
     }
-    const bool approved = ActionStore::isApproved(
-        run.repoKey(), path, content, run.repositoryTree,
-        run.executionDigest);
+    const bool approved = resolveActionApproval(repo, run);
     run.status = approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
 
     const ActionRun created = m_actionStore->createRun(run);
@@ -3766,6 +3774,84 @@ void MainWindow::approveSelectedRun()
     processActionQueue();
 }
 
+bool MainWindow::resolveActionApproval(const RepositoryRecord &repo,
+                                       const ActionRun &run)
+{
+    const bool alreadyApproved = ActionStore::isApproved(
+        run.repoKey(), run.workflowPath, run.workflowContent,
+        run.repositoryTree, run.executionDigest);
+    if (alreadyApproved || !repo.actionsAutoApprove)
+        return alreadyApproved;
+
+    // The caller has just read the workflow from its commit and bound the
+    // complete repository state. Persisting this exact tuple gives the runner
+    // the same immediately-before-execution verification as a manual click.
+    ActionStore::approve(run.repoKey(), run.workflowPath, run.workflowContent,
+                         run.repositoryTree, run.executionDigest);
+    return ActionStore::isApproved(
+        run.repoKey(), run.workflowPath, run.workflowContent,
+        run.repositoryTree, run.executionDigest);
+}
+
+int MainWindow::autoApproveAwaitingRuns(const RepositoryRecord &repo)
+{
+    if (!m_actionStore || !repo.actionsEnabled || !repo.actionsAutoApprove)
+        return 0;
+
+    int queued = 0;
+    for (ActionRun &run : m_actionRuns) {
+        if (run.status != ActionStatus::AwaitingApproval ||
+            run.owner != repo.owner || run.name != repo.name)
+            continue;
+
+        // Never resurrect a stale saved run merely because automatic approval
+        // is on. It must still resolve to the exact workflow and repository
+        // snapshot it recorded before it is allowed into the execution queue.
+        ActionRun verified = run;
+        QString snapshotError;
+        if (workflowContentAt(repo.mirrorPath, run.commit, run.workflowPath) !=
+                run.workflowContent ||
+            !bindActionRepositoryState(&verified, repo.mirrorPath,
+                                       &snapshotError) ||
+            verified.repositoryTree != run.repositoryTree ||
+            verified.executionDigest != run.executionDigest) {
+            logSystem(QStringLiteral(
+                          "Actions: keeping \"%1\" for %2/%3 @ %4 awaiting "
+                          "review because its saved repository state could not "
+                          "be reverified%5.")
+                          .arg(run.workflowName, run.owner, run.name,
+                               run.commit.left(8),
+                               snapshotError.isEmpty()
+                                   ? QString()
+                                   : QStringLiteral(": ") + snapshotError));
+            continue;
+        }
+        if (!resolveActionApproval(repo, run)) {
+            logSystem(QStringLiteral(
+                          "Actions: keeping \"%1\" for %2/%3 @ %4 awaiting "
+                          "review because its automatic approval could not be "
+                          "saved.")
+                          .arg(run.workflowName, run.owner, run.name,
+                               run.commit.left(8)));
+            continue;
+        }
+
+        run.status = ActionStatus::Queued;
+        m_actionStore->saveRun(run);
+        if (!m_actionQueue.contains(run.id))
+            m_actionQueue.append(run.id);
+        ++queued;
+        logSystem(QStringLiteral(
+                      "Actions: automatically approved \"%1\" for %2/%3 "
+                      "@ %4.")
+                      .arg(run.workflowName, run.owner, run.name,
+                           run.commit.left(8)));
+    }
+    if (queued > 0)
+        scheduleMirrorActionsSummary(0);
+    return queued;
+}
+
 void MainWindow::rejectSelectedRun()
 {
     ActionRun *run = findRun(m_selectedRunId);
@@ -3826,9 +3912,8 @@ void MainWindow::rerunSelectedRun()
                          .arg(snapshotError));
         return;
     }
-    const bool approved = ActionStore::isApproved(
-        run.repoKey(), run.workflowPath, run.workflowContent,
-        run.repositoryTree, run.executionDigest);
+    const bool approved = resolveActionApproval(
+        m_repositories.at(repoIndex), run);
     run.status = approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
 
     const ActionRun created = m_actionStore->createRun(run);
@@ -4101,10 +4186,17 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionsEnabledCheck = new QCheckBox("Run actions on push");
     m_actionsEnabledCheck->setToolTip(
         "When a fork pushes to this repo's local mirror, run its .forkmesh/ "
-        "workflows. Changed workflows still require approval below before they "
-        "run.");
+        "workflows. New snapshots run automatically when automatic approval "
+        "is enabled below.");
     connect(m_actionsEnabledCheck, &QCheckBox::toggled, this,
             [this](bool on) { setRepoActionsEnabled(on); });
+
+    m_actionsAutoApproveCheck = new QCheckBox("Automatically approve runs");
+    m_actionsAutoApproveCheck->setToolTip(
+        "Start workflows without waiting for an approval click. Approval still "
+        "covers the exact pushed repository snapshot.");
+    connect(m_actionsAutoApproveCheck, &QCheckBox::toggled, this,
+            [this](bool on) { setRepoActionsAutoApprove(on); });
 
     // Where the actions run: pick a node here instead of hand-editing a
     // `runs-on:` line into the YAML. The dropdown edits whichever workflow is
@@ -4134,6 +4226,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     wfLayout->addWidget(wfHeading);
     wfLayout->addWidget(wfHint);
     wfLayout->addWidget(m_actionsEnabledCheck);
+    wfLayout->addWidget(m_actionsAutoApproveCheck);
     wfLayout->addLayout(nodeRow);
     wfLayout->addWidget(m_actionWorkflowList, 1);
 
