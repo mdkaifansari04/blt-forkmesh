@@ -137,6 +137,12 @@ QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::do
     width: 16px;
     height: 16px;
 }
+/* These two are icon-only and fixed at 30px wide, so the 8px left padding the
+   shared rule above gives the labelled pickers left only 18px for a 22px icon
+   and chopped its right edge (adhoc #1204). 4px a side fits it exactly. */
+QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
+    padding: 0px 4px;
+}
 QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
     border: none; width: 0px;
 }
@@ -1456,6 +1462,12 @@ QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::do
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
+}
+/* These two are icon-only and fixed at 30px wide, so the 8px left padding the
+   shared rule above gives the labelled pickers left only 18px for a 22px icon
+   and chopped its right edge (adhoc #1204). 4px a side fits it exactly. */
+QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
+    padding: 0px 4px;
 }
 QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
     border: none; width: 0px;
