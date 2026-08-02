@@ -117,16 +117,20 @@ QString mirrorHeadBranch(const QString &mirrorPath)
 {
     if (!QDir(mirrorPath).exists())
         return QString();
-    QProcess p;
-    p.start("git", {"-C", mirrorPath, "symbolic-ref", "--short", "HEAD"});
-    if (p.waitForFinished(5000) && p.exitCode() == 0) {
-        const QString head = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
-        if (!head.isEmpty() &&
-            (!mirrorCommitForRef(mirrorPath, QStringLiteral("HEAD")).isEmpty() ||
-             !mirrorCommitForRef(mirrorPath,
-                                 QStringLiteral("refs/heads/") + head).isEmpty()))
-            return head;
+    // A bare mirror's HEAD is one line on disk; only fall back to the subprocess
+    // when it isn't the plain "ref: refs/heads/<branch>" form.
+    QString head = headBranchFromFile(mirrorPath);
+    if (head.isEmpty()) {
+        QProcess p;
+        p.start("git", {"-C", mirrorPath, "symbolic-ref", "--short", "HEAD"});
+        if (p.waitForFinished(5000) && p.exitCode() == 0)
+            head = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
     }
+    if (!head.isEmpty() &&
+        (!mirrorCommitForRef(mirrorPath, QStringLiteral("HEAD")).isEmpty() ||
+         !mirrorCommitForRef(mirrorPath,
+                             QStringLiteral("refs/heads/") + head).isEmpty()))
+        return head;
     // A bare mirror cloned from the relay can carry an unset/dangling HEAD (the
     // relay serves git-upload-pack without advertising a symref HEAD), so the
     // symbolic-ref above yields nothing. Every downstream figure the Mirror nodes
