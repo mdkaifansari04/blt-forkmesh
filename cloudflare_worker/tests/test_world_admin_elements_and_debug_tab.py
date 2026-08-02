@@ -257,8 +257,65 @@ def test_debug_tab_lists_every_individual_triangle_drawing_object_sortably():
     assert "WORLD_OBJECT_ROW_LIMIT" in render
 
 
+def test_every_element_expands_into_its_own_pieces_each_sorted_on_its_own():
+    # The scene can walk one level at a time into an element's subtree, so a
+    # row like "Mirror node cabinets" opens into one row per cabinet, and each
+    # cabinet opens again down to a single mesh.
+    for contract in (
+        "function listWorldElementParts(elementId, path = [])",
+        "function elementPartRoots(element)",
+        "function elementPartNodes(element, path)",
+        "function describeElementPart(node, index, path, interactiveSet)",
+        "const ELEMENT_PART_LIMIT =",
+        "listSceneObjects,\n    listWorldElementParts,",
+        # Element rows advertise whether there is anything inside to open.
+        "parts: elementPartRoots(element).length,",
+    ):
+        assert contract in SCENE
+    # A lone wrapper Group is scaffolding, so the first level opens into its
+    # children; multi-root elements list their roots.
+    roots = SCENE.split("function elementPartRoots(element) {", 1)[1].split(
+        "\n  }", 1
+    )[0]
+    assert "roots.length === 1 && roots[0]?.children?.length" in roots
+    # Clicking the name expands; the checkbox still switches the element off.
+    for contract in (
+        "data-world-element-expand=",
+        "data-world-element-part-sort=",
+        "data-world-element-part-scope=",
+        "this.expandedWorldElements = new Set();",
+        "this.worldElementPartSorts = new Map();",
+        "toggleWorldElementExpanded(scope) {",
+        "sortWorldElementParts(scope, key) {",
+        "renderWorldElementParts(elementId, path, depth) {",
+        'this.world?.listWorldElementParts?.(elementId, path)',
+        '{ key: "label", heading: "Piece" },',
+        '{ key: "type", heading: "Kind" },',
+        "const WORLD_ELEMENT_PART_DEPTH_LIMIT =",
+    ):
+        assert contract in APP
+    parts = APP.split("  renderWorldElementParts(elementId, path, depth) {", 1)[
+        1
+    ].split("\n  renderWorldObjectPane", 1)[0]
+    # Each opened level keeps its own sort key, and expanding recurses.
+    assert "this.worldElementPartSortFor(scope)" in parts
+    assert "this.renderWorldElementParts(elementId, part.path, depth + 1)" in parts
+    # Nothing is dropped silently: a truncated level says how many it left out.
+    assert "Showing ${parts.length.toLocaleString()} of " in parts
+    sorter = APP.split("  sortWorldElementParts(scope, key) {", 1)[1].split(
+        "\n  toggleWorldElementExpanded", 1
+    )[0]
+    assert "this.worldElementPartSorts.set(" in sorter
+    assert "ascending: current.ascending !== true" in sorter
+
+
 def test_element_and_debug_panels_have_styles():
     for selector in (
+        ".world-element-subhead",
+        ".world-element-part",
+        '.world-element-part[data-visible="false"]',
+        ".world-element-twisty",
+        "button.world-element-name",
         ".world-debug-live",
         ".world-debug-suggestions",
         '.world-debug-suggestions li[data-level="high"]',
