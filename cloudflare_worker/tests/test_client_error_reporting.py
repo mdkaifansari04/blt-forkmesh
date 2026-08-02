@@ -113,3 +113,61 @@ def test_admin_hud_counts_only_rows_after_the_local_seen_cursor():
     assert "this.identity?.isAdmin !== true" in WORLD
     assert "world-admin-error-arrival" in WORLD_CSS
     assert "prefers-reduced-motion: reduce" in WORLD_CSS
+    assert 'method not in ("GET", "POST", "DELETE")' in ENTRY
+    assert '"DELETE FROM error_log WHERE id=?"' in ENTRY
+    assert "_admin_error_create_bot_task(" in ENTRY
+    assert 'payload["groups"]' in ENTRY
+    assert 'payload["hourly"]' in ENTRY
+    assert '"hours": [0] * 24' in ENTRY
+    assert "world-error-group-table" in WORLD
+    assert "world-error-chart" in WORLD
+    assert "world-error-sparkline" in WORLD
+    assert "world-error-table-header" in WORLD
+    assert "data-world-admin-error-delete" in WORLD
+    assert "data-world-admin-error-task" in WORLD
+    assert "data-world-admin-error-group-delete" in WORLD
+    assert "data-world-admin-error-group-task" in WORLD
+    assert "data-world-admin-error-copy" in WORLD
+    assert "async deleteAdminError(" in WORLD
+    assert "async createTaskFromAdminError(" in WORLD
+    assert "async deleteAdminErrorGroup(" in WORLD
+    assert "async createTaskFromAdminErrorGroup(" in WORLD
+    assert "relativeTime(group.firstSeen)" in WORLD
+    assert 'title="${escapeHTML(exactTime(group.firstSeen))}"' in WORLD
+    assert ".world-error-actor-stack" in WORLD_CSS
+
+
+def test_newly_logged_errors_are_announced_not_only_counted():
+    # adhoc #57: the badge said a number had changed somewhere off screen, so
+    # new errors never reached the activity stream the operational pings use.
+    assert (
+        '"SELECT id,ts,status,method,path FROM error_log ORDER BY id DESC "'
+        in ENTRY)
+    assert '"latestStatus": latest_status,' in ENTRY
+    assert '"latestSource": _admin_error_source(' in ENTRY
+    start = WORLD.index("  async refreshAdminErrors() {")
+    refresh = WORLD[start:WORLD.index("\n  }", start)]
+    assert "const previousCount = this.adminErrorCount;" in refresh
+    assert "const arrived = nextCount > previousCount;" in refresh
+    assert "this.activityNoticesSettled() &&" in refresh
+    # An error storm is one card a minute carrying the real total, and the
+    # arrivals in between are carried forward rather than dropped.
+    assert "this.adminErrorPendingAnnounce =" in refresh
+    assert "ADMIN_ERROR_ANNOUNCE_GAP_MS" in refresh
+    assert "this.adminErrorPendingAnnounce = 0;" in refresh
+    assert "New error logged" in refresh
+    assert "new errors logged" in refresh
+    assert '{ kind: "error" },' in refresh
+    # Status and source only: no route, message, ray or actor in the HUD.
+    assert "payload?.latestStatus" in refresh
+    assert "payload?.latestSource" in refresh
+    assert "payload?.path" not in refresh
+    assert "payload?.message" not in refresh
+    assert "payload?.ray" not in refresh
+
+
+def test_world_admin_error_chart_height_expression_keeps_ternary_balanced():
+    assert (
+        'style="height:${chartPeak ? Math.max(2, '
+        'Math.round((132 * count) / chartPeak)) : 2}px"'
+    ) in WORLD

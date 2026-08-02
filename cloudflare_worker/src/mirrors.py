@@ -551,6 +551,16 @@ def build_repo_mirrors_payload(
             "id": str(rec.get("nodeId") or "").strip(),
             "clonesServed": clones_served,
             "websiteServed": website_served,
+            # When those two counters last moved, and the bounded class of
+            # client served ("git-client", "browser", ...). Optional catalog-v2
+            # extensions: None when the node has served none yet, or runs a
+            # build that predates the stamps -- never a fabricated "just now".
+            "cloneServedAt": _mirror_ms(rec.get("cloneServedAt")),
+            "cloneServedAgent": (
+                str(rec.get("cloneServedAgent") or "").strip() or None),
+            "websiteServedAt": _mirror_ms(rec.get("websiteServedAt")),
+            "websiteServedAgent": (
+                str(rec.get("websiteServedAgent") or "").strip() or None),
             # Optional, operator-approved public host telemetry. These values
             # were bounded and signed as part of catalog-v2; preserve None as
             # "not shared" rather than inventing a zero for an older/opted-out

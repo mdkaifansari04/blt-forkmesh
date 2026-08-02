@@ -116,10 +116,13 @@
         <p>
           Open <strong>Control Node</strong> in the installed ForkMesh Qt client,
           then use its Cloudflare deployment form. Enter a narrowly scoped
-          Cloudflare API token only in that local desktop form. The hosted
-          website and ForkMesh World never ask for, receive, proxy, or store the
-          token, and a <code>forkmesh://control/cloudflare</code> setup link
-          carries no token or other secret in its URL.
+          Cloudflare API token in that local desktop form. The optional World
+          instance booth can hold a masked token only in the current browser
+          tab long enough to copy it into the desktop field; it never submits,
+          proxies, persists, screenshots, or includes that value in the
+          <code>forkmesh://control/cloudflare</code> setup link. The link carries
+          bounded public topology only and rejects token-, password-, key-, and
+          credential-shaped parameters.
         </p>
         <p>
           Review the dry-run output before deployment and clear or rotate the

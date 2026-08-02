@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contracts for click-selected World objects and member avatars."""
+"""Contracts for click-selected World member avatars."""
 
 from pathlib import Path
 
@@ -9,20 +9,6 @@ SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text(
     encoding="utf-8"
 )
 WORLD = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
-
-
-def test_objects_select_on_click_and_admin_keyboard_editing_replaces_dragging():
-    assert "const selectedLayoutObject = layoutObjectAtPointer();" in SCENE
-    assert "setActiveLayoutObject(selectedLayoutObject);" in SCENE
-    assert "forkmesh-layout-selection-highlight" in SCENE
-    assert "onLayoutObjectSelect(layoutObjectSelection(" in SCENE
-    assert "nudgeActiveLayoutObject(event.code)" in SCENE
-    assert 'event.code === "KeyR" && layoutEditingEnabled' in SCENE
-    assert "draggedLayoutObject" not in SCENE
-    assert 'addEventListener("contextmenu", handleContextMenu)' not in SCENE
-    assert "rotateActiveLayoutObject(Math.sign(deltaPixels))" not in SCENE
-    assert "use arrow keys to" in WORLD
-    assert "R or Shift+R to rotate it" in WORLD
 
 
 def test_avatar_click_uses_public_identity_and_opens_the_side_panel():

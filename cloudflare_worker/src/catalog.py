@@ -317,6 +317,21 @@ def safe_catalog_record(data):
     commit_at = clean_string(data.get("commitAt", ""), 16)
     if commit_at:
         record["commitAt"] = commit_at
+    # When the node last served a clone / a website read for this repo, and the
+    # bounded class of client it served (never a raw User-Agent). Same optional
+    # -extension rule: absent when the node never served one, or never reported.
+    for field in ("cloneServedAt", "websiteServedAt"):
+        served_at = clean_string(data.get(field, ""), 16)
+        if served_at.isdigit() and int(served_at) > 0:
+            record[field] = served_at
+    # Bounded client classes only: the serving gateway generalizes the raw
+    # User-Agent (a fingerprint) into one of these before it is ever signed.
+    serve_agent_classes = (
+        "forkmesh-node", "git-client", "bot-tool", "browser", "client")
+    for field in ("cloneServedAgent", "websiteServedAgent"):
+        agent = clean_string(data.get(field, ""), 16)
+        if agent in serve_agent_classes:
+            record[field] = agent
     # Agent runtimes are optional, signed catalog-v2 capabilities. Keep the
     # field absent for older clients and nodes with no supported binary so
     # routing fails closed without invalidating legacy signatures.

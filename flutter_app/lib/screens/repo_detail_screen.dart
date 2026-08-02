@@ -4602,8 +4602,6 @@ class _CommitDetailScreen extends StatelessWidget {
                         truncated: detail.truncated,
                       ),
                     ],
-                    const SizedBox(height: 12),
-                    _CommitCommentCard(repo: repo, hash: hash),
                   ],
                 );
               },
@@ -4752,107 +4750,6 @@ class _CommitDiffCard extends StatelessWidget {
       ],
     );
   }
-}
-
-class _CommitCommentCard extends StatelessWidget {
-  const _CommitCommentCard({required this.repo, required this.hash});
-
-  final Repository repo;
-  final String hash;
-
-  @override
-  Widget build(BuildContext context) => _InfoCard(
-    title: 'Commit comments',
-    children: [
-      const Text(
-        'Add a signed comment to this commit. The repo owner drains it through the Worker commit inbox.',
-      ),
-      const SizedBox(height: 12),
-      FilledButton.icon(
-        onPressed: hash.isEmpty
-            ? null
-            : () => _commentOnCommit(context, repo, hash),
-        icon: const Icon(Icons.add_comment_outlined),
-        label: const Text('Comment on commit'),
-      ),
-    ],
-  );
-}
-
-Future<void> _commentOnCommit(
-  BuildContext context,
-  Repository repo,
-  String hash,
-) async {
-  final inbox = context.read<InboxService>();
-  final body = await _showCommitCommentComposer(context, hash: hash);
-  if (body == null || !context.mounted) return;
-  await _run(
-    context,
-    () => inbox.commentOnCommit(repo.owner, repo.name, hash, body),
-    _pendingNote,
-  );
-}
-
-Future<String?> _showCommitCommentComposer(
-  BuildContext context, {
-  required String hash,
-}) {
-  final controller = TextEditingController();
-  final short = hash.length < 7 ? hash : hash.substring(0, 7);
-  return showDialog<String>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      backgroundColor: FmTheme.bgOverlay(ctx),
-      surfaceTintColor: Colors.transparent,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(FmRadius.lg),
-      ),
-      title: const Text('Signed commit comment'),
-      content: SizedBox(
-        width: 520,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Commit comments are signed and sent to the commit inbox for $short, pending the repo owner applying them.',
-              style: const TextStyle(height: 1.4),
-            ),
-            const SizedBox(height: 12),
-            const ComposeIdentityBar(verb: 'Commenting'),
-            const SizedBox(height: 8),
-            TextField(
-              controller: controller,
-              autofocus: true,
-              minLines: 4,
-              maxLines: 8,
-              decoration: const InputDecoration(
-                labelText: 'Comment',
-                alignLabelWithHint: true,
-              ),
-            ),
-            const SizedBox(height: 12),
-            const _PendingInboxNote(),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(ctx),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () {
-            final body = controller.text.trim();
-            if (body.isEmpty) return;
-            Navigator.pop(ctx, body);
-          },
-          child: const Text('Submit comment'),
-        ),
-      ],
-    ),
-  );
 }
 
 class _RepoHeaderCard extends StatelessWidget {

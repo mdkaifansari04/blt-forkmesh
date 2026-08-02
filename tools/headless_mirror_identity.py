@@ -88,6 +88,17 @@ PUBLIC_STATE_FIELDS = frozenset(
         "allowedOrigins",
     }
 )
+# Bounded client classes a node may report for its last served clone / website
+# read. Raw User-Agent strings are never published (see mirror_gateway.py).
+SERVE_AGENT_CLASSES = frozenset(
+    {
+        "forkmesh-node",
+        "git-client",
+        "bot-tool",
+        "browser",
+        "client",
+    }
+)
 STORAGE_PURPOSES = frozenset(
     {
         "service-discovery",
@@ -133,6 +144,10 @@ PUBLIC_CATALOG_INPUT_FIELDS = frozenset(
         "nodeId",
         "clonesServed",
         "websiteServed",
+        "cloneServedAt",
+        "cloneServedAgent",
+        "websiteServedAt",
+        "websiteServedAgent",
         "cpuPercent",
         "memUsedBytes",
         "memTotalBytes",
@@ -1933,6 +1948,17 @@ def _normalized_public_catalog(
     commit_at = _clean_string(source.get("commitAt", ""), 16)
     if commit_at:
         record["commitAt"] = commit_at
+    # When this node last served a clone / a website read, and the class of
+    # client it served. Same optional-extension rule: absent when the gateway
+    # never recorded one, so older publishers' signatures still verify.
+    for field in ("cloneServedAt", "websiteServedAt"):
+        served_at = _clean_string(source.get(field, ""), 16)
+        if served_at.isdigit() and int(served_at) > 0:
+            record[field] = served_at
+    for field in ("cloneServedAgent", "websiteServedAgent"):
+        agent = _clean_string(source.get(field, ""), 16)
+        if agent in SERVE_AGENT_CLASSES:
+            record[field] = agent
     return record
 
 

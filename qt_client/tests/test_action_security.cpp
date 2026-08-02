@@ -3,6 +3,7 @@
 #include "ActionStore.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
@@ -12,6 +13,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -76,6 +78,42 @@ QString commitAll(const QString &repository, const QString &message)
                    {QStringLiteral("rev-parse"), QStringLiteral("HEAD")},
                    &ok))
         .trimmed();
+}
+
+// A top-level package that only the node's per-user site directory provides —
+// `python3 -s` (user site disabled) must not find it. That makes it a witness
+// for the runner's site-packages mount: a step can only import it if the
+// sandbox re-exposed the host interpreter's own packages.
+QString userSiteOnlyPackage()
+{
+    const QString lib = QDir::homePath() + QStringLiteral("/.local/lib");
+    const QStringList pythons =
+        QDir(lib).entryList({QStringLiteral("python*")},
+                            QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    for (const QString &python : pythons) {
+        const QString site =
+            lib + QLatin1Char('/') + python + QStringLiteral("/site-packages");
+        const QStringList packages =
+            QDir(site).entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+        for (const QString &package : packages) {
+            if (package.startsWith(QLatin1Char('_')) ||
+                package.contains(QLatin1Char('.')) ||
+                package.contains(QLatin1Char('-')))
+                continue;
+            if (!QFileInfo::exists(site + QLatin1Char('/') + package +
+                                   QStringLiteral("/__init__.py")))
+                continue;
+            QProcess probe;
+            probe.start(QStringLiteral("python3"),
+                        {QStringLiteral("-s"), QStringLiteral("-c"),
+                         QStringLiteral("import %1").arg(package)});
+            if (!probe.waitForFinished(10000))
+                continue;
+            if (probe.exitCode() != 0)
+                return package;
+        }
+    }
+    return {};
 }
 
 struct RunResult {
@@ -478,6 +516,108 @@ int main(int argc, char **argv)
                   budget.log.contains(QStringLiteral("budget ok")),
               "steps see the sandbox CPU and memory budget they must build "
               "within");
+
+        // /usr/bin/awk, cc, c++ and friends are symlinks into
+        // /etc/alternatives on Debian-family hosts. When that farm is outside
+        // the mount namespace they dangle, and a step using one dies with exit
+        // 127 — which is how the v0.7.10 release publish failed after a full
+        // desktop build.
+        if (QStandardPaths::findExecutable(QStringLiteral("awk")).isEmpty()) {
+            std::printf("  SKIP alternatives resolution: no awk on this host\n");
+        } else {
+            const QString toolWorkflow = QStringLiteral(
+                "name: Toolchain\non: push\nsteps:\n"
+                "  - name: alternatives-managed commands resolve\n"
+                "    run: |\n"
+                "      set -eu\n"
+                "      [ \"$(printf 'x y\\n' | awk '{print $2}')\" = \"y\" ]\n"
+                "      echo \"alternatives ok\"\n");
+            check(writeFile(workflowPath, toolWorkflow.toUtf8()),
+                  "alternatives workflow fixture is written");
+            const QString toolCommit =
+                commitAll(repository, QStringLiteral("alternatives workflow"));
+            const RunResult tools =
+                runWorkflow(repository, toolCommit, toolWorkflow,
+                            &store, 106, limits);
+            check(tools.finished && tools.signalOk &&
+                      tools.persisted.status == ActionStatus::Success &&
+                      tools.log.contains(QStringLiteral("alternatives ok")),
+                  "commands resolved through /etc/alternatives run inside the "
+                  "sandbox");
+        }
+
+        // Egress is denied, so a step imports only what the runner mounts.
+        // System packages arrive with /usr, but pip's per-user site directory
+        // lives in the host home — without it an offline suite fails with
+        // "Runner image is missing pytest" on a healthy tree.
+        const QString userPackage = userSiteOnlyPackage();
+        if (userPackage.isEmpty()) {
+            std::printf("  SKIP node python packages: none are user-site only\n");
+        } else {
+            const QString pythonWorkflow =
+                QStringLiteral(
+                    "name: Node python\non: push\nsteps:\n"
+                    "  - name: offline step imports the node's own packages\n"
+                    "    run: |\n"
+                    "      set -eu\n"
+                    "      python3 -c 'import %1'\n"
+                    "      [ ! -e /home/forkmesh/.local/share ]\n"
+                    "      echo \"python ok\"\n")
+                    .arg(userPackage);
+            check(writeFile(workflowPath, pythonWorkflow.toUtf8()),
+                  "node-python workflow fixture is written");
+            const QString pythonCommit =
+                commitAll(repository, QStringLiteral("node python workflow"));
+            const RunResult python =
+                runWorkflow(repository, pythonCommit, pythonWorkflow,
+                            &store, 107, limits);
+            check(python.finished && python.signalOk &&
+                      python.persisted.status == ActionStatus::Success &&
+                      python.log.contains(QStringLiteral("python ok")),
+                  "offline steps import the node interpreter's packages while "
+                  "the rest of the host home stays out of the namespace");
+        }
+
+        // Disposable trees are disk-backed beside the run's own records, not on
+        // the host's shared tmpfs: a step that fills that tmpfs corrupts other
+        // checkouts and can fail silently mid-build. An app-data directory does
+        // not self-clean, so a dead run's leftovers are swept on the next start
+        // while a live sibling run's tree is left alone.
+        const QDir sandboxBase(store.sandboxDir());
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        const QString staleTree =
+            sandboxBase.absoluteFilePath(QStringLiteral("forkmesh-run-901-%1")
+                                             .arg(nowMs - 3 * 24 * 3600 * 1000LL));
+        const QString liveTree =
+            sandboxBase.absoluteFilePath(
+                QStringLiteral("forkmesh-run-902-%1").arg(nowMs));
+        check(QDir().mkpath(staleTree + QStringLiteral("/workspace")) &&
+                  QDir().mkpath(liveTree + QStringLiteral("/workspace")),
+              "abandoned and in-flight sandbox trees are staged");
+
+        const QString sweepWorkflow = QStringLiteral(
+            "name: Sandbox home\non: push\nsteps:\n"
+            "  - name: disposable tree location\n"
+            "    run: echo \"sandbox ok\"\n");
+        check(writeFile(workflowPath, sweepWorkflow.toUtf8()),
+              "sandbox-location workflow fixture is written");
+        const QString sweepCommit =
+            commitAll(repository, QStringLiteral("sandbox location workflow"));
+        const RunResult sweep =
+            runWorkflow(repository, sweepCommit, sweepWorkflow,
+                        &store, 108, limits);
+        check(sweep.finished && sweep.signalOk &&
+                  sweep.persisted.status == ActionStatus::Success,
+              "a run whose sandbox lives under the Actions store succeeds");
+        check(!QDir(staleTree).exists(),
+              "the abandoned sandbox tree is swept before the next run");
+        check(QDir(liveTree).exists(),
+              "a concurrent run's sandbox tree is left alone");
+        check(sandboxBase.entryList({QStringLiteral("forkmesh-run-108-*")},
+                                    QDir::Dirs | QDir::NoDotAndDotDot)
+                  .isEmpty(),
+              "a finished run removes its own disposable tree");
+        QDir(liveTree).removeRecursively();
     }
 
     if (failures == 0)

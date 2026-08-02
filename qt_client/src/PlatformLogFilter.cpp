@@ -1,6 +1,8 @@
 #include "PlatformLogFilter.h"
 
 #include <QLatin1String>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QtGlobal>
 
 #include <cstdio>
@@ -11,12 +13,41 @@ namespace {
 
 QtMessageHandler g_previousMessageHandler = nullptr;
 
+QMutex g_sinkMutex;
+AppLogSink g_sink;
+bool g_keepConsoleEcho = false;
+// A sink lands in the app's log, and logging can itself warn. Sinking that
+// warning would re-enter the sink from inside it, so the nested message takes
+// the console path instead.
+thread_local bool g_insideSink = false;
+
+// Hands the message to the registered sink. Returns true once the sink has it
+// and the console copy should be dropped.
+bool routeToAppLog(QtMsgType type, const QString &message)
+{
+    if (type == QtFatalMsg || g_insideSink)
+        return false;
+    // Held across the call so clearAppLogSink() cannot return — and the sink's
+    // callee cannot be destroyed — while a worker thread is inside the sink.
+    QMutexLocker lock(&g_sinkMutex);
+    if (!g_sink)
+        return false;
+    struct ReentryGuard {
+        ReentryGuard() { g_insideSink = true; }
+        ~ReentryGuard() { g_insideSink = false; }
+    } guard;
+    g_sink(type, message);
+    return !g_keepConsoleEcho;
+}
+
 void filterPlatformNoise(QtMsgType type, const QMessageLogContext &context,
                          const QString &message)
 {
     if (isPlatformSizeHintNoise(message))
         return;
     if (isFontDatabaseNoise(message))
+        return;
+    if (routeToAppLog(type, message))
         return;
     if (g_previousMessageHandler) {
         g_previousMessageHandler(type, context, message);
@@ -52,6 +83,20 @@ bool isFontDatabaseNoise(const QString &message)
 void installPlatformLogFilter()
 {
     g_previousMessageHandler = qInstallMessageHandler(filterPlatformNoise);
+}
+
+void setAppLogSink(AppLogSink sink, bool keepConsoleEcho)
+{
+    QMutexLocker lock(&g_sinkMutex);
+    g_sink = std::move(sink);
+    g_keepConsoleEcho = keepConsoleEcho;
+}
+
+void clearAppLogSink()
+{
+    QMutexLocker lock(&g_sinkMutex);
+    g_sink = {};
+    g_keepConsoleEcho = false;
 }
 
 } // namespace forkmesh

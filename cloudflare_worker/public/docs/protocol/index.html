@@ -194,7 +194,6 @@
             <tr><td><strong>Discussion event</strong></td><td><code>discussion-event</code> type · number · author · ts · <code>sha256hex(content)</code></td></tr>
             <tr><td><strong>Pull request</strong></td><td><code>pull-event</code> author · ts · <code>sha256hex(title \0 base \0 head \0 patch [\0 commits])</code></td></tr>
             <tr><td><strong>Pull comment</strong></td><td><code>pull-comment</code> type · number · author · ts · <code>sha256hex(content)</code></td></tr>
-            <tr><td><strong>Commit comment</strong></td><td><code>commit-comment</code> sha · author · ts · <code>sha256hex(body)</code></td></tr>
             <tr><td><strong>Catalog record</strong></td><td><code>catalog</code> owner · repo · updatedAt</td></tr>
             <tr><td><strong>Catalog delete</strong></td><td><code>catalog-delete</code> owner · name · ts</td></tr>
             <tr><td><strong>Repo-state attestation</strong></td><td><code>repostate</code> owner · repo · stateHash · updatedAt</td></tr>
@@ -536,7 +535,6 @@
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/issues</code></td><td>signed issue open/comment/edit/status/…</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/pulls</code></td><td>signed pull request</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/pulls/&lt;number&gt;/merge</code></td><td>account-session-authorized asynchronous merge, pinned to one write-enabled mirror and exact base/head/metadata object ids</td></tr>
-            <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/commits</code></td><td>signed per-commit comment</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/discussions</code></td><td>signed discussion open/comment</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/subscribe</code></td><td>signed thread subscribe/unsubscribe</td></tr>
             <tr><td><code>POST /api/repo/&lt;owner&gt;/&lt;repo&gt;/bounty</code></td><td>retired legacy bounty-custody path; returns a migration response and never creates a deposit wallet</td></tr>

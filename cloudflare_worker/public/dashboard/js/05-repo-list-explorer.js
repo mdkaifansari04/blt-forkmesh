@@ -6,11 +6,48 @@
       repo.name,
       canonical.owner,
       canonical.name,
+      // Cards are labelled with the logical owner, so filtering by the
+      // organization (or account) name has to match too.
+      ...repoLogicalOwners(repo).map((value) => value.owner),
       repo.description,
       repo.channel,
       repo.source,
+      // Catalog records advertise the current head and stable root commits.
+      // Include both so a pasted full SHA or a short prefix opens the matching
+      // repository without fetching every repository's commit history.
+      repo.commit,
+      repo.rootCommit,
     ].join(" ").toLowerCase();
     return haystack.includes(query);
+  }
+
+  // --- Header search as a live page filter (adhoc #37) -------------------
+  //
+  // Typing in the header search box opens its repository dropdown *and*
+  // narrows the list you are already looking at, with no Enter and no round
+  // trip. The two are independent: the dropdown always searches the whole
+  // catalog, while the page filter only ever hides rows the page had already
+  // rendered. Clearing the box (including the native type="search" ✕) restores
+  // everything.
+  //
+  // A page keeps its own filter box where it has one (#repoSearch, the issue
+  // search, ...); the global query is ANDed on top of it rather than replacing
+  // it, so neither control silently overrides the other.
+  function globalSearchPageQuery() {
+    return state.globalSearch.pageQuery || "";
+  }
+
+  // The lowercase terms a page list must match: its own filter box, then the
+  // header search box. Empty terms drop out, so an untouched box filters
+  // nothing.
+  function pageFilterQueries(ownQuery) {
+    return [String(ownQuery || "").trim().toLowerCase(), globalSearchPageQuery()]
+      .filter(Boolean);
+  }
+
+  function repositoryMatchesPageFilter(repo, ownQuery) {
+    return pageFilterQueries(ownQuery)
+      .every((query) => repositoryMatchesQuery(repo, query));
   }
 
   function repositoryTermsBadge(repo, compact = false) {
@@ -48,6 +85,75 @@
     state.globalSearch.open = false;
     state.globalSearch.selectedIndex = 0;
     renderGlobalSearchResults();
+    // Clearing the box must un-filter the page too, not just close the panel.
+    if (options.clear) applyGlobalSearchPageFilter();
+  }
+
+  // Pull the header box's current text into state.globalSearch.pageQuery and
+  // re-render this page's lists through it. Cheap enough to run per keystroke:
+  // every list it drives filters an already-loaded array in memory, so nothing
+  // here refetches.
+  function applyGlobalSearchPageFilter() {
+    const shell = $("[data-global-search-shell]");
+    const input = $("[data-global-search]");
+    // The box is lg-only chrome; when it is not on screen it must not be
+    // holding a stale filter over the page.
+    const visible = Boolean(input) && (!shell || shell.getClientRects().length > 0);
+    const next = visible ? (input.value || "").trim().toLowerCase() : "";
+    if (next === state.globalSearch.pageQuery) return;
+    state.globalSearch.pageQuery = next;
+    renderGlobalSearchPageFilter();
+  }
+
+  // Re-render whichever lists this page shows. Each branch reuses the page's
+  // normal render path, so the filtered view is the same markup (empty states,
+  // pagination, counts) the page would draw for a hand-typed filter.
+  function renderGlobalSearchPageFilter() {
+    const page = currentPage();
+    if (["home", "repos", "profile-overview", "profile-repositories"].includes(page)) {
+      // Filtering to a shorter list can strand you past the last page.
+      state.page = 1;
+      applyRepositoryFilter();
+    } else if (page === "network") {
+      renderNetworkRows(Array.isArray(state.networkNodeRows) ? state.networkNodeRows : []);
+      window.lucide?.createIcons();
+    } else if (page === "repo") {
+      renderRepoPageFilter();
+    }
+    renderGlobalSearchPageFilterNotice();
+  }
+
+  // How many rows the page filter is currently showing, or null when this page
+  // has nothing the header box filters (settings, chat).
+  function globalSearchPageFilterCount() {
+    const page = currentPage();
+    if (["home", "repos", "profile-overview", "profile-repositories"].includes(page)) {
+      return (state.filteredGroups || []).length;
+    }
+    if (page === "network") {
+      return networkRowsMatchingPageFilter(
+        Array.isArray(state.networkNodeRows) ? state.networkNodeRows : []).length;
+    }
+    if (page === "repo") return repoPageFilterCount();
+    return null;
+  }
+
+  // A one-line footer under the dropdown, so it is obvious the page behind the
+  // panel narrowed on purpose rather than losing its rows.
+  function renderGlobalSearchPageFilterNotice() {
+    const notice = $("[data-global-search-page-filter]");
+    if (!notice) return;
+    const query = globalSearchPageQuery();
+    const count = query ? globalSearchPageFilterCount() : null;
+    const show = Boolean(query) && count !== null;
+    notice.classList.toggle("hidden", !show);
+    notice.classList.toggle("flex", show);
+    if (!show) {
+      notice.innerHTML = "";
+      return;
+    }
+    notice.innerHTML = `<i data-lucide="list-filter" class="h-3 w-3 shrink-0"></i><span class="min-w-0 truncate">Filtering this page: ${formatCount(count)} match${count === 1 ? "" : "es"}</span>`;
+    window.lucide?.createIcons();
   }
 
   function renderGlobalSearchResults() {
@@ -68,6 +174,9 @@
 
     input.setAttribute("aria-expanded", state.globalSearch.open ? "true" : "false");
     panel.classList.toggle("hidden", !state.globalSearch.open);
+    // Keep the "filtering this page" footer honest when the list behind it is
+    // re-rendered (catalog arriving, page change) rather than only on keystroke.
+    renderGlobalSearchPageFilterNotice();
     if (!state.globalSearch.open) return;
 
     if (state.repositoriesLoading) {
@@ -95,7 +204,7 @@
         >
           <i data-lucide="book-marked" class="h-3.5 w-3.5 text-muted-foreground"></i>
           <span class="min-w-0">
-            <span class="block truncate font-medium text-foreground">${escapeHtml(key)}</span>
+            <span class="block truncate font-medium text-foreground">${escapeHtml(`${groupDisplayOwner(group)}/${repo.name || ""}`)}</span>
             <span class="block truncate text-xs text-muted-foreground">${escapeHtml(globalSearchRepoSummary(group, repo))}</span>
           </span>
         </button>`;
@@ -273,19 +382,39 @@
       }).then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const body = await response.json();
-        if (String(state.session?.sessionToken || "") !== token) return "";
-        return nativeRepositoryLogoDataUrl(body?.logo?.dataUrl);
+        if (String(state.session?.sessionToken || "") !== token) return null;
+        return {
+          dataUrl: nativeRepositoryLogoDataUrl(body?.logo?.dataUrl),
+          // The repository's own root logo streams through a mirror, so it can
+          // fail long after the card rendered. The generated/approved artwork
+          // ships with it so the card swaps instead of showing a broken image.
+          fallbackDataUrl: nativeRepositoryLogoDataUrl(
+            body?.logo?.fallbackDataUrl),
+        };
       }).catch(() => {
         // Do not negatively cache authorization failures or transient errors.
         // The same card can be retried after login or on a later render.
         if (nativeRepositoryLogoCache.get(cacheKey) === pending) {
           nativeRepositoryLogoCache.delete(cacheKey);
         }
-        return "";
+        return null;
       });
       nativeRepositoryLogoCache.set(cacheKey, pending);
     }
     return nativeRepositoryLogoCache.get(cacheKey);
+  }
+
+  function showNativeRepositoryLogo(image) {
+    image.classList.remove("hidden");
+    image.parentElement?.querySelector("[data-native-repo-logo-fallback]")
+      ?.classList.add("hidden");
+  }
+
+  function hideNativeRepositoryLogo(image) {
+    image.classList.add("hidden");
+    image.removeAttribute("src");
+    image.parentElement?.querySelector("[data-native-repo-logo-fallback]")
+      ?.classList.remove("hidden");
   }
 
   function hydrateNativeRepositoryLogos(root) {
@@ -294,12 +423,24 @@
       const endpoint = image.getAttribute("data-logo-endpoint") || "";
       if (!endpoint || image.dataset.logoHydrated === "true") return;
       image.dataset.logoHydrated = "true";
-      const dataUrl = await loadNativeRepositoryLogo(endpoint);
+      const logo = await loadNativeRepositoryLogo(endpoint);
+      const dataUrl = String(logo?.dataUrl || "");
+      const fallbackDataUrl = String(logo?.fallbackDataUrl || "");
       if (!dataUrl || !image.isConnected) return;
+      // The committed root logo is served by a mirror, so it can fail after the
+      // card rendered (offline or lagging host). Swap to the generated artwork,
+      // then to the repository icon — never leave a broken image behind.
+      image.onerror = () => {
+        if (fallbackDataUrl && image.dataset.logoFallbackUsed !== "true") {
+          image.dataset.logoFallbackUsed = "true";
+          image.src = fallbackDataUrl;
+          return;
+        }
+        image.onerror = null;
+        hideNativeRepositoryLogo(image);
+      };
       image.src = dataUrl;
-      image.classList.remove("hidden");
-      image.parentElement?.querySelector("[data-native-repo-logo-fallback]")
-        ?.classList.add("hidden");
+      showNativeRepositoryLogo(image);
     });
   }
 
@@ -335,6 +476,10 @@
     const origin = sourceOfTruth(group);
     const repo = group.primary;
     const key = repoKey(origin);
+    const displayOwner = groupDisplayOwner(group);
+    const servedNote = displayOwner.toLowerCase() !== String(origin.owner || "").toLowerCase()
+      ? ` (published from ${origin.owner || "a node"})`
+      : "";
     const live = repoIsLive(origin);
     const viaMirror = repoServedByMirror(origin);
     const visibility = origin.isPrivate ? "private" : "public";
@@ -354,14 +499,14 @@
     const activityWeeks = groupActivityWeeks(group);
     const language = repoLanguage(origin);
     return `
-      <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+      <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(`${displayOwner || "owner"}/${origin.name || "repository"}`)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
         <div class="repo-layout grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(10rem,12rem)] md:items-center">
           <div class="flex min-w-0 items-start gap-3">
             ${nativeRepositoryLogoMarkup(origin)}
             <div class="min-w-0 flex-1">
             <div class="flex min-w-0 items-center gap-2">
-              <p class="min-w-0 truncate text-sm font-medium text-foreground">
-                <span class="text-muted-foreground">${escapeHtml(origin.owner || "owner")}/</span>${escapeHtml(origin.name || "repository")}
+              <p class="min-w-0 truncate text-sm font-medium text-foreground" title="${escapeHtml(`${displayOwner || "owner"}/${origin.name || "repository"}${servedNote}`)}">
+                <span class="text-muted-foreground">${escapeHtml(displayOwner || "owner")}/</span>${escapeHtml(origin.name || "repository")}
               </p>
               <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${statusClass}">
                 ${statusText}
@@ -406,7 +551,7 @@
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     return `<article data-profile-repository-row class="grid gap-3 px-4 py-5 md:grid-cols-[minmax(0,1fr)_12rem]">
-      <a href="${escapeHtml(repoPathUrl(repo))}" class="flex min-w-0 items-start gap-3 text-left">
+      <a href="${escapeHtml(groupLinkUrl(group))}" class="flex min-w-0 items-start gap-3 text-left">
         ${nativeRepositoryLogoMarkup(repo, "h-12 w-12")}
         <span class="block min-w-0 flex-1">
         <span class="flex min-w-0 flex-wrap items-center gap-2">
@@ -528,8 +673,11 @@
         const repo = sourceOfTruth(group);
         return {
           repo,
-          key: repoKey(repo),
-          href: repoPathUrl(repo),
+          // Dedupe on the label, so a repo already listed under its
+          // organization does not come back a second time under the node that
+          // publishes it.
+          key: `${groupDisplayOwner(group)}/${repo.name || ""}`,
+          href: groupLinkUrl(group),
           organization: false,
         };
       }),
@@ -548,7 +696,7 @@
       return `
         <a href="${escapeHtml(entry.href)}" class="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
           <span class="h-2 w-2 shrink-0 rounded-full ${live ? "bg-primary" : "bg-muted-foreground/40"}"></span>
-          <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
+          <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repoDisplayOwner(repo) || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
           ${repositoryTermsBadge(repo, true)}
           ${entry.organization ? '<span class="shrink-0 rounded border border-border px-1 py-0.5 font-mono text-[8px] uppercase text-muted-foreground">org</span>' : ""}
         </a>`;
@@ -569,22 +717,21 @@
         })),
       ...groupRepositories(state.repositories || []).map((group) => {
         const repo = sourceOfTruth(group);
-        return { repo, href: repoPathUrl(repo), organization: false };
+        return { repo, href: groupLinkUrl(group), organization: false };
       }),
-    ].filter((entry) => repositoryMatchesQuery(entry.repo, query))
+    ].filter((entry) => repositoryMatchesPageFilter(entry.repo, query))
       .filter((entry, index, values) =>
         values.findIndex((candidate) =>
-          repoKey(candidate.repo).toLowerCase() ===
-          repoKey(entry.repo).toLowerCase()) === index)
+          repoDisplayKey(candidate.repo).toLowerCase() ===
+          repoDisplayKey(entry.repo).toLowerCase()) === index)
       .slice(0, 8);
     container.innerHTML = `
       ${entries.length
         ? `<div class="grid gap-1">${entries.map((entry) => {
             const repo = entry.repo;
-            const key = repoKey(repo);
             return `<a href="${escapeHtml(entry.href)}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground">
               <i data-lucide="${entry.organization ? "building-2" : "book-marked"}" class="h-3.5 w-3.5 shrink-0"></i>
-              <span class="min-w-0 truncate">${escapeHtml(key)}</span>
+              <span class="min-w-0 truncate">${escapeHtml(repoDisplayKey(repo))}</span>
               ${repositoryTermsBadge(repo, true)}
               ${entry.organization ? '<span class="ml-auto shrink-0 text-[9px] uppercase text-muted-foreground">organization</span>' : ""}
             </a>`;
@@ -616,7 +763,7 @@
 
   function homeFeedRepositoryCard(group) {
     const repo = sourceOfTruth(group);
-    const key = repoKey(repo);
+    const key = `${groupDisplayOwner(group)}/${repo.name || ""}`;
     const live = repoIsLive(repo);
     const viaMirror = repoServedByMirror(repo);
     const description = repo.description || "No description published.";
@@ -627,7 +774,7 @@
           ${nativeRepositoryLogoMarkup(repo)}
           <div class="min-w-0 flex-1">
             <p class="text-sm text-muted-foreground">
-              <a href="${escapeHtml(repoPathUrl(repo))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
+              <a href="${escapeHtml(groupLinkUrl(group))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
               ${live ? "is available on the mesh" : "is waiting for a live host"}
             </p>
             <p class="mt-2 line-clamp-2 text-sm leading-5 text-muted-foreground">${escapeHtml(description)}</p>
@@ -845,7 +992,7 @@
     if (!container) return;
     const query = ($("[data-profile-repo-search]")?.value || "").trim().toLowerCase();
     const groups = profileRepositoryGroups().filter((group) => {
-      return repositoryMatchesQuery(sourceOfTruth(group), query);
+      return repositoryMatchesPageFilter(sourceOfTruth(group), query);
     });
     container.innerHTML = groups.length
       ? groups.map((group) => profileRepositoryRow(group)).join("")
@@ -864,7 +1011,7 @@
   function applyRepositoryFilter() {
     const query = ($("#repoSearch")?.value || "").trim().toLowerCase();
     state.filteredRepositories = state.repositories.filter((repo) =>
-      repositoryMatchesQuery(repo, query));
+      repositoryMatchesPageFilter(repo, query));
     state.filteredGroups = groupRepositories(state.filteredRepositories);
     updateRepositoryPagination();
     renderSidebarRepositories();
@@ -1281,6 +1428,14 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
+    if (tab === "code") {
+      if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
+      if (!state.loadedRepoTabs.code) {
+        state.loadedRepoTabs.code = true;
+        loadRepositoryTree(state.selectedRepo, "");
+      }
+      scheduleRepoAboutRail(state.selectedRepo);
+    }
     // Mirror health loads once with the repository summary, then refreshes
     // only when its own tab is actually opened (plus the bounded visible-tab
     // fallback and coalesced socket signal below).

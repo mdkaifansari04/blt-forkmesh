@@ -1,5 +1,7 @@
 #pragma once
 
+#include "StartupTrace.h"
+
 // Internal UI helper layer for MainWindow: custom delegates, mini-chart and
 // spinner widgets, syntax highlighters, the code-preview editor, and the many
 // free helper functions/constants the window's feature code shares. Lifted out
@@ -14,12 +16,14 @@
 #include "ActionRunner.h"
 #include "BackgroundActivity.h"
 #include "BackoffNetworkAccessManager.h"
+#include "GuiPump.h"
 #include "ClaudeAgentScript.h"
 #include "ClaudeIdeBridge.h"
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
+#include "CommitGraph.h"
 #include "ScrollJumpButtons.h"
-#include "CommitCommentStore.h"
+#include "DirectorySizeScan.h"
 #include "StallWatchdog.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
@@ -28,6 +32,7 @@
 #include "MarkdownEditor.h"
 #include "MessageRow.h"
 #include "MainnodeRoom.h"
+#include "NodeDiagnostics.h"
 #include "PullReviewModel.h"
 #include "RepoHost.h"
 #include "RepoSecurity.h"
@@ -38,6 +43,7 @@
 #include "Theme.h"
 
 #include <QAbstractButton>
+#include <QAbstractAnimation>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
@@ -63,6 +69,7 @@
 #include <QFileDialog>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEasingCurve>
 #include <QFileInfo>
 #include <QMimeData>
 #include <QMutex>
@@ -145,8 +152,10 @@
 #include <QStringList>
 #include <QStringListModel>
 #include <QStyle>
+#include <QStylePainter>
 #include <QStyledItemDelegate>
 #include <QStyleHints>
+#include <QStyleOptionComboBox>
 #include <QSyntaxHighlighter>
 #include <QAbstractItemView>
 #include <QHeaderView>
@@ -290,9 +299,12 @@ QString diffStickyLabelHtml(const DiffFileEntry &f);
 // bounded blocks stream one event-loop turn at a time.
 void renderDiffStreamed(QTextEdit *view, const QString &html,
                         const QString &styleSheet);
-// Force everything still queued for `view` into its document now. Call before an
-// operation that needs the whole document (an anchor jump, a document-wide
-// search, a file-position scan) rather than only what is on screen.
+// Ensure a streamed diff continues filling. This deliberately does *not* force
+// its remaining HTML into the document synchronously: doing that from an anchor
+// jump or a document-wide search bypassed the streaming limits and recreated the
+// multi-second UI stalls streaming was introduced to prevent. Operations may use
+// the portion currently available; their normal stream-finished hooks refresh
+// complete-document state once the bounded batches have landed.
 void flushDiffStream(QTextEdit *view);
 // Register a callback run every time `view`'s diff finishes streaming (and
 // immediately at the end of a render that needed no streaming), for state that
@@ -301,13 +313,17 @@ void flushDiffStream(QTextEdit *view);
 void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook);
 bool autoMarkViewedOnScrollPref();
 void setAutoMarkViewedOnScrollPref(bool on);
+// Paint find-in-diff matches as extra selections (active match brighter) and
+// update the "n/m" count label. Shared by the PR and branch/PR-range find bars.
+void applyDiffSearchHighlights(QTextBrowser *diff,
+                               const QList<QTextCursor> &matches, int activeIndex,
+                               QLabel *countLabel, bool termEmpty);
 QString diffStickyStyleSheet(int fontPt);
 QString diffStickyPathHtml(const QString &path);
 QString agentCostText(double usd);
 QString agentStatusText(const QString &status);
 QColor agentStatusColor(const QString &status);
 bool agentSessionActive(const AgentSession *s);
-QString solanaDisplayCurrency();
 QIcon agentStatusOcticon(const AgentSession &s, int px = 13);
 QColor agentStatusIconColor(const AgentSession &s);
 QString linkifyIssueRefs(const QString &escaped);
@@ -467,10 +483,10 @@ constexpr int kPacmanAnchorRole = Qt::UserRole + 12;
 constexpr int kNodeLightRole = Qt::UserRole + 13;
 // Cadence on which a node re-fetches its mirrors from source (mirrors
 // m_mirrorSyncTimer, which adds ±15% jitter — the pie is an approximation);
-// a behind node is expected to catch up within roughly three minutes. This is
+// a behind node is expected to catch up within roughly one minute. This is
 // only the dropped-event safety net: push events still notify mirror peers the
 // moment the source moves.
-constexpr qint64 kMirrorSyncIntervalMs = 3LL * 60 * 1000;
+constexpr qint64 kMirrorSyncIntervalMs = 60LL * 1000;
 constexpr int kMirrorSyncJitterPercent = 15;
 
 // Extra labels this machine answers to when a workflow declares `runs-on:`
@@ -480,6 +496,9 @@ constexpr int kMirrorSyncJitterPercent = 15;
 constexpr auto kActionNodeLabelsSetting = "actions/nodeLabels";
 // Defined further down; used early by MirrorSyncDelegate to pick chart colors.
 bool currentThemeIsDark();
+// Defined with the rest of the icon helpers further down; commit ref badges use
+// it before that definition while painting the graph rows.
+inline QIcon themedOcticon(const QString &name, const QColor &color, int size);
 
 // Column in the commits list that carries the Summary text + the commit hash
 // (Qt::UserRole). The metadata columns sit to its left.
@@ -511,22 +530,20 @@ constexpr int kCommitFilePathRole = Qt::UserRole + 29; // file row: repo-relativ
 constexpr int kCommitRefsRole = Qt::UserRole + 30;     // branch/tag badges (QStringList)
 constexpr int kCommitBodyRole = Qt::UserRole + 31;     // full message body (fed to the hover box)
 constexpr int kGraphIsMergeRole = Qt::UserRole + 32;   // graph cell: commit has >1 parent
+constexpr int kCommitFilesRole =
+    Qt::UserRole + 33; // QStringList "path\tadds\tdels" of the files the commit
+                       // touched, previewed in the summary's hover box
+constexpr int kCommitRefKindsRole =
+    Qt::UserRole + 34; // QStringList aligned with kCommitRefsRole: local/remote/tag
+// The synthetic first row for local commits that still need publishing.  It is
+// part of the graph (rather than a detached notice above it) so its dotted node
+// can connect directly to the tip it represents.
+constexpr int kCommitOutgoingRole = Qt::UserRole + 35;
 
-// URL scheme for the clickable worktree-location link in the agent session
-// header; the percent-encoded branch name follows. Clicking it opens that
-// branch's row in the Worktrees tab (issue #265). Shared by the link builder
-// and its handler.
-const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
-
-// URL scheme for the clickable branch-name link in the agent session header; the
-// percent-encoded branch name follows. Clicking it opens that branch's row in
-// the Branches tab (adhoc #123). Shared by the link builder and its handler.
+// URL scheme for a clickable branch-name link; the percent-encoded branch name
+// follows. Clicking it opens that branch's row in the Branches tab (adhoc #123).
+// Shared by the link builder and its handler.
 const QLatin1String kBranchLinkScheme("forkmesh-branch:");
-
-// "forkmesh-copy-branch:<branch>" link next to the branch chip in the agent-detail
-// header (adhoc #259): clicking it copies the branch name to the clipboard
-// instead of navigating anywhere.
-const QLatin1String kCopyBranchLinkScheme("forkmesh-copy-branch:");
 
 // "forkmesh-pull:<number>" link in the agent-detail meta line: when a session
 // has a pull request, its "PR #N" reference links to that PR's tab. Shared by
@@ -563,174 +580,15 @@ const QLatin1String kRepoInfoPath(".forkmesh/info.json");
 // Agents tab (adhoc #78). Shared by the link builder and its linkActivated handler.
 const QLatin1String kAgentLinkScheme("forkmesh-agent:");
 
-// Lane geometry, shared between the column-width calc and the delegate so the
-// dots line up with the section width.
-constexpr int kGraphLaneWidth = 12;
-constexpr int kGraphMargin = 8;
-// Cap on how far a row's text can be pushed right by a very wide graph, so a
-// deep merge history can't shove the messages off-screen.
-constexpr int kGraphMaxTextIndent = 160;
-// Commit node is drawn as a "bullseye": a hollow ring with a filled centre,
-// matching the VS Code git-graph look. Slightly larger than before so the
-// nodes read as clear anchors; lane lines stop at the ring's edge on merge
-// rows so the background shows through the ring/centre-dot gap.
-constexpr qreal kGraphNodeOuter = 4.5; // outer ring radius
-constexpr qreal kGraphNodeInner = 2.0; // centre-dot radius
+// Commit-graph gutter geometry + painter (lane pitch, node sizes, palette).
+// Lives in CommitGraph.h so it can be rendered standalone.
 
-// Stable per-lane colour so a branch keeps its hue down the whole graph.
-// Blue leads so the trunk lane (main) draws blue, like the VS Code graph.
-inline QColor commitGraphLaneColor(int lane)
-{
-    static const QColor palette[] = {
-        QColor("#58a6ff"), QColor("#d29922"), QColor("#db61a2"),
-        QColor("#bc8cff"), QColor("#39c5cf"), QColor("#3fb950"),
-    };
-    constexpr int n = int(sizeof(palette) / sizeof(palette[0]));
-    return palette[((lane % n) + n) % n];
-}
 
 // Defined below: outlines a selected row in green instead of filling it solid.
 inline void paintRowSelectionBorder(QPainter *painter,
                                     const QStyleOptionViewItem &option,
                                     const QModelIndex &index);
 
-// Paints the git-graph gutter the way the VS Code git-graph view does: lanes
-// that pass straight through a row are drawn as vertical lines, while a lane
-// that merges into the commit (or branches out of it) loops through a rounded
-// quarter-circle corner — a horizontal run along the node's centreline joined
-// to a vertical run in its own lane. Merge commits draw as a bullseye (hollow
-// ring with a filled centre), regular commits as a solid dot. Each row carries
-// the lanes present at its top and bottom edges; comparing the two boundaries
-// tells us which lanes pass through, merge in, or branch out. Topology is
-// meaningful only while the list is in git-log order, which is why that
-// ordering is pinned when the list loads. Called by CommitSummaryDelegate
-// inside the summary cell (the standalone gutter column is hidden) so each
-// row's text can start right beside its own rightmost lane.
-inline void paintCommitGraphGutter(QPainter *painter, const QRect &r,
-                                   const QVariantList &topLanes,
-                                   const QVariantList &botLanes, int nodeLane,
-                                   bool isMerge)
-{
-    if (topLanes.isEmpty() && botLanes.isEmpty() && nodeLane < 0)
-        return;
-    const qreal yTop = r.top();
-    const qreal yBot = r.top() + r.height(); // meets the next row's top edge
-    const qreal yMid = r.center().y() + 0.5;
-    auto laneX = [&](int lane) -> qreal {
-        return r.left() + kGraphMargin + lane * kGraphLaneWidth;
-    };
-    // Which lane columns are occupied at each edge of the row.
-    QSet<int> topSet;
-    QSet<int> botSet;
-    int maxLane = nodeLane;
-    for (const QVariant &v : topLanes) {
-        const int l = v.toInt();
-        topSet.insert(l);
-        maxLane = std::max(maxLane, l);
-    }
-    for (const QVariant &v : botLanes) {
-        const int l = v.toInt();
-        botSet.insert(l);
-        maxLane = std::max(maxLane, l);
-    }
-
-    painter->save();
-    painter->setRenderHint(QPainter::Antialiasing, true);
-
-    // On merge rows the lines stop short of the node by the ring radius, so
-    // the hollow ring keeps a clean background gap around its centre dot
-    // instead of lane strokes cutting through it.
-    const qreal trim = (isMerge && nodeLane >= 0) ? kGraphNodeOuter : 0.0;
-
-    // Round caps/joins keep the lanes and their loops smooth where they meet
-    // nodes and each other.
-    auto strokePath = [&](const QPainterPath &path, const QColor &c) {
-        QPen pen(c, 2.0);
-        pen.setCapStyle(Qt::RoundCap);
-        pen.setJoinStyle(Qt::RoundJoin);
-        painter->setPen(pen);
-        painter->setBrush(Qt::NoBrush);
-        painter->drawPath(path);
-    };
-    auto straight = [&](qreal x, qreal y0, qreal y1, const QColor &c) {
-        QPainterPath path(QPointF(x, y0));
-        path.lineTo(QPointF(x, y1));
-        strokePath(path, c);
-    };
-    // A lane looping into the node from the row's top edge: vertical in its
-    // own lane, then a rounded quarter-circle corner onto the node's
-    // centreline — the smooth "loop" the VS Code graph draws for merges.
-    auto loopIn = [&](int lane, const QColor &c) {
-        const qreal x0 = laneX(lane);
-        const qreal x1 = laneX(nodeLane);
-        const qreal rad = qMax(0.0, qMin(qAbs(x1 - x0) - trim, yMid - yTop));
-        const qreal sx = (x1 > x0) ? 1.0 : -1.0;
-        QPainterPath path(QPointF(x0, yTop));
-        path.lineTo(QPointF(x0, yMid - rad));
-        path.quadTo(QPointF(x0, yMid), QPointF(x0 + sx * rad, yMid));
-        path.lineTo(QPointF(x1 - sx * trim, yMid));
-        strokePath(path, c);
-    };
-    // A lane looping out of the node towards the row's bottom edge: horizontal
-    // along the centreline, then the rounded corner down into its own lane.
-    auto loopOut = [&](int lane, const QColor &c) {
-        const qreal x0 = laneX(nodeLane);
-        const qreal x1 = laneX(lane);
-        const qreal rad = qMax(0.0, qMin(qAbs(x1 - x0) - trim, yBot - yMid));
-        const qreal sx = (x1 > x0) ? 1.0 : -1.0;
-        QPainterPath path(QPointF(x0 + sx * trim, yMid));
-        path.lineTo(QPointF(x1 - sx * rad, yMid));
-        path.quadTo(QPointF(x1, yMid), QPointF(x1, yMid + rad));
-        path.lineTo(QPointF(x1, yBot));
-        strokePath(path, c);
-    };
-
-    // Every lane other than the node's: straight through if present at both
-    // edges, a merge loop if it only enters from the top, a branch loop if it
-    // only leaves at the bottom. Rows without a node (expanded file rows) only
-    // carry pass-through lanes; anything else degrades to a straight stub.
-    for (int lane = 0; lane <= maxLane; ++lane) {
-        if (lane == nodeLane)
-            continue;
-        const bool inTop = topSet.contains(lane);
-        const bool inBot = botSet.contains(lane);
-        const QColor c = commitGraphLaneColor(lane);
-        if (inTop && inBot)
-            straight(laneX(lane), yTop, yBot, c);
-        else if (inTop)
-            nodeLane >= 0 ? loopIn(lane, c) : straight(laneX(lane), yTop, yMid, c);
-        else if (inBot)
-            nodeLane >= 0 ? loopOut(lane, c) : straight(laneX(lane), yMid, yBot, c);
-    }
-
-    if (nodeLane >= 0) {
-        const QColor c = commitGraphLaneColor(nodeLane);
-        const qreal nx = laneX(nodeLane);
-        // The node's own lane: a straight stub above (it was reached from a
-        // child) and below (its first parent continues here), trimmed at the
-        // ring's edge on merge rows so the ring interior stays clear.
-        if (topSet.contains(nodeLane))
-            straight(nx, yTop, yMid - trim, c);
-        if (botSet.contains(nodeLane))
-            straight(nx, yMid + trim, yBot, c);
-        if (isMerge) {
-            // Merge node: hollow ring + filled centre.
-            painter->setBrush(Qt::NoBrush);
-            painter->setPen(QPen(c, 2.0));
-            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter, kGraphNodeOuter);
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(c);
-            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeInner, kGraphNodeInner);
-        } else {
-            // Regular commit: a solid dot.
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(c);
-            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter - 0.7,
-                                 kGraphNodeOuter - 0.7);
-        }
-    }
-    painter->restore();
-}
 
 // Paints the commits list's Summary column the way VS Code's source-control
 // graph does: the text starts right beside the commit's own lane (so it shifts
@@ -772,9 +630,6 @@ public:
             graphIdx.data(kGraphBottomLanesRole).toList();
         const QVariant nodeLaneVar = graphIdx.data(kGraphNodeLaneRole);
         const int nodeLane = nodeLaneVar.isValid() ? nodeLaneVar.toInt() : -1;
-        paintCommitGraphGutter(painter, option.rect, topLanes, botLanes,
-                               nodeLane,
-                               graphIdx.data(kGraphIsMergeRole).toBool());
         int rowMaxLane = std::max(nodeLane, 0);
         for (const QVariant &v : topLanes)
             rowMaxLane = std::max(rowMaxLane, v.toInt());
@@ -783,9 +638,19 @@ public:
         if (fileRow) // nested one step under its commit's lane
             rowMaxLane =
                 std::max(rowMaxLane, index.data(kGraphNodeLaneRole).toInt());
-        const int indent =
-            std::min(kGraphMargin + (rowMaxLane + 1) * kGraphLaneWidth,
-                     kGraphMaxTextIndent);
+        // One pitch for the whole list (the loader publishes its widest row),
+        // so lanes line up vertically and a deep history compresses instead of
+        // running past the gutter and through the messages.
+        const int laneCount =
+            std::max(rowMaxLane + 1,
+                     w ? w->property(kGraphLaneCountProperty).toInt() : 0);
+        const CommitGraphMetrics metrics = commitGraphMetrics(laneCount);
+        paintCommitGraphGutter(painter, option.rect, topLanes, botLanes,
+                               nodeLane,
+                               graphIdx.data(kGraphIsMergeRole).toBool(),
+                               index.data(kCommitOutgoingRole).toBool(),
+                               metrics);
+        const int indent = commitGraphTextIndent(rowMaxLane, metrics);
 
         const QFontMetrics fm(option.font);
         QRect r = option.rect.adjusted(indent, 0, -8, 0);
@@ -838,28 +703,11 @@ public:
             x += 18;
         }
         int rightEdge = r.right();
-        // Branch / tag badges (the VS Code graph's ref pills) lead the summary.
+        // Branch / tag badges live at the trailing edge, matching the source
+        // graph: the message remains easy to scan while refs stay together.
         const QStringList refs = index.data(kCommitRefsRole).toStringList();
-        if (!refs.isEmpty()) {
-            painter->setRenderHint(QPainter::Antialiasing, true);
-            for (const QString &ref : refs) {
-                const int rw = fm.horizontalAdvance(ref) + 12;
-                if (x + rw > rightEdge - 80)
-                    break; // keep room for the summary itself
-                const QRect br(x, r.center().y() - fm.height() / 2 - 1, rw,
-                               fm.height() + 2);
-                // Solid pill with white text, like the VS Code graph's ref
-                // badges, rounded to a full capsule.
-                painter->setPen(Qt::NoPen);
-                painter->setBrush(QColor("#1f6feb"));
-                painter->drawRoundedRect(br, br.height() / 2.0,
-                                         br.height() / 2.0);
-                painter->setPen(Qt::white);
-                painter->drawText(br, Qt::AlignCenter, ref);
-                x += rw + 5;
-            }
-            painter->setBrush(Qt::NoBrush);
-        }
+        const QStringList refKinds =
+            index.data(kCommitRefKindsRole).toStringList();
         if (index.data(kCommitUnsyncedRole).toBool()) {
             const QString mark = QString::fromUtf8("\xE2\x96\xB2");
             const int mw = fm.horizontalAdvance(mark);
@@ -867,6 +715,51 @@ public:
             painter->drawText(QRect(rightEdge - mw, r.top(), mw, r.height()),
                               Qt::AlignVCenter | Qt::AlignRight, mark);
             rightEdge -= mw + 8;
+        }
+        if (!refs.isEmpty()) {
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            // Paint from right to left so the refs retain their source order
+            // while the whole pill group is anchored on the row's right edge.
+            for (int refIndex = refs.size() - 1; refIndex >= 0; --refIndex) {
+                const QString ref = refs.at(refIndex);
+                const QString kind = refKinds.value(refIndex);
+                const bool remote = kind == QLatin1String("remote");
+                const bool tag = kind == QLatin1String("tag");
+                const QString iconName = remote ? QStringLiteral("cloud")
+                                                : tag ? QStringLiteral("tag")
+                                                      : QStringLiteral("git-commit");
+                const QColor badgeColor =
+                    remote ? QColor("#8957e5")
+                           : tag ? QColor("#2da44e") : QColor("#1f6feb");
+                constexpr int iconSize = 12;
+                constexpr int iconGap = 4;
+                const int rw = fm.horizontalAdvance(ref) + 12 + iconSize + iconGap;
+                if (x + rw > rightEdge - 80)
+                    break; // keep room for the summary itself
+                rightEdge -= rw;
+                const QRect br(rightEdge, r.center().y() - fm.height() / 2 - 1, rw,
+                               fm.height() + 2);
+                // Local heads carry the target/commit glyph, remote-tracking
+                // heads carry the cloud glyph, and tags retain their own mark.
+                // Blue/purple/green match the graph/ref palette in the adjacent
+                // VS Code view and make local vs published state readable before
+                // the ref text itself is parsed.
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(badgeColor);
+                painter->drawRoundedRect(br, br.height() / 2.0,
+                                         br.height() / 2.0);
+                const QRect iconRect(br.left() + 6,
+                                     br.center().y() - iconSize / 2,
+                                     iconSize, iconSize);
+                themedOcticon(iconName, Qt::white, iconSize)
+                    .paint(painter, iconRect);
+                painter->setPen(Qt::white);
+                painter->drawText(
+                    br.adjusted(6 + iconSize + iconGap, 0, -6, 0),
+                    Qt::AlignVCenter | Qt::AlignLeft, ref);
+                rightEdge -= 5;
+            }
+            painter->setBrush(Qt::NoBrush);
         }
         // Draw the subject flush-left, then append the author dimmed at its tail
         // so the row reads "<subject> · <author>" instead of a separate
@@ -979,9 +872,10 @@ private:
     QColor m_color;
 };
 
-// A super-tiny two-row usage meter for the top bar, sized to tuck in next to the
-// node's public-wallet balance/avatar (issue #266). The top row is the rolling 5-hour window,
-// the bottom row the weekly window; each draws a horizontal track that fills
+// A super-tiny usage meter for the top bar, sized to tuck in next to the
+// node's public-wallet balance/avatar (issue #266). One thin vertical bar per
+// rolling window — 5-hour, weekly, and (Claude only, adhoc #96) the premium
+// per-model weekly window we label "Fable" — each an empty track that fills
 // 0..100% of that window's utilisation and is tinted green/amber/red as it nears
 // the cap. Values are fed from Claude Code rate-limit events (see usageChanged);
 // a value of -1 means "unknown" and leaves an empty track. Stored as a plain
@@ -989,24 +883,32 @@ private:
 class TokenUsageMiniChart : public QWidget
 {
 public:
+    // Which rolling window a figure belongs to. Fable is the per-model weekly
+    // allowance the provider reports alongside the plan-wide one; charts built
+    // with `windows == 2` (Codex) simply never show it.
+    enum Window { FiveHour = 0, Weekly = 1, Fable = 2, WindowCount = 3 };
+
     explicit TokenUsageMiniChart(const QString &title =
                                      QStringLiteral("Claude Code usage"),
                                  bool remainingMode = false,
+                                 int windows = 2,
                                  QWidget *parent = nullptr)
-        : QWidget(parent), m_title(title), m_remainingMode(remainingMode)
+        : QWidget(parent), m_title(title), m_remainingMode(remainingMode),
+          m_windows(qBound(1, windows, int(WindowCount)))
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        // Two thin vertical bars (5h + weekly) that ride in the prompt toolbar
-        // (adhoc #47). No inline text — the label/figures live in the hover
-        // tooltip only, so the strip stays tiny next to the send buttons.
-        setFixedSize(15, 22);
+        // Thin vertical bars that ride in the prompt toolbar (adhoc #47). No
+        // inline text — the label/figures live in the hover tooltip only, so the
+        // strip stays tiny next to the send buttons. The 3px padding around the
+        // bars is what the hover refresh box is drawn in (adhoc #96).
+        setFixedSize(qRound(m_windows * kBarW + (m_windows - 1) * kGap) + 6, 24);
         refreshTooltip();
     }
 
     // Update one window's utilisation (0..100); pass -1 to mark it unknown.
-    void setUsage(bool weekly, int percent)
+    void setUsage(Window window, int percent)
     {
-        int &slot = weekly ? m_weekly : m_fiveHour;
+        int &slot = m_pct[window];
         const int clamped = percent < 0 ? -1 : qBound(0, percent, 100);
         if (slot == clamped)
             return;
@@ -1014,25 +916,37 @@ public:
         refreshTooltip();
         update();
     }
+    void setUsage(bool weekly, int percent)
+    {
+        setUsage(weekly ? Weekly : FiveHour, percent);
+    }
 
     // Update one window's "resets in ..." text (e.g. "2h 13m"), shown next to its
     // utilisation in the tooltip so the user can see how long until the limit
     // clears (issue #50). Pass an empty string to mark it unknown.
-    void setReset(bool weekly, const QString &remaining)
+    void setReset(Window window, const QString &remaining)
     {
-        setWindowNote(weekly,
+        setWindowNote(window,
                       remaining.isEmpty()
                           ? QString()
                           : QStringLiteral("resets in %1").arg(remaining));
     }
-
-    void setWindowNote(bool weekly, const QString &note)
+    void setReset(bool weekly, const QString &remaining)
     {
-        QString &slot = weekly ? m_weeklyNote : m_fiveHourNote;
+        setReset(weekly ? Weekly : FiveHour, remaining);
+    }
+
+    void setWindowNote(Window window, const QString &note)
+    {
+        QString &slot = m_note[window];
         if (slot == note)
             return;
         slot = note;
         refreshTooltip();
+    }
+    void setWindowNote(bool weekly, const QString &note)
+    {
+        setWindowNote(weekly ? Weekly : FiveHour, note);
     }
 
     // For Codex we do not get a live utilization percentage from the CLI today,
@@ -1042,6 +956,22 @@ public:
     {
         setUsage(weekly, percent);
         setWindowNote(weekly, note);
+    }
+
+    // Hover feedback (adhoc #96): flash a box around the bars — green when the
+    // hover pulled a fresh reading, red when the refresh failed — so a hover
+    // that leaves the figures unchanged still says whether it worked.
+    void flashRefresh(bool ok)
+    {
+        m_flash = ok ? 1 : -1;
+        update();
+        const int token = ++m_flashToken;
+        QTimer::singleShot(kFlashMs, this, [this, token] {
+            if (token != m_flashToken) // a newer flash owns the box now
+                return;
+            m_flash = 0;
+            update();
+        });
     }
 
     // The per-session token/cost detail that used to live on the agent detail
@@ -1072,28 +1002,36 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
 
-        // Two vertical gauges side by side: 5-hour on the left, weekly on the
-        // right. Each is an empty track filling from the bottom to its
-        // utilisation and tinted by barColor(); -1 (unknown) leaves it empty.
-        const int vals[2] = {m_fiveHour, m_weekly};
-        const qreal barW = 4.0;
-        const qreal gap = 3.0;
-        const qreal totalW = 2 * barW + gap;
+        // Vertical gauges side by side, in Window order: 5-hour, weekly, Fable.
+        // Each is an empty track filling from the bottom to its utilisation and
+        // tinted by barColor(); -1 (unknown) leaves it empty.
+        const qreal totalW = m_windows * kBarW + (m_windows - 1) * kGap;
         qreal x = (width() - totalW) / 2.0;
-        const qreal top = 1.0;
-        const qreal trackH = height() - 2.0;
-        for (int i = 0; i < 2; ++i) {
-            const QRectF track(x, top, barW, trackH);
+        const qreal top = 3.0;
+        const qreal trackH = height() - 6.0;
+        for (int i = 0; i < m_windows; ++i) {
+            const QRectF track(x, top, kBarW, trackH);
             p.setPen(Qt::NoPen);
             p.setBrush(textColor(38));
-            p.drawRoundedRect(track, barW / 2.0, barW / 2.0);
-            if (vals[i] > 0) {
-                const qreal fillH = trackH * qBound(0, vals[i], 100) / 100.0;
-                const QRectF fill(x, top + trackH - fillH, barW, fillH);
-                p.setBrush(barColor(vals[i]));
-                p.drawRoundedRect(fill, barW / 2.0, barW / 2.0);
+            p.drawRoundedRect(track, kBarW / 2.0, kBarW / 2.0);
+            if (m_pct[i] > 0) {
+                const qreal fillH = trackH * qBound(0, m_pct[i], 100) / 100.0;
+                const QRectF fill(x, top + trackH - fillH, kBarW, fillH);
+                p.setBrush(barColor(m_pct[i]));
+                p.drawRoundedRect(fill, kBarW / 2.0, kBarW / 2.0);
             }
-            x += barW + gap;
+            x += kBarW + kGap;
+        }
+
+        // The refresh-result box (adhoc #96) rides in the padding around the
+        // bars, so it never overdraws a gauge.
+        if (m_flash != 0) {
+            QPen pen(m_flash > 0 ? QColor("#3fb950") : QColor("#f85149"));
+            pen.setWidthF(1.5);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(QRectF(rect()).adjusted(0.75, 0.75, -0.75, -0.75),
+                              4.0, 4.0);
         }
     }
 
@@ -1132,24 +1070,28 @@ private:
                 s += QString::fromUtf8(" \xC2\xB7 ") + note; // ·
             return s;
         };
-        QString tip = QStringLiteral("%1\n%2\n%3")
-                          .arg(m_title,
-                               line(QStringLiteral("5-hour"), m_fiveHour,
-                                    m_fiveHourNote),
-                               line(QStringLiteral("Weekly"), m_weekly,
-                                    m_weeklyNote));
+        static const char *labels[WindowCount] = {"5-hour", "Weekly", "Fable"};
+        QString tip = m_title;
+        for (int i = 0; i < m_windows; ++i)
+            tip += QLatin1Char('\n')
+                   + line(QString::fromLatin1(labels[i]), m_pct[i], m_note[i]);
         if (!m_stats.isEmpty())
             tip += QStringLiteral("\n\n") + m_stats;
         setToolTip(tip);
     }
 
+    static constexpr qreal kBarW = 4.0;
+    static constexpr qreal kGap = 3.0;
+    static constexpr int kFlashMs = 900; // how long the hover box stays up
+
     QString m_title;
     bool m_remainingMode = false;
-    int m_fiveHour = -1;
-    int m_weekly = -1;
-    QString m_fiveHourNote; // extra tooltip text for the 5-hour window
-    QString m_weeklyNote;   // extra tooltip text for the weekly window
+    int m_windows = 2;              // how many of the Window slots are drawn
+    int m_pct[WindowCount] = {-1, -1, -1};
+    QString m_note[WindowCount];    // extra tooltip text per window
     QString m_stats; // per-session token/cost line, shown under the gauges
+    int m_flash = 0;     // 0 = none, 1 = refreshed (green), -1 = failed (red)
+    int m_flashToken = 0; // guards against an older flash clearing a newer one
 };
 
 // A tiny moving line chart for one system resource (CPU, memory or disk). New
@@ -1159,14 +1101,21 @@ private:
 // (adhoc #17). Kept header-only (no Q_OBJECT) like the other Internal.h mini-
 // charts; the click hook is a std::function so a left-click can still open
 // the stall dialog.
+// The side of one resource square. The window chrome's live CPU/MEM/DISK
+// squares and the repo mode row's SIZE/LOC/FILES day trends share it (adhoc
+// #421) so both rows of cards are the same size.
+constexpr int kResourceSparklineSide = 34;
+
 class ResourceSparkline : public QWidget
 {
 public:
-    explicit ResourceSparkline(const QString &label, QWidget *parent = nullptr)
-        : QWidget(parent), m_label(label)
+    explicit ResourceSparkline(const QString &label, QWidget *parent = nullptr,
+                               int side = kResourceSparklineSide,
+                               int maxPoints = 60)
+        : QWidget(parent), m_label(label), m_maxPoints(qMax(2, maxPoints))
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(kSide, kSide); // a little button-sized square
+        setFixedSize(side, side); // a little button-sized square
         setCursor(Qt::PointingHandCursor);
     }
 
@@ -1179,8 +1128,17 @@ public:
         m_max = maxValue > 0 ? maxValue : 100.0;
         m_value = valueText;
         m_history.append(value);
-        while (m_history.size() > kMaxPoints)
+        while (m_history.size() > m_maxPoints)
             m_history.removeFirst();
+        update();
+    }
+
+    void setSamples(const QVector<double> &values, double maxValue,
+                    const QString &valueText)
+    {
+        m_max = maxValue > 0 ? maxValue : 1.0;
+        m_value = valueText;
+        m_history = values.mid(qMax(0, values.size() - m_maxPoints));
         update();
     }
 
@@ -1218,7 +1176,7 @@ protected:
             p.save();
             p.setClipPath(cardPath);
             const QColor line = gaugeColor(m_history.last() / m_max * 100.0);
-            const double step = area.width() / double(kMaxPoints - 1);
+            const double step = area.width() / double(m_maxPoints - 1);
             const int n = m_history.size();
             QPolygonF curve;
             for (int i = 0; i < n; ++i) {
@@ -1287,47 +1245,132 @@ private:
         return QColor("#3fb950");     // green: light load
     }
 
-    static constexpr int kSide = 40;      // button-sized square (w == h)
-    static constexpr int kMaxPoints = 60; // ~1 minute of history at 1 Hz
     QString m_label;
     QString m_value;
     double m_max = 100.0;
     QVector<double> m_history;
+    int m_maxPoints = 60;
 };
 
-// Spinning-radar dish with a latency readout centered inside it, shown on the
-// window-chrome line just left of the CPU/MEM/DISK sparklines (adhoc #87). The
-// dish always sweeps (a continuously rotating wedge) so the relay looks
-// "alive"; a one-minute probe feeds in the round-trip time, which renders as
-// "33ms" over the middle of the dish — mirroring how ResourceSparkline centers
-// its label/value over the chart. When the relay stops answering the whole
-// control flips to a red alert (red dish + "offline"). Colour-grades the
-// latency green/amber so a degrading link is visible at a glance.
-class RelayRadarWidget : public QWidget
+// A row-sized memory trend square for one process in the "High memory usage"
+// panel (adhoc #98). Each refresh of that panel pushes the process's resident
+// size in, so a row shows at a glance whether that PID is still growing or has
+// levelled off. Unlike ResourceSparkline it plots on a caller-supplied scale
+// shared by every row (the largest resident size on the list), so the squares
+// are comparable down the column, and it carries no label — the numbers are
+// already in the neighbouring cells.
+class ProcessMemorySparkline : public QWidget
 {
 public:
-    explicit RelayRadarWidget(QWidget *parent = nullptr) : QWidget(parent)
+    static constexpr int kMaxPoints = 24; // ~2 minutes at the panel's 5s refresh
+
+    explicit ProcessMemorySparkline(QWidget *parent = nullptr) : QWidget(parent)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(kSide, kSide); // same button-sized square as the resource sparklines
-        setCursor(Qt::PointingHandCursor);
-        refreshTooltip();
-        // Drive the sweep: a slow, steady rotation independent of probe timing.
-        m_sweep = new QTimer(this);
-        m_sweep->setInterval(60);
-        connect(m_sweep, &QTimer::timeout, this, [this] {
-            m_angle = (m_angle + 9) % 360;
-            update();
-        });
-        m_sweep->start();
+        setFixedSize(kSide, kSide);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+
+    // `history` is oldest-to-newest resident sizes in KB; `maxValue` is the
+    // shared full-scale value for the column.
+    void setHistory(const QVector<double> &history, double maxValue)
+    {
+        m_history = history;
+        m_max = maxValue > 0 ? maxValue : 1.0;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(box, 3, 3);
+        QColor card = palette().color(QPalette::WindowText);
+        card.setAlpha(28);
+        p.setPen(Qt::NoPen);
+        p.setBrush(card);
+        p.drawPath(cardPath);
+        const QRectF area = box.adjusted(1.5, 1.5, -1.5, -1.5);
+        if (m_history.isEmpty() || area.height() < 2 || area.width() < 2)
+            return;
+
+        // A single sample is still worth drawing — a flat line at that level
+        // says the process was only just seen.
+        p.save();
+        p.setClipPath(cardPath);
+        const double norm = qBound(0.0, m_history.last() / m_max, 1.0);
+        const QColor line = norm >= 0.66   ? QColor("#f85149")
+                            : norm >= 0.33 ? QColor("#d29922")
+                                           : QColor("#3fb950");
+        const int n = m_history.size();
+        const double step = area.width() / double(kMaxPoints - 1);
+        QPolygonF curve;
+        for (int i = 0; i < n; ++i) {
+            const double x =
+                n > 1 ? area.right() - (n - 1 - i) * step : area.left();
+            const double v = qBound(0.0, m_history.at(i) / m_max, 1.0);
+            curve << QPointF(x, area.bottom() - v * area.height());
+        }
+        if (n == 1)
+            curve << QPointF(area.right(), curve.first().y());
+        QPolygonF fill = curve;
+        fill << QPointF(curve.last().x(), area.bottom())
+             << QPointF(curve.first().x(), area.bottom());
+        QColor under = line;
+        under.setAlpha(70);
+        p.setBrush(under);
+        p.setPen(Qt::NoPen);
+        p.drawPolygon(fill);
+        QPen pen(line);
+        pen.setWidthF(1.2);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPolyline(curve);
+        p.restore();
+    }
+
+private:
+    static constexpr int kSide = 34; // fits a table row without growing it
+    QVector<double> m_history;
+    double m_max = 1.0;
+};
+
+// The relay link's speed as a coloured dropdown caret on the corner of the
+// instance logo on the window-chrome line (adhoc #124, reshaped in adhoc #224).
+// It is what is left of the spinning radar dish that used to sit beside the
+// CPU/MEM/DISK sparklines (adhoc #87): the dish's node blips became the node
+// dots next to the agent fleet, and its latency grading survives here as the
+// caret's colour — green when the link is snappy, amber when it is sluggish,
+// red when it is very slow or the relay stopped answering. A plain dot said
+// only "there is a status here"; a caret says the logo it rides on opens the
+// instance menu, which is what clicking either of them has always done. The
+// measured round-trip itself rides the instance button's tooltip and the relay
+// dropdown, so the chrome line stays free of another number.
+class RelaySpeedDot : public QWidget
+{
+public:
+    explicit RelaySpeedDot(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setFixedSize(kWidth, kHeight);
+        // Clicks belong to the logo underneath: the caret is pure indicator, and
+        // the button it is pinned to is the dropdown it advertises.
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        if (parent)
+            parent->installEventFilter(this);
+        reposition();
     }
 
     // Record a successful probe (round-trip milliseconds).
     void setLatency(int ms)
     {
-        m_latencyMs = qMax(0, ms);
+        ms = qMax(0, ms);
+        if (!m_unreachable && m_latencyMs == ms)
+            return;
+        m_latencyMs = ms;
         m_unreachable = false;
-        refreshTooltip();
         update();
     }
 
@@ -1337,211 +1380,81 @@ public:
         if (m_unreachable)
             return;
         m_unreachable = true;
-        refreshTooltip();
         update();
     }
 
-    // A mirror node echoed inside the dish as a radar blip, reusing the exact
-    // colours and shapes of the Mirror-nodes activity strip so the two read as
-    // the same thing (adhoc #122): online nodes are green (amber when out of
-    // sync), offline nodes grey, and a node failing the relay's integrity pin
-    // draws as an amber triangle rather than a dot.
-    struct Blip
-    {
-        QString id;
-        bool online = false;
-        bool behind = false;
-        bool integrityFailing = false;
-    };
+    int latencyMs() const { return m_latencyMs; }
+    bool unreachable() const { return m_unreachable; }
 
-    void setBlips(const QVector<Blip> &blips)
+    // Green when snappy, amber when sluggish, red when very slow — the same
+    // grading the dish used, so the colours mean exactly what they used to.
+    // A latency of -1 (nothing measured yet) grades as unknown.
+    static QColor speedColor(int ms, bool unreachable)
     {
-        m_blips = blips;
-        update();
+        if (unreachable)
+            return QColor("#f85149"); // red: not answering
+        if (ms < 0)
+            return QColor("#8b949e"); // grey: still measuring
+        if (ms >= 1000)
+            return QColor("#f85149"); // red
+        if (ms >= 300)
+            return QColor("#d29922"); // amber
+        return QColor("#3fb950");     // green
     }
-
-    std::function<void()> onClicked;
 
 protected:
-    void mouseReleaseEvent(QMouseEvent *event) override
+    bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (event->button() == Qt::LeftButton && onClicked)
-            onClicked();
-        QWidget::mouseReleaseEvent(event);
+        if (watched == parentWidget() && (event->type() == QEvent::Resize ||
+                                          event->type() == QEvent::Show))
+            reposition();
+        return QWidget::eventFilter(watched, event);
     }
 
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
+        const QColor colour = speedColor(m_latencyMs, m_unreachable);
 
-        // The dish fills almost the whole square, same footprint as the
-        // resource sparklines' card.
-        const qreal dish = width() - 4.0;
-        const QRectF dishRect((width() - dish) / 2.0, (height() - dish) / 2.0,
-                              dish, dish);
-        const QPointF c = dishRect.center();
-        const qreal r = dish / 2.0;
-        const QColor accent = m_unreachable ? QColor("#f85149")  // red alert
-                                            : statusColor();
-
-        // Faint radar rings.
-        QColor ring = accent;
-        ring.setAlpha(70);
-        p.setPen(QPen(ring, 1.0));
-        p.setBrush(Qt::NoBrush);
-        p.drawEllipse(dishRect);
-        p.drawEllipse(c, r * 0.5, r * 0.5);
-
-        // Rotating sweep wedge, fading behind the leading edge.
-        QConicalGradient sweep(c, -m_angle);
-        QColor lead = accent;
-        QColor tail = accent;
-        tail.setAlpha(0);
-        sweep.setColorAt(0.0, lead);
-        sweep.setColorAt(0.18, tail);
-        sweep.setColorAt(1.0, tail);
+        // A rounded plate in the chrome's own colour so the caret reads against
+        // the favicon it overlaps, washed with the speed colour so the whole
+        // marker — not just the arrow inside it — carries the status.
+        const QRectF plate(rect());
+        const qreal radius = plate.height() / 2.0;
+        QColor wash = colour;
+        wash.setAlpha(52);
         p.setPen(Qt::NoPen);
-        p.setBrush(sweep);
-        p.drawPie(dishRect, -m_angle * 16, 70 * 16);
+        p.setBrush(palette().color(QPalette::Window));
+        p.drawRoundedRect(plate, radius, radius);
+        p.setBrush(wash);
+        p.drawRoundedRect(plate, radius, radius);
 
-        // Centre blip.
-        p.setBrush(accent);
-        p.drawEllipse(c, 1.4, 1.4);
-
-        // Latency text / alert, centered in the middle of the dish — mirrors
-        // how ResourceSparkline overlays its value on top of its chart.
-        QFont f = font();
-        double pt = f.pointSizeF() > 0 ? qMin(8.0, f.pointSizeF()) : 7.0;
-        QString label;
-        QColor textCol;
-        if (m_unreachable) {
-            label = QStringLiteral("offline");
-            textCol = QColor("#f85149");
-        } else if (m_latencyMs < 0) {
-            label = QString::fromUtf8("\xE2\x80\xA6"); // ellipsis: probing
-            textCol = palette().color(QPalette::WindowText);
-            textCol.setAlpha(150);
-        } else {
-            label = QStringLiteral("%1ms").arg(m_latencyMs);
-            textCol = statusColor();
-        }
-        const double avail = dish - 4.0;
-        for (; pt > 5.5; pt -= 0.5) {
-            f.setPointSizeF(pt);
-            if (QFontMetrics(f).horizontalAdvance(label) <= avail)
-                break;
-        }
-        f.setPointSizeF(pt);
-        p.setFont(f);
-        // A soft backing disc behind the text keeps it legible as the sweep
-        // wedge rotates underneath.
-        QColor backing = palette().color(QPalette::Window);
-        backing.setAlpha(190);
-        p.setPen(Qt::NoPen);
-        p.setBrush(backing);
-        const QFontMetrics fm(f);
-        const qreal textR = qMax(fm.horizontalAdvance(label), fm.height()) / 2.0 + 2.0;
-        p.drawEllipse(c, textR, textR);
-        p.setPen(textCol);
-        p.drawText(dishRect, Qt::AlignCenter, label);
-
-        // Mirror nodes echoed as blips on the dish, in the same colours/shapes
-        // as the Mirror-nodes activity strip (adhoc #122). Every blip is always
-        // visible — a solid filled shape with no border and no delay waiting on
-        // the sweep (adhoc #141). The passing beam still adds a soft phosphor
-        // halo flare so the scope keeps its live feel, but the shape underneath
-        // never dims or hides. Each node owns an evenly-spaced slot around one
-        // ring so the blips fan out cleanly and never overlap. Drawn last, on
-        // top of the centre latency read-out and pushed out near the rim, so
-        // every shape reads as a complete circle (or an integrity-warning
-        // triangle) rather than a slice clipped by the dish edge or the text
-        // backing disc.
-        //
-        // The pie/gradient start at Qt angle -m_angle, and Qt angles run
-        // counter-clockwise on screen while the blip positions below use
-        // (cos, sin) in y-down coordinates — i.e. clockwise. So in the blips'
-        // clockwise convention the leading edge sits at +m_angle, and the beam
-        // flares a blip as the sweep passes its own slot angle.
-        const int leadDeg = m_angle % 360;
-        constexpr int kFadeDeg = 130; // beam flare: degrees the halo brightens behind the sweep
-        const int n = m_blips.size();
-        for (int i = 0; i < n; ++i) {
-            const Blip &b = m_blips.at(i);
-            // Evenly space the blips around the ring by index, so a growing
-            // roster fans out cleanly instead of clustering on a hash.
-            const int blipDeg = n > 0 ? (i * 360) / n : 0;
-            // Degrees the sweep has advanced past this blip; drives the halo
-            // flare only — the blip itself is always drawn at full brightness.
-            const int delta = (leadDeg - blipDeg + 360) % 360;
-            const qreal flare = delta <= kFadeDeg ? 1.0 - qreal(delta) / kFadeDeg : 0.0;
-
-            const qreal ang = qDegreesToRadians(qreal(blipDeg));
-            const QPointF pos = c + QPointF(qCos(ang), qSin(ang)) * (r * 0.80);
-            QColor col = b.online ? QColor(b.behind ? "#d29922" : "#3fb950")
-                                  : QColor("#484f58");
-            if (b.integrityFailing)
-                col = QColor("#d29922"); // amber caution, matching the strip
-
-            // Soft phosphor halo, brightest as the beam catches the blip.
-            QColor halo = col;
-            halo.setAlphaF(0.35 * flare);
-            p.setPen(Qt::NoPen);
-            p.setBrush(halo);
-            p.drawEllipse(pos, 2.6 + 2.0 * flare, 2.6 + 2.0 * flare);
-
-            // The solid filled shape itself — always visible, no border.
-            p.setPen(Qt::NoPen);
-            p.setBrush(col);
-            if (b.integrityFailing) {
-                // Amber caution triangle, matching the Mirror nodes table's
-                // error light.
-                const qreal s = 3.2;
-                p.drawPolygon(QPolygonF({QPointF(pos.x(), pos.y() - s),
-                                         QPointF(pos.x() + s, pos.y() + s),
-                                         QPointF(pos.x() - s, pos.y() + s)}));
-            } else {
-                p.drawEllipse(pos, 2.8, 2.8);
-            }
-        }
+        // The caret itself: the ordinary "this opens a menu" triangle, in green,
+        // amber or red.
+        const QPointF centre = plate.center();
+        QPolygonF caret;
+        caret << QPointF(centre.x() - 3.0, centre.y() - 1.6)
+              << QPointF(centre.x() + 3.0, centre.y() - 1.6)
+              << QPointF(centre.x(), centre.y() + 2.4);
+        p.setBrush(colour);
+        p.drawPolygon(caret);
     }
 
 private:
-    // Green when snappy, amber when sluggish, red when very slow.
-    QColor statusColor() const
+    // Bottom-right of the logo — where a dropdown arrow belongs, and the one
+    // free corner: the pending-join dot owns the top-right.
+    void reposition()
     {
-        if (m_latencyMs < 0)
-            return palette().color(QPalette::WindowText);
-        if (m_latencyMs >= 1000)
-            return QColor("#f85149"); // red
-        if (m_latencyMs >= 300)
-            return QColor("#d29922"); // amber
-        return QColor("#3fb950");     // green
-    }
-    void refreshTooltip()
-    {
-        if (m_unreachable) {
-            setToolTip(QStringLiteral(
-                "Relay not responding \xE2\x80\x94 last probe timed out\n"
-                "Click to open Mirror nodes"));
-        } else if (m_latencyMs < 0) {
-            setToolTip(QStringLiteral(
-                "Measuring relay latency\xE2\x80\xA6\n"
-                "Click to open Mirror nodes"));
-        } else {
-            setToolTip(QStringLiteral(
-                           "Relay round-trip latency: %1 ms\n"
-                           "Probed every minute\nClick to open Mirror nodes")
-                           .arg(m_latencyMs));
-        }
+        if (QWidget *owner = parentWidget())
+            move(qMax(0, owner->width() - width()),
+                 qMax(0, owner->height() - height()));
     }
 
-    static constexpr int kSide = 40; // matches ResourceSparkline's button-sized square
+    static constexpr int kWidth = 14;
+    static constexpr int kHeight = 10;
     int m_latencyMs = -1;       // last measured round-trip; -1 = unknown/probing
     bool m_unreachable = false; // relay failed to answer the last probe
-    int m_angle = 0;            // sweep rotation (degrees)
-    QTimer *m_sweep = nullptr;  // drives the spin
-    QVector<Blip> m_blips;      // mirror nodes echoed as blips inside the dish
 };
 
 // A matrix of tiny squares on the window-chrome line, one per agent session,
@@ -1550,11 +1463,11 @@ private:
 // whole fleet reads at a glance: green running/done, red failed, amber queued,
 // purple merged, grey cleared.
 //
-// Running sessions get the night-rider treatment the agents list uses on its
-// Activity column: a Larson highlight travels along the matrix and each running
-// square pulses at a speed and brightness driven by that session's live output
-// meter, so a busy agent visibly races while a quiet one just breathes. The
-// animation timer only runs while something is actually running.
+// Running sessions get the night-rider treatment the agents list used to give its
+// (now dropped) Activity column: a Larson highlight travels along the matrix and
+// each running square pulses at a speed and brightness driven by how hard that
+// session is working, so a busy agent visibly races while a quiet one just
+// breathes. The animation timer only runs while something is actually running.
 class AgentDotMatrix : public QWidget
 {
 public:
@@ -1562,7 +1475,12 @@ public:
         int sessionId = 0;
         QColor color;
         bool running = false;
-        double intensity = 0.0; // 0..1 live-output meter for running sessions
+        double intensity = 0.0; // 0..1 live-output (bytes) meter
+        // 0..1 token-throughput meter: the session's tok/s scaled against a
+        // flat-out run (adhoc #35). Volume of raw output alone made a session
+        // chewing through a big file look as busy as one actually generating, so
+        // the blink now takes the token rate into account as well.
+        double throughput = 0.0;
     };
 
     explicit AgentDotMatrix(QWidget *parent = nullptr) : QWidget(parent)
@@ -1634,15 +1552,19 @@ protected:
             double scale = 1.0;
             if (dot.running) {
                 // The highlight travels along the matrix (each square is offset
-                // a little further through the cycle), and the session's own
-                // output meter both speeds up its cycle and deepens the pulse —
-                // that's the "live activity" part: idle running agents breathe
-                // slowly and dimly, streaming ones strobe.
-                const double speed = 0.6 + 1.9 * qBound(0.0, dot.intensity, 1.0);
+                // a little further through the cycle), and how hard the session is
+                // working both speeds up its cycle and deepens the pulse — that's
+                // the "live activity" part: idle running agents breathe slowly and
+                // dimly, streaming ones strobe. "Working" is the stronger of the
+                // raw-output meter and the token throughput (adhoc #35), so an
+                // agent producing fast still races while it thinks between chunks.
+                const double meter = qMax(qBound(0.0, dot.intensity, 1.0),
+                                          qBound(0.0, dot.throughput, 1.0));
+                const double speed = 0.6 + 1.9 * meter;
                 double t = m_phase * speed + i * kSweepStep;
                 t -= std::floor(t);
                 const double tri = 1.0 - std::abs(2.0 * t - 1.0);
-                const double depth = 0.45 + 0.35 * qBound(0.0, dot.intensity, 1.0);
+                const double depth = 0.45 + 0.35 * meter;
                 const double glow = (1.0 - depth) + depth * tri;
                 color.setAlphaF(qBound(0.18, glow, 1.0));
                 scale = 0.82 + 0.18 * tri; // the crest swells a touch
@@ -1691,6 +1613,250 @@ private:
     QTimer *m_sweep = nullptr; // only ticks while something is running
 };
 
+// The mesh companion to the fleet matrix (adhoc #124): one dot per node on the
+// network, stacked three deep in the same 3x7 grid the agent squares use and
+// sitting immediately right of them behind a faint divider, so one glance at
+// the chrome line covers both the agents and the machines. This is where the
+// relay radar's blips went when the dish was retired — same roster, same
+// colours (green serving, amber out of sync or failing an integrity gate, grey
+// offline) — except the dots are always the whole mesh rather than only the
+// repo whose Mirror-nodes tab happens to be open. Nodes are drawn as circles
+// where agents are rounded squares, so the two groups stay tellable apart.
+class NodeDotMatrix : public QWidget
+{
+public:
+    struct Dot {
+        QString name;
+        QColor color;
+        bool self = false; // this machine, ringed so it's findable
+    };
+
+    explicit NodeDotMatrix(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedHeight(kRows * kPitch);
+        setFixedWidth(0); // nothing to show until the first setDots()
+        setCursor(Qt::PointingHandCursor);
+        hide();
+    }
+
+    // Replace the mesh. Anything past the visible grid is dropped from the
+    // paint (the caller folds the remainder into the tooltip and puts the
+    // online nodes first), so the matrix can never grow the chrome line
+    // without bound.
+    void setDots(const QVector<Dot> &dots)
+    {
+        m_dots = dots.mid(0, kRows * kMaxColumns);
+        const int columns = (m_dots.size() + kRows - 1) / kRows;
+        setFixedWidth(columns * kPitch);
+        update();
+    }
+
+    // How many of the dots handed to setDots() actually fit in the grid.
+    int shownCount() const { return m_dots.size(); }
+
+    // Clicking a dot opens that node in the Network > Nodes list; clicking the
+    // empty space around them falls back to the list itself (empty name).
+    std::function<void(const QString &)> onDotClicked;
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && onDotClicked) {
+            const int index = dotAt(e->position().toPoint());
+            onDotClicked(index >= 0 ? m_dots.at(index).name : QString());
+            // Same reason as AgentDotMatrix: an unhandled press on the
+            // window-chrome bar below turns into a system window-move.
+            e->accept();
+            return;
+        }
+        QWidget::mousePressEvent(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        for (int i = 0; i < m_dots.size(); ++i) {
+            const Dot &dot = m_dots.at(i);
+            QColor color = dot.color;
+            color.setAlpha(205); // same weight as an idle agent square
+            const QPointF center = cellCenter(i);
+            p.setBrush(color);
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(center, kRadius, kRadius);
+            if (dot.self) {
+                // A thin ring marks this machine among its peers.
+                QColor ring = palette().color(QPalette::WindowText);
+                ring.setAlpha(190);
+                p.setBrush(Qt::NoBrush);
+                p.setPen(QPen(ring, 0.9));
+                p.drawEllipse(center, kRadius + 1.0, kRadius + 1.0);
+            }
+        }
+    }
+
+private:
+    // Column-major fill, matching the agent matrix so the two grids line up
+    // row for row across the divider.
+    QPointF cellCenter(int index) const
+    {
+        const int column = index / kRows;
+        const int row = index % kRows;
+        return QPointF(column * kPitch + kPitch / 2.0,
+                       row * kPitch + kPitch / 2.0);
+    }
+
+    int dotAt(const QPoint &pos) const
+    {
+        const int column = pos.x() / kPitch;
+        const int row = pos.y() / kPitch;
+        if (column < 0 || row < 0 || row >= kRows)
+            return -1;
+        const int index = column * kRows + row;
+        return index < m_dots.size() ? index : -1;
+    }
+
+    static constexpr int kRows = 3;        // dots stacked per column
+    static constexpr int kPitch = 7;       // cell size, including its gap
+    static constexpr double kRadius = 2.3; // painted dot
+    static constexpr int kMaxColumns = 12; // ~36 nodes before the tooltip takes over
+
+    QVector<Dot> m_dots;
+};
+
+// The CI companion to the fleet matrix (adhoc #70): the most recent action runs
+// as tiny status squares sitting immediately right of the node dots behind a
+// faint divider of their own, so one glance at the chrome line covers what the
+// agents, the machines and the workflows are doing. Each square is tinted with
+// the same actionStatusColor() the Actions tab uses; a running square breathes
+// so an in-flight workflow is distinguishable from a finished blue one.
+// The runs used to be one long row of big squares; they now use the same
+// three-deep, column-major grid as the agent and node matrices (newest run
+// top-left, filling down then right) so the three groups read as one family
+// instead of the CI one shouting over its neighbours.
+class ActionRunStrip : public QWidget
+{
+public:
+    struct Cell {
+        int runId = 0;
+        QColor color;
+        bool running = false;
+    };
+
+    static constexpr int kRows = 3;       // squares stacked per column
+    static constexpr int kMaxColumns = 6; // before the tooltip takes over
+    // How many runs the strip shows before the tooltip takes over.
+    static constexpr int kMaxCells = kRows * kMaxColumns;
+
+    explicit ActionRunStrip(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedHeight(kRows * kPitch);
+        setFixedWidth(0); // nothing to show until the first setCells()
+        setCursor(Qt::PointingHandCursor);
+        hide();
+        m_pulse = new QTimer(this);
+        m_pulse->setInterval(90);
+        connect(m_pulse, &QTimer::timeout, this, [this] {
+            m_phase += 0.05;
+            if (m_phase >= 1.0)
+                m_phase -= 1.0;
+            update();
+        });
+    }
+
+    // Replace the strip. Anything past kMaxCells is dropped from the paint (the
+    // caller folds the remainder into the tooltip).
+    void setCells(const QVector<Cell> &cells)
+    {
+        m_cells = cells.mid(0, kMaxCells);
+        const int columns = (m_cells.size() + kRows - 1) / kRows;
+        setFixedWidth(columns * kPitch);
+        bool anyRunning = false;
+        for (const Cell &c : std::as_const(m_cells))
+            anyRunning = anyRunning || c.running;
+        if (anyRunning && !m_pulse->isActive())
+            m_pulse->start();
+        else if (!anyRunning && m_pulse->isActive())
+            m_pulse->stop();
+        update();
+    }
+
+    int shownCount() const { return m_cells.size(); }
+
+    // Clicking a square opens that run; clicking past them falls back to run id
+    // 0 (the repository's Actions tab).
+    std::function<void(int)> onCellClicked;
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && onCellClicked) {
+            const int index = cellAt(e->position().toPoint());
+            onCellClicked(index >= 0 ? m_cells.at(index).runId : 0);
+            // Same reason as AgentDotMatrix: an unhandled press on the
+            // window-chrome bar below turns into a system window-move.
+            e->accept();
+            return;
+        }
+        QWidget::mousePressEvent(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        for (int i = 0; i < m_cells.size(); ++i) {
+            const Cell &cell = m_cells.at(i);
+            QColor color = cell.color;
+            if (cell.running) {
+                double t = m_phase + i * kPulseStep;
+                t -= std::floor(t);
+                const double tri = 1.0 - std::abs(2.0 * t - 1.0);
+                color.setAlphaF(qBound(0.35, 0.55 + 0.45 * tri, 1.0));
+            } else {
+                color.setAlpha(205); // same weight as an idle agent square
+            }
+            const QPointF center = cellCenter(i);
+            p.setBrush(color);
+            p.drawRoundedRect(QRectF(center.x() - kSide / 2.0,
+                                     center.y() - kSide / 2.0, kSide, kSide),
+                              1.2, 1.2);
+        }
+    }
+
+private:
+    // Column-major fill, matching the agent and node matrices so all three
+    // grids line up row for row across their dividers.
+    QPointF cellCenter(int index) const
+    {
+        const int column = index / kRows;
+        const int row = index % kRows;
+        return QPointF(column * kPitch + kPitch / 2.0,
+                       row * kPitch + kPitch / 2.0);
+    }
+
+    int cellAt(const QPoint &pos) const
+    {
+        const int column = pos.x() / kPitch;
+        const int row = pos.y() / kPitch;
+        if (column < 0 || row < 0 || row >= kRows)
+            return -1;
+        const int index = column * kRows + row;
+        return index < m_cells.size() ? index : -1;
+    }
+
+    static constexpr int kPitch = 7;     // cell size, including its gap
+    static constexpr double kSide = 4.5; // painted square
+    static constexpr double kPulseStep = 0.09; // per-square offset of the pulse
+
+    QVector<Cell> m_cells;
+    double m_phase = 0.0;
+    QTimer *m_pulse = nullptr; // only ticks while a run is in flight
+};
+
 // A plain track-and-knob on/off switch, used for controls where the state is a
 // real power switch (e.g. "is this node online") rather than a momentary
 // action, so it reads unambiguously as on/off instead of just another button.
@@ -1729,10 +1895,12 @@ protected:
     }
 };
 
-// One mirror node's live state, as fed to the relay radar's blips (adhoc #122).
-// This was the dot model for the activity strip that floated above the Mirror
-// nodes tab (adhoc #197); the strip is gone (adhoc #420) but the radar still
-// draws the same per-node dots, so loadMirrorNodesPanel keeps building them.
+// One mirror node's live state for the repo the Mirror-nodes panel is showing
+// (adhoc #122). This was the dot model for the activity strip that floated
+// above the Mirror nodes tab (adhoc #197); the strip is gone (adhoc #420) and
+// so is the radar dish that inherited its blips (adhoc #124), but
+// loadMirrorNodesPanel still builds these so the chrome line's node dots can be
+// tinted with this repo's sync/integrity state.
 // A node the relay's integrity gate is rejecting is kept in the list even while
 // offline, so the warning stays visible instead of the node just disappearing
 // (adhoc #196).
@@ -1992,9 +2160,11 @@ private:
 // ResizeToContents and Stretch/stretch-last columns alike are sized to their content
 // (a Stretch column would otherwise keep only the width it was stretched to fill,
 // which can be narrower than its content and elide the text), and stretch-last is
-// turned off. Fixed button columns are left exactly as the caller set them. Call
+// turned off. Fixed button columns are left exactly as the caller set them, and
+// so is `keepFlexibleColumn` when the caller has one column that must go on
+// absorbing the spare width (the agents list's Issue title, adhoc #35). Call
 // once after the header has been configured.
-inline void makeColumnsResizable(QTableWidget *table)
+inline void makeColumnsResizable(QTableWidget *table, int keepFlexibleColumn = -1)
 {
     if (!table || !table->model())
         return;
@@ -2002,19 +2172,21 @@ inline void makeColumnsResizable(QTableWidget *table)
     auto done = std::make_shared<bool>(false);
     QObject::connect(
         table->model(), &QAbstractItemModel::rowsInserted, table,
-        [table, header, done]() {
+        [table, header, done, keepFlexibleColumn]() {
             if (*done)
                 return;
             *done = true;
             // Defer to the next event-loop turn so the fit reflects the
             // freshly-set cell contents rather than the just-inserted empty rows.
-            QTimer::singleShot(0, table, [table, header]() {
+            QTimer::singleShot(0, table, [table, header, keepFlexibleColumn]() {
                 // The last column may auto-fill via stretchLastSection rather than
                 // a per-section Stretch mode; capture that before turning it off.
                 const bool stretchLast = header->stretchLastSection();
                 const int last = header->count() - 1;
                 header->setStretchLastSection(false);
                 for (int i = 0; i < header->count(); ++i) {
+                    if (i == keepFlexibleColumn)
+                        continue; // stays Stretch, absorbing the spare width
                     const QHeaderView::ResizeMode mode = header->sectionResizeMode(i);
                     const bool autosized =
                         mode == QHeaderView::ResizeToContents ||
@@ -2166,6 +2338,16 @@ class ResourceBarDelegate : public HoverRowDelegate
 public:
     using HoverRowDelegate::HoverRowDelegate;
 
+    // Views whose selected row is a muted band from a per-widget QSS rule (the
+    // Nodes directory) rather than the issue #252 green outline set this. The
+    // base strips State_Selected, so without it the view's app-wide green
+    // selection band showed through on just the delegate's columns while every
+    // other column painted the muted band — a solid green bar across CPU/RAM/
+    // Disk on the selected row. Painting the band here covers the view's band
+    // and keeps the whole row one colour; stripping the state before the base
+    // runs also skips the outline, which that design doesn't use.
+    bool mutedSelectionBand = false;
+
     QSize sizeHint(const QStyleOptionViewItem &option,
                    const QModelIndex &index) const override
     {
@@ -2176,7 +2358,15 @@ public:
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
     {
-        HoverRowDelegate::paint(painter, option, index);
+        QStyleOptionViewItem opt(option);
+        if (mutedSelectionBand && (option.state & QStyle::State_Selected)) {
+            // Same colours as the nodesDirectory ::item:selected QSS rules.
+            painter->fillRect(option.rect, currentThemeIsDark()
+                                               ? QColor("#21262d")
+                                               : QColor("#eaeef2"));
+            opt.state &= ~QStyle::State_Selected;
+        }
+        HoverRowDelegate::paint(painter, opt, index);
         const QVariant value = index.data(kProgressBarRole);
         paintResourceBar(painter, option.rect,
                          value.isValid() ? value.toInt() : -1,
@@ -2391,6 +2581,53 @@ inline SortTableWidgetItem *makeByteUsageCell(const QString &label, qint64 used,
     return makeResourceBarCell(pct, tip);
 }
 
+// The colour a self-diagnostics severity paints in a node list.
+inline QString nodeHealthColor(int severity)
+{
+    switch (severity) {
+    case NodeDiagnostics::Critical:
+        return QStringLiteral("#f85149");
+    case NodeDiagnostics::Warning:
+        return QStringLiteral("#d29922");
+    case NodeDiagnostics::Info:
+        return QStringLiteral("#58a6ff");
+    default:
+        return QStringLiteral("#3fb950"); // all clear
+    }
+}
+
+// The Health cell every node list shows (adhoc #27): what the node's own
+// periodic self-check found, pushed to us in its heartbeat. Sorts worst-first
+// (unknown below "OK"), colours by severity, and puts the full findings — plus
+// how long ago the node ran them — in the hover tooltip.
+inline SortTableWidgetItem *makeNodeHealthCell(
+    const QList<NodeDiagnostics::Finding> &findings, qint64 diagnosticsMs,
+    qint64 nowMs)
+{
+    const bool reported = diagnosticsMs > 0;
+    auto *item = new SortTableWidgetItem(
+        NodeDiagnostics::summaryLabel(findings, reported));
+    const int severity =
+        reported ? NodeDiagnostics::worstSeverity(findings) : -1;
+    item->setData(kTableSortRole, double(severity));
+    if (!reported) {
+        item->setToolTip(QStringLiteral(
+            "This node has not reported a self-check — an older build, or "
+            "self-diagnostics turned off in its settings."));
+        return item;
+    }
+    item->setForeground(QColor(nodeHealthColor(severity)));
+    QString tip = findings.isEmpty()
+                      ? QStringLiteral("Self-check found no problems.")
+                      : NodeDiagnostics::detailText(findings);
+    const qint64 ageMs = nowMs > 0 ? nowMs - diagnosticsMs : 0;
+    if (ageMs > 60 * 1000)
+        tip += QStringLiteral("\n\nLast reported %1 min ago")
+                   .arg(ageMs / (60 * 1000));
+    item->setToolTip(tip);
+    return item;
+}
+
 // A CPU usage bar cell from a 0..100 host-CPU percentage (< 0 == unknown).
 inline SortTableWidgetItem *makeCpuUsageCell(double cpuPercent)
 {
@@ -2438,6 +2675,14 @@ const QString kRepoUrl = QStringLiteral("https://github.com/forkmesh/forkmesh.gi
 const QString kDisplayNameSetting = QStringLiteral("profile/displayName");
 const QString kHandleSetting = QStringLiteral("profile/handle");
 const QString kAccountNameSetting = QStringLiteral("account/nodeName");
+// The fun node name a true first run handed out (see randomFunNodeName). While
+// the account name is still exactly this — nobody typed a username, signed up,
+// or logged in — the person at the desktop is a guest, not a user, and chat
+// speaks as "Guest ####" like the website does for anonymous visitors (adhoc
+// #113). Renaming (setup screen or Settings) or claiming a user account makes
+// account/nodeName diverge from this and thereby exits guest mode.
+const QString kGeneratedNodeNameSetting =
+    QStringLiteral("account/generatedNodeName");
 // This machine's own node name on the mesh, distinct from the username: a user
 // account owns many nodes, and the machine you're sitting at is just one of
 // them. Unset means "derive a default" (hostname for user-account installs,
@@ -2479,6 +2724,11 @@ const QString kDefaultRoomName = forkmesh::mainnode::kDefaultRoomName;
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kLastRepositorySetting = QStringLiteral("repositories/lastOpen");
+// Last repo-detail tab actually viewed (updated by recordNavLocation()); a
+// restart restores this rather than landing wherever a fresh open would
+// (adhoc #101) — the app comes back on the page it was left on.
+const QString kLastRepoDetailTabSetting =
+    QStringLiteral("repositories/lastOpenDetailTab");
 // Issue looper (adhoc #125): persist the running state so a restart resumes the
 // loop on the same repo with the same provider instead of silently dropping it.
 const QString kLooperActiveSetting = QStringLiteral("looper/active");
@@ -2564,6 +2814,11 @@ const QString kEmailNotifyHostOfflineSetting = QStringLiteral("notifications/ema
 // whose email is verified — plain nodes and unverified users stay silent, so
 // #welcome reads as a genuine roll-call of real people.
 const QString kWelcomeChannel = QStringLiteral("#welcome");
+// A #welcome greeting only raises a "new user joined" ping while it is this
+// fresh — peers replay their in-session history on every reconnect, and a
+// replayed greeting that fell out of the id-dedupe set must not re-ping for a
+// join the user already saw.
+const qint64 kWelcomePingFreshMs = 5 * 60 * 1000;
 // Legacy QSettings migration prefix retained for installs that already posted to
 // an older welcome room.
 const QString kLegacyWelcomeAnnouncedSettingPrefix =
@@ -2584,11 +2839,10 @@ const QString kAutoPrBountyEnabledSetting =
 const QString kAutoPrBountyAmountSetting =
     QStringLiteral("bounty/autoPrAmountUsd");
 const QString kAutoPrBountyModeSetting = QStringLiteral("bounty/autoPrMode");
-const QString kSolanaDisplayUsdSetting = QStringLiteral("profile/solanaDisplayUsd");
-// Top-bar balance display currency: "sol" | "usd" | "inr". Supersedes the
-// older boolean above (migrated on first read).
-const QString kSolanaDisplayCurrencySetting =
-    QStringLiteral("profile/solanaDisplayCurrency");
+// The balance display-currency keys ("profile/solanaDisplayUsd" and its
+// "profile/solanaDisplayCurrency" successor) are retired: the balance reads as
+// a tiny always-SOL line under the account avatar (adhoc #96), so any stored
+// preference is simply ignored.
 const QString kSolanaLastBalanceSettingPrefix =
     QStringLiteral("profile/solanaLastBalance/");
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
@@ -2652,9 +2906,9 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
 // Hourly local snapshots of the live database (Settings -> Data -> Automatic
-// backups). On by default: the snapshot is small (identity, account and every
-// local store, minus the re-downloadable mirrors) and it is the only thing
-// standing between a corrupted store and a lost account key.
+// backups). OFF by default everywhere because a rolling day of multi-gigabyte
+// tarballs filled control machines and small VPS disks. An explicit true turns
+// backups on for any node.
 const QString kAutoBackupEnabledSetting = QStringLiteral("backup/hourlyEnabled");
 // How many hourly snapshots are kept before the oldest is pruned.
 const QString kAutoBackupKeepSetting = QStringLiteral("backup/keepCount");
@@ -2772,6 +3026,10 @@ const QString kClaudeUsageWeekPctSetting = QStringLiteral("agents/claudeUsageWee
 // away on the first frame after a restart (issue #50).
 const QString kClaudeUsage5hResetSetting = QStringLiteral("agents/claudeUsage5hReset");
 const QString kClaudeUsageWeekResetSetting = QStringLiteral("agents/claudeUsageWeekReset");
+// Same pair for the premium per-model weekly window the OAuth usage endpoint
+// reports next to the plan-wide one — the third bar on the chart (adhoc #96).
+const QString kClaudeUsageFablePctSetting = QStringLiteral("agents/claudeUsageFablePct");
+const QString kClaudeUsageFableResetSetting = QStringLiteral("agents/claudeUsageFableReset");
 constexpr qint64 kAgentLimit5hMs = 5LL * 60 * 60 * 1000;
 constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
 // Issue #346: whether either window has been seen maxed out (>=99%) since it
@@ -2779,9 +3037,20 @@ constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
 // while still low". Cleared the moment the refill notification fires.
 const QString kClaudeUsage5hExhaustedSetting = QStringLiteral("agents/claudeUsage5hExhausted");
 const QString kClaudeUsageWeekExhaustedSetting = QStringLiteral("agents/claudeUsageWeekExhausted");
+const QString kClaudeUsageFableExhaustedSetting = QStringLiteral("agents/claudeUsageFableExhausted");
+const QString kCodexUsage5hExhaustedSetting = QStringLiteral("agents/codexUsage5hExhausted");
+const QString kCodexUsageWeekExhaustedSetting = QStringLiteral("agents/codexUsageWeekExhausted");
 // Opt-in: email the node's account when a previously-maxed-out usage window
 // refills. Off by default — most nodes are watched interactively.
 const QString kEmailOnCreditsRefillSetting = QStringLiteral("agents/emailOnCreditsRefill");
+// Opt-in: open a standard calendar reminder when an agent provider's usage
+// window is exhausted, and ping locally when it reaches its known reset time.
+const QString kUsageLimitCalendarReminderSetting =
+    QStringLiteral("agents/usageLimitCalendarReminder");
+const QString kUsageLimitReminderScheduledPrefix =
+    QStringLiteral("agents/usageLimitReminderScheduled/");
+const QString kUsageLimitReminderNotifiedPrefix =
+    QStringLiteral("agents/usageLimitReminderNotified/");
 
 // Compact "3h 12m" / "4d 6h" / "5m" rendering of a remaining duration, rounded
 // up to the minute. Shared by the agent-limits label and the top-bar usage
@@ -2844,23 +3113,59 @@ const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
 // Exact composer mode shared by CLI-backed agents. The older bool above remains
 // for settings migration and code paths that only distinguish unattended runs.
 const QString kAgentModeSetting = QStringLiteral("agents/cliPermissionMode");
-// The composer mode-selector label that runs the agent unattended. Only this
-// one skips the CLI's permission prompts today; the other labels ("Ask before
-// edits" / "Edit automatically" / "Plan mode") all mean "don't skip" until the
-// app can drive per-tool approval headlessly (see MainWindowChat's selector).
-const QString kClaudeAutoModeLabel = QStringLiteral("Auto mode");
+// The composer mode-selector labels. One word each (adhoc #38) so the whole
+// composer row stays compact — "Auto mode" was the only one carrying the word
+// "mode" and the dropdown itself already says what it is. Only "Auto" skips the
+// CLI's permission prompts today; "Ask" / "Edit" / "Plan" all mean "don't skip"
+// until the app can drive per-tool approval headlessly (see MainWindowChat's
+// selector). Codex maps each label to an approval policy/sandbox by substring
+// ("ask", "edit", "plan", "auto"), so these names are what it keys off too.
+const QString kClaudeAutoModeLabel = QStringLiteral("Auto");
+const QString kAgentAskModeLabel = QStringLiteral("Ask");
 
 // Does a session's stored permission-mode label (AgentSession::mode) run the
 // agent unattended? An empty label means the session predates per-session mode
-// capture, so callers fall back to the global kClaudeAutoModeSetting.
+// capture, so callers fall back to the global kClaudeAutoModeSetting. Sessions
+// (and the saved kAgentModeSetting) written before the labels were shortened
+// still say "Auto mode", and must keep running unattended.
 inline bool agentModeSkipsPermissions(const QString &modeLabel)
 {
-    return modeLabel.trimmed() == kClaudeAutoModeLabel;
+    const QString label = modeLabel.trimmed().toLower();
+    return label == QLatin1String("auto") || label == QLatin1String("auto mode");
 }
 // Slash-actions menu (adhoc #116), mirroring the Claude Code extension's "/"
 // actions popup. Effort level for Claude Code runs ("low"/"medium"/"high"/
 // "xhigh"/"max"), passed to the CLI as `--effort`.
 const QString kClaudeEffortSetting = QStringLiteral("agents/claudeEffort");
+// Effort levels the installed `claude` CLI actually accepts, probed from its own
+// `--help` output (adhoc #38) and cached so the composer's speed picker offers
+// the real list rather than a hard-coded guess that drifts with the CLI. Empty /
+// unset falls back to defaultAgentEffortLevels() below.
+const QString kClaudeEffortLevelsCacheSetting =
+    QStringLiteral("agents/claudeEffortLevels");
+// The fallback ladder for the composer's speed picker: what the CLI has shipped
+// for a while, used until a probe (Claude Code) or the app-server model catalog
+// (Codex) says otherwise.
+inline QStringList defaultAgentEffortLevels()
+{
+    return {QStringLiteral("low"), QStringLiteral("medium"),
+            QStringLiteral("high"), QStringLiteral("xhigh"),
+            QStringLiteral("max")};
+}
+// One short label per effort id, for the composer's speed picker. Unknown ids (a
+// CLI probe can surface levels this app has never heard of) just get their first
+// letter capitalised, so a new level still reads as a real choice.
+inline QString agentEffortLabel(const QString &level)
+{
+    const QString id = level.trimmed().toLower();
+    if (id.isEmpty())
+        return QString();
+    if (id == QLatin1String("xhigh"))
+        return QStringLiteral("Ultra");
+    QString label = id;
+    label[0] = label[0].toUpper();
+    return label;
+}
 // "Thinking" toggle: false => launch the CLI with MAX_THINKING_TOKENS=0 so the
 // model skips extended thinking. Default on (the CLI's own behavior).
 const QString kClaudeThinkingSetting = QStringLiteral("agents/claudeThinking");
@@ -2929,16 +3234,15 @@ inline int maxRunningAgents()
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
-// Footer quick-add "YOLO" toggle (adhoc #12): true => every agent started from
-// here merges its own branch into the default branch the moment its run
-// finishes successfully, skipping the pull-request review step.
-const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
-// Footer quick-add "Task" toggle (adhoc #18): true => every agent started from
-// here also opens an organization task recording which bot launched the run,
-// which bot finished it, and the model/mode/strength it used. On by default —
-// the point is that prompted work is visible to the organization, not just to
-// the desktop that typed it — and turned off per-run for throwaway prompts.
-const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
+// The footer quick-add "YOLO" (adhoc #12) and "Task" (adhoc #18) toggles were
+// dropped from the composer in adhoc #120, so agents/quickAddYolo and
+// agents/quickAddTask are no longer read or written: a prompted run never
+// auto-merges and always opens an organization task.
+// Last known number of open organization tasks, mirrored into settings so the
+// Tasks rail badge is on screen from the first frame after a restart instead of
+// staying blank until someone opens the Tasks page (adhoc #79).
+const QString kOrganizationTaskOpenCountSetting =
+    QStringLiteral("tasks/openCount");
 // Canonical prefixes this desktop signs with its account key to open and close
 // an organization task when it has no account session token to present (the
 // authenticateSilently path holds keys, not sessions). Must stay byte-identical
@@ -2946,6 +3250,29 @@ const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
 const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
 const QString kOrgTaskCompleteProof =
     QStringLiteral("forkmesh-org-task-complete-v1");
+// Same key, reading the board. Without it the Tasks tab was empty for every
+// operator who launched normally instead of typing a password (adhoc #52).
+// Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.
+const QString kOrgTaskListProof = QStringLiteral("forkmesh-org-task-list-v1");
+// Same signing key, for the one credential the "genie" button needs (adhoc
+// #49): the relay mints this desktop's task-only remote-MCP bearer instead of
+// its operator copying one out of the website. Must stay byte-identical to
+// GENIE_CREDENTIAL_PROOF in entry.py.
+const QString kGenieCredentialProof =
+    QStringLiteral("forkmesh-genie-credential-v1");
+// Same signing key, for this account's own website alert inbox: the Alerts page
+// shows what the site's bell shows, and clears it from here (adhoc #59). Must
+// stay byte-identical to ACCOUNT_ALERT_LIST_PROOF / ACCOUNT_ALERT_READ_PROOF in
+// entry.py.
+const QString kAccountAlertListProof =
+    QStringLiteral("forkmesh-account-alert-list-v1");
+const QString kAccountAlertReadProof =
+    QStringLiteral("forkmesh-account-alert-read-v1");
+// Deleting one ping from that inbox signs the row's id as well, so a captured
+// delete cannot be replayed against a different notification (adhoc #77). Must
+// stay byte-identical to ACCOUNT_ALERT_DELETE_PROOF in entry.py.
+const QString kAccountAlertDeleteProof =
+    QStringLiteral("forkmesh-account-alert-delete-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
@@ -3055,6 +3382,11 @@ inline void selectQuickAddAgentProvider(QComboBox *combo)
     combo->setCurrentIndex(index >= 0 ? index : 0);
 }
 
+// One-line explanation painted beside a popup row's label by
+// AgentChoiceDescriptionDelegate — "Ask" alone does not say what it permits, and
+// the closed control has no room to say so (adhoc #1204).
+constexpr int kAgentChoiceDescriptionRole = Qt::UserRole + 7;
+
 // A QComboBox whose popup always opens tall enough to show every item, with no
 // up/down scroll-arrow buttons (issue #348). Once a Qt Style Sheet is applied
 // app-wide (Theme::kStyleSheet, set in MainWindow's ctor), Qt's CSS engine
@@ -3065,11 +3397,69 @@ inline void selectQuickAddAgentProvider(QComboBox *combo)
 // reliable workaround: given room for every row plus the container's scroller
 // chrome, nothing needs scrolling so Qt hides the arrows. When the list is
 // genuinely taller than the screen the arrows correctly stay (we cap there).
+// It also sizes itself to the item that is actually showing rather than to the
+// widest item in its list (adhoc #72). Qt's own hint measures every entry, so a
+// single long label — "GPT-5.5 Codex" in the model picker, "Claude API" in the
+// provider one — padded all four composer dropdowns with dead space even while
+// short labels like "CC" or "Auto" were selected.
 class FullPopupComboBox : public QComboBox {
 public:
-    using QComboBox::QComboBox;
+    explicit FullPopupComboBox(QWidget *parent = nullptr) : QComboBox(parent)
+    {
+        // Never wider than the selected label needs; the row's stretches take
+        // the leftover space instead of the dropdowns.
+        setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    }
+
+    QSize sizeHint() const override { return currentTextSizeHint(); }
+    QSize minimumSizeHint() const override { return currentTextSizeHint(); }
 
 protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        // The hint follows the selection, and the pickers are repopulated with
+        // signals blocked (refreshQuickAddSpeedSelector, the model refresh,
+        // applyLiveClaudeModelsToCombos), so currentIndexChanged is not a
+        // reliable place to re-ask for space. A repaint always follows a
+        // selection change: if the text about to be painted is not the one the
+        // last hint was measured from, relayout first. This settles after one
+        // extra layout pass — the next paint sees a matching label.
+        if (m_hintedText != currentText()) {
+            m_hintedText = currentText();
+            updateGeometry();
+        }
+        QComboBox::paintEvent(event);
+    }
+
+    // The Qt::Popup window Qt parents the drop-down view into (the view itself on
+    // styles that do not wrap it). Both the width and the height fit-up below
+    // resize this, not the view.
+    QWidget *popupContainer() const
+    {
+        QAbstractItemView *v = view();
+        if (!v)
+            return nullptr;
+        for (QWidget *w = v; w; w = w->parentWidget()) {
+            if (w->windowFlags().testFlag(Qt::Popup))
+                return w;
+        }
+        QWidget *top = v->window();
+        if (top && top->windowFlags().testFlag(Qt::Popup))
+            return top;
+        return v;
+    }
+
+    QRect availableScreenRect(const QWidget *popup) const
+    {
+        QScreen *screen = popup ? popup->screen() : nullptr;
+        if (!screen && windowHandle())
+            screen = windowHandle()->screen();
+        if (!screen)
+            screen = QGuiApplication::primaryScreen();
+        return screen ? screen->availableGeometry()
+                      : QRect(QPoint(0, 0), QSize(10000, 10000));
+    }
+
     void showPopup() override
     {
         setMaxVisibleItems(qMax(maxVisibleItems(), count()));
@@ -3077,18 +3467,8 @@ protected:
         QAbstractItemView *v = view();
         if (!v || count() == 0)
             return;
-        QWidget *popup = v;
-        for (QWidget *w = v; w; w = w->parentWidget()) {
-            if (w->windowFlags().testFlag(Qt::Popup)) {
-                popup = w;
-                break;
-            }
-        }
-        if (!popup->windowFlags().testFlag(Qt::Popup)) {
-            QWidget *top = v->window();
-            if (top && top->windowFlags().testFlag(Qt::Popup))
-                popup = top;
-        }
+        QWidget *popup = popupContainer();
+        fitPopupWidth(v, popup);
         // Height for every row plus the view frame. sizeHintForRow under-reports
         // the styled row height (the rows aren't laid out with their stylesheet
         // metrics yet when the base showPopup returns) and the view's own
@@ -3105,14 +3485,7 @@ protected:
         }
         const int fullHeight = 2 * v->frameWidth() + rowsH;
         QRect geo = popup->geometry();
-        QScreen *screen = popup->screen();
-        if (!screen && windowHandle())
-            screen = windowHandle()->screen();
-        if (!screen)
-            screen = QGuiApplication::primaryScreen();
-        const QRect avail =
-            screen ? screen->availableGeometry()
-                   : QRect(QPoint(0, 0), QSize(10000, 10000));
+        const QRect avail = availableScreenRect(popup);
         const int height = qMin(fullHeight, avail.height());
         v->setVerticalScrollBarPolicy(fullHeight <= avail.height()
                                           ? Qt::ScrollBarAlwaysOff
@@ -3131,7 +3504,194 @@ protected:
             geo.moveTop(avail.top());
         popup->setGeometry(geo);
     }
+
+    // Qt sizes a combo popup to the closed control, and these controls are
+    // deliberately only as wide as the label they are showing (adhoc #72) — so a
+    // short selection ("Opus 5", or nothing at all on the icon-only pickers)
+    // clipped every longer row in the open menu (adhoc #1204). Widen the popup to
+    // its widest row once it is up: the same after-the-fact fix-up the caller
+    // does for height, and it leaves the closed control untouched.
+    void fitPopupWidth(QAbstractItemView *v, QWidget *popup)
+    {
+        if (!v || !popup || count() == 0)
+            return;
+        const QFontMetrics fm = v->fontMetrics();
+        int content = 0;
+        for (int row = 0; row < count(); ++row) {
+            int rowW = fm.horizontalAdvance(itemText(row));
+            const QString description =
+                itemData(row, kAgentChoiceDescriptionRole).toString();
+            if (!description.isEmpty())
+                rowW += 12 + fm.horizontalAdvance(description);
+            content = qMax(content, rowW);
+        }
+        // Room for the row's icon plus the view's own item padding, then take
+        // whichever of the two measurements is larger: the styled hint knows the
+        // stylesheet's padding, the hand count knows the delegate's description.
+        content += v->iconSize().width() + 28;
+        int width = qMax(content, v->sizeHintForColumn(0)) + 2 * v->frameWidth();
+        QRect geo = popup->geometry();
+        if (geo.width() >= width)
+            return;
+        const QRect avail = availableScreenRect(popup);
+        width = qMin(width, avail.width());
+        v->setMinimumWidth(width - 2 * v->frameWidth());
+        popup->setMinimumWidth(width);
+        geo.setWidth(width);
+        // Keep the now-wider popup on screen: growing it off the right edge would
+        // otherwise let Qt clamp the width straight back.
+        if (geo.right() > avail.right())
+            geo.moveRight(avail.right());
+        if (geo.left() < avail.left())
+            geo.moveLeft(avail.left());
+        popup->setGeometry(geo);
+    }
+
+private:
+    // Same shape as QComboBox's own hint (font metrics for the contents, then
+    // the style adds frame and drop-down arrow) but measured from the current
+    // text alone instead of the widest item in the model.
+    QSize currentTextSizeHint() const
+    {
+        const QFontMetrics fm = fontMetrics();
+        const QString text = currentText();
+        QSize contents(fm.horizontalAdvance(text.isEmpty() ? QStringLiteral("XX") : text),
+                       qMax(fm.height(), 14) + 2);
+        const QIcon icon = currentIndex() >= 0 ? itemIcon(currentIndex()) : QIcon();
+        if (!icon.isNull()) {
+            contents.setWidth(contents.width() + iconSize().width() + 4);
+            contents.setHeight(qMax(contents.height(), iconSize().height()));
+        }
+        QStyleOptionComboBox opt;
+        initStyleOption(&opt);
+        return style()->sizeFromContents(QStyle::CT_ComboBox, &opt, contents, this);
+    }
+
+    QString m_hintedText;
 };
+
+// Paints "<label>   <description>" for rows carrying kAgentChoiceDescriptionRole
+// and leaves every other row to the default delegate. The description is drawn
+// in the row's own text colour at reduced alpha so it reads as secondary in both
+// themes and stays legible on the selected (filled) row.
+class AgentChoiceDescriptionDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override
+    {
+        QSize hint = QStyledItemDelegate::sizeHint(option, index);
+        const QString description =
+            index.data(kAgentChoiceDescriptionRole).toString();
+        if (!description.isEmpty())
+            hint.setWidth(hint.width() + kGap +
+                          option.fontMetrics.horizontalAdvance(description));
+        return hint;
+    }
+
+protected:
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyledItemDelegate::paint(painter, option, index);
+        const QString description =
+            index.data(kAgentChoiceDescriptionRole).toString();
+        if (description.isEmpty())
+            return;
+        QStyleOptionViewItem styled(option);
+        initStyleOption(&styled, index);
+        const QWidget *widget = styled.widget;
+        QStyle *style = widget ? widget->style() : QApplication::style();
+        QRect textRect =
+            style->subElementRect(QStyle::SE_ItemViewItemText, &styled, widget);
+        textRect.setLeft(textRect.left() +
+                         styled.fontMetrics.horizontalAdvance(styled.text) + kGap);
+        if (textRect.width() <= 0)
+            return;
+        QColor colour = styled.palette.color(QPalette::Text);
+        colour.setAlpha(160);
+        painter->save();
+        painter->setPen(colour);
+        painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter,
+                          styled.fontMetrics.elidedText(
+                              description, Qt::ElideRight, textRect.width()));
+        painter->restore();
+    }
+
+private:
+    static constexpr int kGap = 12;
+};
+
+// Compact composer controls whose closed state is just the selected icon. The
+// popup still uses the normal combo model, so opening it reveals the full icon
+// + label rows (Auto / Ask / Plan / Edit or the effort ladder). This keeps the
+// prompt chrome quiet without making the choices cryptic once clicked.
+class IconOnlyFullPopupComboBox : public FullPopupComboBox {
+public:
+    explicit IconOnlyFullPopupComboBox(QWidget *parent = nullptr)
+        : FullPopupComboBox(parent)
+    {
+        setIconSize(QSize(22, 22));
+        // 22px icon + the 4px of side padding Theme.h gives these two controls.
+        // A narrower box clips the icon's right edge (adhoc #1204).
+        setFixedWidth(30);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setItemDelegate(new AgentChoiceDescriptionDelegate(this));
+    }
+
+    QSize sizeHint() const override
+    {
+        return QSize(30, qMax(26, FullPopupComboBox::sizeHint().height()));
+    }
+
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QStylePainter painter(this);
+        QStyleOptionComboBox option;
+        initStyleOption(&option);
+        option.currentText.clear();
+        option.iconSize = iconSize();
+        painter.drawComplexControl(QStyle::CC_ComboBox, option);
+        painter.drawControl(QStyle::CE_ComboBoxLabel, option);
+    }
+};
+
+// Named transparent assets keep the source artwork inspectable and reusable
+// outside this control. Cache the QIcons because the combined menu is rebuilt
+// whenever a live provider catalog changes.
+inline QIcon agentControlIcon(int index)
+{
+    static const char *const paths[] = {
+        ":/agent-ui/icons/model-starburst.png",
+        ":/agent-ui/icons/model-book-quill.png",
+        ":/agent-ui/icons/model-feather.png",
+        ":/agent-ui/icons/model-mountain-blossom.png",
+        ":/agent-ui/icons/model-sun.png",
+        ":/agent-ui/icons/model-globe-leaf.png",
+        ":/agent-ui/icons/model-crescent-moon.png",
+        ":/agent-ui/icons/mode-auto.png",
+        ":/agent-ui/icons/mode-ask.png",
+        ":/agent-ui/icons/mode-plan.png",
+        ":/agent-ui/icons/mode-edit.png",
+        ":/agent-ui/icons/effort-low.png",
+        ":/agent-ui/icons/effort-medium.png",
+        ":/agent-ui/icons/effort-high.png",
+        ":/agent-ui/icons/effort-ultra.png",
+        ":/agent-ui/icons/effort-max.png",
+    };
+    if (index < 0 || index >= 16)
+        return QIcon();
+    static QHash<int, QIcon> cache;
+    if (const auto cached = cache.constFind(index); cached != cache.cend())
+        return cached.value();
+    const QIcon icon(QString::fromLatin1(paths[index]));
+    cache.insert(index, icon);
+    return icon;
+}
 
 // "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript
 // launcher routes each task: a free local heuristic pass first, then a triage
@@ -3266,6 +3826,10 @@ inline void populateClaudeModelCombo(QComboBox *combo)
     combo->setEditable(false);
     combo->setProperty("allowAutoModel", true);
     combo->addItem(QStringLiteral("Auto"), kClaudeAutoModelId);
+    // Offline/API-key users still need a concrete model list. A live OAuth
+    // catalog replaces these entries later via mergeLiveClaudeModels().
+    for (const ClaudeAutoRung &rung : claudeAutoLadder())
+        combo->addItem(rung.label, rung.id);
 }
 
 inline QString codexChatGptModelId(const QString &model)
@@ -3369,6 +3933,118 @@ inline void selectModelComboValue(QComboBox *combo, const QString &model)
 // Friendly label for a session's `model` field, so the agent header can show
 // which LLM actually did the work alongside its worktree location. Known short
 // aliases and full IDs are mapped to display names; anything else is shown as-is.
+// Model names in the pickers drop the vendor prefix (adhoc #38): the provider
+// dropdown sitting right beside them already says which CLI is running, so the
+// live "Claude Opus 5" reads as "Opus 5" and the composer row stays compact.
+inline QString compactModelName(const QString &name)
+{
+    QString label = name.trimmed();
+    static const QLatin1String prefixes[] = {QLatin1String("Claude "),
+                                             QLatin1String("Anthropic ")};
+    for (const QLatin1String &prefix : prefixes) {
+        if (label.startsWith(prefix, Qt::CaseInsensitive)) {
+            label = label.mid(prefix.size()).trimmed();
+            break;
+        }
+    }
+    return label.isEmpty() ? name.trimmed() : label;
+}
+
+// Version number carried by a model id or display name: "claude-opus-4-8" and
+// "Opus 4.8" both read as 4.8, "claude-opus-5" as 5.0, "gpt-5.6-sol" as 5.6. The
+// negative lookahead keeps a dated snapshot ("claude-haiku-4-5-20251001") from
+// swallowing the release date as a minor version. Returns 0 when nothing looks
+// like a version.
+inline double agentModelVersionNumber(const QString &text)
+{
+    static const QRegularExpression version(
+        QStringLiteral("(\\d+)(?:[.\\-](\\d{1,2})(?![0-9]))?"));
+    const QRegularExpressionMatch match = version.match(text);
+    if (!match.hasMatch())
+        return 0.0;
+    const double major = match.captured(1).toDouble();
+    const QString minor = match.captured(2);
+    return minor.isEmpty() ? major : major + minor.toDouble() / 10.0;
+}
+
+// How powerful a model is, for sorting the composer's combined agent+model menu
+// strongest-first (adhoc #1204). Within the Claude family the published ordering
+// is Fable > Opus > Sonnet > Haiku with a newer version winning; Codex/GPT models
+// sort among themselves the same way. The two families sit in separate bands
+// (Claude above GPT) because version numbers are not comparable across vendors —
+// "GPT-5.6" is not a later release of "Opus 5". A model whose id carries no
+// version is treated as current-generation so a line-up that lands after this
+// binary shipped still sorts near the top instead of the bottom.
+inline int agentModelPowerRank(const QString &model, const QString &label)
+{
+    const QString id = model.trimmed().toLower();
+    const QString name = label.trimmed().toLower();
+    // The router can escalate to any model in the ladder, so it belongs above
+    // every concrete one rather than wherever its name happens to sort.
+    if (id == kClaudeAutoModelId)
+        return 100000;
+    const QString text = id.isEmpty() ? name : id;
+    double version = agentModelVersionNumber(text);
+    if (version <= 0.0)
+        version = agentModelVersionNumber(name);
+    if (version <= 0.0)
+        version = 5.0; // unknown/new: assume the current generation
+    const bool claudeFamily =
+        !text.startsWith(QLatin1String("gpt")) &&
+        !text.startsWith(QLatin1String("o1")) &&
+        !text.startsWith(QLatin1String("o3"));
+    if (!claudeFamily) {
+        // GPT band. "mini"/"nano"/"spark" variants are the small siblings of
+        // their own version, so they sit just under it.
+        int rank = int(version * 100.0 + 0.5);
+        if (text.contains(QLatin1String("mini")) ||
+            text.contains(QLatin1String("nano")) ||
+            text.contains(QLatin1String("spark")))
+            rank -= 10;
+        return rank;
+    }
+    int tier = 20; // unrecognised Claude id: park it at the Sonnet tier
+    if (text.contains(QLatin1String("fable")) ||
+        text.contains(QLatin1String("mythos")))
+        tier = 60;
+    else if (text.contains(QLatin1String("opus")))
+        tier = 40;
+    else if (text.contains(QLatin1String("sonnet")))
+        tier = 20;
+    else if (text.contains(QLatin1String("haiku")))
+        tier = 0;
+    // The +500 base keeps the whole Claude band above the GPT one.
+    return 500 + int(version * 100.0 + 0.5) + tier;
+}
+
+// Models the composer's menu hides by default (adhoc #1204): superseded and
+// small-sibling releases that nobody should be reaching for when a stronger
+// model of the same family is one row up. Hiding is presentation only — a run
+// already pinned to one of these keeps working, and the picker still shows the
+// row when it is the live selection.
+inline bool agentModelIsMinorTier(const QString &model, const QString &label)
+{
+    const QString id = model.trimmed().toLower();
+    const QString name = label.trimmed().toLower();
+    const QString text = id.isEmpty() ? name : id;
+    if (text.isEmpty() || text == kClaudeAutoModelId)
+        return false;
+    double version = agentModelVersionNumber(text);
+    if (version <= 0.0)
+        version = agentModelVersionNumber(name);
+    const bool gptFamily = text.startsWith(QLatin1String("gpt"));
+    if (gptFamily) {
+        if (text.contains(QLatin1String("mini")) ||
+            text.contains(QLatin1String("nano")) ||
+            text.contains(QLatin1String("spark")))
+            return true;
+        return version > 0.0 && version < 5.4;
+    }
+    if (text.contains(QLatin1String("haiku")))
+        return true;
+    return version > 0.0 && version < 4.6;
+}
+
 inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())
@@ -3461,7 +4137,9 @@ inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
         const QString id = m.value(QStringLiteral("id")).toString();
         if (id.isEmpty())
             continue;
-        combo->addItem(m.value(QStringLiteral("display_name")).toString(id), id);
+        combo->addItem(
+            compactModelName(m.value(QStringLiteral("display_name")).toString(id)),
+            id);
     }
     const int idx = combo->findData(picked);
     // No restorable pick: land on the first live model, not the synthetic
@@ -3472,20 +4150,16 @@ inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
     combo->setCurrentIndex(idx >= 0 ? idx : fallback);
 }
 
-// User's preferred tab a repository opens on (Settings → General). Stored as
-// the m_repoDetailStack / m_repoDetailTabs index. Restricted to the tabs whose
-// data is eagerly loaded when a repo opens — Code(0), Commits(1), Issues(2),
-// Agents(3), Pull requests(4), Discussions(5) — so landing there shows content
-// without a manual click. Defaults to the Agents tab.
-const QString kDefaultRepoTabSetting = QStringLiteral("ui/defaultRepoTab");
-constexpr int kFallbackRepoTab = 3; // Agents
+// The tab a repository opens on: Code(0), the repo's own front page. Was a
+// Settings → General preference defaulting to Agents, which meant every launch
+// and every repo switch detoured through the Agents tab; adhoc #119 dropped both
+// the setting and the detour, so a repo just opens where the app opens — its
+// overview — and a relaunch restores the tab last viewed
+// (kLastRepoDetailTabSetting).
+constexpr int kRepoLandingTab = 0; // Code
 
-inline int defaultRepoTabIndex()
-{
-    const int value =
-        QSettings().value(kDefaultRepoTabSetting, kFallbackRepoTab).toInt();
-    return (value >= 0 && value <= 5) ? value : kFallbackRepoTab;
-}
+// The Agents tab's index in m_repoDetailStack (see ensureRepoDetailTabBuilt).
+constexpr int kRepoAgentsTab = 3;
 
 // Live claude.ai OAuth access token the Claude Code CLI stores in
 // ~/.claude/.credentials.json. Empty when the user logged in with an API key
@@ -3777,6 +4451,24 @@ inline QString brewPrefix(const QString &formula)
     return QString::fromUtf8(process.readAllStandardOutput()).trimmed();
 }
 #endif
+
+// How many parallel jobs a local qt_client build may use. cc1plus peaks
+// between 0.6 GB and 1.6 GB on the big MainWindow*.cpp translation units, so a
+// plain -j<cores> on a many-core box swamps physical RAM and shoves the whole
+// machine into swap — and an OOM kill during an in-place update can take out
+// the RUNNING node, which nothing restarts (the fleet daemons run under nohup,
+// no supervisor). Budget ~3 GiB of RAM per job, never exceeding the core
+// count. The Ninja-generator builds additionally gate the heavy targets'
+// compiles behind the forkmesh_heavy job pool (see qt_client/CMakeLists.txt);
+// this cap is what protects Makefile-generator builds, which ignore pools.
+inline int ramCappedBuildJobs()
+{
+    int jobs = QThread::idealThreadCount();
+    const qint64 totalRam = SystemStats::totalMemoryBytes();
+    if (totalRam > 0)
+        jobs = qBound(1, int(totalRam / (3LL * 1024 * 1024 * 1024)), jobs);
+    return jobs;
+}
 
 inline QStringList cmakeConfigureArgs(const QString &clientDir, const QString &buildDir,
                                const QString &buildType)
@@ -4238,17 +4930,10 @@ private:
     QList<IssueBurnupPoint> m_series;
 };
 
-// One entry in the Size map tab's tree: total bytes of everything beneath
-// it, with subdirectories and direct files as children (largest first,
-// adhoc #189/#262). A file is a leaf — no children — so the chart offers
-// zoom only on directories, and zooming into a files-only directory shows
-// one slice per file, matching the website's size map.
-struct SunburstNode {
-    QString name;
-    qint64 size = 0;
-    int fileCount = 0;
-    QList<SunburstNode> children;
-};
+// One entry in the Size map tab's tree. It lives in DirectorySizeScan.h so
+// the scan can also run from the elevated helper process, which links none of
+// the widget code (adhoc #76).
+using forkmesh::SunburstNode;
 
 // The Size map tab's multi-level pie (adhoc #189): ring 1 is the working
 // tree's top-level directories and files, each deeper ring subdivides its
@@ -4836,13 +5521,36 @@ inline QStringList splitIssueFieldList(const QString &text)
     return values;
 }
 
+// Every raster icon below is drawn at the app's device-pixel-ratio and tagged
+// with it, so HiDPI screens composite the pixmap 1:1 instead of upscaling a
+// logical-size raster into a pixelated blur (adhoc #139).
+inline qreal iconDevicePixelRatio()
+{
+    const qreal dpr = qGuiApp ? qGuiApp->devicePixelRatio() : 1.0;
+    return dpr > 0.0 ? dpr : 1.0;
+}
+
+// A w×h-logical-pixel transparent pixmap backed by a DPR-scaled raster;
+// QPainter coordinates on it stay logical.
+inline QPixmap crispIconPixmap(int w, int h, qreal dpr)
+{
+    QPixmap pm(qMax(1, qRound(w * dpr)), qMax(1, qRound(h * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    return pm;
+}
+
+inline QPixmap crispIconPixmap(int size, qreal dpr)
+{
+    return crispIconPixmap(size, size, dpr);
+}
+
 // A small platform emoji for a node's operating system.
 // Crisp vector icons for the server-rail footer (glyph fonts render these
 // inconsistently across platforms, so we draw them).
 inline QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
 {
-    QPixmap pm(size, size);
-    pm.fill(Qt::transparent);
+    QPixmap pm = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
     p.translate(size / 2.0, size / 2.0);
@@ -4870,8 +5578,7 @@ inline QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
 // action is queued behind other work rather than actively running.
 inline QPixmap hourglassPixmap(const QColor &color, double angleDeg, int size)
 {
-    QPixmap pm(size, size);
-    pm.fill(Qt::transparent);
+    QPixmap pm = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
     p.translate(size / 2.0, size / 2.0);
@@ -5396,16 +6103,20 @@ inline QPixmap roundedAvatar(const QByteArray &png, int side,
     QPixmap src;
     if (png.isEmpty() || !src.loadFromData(png))
         return QPixmap();
-    QPixmap out(side, side);
-    out.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap out = crispIconPixmap(side, dpr);
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
     QPainterPath clip;
     const qreal radius = side * radiusRatio;
     clip.addRoundedRect(0, 0, side, side, radius, radius);
     p.setClipPath(clip);
-    p.drawPixmap(0, 0, src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
-                                  Qt::SmoothTransformation));
+    QPixmap scaled = src.scaled(out.width(), out.height(),
+                                Qt::KeepAspectRatioByExpanding,
+                                Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    p.drawPixmap(0, 0, scaled);
     return out;
 }
 
@@ -5427,8 +6138,7 @@ inline QIcon osBadgeIcon(const QString &platform, bool online, int size)
     const QColor online_green("#2ea043");
     auto col = [&](const QColor &) { return online ? online_green : grey; };
 
-    QPixmap pm(size, size);
-    pm.fill(Qt::transparent);
+    QPixmap pm = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter g(&pm);
     g.setRenderHint(QPainter::Antialiasing);
     g.setPen(Qt::NoPen);
@@ -5501,8 +6211,7 @@ inline void saveProfileName(const QString &name)
 
 inline QIcon statusDotIcon(bool online)
 {
-    QPixmap pixmap(12, 12);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(12, iconDevicePixelRatio());
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setBrush(online ? QColor("#2ea043") : QColor("#6e7681"));
@@ -6536,17 +7245,27 @@ inline QPixmap tintedOcticonPixmap(const QString &name, const QColor &color, int
     // finished pixmaps keyed on the inputs so each (name,color,size) renders once.
     // UI-thread only, so a plain static map needs no locking.
     static QHash<QString, QPixmap> cache;
+    const qreal dpr = iconDevicePixelRatio();
     const QString key = name + QLatin1Char('|') +
                         QString::number(color.rgba(), 16) + QLatin1Char('|') +
-                        QString::number(size);
+                        QString::number(size) + QLatin1Char('|') +
+                        QString::number(dpr);
     const auto cached = cache.constFind(key);
     if (cached != cache.constEnd())
         return cached.value();
 
-    QPixmap pixmap(size, size);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(size, dpr);
 
-    QSvgRenderer renderer(QStringLiteral(":/icons/octicons/%1.svg").arg(name));
+    // A few glyphs have no octicon (the git worktree symbol, for one); those come
+    // from VS Code's codicons under /icons/codicons. Both sets are 16x16 line art
+    // of the same weight, so they mix cleanly. The existence check comes first
+    // because handing QSvgRenderer a missing resource logs a qt.svg warning; only
+    // a cache miss pays for it at all.
+    QString path = QStringLiteral(":/icons/octicons/%1.svg").arg(name);
+    if (!QFile::exists(path))
+        path = QStringLiteral(":/icons/codicons/%1.svg").arg(name);
+
+    QSvgRenderer renderer(path);
     if (!renderer.isValid())
         return pixmap;
 
@@ -6554,7 +7273,7 @@ inline QPixmap tintedOcticonPixmap(const QString &name, const QColor &color, int
     painter.setRenderHint(QPainter::Antialiasing);
     renderer.render(&painter, QRectF(0, 0, size, size));
     painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
-    painter.fillRect(pixmap.rect(), color);
+    painter.fillRect(QRect(0, 0, size, size), color);
     painter.end();
     cache.insert(key, pixmap);
     return pixmap;
@@ -6571,15 +7290,20 @@ inline QIcon themedOcticon(const QString &name, const QColor &color, int size)
     return icon;
 }
 
-// A tinted octicon rotated `angleDeg` about its centre — used to spin the green
+// Tick rate for the running-agent spinners (the Agents table's "#" cells).
+// Fast enough that a flat-out session reads as a smooth
+// spin; how far each session turns per tick comes from its own tok/s (see
+// agentSpinStepDegrees in MainWindowAgents.cpp).
+inline constexpr int kAgentSpinTickMs = 60;
+
+// A tinted octicon rotated `angleDeg` about its centre — used to spin the blue
 // "running" glyph in the agents list (issue #108). Not cached, since the angle
 // changes every animation frame; callers keep it to the handful of running rows.
 inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &color,
                                    int size, qreal angleDeg)
 {
     const QPixmap base = tintedOcticonPixmap(name, color, size);
-    QPixmap out(size, size);
-    out.fill(Qt::transparent);
+    QPixmap out = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter painter(&out);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     painter.translate(size / 2.0, size / 2.0);
@@ -6598,8 +7322,7 @@ inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &col
 inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleDeg,
                                      bool spinning)
 {
-    QPixmap out(size, size);
-    out.fill(Qt::transparent);
+    QPixmap out = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing, true);
     const QPointF c(size / 2.0, size / 2.0);
@@ -6610,7 +7333,7 @@ inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleD
     p.drawEllipse(c, r, r);
     if (spinning) {
         // Rotating beacon beam: a bright wedge fading behind its leading edge,
-        // the same construction as RelayRadarWidget's sweep.
+        // the same construction the retired relay radar's sweep used.
         QConicalGradient sweep(c, -angleDeg);
         QColor lead = color.lighter(130);
         QColor tail = color;
@@ -6672,15 +7395,585 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
     applyStoredOcticon(button);
 }
 
-// Width of one activity-rail entry, and of the rail (scroll area) itself. Every
-// badge in the rail rides its own icon's corner rather than the item's outer
-// edge, so an item only has to be as wide as its icon plus its caption — the
-// rail no longer reserves a column of empty space for a count (adhoc #19).
-constexpr int kRailItemWidth = 46;
-constexpr int kRailWidth = kRailItemWidth + 8; // + room for the scrollbar
-// Size of the bell glyph on the rail's Alerts item — updateNotificationButton
-// needs it to park the pending-approval count on the glyph's corner.
-constexpr int kNotificationBellIconPx = 16;
+// A push button whose label never pins its pane open: the text is elided to
+// whatever width the button is actually given, and both its preferred and its
+// minimum width are capped instead of tracking the full string. A long branch
+// name in the commits search row otherwise set the minimum width of the whole
+// left column, so dragging the workspace splitter narrower "got stuck" hundreds
+// of pixels short of where it could go (adhoc #74). Keep the untruncated text on
+// the tooltip at the call site.
+class ElidingPushButton : public QPushButton
+{
+public:
+    using QPushButton::QPushButton;
+
+    // Full, untruncated label. What's painted is derived from it on every
+    // resize; setText() alone would be overwritten by the next elide.
+    void setFullText(const QString &text)
+    {
+        m_fullText = text;
+        applyElide();
+    }
+    QString fullText() const { return m_fullText; }
+
+    // Both hints are computed from the *full* text, never from the elided one,
+    // so a re-elide can never feed back into the layout that caused it.
+    QSize sizeHint() const override
+    {
+        QSize hint = QPushButton::sizeHint();
+        hint.setWidth(qBound(kMinWidth,
+                             fontMetrics().horizontalAdvance(m_fullText) +
+                                 chromeWidth(),
+                             kMaxWidth));
+        return hint;
+    }
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QPushButton::minimumSizeHint();
+        hint.setWidth(qMin(hint.width(), kMinWidth));
+        return hint;
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QPushButton::resizeEvent(event);
+        applyElide();
+    }
+
+private:
+    static constexpr int kMinWidth = 56;  // still shows a few characters
+    static constexpr int kMaxWidth = 240; // long refs stop growing the row here
+
+    // The frame padding, the leading octicon and the menu indicator all eat
+    // into the width the label actually gets.
+    int chromeWidth() const
+    {
+        return 28 + (icon().isNull() ? 0 : iconSize().width() + 6) +
+               (menu() ? 14 : 0);
+    }
+
+    void applyElide()
+    {
+        const QString elided = fontMetrics().elidedText(
+            m_fullText, Qt::ElideMiddle, qMax(0, width() - chromeWidth()));
+        if (elided != text())
+            QPushButton::setText(elided);
+    }
+
+    QString m_fullText;
+};
+
+// A toolbar button that stacks its glyph over a small caption instead of setting
+// them side by side. A row of these reads as a bar of tools rather than a run of
+// sentences: the icon carries the recognition and the word underneath removes
+// the guesswork an icon-only bar leaves behind (adhoc #223).
+//
+// The label is painted verbatim, so an ampersand in a caption ("Merge & clean
+// up") stays an ampersand rather than being eaten as a mnemonic — which is what
+// the stock QPushButton painter did to that very button.
+//
+// Everything else is a plain QPushButton: setText() still sets the caption,
+// setOcticon()/setIcon() still set the glyph, and the QSS background/border for
+// #ghostButton / #primaryButton is drawn by the style exactly as before.
+class StackedIconButton : public QPushButton
+{
+public:
+    using QPushButton::QPushButton;
+
+    // Painted in the icon slot for buttons with no octicon of their own (the
+    // diff zoom −/+ pair, whose "icon" has always been a typographic glyph).
+    void setGlyph(const QString &glyph)
+    {
+        m_glyph = glyph;
+        updateGeometry();
+        update();
+    }
+
+    QSize sizeHint() const override
+    {
+        const QSize slot = iconSlotSize();
+        const QFontMetrics fm(captionFont());
+        const bool hasCaption = !text().isEmpty();
+        // +2 of slack: an exact fit rounds the wrong way often enough that the
+        // caption elides itself at its own natural width.
+        const int captionW = hasCaption ? fm.horizontalAdvance(text()) + 2 : 0;
+        const int captionH = hasCaption ? fm.height() + kGap : 0;
+        return QSize(qMax(slot.width(), captionW) + 2 * kPadH,
+                     slot.height() + captionH + 2 * kPadV);
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    // The theme sizes fonts from the style sheet, which lands on the widget
+    // after the first layout pass — without this the button keeps the geometry
+    // it hinted at under the default font and clips its own caption.
+    bool event(QEvent *e) override
+    {
+        switch (e->type()) {
+        case QEvent::FontChange:
+        case QEvent::StyleChange:
+        case QEvent::ApplicationFontChange:
+            updateGeometry();
+            break;
+        default:
+            break;
+        }
+        return QPushButton::event(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QStylePainter painter(this);
+        QStyleOptionButton opt;
+        initStyleOption(&opt);
+        // Draw the chrome only. Handing the style an empty label keeps the QSS
+        // background, border and hover/pressed states while leaving the content
+        // rect for us to fill.
+        const QIcon glyphIcon = opt.icon;
+        opt.text.clear();
+        opt.icon = QIcon();
+        opt.iconSize = QSize();
+        painter.drawControl(QStyle::CE_PushButton, opt);
+
+        const QSize slot = iconSlotSize();
+        const QFont caption = captionFont();
+        const QFontMetrics fm(caption);
+        const bool hasCaption = !text().isEmpty();
+        const int captionH = hasCaption ? fm.height() : 0;
+        const int blockH = slot.height() + (hasCaption ? kGap + captionH : 0);
+        int top = rect().top() + (height() - blockH) / 2;
+
+        const QRect slotRect((width() - slot.width()) / 2, top, slot.width(),
+                             slot.height());
+        if (!glyphIcon.isNull()) {
+            // themedOcticon only carries Off-state pixmaps; asking for On would
+            // fall back to it anyway, so name it explicitly.
+            glyphIcon.paint(&painter, slotRect, Qt::AlignCenter,
+                            isEnabled() ? QIcon::Normal : QIcon::Disabled,
+                            QIcon::Off);
+        } else if (!m_glyph.isEmpty()) {
+            QFont glyphFont = font();
+            glyphFont.setBold(true);
+            if (glyphFont.pixelSize() > 0)
+                glyphFont.setPixelSize(slot.height());
+            else
+                glyphFont.setPointSize(qMax(9, slot.height() - 3));
+            painter.setFont(glyphFont);
+            painter.setPen(labelColor(opt));
+            painter.drawText(slotRect, Qt::AlignCenter, m_glyph);
+        }
+
+        if (!hasCaption)
+            return;
+        const QRect captionRect(kPadH, top + slot.height() + kGap,
+                                qMax(0, width() - 2 * kPadH), captionH);
+        painter.setFont(caption);
+        painter.setPen(labelColor(opt));
+        painter.drawText(captionRect, Qt::AlignHCenter | Qt::AlignVCenter,
+                         fm.elidedText(text(), Qt::ElideRight, captionRect.width()));
+    }
+
+private:
+    static constexpr int kPadH = 8;
+    static constexpr int kPadV = 4;
+    static constexpr int kGap = 3; // between the glyph and its caption
+
+    QSize iconSlotSize() const
+    {
+        if (!icon().isNull() && iconSize().isValid())
+            return iconSize();
+        return QSize(16, 16);
+    }
+
+    // QSS `color:` lands on the widget palette when QStyleSheetStyle polishes
+    // the button, so the theme's ghost/primary foregrounds come through here.
+    QColor labelColor(const QStyleOptionButton &opt) const
+    {
+        return opt.palette.color(isEnabled() ? QPalette::Active
+                                             : QPalette::Disabled,
+                                 QPalette::ButtonText);
+    }
+
+    QFont captionFont() const
+    {
+        QFont f = font();
+        // The theme sizes fonts in pixels; fall back to points for any style
+        // that doesn't.
+        if (f.pixelSize() > 0)
+            f.setPixelSize(qMax(9, f.pixelSize() - 4));
+        else
+            f.setPointSize(qMax(7, f.pointSize() - 3));
+        f.setWeight(QFont::DemiBold);
+        return f;
+    }
+
+    QString m_glyph;
+};
+
+// A one-line, muted status label that sits beside a busy button and carries the
+// live "what is it doing right now" note (the sync button's git/seal progress).
+// It never widens its row: the size hint stays at zero width and the layout
+// hands it whatever space is left, so a long progress line elides instead of
+// pushing the button around. The untruncated text is kept for the tooltip and
+// so a resize re-elides the original rather than an already-cut string.
+class ElidingStatusLabel : public QLabel
+{
+public:
+    explicit ElidingStatusLabel(QWidget *parent = nullptr) : QLabel(parent)
+    {
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        setTextInteractionFlags(Qt::NoTextInteraction);
+    }
+
+    void setFullText(const QString &text)
+    {
+        const QString line = text.simplified();
+        if (line == m_fullText)
+            return;
+        m_fullText = line;
+        setToolTip(line);
+        applyElide();
+    }
+    QString fullText() const { return m_fullText; }
+
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QLabel::minimumSizeHint();
+        hint.setWidth(0);
+        return hint;
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QLabel::resizeEvent(event);
+        applyElide();
+    }
+
+private:
+    void applyElide()
+    {
+        const QString elided = fontMetrics().elidedText(
+            m_fullText, Qt::ElideRight, qMax(0, width()));
+        if (elided != text())
+            QLabel::setText(elided);
+    }
+
+    QString m_fullText;
+};
+
+// A push button that stacks its octicon above a small caption — the same
+// icon-over-words form as the activity rail's entries (adhoc #91) — but driven
+// by the button's live text(), so the existing "Issues (60)" / "Fork 0" count
+// updates keep working. Three forms: Tab paints the repo tabs' checked
+// underline, Action paints a pill only under the pointer, and Bare
+// paints neither — just the rail's own icon over caption, resting grey and
+// brightening under the pointer (adhoc #59). Fully custom-painted (like
+// ActivityRailButton), so the QPushButton QSS box — including #repoAction's
+// max-height, which would squash the stacked layout — never shapes what's
+// drawn.
+class VerticalIconButton : public QPushButton
+{
+public:
+    enum Form { Action, Tab, Bare };
+    explicit VerticalIconButton(const QString &text, Form form,
+                                QWidget *parent = nullptr)
+        : QPushButton(text, parent), m_form(form)
+    {
+        setCursor(Qt::PointingHandCursor);
+        setFlat(true);
+        // Nothing here is styled by QSS, so Qt doesn't set WA_Hover for us —
+        // without it underMouse() would only be re-read on some unrelated
+        // repaint and the hover brightening would come and go at random.
+        setAttribute(Qt::WA_Hover, true);
+    }
+
+    QSize sizeHint() const override
+    {
+        QFont f = font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        const int textW = QFontMetrics(f).horizontalAdvance(text());
+        return QSize(qMax(44, qMax(kIconPx, textW) + 16), kHeight);
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+    // The count riding the icon's upper-right corner as a rail-style circle
+    // badge (0 hides it), so "Fork 12" / "147 branches" style counts read the
+    // same as the activity rail's badges instead of living in the caption.
+    void setBadgeCount(qint64 count)
+    {
+        if (m_badge == count)
+            return;
+        m_badge = count;
+        update();
+    }
+    qint64 badgeCount() const { return m_badge; }
+
+    // Name the octicon instead of handing over a finished QIcon, and the glyph
+    // is re-tinted to the live caption colour on every repaint — exactly how
+    // ActivityRailButton does it, so a Bare tile's icon greys and brightens
+    // with its caption rather than sitting at one fixed contrast.
+    void setOcticonName(const QString &name)
+    {
+        if (m_iconName == name)
+            return;
+        m_iconName = name;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const bool hovered = isEnabled() && underMouse();
+        QColor fg;
+        // Tab and Bare both rest in the rail's grey and brighten under the
+        // pointer; Action carries the header's primary verbs, so it stays at
+        // full contrast even with no pill behind it.
+        if (m_form == Action)
+            fg = dark ? QColor("#e6edf3") : QColor("#1f2328");
+        else
+            fg = dark ? QColor(isChecked() || hovered ? "#e6edf3" : "#8b949e")
+                      : QColor(isChecked() || hovered ? "#1f2328" : "#656d76");
+        if (!isEnabled())
+            fg = QColor("#6e7681");
+
+        if (m_form == Action) {
+            // No resting fill or border: the repo header's actions read as
+            // plain icon-over-caption tiles on the page background, and only
+            // the pointer raises a pill under them.
+            if (hovered) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(QColor(dark ? "#21262d" : "#eaeef2"));
+                p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+                                  6, 6);
+            }
+        } else if (m_form == Tab && isChecked()) {
+            p.fillRect(QRect(0, height() - 2, width(), 2),
+                       QColor(dark ? "#2ea043" : "#1f883d"));
+        }
+
+        const QRect iconRect((width() - kIconPx) / 2, 6, kIconPx, kIconPx);
+        if (m_iconName.isEmpty())
+            icon().paint(&p, iconRect, Qt::AlignCenter,
+                         isEnabled() ? QIcon::Normal : QIcon::Disabled);
+        else
+            p.drawPixmap(iconRect.topLeft(),
+                         tintedOcticonPixmap(m_iconName, fg, kIconPx));
+
+        QFont f = font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        p.setFont(f);
+        p.setPen(fg);
+        p.drawText(QRect(2, iconRect.bottom() + 2, width() - 4, 14),
+                   Qt::AlignHCenter | Qt::AlignTop,
+                   QFontMetrics(f).elidedText(text(), Qt::ElideRight,
+                                              width() - 4));
+
+        // Count badge on the icon's upper-right corner, the same geometry and
+        // blue as ActivityRailButton's, but never capped at 99+ — a repo can
+        // legitimately advertise hundreds of branches.
+        if (m_badge > 0) {
+            const QString badgeText = formatCount(m_badge);
+            QFont bf = font();
+            bf.setPixelSize(9);
+            bf.setBold(true);
+            p.setFont(bf);
+            const int h = 14;
+            const int w =
+                qMax(h, QFontMetrics(bf).horizontalAdvance(badgeText) + 8);
+            const QRectF badge(iconRect.right() - w + h / 2.0 + 2,
+                               qMax(0.0, double(iconRect.top() - 5)), w, h);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor("#1f6feb"));
+            p.drawRoundedRect(badge, h / 2.0, h / 2.0);
+            p.setPen(QColor("#ffffff"));
+            p.drawText(badge, Qt::AlignCenter, badgeText);
+        }
+    }
+
+private:
+    static constexpr int kIconPx = 16;
+    static constexpr int kHeight = 44;
+    Form m_form;
+    qint64 m_badge = 0;
+    QString m_iconName; // empty: paint the QIcon set by setOcticon instead
+};
+
+// The repository Ratchet toggle at the right end of the mode row (adhoc #421).
+// It takes the same icon-over-caption shape as every other button on that line,
+// but unlike a tab it has to read as a *state*, not a destination: a plain
+// checkable QToolButton showed no difference between armed and idle. On, the
+// pill fills green and the glyph is a closed padlock; off, it is a hollow
+// outline with an open padlock and the muted caption colour. Kept a QToolButton
+// subclass so the checkable/toggled API and existing lookups are unchanged.
+class RatchetToggleButton : public QToolButton
+{
+public:
+    explicit RatchetToggleButton(QWidget *parent = nullptr)
+        : QToolButton(parent)
+    {
+        setText(QStringLiteral("Ratchet"));
+        setCheckable(true);
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    QSize sizeHint() const override
+    {
+        QFont f = font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        const int textW = QFontMetrics(f).horizontalAdvance(text());
+        return QSize(qMax(48, qMax(kIconPx, textW) + 16), kHeight);
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const bool hovered = isEnabled() && underMouse();
+        const bool on = isChecked();
+
+        // Filled green when armed, hollow when idle — the whole point is that
+        // the two states cannot be confused at a glance.
+        const QColor accent(dark ? "#2ea043" : "#1f883d");
+        QRectF pill = QRectF(rect()).adjusted(0.5, 3.5, -0.5, -3.5);
+        if (on) {
+            QColor fill = accent;
+            if (hovered)
+                fill = fill.lighter(112);
+            p.setPen(QPen(accent.darker(115), 1));
+            p.setBrush(fill);
+        } else {
+            p.setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 1));
+            p.setBrush(hovered ? QColor(dark ? "#21262d" : "#eaeef2")
+                               : QColor(Qt::transparent));
+        }
+        p.drawRoundedRect(pill, 6, 6);
+
+        const QColor fg =
+            !isEnabled() ? QColor("#6e7681")
+            : on         ? QColor("#ffffff")
+                         : (dark ? QColor(hovered ? "#e6edf3" : "#8b949e")
+                                 : QColor(hovered ? "#1f2328" : "#656d76"));
+        const QRect iconRect((width() - kIconPx) / 2, int(pill.top()) + 5,
+                             kIconPx, kIconPx);
+        p.drawPixmap(iconRect.topLeft(),
+                     tintedOcticonPixmap(on ? QStringLiteral("lock")
+                                            : QStringLiteral("unlock"),
+                                         fg, kIconPx));
+
+        QFont f = font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        p.setFont(f);
+        p.setPen(fg);
+        p.drawText(QRect(2, iconRect.bottom() + 2, width() - 4, 12),
+                   Qt::AlignHCenter | Qt::AlignTop,
+                   QFontMetrics(f).elidedText(text(), Qt::ElideRight,
+                                              width() - 4));
+    }
+    void enterEvent(QEnterEvent *e) override
+    {
+        update();
+        QToolButton::enterEvent(e);
+    }
+    void leaveEvent(QEvent *e) override
+    {
+        update();
+        QToolButton::leaveEvent(e);
+    }
+
+private:
+    static constexpr int kIconPx = 16;
+    static constexpr int kHeight = 44;
+};
+
+// Width and height of one activity-rail entry, and the width of the rail
+// (scroll area) itself. Every badge in the rail rides its own icon's corner
+// rather than the item's outer edge, so an item only has to be as wide as its
+// icon plus its caption — the rail no longer reserves a column of empty space
+// for a count (adhoc #19). Adhoc #117 slimmed the rail: every destination is
+// the same icon-over-caption item, so the item is exactly wide enough for the
+// longest caption and the rail only adds its own slim 6px scrollbar (see the
+// #appNavigationRail QScrollBar rule in Theme.h).
+constexpr int kRailItemWidth = 42;
+constexpr int kRailItemHeight = 44; // 16px icon + 10px caption + breathing room
+// Matches VerticalIconButton's kIconPx so the rail and the repo tab row draw
+// their glyphs at one size (adhoc #421).
+constexpr int kRailIconPx = 16;
+// Air above the first row of icons under the window chrome. The rail and the
+// repo tab row both start at the top of the content area and are pinned to it
+// (adhoc #421), so this inset has to be applied to both or the two rows skew.
+constexpr int kRepoTabRowTopInset = 4;
+
+// The 42px floor fits every rail caption in each of main()'s preferred UI
+// families (Inter/SF/Segoe/Roboto/Noto/Ubuntu/Cantarell measure "Network",
+// the widest word, at <=40px in the 10px demi-bold caption font). A box that
+// has none of them can fall back to a wider face (DejaVu draws it at 48px),
+// so measure the app rail's actual caption set once in the real UI font and
+// widen just enough that no word is ever cut. Font is fixed at startup, so a
+// once-computed static is safe.
+inline int railItemWidth()
+{
+    static const int width = [] {
+        QFont f = QGuiApplication::font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        const QFontMetrics metrics(f);
+        int widest = kRailItemWidth;
+        for (const char *caption :
+             {"Agents", "Code", "Git", "Repos", "Chat", "Control", "Network",
+              "Settings", "Log", "Capture", "Resize", "Tasks", "Pings",
+              "Account"})
+            widest = qMax(widest, metrics.horizontalAdvance(
+                                      QString::fromLatin1(caption)) + 4);
+        return widest;
+    }();
+    return width;
+}
+inline int railWidth() { return railItemWidth() + 6; } // + slim scrollbar
+
+// The public SOL balance sits under the account avatar (adhoc #96), so it has
+// to fit a railItemWidth() slot that it is not allowed to widen. Pick the
+// largest tiny size whose widest figure — "0.0000 SOL", the four-decimal dust
+// case — still fits, the same defence railItemWidth() applies to captions when
+// the box falls back to a wide face. Font is fixed at startup, so a
+// once-computed static is safe.
+inline QFont navBalanceFont()
+{
+    static const QFont font = [] {
+        QFont f = QGuiApplication::font();
+        // Regular weight, unlike the demi-bold rail captions: the balance is a
+        // sub-line under "Account", not a second heading competing with it.
+        f.setWeight(QFont::Normal);
+        for (int px = 9; px > 6; --px) {
+            f.setPixelSize(px);
+            if (QFontMetrics(f).horizontalAdvance(
+                    QStringLiteral("0.0000 SOL")) <= railItemWidth())
+                return f;
+        }
+        f.setPixelSize(6);
+        return f;
+    }();
+    return font;
+}
+
+// How much taller the account rail item is than every other one: the balance
+// line plus the layout spacing above it.
+inline int navBalanceLineHeight()
+{
+    static const int height = QFontMetrics(navBalanceFont()).height() + 2;
+    return height;
+}
 
 // One entry in the app-wide activity rail: an octicon over an optional small
 // label, VS-Code style, with the selected state drawn as a 2px accent line along
@@ -6699,7 +7992,7 @@ public:
         setCursor(Qt::PointingHandCursor);
         setFlat(true);
         setAccessibleName(m_label);
-        setFixedSize(44, m_label.isEmpty() ? 40 : 48);
+        setFixedSize(railItemWidth(), m_label.isEmpty() ? 40 : kRailItemHeight);
         // The sync spinner's timer only runs while syncing *and* visible (see
         // show/hideEvent), so an idle or hidden item costs nothing.
         m_spinTimer = new QTimer(this);
@@ -6718,7 +8011,8 @@ public:
         if (m_compact == compact)
             return;
         m_compact = compact;
-        setFixedSize(44, m_compact ? 30 : (m_label.isEmpty() ? 40 : 48));
+        setFixedSize(railItemWidth(),
+                     m_compact ? 30 : (m_label.isEmpty() ? 40 : kRailItemHeight));
         update();
     }
 
@@ -6728,6 +8022,41 @@ public:
         if (m_badge == count)
             return;
         m_badge = count;
+        update();
+    }
+    int badgeCount() const { return m_badge; }
+
+    // Commits that exist locally but have not reached the upstream/mirror yet.
+    // This is a separate upper-left upload marker so it can coexist with the
+    // working-tree count badge (or the in-flight sync spinner) on Git.
+    void setPendingSyncCount(int count)
+    {
+        count = qMax(0, count);
+        if (m_pendingSync == count)
+            return;
+        m_pendingSync = count;
+        update();
+    }
+    int pendingSyncCount() const { return m_pendingSync; }
+
+    // Red "needs you" badge (Chat unread, pending Pings) instead of the default
+    // blue count — the same corner geometry either way, so the two badge
+    // languages stay aligned across the rail.
+    void setBadgeUrgent(bool urgent)
+    {
+        if (m_badgeUrgent == urgent)
+            return;
+        m_badgeUrgent = urgent;
+        update();
+    }
+
+    // Amber icon+caption tint while something is waiting (the Pings bell) —
+    // the painted replacement for the old QSS [alert="true"] accent.
+    void setAlertTint(bool alert)
+    {
+        if (m_alert == alert)
+            return;
+        m_alert = alert;
         update();
     }
 
@@ -6760,9 +8089,17 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         const bool dark = currentThemeIsDark();
-        const bool lit = isChecked() || underMouse();
-        const QColor fg = dark ? QColor(lit ? "#e6edf3" : "#8b949e")
-                               : QColor(lit ? "#1f2328" : "#656d76");
+        const bool lit = isEnabled() && (isChecked() || underMouse());
+        // The alert tint outranks the resting grey but still brightens on
+        // hover/checked, mirroring the old QSS [alert="true"] rules. A disabled
+        // item (the agent detail reuses this class for its action buttons, which
+        // grey out per session) drops to a low-contrast grey.
+        const QColor fg =
+            !isEnabled() ? QColor(dark ? "#484f58" : "#b6bdc4")
+            : m_alert    ? QColor(dark ? (lit ? "#f0b72f" : "#d29922")
+                                       : (lit ? "#7d4e00" : "#9a6700"))
+                         : (dark ? QColor(lit ? "#e6edf3" : "#8b949e")
+                                 : QColor(lit ? "#1f2328" : "#656d76"));
         const bool showLabel = !m_compact && !m_label.isEmpty();
 
         // Selection line along the left edge — same accent green as the repo
@@ -6770,12 +8107,33 @@ protected:
         if (isChecked())
             p.fillRect(QRectF(0, 4, 2, height() - 8), QColor("#2ea043"));
 
-        const int iconPx = 20;
+        // 16px, the repo tab row's icon size, not the 20px the rail used to
+        // draw (adhoc #421): side by side the rail glyphs read a size up from
+        // the tabs they sit beside. Same top inset and caption gap as
+        // VerticalIconButton, so a rail item and a tab painted at the same y
+        // put their icon and their word on exactly the same two lines.
+        const int iconPx = kRailIconPx;
         const QRect iconRect((width() - iconPx) / 2,
                              showLabel ? 6 : (height() - iconPx) / 2,
                              iconPx, iconPx);
         p.drawPixmap(iconRect.topLeft(),
                      tintedOcticonPixmap(m_iconName, fg, iconPx));
+
+        // An amber upload arrow on the opposite corner from the ordinary count
+        // badge makes "commits waiting to sync" visible without hiding dirty
+        // file count or an active-sync spinner.
+        if (m_pendingSync > 0) {
+            const int s = 12;
+            const QPoint at(qMax(1, iconRect.left() - 5),
+                            qMax(0, iconRect.top() - 4));
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
+            p.drawEllipse(QRect(at, QSize(s, s)).adjusted(-1, -1, 1, 1));
+            p.drawPixmap(
+                at, tintedOcticonPixmap(
+                        QStringLiteral("upload"),
+                        QColor(dark ? "#d29922" : "#9a6700"), s));
+        }
 
         if (showLabel) {
             QFont f = font();
@@ -6783,8 +8141,12 @@ protected:
             f.setWeight(QFont::DemiBold);
             p.setFont(f);
             p.setPen(fg);
-            p.drawText(QRect(0, iconRect.bottom() + 2, width(), 14),
-                       Qt::AlignHCenter | Qt::AlignTop, m_label);
+            // Elide as a guard for wide fallback fonts; the item width is sized
+            // so the longest caption fits in every preferred UI family.
+            p.drawText(QRect(1, iconRect.bottom() + 2, width() - 2, 14),
+                       Qt::AlignHCenter | Qt::AlignTop,
+                       QFontMetrics(f).elidedText(m_label, Qt::ElideRight,
+                                                  width() - 2));
         }
 
         // Badge / sync spinner on the icon's upper-right corner.
@@ -6811,7 +8173,8 @@ protected:
                 qMax(0.0, double(iconRect.top() - 5)),
                 w, h);
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor("#1f6feb"));
+            p.setBrush(QColor(m_badgeUrgent ? (dark ? "#da3633" : "#cf222e")
+                                            : "#1f6feb"));
             p.drawRoundedRect(badge, h / 2.0, h / 2.0);
             p.setPen(QColor("#ffffff"));
             p.drawText(badge, Qt::AlignCenter, text);
@@ -6832,6 +8195,9 @@ private:
     QString m_iconName;
     QString m_label;
     int m_badge = 0;
+    int m_pendingSync = 0;
+    bool m_badgeUrgent = false;
+    bool m_alert = false;
     bool m_syncing = false;
     bool m_compact = false;
     QTimer *m_spinTimer = nullptr;
@@ -7370,6 +8736,51 @@ inline QString octiconMarkup(const QString &name, int size,
         .arg(size);
 }
 
+// "Add to prompt" affordance for the log views (adhoc #114): a tiny plus glyph
+// pinned at the very left of every entry, wrapped in an anchor that carries the
+// entry's own text. Clicking it appends that line to the footer prompt box (see
+// MainWindow::eventFilter), so a line worth asking an agent about takes one
+// click instead of a select-copy-paste round trip.
+const QString kLogPromptAnchorPrefix = QStringLiteral("fmlogprompt:");
+// The document-resource URL the glyph is registered under, one copy per log
+// document (the same trick the site favicons use — far cheaper than a base64
+// data URI repeated on every one of a few hundred rendered lines).
+const QString kLogPromptIconResource = QStringLiteral("logprompt://add");
+
+inline QString logPromptAnchorHref(const QString &storedLine)
+{
+    // Percent-encoded, so the line's own quotes and ampersands can't break out
+    // of the href attribute.
+    return kLogPromptAnchorPrefix +
+           QString::fromLatin1(QUrl::toPercentEncoding(storedLine.trimmed()));
+}
+
+// The log line an anchor href carries, or an empty string when the href is not
+// one of ours (a plain http(s) link in the message body, most often).
+inline QString logPromptAnchorLine(const QString &href)
+{
+    if (!href.startsWith(kLogPromptAnchorPrefix))
+        return QString();
+    return QUrl::fromPercentEncoding(
+        href.mid(kLogPromptAnchorPrefix.size()).toLatin1());
+}
+
+// The leading icon markup for one log entry, registering the glyph on `view`'s
+// document so the <img> resolves there. Grey enough to read on both the Log
+// view's themed canvas and the footer strip's forced-white one.
+inline QString logPromptIconTag(QTextEdit *view, const QString &storedLine)
+{
+    if (!view || storedLine.trimmed().isEmpty())
+        return QString();
+    view->document()->addResource(
+        QTextDocument::ImageResource, QUrl(kLogPromptIconResource),
+        tintedOcticonPixmap(QStringLiteral("plus"), QColor("#8b949e"), 12));
+    return QStringLiteral(
+               "<a href='%1' style='text-decoration:none'><img src='%2' "
+               "width='11' height='11' style='vertical-align:middle'></a>&nbsp;")
+        .arg(logPromptAnchorHref(storedLine), kLogPromptIconResource);
+}
+
 inline QString serverHost(const QString &serverUrl)
 {
     const QString trimmed = serverUrl.trimmed();
@@ -7589,9 +9000,15 @@ inline qint64 g_lastKeepAlivePumpMs = 0;
 // Service the GUI (timers — incl. the stall-watchdog heartbeat — paints, queued
 // slots, but not user input) and record when. One place so the per-call throttle
 // and the in-wait poll share a single "last pumped" timestamp.
+//
+// The scope marker publishes "the GUI thread is servicing events from inside a
+// blocking wait" (see GuiPump.h): queued work delivered here would otherwise
+// stack a second heavy pass on top of the one that is already mid-flight, which
+// is how the multi-second cascades in the stall log were built.
 inline void pumpKeepAlive()
 {
     g_lastKeepAlivePumpMs = keepAliveClock().elapsed();
+    const KeepAlivePumpScope pumping;
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
 }
 
@@ -7731,6 +9148,69 @@ struct ScopedFlag {
     ScopedFlag &operator=(const ScopedFlag &) = delete;
 };
 
+// The repository directory backing `dir`: the path itself when it is already a
+// bare repo/git dir, `<dir>/.git` for a normal checkout, and the linked worktree
+// directory a `.git` *file* points at ("gitdir: <path>"). Empty when `dir` is not
+// a repository. Purely a path resolution — no git subprocess.
+inline QString resolveGitDirPath(const QString &dir)
+{
+    if (dir.trimmed().isEmpty())
+        return QString();
+    const QFileInfo dotGit(dir + QStringLiteral("/.git"));
+    if (dotGit.isDir())
+        return dotGit.absoluteFilePath();
+    if (dotGit.isFile()) {
+        QFile f(dotGit.absoluteFilePath());
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            return QString();
+        const QString line = QString::fromUtf8(f.readLine(4096)).trimmed();
+        if (!line.startsWith(QLatin1String("gitdir:")))
+            return QString();
+        const QString target = line.mid(7).trimmed();
+        if (target.isEmpty())
+            return QString();
+        // A linked worktree's .git file may hold a relative path.
+        return QDir::isAbsolutePath(target)
+                   ? target
+                   : QDir(dir).absoluteFilePath(target);
+    }
+    // A bare repository (our served mirrors) has HEAD at its root.
+    if (QFileInfo::exists(dir + QStringLiteral("/HEAD")))
+        return dir;
+    return QString();
+}
+
+// The checked-out branch of `dir`, read straight out of the repository's HEAD
+// file instead of shelling out.
+//
+// `git symbolic-ref --short HEAD` (and its `rev-parse --abbrev-ref HEAD` twin)
+// is the most-run git subprocess in the client by a wide margin — the source
+// control pane, the breadcrumb, the repo list, the pull view and the mirror
+// helpers all ask for it on every refresh, and the app log counts ~1900 of them
+// running un-backgrounded on the GUI thread in a single session. All any of them
+// does is read one short file, so read it: a process spawn plus git's own
+// start-up becomes a single open/read.
+//
+// Returns an empty string for a detached HEAD, an unreadable/absent file, or any
+// layout this doesn't recognise — every caller keeps its git path for those, so
+// this is a fast path and never a behaviour change.
+inline QString headBranchFromFile(const QString &dir)
+{
+    const QString gitDir = resolveGitDirPath(dir);
+    if (gitDir.isEmpty())
+        return QString();
+    QFile head(gitDir + QStringLiteral("/HEAD"));
+    if (!head.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString();
+    const QString line = QString::fromUtf8(head.readLine(4096)).trimmed();
+    if (!line.startsWith(QLatin1String("ref:")))
+        return QString(); // detached HEAD: a raw object name
+    const QString ref = line.mid(4).trimmed();
+    if (!ref.startsWith(QLatin1String("refs/heads/")))
+        return QString();
+    return ref.mid(11);
+}
+
 // Run a git command in `dir`, capturing stdout. Returns false (with stderr in
 // `err`) on failure. Used by the in-client repo file browser.
 inline bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
@@ -7778,6 +9258,10 @@ inline QString worktreeHeadBranch(const QString &workTree)
 {
     if (workTree.trimmed().isEmpty() || !QDir(workTree).exists(QStringLiteral(".git")))
         return QString();
+    // HEAD names a branch in the overwhelming majority of cases; read it rather
+    // than spawning git for it (see headBranchFromFile).
+    if (const QString fast = headBranchFromFile(workTree); !fast.isEmpty())
+        return fast;
     QByteArray out;
     if (!runGitCapture(workTree,
                        {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
@@ -8023,11 +9507,8 @@ inline QString mirrorReleaseBlobPath(const QString &mirrorPath, const QString &h
 // artifacts a node can serve. Advertised to peers for the Mirror nodes view.
 // Returns -1 when the mirror path can't be read, so "unknown" (older peer) stays
 // distinct from a genuine zero; a store with no blobs yet counts as zero.
-inline int mirrorArtifactCount(const QString &mirrorPath)
+inline int releaseCasBlobCount(const QDir &casDir)
 {
-    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
-        return -1;
-    const QDir casDir(mirrorReleaseCasRoot(mirrorPath));
     if (!casDir.exists())
         return 0; // no artifacts stored yet
     int count = 0;
@@ -8043,6 +9524,24 @@ inline int mirrorArtifactCount(const QString &mirrorPath)
                 ++count;
     }
     return count;
+}
+inline int mirrorArtifactCount(const QString &mirrorPath)
+{
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+        return -1;
+    return releaseCasBlobCount(QDir(mirrorReleaseCasRoot(mirrorPath)));
+}
+// The same tally for a working copy: the standalone release publisher's
+// default CAS lives inside the checkout at .forkmesh/release-blobs (gitignored;
+// see .forkmesh/release.yml), not at <mirror>/forkmesh-releases. Lets the
+// source of truth — which may serve straight from its working copy with no
+// bare mirror at all — still report the artifacts it hosts.
+inline int checkoutArtifactCount(const QString &localPath)
+{
+    if (localPath.trimmed().isEmpty() || !QDir(localPath).exists())
+        return -1;
+    return releaseCasBlobCount(QDir(
+        QDir(localPath).filePath(QStringLiteral(".forkmesh/release-blobs/sha256"))));
 }
 
 // One release artifact blob physically stored in a node's mirror CAS, resolved
@@ -8212,13 +9711,17 @@ inline QString nodeListIdentityKey(const MemberInfo &m)
 // fb9d" rows in the Nodes list). The web chat stamps these accountKind "guest";
 // frames sent before that stamp existed are recognised by the placeholder names
 // the world assigns ("World visitor · <name>", "World Guest ab12", "Guest 1234")
-// — but only when the peer never advertised a registered node identity, so a
-// real node someone happens to have named "Guest ..." keeps its row.
+// — but only when the peer never advertised a node identity, so a real node
+// keeps its row. That nodeName escape now matters for "guest" too: a fresh
+// desktop install chats as "Guest ####" until someone picks a username (adhoc
+// #113), yet the machine itself still advertises its generated node name and
+// belongs in node surfaces. Browser-tab guests advertise no nodeName and stay
+// filtered.
 inline bool isTemporaryChatGuest(const MemberInfo &m)
 {
     const QString kind = m.accountKind.trimmed().toLower();
     if (kind == QLatin1String("guest"))
-        return true;
+        return m.nodeName.trimmed().isEmpty();
     if (!kind.isEmpty() || !m.nodeName.trimmed().isEmpty())
         return false;
     static const QRegularExpression legacyGuestName(
@@ -8610,10 +10113,27 @@ inline bool buildWorkingTreeDiff(const QString &dir, const QString &base, QByteA
     env.insert(QStringLiteral("GIT_INDEX_FILE"), temp.path() + QStringLiteral("/index"));
 
     QByteArray ignored;
-    if (!runGitCaptureWithEnv(dir, {"read-tree", base}, env, &ignored, err))
-        return false;
-    if (!runGitCaptureWithEnv(dir, {"add", "-A", "--", "."}, env, &ignored, err))
-        return false;
+    auto stageSnapshot = [&] {
+        if (!runGitCaptureWithEnv(dir, {"read-tree", base}, env, &ignored, err))
+            return false;
+        return runGitCaptureWithEnv(dir, {"add", "-A", "--", "."}, env,
+                                    &ignored, err);
+    };
+    if (!stageSnapshot()) {
+        // Agent worktrees change while they are being reviewed. If a file is
+        // deleted between Git's directory scan and stat call, `git add -A` can
+        // transiently fail with "unable to stat … No such file" even though a
+        // deletion is a perfectly valid diff. Rebuild the temporary index and
+        // take one fresh snapshot; the real worktree/index remain untouched.
+        const QString firstError = err ? *err : QString();
+        const bool racedDeletion =
+            firstError.contains(QStringLiteral("unable to stat"),
+                                Qt::CaseInsensitive) ||
+            firstError.contains(QStringLiteral("No such file"),
+                                Qt::CaseInsensitive);
+        if (!racedDeletion || !stageSnapshot())
+            return false;
+    }
     return runGitCaptureWithEnv(dir, {"diff", "--binary", "--cached", base}, env, out, err);
 }
 
@@ -8662,8 +10182,8 @@ inline QString faviconCachePath(const QString &host)
 // rects rather than circles.
 inline QPixmap roundedRectPixmap(const QPixmap &src, int side, qreal radius)
 {
-    QPixmap out(side, side);
-    out.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap out = crispIconPixmap(side, dpr);
     if (src.isNull())
         return out;
     QPainter p(&out);
@@ -8672,9 +10192,13 @@ inline QPixmap roundedRectPixmap(const QPixmap &src, int side, qreal radius)
     QPainterPath path;
     path.addRoundedRect(QRectF(0, 0, side, side), radius, radius);
     p.setClipPath(path);
-    const QPixmap scaled = src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
-                                      Qt::SmoothTransformation);
-    p.drawPixmap((side - scaled.width()) / 2, (side - scaled.height()) / 2, scaled);
+    QPixmap scaled = src.scaled(out.width(), out.height(),
+                                Qt::KeepAspectRatioByExpanding,
+                                Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    const QSizeF ls = scaled.deviceIndependentSize();
+    p.drawPixmap(QPointF((side - ls.width()) / 2.0, (side - ls.height()) / 2.0),
+                 scaled);
     return out;
 }
 
@@ -8683,8 +10207,8 @@ inline QPixmap roundedRectPixmap(const QPixmap &src, int side, qreal radius)
 // full-width avatar header at the top of the node profile panel.
 inline QPixmap roundedBannerPixmap(const QPixmap &src, int w, int h, qreal radius)
 {
-    QPixmap out(w, h);
-    out.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap out = crispIconPixmap(w, h, dpr);
     if (src.isNull() || w <= 0 || h <= 0)
         return out;
     QPainter p(&out);
@@ -8693,9 +10217,12 @@ inline QPixmap roundedBannerPixmap(const QPixmap &src, int w, int h, qreal radiu
     QPainterPath path;
     path.addRoundedRect(QRectF(0, 0, w, h), radius, radius);
     p.setClipPath(path);
-    const QPixmap scaled = src.scaled(w, h, Qt::KeepAspectRatioByExpanding,
-                                      Qt::SmoothTransformation);
-    p.drawPixmap((w - scaled.width()) / 2, (h - scaled.height()) / 2, scaled);
+    QPixmap scaled = src.scaled(out.width(), out.height(),
+                                Qt::KeepAspectRatioByExpanding,
+                                Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    const QSizeF ls = scaled.deviceIndependentSize();
+    p.drawPixmap(QPointF((w - ls.width()) / 2.0, (h - ls.height()) / 2.0), scaled);
     return out;
 }
 
@@ -8708,8 +10235,7 @@ inline QPixmap roundedBannerPixmap(const QPixmap &src, int w, int h, qreal radiu
 inline QPixmap languageBarPixmap(const QList<QPair<QString, qint64>> &langs,
                           qint64 total, int shown, int w, int h)
 {
-    QPixmap out(w, h);
-    out.fill(Qt::transparent);
+    QPixmap out = crispIconPixmap(w, h, iconDevicePixelRatio());
     if (total <= 0 || shown <= 0 || w <= 0 || h <= 0)
         return out;
     QPainter p(&out);
@@ -8729,37 +10255,37 @@ inline QPixmap languageBarPixmap(const QList<QPair<QString, qint64>> &langs,
     return out;
 }
 
-inline QPixmap letterFavicon(const QString &host)
+inline QPixmap letterFavicon(const QString &host, int side = 36)
 {
-    constexpr int side = 36;
-    QPixmap pixmap(side, side);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(side, iconDevicePixelRatio());
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     const uint hash = qHash(host);
     painter.setPen(Qt::NoPen);
     painter.setBrush(QColor(Theme::kSenderPalette[hash % Theme::kSenderPaletteSize]));
-    painter.drawRoundedRect(0, 0, side, side, 9, 9);
+    painter.drawRoundedRect(QRectF(0, 0, side, side), side * 0.25, side * 0.25);
     const QChar letter = host.isEmpty() ? QChar('?') : host.at(0).toUpper();
     QFont font = painter.font();
-    font.setPixelSize(18);
+    font.setPixelSize(qMax(8, qRound(side * 0.5)));
     font.setBold(true);
     painter.setFont(font);
     painter.setPen(QColor("#0f172a"));
-    painter.drawText(pixmap.rect(), Qt::AlignCenter, QString(letter));
+    painter.drawText(QRect(0, 0, side, side), Qt::AlignCenter, QString(letter));
     return pixmap;
 }
 
 // Hosts that get a hardcoded, locally drawn icon instead of a /favicon.ico
-// fetch. api.anthropic.com serves no favicon, so every Claude request in the
-// network log used to spit out a red "GET ERR 404 .../favicon.ico" line of its
-// own (adhoc #436). Returns an empty string for hosts with no builtin mark.
+// fetch. API endpoints do not serve favicons, so their request lines must not
+// cause an additional failed favicon request in the network log. Returns an
+// empty string for hosts with no builtin mark.
 inline QString builtinFaviconKey(const QString &host)
 {
     const QString h = host.toLower();
     if (h == QStringLiteral("anthropic.com") || h.endsWith(".anthropic.com") ||
         h == QStringLiteral("claude.ai") || h.endsWith(".claude.ai"))
         return QStringLiteral("anthropic");
+    if (h == QStringLiteral("api.mainnet-beta.solana.com"))
+        return QStringLiteral("solana");
     return {};
 }
 
@@ -8775,13 +10301,25 @@ inline QPixmap builtinFavicon(const QString &host, int side = 36)
     const QString key = builtinFaviconKey(host);
     if (key.isEmpty() || side <= 0)
         return {};
-    QPixmap pixmap(side, side);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(side, iconDevicePixelRatio());
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor("#d97757")); // Anthropic clay
+    painter.setBrush(key == QStringLiteral("solana")
+                         ? QColor("#17172e") // Solana navy
+                         : QColor("#d97757")); // Anthropic clay
     painter.drawRoundedRect(QRectF(0, 0, side, side), side / 4.0, side / 4.0);
+    if (key == QStringLiteral("solana")) {
+        QPen stroke(QColor("#14f195"));
+        stroke.setWidthF(qMax(1.0, side * 0.11));
+        stroke.setCapStyle(Qt::RoundCap);
+        painter.setPen(stroke);
+        const qreal inset = side * 0.25;
+        const qreal width = side * 0.5;
+        for (const qreal y : {side * 0.32, side * 0.50, side * 0.68})
+            painter.drawLine(QPointF(inset, y), QPointF(inset + width, y));
+        return pixmap;
+    }
     // Burst mark: rounded strokes radiating from the centre.
     QPen stroke(QColor("#ffffff"));
     stroke.setWidthF(qMax(1.0, side * 0.09));

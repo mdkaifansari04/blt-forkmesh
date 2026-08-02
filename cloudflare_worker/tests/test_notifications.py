@@ -64,6 +64,30 @@ def test_worker_exposes_first_class_notifications_route_and_schema():
     assert "dedupe_bi TEXT PRIMARY KEY" in ENTRY_TEXT
     assert "read_at INTEGER NOT NULL DEFAULT 0" in ENTRY_TEXT
     assert "idx_notifications_recipient_ts" in ENTRY_TEXT
+    assert "if method == \"DELETE\":" in ENTRY_TEXT
+    assert "WHERE recipient_bi=? AND dedupe_bi=?" in ENTRY_TEXT
+    assert '"allow": "GET, POST, DELETE"' in ENTRY_TEXT
+
+
+def test_world_notification_table_has_owner_scoped_direct_delete():
+    world = _read(PUBLIC / "world" / "world.js")
+    css = _read(PUBLIC / "world" / "world.css")
+    assert "world-notification-table-header" in world
+    assert "world-notification-row" in world
+    assert "data-world-notification-delete" in world
+    assert "async deleteWorldNotification(" in world
+    assert '{ method: "DELETE" }' in world
+    assert ".world-notification-table-header" in css
+    delete_block = ENTRY_TEXT[
+        ENTRY_TEXT.index('    if method == "DELETE":', ENTRY_TEXT.index(
+            "async def notifications_handler"))
+        :ENTRY_TEXT.index("async def mirror_requests_handler")
+    ]
+    # The owner is proven either by a session (browser) or by an account-key
+    # signature that names this exact row (desktop, adhoc #77).
+    assert "_alert_inbox_account_name(" in delete_block
+    assert "resource=item_id) != node" in delete_block
+    assert "recipient_bi=? AND dedupe_bi=?" in delete_block
 
 
 
@@ -99,7 +123,6 @@ def test_worker_indexes_notifications_from_existing_event_sources():
     assert "_best_effort_inbox_side_effect(\n            notify_issue_assignees(" in ENTRY_TEXT
     for marker in (
         "await notify_pending_inbox(env, owner, repo, \"pull\"",
-        "await notify_pending_inbox(env, owner, repo, \"commit_comment\"",
         "await notify_pending_inbox(env, owner, repo, \"discussion\"",
         "await notify_mentions(env, owner, repo,",
         "await enqueue_notification(env, grantee, \"repo_shared\"",

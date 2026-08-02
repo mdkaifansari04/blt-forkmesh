@@ -38,6 +38,13 @@ constexpr int kBackupKeepDefault = 24;
 constexpr int kBackupKeepMin = 1;
 constexpr int kBackupKeepMax = 240;
 
+// The default for backup/hourlyEnabled when the user has never chosen is off
+// everywhere. A rolling day of multi-gigabyte control-node snapshots can fill
+// a disk in hours, so even credentials-bearing control nodes must explicitly
+// opt in from Settings -> Data. The parameter is retained for source/API
+// compatibility with older callers.
+bool autoBackupDefault(const QString &cloudflareApiToken);
+
 // Where snapshots live: <app data>/backups. Kept inside the app-data dir so it
 // travels with the rest of ForkMesh's storage and shows up in the Data tab —
 // callers must therefore exclude it when packing (see configArchiveTarArgs).

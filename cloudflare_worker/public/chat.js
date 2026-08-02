@@ -20,6 +20,12 @@ import {
   toggleLinePrefix,
   wrapSelection,
 } from "./chat-rich-text.js";
+import {
+  fileWebIssue,
+  issueBodyFromMessage,
+  issueTitleFromMessage,
+  loadIssueRepositories,
+} from "./chat-issue-filing.js";
 import { createChatRoomTransport } from "./chat-room-transport.js";
 import { createThreadStore } from "./chat-thread-model.js";
 import {
@@ -2498,6 +2504,138 @@ function confirmMessageDelete() {
   runWhenConnected(() => send(plain));
 }
 
+// ---- convert a message into a repository issue ------------------------------
+// A bug report typed into chat should not have to be retyped on the issues
+// page. Every message carries an "Issue" control (the dashboard and in-world
+// chats carry the same one) that opens an inline form: an editable title seeded
+// from the first line, plus a repository picker. Filing signs an "open" event
+// into the maintainer's inbox — see chat-issue-filing.js — so it works from any
+// account, not just the repository's owner.
+
+function closeIssueForm(record, { restoreFocus = true } = {}) {
+  record.issueFormEl?.remove();
+  record.issueFormEl = null;
+  if (restoreFocus) record.issueTrigger?.focus();
+}
+
+function beginIssueFromMessage(record, trigger) {
+  if (!record?.text || record.deleted || !record.reactionsEl) return;
+  if (record.issueFormEl) {
+    record.issueFormEl.querySelector("input")?.focus();
+    return;
+  }
+  record.issueTrigger = trigger;
+
+  const form = document.createElement("div");
+  form.className = "chat-inline-editor chat-issue-form";
+  const title = document.createElement("input");
+  title.type = "text";
+  title.className = "chat-edit-input chat-issue-title";
+  title.maxLength = 200;
+  title.value = issueTitleFromMessage(record.text);
+  title.setAttribute("aria-label", "Issue title");
+  const repository = document.createElement("select");
+  repository.className = "chat-issue-repo";
+  repository.setAttribute("aria-label", "Issue repository");
+  const status = document.createElement("span");
+  status.className = "chat-issue-status";
+  status.setAttribute("role", "status");
+  const controls = document.createElement("div");
+  controls.className = "chat-edit-actions";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  cancel.setAttribute("aria-label", "Cancel issue");
+  const create = document.createElement("button");
+  create.type = "button";
+  create.className = "is-primary";
+  create.textContent = "Create issue";
+  create.setAttribute("aria-label", "File this issue");
+  create.disabled = true;
+
+  let entries = [];
+  const setStatus = (message, bad = false) => {
+    status.textContent = message;
+    status.classList.toggle("is-bad", Boolean(bad));
+  };
+  const submit = async () => {
+    const target = entries.find((entry) => entry.value === repository.value);
+    if (!target) {
+      setStatus("Choose a repository for this issue.", true);
+      repository.focus();
+      return;
+    }
+    const issueTitle = String(title.value || "").trim().slice(0, 200);
+    if (!issueTitle) {
+      setStatus("An issue needs a title.", true);
+      title.focus();
+      return;
+    }
+    create.disabled = true;
+    setStatus("Signing issue…");
+    try {
+      await fileWebIssue(
+        target,
+        issueTitle,
+        issueBodyFromMessage({
+          text: record.text,
+          who: record.sender,
+          tsMs: record.ts,
+          channelLabel: channelDisplayLabel(record.channel),
+        }),
+        String(readSession()?.nodeName || ""),
+      );
+      closeIssueForm(record);
+      appendSystem(
+        `Issue “${issueTitle}” was signed and sent to ${target.owner}/${target.name}.`,
+      );
+    } catch (error) {
+      create.disabled = false;
+      setStatus(String(error?.message || "The issue could not be filed."), true);
+    }
+  };
+
+  cancel.addEventListener("click", () => closeIssueForm(record));
+  create.addEventListener("click", () => void submit());
+  title.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeIssueForm(record);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      if (!create.disabled) void submit();
+    }
+  });
+  controls.append(cancel, create);
+  form.append(title, repository, controls, status);
+  record.issueFormEl = form;
+  record.reactionsEl.before(form);
+
+  setStatus("Loading repositories…");
+  loadIssueRepositories()
+    .then((loaded) => {
+      if (record.issueFormEl !== form) return;
+      entries = loaded;
+      for (const entry of entries) {
+        const option = document.createElement("option");
+        option.value = entry.value;
+        option.textContent = entry.label;
+        repository.append(option);
+      }
+      create.disabled = !entries.length;
+      setStatus(
+        entries.length ? "" : "No repositories are available to file into.",
+        !entries.length,
+      );
+    })
+    .catch(() => {
+      if (record.issueFormEl !== form) return;
+      setStatus("The repository list is unavailable right now.", true);
+    });
+  title.focus();
+  title.select();
+}
+
 function buildDateDivider(ts) {
   const divider = document.createElement("div");
   const timestamp = Number(ts);
@@ -2608,6 +2746,15 @@ function buildRow(record, prev) {
       "Add reaction",
       "React",
       (button) => showEmojiPicker(button, record.id),
+    ));
+  }
+  // Filing someone else's report is the common case, so this is not
+  // author-only; the issue is signed by, and attributed to, whoever files it.
+  if (!record.deleted && record.text) {
+    actions.append(messageAction(
+      "Create an issue from this message",
+      "Issue",
+      (button) => beginIssueFromMessage(record, button),
     ));
   }
   if (!record.deleted && record.self && record.senderId === selfId) {

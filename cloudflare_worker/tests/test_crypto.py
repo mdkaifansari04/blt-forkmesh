@@ -95,14 +95,6 @@ def pull_comment_canonical(number, ev):
     )
 
 
-def commit_comment_canonical(sha, c):
-    # Mirrors entry.py:verify_commit_comment_event canonical construction.
-    return (
-        "forkmesh-commit-comment-v1\n" + sha + "\n" + c.get("author", "") + "\n" +
-        str(int(c.get("ts", 0))) + "\n" + _sha256_hex(c.get("body", ""))
-    )
-
-
 def discussion_event_content(ev):
     # Mirrors entry.py:discussion_event_content / DiscussionStore::contentForSigning.
     t = ev.get("type", "")
@@ -261,13 +253,6 @@ def main():
                 "body": "applied in follow-up"}),
         "forkmesh-pull-comment-v1\nsuggestion-state\n5\nTESTPUB\n2900\n"
         "07ce71665f21bcb839faeb956910a9ca369d79167e6f6e52f60c4d01344f3c52",
-    )
-    check(
-        "commit-comment canonical vector",
-        commit_comment_canonical(
-            "abc123", {"author": "TESTPUB", "ts": 3000, "body": "Nice"}),
-        "forkmesh-commit-comment-v1\nabc123\nTESTPUB\n3000\n"
-        "fdc96ffbf256523aec8846ae56321053c7ab751c99eb766e6bb4a7d362a4f060",
     )
     check(
         "discussion open canonical vector",

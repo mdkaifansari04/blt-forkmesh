@@ -69,8 +69,10 @@ def test_work_tab_shows_assigned_task_stats_with_start_stop():
         "syncRecentIssueAssignments()",
     ):
         assert contract in WORLD
-    assert "this.officeTasks?.setPersonalView?.(open === true)" in WORLD
-    assert "this.officeTasks?.prime?.()" in WORLD
+    assert "this.officeTasks?.setPersonalView?.(true)" in WORLD
+    assert "this.officeTasks?.setPersonalView?.(false)" in WORLD
+    assert "this.ensureOfficeRuntime({ userInitiated: true }).then(" in WORLD
+    assert 'this.settingsTab !== "work"' in WORLD
     for contract in (
         "function renderWorkPane()",
         "function normalizedRecentIssue(issue)",

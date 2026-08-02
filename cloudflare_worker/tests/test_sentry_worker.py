@@ -397,9 +397,16 @@ def test_forkmesh_deploy_pushes_sentry_dsn_secret():
 
 
 def test_forkmesh_actions_run_full_worker_pytest_suite():
-    assert "python3 -m venv .forkmesh-pytest-venv" in CI_WORKFLOW_TEXT
-    assert ".forkmesh-pytest-venv/bin/python -m pip install pytest" in CI_WORKFLOW_TEXT
-    assert ".forkmesh-pytest-venv/bin/python -m pytest -q cloudflare_worker/tests" in CI_WORKFLOW_TEXT
+    # Steps run with egress denied, so the suite uses the interpreter the runner
+    # exposes rather than building an environment it cannot download into.
+    assert "python3 -m pytest -q cloudflare_worker/tests" in CI_WORKFLOW_TEXT
+    assert "FORKMESH_CI_KNOWN_FAILURES=1" in CI_WORKFLOW_TEXT
+    assert "python3 -m venv" not in CI_WORKFLOW_TEXT
+    assert [
+        line
+        for line in CI_WORKFLOW_TEXT.splitlines()
+        if "pip install" in line and not line.lstrip().startswith("#")
+    ] == []
     assert "needs: [.forkmesh/ci.yml]" in DEPLOY_WORKFLOW_TEXT
     assert "already ran for this commit" in DEPLOY_WORKFLOW_TEXT
     assert "pip install --user" not in CI_WORKFLOW_TEXT
@@ -413,6 +420,40 @@ def test_forkmesh_actions_run_full_worker_pytest_suite():
         in CI_WORKFLOW_TEXT
     )
     assert "./qt_client/build-ci/forkmesh-tests" in CI_WORKFLOW_TEXT
+
+
+def test_action_sandbox_lives_on_disk_not_the_shared_tmpfs():
+    # /tmp is a size-capped tmpfs shared with every other checkout on the host,
+    # and the sandbox holds the source, the writable clone, the step's home and
+    # the step's /tmp. Filling it is silent — CMake dropped a generated Makefile
+    # and still reported success — so the trees belong beside the run records.
+    assert "QString sandboxBaseDir(const ActionStore *store)" in ACTION_RUNNER_CPP_TEXT
+    assert "store->sandboxDir()" in ACTION_RUNNER_CPP_TEXT
+    assert "m_sandboxRoot = sandboxBase + QStringLiteral(\"/forkmesh-run-\")" in (
+        ACTION_RUNNER_CPP_TEXT
+    )
+    assert "m_sandboxRoot =\n        QDir::tempPath()" not in ACTION_RUNNER_CPP_TEXT
+    # An app-data directory does not self-clean the way /tmp did, so a run whose
+    # node was killed outright must not leak its tree forever.
+    assert "removeStaleSandboxes(sandboxBase, sandboxStampMs" in ACTION_RUNNER_CPP_TEXT
+
+
+def test_action_sandbox_exposes_node_python_packages_for_offline_steps():
+    # Egress is denied during a run, so a step can only import what the runner
+    # mounts. System packages come with /usr; pip's per-user site directory is
+    # in the host home, which is otherwise kept out of the namespace entirely.
+    assert 'QStringLiteral("/.local/lib")' in ACTION_RUNNER_CPP_TEXT
+    assert 'QStringLiteral("/site-packages")' in ACTION_RUNNER_CPP_TEXT
+    assert (
+        '<< QStringLiteral("/home/forkmesh/.local/lib/%1/site-packages")'
+        in ACTION_RUNNER_CPP_TEXT
+    )
+    # Read-only, and only site-packages: ~/.local/share holds this node's keys.
+    assert (
+        'args << QStringLiteral("--ro-bind") << site' in ACTION_RUNNER_CPP_TEXT
+    )
+    assert 'QStringLiteral("/.local/share")' not in ACTION_RUNNER_CPP_TEXT
+    assert "no host home beyond the node interpreter's Python" in ACTION_RUNNER_H_TEXT
 
 
 def test_action_runner_does_not_override_installer_source_in_ci_jobs():
@@ -543,11 +584,11 @@ def test_worker_observability_stays_within_the_free_event_budget():
 
 
 def test_expected_degraded_responses_skip_the_generic_5xx_logger():
-    # Deliberate degraded answers — DO-abort 503s whose real reason
-    # log_durable_object_abort already recorded, the fail-closed git push
+    # Deliberate degraded answers — DO-abort 503s already counted by
+    # log_durable_object_abort, the fail-closed git push
     # 501, and central-fund/office "upstream unavailable" 503s — used to be
     # re-logged by the outer fetch as anonymous "response status N" Sentry
-    # events (one DO abort produced TWO error-log rows). They now carry the
+    # events (one DO abort could produce multiple error rows). They now carry the
     # expected-degraded marker and the generic logger skips them.
     assert 'EXPECTED_DEGRADED_HEADER = "x-forkmesh-expected-degraded"' in (
         ENTRY_TEXT)
@@ -559,8 +600,8 @@ def test_expected_degraded_responses_skip_the_generic_5xx_logger():
     assert logger_block.index("_response_is_expected_degraded") < (
         logger_block.index("await log_error("))
 
-    # Every DO-abort 503 fallback is marked, so the detailed abort row stays
-    # the only record of the event.
+    # Every DO-abort 503 fallback is marked, so the aggregate stays the only
+    # record of the event.
     for site_start in [
         match for match in range(len(ENTRY_TEXT))
         if ENTRY_TEXT.startswith("await log_durable_object_abort(", match)
@@ -576,6 +617,17 @@ def test_expected_degraded_responses_skip_the_generic_5xx_logger():
     fund_block = ENTRY_TEXT.split(
         "async def _account_central_fund", 1)[1][:1600]
     assert fund_block.count("EXPECTED_DEGRADED_HEADERS") == 2
+
+
+def test_durable_object_aborts_are_aggregated_without_error_rows():
+    body = ENTRY_TEXT.split(
+        "async def log_durable_object_abort(", 1)[1].split(
+            "\n\ndef _is_d1_platform_error", 1)[0]
+    assert "INSERT INTO durable_object_abort_minute" in body
+    assert "ON CONFLICT(minute_ts) DO UPDATE SET" in body
+    assert "duration_aborts" in body
+    assert "_write_error_log(" not in body
+    assert "capture_sentry_error(" not in body
 
 
 def test_mirror_gateway_retries_all_5xx_and_marks_unavailability_expected():

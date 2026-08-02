@@ -9,6 +9,9 @@ HEADER = (ROOT / "qt_client/src/MainWindow.h").read_text(encoding="utf-8")
 # The remote installer script itself lives in the pure control-node helper, so
 # the Hosts button and the one-click Vultr flow cannot drift apart (adhoc #418).
 CONTROL = (ROOT / "qt_client/src/ControlNode.cpp").read_text(encoding="utf-8")
+INSTALLER = (ROOT / "cloudflare_worker/public/install.sh").read_text(
+    encoding="utf-8"
+)
 
 
 def test_hosts_table_has_a_selected_host_agent_cli_install_action():
@@ -82,6 +85,44 @@ def test_one_click_vultr_mirror_can_sign_the_new_node_in():
     assert "agentCliCredentialsAreEmpty" in vultr
 
 
+def test_vultr_api_key_is_saved_once_vultr_accepts_it():
+    """The key is asked for once, then lives in both stores (adhoc #127)."""
+    settings = (ROOT / "qt_client/src/MainWindowSettings.cpp").read_text(
+        encoding="utf-8"
+    )
+    control = (ROOT / "qt_client/src/MainWindowControlNode.cpp").read_text(
+        encoding="utf-8"
+    )
+    assert "QStringList rememberVultrApiKey(" in HEADER
+
+    remember = control.split("QStringList MainWindow::rememberVultrApiKey(", 1)[
+        1
+    ].split("\nvoid MainWindow::adoptRotatedCloudflareToken(", 1)[0]
+    # Both stores: the device variable and the deploy machine's .env.production.
+    assert "ActionStore::setVariables(variables)" in remember
+    assert "forkmesh::control::siteDeployEnvFilePath(" in remember
+    assert "writeEnvAssignments(envPath, {{canonical, key}}, &envError," in remember
+    # A stale alias must not keep shadowing the key that was just proven good.
+    assert "forkmesh::control::vultrApiKeyVariableNames()" in remember
+    assert "haveCanonical" in remember
+    # A failed file write is retried by the next call, not recorded as done.
+    assert "if (!retryable)" in remember
+
+    # Saved only after Vultr itself authenticated the key, never on a 4xx.
+    api_call = CHAT.split("void MainWindow::vultrApiCall(", 1)[1][:4000]
+    assert "Vultr API error (HTTP %1): %2" in api_call
+    assert api_call.index(
+        "rememberVultrApiKey(apiKey, &rememberError)"
+    ) > api_call.index("Vultr API error (HTTP %1): %2")
+    # Both entry points prefill from the store, so neither asks twice.
+    assert (
+        "forkmesh::control::vultrApiKeyFromVariables(ActionStore::variables())"
+        in CHAT
+    )
+    assert "forkmesh::control::vultrApiKeyFromVariables(storedVars)" in settings
+    assert "rememberVultrApiKey(vultrTokenEdit->text().trimmed()" in settings
+
+
 def test_saved_host_key_path_fails_closed_instead_of_falling_back_to_password():
     lookup = CHAT.split(
         "QString MainWindow::savedHostIdentityFile(", 1
@@ -149,11 +190,45 @@ def test_vultr_success_waits_for_mirror_nodes_and_world_catalog():
     for contract in (
         "void MainWindow::waitForVultrMirrorPublication(",
         "/api/repo/forkmesh/forkmesh/mirrors",
-        "kMaxPublicationPolls = 30",
+        "kMaxPublicationPolls = 90",
         "mirror.value(QStringLiteral(\"integrity\"))",
         "mirror.value(QStringLiteral(\"lastSync\"))",
+        "mirror.value(QStringLiteral(\"cloneAvailable\"))",
+        "mirror.value(QStringLiteral(\"endpointHealthy\"))",
+        "mirror.value(QStringLiteral(\"endpointFresh\"))",
         "waitForVultrMirrorPublication(node, done)",
         "Verified %1 in the public Mirror nodes / World",
     ):
         assert contract in CHAT
     assert "waitForVultrMirrorPublication" in HEADER
+
+
+def test_vultr_requires_and_bootstraps_a_live_tunnel_without_leaking_token():
+    create = CHAT.split("void MainWindow::createVultrMirrorFromForm()", 1)[1][
+        :12000
+    ]
+    assert "cloudflareApiTokenFromVariables" in create
+    assert "cloudflareZoneNameFromVariables" in create
+    assert "vultrMirrorDnsHostname" in create
+    assert "before creating a billable instance" in create
+
+    command = CHAT.split("bool MainWindow::buildHostInstallCommand(", 1)[1][
+        :18000
+    ]
+    assert "FORKMESH_TUNNEL_HOSTNAME" in command
+    assert "FORKMESH_REQUIRE_TUNNEL=1" in command
+    assert 'IFS= read -r fm_cf_token' in command
+    assert 'CLOUDFLARE_API_TOKEN=\\\"$fm_cf_token\\\"' in command
+    # Secret value is stdin-only; only its member name may occur in the
+    # generated command implementation.
+    assert "m_vultrTunnelApiToken" in command
+    driver = CHAT.split("void MainWindow::runHostInstall(", 1)[1][:15000]
+    assert 'proc->write((m_vultrTunnelApiToken + QStringLiteral("\\n"))' in driver
+    assert "rememberCloudflareApiToken(cloudflareToken" in create
+    assert "QStringList MainWindow::rememberCloudflareApiToken(" in (
+        ROOT / "qt_client/src/MainWindowControlNode.cpp"
+    ).read_text(encoding="utf-8")
+    assert "m_vultrTunnelApiToken.fill" not in CHAT
+    assert "FORKMESH_REQUIRE_TUNNEL" in INSTALLER
+    assert 'if [ "$FORKMESH_REQUIRE_TUNNEL" = "1" ]; then' in INSTALLER
+    assert "this install requires a live direct HTTPS endpoint" in INSTALLER

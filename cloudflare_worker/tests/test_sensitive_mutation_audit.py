@@ -379,6 +379,7 @@ def _catalog_delete_handler(
             lambda *args: _bool_result(authorized)),
         "ed25519_verify": (
             lambda *args: _bool_result(authorized)),
+        "_record_repo_delete_tombstone": _noop,
         "_delete_repo_scoped_state": _noop,
         "d1_run": d1_run,
         "_delete_bounties_namespace": _noop,

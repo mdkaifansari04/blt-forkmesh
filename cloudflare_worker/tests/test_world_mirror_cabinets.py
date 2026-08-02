@@ -40,6 +40,10 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
             lastCommitAuthorName: "Ada Lovelace",
             lastCommitAt: 1750000000000,
             version: "0.7.0", cpuPercent: 32,
+            ownerUser: "jett", endpoint: "https://mirror2.example",
+            checkedAt: 1750000001000, latencyMs: 42, region: "ewr",
+            endpointHealthy: true, endpointFresh: true,
+            endpointIntegrity: "ok", operations: ["clone", "browse"],
             memUsedBytes: 25, memTotalBytes: 100,
             diskUsedBytes: -1, diskTotalBytes: -1
           }},
@@ -82,6 +86,12 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
     assert mirror2["sizeBytes"] == 44
     assert mirror2["version"] == "0.7.0"
     assert mirror2["cpuPercent"] == 32
+    assert mirror2["ownerUser"] == "jett"
+    assert mirror2["endpoint"] == "https://mirror2.example"
+    assert mirror2["latencyMs"] == 42
+    assert mirror2["region"] == "ewr"
+    assert mirror2["endpointFresh"] is True
+    assert mirror2["operations"] == ["clone", "browse"]
     assert mirror2["memoryUsedBytes"] == 25
     assert mirror2["memoryTotalBytes"] == 100
     assert "diskUsedBytes" not in mirror2
@@ -96,6 +106,7 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
     assert "lastCommitMessage" not in mirror3
     assert "lastCommitAuthorName" not in mirror3
     assert "cpuPercent" not in mirror3
+    assert "latencyMs" not in mirror3
     assert "memoryUsedBytes" not in mirror3
     assert "diskUsedBytes" not in mirror3
 
@@ -283,6 +294,72 @@ def test_recent_signed_endpoint_health_keeps_a_physical_cabinet_live_during_pin_
     assert node["repositories"][0]["endpointHealthy"] is True
 
 
+def test_cabinet_carries_last_served_clone_and_web_stamps_with_client_class():
+    script = f"""
+      import {{ buildLiveMirrorNodes }} from {json.dumps(MODULE.as_uri())};
+      const payload = {{
+        requestedOwner: "forkmesh", requestedRepo: "forkmesh",
+        mirrors: [
+          {{
+            node: "mirror2", status: "online", integrity: "ok",
+            cloneAvailable: true, commit: "a".repeat(40), branch: "main",
+            clonesServed: 12, websiteServed: 40,
+            cloneServedAt: 1750000000000, cloneServedAgent: "git-client",
+            websiteServedAt: 1750000900000, websiteServedAgent: "browser"
+          }},
+          {{
+            node: "mirror3", status: "online", integrity: "ok",
+            cloneAvailable: true, commit: "a".repeat(40), branch: "main",
+            clonesServed: 3,
+            cloneServedAt: 0,
+            websiteServedAt: 1750000900000,
+            websiteServedAgent: "git/2.43.0 (10.0.0.4)"
+          }}
+        ]
+      }};
+      process.stdout.write(JSON.stringify(buildLiveMirrorNodes({{}}, payload)));
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    nodes = {node["name"]: node for node in json.loads(result.stdout)}
+    served = nodes["mirror2"]
+    assert served["cloneServedAt"] == 1_750_000_000_000
+    assert served["cloneServedAgent"] == "git-client"
+    assert served["websiteServedAt"] == 1_750_000_900_000
+    assert served["websiteServedAgent"] == "browser"
+    # A node that has served no clone yet keeps the honest unknown, and a raw
+    # User-Agent smuggled into the record is never carried into the scene.
+    partial = nodes["mirror3"]
+    assert "cloneServedAt" not in partial
+    assert "cloneServedAgent" not in partial
+    assert partial["websiteServedAt"] == 1_750_000_900_000
+    assert "websiteServedAgent" not in partial
+
+
+def test_cabinet_serve_counters_are_stamped_with_when_and_who():
+    # The two serve rows on the cabinet card carry a second line: how long ago
+    # that kind of request was last answered, and the class of client answered.
+    assert "function mirrorServeStamp" in SCENE
+    assert "MIRROR_SERVE_AGENT_LABELS" in SCENE
+    assert (
+        "mirrorServeStamp(node?.cloneServedAt, node?.cloneServedAgent)" in SCENE
+    )
+    assert (
+        "mirrorServeStamp(node?.websiteServedAt, node?.websiteServedAgent)"
+        in SCENE
+    )
+    # Texture caching has to notice a new serve, or the card would freeze at
+    # whatever stamp it was first drawn with.
+    assert "cloneServedAt: node?.cloneServedAt" in SCENE
+    assert "websiteServedAgent: node?.websiteServedAgent" in SCENE
+    assert "<dt>Last clone served</dt>" in APP
+    assert "<dt>Last web request served</dt>" in APP
+
+
 def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     # Bootstrap and the bounded visible-page fallback share one cached,
     # single-flight/backoff helper. Push signals remain the instant path.
@@ -309,6 +386,9 @@ def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     assert "COMMIT SUBJECT NOT REPORTED" in SCENE
     assert "AUTHOR NOT REPORTED" in SCENE
     assert "mirrorCommitAgeLabel" in SCENE
+    assert "`PING ${Math.round(pingLatency)} MS" in SCENE
+    assert "node?.ownerUser" in SCENE
+    assert "node?.nodeId" in SCENE
     # The cabinet title is the machine's advertised node name, falling back to
     # the account for publishers that predate the machineName catalog field.
     assert 'String(node?.machineName || node?.name || "MIRROR")' in SCENE
@@ -321,6 +401,9 @@ def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     assert "data-world-mirror-node-detail" in APP
     assert "operator-reported" in APP
     assert "createMirrorNodePylon" not in SCENE
+    assert "<dt>Relay HTTPS ping</dt>" in APP
+    assert "<dt>Supported operations</dt>" in APP
+    assert "<dt>Latest commit message</dt>" in APP
 
 
 def test_status_beacons_are_open_topped_and_alert_colours_sweep():

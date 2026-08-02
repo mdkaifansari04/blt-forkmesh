@@ -19,6 +19,10 @@ public:
         QString apiKey;
         QString isolatedHome;
         QString model;
+        // Launch identity values resolved by the caller from the session (or
+        // legacy settings). They are included in the first provider prompt.
+        QString mode;
+        QString strength;
         // Instruction preamble prepended to the issue prompt. Empty falls back to
         // defaultPromptPreamble(); editable and saved via Settings → Agents.
         QString promptPreamble;
@@ -38,9 +42,17 @@ public:
 
     // The built-in instruction preamble used when no custom prompt is configured.
     static QString defaultPromptPreamble();
+    static QString providerDisplayName(const QString &provider);
+    static QString launchIdentityInstruction(const QString &provider,
+                                             const QString &model,
+                                             const QString &mode,
+                                             const QString &strength);
 
     bool busy() const { return m_busy; }
     int currentSessionId() const { return m_session.id; }
+    // PID of the CLI this runner is driving (0 when nothing runs), so the UI can
+    // count the build processes spawned below it (adhoc #57).
+    qint64 processId() const;
 
     void start(const AgentSession &session, const Issue &issue,
                const QString &repoPath, const Config &config);
