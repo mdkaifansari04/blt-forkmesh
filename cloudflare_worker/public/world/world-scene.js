@@ -3549,12 +3549,15 @@ function worldQaCardTexture(THREE, snapshot = {}) {
     current?.global && typeof current.global === "object"
       ? current.global
       : {};
+  const currentFailed =
+    current?.verdict === "fail" ||
+    (view === "detail" && current?.taskQaStatus === "failed");
   const total = Math.max(0, Number(stats.total) || 0);
   const currentIndex = Math.max(0, Number(snapshot?.currentIndex) || 0);
   return canvasTexture(THREE, 1200, 1050, (context) => {
-    context.fillStyle = "#2b1f17";
+    context.fillStyle = currentFailed ? "#381719" : "#2b1f17";
     context.fillRect(0, 0, 1200, 1050);
-    context.strokeStyle = "#a5764d";
+    context.strokeStyle = currentFailed ? "#ff4c55" : "#a5764d";
     context.lineWidth = 8;
     for (let y = 10; y < 1050; y += 30) {
       context.beginPath();
@@ -3562,10 +3565,10 @@ function worldQaCardTexture(THREE, snapshot = {}) {
       context.bezierCurveTo(300, y - 7, 860, y + 8, 1200, y - 2);
       context.stroke();
     }
-    context.fillStyle = "#f4e8ce";
+    context.fillStyle = currentFailed ? "#fff0ed" : "#f4e8ce";
     roundedRect(context, 62, 52, 1076, 782, 42);
     context.fill();
-    context.strokeStyle = "#111d1a";
+    context.strokeStyle = currentFailed ? "#e33d48" : "#111d1a";
     context.lineWidth = 10;
     context.stroke();
     context.fillStyle = "#14392e";
@@ -3677,11 +3680,16 @@ function worldQaCardTexture(THREE, snapshot = {}) {
       list.forEach((card, index) => {
         const y = 230 + index * 98;
         const selected = String(card?.key || "") === selectedKey;
-        context.fillStyle = selected ? "#d7f5e5" : "#eadfc6";
+        const failed =
+          String(card?.verdict || "") === "fail" ||
+          String(card?.taskQaStatus || "") === "failed";
+        context.fillStyle = failed
+          ? "#ffe8e6"
+          : selected ? "#d7f5e5" : "#eadfc6";
         roundedRect(context, 105, y, 990, 82, 12);
         context.fill();
-        context.strokeStyle = selected ? "#168a4d" : "#b89b73";
-        context.lineWidth = selected ? 5 : 2;
+        context.strokeStyle = failed ? "#e33d48" : selected ? "#168a4d" : "#b89b73";
+        context.lineWidth = failed || selected ? 5 : 2;
         context.stroke();
         context.fillStyle = "#16211d";
         context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
@@ -21435,6 +21443,15 @@ export function createWorldScene({
     qaBoardFace.material.map = worldQaCardTexture(THREE, qaBoardSnapshot);
     qaBoardFace.material.needsUpdate = true;
     previous?.dispose?.();
+    const failed =
+      qaBoardSnapshot?.current?.verdict === "fail" ||
+      (qaBoardSnapshot?.view === "detail" &&
+        qaBoardSnapshot?.current?.taskQaStatus === "failed");
+    qaBoardFrame.material.color?.set(failed ? "#9f1d27" : "#332318");
+    qaBoardFrame.material.emissive?.set(failed ? "#4a0007" : "#000000");
+    if ("emissiveIntensity" in qaBoardFrame.material) {
+      qaBoardFrame.material.emissiveIntensity = failed ? 0.55 : 0;
+    }
     qaSwipeCues.visible = qaBoardSnapshot.view === "cards";
   }
 
