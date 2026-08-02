@@ -1612,7 +1612,7 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentBranchButton, &QPushButton::clicked, this,
             [this] { switchToAgentBranch(m_selectedAgentSessionId); });
     m_agentWorktreeButton = railActionButton(
-        QStringLiteral("file-directory"), QStringLiteral("Worktree"),
+        QStringLiteral("worktree"), QStringLiteral("Worktree"),
         "Open this session's worktree in the Worktrees tab");
     m_agentWorktreeButton->hide();
     connect(m_agentWorktreeButton, &QPushButton::clicked, this, [this] {
