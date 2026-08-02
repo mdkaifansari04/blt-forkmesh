@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source ../pywrangler.sh
-export FORKMESH_D1_LOCAL=1
-export WRANGLER_NPM_SPEC="wrangler@4.42.1"
-exec pywrangler dev \
-  --config wrangler.browser-tests.toml \
-  --ip 127.0.0.1 \
-  --port 4179 \
-  --persist-to .wrangler/direct-messages-v3 \
-  --local
+# Critical browser cases stub their API and WebSocket boundaries in Playwright;
+# serve only the checked-in assets they exercise. Worker routing and Durable
+# Object behavior are covered by the separate bounded Python contracts.
+cd ../public
+exec python3 -m http.server 4179 --bind 127.0.0.1

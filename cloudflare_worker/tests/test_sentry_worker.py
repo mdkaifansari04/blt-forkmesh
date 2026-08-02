@@ -396,11 +396,12 @@ def test_forkmesh_deploy_pushes_sentry_dsn_secret():
     assert "\n        push_secrets\n" in DEPLOY_SH_TEXT
 
 
-def test_forkmesh_actions_run_full_worker_pytest_suite():
+def test_forkmesh_actions_run_bounded_critical_suites():
     # Steps run with egress denied, so the suite uses the interpreter the runner
     # exposes rather than building an environment it cannot download into.
-    assert "python3 -m pytest -q cloudflare_worker/tests" in CI_WORKFLOW_TEXT
-    assert "FORKMESH_CI_KNOWN_FAILURES=1" in CI_WORKFLOW_TEXT
+    assert "python3 tools/run_critical_tests.py worker" in CI_WORKFLOW_TEXT
+    assert "python3 tools/run_critical_tests.py world" in CI_WORKFLOW_TEXT
+    assert "FORKMESH_CI_KNOWN_FAILURES=1" not in CI_WORKFLOW_TEXT
     assert "python3 -m venv" not in CI_WORKFLOW_TEXT
     assert [
         line
@@ -414,12 +415,10 @@ def test_forkmesh_actions_run_full_worker_pytest_suite():
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in CI_WORKFLOW_TEXT
     assert "python3 cloudflare_worker/tests/test_crypto.py" not in DEPLOY_WORKFLOW_TEXT
     assert "cmake -S qt_client -B qt_client/build-ci" in CI_WORKFLOW_TEXT
-    assert (
-        'cmake --build qt_client/build-ci -j '
-        '"${FORKMESH_ACTIONS_CPUS:-2}" --target forkmesh-tests'
-        in CI_WORKFLOW_TEXT
+    assert "--target forkmesh-control-tests forkmesh-private-mirror-tests" in (
+        CI_WORKFLOW_TEXT
     )
-    assert "./qt_client/build-ci/forkmesh-tests" in CI_WORKFLOW_TEXT
+    assert "python3 tools/run_critical_tests.py qt" in CI_WORKFLOW_TEXT
 
 
 def test_action_sandbox_lives_on_disk_not_the_shared_tmpfs():

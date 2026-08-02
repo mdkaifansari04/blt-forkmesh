@@ -5658,7 +5658,7 @@ async function focusMusicTrackIsChecked(page, trackId) {
     });
 }
 
-test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async ({
+test("@critical enhanced Town Square starts in WebGL and keeps keyboard navigation", async ({
   page,
 }) => {
   await prepareWorldPage(page, "desktop-a");
@@ -7004,7 +7004,7 @@ test("Unicode emoji status is local-persisted, coalesced, and available to every
   expect(new URL(page.url()).pathname).toBe("/world/");
 });
 
-test("two live clients synchronize movement without leaking disabled badge fields", async ({
+test("@critical two live clients synchronize movement without leaking disabled badge fields", async ({
   context,
 }) => {
   const observer = await context.newPage();
@@ -9738,7 +9738,7 @@ test("focus music selection and controls persist without autoplaying on reload",
   expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
 });
 
-test("portrait coarse-pointer thumbstick and visual viewport remain usable", async ({
+test("@critical portrait coarse-pointer thumbstick and visual viewport remain usable", async ({
   browser,
 }) => {
   test.setTimeout(60_000);
