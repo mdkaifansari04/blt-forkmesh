@@ -120,7 +120,7 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                                 const AgentSession &session,
                                 const QString &gitDir, const QString &base,
                                 const QString &worktree,
-                                bool probeConflict)
+                                bool probeConflict, bool autoSyncCompleted)
 {
     AgentDiffStat stat;
     const QString patch = store.readPatch(session);
@@ -170,6 +170,50 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
             if (parts.size() >= 2) {
                 stat.behind = parts.at(0).toInt();
                 stat.ahead = parts.at(1).toInt();
+            }
+        }
+        // A merge into main advances the base for every surviving agent branch.
+        // Keep completed, clean worktrees current as part of the same background
+        // refresh instead of painting every row as newly unhealthy until the
+        // user opens it one by one. Never touch an active or dirty worktree, and
+        // preflight the merge tree so a genuine conflict stays completely
+        // unchanged and visible for manual resolution.
+        if (autoSyncCompleted && stat.behind > 0 && stat.dirty == 0 &&
+            !stat.worktree.isEmpty()) {
+            const bool canMerge =
+                runGitCapture(gitDir,
+                              {QStringLiteral("merge-tree"),
+                               QStringLiteral("--write-tree"),
+                               session.branchName, base},
+                              nullptr, nullptr);
+            if (canMerge) {
+                const QStringList mergeArgs =
+                    stat.ahead == 0
+                        ? QStringList{QStringLiteral("merge"),
+                                      QStringLiteral("--ff-only"), base}
+                        : QStringList{QStringLiteral("merge"),
+                                      QStringLiteral("--no-edit"), base};
+                if (runGitCapture(stat.worktree, mergeArgs, nullptr, nullptr)) {
+                    QByteArray refreshedCounts;
+                    if (runGitCapture(
+                            gitDir,
+                            {QStringLiteral("rev-list"),
+                             QStringLiteral("--left-right"),
+                             QStringLiteral("--count"),
+                             base + QStringLiteral("...") + session.branchName},
+                            &refreshedCounts, nullptr)) {
+                        const QStringList refreshed =
+                            QString::fromUtf8(refreshedCounts)
+                                .trimmed()
+                                .split(QRegularExpression(QStringLiteral("\\s+")));
+                        if (refreshed.size() >= 2) {
+                            stat.behind = refreshed.at(0).toInt();
+                            stat.ahead = refreshed.at(1).toInt();
+                        }
+                    }
+                }
+            } else {
+                stat.conflicted = true;
             }
         }
         // merge-tree is materially slower than the ref/status reads above. The
@@ -5018,7 +5062,7 @@ void MainWindow::refreshAgentTable()
                             const AgentDiffStat stat = readAgentDiffStat(
                                 store, session, agentGitDir, sessionBase,
                                 worktrees.value(session.branchName),
-                                session.id == selectedSessionId);
+                                session.id == selectedSessionId, !active);
                             batch.stats.insert(session.id, stat);
                             // Do not hold every badge behind the slowest branch.
                             // Each completed probe is queued back to the GUI
