@@ -211,6 +211,13 @@ QString ActionStore::artifactsDir() const
     return path;
 }
 
+QString ActionStore::sandboxDir() const
+{
+    const QString path = m_root + QStringLiteral("/sandbox");
+    QDir().mkpath(path);
+    return path;
+}
+
 QString ActionStore::runDir(const ActionRun &run) const
 {
     return runsDir() + QLatin1Char('/') + run.repoKey() + QLatin1Char('/') +
