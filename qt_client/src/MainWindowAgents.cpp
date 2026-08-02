@@ -5379,10 +5379,6 @@ void MainWindow::refreshAgentDotMatrix()
                       .arg(dots.size())
                       .arg(dots.size() == 1 ? QString() : QStringLiteral("s"),
                            key);
-    // The grid is bounded, so say so rather than silently dropping the tail.
-    const int shown = m_agentDotMatrix->shownCount();
-    if (shown < dots.size())
-        tip += QStringLiteral("\n(showing the first %1)").arg(shown);
     tip += QStringLiteral("\nClick a square to open that session.");
     m_agentDotMatrix->setToolTip(tip);
 }
