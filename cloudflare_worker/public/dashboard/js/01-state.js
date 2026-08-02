@@ -98,6 +98,10 @@
       error: "",
       actor: "",
     },
+    notesView: {
+      items: [], selected: null, dirty: false, loading: true,
+      error: "", socket: null, clientId: "", draftTimer: 0,
+    },
     globalSearch: {
       open: false,
       selectedIndex: 0,

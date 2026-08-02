@@ -1,11 +1,10 @@
 import {
   ACTIVITY_OPTIONS,
   AVAILABILITY_OPTIONS,
-  FOCUS_MUSIC_TRACKS,
+  FORKMESH_SONG,
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
   OUTFIT_STYLE_OPTIONS,
-  RADIO_STATIONS,
   THEME_OPTIONS,
   TOUR_STEPS,
   WORLD_EMOJI_CATEGORIES,
@@ -350,7 +349,6 @@ const WORLD_AGENT_BOT_POLL_MS = 8 * 1000;
 const WORLD_MEMBER_DIRECTORY_POLL_MS = 5 * 60 * 1000;
 const USERS_DIRECTORY_TTL_MS = 30 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
-const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
 // Every step the opening sequence walks through, listed on the curtain in this
 // order with its own live seconds counter. Boot work overlaps (the engine
 // streams while the context and world reads are in flight), so more than one
@@ -368,8 +366,6 @@ const WORLD_BOOT_STEPS = [
 // Counters redraw ten times a second: fast enough to read as a stopwatch,
 // cheap enough to stay out of the way of the scene build.
 const WORLD_BOOT_TICK_MS = 100;
-const DEFAULT_FOCUS_MUSIC_TRACK_ID = FOCUS_MUSIC_TRACKS[0].id;
-const DEFAULT_FOCUS_MUSIC_VOLUME = 35;
 const WORLD_LIGHT_LEVEL_MIN = 40;
 const WORLD_LIGHT_LEVEL_MAX = 140;
 const WORLD_LIGHT_LEVEL_DEFAULT = 100;
@@ -1665,9 +1661,6 @@ function defaultSettings() {
     daylightMode: "auto",
     lightLevel: WORLD_LIGHT_LEVEL_DEFAULT,
     moveSpeed: WORLD_MOVE_SPEED_DEFAULT,
-    focusMusicTrackId: DEFAULT_FOCUS_MUSIC_TRACK_ID,
-    focusMusicVolume: DEFAULT_FOCUS_MUSIC_VOLUME,
-    focusMusicMuted: false,
     availability: "online",
     activityCategory: "automatic",
     publicDoor: "knock",
@@ -1705,9 +1698,6 @@ function mergeSettings(stored) {
     stored?.statusEmoji,
     stored?.statusNote,
   );
-  const requestedFocusMusicTrackId = String(
-    stored?.focusMusicTrackId || defaults.focusMusicTrackId,
-  );
   return {
     ...defaults,
     ...(stored || {}),
@@ -1733,21 +1723,6 @@ function mergeSettings(stored) {
           : WORLD_MOVE_SPEED_DEFAULT,
       ),
     ),
-    focusMusicTrackId: FOCUS_MUSIC_TRACKS.some(
-      (track) => track.id === requestedFocusMusicTrackId,
-    )
-      ? requestedFocusMusicTrackId
-      : defaults.focusMusicTrackId,
-    focusMusicVolume: Math.min(
-      100,
-      Math.max(
-        0,
-        Number.isFinite(Number(stored?.focusMusicVolume))
-          ? Math.round(Number(stored.focusMusicVolume))
-          : defaults.focusMusicVolume,
-      ),
-    ),
-    focusMusicMuted: stored?.focusMusicMuted === true,
     debugPanel: stored?.debugPanel === true,
     statusEmoji: publicStatus.emoji,
     statusNote: publicStatus.note,
@@ -2152,113 +2127,6 @@ function providerMetadataCopy(item) {
     ).toLocaleTimeString()}: ${credit}`;
   }
   return "Current provider track metadata unavailable: ForkMesh did not receive a permitted provider metadata event. The playlist title is user supplied.";
-}
-
-function createProceduralWorldSoundtrack(AudioContext, scoreOffsetMs) {
-  const context = new AudioContext();
-  const master = context.createGain();
-  master.gain.setValueAtTime(0.0001, context.currentTime);
-  master.gain.exponentialRampToValueAtTime(
-    0.055,
-    context.currentTime + 1.2,
-  );
-  master.connect(context.destination);
-
-  const stepSeconds = 60 / 72 / 2;
-  const roots = [110, 98, 82.41, 92.5, 73.42, 82.41, 98, 87.31];
-  let step = Math.floor(
-    (scoreOffsetMs / 1000 / stepSeconds) %
-      Math.floor(WORLD_SCORE_LOOP_MS / 1000 / stepSeconds),
-  );
-  let nextWhen = context.currentTime + 0.08;
-  let stopped = false;
-
-  const voice = (frequency, when, duration, level, type, detune = 0) => {
-    const oscillator = context.createOscillator();
-    const envelope = context.createGain();
-    oscillator.type = type;
-    oscillator.frequency.setValueAtTime(frequency, when);
-    oscillator.detune.setValueAtTime(detune, when);
-    envelope.gain.setValueAtTime(0.0001, when);
-    envelope.gain.exponentialRampToValueAtTime(level, when + 0.18);
-    envelope.gain.exponentialRampToValueAtTime(
-      0.0001,
-      when + Math.max(0.25, duration),
-    );
-    oscillator.connect(envelope);
-    envelope.connect(master);
-    oscillator.start(when);
-    oscillator.stop(when + duration + 0.08);
-  };
-
-  const schedule = () => {
-    const horizon = context.currentTime + 1.6;
-    while (!stopped && nextWhen < horizon) {
-      const scoreStepCount = Math.floor(
-        WORLD_SCORE_LOOP_MS / 1000 / stepSeconds,
-      );
-      const normalizedStep = ((step % scoreStepCount) + scoreStepCount) %
-        scoreStepCount;
-      const scoreMs = normalizedStep * stepSeconds * 1000;
-      const chapter = Math.floor(scoreMs / (15 * 60 * 1000));
-      const bar = Math.floor(normalizedStep / 8);
-      const root = roots[(bar + chapter * 3) % roots.length];
-      const color = [1, 6 / 5, 3 / 2, 9 / 5][
-        (Math.floor(bar / 2) + chapter) % 4
-      ];
-      if (normalizedStep % 8 === 0) {
-        voice(root, nextWhen, stepSeconds * 7.5, 0.025, "sine");
-        voice(
-          root * color,
-          nextWhen + 0.03,
-          stepSeconds * 7.2,
-          0.012,
-          "triangle",
-          chapter % 2 ? 4 : -4,
-        );
-      }
-      if (normalizedStep % 2 === 0) {
-        voice(
-          root * (chapter % 3 === 0 ? 2 : 1),
-          nextWhen,
-          stepSeconds * 1.45,
-          0.009,
-          "sine",
-        );
-      }
-      if (
-        normalizedStep % 4 === 3 &&
-        (chapter % 4 !== 0 || normalizedStep % 16 === 15)
-      ) {
-        voice(
-          880 + (chapter % 5) * 55,
-          nextWhen,
-          0.11,
-          0.0025,
-          "triangle",
-        );
-      }
-      step += 1;
-      nextWhen += stepSeconds;
-    }
-  };
-  schedule();
-  const timer = window.setInterval(schedule, 180);
-  return {
-    context,
-    gain: master,
-    timer,
-    scoreOffsetMs,
-    durationMs: WORLD_SCORE_LOOP_MS,
-    license: "ForkMesh Procedural World Score · CC0-1.0",
-    stop() {
-      if (stopped) return;
-      stopped = true;
-      window.clearInterval(timer);
-      master.gain.cancelScheduledValues(context.currentTime);
-      master.gain.setTargetAtTime(0.0001, context.currentTime, 0.03);
-    },
-  };
 }
 
 function safeHTTPURL(value) {
@@ -4722,11 +4590,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <span data-world-diagnostics-traffic-compact title="Socket frames">IO 0↓ 0↑</span>
               <span data-world-diagnostics-queues-compact title="Local queues">Q idle</span>
               <span data-world-diagnostics-build-compact title="Build">B pending</span>
-              <span class="world-diagnostics-music-compact" data-world-diagnostics-music-compact title="Focus music playback">
-                <span data-world-diagnostics-music-label>♪ off</span>
-                <progress data-world-diagnostics-music-progress max="1" value="0" aria-label="Focus music playback position"></progress>
-                <span data-world-diagnostics-music-position>0:00</span>
-              </span>
             </span>
             <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
           </summary>
@@ -4737,7 +4600,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <div><dt>Frame health</dt><dd data-world-diagnostics-frame-health>Sampling…</dd></div>
               <div><dt>Input / scene</dt><dd data-world-diagnostics-input>Sampling…</dd></div>
               <div><dt>World state</dt><dd data-world-diagnostics-world-state>Sampling…</dd></div>
-              <div><dt>Music</dt><dd data-world-diagnostics-music>Nothing playing</dd></div>
               <div><dt>Connection</dt><dd data-world-diagnostics-connection>Connecting…</dd></div>
               <div><dt>Socket frames</dt><dd data-world-diagnostics-traffic>Inbound 0 · outbound 0</dd></div>
               <div><dt>Coalescing</dt><dd data-world-diagnostics-queues>Movement idle · profile idle</dd></div>
@@ -5428,7 +5290,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <div><dt>Top costs</dt><dd data-world-debug-top-costs>Waiting for the first scene walk…</dd></div>
                 <div><dt>Output</dt><dd data-world-debug-output>Sampling…</dd></div>
                 <div><dt>World state</dt><dd data-world-debug-world-state>Sampling…</dd></div>
-                <div><dt>Music</dt><dd data-world-debug-music>Nothing playing</dd></div>
                 <div><dt>Connection</dt><dd data-world-debug-connection>Connecting…</dd></div>
                 <div><dt>Socket frames</dt><dd data-world-debug-traffic>Inbound 0 · outbound 0</dd></div>
                 <div><dt>Coalescing</dt><dd data-world-debug-queues>Movement idle · profile idle</dd></div>
@@ -5818,9 +5679,7 @@ class ForkMeshWorld extends HTMLElement {
     this.infrastructureConsoleCapture = null;
     this.infrastructureConsoleEntries = [];
     this.detailReturnFocus = null;
-    this.activeAudio = null;
-    this.focusMusicState = "stopped";
-    this.focusMusicError = "";
+    this.songAudio = null;
     this.soundEnabled = false;
     this.soundContext = null;
     this.mobileMovementActive = false;
@@ -6286,12 +6145,6 @@ class ForkMeshWorld extends HTMLElement {
       this.reclaimPresenceHere();
     }
     this.scheduleActivityArrival();
-    if (this.focusMusicAutoplayPending) {
-      this.focusMusicAutoplayPending = false;
-      // A browser that rejected the initial unmuted request can accept this
-      // retry because it is directly caused by the visitor's first input.
-      void this.playFocusMusic();
-    }
     if (!this.identity.inputActive) {
       this.identity.inputActive = true;
       this.world?.setInputActive?.(this.settings.privacy.activity === true);
@@ -7126,9 +6979,6 @@ class ForkMeshWorld extends HTMLElement {
             this.sessionAuthenticated
               ? "Opening the live ForkMesh source browser. Source edits stay in the desktop app or IDE extension."
               : "Opening public ForkMesh source. Log in for account features. Source edits stay in the desktop app or IDE extension.",
-            // The same first click may satisfy the browser's pending music
-            // autoplay gesture. Keep that asynchronous playback notice from
-            // immediately replacing this interaction-specific explanation.
             { priority: 1, lockMs: 1500 },
           );
         },
@@ -7210,9 +7060,7 @@ class ForkMeshWorld extends HTMLElement {
             sessionId: String(session?.id || ""),
           });
         },
-        onPlayForkmeshSong: () => {
-          void this.playForkmeshSong();
-        },
+        onPlayForkmeshSong: () => void this.playForkmeshSong(),
         onCreateRepository: (options) =>
           this.openRepositoryCreateForm(options),
         onStartNodeDownload: () => {
@@ -7423,9 +7271,6 @@ class ForkMeshWorld extends HTMLElement {
       this.startEventPolling();
       this.startNotificationPolling();
       this.startMediaPlaybackPolling();
-      // Start the selected long-form track as the World opens. Browsers that
-      // require a gesture are retried from the first pointer/key activity.
-      void this.playFocusMusic({ autoplay: true });
       this.announceWorldNotifications();
       this.distanceTimer = window.setInterval(() => {
         this.updateDistances();
@@ -11756,31 +11601,6 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
-      if (event.target.closest("[data-world-focus-play]")) {
-        void this.playFocusMusic();
-        return;
-      }
-      if (event.target.closest("[data-world-focus-pause]")) {
-        void this.toggleFocusMusicPause();
-        return;
-      }
-      if (event.target.closest("[data-world-focus-stop]")) {
-        this.stopFocusMusic();
-        return;
-      }
-      if (event.target.closest("[data-world-focus-mute]")) {
-        this.toggleFocusMusicMute();
-        return;
-      }
-      const radio = event.target.closest("[data-world-radio]");
-      if (radio) {
-        this.playRadio(radio.dataset.worldRadio);
-        return;
-      }
-      if (event.target.closest("[data-world-radio-stop]")) {
-        this.stopRadio();
-        return;
-      }
       if (event.target.closest("[data-world-media-add]")) {
         this.addMediaItem();
         return;
@@ -11935,11 +11755,6 @@ class ForkMeshWorld extends HTMLElement {
         }
         return;
       }
-      const focusTrack = event.target.closest("[data-world-focus-track]");
-      if (focusTrack) {
-        this.selectFocusMusic(focusTrack.dataset.worldFocusTrack);
-        return;
-      }
       if (event.target.closest("[data-world-repo-filter]")) {
         this.applyRepositoryFilters();
         return;
@@ -12072,11 +11887,6 @@ class ForkMeshWorld extends HTMLElement {
             replacement.value.length,
           );
         }
-        return;
-      }
-      const focusVolume = event.target.closest("[data-world-focus-volume]");
-      if (focusVolume) {
-        this.setFocusMusicVolume(focusVolume.value);
         return;
       }
       const lightLevel = event.target.closest("[data-world-light-level]");
@@ -12491,16 +12301,6 @@ class ForkMeshWorld extends HTMLElement {
       );
       const faceImage = this.$("[data-world-face-image]");
       if (faceImage) faceImage.checked = this.settings.faceImage === true;
-      setValue("[data-world-focus-volume]", this.settings.focusMusicVolume);
-      setOutput(
-        "[data-world-focus-volume-output]",
-        `${this.settings.focusMusicVolume}%`,
-      );
-      if (this.activeAudio?.kind === "focus-music") {
-        this.activeAudio.element.volume = this.settings.focusMusicVolume / 100;
-        this.activeAudio.element.muted = this.settings.focusMusicMuted;
-      }
-      this.renderFocusMusicPanel();
       this.updateWorldStatusUI();
       this.sendPresence({ type: "presence" });
       this.broadcastLocalPresence();
@@ -18911,97 +18711,6 @@ class ForkMeshWorld extends HTMLElement {
     this.toast("Back on your bench around the campfire. Move to stand up.");
   }
 
-  focusMusicPanelHTML() {
-    const selected =
-      FOCUS_MUSIC_TRACKS.find(
-        (track) => track.id === this.settings.focusMusicTrackId,
-      ) || FOCUS_MUSIC_TRACKS[0];
-    const isFocusMusic = this.activeAudio?.kind === "focus-music";
-    const state = isFocusMusic ? this.focusMusicState : "stopped";
-    const status = this.focusMusicError
-      ? this.focusMusicError
-      : state === "playing"
-        ? `${selected.name} is playing locally and will repeat after ${selected.duration}.`
-        : state === "paused"
-          ? `${selected.name} is paused on this device.`
-          : state === "loading"
-            ? `Loading ${selected.name}…`
-            : `${selected.name} is selected. Press Play to begin.`;
-    const volume = this.settings.focusMusicVolume;
-    const muted = this.settings.focusMusicMuted === true;
-    return `
-      <section class="world-focus-music" data-world-focus-music aria-labelledby="world-focus-music-title">
-        <header>
-          <div>
-            <span>LOCAL FOCUS MUSIC</span>
-            <h3 id="world-focus-music-title">Choose a long-play coding track</h3>
-          </div>
-          <strong>CC0 · 22–45 min · local only</strong>
-        </header>
-        <p class="world-focus-music-intro">Three full-length ambient instrumentals ship with ForkMesh. Each plays for 22–45 minutes before repeating and stays local to this device.</p>
-        <div class="world-focus-track-list" role="radiogroup" aria-label="Focus music selection">
-          ${FOCUS_MUSIC_TRACKS.map(
-            (track) => `
-              <label class="world-focus-track" data-selected="${
-                track.id === selected.id ? "true" : "false"
-              }">
-                <input
-                  type="radio"
-                  name="forkmesh-focus-music"
-                  value="${escapeHTML(track.id)}"
-                  data-world-focus-track="${escapeHTML(track.id)}"
-                  ${track.id === selected.id ? "checked" : ""}
-                />
-                <span>
-                  <strong>${escapeHTML(track.name)}</strong>
-                  <small>${escapeHTML(track.artist)} · ${escapeHTML(
-                    track.duration,
-                  )} · full track</small>
-                </span>
-                <span class="world-focus-track-links">
-                  <a href="${escapeHTML(track.sourceUrl)}" target="_blank" rel="noopener noreferrer">Source</a>
-                  <a href="${escapeHTML(track.licenseUrl)}" target="_blank" rel="noopener noreferrer">${escapeHTML(
-                    track.license,
-                  )}</a>
-                </span>
-              </label>`,
-          ).join("")}
-        </div>
-        <div class="world-focus-transport" aria-label="Focus music playback controls">
-          <button type="button" data-world-focus-play ${
-            isFocusMusic || state === "loading" ? "disabled" : ""
-          }>Play</button>
-          <button type="button" data-world-focus-pause ${
-            isFocusMusic && state !== "loading" ? "" : "disabled"
-          }>${state === "paused" ? "Resume" : "Pause"}</button>
-          <button type="button" data-world-focus-stop ${
-            isFocusMusic ? "" : "disabled"
-          }>Stop</button>
-          <button
-            type="button"
-            data-world-focus-mute
-            aria-pressed="${String(muted)}"
-          >${muted ? "Unmute" : "Mute"}</button>
-          <label>
-            <span>Volume</span>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="1"
-              value="${escapeHTML(volume)}"
-              data-world-focus-volume
-              aria-label="Focus music volume"
-            />
-            <output data-world-focus-volume-output>${escapeHTML(volume)}%</output>
-          </label>
-        </div>
-        <p class="world-focus-status" data-world-focus-now role="status" aria-live="polite">${escapeHTML(
-          status,
-        )}</p>
-      </section>`;
-  }
-
   broadcastPanelHTML() {
     const sessionLabels = {
       "listening-room": "Shared listening room",
@@ -19039,34 +18748,6 @@ class ForkMeshWorld extends HTMLElement {
         : "";
     return `
       <section class="world-feature-card" aria-label="Opt-in media controls">
-        ${this.focusMusicPanelHTML()}
-        <div class="world-media-list">
-          ${RADIO_STATIONS.map(
-            (station) => `
-              <article>
-                <div><span>${escapeHTML(station.provider)}</span><strong>${escapeHTML(
-                  station.name,
-                )}</strong><p>${escapeHTML(station.description)}</p></div>
-                <button type="button" data-world-radio="${escapeHTML(
-                  station.id,
-                )}">${escapeHTML(
-                  station.actionLabel ||
-                    (station.playMode === "external"
-                      ? "Open official player"
-                      : "Play with consent"),
-                )}</button>
-                <a href="${escapeHTML(station.homepageUrl)}" target="_blank" rel="noopener noreferrer">${
-                  station.playMode === "external"
-                    ? "Provider page"
-                    : "License and method"
-                }</a>
-              </article>`,
-          ).join("")}
-        </div>
-        <div class="world-media-now" data-world-media-now>
-          <span>Nothing is playing. Audio never starts automatically.</span>
-          <button type="button" data-world-radio-stop disabled>Mute / stop</button>
-        </div>
         <section class="world-media-room" aria-label="Community media room">
           <h3>Server-authoritative rooms and playlists</h3>
           ${
@@ -23802,380 +23483,6 @@ class ForkMeshWorld extends HTMLElement {
       </section>`;
   }
 
-  selectedFocusMusicTrack() {
-    return (
-      FOCUS_MUSIC_TRACKS.find(
-        (track) => track.id === this.settings.focusMusicTrackId,
-      ) || FOCUS_MUSIC_TRACKS[0]
-    );
-  }
-
-  renderFocusMusicPanel() {
-    const panel = this.$("[data-world-focus-music]");
-    if (panel) panel.outerHTML = this.focusMusicPanelHTML();
-  }
-
-  selectFocusMusic(trackId) {
-    const track = FOCUS_MUSIC_TRACKS.find((item) => item.id === trackId);
-    if (!track || track.id === this.settings.focusMusicTrackId) return;
-    const continuePlaying =
-      this.activeAudio?.kind === "focus-music" &&
-      this.focusMusicState === "playing";
-    this.stopFocusMusic(false);
-    this.settings.focusMusicTrackId = track.id;
-    this.focusMusicError = "";
-    this.saveSettings();
-    this.renderFocusMusicPanel();
-    if (continuePlaying) {
-      void this.playFocusMusic();
-    } else {
-      this.toast(`${track.name} selected. Press Play when you are ready.`);
-    }
-  }
-
-  async playFocusMusic({ autoplay = false } = {}) {
-    const track = this.selectedFocusMusicTrack();
-    if (!this.soundEnabled) {
-      this.focusMusicError =
-        "Enable World sounds from the toolbar before starting focus music.";
-      this.renderFocusMusicPanel();
-      return;
-    }
-    const AudioElement = window.Audio;
-    if (!AudioElement) {
-      this.focusMusicError = "Audio playback is unavailable in this browser.";
-      this.renderFocusMusicPanel();
-      return;
-    }
-    let trackURL;
-    try {
-      trackURL = new URL(track.trackUrl, location.origin);
-    } catch (_) {
-      this.focusMusicError = "This bundled music path is invalid.";
-      this.renderFocusMusicPanel();
-      return;
-    }
-    if (trackURL.origin !== location.origin) {
-      this.focusMusicError = "Focus music must be served by ForkMesh.";
-      this.renderFocusMusicPanel();
-      return;
-    }
-
-    // Exactly one local soundtrack may run at a time. This stops procedural
-    // radio, a hosted station, or a prior focus track before creating this one.
-    this.stopRadio(false);
-    const element = new AudioElement(track.trackUrl);
-    element.preload = "metadata";
-    element.autoplay = true;
-    element.loop = true;
-    element.volume = this.settings.focusMusicVolume / 100;
-    element.muted = this.settings.focusMusicMuted === true;
-    const playback = {
-      kind: "focus-music",
-      trackId: track.id,
-      element,
-      stop() {
-        try {
-          element.pause();
-          element.currentTime = 0;
-        } catch (_) {}
-      },
-    };
-    const fail = () => {
-      if (this.activeAudio !== playback) return;
-      playback.stop();
-      this.activeAudio = null;
-      this.focusMusicState = "stopped";
-      this.focusMusicError = `${track.name} could not be loaded.`;
-      this.renderFocusMusicPanel();
-    };
-    element.addEventListener?.("error", fail, { once: true });
-    this.activeAudio = playback;
-    this.focusMusicState = "loading";
-    this.focusMusicError = "";
-    this.renderFocusMusicPanel();
-    try {
-      await element.play();
-      if (this.activeAudio !== playback) return;
-      this.focusMusicState = "playing";
-      this.renderFocusMusicPanel();
-      this.toast(
-        `${track.name} is playing on this device only and repeats after the full track.`,
-      );
-    } catch (error) {
-      if (autoplay && error?.name === "NotAllowedError") {
-        playback.stop();
-        if (this.activeAudio === playback) this.activeAudio = null;
-        this.focusMusicState = "stopped";
-        this.focusMusicAutoplayPending = true;
-        this.focusMusicError = "Music will start with your first interaction.";
-        this.renderFocusMusicPanel();
-        return;
-      }
-      fail();
-    }
-  }
-
-  async toggleFocusMusicPause() {
-    const playback = this.activeAudio;
-    if (playback?.kind !== "focus-music") return;
-    if (this.focusMusicState === "paused") {
-      try {
-        // Resume is also an explicit user gesture; a saved setting never calls
-        // this path on page load.
-        await playback.element.play();
-        if (this.activeAudio !== playback) return;
-        this.focusMusicState = "playing";
-        this.focusMusicError = "";
-      } catch (_) {
-        playback.stop();
-        this.activeAudio = null;
-        this.focusMusicState = "stopped";
-        this.focusMusicError = "The browser blocked music playback.";
-      }
-    } else if (this.focusMusicState === "playing") {
-      playback.element.pause();
-      this.focusMusicState = "paused";
-    }
-    this.renderFocusMusicPanel();
-  }
-
-  stopFocusMusic(render = true) {
-    if (this.activeAudio?.kind === "focus-music") {
-      try {
-        this.activeAudio.stop();
-      } catch (_) {}
-      this.activeAudio = null;
-    }
-    this.focusMusicState = "stopped";
-    this.focusMusicError = "";
-    if (render) this.renderFocusMusicPanel();
-  }
-
-  async playForkmeshSong() {
-    // The entrance plaque plays the actual ForkMesh song, not a focus track.
-    // Remember a currently playing track so it can return once the song ends.
-    const resumeTrackId =
-      this.activeAudio?.kind === "focus-music" &&
-      this.focusMusicState === "playing"
-        ? this.activeAudio.trackId
-        : "";
-    this.focusMusicAutoplayPending = false;
-    this.stopRadio(false);
-    if (!this.soundEnabled) {
-      this.toast("Enable World sounds from the toolbar before playing the ForkMesh song.");
-      return;
-    }
-    const song = RADIO_STATIONS.find((station) => station.id === "forkmesh-song");
-    const AudioElement = window.Audio;
-    if (!song || !AudioElement) {
-      this.toast("The ForkMesh song is unavailable in this browser.");
-      return;
-    }
-    const element = new AudioElement(song.trackUrl);
-    element.preload = "auto";
-    element.loop = false;
-    const playback = {
-      kind: "forkmesh-song",
-      element,
-      stop() {
-        try {
-          element.pause();
-          element.currentTime = 0;
-        } catch (_) {}
-      },
-    };
-    const resumeLoop = async () => {
-      if (!resumeTrackId) return;
-      this.settings.focusMusicTrackId = resumeTrackId;
-      this.focusMusicError = "";
-      this.saveSettings();
-      await this.playFocusMusic();
-    };
-    element.addEventListener(
-      "ended",
-      () => {
-        if (this.activeAudio === playback) this.activeAudio = null;
-        void resumeLoop();
-      },
-      { once: true },
-    );
-    this.activeAudio = playback;
-    try {
-      await element.play();
-      this.toast("ForkMesh Forever is playing locally. Your focus track will resume after it ends.");
-    } catch (_) {
-      if (this.activeAudio === playback) this.activeAudio = null;
-      await resumeLoop();
-      this.toast("The ForkMesh song could not be played.");
-    }
-  }
-
-  toggleFocusMusicMute() {
-    this.settings.focusMusicMuted = !this.settings.focusMusicMuted;
-    if (this.activeAudio?.kind === "focus-music") {
-      this.activeAudio.element.muted = this.settings.focusMusicMuted;
-    }
-    this.saveSettings();
-    this.renderFocusMusicPanel();
-    this.toast(
-      this.settings.focusMusicMuted
-        ? "Focus music muted on this device."
-        : "Focus music unmuted on this device.",
-    );
-  }
-
-  setFocusMusicVolume(value) {
-    const numeric = Number(value);
-    const volume = Math.min(
-      100,
-      Math.max(
-        0,
-        Number.isFinite(numeric) ? Math.round(numeric) : DEFAULT_FOCUS_MUSIC_VOLUME,
-      ),
-    );
-    this.settings.focusMusicVolume = volume;
-    if (this.activeAudio?.kind === "focus-music") {
-      this.activeAudio.element.volume = volume / 100;
-    }
-    this.saveSettings();
-    const output = this.$("[data-world-focus-volume-output]");
-    if (output) output.textContent = `${volume}%`;
-    return volume;
-  }
-
-  async playRadio(stationId) {
-    const station = RADIO_STATIONS.find((item) => item.id === stationId);
-    const now = this.$("[data-world-media-now]");
-    if (!station || !now) return;
-    this.stopRadio(false);
-    if (station.playMode === "external") {
-      const provider = window.open(
-        station.homepageUrl,
-        "_blank",
-        "noopener,noreferrer",
-      );
-      now.innerHTML = `
-        <span><strong>${escapeHTML(station.name)}</strong> · official ${escapeHTML(
-          station.provider,
-        )} player<small>Current provider track metadata is unavailable because ForkMesh did not receive a permitted provider metadata event. ForkMesh does not embed, restream, record, or control the provider’s audio.</small></span>
-        <button type="button" data-world-radio-stop disabled>Controlled by provider</button>`;
-      this.toast(
-        provider
-          ? `Opened ${station.name} on the provider’s site.`
-          : "The browser blocked the provider window; use the provider-page link.",
-      );
-      return;
-    }
-    if (station.playMode === "hosted") {
-      await this.playHostedTrack(station, now);
-      return;
-    }
-    if (!this.soundEnabled) {
-      now.innerHTML = `
-        <span><strong>Sound is off</strong><small>Use the Sound button in the World toolbar first. Audio never starts automatically.</small></span>
-        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
-      this.toast("Enable World sounds from the toolbar before starting local audio.");
-      return;
-    }
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContext) {
-      now.innerHTML = `<span>Local audio synthesis is unavailable in this browser.</span><button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
-      return;
-    }
-    const scoreOffsetMs =
-      ((Date.now() % WORLD_SCORE_LOOP_MS) + WORLD_SCORE_LOOP_MS) %
-      WORLD_SCORE_LOOP_MS;
-    const soundtrack = createProceduralWorldSoundtrack(
-      AudioContext,
-      scoreOffsetMs,
-    );
-    this.activeAudio = soundtrack;
-    now.innerHTML = `
-      <span><strong>${escapeHTML(station.name)}</strong> · ${escapeHTML(
-        station.provider,
-      )}<small data-world-track>Original four-hour procedural downtempo score · Local score offset ${escapeHTML(
-        formatMediaPosition(scoreOffsetMs),
-      )} · loops independently of the UTC display · CC0-1.0 · local playback only.</small></span>
-      <button type="button" data-world-radio-stop>Mute / stop</button>`;
-    try {
-      await soundtrack.context.resume();
-      this.toast(`${station.name} is playing on this device only.`);
-    } catch (_) {
-      soundtrack.stop();
-      await soundtrack.context.close().catch(() => {});
-      this.activeAudio = null;
-      now.innerHTML = `
-        <span>Playback was blocked or the provider stream is unavailable.</span>
-        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
-    }
-  }
-
-  // First-party ForkMesh audio shipped with the site. The button press is the
-  // consent gesture, so this path never starts on its own and never proxies a
-  // third-party stream.
-  async playHostedTrack(station, now) {
-    if (!this.soundEnabled) {
-      now.innerHTML = `
-        <span><strong>Sound is off</strong><small>Use the Sound button in the World toolbar first. Audio never starts automatically.</small></span>
-        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
-      this.toast("Enable World sounds from the toolbar before starting local audio.");
-      return;
-    }
-    const AudioElement = window.Audio;
-    if (!AudioElement) {
-      now.innerHTML = `<span>Audio playback is unavailable in this browser.</span><button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
-      return;
-    }
-    const element = new AudioElement(station.trackUrl);
-    element.preload = "auto";
-    element.loop = false;
-    element.addEventListener("ended", () => this.stopRadio());
-    this.activeAudio = {
-      stop() {
-        try {
-          element.pause();
-          element.currentTime = 0;
-        } catch (_) {}
-      },
-    };
-    now.innerHTML = `
-      <span><strong>${escapeHTML(station.name)}</strong> · ${escapeHTML(
-        station.provider,
-      )}<small data-world-track>Hosted by ForkMesh · local playback only · stop any time.</small></span>
-      <button type="button" data-world-radio-stop>Mute / stop</button>`;
-    try {
-      await element.play();
-      this.toast(`${station.name} is playing on this device only.`);
-    } catch (_) {
-      this.activeAudio = null;
-      now.innerHTML = `
-        <span>Playback was blocked or the song could not be loaded.</span>
-        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
-    }
-  }
-
-  stopRadio(render = true) {
-    const stoppedFocusMusic = this.activeAudio?.kind === "focus-music";
-    try {
-      this.activeAudio?.stop?.();
-      this.activeAudio?.context?.close?.();
-    } catch (_) {}
-    this.activeAudio = null;
-    if (stoppedFocusMusic) {
-      this.focusMusicState = "stopped";
-      this.focusMusicError = "";
-      this.renderFocusMusicPanel();
-    }
-    if (!render) return;
-    const now = this.$("[data-world-media-now]");
-    if (now) {
-      now.innerHTML = `
-        <span>Nothing is playing. Audio never starts automatically.</span>
-        <button type="button" data-world-radio-stop disabled>Mute / stop</button>`;
-    }
-  }
-
   handleLandmarkAction(action) {
     if (action === "tour") {
       this.closeLandmark();
@@ -24217,7 +23524,7 @@ class ForkMeshWorld extends HTMLElement {
       neighborhood:
         "Availability, inactivity, and door state are under your local privacy controls.",
       broadcast:
-        "Audio starts only after your explicit play action and stays local to this device.",
+        "Shared rooms coordinate provider links and timestamps without playing or storing songs.",
     };
     this.toast(messages[action] || "This district is being connected to its technical backend.");
   }
@@ -25417,7 +24724,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=9c7a246e1652";
+    script.src = "/dashboard-chat.js?v=54dd9112e32d";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {
@@ -26031,10 +25338,7 @@ class ForkMeshWorld extends HTMLElement {
   async toggleWorldSound() {
     if (this.soundEnabled) {
       this.soundEnabled = false;
-      // The toolbar control is the master switch, not only a switch for the
-      // short synthesized cues. Stop every local soundtrack as well.
-      this.focusMusicAutoplayPending = false;
-      this.stopRadio();
+      this.stopForkmeshSong();
       const context = this.soundContext;
       this.soundContext = null;
       await context?.close?.().catch(() => {});
@@ -26813,6 +26117,42 @@ class ForkMeshWorld extends HTMLElement {
       oscillator.start(start);
       oscillator.stop(start + 0.12);
     });
+  }
+
+  async playForkmeshSong() {
+    if (!this.soundEnabled) {
+      this.toast("Enable World sounds from the toolbar before playing the ForkMesh song.");
+      return;
+    }
+    this.stopForkmeshSong();
+    const element = new Audio(FORKMESH_SONG.trackUrl);
+    element.preload = "auto";
+    element.loop = false;
+    this.songAudio = element;
+    element.addEventListener(
+      "ended",
+      () => {
+        if (this.songAudio === element) this.songAudio = null;
+      },
+      { once: true },
+    );
+    try {
+      await element.play();
+      this.toast(`${FORKMESH_SONG.name} is playing once on this device.`);
+    } catch (_) {
+      if (this.songAudio === element) this.songAudio = null;
+      this.toast("The ForkMesh song could not be played.");
+    }
+  }
+
+  stopForkmeshSong() {
+    const element = this.songAudio;
+    this.songAudio = null;
+    if (!element) return;
+    try {
+      element.pause();
+      element.currentTime = 0;
+    } catch (_) {}
   }
 
   playOfficeElevatorSound(stage, trip = {}) {
@@ -27614,19 +26954,6 @@ class ForkMeshWorld extends HTMLElement {
         ),
       },
       build: { ...this.buildDiagnostics },
-      music: (() => {
-        const playback = this.activeAudio;
-        if (playback?.kind !== "focus-music") {
-          return { state: "stopped", title: "Nothing playing", positionMs: 0 };
-        }
-        const track = FOCUS_MUSIC_TRACKS.find((item) => item.id === playback.trackId);
-        return {
-          state: this.focusMusicState,
-          title: track?.name || "ForkMesh song",
-          positionMs: Math.max(0, Math.round(Number(playback.element?.currentTime) * 1000 || 0)),
-          durationMs: Math.max(0, Math.round(Number(playback.element?.duration) * 1000 || 0)),
-        };
-      })(),
     };
     // Sixty seconds of one-second frame samples back the history sparkline.
     if (snapshot.renderer && !snapshot.renderer.paused) {
@@ -27685,7 +27012,7 @@ class ForkMeshWorld extends HTMLElement {
     const snapshot = this.collectDiagnostics();
     if (debugPane) this.renderDebugSettingsPane(debugPane, snapshot);
     if (!floatingVisible) return;
-    const { renderer, connection, traffic, queues, build, music } = snapshot;
+    const { renderer, connection, traffic, queues, build } = snapshot;
     const formatRate = (value) =>
       `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
     const formatCompactCount = (value) => {
@@ -27744,40 +27071,6 @@ class ForkMeshWorld extends HTMLElement {
       "[data-world-diagnostics-build-compact]",
       `B ${escapeHTML(version)}${build.revision ? `/${escapeHTML(build.revision.slice(0, 7))}` : ""}`,
     );
-    const musicActive =
-      music.state === "playing" || music.state === "paused";
-    const musicLabel = this.$("[data-world-diagnostics-music-label]");
-    if (musicLabel) {
-      musicLabel.textContent = musicActive
-        ? `♪ ${String(music.title || "track").slice(0, 18)}`
-        : "♪ off";
-    }
-    const musicPosition = this.$("[data-world-diagnostics-music-position]");
-    const musicElapsed = formatMediaPosition(music.positionMs);
-    const musicDuration = music.durationMs
-      ? formatMediaPosition(music.durationMs)
-      : "";
-    if (musicPosition) {
-      musicPosition.textContent = musicActive
-        ? `${musicElapsed}${musicDuration ? `/${musicDuration}` : ""}`
-        : "0:00";
-    }
-    const musicProgress = this.$("[data-world-diagnostics-music-progress]");
-    if (musicProgress) {
-      const duration = Math.max(0, Number(music.durationMs) || 0);
-      const position = Math.max(
-        0,
-        Math.min(duration || 1, Number(music.positionMs) || 0),
-      );
-      musicProgress.max = duration || 1;
-      musicProgress.value = position;
-      musicProgress.setAttribute(
-        "aria-valuetext",
-        musicActive
-          ? `${music.title}, ${musicElapsed}${musicDuration ? ` of ${musicDuration}` : ""}, ${music.state}`
-          : "No focus music playing",
-      );
-    }
     const light = this.$("[data-world-diagnostics-light]");
     if (light) {
       light.dataset.state =
@@ -27856,8 +27149,6 @@ class ForkMeshWorld extends HTMLElement {
       const detail = this.$(`[data-world-diagnostics-${slot}]`);
       if (detail) detail.innerHTML = html;
     }
-    const musicDetail = this.$("[data-world-diagnostics-music]");
-    if (musicDetail) musicDetail.textContent = readouts.music;
   }
 
   // The detailed one-second readouts, shared verbatim by the floating debug
@@ -27876,7 +27167,6 @@ class ForkMeshWorld extends HTMLElement {
       traffic,
       queues,
       build,
-      music,
     } = snapshot;
     const formatRate = (value) =>
       `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
@@ -27941,10 +27231,6 @@ class ForkMeshWorld extends HTMLElement {
             `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}${position ? ` · at ${position.x.toFixed(1)}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)} facing ${position.headingDeg}°` : ""}${renderer.remoteAvatars ? ` · ${renderer.remoteAvatars} remote avatars` : ""}${renderer.disabledElements ? ` · ${renderer.disabledElements} elements off` : ""}`,
           )
         : unavailable("World state unavailable"),
-      music:
-        music.state === "playing" || music.state === "paused"
-          ? `${music.title} · ${formatMediaPosition(music.positionMs)}${music.durationMs ? ` / ${formatMediaPosition(music.durationMs)}` : ""} · ${music.state}`
-          : "Nothing playing",
       connection: `${diagnosticReading(connection.state, diagnosticStateLevel(connection.state))} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${diagnosticMetric("reconnects", connection.reconnects, `${connection.reconnects} reconnect attempts`)} · ${diagnosticMetric("bufferedBytes", connection.bufferedBytes, `${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`)}`,
       traffic: `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.inboundRate, formatRate(traffic.inboundRate))}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.outboundRate, formatRate(traffic.outboundRate))})`,
       queues: `Movement ${escapeHTML(queues.movement)} (${diagnosticMetric("coalesced", queues.movementCoalesced, `${queues.movementCoalesced} coalesced`)}) · profile ${escapeHTML(queues.profile)} (${diagnosticMetric("coalesced", queues.profileCoalesced, `${queues.profileCoalesced} coalesced`)}) · ${diagnosticMetric("backpressure", queues.backpressureEvents, `${queues.backpressureEvents} backpressure events`)}`,
@@ -27985,8 +27271,6 @@ class ForkMeshWorld extends HTMLElement {
       const detail = pane.querySelector(`[data-world-debug-${slot}]`);
       if (detail) detail.innerHTML = html;
     }
-    const musicDetail = pane.querySelector("[data-world-debug-music]");
-    if (musicDetail) musicDetail.textContent = readouts.music;
     const suggestionList = this.$("[data-world-debug-suggestions]");
     if (!suggestionList) return;
     const isAdmin = this.identity?.isAdmin === true;
@@ -30665,8 +29949,8 @@ class ForkMeshWorld extends HTMLElement {
     try {
       this.socket?.close(1000, "page closed");
     } catch (_) {}
-    this.stopRadio(false);
     this.soundEnabled = false;
+    this.stopForkmeshSong();
     const soundContext = this.soundContext;
     this.soundContext = null;
     soundContext?.close?.().catch(() => {});
