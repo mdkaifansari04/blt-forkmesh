@@ -115,6 +115,30 @@ def test_owned_map_drops_unknown_elements_and_normalises_entries():
     assert store.clean_owned(None) == {}
 
 
+def test_stored_parameters_can_never_introduce_a_wallet_key_name():
+    # Owned elements are written to the account record, which the legacy
+    # custody guard scans by key name at startup. Parameters are emitted from
+    # the catalog definition, never copied from the request, so a crafted
+    # payload cannot plant a flagged key and fail the Worker closed.
+    beacon = store.element("aurora-beacon")
+    cleaned = store.clean_params(beacon, {
+        "walletSecret": "hunter2",
+        "mnemonic": "abandon abandon",
+        "height": 6,
+    })
+    assert set(cleaned) == {spec["key"] for spec in beacon["params"]}
+    owned = store.clean_owned({
+        "aurora-beacon": {
+            "params": {"donationSecret": "x"},
+            "placement": {"x": 1, "secret": "x"},
+        },
+    })
+    entry = owned["aurora-beacon"]
+    assert set(entry["params"]) == {spec["key"] for spec in beacon["params"]}
+    assert set(entry["placement"]) == {"x", "z", "heading"}
+    assert "secret" not in repr(owned).lower()
+
+
 def test_split_policy_makes_no_investment_claim():
     policy = store.split_policy_public()
     assert policy["forkMeshHoldsUserKeys"] is False

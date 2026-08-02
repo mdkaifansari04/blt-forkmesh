@@ -34557,9 +34557,9 @@ export function createWorldScene({
     getDiagnostics,
     listWorldElements,
     setWorldElementEnabled,
+    listSceneObjects,
     installStoreElement,
     removeStoreElement,
-    listSceneObjects,
     getEnvironmentState: () => ({
       theme: currentTheme,
       lightLevel,
