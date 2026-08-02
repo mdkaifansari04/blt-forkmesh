@@ -27,6 +27,13 @@ SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text(
     encoding="utf-8")
 
 
+def _top_level_def(tree, name):
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError("entry.py must define %s" % name)
+
+
 def _load(name):
     for node in ast.parse(ENTRY).body:
         if isinstance(node, ast.FunctionDef) and node.name == name:
@@ -70,6 +77,47 @@ def test_directory_payload_carries_the_stamp_but_not_the_address():
         "\ndef ", 1)[0]
     assert '"lastEmailKind"' not in helper
     assert '"emailSendCount"' not in helper
+
+
+def test_the_stamp_is_the_directorys_only_last_email_source():
+    """adhoc #220: a merge left a second, raw last-email source behind.
+
+    An earlier branch fed the directory a per-account row read straight out of
+    mailtrap_email_sends, as a fourth ``email_activity`` argument. This branch
+    replaced it: the stamp now rides the account record, hour-bucketed. The
+    merge kept both halves of the payload body but only one signature, so
+    every directory read raised TypeError and /api/accounts/users and
+    /api/leaderboards (which reads the directory) answered 500.
+
+    Both halves are pinned here because either one alone reintroduces the
+    outage: a caller arity the signature cannot take, or a raw provider
+    timestamp and status where the bucketed contract is documented.
+    """
+    tree = ast.parse(ENTRY)
+    payload = _top_level_def(tree, "_account_chat_user_payload")
+    accepted = len(payload.args.args)
+    required = accepted - len(payload.args.defaults)
+    assert payload.args.vararg is None and payload.args.kwarg is None
+
+    calls = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name)
+             and node.func.id == "_account_chat_user_payload"]
+    assert calls, "the public directory must build its rows through the payload"
+    for call in calls:
+        assert not call.keywords
+        assert required <= len(call.args) <= accepted, (
+            "line %d passes %d arguments to a function taking %d"
+            % (call.lineno, len(call.args), accepted))
+
+    # The raw provider row carries an unbucketed send time and the provider's
+    # own status vocabulary ("accepted", webhook events) rather than the
+    # delivered/failed pair the badge paints, so the public directory must not
+    # read it at all. It stays behind the admin email reporting endpoint.
+    directory = ENTRY.split("async def _account_users_directory", 1)[1].split(
+        "\ndef ", 1)[0]
+    assert "mailtrap_email_sends" not in directory
+    assert "email_activity" not in directory
 
 
 def test_world_app_forwards_both_fields_from_the_directory():
