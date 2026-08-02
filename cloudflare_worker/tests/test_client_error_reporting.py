@@ -135,3 +135,10 @@ def test_admin_hud_counts_only_rows_after_the_local_seen_cursor():
     assert "relativeTime(group.firstSeen)" in WORLD
     assert 'title="${escapeHTML(exactTime(group.firstSeen))}"' in WORLD
     assert ".world-error-actor-stack" in WORLD_CSS
+
+
+def test_world_admin_error_chart_height_expression_keeps_ternary_balanced():
+    assert (
+        'style="height:${chartPeak ? Math.max(2, '
+        'Math.round((132 * count) / chartPeak)) : 2}px"'
+    ) in WORLD
