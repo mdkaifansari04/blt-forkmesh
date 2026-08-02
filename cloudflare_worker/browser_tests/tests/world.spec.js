@@ -5971,6 +5971,64 @@ test("mobile refresh keeps a live low-memory renderer and recovers cached pages 
   await context.close();
 });
 
+test("a 4K display keeps the full World inside a 1080p raster budget", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 3840, height: 2160 },
+    screen: { width: 3840, height: 2160 },
+    deviceScaleFactor: 1,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "desktop-4k-memory");
+  await waitForWorld(page);
+
+  const state = await page.locator("forkmesh-world").evaluate((shell) => {
+    const diagnostics = shell.world.getDiagnostics();
+    let scaledCanvasTextures = 0;
+    shell.world.scene.traverse((object) => {
+      const materials = Array.isArray(object.material)
+        ? object.material
+        : [object.material];
+      materials.filter(Boolean).forEach((material) => {
+        if (material.map?.image?.dataset?.textureScale === "0.5") {
+          scaledCanvasTextures += 1;
+        }
+      });
+    });
+    return {
+      compact: diagnostics.output.compactRenderer,
+      lowMemory: diagnostics.output.memoryConstrainedRenderer,
+      antialias: diagnostics.output.antialias,
+      shadows: diagnostics.shadowsEnabled,
+      drawingPixels:
+        diagnostics.output.drawingBufferWidth *
+        diagnostics.output.drawingBufferHeight,
+      pixelBudget: diagnostics.output.pixelBudget,
+      pixelRatio: diagnostics.pixelRatio,
+      triangles: diagnostics.rendererTriangles,
+      stars: diagnostics.sky.stars,
+      satelliteLimit: diagnostics.sky.satelliteLimit,
+      scaledCanvasTextures,
+    };
+  });
+
+  expect(state).toMatchObject({
+    compact: false,
+    lowMemory: true,
+    antialias: false,
+    shadows: true,
+    pixelBudget: 1920 * 1080,
+    stars: 1100,
+    satelliteLimit: 160,
+  });
+  expect(state.drawingPixels).toBeLessThanOrEqual(state.pixelBudget);
+  expect(state.pixelRatio).toBeLessThan(1);
+  expect(state.triangles).toBeGreaterThan(0);
+  expect(state.scaledCanvasTextures).toBeGreaterThan(0);
+  await context.close();
+});
+
 test("busy walking stays connected while movement frames remain within the soft budget", async ({
   page,
 }) => {

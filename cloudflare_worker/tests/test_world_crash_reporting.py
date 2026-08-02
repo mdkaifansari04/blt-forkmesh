@@ -79,6 +79,11 @@ def test_webgl_context_losses_are_reported_with_diagnostics():
     assert "World renderer crashed; WebGL context lost after" in WORLD
     assert "this.reportedRendererContextLoss = true;" in WORLD
     assert "this.rendererContextLosses" in WORLD
+    # A restored context still proves the current allocation profile failed;
+    # the next ordinary reload must come back in compact mode.
+    lost = WORLD[WORLD.index('    if (state !== "lost") return;'):]
+    lost = lost[:lost.index("    this.beatCrashGuard();")]
+    assert "this.recordWorldCrash();" in lost
 
 
 def test_crashed_sessions_reboot_into_the_compact_renderer():
@@ -99,17 +104,18 @@ def test_crashed_sessions_reboot_into_the_compact_renderer():
     ) in WORLD
 
 
-def test_compact_renderer_paints_large_plates_at_half_resolution():
-    # The mobile crash is a memory crash: ~96 plates at desktop resolution
-    # allocate more 2D backing store than a phone tab is allowed to hold.
+def test_memory_constrained_renderer_paints_large_plates_at_half_resolution():
+    # The memory crash applies to phones and oversized desktop surfaces: ~96
+    # full-resolution plates retain both 2D and GPU backing stores.
     assert "const CANVAS_TEXTURE_SCALE_MIN_PIXELS = 512 * 512;" in SCENE
     assert "let canvasTextureScale = 1;" in SCENE
-    assert "canvasTextureScale = compactRenderer ? 0.5 : 1;" in SCENE
+    assert "canvasTextureScale = memoryConstrainedRenderer ? 0.5 : 1;" in SCENE
     # The scale must be chosen before the first plate paints, or the phone
     # allocates the full-size buffers this is meant to avoid.
     build = SCENE[SCENE.index("export function createWorldScene("):]
-    assert build.index("canvasTextureScale = compactRenderer") < build.index(
-        "createWorldSky({")
+    assert build.index(
+        "canvasTextureScale = memoryConstrainedRenderer"
+    ) < build.index("createWorldSky({")
     # Draw code keeps its own coordinate system: only the buffer shrinks.
     assert "canvas.width = Math.max(1, Math.round(width * scale));" in SCENE
     assert "context.setTransform(scale, 0, 0, scale, 0, 0);" in SCENE
@@ -133,12 +139,12 @@ def test_crash_reports_name_the_device_renderer_and_resident_scene():
     report = report[:report.index("  reportWorldClientError(")]
     for reading in (
         "device ${device.touch",
-        "renderer ${record.compact === true",
+        "renderer ${rendererModeLabel(record)}",
         "webgl${record.webgl2 === true",
         "cores ${describe(device.cores)}",
         "device memory ",
-        "textures ${coarseCrashLabel(record.textures)}",
-        "geometries ${coarseCrashLabel(record.geometries)}",
+        "textures resident/live ${coarseCrashLabel(record.textures)}",
+        "geometries resident/live ${coarseCrashLabel(record.geometries)}",
         "programs ${coarseCrashLabel(record.programs)}",
         "draws ${coarseCrashLabel(record.calls)}",
         "buffer ${buffer} at dpr ",
@@ -161,6 +167,29 @@ def test_crash_reports_name_the_device_renderer_and_resident_scene():
     assert (
         "compact: output ? output.compactRenderer === true : false,"
     ) in guard
+    for reading in (
+        "liveTextures: complexity",
+        "liveGeometries: complexity",
+        "textureMb: complexity",
+        "geometryMb: complexity",
+        "renderTargetMb: complexity",
+    ):
+        assert reading in guard
+
+
+def test_context_loss_report_distinguishes_leaks_from_large_live_assets():
+    report = WORLD[WORLD.index("  handleRendererStateChange(state)"):]
+    report = report[:report.index("  renderWebGLFallback()")]
+    for reading in (
+        "buffer ${buffer} css ",
+        "antialias ${output?.antialias",
+        "textures resident/live ",
+        "geometries resident/live ",
+        "estimated GPU resources textures ",
+        "heap ${coarseCrashLabel(memory?.heapUsedMB",
+        '"next boot compact"',
+    ):
+        assert reading in report, reading
 
 
 def test_volatile_crash_readings_are_bucketed_so_equivalent_crashes_group():

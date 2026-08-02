@@ -376,6 +376,19 @@ function coarseCrashLabel(value, unit = "") {
   return Number.isFinite(reading) ? `${reading}${unit}` : "unknown";
 }
 
+function rendererModeLabel(output) {
+  if (output?.compactRenderer === true || output?.compact === true) {
+    return "compact";
+  }
+  if (
+    output?.memoryConstrainedRenderer === true ||
+    output?.memoryConstrained === true
+  ) {
+    return "low-memory";
+  }
+  return "full";
+}
+
 // Chromium-only heap reading; NaN elsewhere and the caller omits the figure.
 function heapUsedMB() {
   const bytes = Number(performance?.memory?.usedJSHeapSize);
@@ -8583,6 +8596,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     const renderer = snapshot?.renderer;
     const output = snapshot?.output;
+    const complexity = snapshot?.complexity;
     const memory =
       typeof performance.memory === "object" ? performance.memory : null;
     const record = {
@@ -8606,6 +8620,9 @@ class ForkMeshWorld extends HTMLElement {
       avatars: renderer ? Math.round(renderer.remoteAvatars) : -1,
       space: String(renderer?.space || "unknown").slice(0, 32),
       compact: output ? output.compactRenderer === true : false,
+      memoryConstrained: output
+        ? output.memoryConstrainedRenderer === true
+        : false,
       bufferWidth: output ? Math.round(output.drawingBufferWidth) : -1,
       bufferHeight: output ? Math.round(output.drawingBufferHeight) : -1,
       webgl2: output ? output.webgl2 === true : false,
@@ -8617,6 +8634,21 @@ class ForkMeshWorld extends HTMLElement {
         ? Math.round(Number(memory.jsHeapSizeLimit) / 1048576)
         : -1,
       contextLosses: Math.max(0, Number(this.rendererContextLosses) || 0),
+      liveTextures: complexity
+        ? Math.round(complexity.uniqueTextures)
+        : -1,
+      liveGeometries: complexity
+        ? Math.round(complexity.uniqueGeometries)
+        : -1,
+      textureMb: complexity
+        ? Math.round(Number(complexity.textureBytes) / 1048576)
+        : -1,
+      geometryMb: complexity
+        ? Math.round(Number(complexity.geometryBytes) / 1048576)
+        : -1,
+      renderTargetMb: complexity
+        ? Math.round(Number(complexity.renderTargetBytes) / 1048576)
+        : -1,
       safeMode: this.rendererSafeMode === true,
       gpu: this.rendererGpuLabel(),
     };
@@ -8663,7 +8695,7 @@ class ForkMeshWorld extends HTMLElement {
       ...(gpu ? [`gpu ${gpu}`] : []),
       `cores ${describe(device.cores)}`,
       `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
-      `renderer ${record.compact === true ? "compact" : "full"} webgl${record.webgl2 === true ? "2" : "1"}`,
+      `renderer ${rendererModeLabel(record)} webgl${record.webgl2 === true ? "2" : "1"}`,
       `safe mode ${record.safeMode === true ? "on" : "off"}`,
       `uptime ${coarseCrashLabel((beatAt - Number(record.startedAt)) / 1000, "s")}`,
       `heartbeat gap ${coarseCrashLabel((Date.now() - beatAt) / 1000, "s")}`,
@@ -8677,9 +8709,10 @@ class ForkMeshWorld extends HTMLElement {
       `frame ${coarseCrashLabel(record.frameTimeMs, "ms")} worst ${coarseCrashLabel(record.longestFrameMs, "ms")}`,
       `triangles ${coarseCrashLabel(record.triangles)}`,
       `draws ${coarseCrashLabel(record.calls)}`,
-      `textures ${coarseCrashLabel(record.textures)}`,
-      `geometries ${coarseCrashLabel(record.geometries)}`,
+      `textures resident/live ${coarseCrashLabel(record.textures)}/${coarseCrashLabel(record.liveTextures)}`,
+      `geometries resident/live ${coarseCrashLabel(record.geometries)}/${coarseCrashLabel(record.liveGeometries)}`,
       `programs ${coarseCrashLabel(record.programs)}`,
+      `estimated GPU resources textures ${coarseCrashLabel(record.textureMb, "MB")} geometries ${coarseCrashLabel(record.geometryMb, "MB")} targets ${coarseCrashLabel(record.renderTargetMb, "MB")}`,
       `buffer ${buffer} at dpr ${Number(record.pixelRatio) || 0}`,
       `heap ${coarseCrashLabel(record.heapUsedMb, "MB")} of ${coarseCrashLabel(record.heapLimitMb, "MB")}`,
       `context losses ${describe(record.contextLosses)}`,
@@ -8745,28 +8778,46 @@ class ForkMeshWorld extends HTMLElement {
       // One report per page instance: repeated losses in the same session
       // add noise, and the rolling crash-guard heartbeat already counts them.
       this.reportedRendererContextLoss = true;
-      const renderer = this.lastDiagnosticsSnapshot?.renderer;
-      const output = this.lastDiagnosticsSnapshot?.output;
+      // Even when the browser restores this context, the next reload must not
+      // recreate the same high-memory renderer that just failed.
+      this.recordWorldCrash();
+      const snapshot = this.lastDiagnosticsSnapshot;
+      const renderer = snapshot?.renderer;
+      const output = snapshot?.output;
+      const complexity = snapshot?.complexity;
+      const memory = snapshot?.memory;
       const uptimeS = Math.max(
         0,
         Math.round((Date.now() - (this.crashGuardStartedAt || Date.now())) / 1000),
       );
       const device = this.deviceProfile();
+      const gpu = this.rendererGpuLabel();
+      const buffer =
+        Number(output?.drawingBufferWidth) > 0 &&
+        Number(output?.drawingBufferHeight) > 0
+          ? `${coarseCrashReading(output.drawingBufferWidth)}x${coarseCrashReading(output.drawingBufferHeight)}`
+          : "unknown";
       const parts = [
         `World renderer crashed; WebGL context lost after ${coarseCrashLabel(uptimeS)}s`,
         `device ${device.touch ? "touch" : "pointer"} ${device.screen || "unknown"} screen`,
-        `renderer ${output?.compactRenderer === true ? "compact" : "full"}`,
+        ...(gpu ? [`gpu ${gpu}`] : []),
+        `renderer ${rendererModeLabel(output)} webgl${output?.webgl2 === true ? "2" : "1"} antialias ${output?.antialias === true ? "on" : "off"}`,
+        `buffer ${buffer} css ${coarseCrashLabel(output?.cssWidth)}x${coarseCrashLabel(output?.cssHeight)} at dpr ${renderer ? Number(renderer.pixelRatio) || 0 : 0}`,
         `fps ${coarseCrashLabel(renderer?.fps)}`,
+        `frame ${coarseCrashLabel(renderer?.frameTimeMs, "ms")} worst ${coarseCrashLabel(renderer?.longestFrameMs, "ms")}`,
+        `draws ${coarseCrashLabel(renderer?.calls)}`,
         `triangles ${coarseCrashLabel(renderer?.triangles)}`,
-        `textures ${coarseCrashLabel(renderer?.textures)}`,
-        `geometries ${coarseCrashLabel(renderer?.geometries)}`,
-        `dpr ${renderer ? Number(renderer.pixelRatio) || 0 : 0}`,
+        `textures resident/live ${coarseCrashLabel(renderer?.textures)}/${coarseCrashLabel(complexity?.uniqueTextures)}`,
+        `geometries resident/live ${coarseCrashLabel(renderer?.geometries)}/${coarseCrashLabel(complexity?.uniqueGeometries)}`,
+        `programs ${coarseCrashLabel(renderer?.programs)}`,
+        `estimated GPU resources textures ${coarseCrashLabel(Number(complexity?.textureBytes) / 1048576, "MB")} geometries ${coarseCrashLabel(Number(complexity?.geometryBytes) / 1048576, "MB")} targets ${coarseCrashLabel(Number(complexity?.renderTargetBytes) / 1048576, "MB")}`,
+        `heap ${coarseCrashLabel(memory?.heapUsedMB, "MB")} trend ${coarseCrashLabel(memory?.heapTrendMBPerMin, "MB/min")}`,
+        `space ${String(renderer?.space || "unknown").slice(0, 32)} avatars ${coarseCrashLabel(renderer?.remoteAvatars)}`,
         `cores ${coarseCrashLabel(device.cores)}`,
         `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
         `safe mode ${this.rendererSafeMode === true ? "on" : "off"}`,
+        "next boot compact",
       ];
-      const gpu = this.rendererGpuLabel();
-      if (gpu) parts.push(`gpu ${gpu}`);
       this.reportWorldClientError(parts.join("; "));
     }
     this.beatCrashGuard();
@@ -26766,6 +26817,9 @@ class ForkMeshWorld extends HTMLElement {
             webgl2: sceneOutput.webgl2 === true,
             antialias: sceneOutput.antialias === true,
             compactRenderer: sceneOutput.compactRenderer === true,
+            memoryConstrainedRenderer:
+              sceneOutput.memoryConstrainedRenderer === true,
+            pixelBudget: clampCount(sceneOutput.pixelBudget, 100_000_000),
             gpu: String(sceneOutput.gpu || "").slice(0, 96),
             threeRevision: String(sceneOutput.threeRevision || "").slice(
               0,
@@ -27164,7 +27218,7 @@ class ForkMeshWorld extends HTMLElement {
       output:
         renderer && output
           ? escapeHTML(
-              `${output.drawingBufferWidth}×${output.drawingBufferHeight} buffer (${output.cssWidth}×${output.cssHeight} CSS @ DPR ${renderer.pixelRatio.toFixed(2)}) · WebGL${output.webgl2 ? "2" : "1"} · AA ${output.antialias ? "on" : "off"}${output.compactRenderer ? " · compact renderer" : ""} · ${output.toneMapping} tone mapping @ ${output.exposure.toFixed(2)} · ${output.colorSpace} · camera ${Math.round(output.cameraFov)}° fov, near ${output.cameraNear} far ${output.cameraFar} · three r${output.threeRevision}${output.gpu ? ` · ${output.gpu}` : " · GPU name withheld by browser"}`,
+              `${output.drawingBufferWidth}×${output.drawingBufferHeight} buffer (${output.cssWidth}×${output.cssHeight} CSS @ DPR ${renderer.pixelRatio.toFixed(2)}) · WebGL${output.webgl2 ? "2" : "1"} · AA ${output.antialias ? "on" : "off"}${output.compactRenderer ? " · compact renderer" : output.memoryConstrainedRenderer ? " · low-memory raster" : ""} · ${output.toneMapping} tone mapping @ ${output.exposure.toFixed(2)} · ${output.colorSpace} · camera ${Math.round(output.cameraFov)}° fov, near ${output.cameraNear} far ${output.cameraFar} · three r${output.threeRevision}${output.gpu ? ` · ${output.gpu}` : " · GPU name withheld by browser"}`,
             )
           : unavailable("WebGL renderer unavailable"),
       worldState: renderer
