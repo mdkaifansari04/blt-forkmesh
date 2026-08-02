@@ -267,9 +267,11 @@ QColor actionStatusColor(const QString &status)
 // one timeline.
 void logStartup(const QString &phase)
 {
-    qInfo().noquote() << QStringLiteral("[startup +%1ms] %2")
-                             .arg(startupClock().elapsed(), 5)
-                             .arg(phase);
+    // forkmesh::logStartupTrace() emits the same "[startup +<ms>ms] <phase>"
+    // line off forkmesh::startupTraceClock(), and starts that clock if a path
+    // that skipped main()'s beginStartupTrace() (the test targets) gets here
+    // first.
+    forkmesh::logStartupTrace(phase);
     // The same phases, on screen, while the constructor still owns the GUI
     // thread (adhoc #39). logStartup() marks work that has *finished*, so it
     // closes whichever step startupStep() announced; a phase indented by
