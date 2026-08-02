@@ -1115,6 +1115,37 @@ void MainWindow::applyLoadedPulls(const PullStore &store,
                                   const QString &baseTip)
 {
     m_currentPulls = std::move(pulls);
+    // Agent attribution for the list badges, off the GUI thread. Scanning a PR's
+    // signed commit series for the ForkMesh-Agent trailer means walking the
+    // whole mbox when there is no trailer to find, and refreshPullList() used to
+    // do that for every visible row on every rebuild — including each search
+    // keystroke. Compute it once per load here instead; until it lands the rows
+    // simply carry no agent badge.
+    {
+        const quint64 provenanceGen = ++m_pullProvenanceGen;
+        QList<QPair<int, QString>> series;
+        series.reserve(m_currentPulls.size());
+        for (const PullRequest &pr : std::as_const(m_currentPulls))
+            series.append({pr.number, pr.commits}); // implicitly shared, cheap
+        runOffThread<QHash<int, PullAgentProvenance>>(
+            [series]() {
+                QHash<int, PullAgentProvenance> map;
+                for (const auto &entry : series) {
+                    const PullAgentProvenance prov =
+                        pullAgentProvenanceIn(entry.second);
+                    if (prov.isAgent)
+                        map.insert(entry.first, prov);
+                }
+                return map;
+            },
+            [this, provenanceGen](QHash<int, PullAgentProvenance> map) {
+                if (provenanceGen != m_pullProvenanceGen)
+                    return; // a newer load superseded this pass
+                m_pullProvenance = std::move(map);
+                if (m_pullTable)
+                    refreshPullList(); // badge the rows now that we know
+            });
+    }
     // Pre-compute which open PRs no longer apply cleanly so refreshPullList() can
     // badge their rows. Done here (not per refresh) so typing in the search box
     // doesn't re-spawn the dry-run apply for every open PR. Only meaningful when
@@ -1391,7 +1422,8 @@ void MainWindow::refreshPullList()
                     agent->prNumber == pr.number
                         ? QStringLiteral("this PR")
                         : QStringLiteral("branch %1").arg(pr.head)));
-        } else if (const PullAgentProvenance prov = pullAgentProvenance(pr);
+        } else if (const PullAgentProvenance prov =
+                       m_pullProvenance.value(pr.number);
                    prov.isAgent) {
             // No local session (e.g. an agent PR from another node), but the signed
             // commit trailer still attributes authorship (issue #365).
@@ -1640,19 +1672,40 @@ void MainWindow::showPull(int number)
     // before merging (the "Update branch" button merges the base in — issue #72).
     if (found->status == QLatin1String("open")) {
         const PullStore store = pullStoreForCurrentRepo();
-        bool behind = false;
-        int behindCount = 0;
-        if (store.canWrite() &&
-            store.isBranchBehindBase(found->number, &behind, nullptr, &behindCount) &&
-            behind) {
-            m_pullMeta->setText(
-                m_pullMeta->text() +
-                QString::fromUtf8(" \xC2\xB7 <span style='color:#d29922'>%1 commit%2 "
-                                  "behind %3</span>")
-                    .arg(behindCount)
-                    .arg(behindCount == 1 ? QString() : QStringLiteral("s"),
-                         found->base.toHtmlEscaped()));
-        }
+        const int pullNumber = found->number;
+        const QString base = found->base;
+        // This is a `git rev-list --count` over the PR range. It used to run
+        // while showing the detail pane and is the rev-parse/range stall seen in
+        // the watchdog traces. Keep the store and all identity inputs by value;
+        // the selected PR list can be replaced while the worker is running.
+        runOffThread<QPair<bool, int>>(
+            [store, pullNumber] {
+                bool behind = false;
+                int count = 0;
+                const bool ok = store.canWrite() &&
+                                store.isBranchBehindBase(pullNumber, &behind,
+                                                         nullptr, &count);
+                return qMakePair(ok && behind, count);
+            },
+            [this, pullNumber, base](QPair<bool, int> result) {
+                if (!result.first || m_currentPullNumber != pullNumber ||
+                    !m_pullMeta)
+                    return;
+                const auto current = std::find_if(
+                    m_currentPulls.cbegin(), m_currentPulls.cend(),
+                    [pullNumber](const PullRequest &candidate) {
+                        return candidate.number == pullNumber;
+                    });
+                if (current == m_currentPulls.cend() || current->base != base)
+                    return;
+                m_pullMeta->setText(
+                    m_pullMeta->text() +
+                    QString::fromUtf8(" \xC2\xB7 <span style='color:#d29922'>%1 commit%2 "
+                                      "behind %3</span>")
+                        .arg(result.second)
+                        .arg(result.second == 1 ? QString() : QStringLiteral("s"),
+                             base.toHtmlEscaped()));
+            });
     }
     const QString review = found->reviewSummary();
     if (review == QLatin1String("approved"))
@@ -4625,7 +4678,7 @@ void MainWindow::mergeCurrentPull()
     reloadPulls();
     // Issue #291: flag the agent session behind this PR as landed in main (after
     // reloadPulls so the agent table's PR column also reflects the merge).
-    markAgentSessionsMerged(current.number, current.head);
+    markAgentSessionsMerged(current.number, current.head, /*mergeVerified=*/true);
     // Adhoc #110: only push the merge (closed PR + any linked issue closes) to the
     // mirror and notify peers when the owner has opted into auto-sync-on-merge.
     // Off by default: the merge stays local, refreshSourceControl above has
@@ -7544,7 +7597,7 @@ void MainWindow::mergeAndDeleteCurrentPull()
     refreshSourceControl(true);
     // Issue #291: flag the agent session behind this PR before its branch/record
     // are deleted below (after which it can no longer be detected on reload).
-    markAgentSessionsMerged(m_currentPullNumber, head);
+    markAgentSessionsMerged(m_currentPullNumber, head, /*mergeVerified=*/true);
 
     // Now delete the merged PR and its branch. Adhoc #110: only propagate the
     // merge (and the PR's removal) to peers when auto-sync-on-merge is on;

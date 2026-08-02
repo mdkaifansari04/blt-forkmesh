@@ -55,6 +55,7 @@ QJsonObject AgentSession::toJson() const
     obj["branchName"] = branchName;
     obj["baseRef"] = baseRef;
     obj["baseBranch"] = baseBranch;
+    obj["mergeCandidateHead"] = mergeCandidateHead;
     obj["merged"] = merged;
     obj["mergedAtMs"] = mergedAtMs;
     obj["createdAtMs"] = createdAtMs;
@@ -102,6 +103,7 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.branchName = obj.value("branchName").toString();
     session.baseRef = obj.value("baseRef").toString();
     session.baseBranch = obj.value("baseBranch").toString();
+    session.mergeCandidateHead = obj.value("mergeCandidateHead").toString();
     session.merged = obj.value("merged").toBool();
     session.mergedAtMs = obj.value("mergedAtMs").toVariant().toLongLong();
     session.createdAtMs = obj.value("createdAtMs").toVariant().toLongLong();

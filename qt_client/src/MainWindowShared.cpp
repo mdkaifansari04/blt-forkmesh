@@ -314,20 +314,21 @@ namespace {
 
 // Progressive diff rendering (adhoc #421), see the declarations in
 // MainWindowInternal.h. Above this many chars of HTML a diff is laid out one
-// batch at a time instead of in a single blocking pass; the first batch covers
-// well over a screenful, so the visible window is complete on arrival.
-constexpr qsizetype kDiffFirstPaintChars = 70'000;
+// batch at a time instead of in a single blocking pass. The 70k-char batches
+// still produced 0.5–7s QTextDocument layouts in the stall log; keep a turn
+// below roughly one small file and let the rest arrive on subsequent turns.
+constexpr qsizetype kDiffFirstPaintChars = 12'000;
 // Chars of HTML per streamed batch. Each batch is a separate GUI-thread layout,
 // so this trades how fast the rest lands against how long any one turn blocks.
-constexpr qsizetype kDiffStreamBatchChars = 70'000;
+constexpr qsizetype kDiffStreamBatchChars = 12'000;
 
 // QTextDocument is not virtualized: inserting another row can relayout the
 // entire table already above it. Multi-megabyte generated HTML therefore gets
 // progressively *slower* even when it arrives in event-loop-sized batches. Keep
 // each file body and the complete rich-text body bounded. Headers/anchors remain
 // for every file, and a clear placeholder points readers to the full patch.
-constexpr qsizetype kDiffFileRichTextChars = 60'000;
-constexpr qsizetype kDiffTotalRichTextChars = 420'000;
+constexpr qsizetype kDiffFileRichTextChars = 12'000;
+constexpr qsizetype kDiffTotalRichTextChars = 180'000;
 
 QString responsiveDiffBlock(const QString &block, bool headerOnly)
 {
@@ -558,11 +559,11 @@ void flushDiffStream(QTextEdit *view)
     auto it = diffStreams().find(view);
     if (it == diffStreams().end() || it->pending.isEmpty())
         return;
-    ++it->gen; // the queued batch bails; the whole remainder lands here instead
-    const QString rest = it->pending.join(QString());
-    it->pending.clear();
-    appendDiffStreamBatch(view, rest);
-    finishDiffStream(view);
+    // Never append the remainder synchronously. A file navigation/search used to
+    // concatenate and lay out the entire pending document here, turning a click
+    // into the exact 45–70k+ `diff html append` stalls captured by the watchdog.
+    // scheduleDiffStreamBatch() always queues the next bounded batch before the
+    // event loop can deliver another user action, so there is nothing to do here.
 }
 
 void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook)

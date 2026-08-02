@@ -74,6 +74,11 @@ struct AgentSession {
     QString branchName;
     QString baseRef;    // base commit SHA captured at run start (worktree/diff)
     QString baseBranch; // base branch the PR targets (e.g. main)
+    // Exact source-branch tip ForkMesh observed while it was still ahead of the
+    // base branch. A background merge check may only call the work landed once
+    // this specific commit is reachable from base; the mutable branch name is
+    // not proof on its own because an agent can reset it to main.
+    QString mergeCandidateHead;
     // Set once this session's worktree/PR has landed in the base branch (issue
     // #291), so the status and detail page can flag it.
     bool merged = false;

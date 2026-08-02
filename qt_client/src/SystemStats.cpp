@@ -138,6 +138,50 @@ qint64 SystemStats::availableMemoryBytes()
     return 0;
 }
 
+qint64 SystemStats::totalSwapBytes()
+{
+#if defined(Q_OS_LINUX)
+    QFile meminfo(QStringLiteral("/proc/meminfo"));
+    if (meminfo.open(QIODevice::ReadOnly)) {
+        const QList<QByteArray> lines = meminfo.readAll().split('\n');
+        for (const QByteArray &line : lines) {
+            if (!line.startsWith("SwapTotal:"))
+                continue;
+            const QList<QByteArray> parts = line.simplified().split(' ');
+            if (parts.size() >= 2) {
+                bool ok = false;
+                const qulonglong kib = parts.at(1).toULongLong(&ok);
+                if (ok)
+                    return qint64(kib) * 1024;
+            }
+        }
+    }
+#endif
+    return 0;
+}
+
+qint64 SystemStats::freeSwapBytes()
+{
+#if defined(Q_OS_LINUX)
+    QFile meminfo(QStringLiteral("/proc/meminfo"));
+    if (meminfo.open(QIODevice::ReadOnly)) {
+        const QList<QByteArray> lines = meminfo.readAll().split('\n');
+        for (const QByteArray &line : lines) {
+            if (!line.startsWith("SwapFree:"))
+                continue;
+            const QList<QByteArray> parts = line.simplified().split(' ');
+            if (parts.size() >= 2) {
+                bool ok = false;
+                const qulonglong kib = parts.at(1).toULongLong(&ok);
+                if (ok)
+                    return qint64(kib) * 1024;
+            }
+        }
+    }
+#endif
+    return 0;
+}
+
 qint64 SystemStats::diskTotalBytes(const QString &path)
 {
 #if defined(Q_OS_UNIX)
