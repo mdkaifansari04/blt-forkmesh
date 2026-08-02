@@ -4930,19 +4930,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         if (maybeShowSendToPromptMenu(obj, static_cast<QContextMenuEvent *>(event)))
             return true;
     }
-    // Hovering the top-bar balance is what spends a Solana getBalance call —
-    // every other path renders the cached figure, so the app no longer re-queries
-    // the public RPC endpoints on each profile refresh. Don't consume: the label
-    // still needs the enter event for its tooltip/hover styling.
+    // Hovering the rail balance under the account avatar is what spends a Solana
+    // getBalance call — every other path renders the cached figure, so the app no
+    // longer re-queries the public RPC endpoints on each profile refresh. Don't
+    // consume: the label still needs the enter event for its tooltip/hover
+    // styling. Clicking no longer cycles SOL/USD/INR — the tiny line is always
+    // SOL now (adhoc #96) — so the only click target left is its "Add SOL" link.
     if (obj == m_navSolanaBalance && event->type() == QEvent::Enter)
         refreshNavSolanaBalance();
-    // Click the top-bar balance to cycle its display currency (SOL/USD/INR).
-    if (obj == m_navSolanaBalance &&
-        event->type() == QEvent::MouseButtonRelease &&
-        !m_navSolanaBalanceAddress.isEmpty()) {
-        cycleNavSolanaCurrency();
-        return true;
-    }
     // Click a row (or effort dot) in the footer slash-actions popup (adhoc
     // #116): every activatable widget in that popup carries a "slashKind"
     // dynamic property, dispatched generically in activateSlashActionRow.
