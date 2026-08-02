@@ -487,17 +487,22 @@ QWidget *MainWindow::buildChatPage()
 
     // The account avatar is intentionally the bottom-most rail destination. It
     // keeps the round user picture (not an octicon), sized and captioned like
-    // every other item.
+    // every other item. The public SOL balance is a third, tinier line beneath
+    // the caption (adhoc #96) — it used to sit on the top-chrome line, far from
+    // the account it describes, so the item is one balance-line taller than the
+    // standard kRailItemHeight.
     auto *accountLabel = new QLabel(QStringLiteral("Account"));
     accountLabel->setObjectName(QStringLiteral("railItemLabel"));
     accountLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
     auto *accountHost = new QWidget;
-    accountHost->setFixedSize(railItemWidth(), kRailItemHeight);
+    accountHost->setFixedSize(railItemWidth(),
+                              kRailItemHeight + navBalanceLineHeight());
     auto *accountLayout = new QVBoxLayout(accountHost);
     accountLayout->setContentsMargins(0, 2, 0, 0);
     accountLayout->setSpacing(2);
     accountLayout->addWidget(m_userAvatarNavButton, 0, Qt::AlignHCenter);
     accountLayout->addWidget(accountLabel, 0, Qt::AlignHCenter);
+    accountLayout->addWidget(m_navSolanaBalance, 0, Qt::AlignHCenter);
     m_appNavigationRailLayout->addWidget(accountHost, 0, Qt::AlignLeft);
     updateNotificationButton();
 
@@ -4973,23 +4978,33 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
 
-    // The public wallet balance heads the top-chrome line right after the relay
-    // switcher. The "user/node" caption that used to precede it was dropped
-    // (adhoc #42) — the avatar already says who is signed in.
-    m_navSolanaBalance = new QLabel(QStringLiteral("0.000000000 SOL"));
+    // The public wallet balance no longer heads the top-chrome line (adhoc #96):
+    // it rides under the account avatar at the foot of the activity rail, with
+    // the identity it belongs to, as a tiny always-SOL figure. Only the tooltip
+    // carries the full nine-decimal amount now.
+    m_navSolanaBalance = new QLabel(QString::fromUtf8("\xE2\x80\x94 SOL"));
     m_navSolanaBalance->setObjectName("navSolanaBalance");
-    m_navSolanaBalance->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_navSolanaBalance->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
     m_navSolanaBalance->setTextFormat(Qt::RichText);
     m_navSolanaBalance->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
     m_navSolanaBalance->setOpenExternalLinks(false);
     m_navSolanaBalance->setCursor(Qt::PointingHandCursor);
+    // The rail item cannot widen, so the label is pinned to it and drawn in the
+    // largest tiny size whose widest figure still fits (navBalanceFont()). That
+    // size has to be declared on the widget itself: Theme.h's QWidget rule sets
+    // a 14px base font, and a stylesheet font beats setFont() — the label would
+    // paint at 14px and run out of its slot. Colour still comes from the theme's
+    // #navSolanaBalance rule, which this doesn't override.
+    m_navSolanaBalance->setFixedWidth(railItemWidth());
+    m_navSolanaBalance->setFont(navBalanceFont());
+    m_navSolanaBalance->setStyleSheet(
+        QStringLiteral("font-size:%1px;").arg(navBalanceFont().pixelSize()));
     m_navSolanaBalance->setToolTip(
-        "Your Solana wallet balance \xE2\x80\x94 click to switch "
-        "currency (SOL / USD / INR).\n"
+        "Your Solana wallet balance.\n"
         "Non-custodial payout address: this client only shares its public "
         "address; its private key stays in the wallet you control.");
-    // Clicking the balance itself cycles its display currency, so the control
-    // sits right on the value instead of needing a separate swap icon.
+    // Pointing at the balance is what spends the getBalance call (see
+    // eventFilter) — everything else renders the cached figure.
     m_navSolanaBalance->installEventFilter(this);
     connect(m_navSolanaBalance, &QLabel::linkActivated, this,
             [this](const QString &) {
@@ -5603,27 +5618,25 @@ QWidget *MainWindow::buildBreadcrumb()
     // icons directly below it (this replaces the old 24px inset from adhoc #91).
     chromeRow->setContentsMargins(0, 0, 8, 0);
     chromeRow->setSpacing(8);
-    // The instance/relay switcher heads the edge-to-edge chrome, with the public
-    // SOL balance immediately to its right. The live fleet matrix sits in this
-    // same left-hand group (adhoc #42), so it reads on the same left edge as the
-    // balance instead of drifting with the search box, and the recent action
-    // runs follow it (adhoc #70). The Agents button that used to head this group
-    // is now a regular rail entry.
+    // The instance/relay switcher heads the edge-to-edge chrome. The live fleet
+    // matrix sits in this same left-hand group (adhoc #42) so it reads on the
+    // window's left edge instead of drifting with the search box, and the recent
+    // action runs follow it (adhoc #70). The Agents button that used to head this
+    // group is now a regular rail entry, and the public SOL balance that used to
+    // sit here moved under the account avatar in the rail (adhoc #96).
     chromeRow->addWidget(m_relayMenuButton);
     // Logged-out only: the sign-in pill sits immediately after the relay switcher
     // so it is the first thing on the bar that isn't chrome, and it lives in the
     // left-hand group because that group never scrolls out of a narrow window.
     chromeRow->addWidget(m_navSignInButton);
     chromeRow->addWidget(m_relayJoinApproveButton);
-    // The owner/repo switcher sits between the instance logo and the SOL
-    // balance (adhoc #6) — repository identity now reads on the chrome line
-    // instead of heading the repo-detail page. updateRepoSwitcher still owns
-    // its text, icon and visibility.
+    // The owner/repo switcher follows the instance logo (adhoc #6) — repository
+    // identity now reads on the chrome line instead of heading the repo-detail
+    // page. updateRepoSwitcher still owns its text, icon and visibility.
     chromeRow->addWidget(m_repoMenuButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);
-    identityBalanceRow->addWidget(m_navSolanaBalance);
     identityBalanceRow->addWidget(m_agentDotMatrix);
     identityBalanceRow->addWidget(m_chromeDotDivider, 0, Qt::AlignVCenter);
     identityBalanceRow->addWidget(m_nodeDotMatrix);
@@ -6565,22 +6578,25 @@ QString formatSolanaBalance(qint64 lamports)
     return QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 9);
 }
 
-// solanaDisplayCurrency() ("sol" | "usd" | "inr") is a shared helper declared in
-// MainWindowInternal.h (used by both this view and the settings panel).
-
-QString fiatCurrencySymbol(const QString &cur)
+// The rail slot under the avatar is one rail item wide, so the nine-decimal
+// figure the chrome line used to carry no longer fits. Print the most precision
+// that stays inside the item and let the tooltip keep the exact amount. Always
+// SOL: the fiat conversion (and its click-to-cycle currency) went away with the
+// move (adhoc #96).
+QString compactSolanaBalance(qint64 lamports)
 {
-    return cur == QLatin1String("inr") ? QString::fromUtf8("\xE2\x82\xB9")
-                                       : QStringLiteral("$");
-}
-
-QString formatFiatBalance(qint64 lamports, double rate, const QString &cur)
-{
-    const double value = (lamports / 1000000000.0) * rate;
-    return QStringLiteral("%1%2 %3")
-        .arg(fiatCurrencySymbol(cur))
-        .arg(value, 0, 'f', 2)
-        .arg(cur.toUpper());
+    const double sol = lamports / 1000000000.0;
+    if (lamports <= 0)
+        return QStringLiteral("0 SOL");
+    if (sol >= 1000.0)
+        return QStringLiteral("%1k SOL").arg(sol / 1000.0, 0, 'f', 1);
+    if (sol >= 100.0)
+        return QStringLiteral("%1 SOL").arg(sol, 0, 'f', 1);
+    if (sol >= 1.0)
+        return QStringLiteral("%1 SOL").arg(sol, 0, 'f', 2);
+    // Dust rounds to "0.0000 SOL", which still reads differently from the
+    // "0 SOL" an empty wallet prints above.
+    return QStringLiteral("%1 SOL").arg(sol, 0, 'f', 4);
 }
 
 QString lastSolanaBalanceSetting(const QString &address)
@@ -6742,24 +6758,6 @@ void MainWindow::refreshWebUserSolanaAddress()
             });
 }
 
-void MainWindow::cycleNavSolanaCurrency()
-{
-    QSettings s;
-    QString cur = s.value(kSolanaDisplayCurrencySetting).toString().toLower();
-    if (cur.isEmpty())
-        cur = s.value(kSolanaDisplayUsdSetting, false).toBool()
-                  ? QStringLiteral("usd")
-                  : QStringLiteral("sol");
-    const QString next = cur == QLatin1String("sol")   ? QStringLiteral("usd")
-                         : cur == QLatin1String("usd") ? QStringLiteral("inr")
-                                                       : QStringLiteral("sol");
-    s.setValue(kSolanaDisplayCurrencySetting, next);
-    // Re-render from the cached balance/rate rather than re-querying the chain +
-    // price API on every click — that re-querying is what made the figure stall
-    // (rate-limited) after a few quick switches.
-    renderNavSolanaBalance();
-}
-
 void MainWindow::updateNavSolanaBalance()
 {
     // The top bar no longer prints "user/node" beside the balance (adhoc #42),
@@ -6790,9 +6788,10 @@ void MainWindow::updateNavSolanaBalance()
     m_navSolanaBalanceAddress = addr;
     if (addr.isEmpty()) {
         m_navSolanaLamports = -1;
+        // One rail item wide: the prompt is the link itself, and the tooltip
+        // says what it does.
         m_navSolanaBalance->setText(
-            QStringLiteral("0.000000000 SOL &nbsp;&middot;&nbsp; "
-                           "<a href=\"settings\">Add address online</a>"));
+            QStringLiteral("<a href=\"settings\">Add SOL</a>"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral(
                 "Add a public self-custodial Solana address to show its balance.")));
@@ -6800,7 +6799,7 @@ void MainWindow::updateNavSolanaBalance()
     }
     if (!isLikelySolanaAddress(addr)) {
         m_navSolanaLamports = -1;
-        m_navSolanaBalance->setText(QStringLiteral("SOL invalid"));
+        m_navSolanaBalance->setText(QStringLiteral("bad addr"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral("Saved public Solana address is invalid.")));
         return;
@@ -6813,9 +6812,10 @@ void MainWindow::updateNavSolanaBalance()
     renderNavSolanaBalance();
 }
 
-// Re-render the balance label from the cached lamports + fiat rate, without
-// touching Solana. Shows a "hover to load" placeholder when nothing is cached
-// yet, and fetches a single price when the fiat rate is stale.
+// Re-render the balance label from the cached lamports, without touching
+// Solana. Shows a "hover to load" placeholder when nothing is cached yet. The
+// figure is always SOL — the tiny rail line has no room for a fiat conversion,
+// and the exact nine-decimal amount lives in the tooltip.
 void MainWindow::renderNavSolanaBalance()
 {
     if (!m_navSolanaBalance)
@@ -6824,55 +6824,17 @@ void MainWindow::renderNavSolanaBalance()
         return; // updateNavSolanaBalance() already painted the empty state
     if (m_navSolanaLamports < 0) {
         if (m_navSolanaFetchInFlight)
-            return; // a hover-triggered query is already painting "SOL ..."
-        m_navSolanaBalance->setText(QString::fromUtf8("SOL \xE2\x80\x94"));
+            return; // a hover-triggered query is already painting "... SOL"
+        m_navSolanaBalance->setText(QString::fromUtf8("\xE2\x80\x94 SOL"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral("Hover to check your public Solana balance.")));
         return;
     }
-    const QString cur = solanaDisplayCurrency();
-    const QString solBalance = formatSolanaBalance(m_navSolanaLamports);
-    if (cur == QLatin1String("sol")) {
-        m_navSolanaBalance->setText(solBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("Your public Solana balance: %1")
-                    .arg(solBalance)));
-        return;
-    }
-    const auto it = m_navFiatRates.constFind(cur);
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const bool fresh = it != m_navFiatRates.constEnd() && it->first > 0.0 &&
-                       now - it->second < 5 * 60 * 1000; // 5-minute rate cache
-    if (fresh) {
-        const QString fiatBalance =
-            formatFiatBalance(m_navSolanaLamports, it->first, cur);
-        m_navSolanaBalance->setText(fiatBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("Your public wallet balance: %1 (%2)")
-                    .arg(fiatBalance, solBalance)));
-        return;
-    }
-    // No fresh rate cached. This function now runs on every profile-hydration
-    // pass, so back off after a recent attempt (successful or not) instead of
-    // re-asking the price API each time; show the SOL figure meanwhile.
-    const bool attemptedRecently =
-        it != m_navFiatRates.constEnd() && now - it->second < 60 * 1000;
-    if (attemptedRecently || m_navFiatFetchInFlight) {
-        m_navSolanaBalance->setText(solBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("SOL/%1 price unavailable. Public balance: %2")
-                    .arg(cur.toUpper(), solBalance)));
-        return;
-    }
-    m_navSolanaBalance->setText(QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
+    m_navSolanaBalance->setText(compactSolanaBalance(m_navSolanaLamports));
     m_navSolanaBalance->setToolTip(
         externalWalletBalanceTooltip(
-            QStringLiteral("Checking SOL/%1 price for %2")
-                .arg(cur.toUpper(), solBalance)));
-    queryNavSolanaUsdPrice(m_navSolanaBalanceAddress, m_navSolanaLamports);
+            QStringLiteral("Your public Solana balance: %1")
+                .arg(formatSolanaBalance(m_navSolanaLamports))));
 }
 
 // Hovering the top-bar balance is the only thing that spends a Solana RPC
@@ -6892,7 +6854,7 @@ void MainWindow::refreshNavSolanaBalance(bool force)
         now - m_navSolanaFetchedMs < kNavSolanaBalanceTtlMs)
         return;
     if (m_navSolanaLamports < 0) {
-        m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
+        m_navSolanaBalance->setText(QStringLiteral("... SOL"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral("Checking your public Solana balance.")));
     }
@@ -6910,7 +6872,7 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
         m_navSolanaFetchedMs = QDateTime::currentMSecsSinceEpoch();
         if (m_navSolanaBalance && m_navSolanaBalanceAddress == addr &&
             m_navSolanaLamports < 0) {
-            m_navSolanaBalance->setText(QStringLiteral("SOL unavailable"));
+            m_navSolanaBalance->setText(QStringLiteral("n/a SOL"));
             m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
                 QStringLiteral("Public Solana balance is temporarily unavailable.")));
         }
@@ -6946,7 +6908,7 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
         m_navSolanaFetchInFlight = false;
         m_navSolanaFetchedMs = QDateTime::currentMSecsSinceEpoch();
         const qint64 lamports = result.value("value").toVariant().toLongLong();
-        m_navSolanaLamports = lamports; // cache so currency switches don't re-query
+        m_navSolanaLamports = lamports; // cache so re-renders don't re-query
         QSettings settings;
         const QString lastBalanceKey = lastSolanaBalanceSetting(addr);
         const QVariant previousValue = settings.value(lastBalanceKey);
@@ -6964,74 +6926,11 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
                              false, QStringLiteral("emblem-default"));
         }
         settings.setValue(lastBalanceKey, QString::number(lamports));
-        const QString cur = solanaDisplayCurrency();
-        if (cur != QLatin1String("sol")) {
-            m_navSolanaBalance->setText(
-                QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
-            m_navSolanaBalance->setToolTip(
-                externalWalletBalanceTooltip(
-                    QStringLiteral("Checking SOL/%1 price for %2")
-                        .arg(cur.toUpper(), balance)));
-            queryNavSolanaUsdPrice(addr, lamports);
-            return;
-        }
-        m_navSolanaBalance->setText(balance);
+        m_navSolanaBalance->setText(compactSolanaBalance(lamports));
         m_navSolanaBalance->setToolTip(
             externalWalletBalanceTooltip(
                 QStringLiteral("Your public Solana balance: %1")
                     .arg(balance)));
-    });
-}
-
-void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
-{
-    const QString cur = solanaDisplayCurrency();
-    if (cur == QLatin1String("sol"))
-        return;
-    if (m_navFiatFetchInFlight)
-        return;
-    m_navFiatFetchInFlight = true;
-    QNetworkRequest request(QUrl(
-        QStringLiteral("https://api.coingecko.com/api/v3/simple/price"
-                       "?ids=solana&vs_currencies=%1").arg(cur)));
-    QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, addr, lamports, cur]() {
-        const QByteArray raw = reply->readAll();
-        const QNetworkReply::NetworkError netError = reply->error();
-        reply->deleteLater();
-        m_navFiatFetchInFlight = false;
-        const double rate =
-            QJsonDocument::fromJson(raw).object()
-                .value(QStringLiteral("solana")).toObject()
-                .value(cur).toDouble();
-        // Stamp the attempt either way: a 0 rate marks "tried and failed" so
-        // renderNavSolanaBalance backs off instead of retrying on every pass.
-        if (netError != QNetworkReply::NoError || rate <= 0.0)
-            m_navFiatRates[cur] = {0.0, QDateTime::currentMSecsSinceEpoch()};
-        if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr ||
-            solanaDisplayCurrency() != cur)
-            return;
-
-        const QString solBalance = formatSolanaBalance(lamports);
-        if (netError != QNetworkReply::NoError || rate <= 0.0) {
-            m_navSolanaBalance->setText(solBalance);
-            m_navSolanaBalance->setToolTip(
-                externalWalletBalanceTooltip(
-                    QStringLiteral("SOL/%1 price unavailable. Public balance: %2")
-                        .arg(cur.toUpper(), solBalance)));
-            return;
-        }
-
-        m_navFiatRates[cur] = {rate, QDateTime::currentMSecsSinceEpoch()};
-        const QString fiatBalance = formatFiatBalance(lamports, rate, cur);
-        m_navSolanaBalance->setText(fiatBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("Your public wallet balance: %1 "
-                               "(%2 at %3%4/SOL)")
-                    .arg(fiatBalance, solBalance, fiatCurrencySymbol(cur),
-                         QString::number(rate, 'f', 2))));
     });
 }
 
