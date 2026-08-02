@@ -693,7 +693,9 @@ QWidget *MainWindow::buildNetworkLogDock()
             });
     updateQuickAddCharCount();
 
-    m_quickAddAgentProvider = new FullPopupComboBox; // no scroll arrows (issue #348)
+    // Hidden canonical provider state. The user-facing agent + model menu is
+    // built below after this control and the model control are ready.
+    m_quickAddAgentProvider = new FullPopupComboBox;
     m_quickAddAgentProvider->setObjectName("quickAddAgentSelector");
     // "Manual" (adhoc #29): the no-agent choice that replaces the old Agent /
     // Create-issue checkboxes — picking it files an issue from the typed prompt
@@ -728,6 +730,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Show the whole model list at once rather than a scrollable popup, even
     // once the live provider list-up fills in more than a handful (adhoc #99).
     m_quickAddClaudeModel->setMaxVisibleItems(30);
+    m_quickAddAgentModelSelector = new FullPopupComboBox;
+    m_quickAddAgentModelSelector->setObjectName("quickAddAgentModelSelector");
+    m_quickAddAgentModelSelector->setIconSize(QSize(22, 22));
+    m_quickAddAgentModelSelector->view()->setIconSize(QSize(26, 26));
+    m_quickAddAgentModelSelector->setMaxVisibleItems(30);
+    m_quickAddAgentModelSelector->setToolTip(
+        "Choose the agent and model that will handle this prompt.");
     auto refreshQuickAddModelPicker = [this]() {
         if (!m_quickAddAgentProvider || !m_quickAddClaudeModel)
             return;
@@ -772,6 +781,7 @@ QWidget *MainWindow::buildNetworkLogDock()
             if (m_codexModelEdit)
                 m_codexModelEdit->setText(safeModel);
         }
+        refreshQuickAddAgentModelSelector();
     };
     connect(m_quickAddClaudeModel, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [persistQuickAddModel](int) { persistQuickAddModel(); });
@@ -780,12 +790,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Permission/sandbox mode for both structured CLI integrations. Claude maps
     // this to its skip-permissions switch; Codex app-server maps every option to
     // a distinct approval policy and sandbox, including interactive requests.
-    m_quickAddModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
+    m_quickAddModeSelector = new IconOnlyFullPopupComboBox;
     m_quickAddModeSelector->setObjectName("quickAddModeSelector");
-    m_quickAddModeSelector->addItem(kAgentAskModeLabel, false);
-    m_quickAddModeSelector->addItem(QStringLiteral("Edit"), false);
-    m_quickAddModeSelector->addItem(QStringLiteral("Plan"), false);
-    m_quickAddModeSelector->addItem(kClaudeAutoModeLabel, true);
+    m_quickAddModeSelector->addItem(agentControlIcon(7), kClaudeAutoModeLabel, true);
+    m_quickAddModeSelector->addItem(agentControlIcon(8), kAgentAskModeLabel, false);
+    m_quickAddModeSelector->addItem(agentControlIcon(9), QStringLiteral("Plan"), false);
+    m_quickAddModeSelector->addItem(agentControlIcon(10), QStringLiteral("Edit"), false);
+    m_quickAddModeSelector->view()->setIconSize(QSize(26, 26));
     m_quickAddModeSelector->setMaxVisibleItems(30);
     m_quickAddModeSelector->setToolTip(
         "How much freedom the agent has to make changes without asking first.");
@@ -805,14 +816,28 @@ QWidget *MainWindow::buildNetworkLogDock()
                                      m_quickAddModeSelector->currentData().toBool());
                 QSettings().setValue(kAgentModeSetting,
                                      m_quickAddModeSelector->currentText());
+                const QString description =
+                    QStringLiteral("Permission mode: %1")
+                        .arg(m_quickAddModeSelector->currentText());
+                m_quickAddModeSelector->setAccessibleName(description);
+                m_quickAddModeSelector->setToolTip(
+                    description + QStringLiteral(". Click to choose a mode."));
             });
+    {
+        const QString description =
+            QStringLiteral("Permission mode: %1")
+                .arg(m_quickAddModeSelector->currentText());
+        m_quickAddModeSelector->setAccessibleName(description);
+        m_quickAddModeSelector->setToolTip(
+            description + QStringLiteral(". Click to choose a mode."));
+    }
     // Speed (reasoning effort) beside the mode selector (adhoc #38): the same
     // setting the "/" popup's effort dots write, promoted to the composer so the
     // choice is visible where prompts are launched. The item list is per
     // provider — Codex reports supportedReasoningEfforts per model, the `claude`
     // CLI is probed for what it accepts — so filling it lives in
     // refreshQuickAddSpeedSelector() and re-runs whenever either changes.
-    m_quickAddSpeedSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
+    m_quickAddSpeedSelector = new IconOnlyFullPopupComboBox;
     m_quickAddSpeedSelector->setObjectName("quickAddSpeedSelector");
     m_quickAddSpeedSelector->setMaxVisibleItems(30);
     m_quickAddSpeedSelector->setToolTip(
@@ -916,7 +941,11 @@ QWidget *MainWindow::buildNetworkLogDock()
         const QString provider = m_quickAddAgentProvider->currentData().toString();
         const bool claudeCode = provider == QLatin1String("claude-code");
         const bool codex = agentIsCodexProvider(provider);
-        m_quickAddClaudeModel->setVisible(claudeCode || codex);
+        // Provider and model now appear in m_quickAddAgentModelSelector. These
+        // controls retain the canonical state expected by the launch paths.
+        m_quickAddAgentProvider->setVisible(false);
+        m_quickAddClaudeModel->setVisible(false);
+        m_quickAddAgentModelSelector->setVisible(true);
         m_quickAddModeSelector->setVisible(claudeCode || codex);
         if (m_quickAddSpeedSelector) {
             m_quickAddSpeedSelector->setVisible(claudeCode || codex);
@@ -932,7 +961,31 @@ QWidget *MainWindow::buildNetworkLogDock()
                     m_quickAddAgentProvider->currentData().toString());
                 refreshQuickAddModelPicker();
                 syncQuickAddAgentControls();
+                refreshQuickAddAgentModelSelector();
             });
+    connect(m_quickAddAgentModelSelector,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+                if (index < 0 || !m_quickAddAgentProvider ||
+                    !m_quickAddClaudeModel)
+                    return;
+                const QString provider =
+                    m_quickAddAgentModelSelector->itemData(index).toString();
+                const QString model = m_quickAddAgentModelSelector
+                                          ->itemData(index, Qt::UserRole + 1)
+                                          .toString();
+                const QSignalBlocker selectorBlock(m_quickAddAgentModelSelector);
+                const int providerIndex =
+                    m_quickAddAgentProvider->findData(provider);
+                if (providerIndex >= 0 &&
+                    providerIndex != m_quickAddAgentProvider->currentIndex())
+                    m_quickAddAgentProvider->setCurrentIndex(providerIndex);
+                if (!model.isEmpty())
+                    selectModelComboValue(m_quickAddClaudeModel, model);
+                refreshQuickAddSpeedSelector();
+                refreshQuickAddAgentModelSelector();
+            });
+    refreshQuickAddAgentModelSelector();
 
     // Slash-actions button (adhoc #116): a small bordered "/" box, like the
     // Claude Code extension's, that opens the filterable actions popup —
@@ -1058,16 +1111,17 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Enter targets "new" until an agent session is opened above.
     updateQuickAddEnterTarget();
 
-    // Agent hand-off controls (adhoc #99): the provider/model/mode dropdowns,
-    // grouped as one unit in the middle of the bottom bar. The provider dropdown
-    // now also carries "Manual (create issue)" (adhoc #29). No border/frame
-    // around them any more (adhoc #111 removed the pill outline) — they just sit
-    // inline in the bar.
+    // Agent hand-off controls: one combined agent/model picker followed by the
+    // icon-only mode and reasoning-effort pickers. No border/frame around the
+    // group; it sits inline in the bottom bar.
     auto *agentBox = new QWidget;
     agentBox->setObjectName("quickAddAgentBox");
     auto *agentBoxRow = new QHBoxLayout(agentBox);
     agentBoxRow->setContentsMargins(6, 1, 4, 1);
     agentBoxRow->setSpacing(2);
+    agentBoxRow->addWidget(m_quickAddAgentModelSelector);
+    // Hidden compatibility state; adding them gives the widgets the same owner
+    // and lifecycle they had before the visible controls were combined.
     agentBoxRow->addWidget(m_quickAddAgentProvider);
     agentBoxRow->addWidget(m_quickAddClaudeModel);
     agentBoxRow->addWidget(m_quickAddModeSelector);
@@ -1842,7 +1896,9 @@ void MainWindow::populateSlashActionsList()
         addHeader(QStringLiteral("Model"));
         if (matches(QStringLiteral("Switch model")))
             addRow(QStringLiteral("Switch model\xE2\x80\xA6"),
-                   m_quickAddClaudeModel ? m_quickAddClaudeModel->currentText() : QString(),
+                   m_quickAddAgentModelSelector
+                       ? m_quickAddAgentModelSelector->currentText()
+                       : QString(),
                    QStringLiteral("switchModel"), QString());
         if (matches(QStringLiteral("Effort"))) {
             auto *row = new QFrame;
@@ -1965,20 +2021,9 @@ void MainWindow::activateSlashActionRow(QWidget *row)
         sendIssueContextToSelectedAgent();
     } else if (kind == QLatin1String("switchModel")) {
         closePopup();
-        if (m_quickAddAgentProvider) {
-            const QString provider =
-                m_quickAddAgentProvider->currentData().toString();
-            if (provider != QLatin1String("claude-code") &&
-                !agentIsCodexProvider(provider)) {
-                const int idx = m_quickAddAgentProvider->findData(
-                    QStringLiteral("claude-code"));
-                if (idx >= 0)
-                    m_quickAddAgentProvider->setCurrentIndex(idx);
-            }
-        }
-        if (m_quickAddClaudeModel) {
-            m_quickAddClaudeModel->setFocus();
-            m_quickAddClaudeModel->showPopup();
+        if (m_quickAddAgentModelSelector) {
+            m_quickAddAgentModelSelector->setFocus();
+            m_quickAddAgentModelSelector->showPopup();
         }
     } else if (kind == QLatin1String("effortLevel")) {
         QSettings().setValue(kClaudeEffortSetting, value);
@@ -2080,10 +2125,102 @@ void MainWindow::refreshQuickAddSpeedSelector()
     }
     const QSignalBlocker block(m_quickAddSpeedSelector);
     m_quickAddSpeedSelector->clear();
-    for (const QString &level : levels)
-        m_quickAddSpeedSelector->addItem(agentEffortLabel(level), level);
+    for (int i = 0; i < levels.size(); ++i)
+        m_quickAddSpeedSelector->addItem(
+            agentControlIcon(11 + qMin(i, 4)), agentEffortLabel(levels.at(i)),
+            levels.at(i));
     const int idx = m_quickAddSpeedSelector->findData(current);
     m_quickAddSpeedSelector->setCurrentIndex(idx >= 0 ? idx : 0);
+    const QString description =
+        QStringLiteral("Reasoning effort: %1")
+            .arg(m_quickAddSpeedSelector->currentText());
+    m_quickAddSpeedSelector->setAccessibleName(description);
+    m_quickAddSpeedSelector->setToolTip(
+        description +
+        QStringLiteral(". Higher levels are slower and more thorough."));
+}
+
+// Build the one visible agent/model menu from the canonical hidden provider and
+// model controls. Each row stores provider in UserRole and model in UserRole+1,
+// allowing a single click to update both without changing the launch contract.
+void MainWindow::refreshQuickAddAgentModelSelector()
+{
+    if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
+        !m_quickAddClaudeModel)
+        return;
+    const QString selectedProvider =
+        m_quickAddAgentProvider->currentData().toString();
+    const QString selectedModel =
+        (selectedProvider == QLatin1String("claude-code") ||
+         agentIsCodexProvider(selectedProvider))
+            ? selectedModelComboValue(m_quickAddClaudeModel)
+            : QString();
+    const QSignalBlocker blocker(m_quickAddAgentModelSelector);
+    m_quickAddAgentModelSelector->clear();
+
+    auto addChoice = [this](const QIcon &icon, const QString &label,
+                            const QString &provider, const QString &model) {
+        const int row = m_quickAddAgentModelSelector->count();
+        m_quickAddAgentModelSelector->addItem(icon, label, provider);
+        m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
+    };
+    addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
+              QStringLiteral("manual"), QString());
+
+    QComboBox claudeModels;
+    populateClaudeModelCombo(&claudeModels);
+    if (!m_liveClaudeModels.isEmpty())
+        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
+    for (int i = 0; i < claudeModels.count(); ++i) {
+        const QString id = claudeModels.itemData(i).toString();
+        const QString lower = id.toLower();
+        int icon = 7;
+        if (lower.contains(QLatin1String("opus")))
+            icon = 0;
+        else if (lower.contains(QLatin1String("fable")))
+            icon = 1;
+        else if (lower.contains(QLatin1String("sonnet")))
+            icon = 2;
+        else if (lower.contains(QLatin1String("haiku")))
+            icon = 3;
+        addChoice(agentControlIcon(icon),
+                  QStringLiteral("%1 · Claude Code")
+                      .arg(compactModelName(claudeModels.itemText(i))),
+                  QStringLiteral("claude-code"), id);
+    }
+
+    QComboBox codexModels;
+    populateCodexModelCombo(&codexModels);
+    for (int i = 0; i < codexModels.count(); ++i) {
+        addChoice(agentControlIcon(4 + (i % 3)),
+                  QStringLiteral("%1 · Codex").arg(codexModels.itemText(i)),
+                  kCodexProvider, codexModels.itemData(i).toString());
+    }
+
+    // These API agents do not expose a per-run model chooser in this composer,
+    // but remain first-class choices in the combined menu.
+    addChoice(agentControlIcon(4), QStringLiteral("OpenAI API"),
+              QStringLiteral("openai"), QString());
+    addChoice(agentControlIcon(2), QStringLiteral("Claude API"),
+              QStringLiteral("claude-api"), QString());
+
+    int selected = -1;
+    for (int i = 0; i < m_quickAddAgentModelSelector->count(); ++i) {
+        if (m_quickAddAgentModelSelector->itemData(i).toString() !=
+            selectedProvider)
+            continue;
+        const QString rowModel = m_quickAddAgentModelSelector
+                                     ->itemData(i, Qt::UserRole + 1)
+                                     .toString();
+        if (selectedModel.isEmpty() || rowModel == selectedModel) {
+            selected = i;
+            break;
+        }
+    }
+    m_quickAddAgentModelSelector->setCurrentIndex(selected >= 0 ? selected : 0);
+    m_quickAddAgentModelSelector->setAccessibleName(
+        QStringLiteral("Agent and model: %1")
+            .arg(m_quickAddAgentModelSelector->currentText()));
 }
 
 // Ask the installed `claude` CLI which --effort values it accepts (adhoc #38)
@@ -4965,9 +5102,11 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_relayJoinApproveButton, &QPushButton::clicked, this,
             &MainWindow::showRelayJoinApprovalDialog);
 
-    // Connection speed as a colour, pinned above the instance logo (adhoc
-    // #124): the radar dish that used to carry this on the right of the chrome
-    // line is gone, so the link's health now rides the instance it belongs to.
+    // Connection speed as the colour of the dropdown caret on the instance
+    // logo's corner (adhoc #124, adhoc #224): the radar dish that used to carry
+    // this on the right of the chrome line is gone, so the link's health rides
+    // the instance it belongs to — and rides the mark that says this logo opens
+    // a menu, rather than a separate dot that only looked like a status light.
     // The probe itself is still driven by m_relayLatencyTimer.
     m_relaySpeedDot = new RelaySpeedDot(m_relayMenuButton);
 
@@ -6511,20 +6650,65 @@ void MainWindow::showRelayMenu()
     menu.addAction(searchAction);
     menu.addSeparator();
 
-    // One checkable action per relay (active one checked), each labelled with
-    // that instance's connection speed (adhoc #124) — the readout the radar
-    // dish used to carry for the active relay only. Cached samples show
-    // instantly; anything stale is re-probed and the label updates in place
-    // while the menu is open.
+    // One row per relay, each labelled with that instance's connection speed
+    // (adhoc #124) — the readout the radar dish used to carry for the active
+    // relay only. Cached samples show instantly; anything stale is re-probed and
+    // the label updates in place while the menu is open.
+    //
+    // Each row is a widget rather than a plain QAction because the name now
+    // carries a link that opens that instance's website in the browser (adhoc
+    // #224) — the "server" link the breadcrumb used to hold before adhoc #91
+    // folded the domain into this menu, back where the domain went. Clicking
+    // anywhere else on the row still switches to the relay, and the active one
+    // is marked with a check the way the checkable action was.
     QList<QAction *> relayActions;
     for (int i = 0; i < m_servers.size(); ++i) {
         const ServerConfig &server = m_servers.at(i);
         const QString host = serverHost(server.url);
-        QAction *act = menu.addAction(QIcon(faviconFor(server)),
-                                      relayMenuEntryText(host));
-        act->setCheckable(true);
-        act->setChecked(i == m_activeServer);
-        connect(act, &QAction::triggered, this, [this, i] { switchToServer(i); });
+        const bool active = i == m_activeServer;
+
+        auto *row = new QWidget(&menu);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(4, 0, 4, 0);
+        rowLayout->setSpacing(2);
+
+        // The check the checkable QAction used to draw, as a leading glyph so
+        // every row's text starts on the same column whether or not it is the
+        // live relay.
+        auto rowText = [active](const QString &entry) {
+            return (active ? QString::fromUtf8("\xE2\x9C\x93  ")
+                           : QStringLiteral("     ")) + entry;
+        };
+        auto *pick = new QPushButton(QIcon(faviconFor(server)),
+                                     rowText(relayMenuEntryText(host)), row);
+        pick->setFlat(true);
+        pick->setCursor(Qt::PointingHandCursor);
+        pick->setStyleSheet(QStringLiteral("text-align:left; padding:4px 6px;"));
+        pick->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        connect(pick, &QPushButton::clicked, &menu, [this, i, &menu] {
+            menu.close();
+            switchToServer(i);
+        });
+
+        auto *open = new QPushButton(row);
+        open->setObjectName(QStringLiteral("issueIconButton"));
+        open->setFlat(true);
+        open->setCursor(Qt::PointingHandCursor);
+        open->setFixedSize(26, 26);
+        open->setToolTip(QStringLiteral("Open %1 in your browser")
+                             .arg(host.isEmpty() ? server.url : host));
+        setOcticon(open, QStringLiteral("link"), 14);
+        connect(open, &QPushButton::clicked, &menu, [this, i, &menu] {
+            menu.close();
+            openServerWebsite(i);
+        });
+
+        rowLayout->addWidget(pick, 1);
+        rowLayout->addWidget(open, 0);
+
+        auto *act = new QWidgetAction(&menu);
+        act->setDefaultWidget(row);
+        menu.addAction(act);
         relayActions.append(act);
 
         const RelayLatencySample sample =
@@ -6532,11 +6716,11 @@ void MainWindow::showRelayMenu()
         if (QDateTime::currentMSecsSinceEpoch() - sample.stampMs <
             kRelaySpeedFreshMs)
             continue;
-        // The action dies with the menu, which the probe can easily outlive.
-        QPointer<QAction> guarded(act);
-        probeRelayHostSpeed(server.url, [this, guarded, host](int) {
+        // The row dies with the menu, which the probe can easily outlive.
+        QPointer<QPushButton> guarded(pick);
+        probeRelayHostSpeed(server.url, [this, guarded, host, rowText](int) {
             if (guarded)
-                guarded->setText(relayMenuEntryText(host));
+                guarded->setText(rowText(relayMenuEntryText(host)));
         });
     }
 

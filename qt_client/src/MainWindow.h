@@ -701,6 +701,10 @@ public:
     // issue/agent a branch is attached to (adhoc #191).
     void testAddAgentSession(const AgentSession &session)
     {
+        // Test fixtures must survive the same delayed reloads as production
+        // sessions; keeping them memory-only made timer timing erase rows.
+        if (m_agentStore)
+            m_agentStore->saveSession(session);
         for (AgentSession &existing : m_agentSessions) {
             if (existing.id == session.id) {
                 existing = session;
@@ -708,6 +712,22 @@ public:
             }
         }
         m_agentSessions.append(session);
+    }
+    int testAgentSessionForPullId(int prNumber, const QString &headBranch) const
+    {
+        const AgentSession *session = agentSessionForPull(prNumber, headBranch);
+        return session ? session->id : 0;
+    }
+    bool testBindAgentSessionsToPull(int prNumber, const QString &headBranch)
+    {
+        return bindAgentSessionsToPull(prNumber, headBranch);
+    }
+    int testAgentSessionPullNumber(int sessionId) const
+    {
+        for (const AgentSession &session : m_agentSessions)
+            if (session.id == sessionId)
+                return session.prNumber;
+        return 0;
     }
     // Take the nav strip's route to the Agents tab, so a test can read that
     // lazily-built list back the way a user reaches it (adhoc #119).
@@ -726,9 +746,21 @@ public:
                 m_agentStore->appendLog(*session, text);
     }
     void testRunAgentTranscriptSearch() { runAgentTranscriptSearch(); }
+    // Force the coalesced attachment scan to run now (adhoc #222), the way the
+    // hook above forces the debounced transcript scan.
+    void testScanAgentSessionImages()
+    {
+        m_agentImageScanPending = true;
+        refreshAgentTable();
+    }
     // The Agents list's visible rows, as the issue/title column renders them
     // (including the "· N in transcript" marker).
     QStringList testAgentRowTitles() const;
+    // adhoc #222: the attachments the list is carrying for a session's row, and
+    // whether that row has drawn the little square yet — so a test can prove a
+    // picture named in a prompt reaches the row and is decoded into a thumbnail.
+    QStringList testAgentRowImages(int sessionId) const;
+    bool testAgentRowHasThumbnail(int sessionId) const;
     // Whether the leading Branch cell for `branch` carries an icon, so a test can
     // prove the list stamps agent status at the row's left edge (adhoc #251).
     bool testBranchAttachmentHasIcon(const QString &branch) const;
@@ -767,6 +799,19 @@ public:
     int testCommitWorkspacePage() const;
     QString testBranchDiffBranch() const { return m_branchDiffBranch; }
     QStringList testBranchDiffFiles() const { return m_branchDiffFilePaths; }
+    // Text currently in the range pane, so a test can prove that selecting a
+    // branch never leaves the previously viewed branch's diff on screen while the
+    // new one is read (adhoc #227).
+    QString testBranchDiffText() const;
+    // Whether that branch's patch is already cached, i.e. whether reselecting it
+    // repaints without waiting on git.
+    bool testBranchDiffCached(const QString &branch) const;
+    // Whether the last branch selection painted from that cache rather than from
+    // a placeholder, which is what makes revisiting a branch instant.
+    bool testBranchDiffPaintedFromCache() const
+    {
+        return m_branchDiffPaintedFromCache;
+    }
     // Paths rendered in the universal CHANGES tree, so branch tests can prove
     // the range's files appear without swapping to a second navigator.
     QStringList testSourceControlPaths() const;
@@ -2462,6 +2507,10 @@ private:
     // a like-named branch in another repo.
     const AgentSession *agentSessionForPull(int prNumber,
                                             const QString &headBranch = QString()) const;
+    // Persist the PR number on every existing Agent session that produced this
+    // repo-scoped source branch. This turns the branch fallback into a durable
+    // PR association without inventing an Agent for a manual branch.
+    bool bindAgentSessionsToPull(int prNumber, const QString &headBranch);
     // Issue #291: flag agent sessions whose worktree/PR has landed in the base
     // branch. markAgentSessionsMerged() records it eagerly when ForkMesh merges
     // a PR/worktree; refreshAgentMergeState() is the catch-all run on reload (it
@@ -3132,6 +3181,13 @@ private:
         int added = -1;
         int removed = -1;
     };
+    // One branch's already-rendered range patch, kept so re-opening that branch
+    // paints from memory instead of leaving the pane on the previous branch
+    // while git is read again (adhoc #227).
+    struct BranchDiffCacheEntry {
+        QByteArray patch;
+        QString emptyMessage;
+    };
     // Branches table layout: destructive action first, immediately followed by
     // the branch name. Updated/worktree remain hidden backing columns whose data
     // is folded into the compact Branch delegate.
@@ -3646,6 +3702,9 @@ private:
     // that range's files while leaving its composer and actions in place.
     void showRangeFilesInSourceControl(const QStringList &paths,
                                        const QStringList &statuses);
+    // Empty that same tree while a freshly clicked branch's range is read, so it
+    // cannot keep listing the previous branch's files (adhoc #227).
+    void clearRangeFilesInSourceControl();
     bool sourceControlShowsRange() const;
     QString sourceControlGitDir() const;
     void scrollBranchDiffToFile(const QString &path);
@@ -4019,6 +4078,7 @@ private:
     // neither is known yet.
     QStringList agentEffortLevels() const;
     void refreshQuickAddSpeedSelector();
+    void refreshQuickAddAgentModelSelector();
     // Probe the installed `claude` CLI for the effort levels it accepts and
     // cache them (kClaudeEffortLevelsCacheSetting). Cheap (`claude --help`),
     // once per app run, and a no-op while a probe is already in flight.
@@ -5469,12 +5529,16 @@ private:
     QPlainTextEdit *m_issueQuickAdd = nullptr;
     QFrame *m_promptWrapper = nullptr; // geometry anchor for notification/prompt bubbles
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
-    // Agent/model chooser (adhoc #29): also carries a "Manual (create issue)"
-    // entry that replaces the old Agent / Create-issue checkboxes — picking it
-    // files an issue from the prompt instead of starting an agent.
+    // Canonical provider state behind the combined visible picker. It also
+    // carries a "Manual (create issue)" entry, which files an issue from the
+    // prompt instead of starting an agent.
     QComboBox *m_quickAddAgentProvider = nullptr;
-    // Prompt-row model chooser (adhoc #261/#349): Claude Code gets the live
-    // Claude model list; Codex gets an editable OpenAI model list.
+    // Visible combined agent/model menu. The two legacy controls below remain
+    // as hidden state holders so all launch/session code continues to consume
+    // the same canonical provider and model values.
+    QComboBox *m_quickAddAgentModelSelector = nullptr;
+    // Canonical model state behind the combined visible picker: Claude Code
+    // gets the live Claude list and Codex gets its app-server list.
     QComboBox *m_quickAddClaudeModel = nullptr;
     // Permission-mode chooser (issue #348): Ask before edits/Edit automatically/
     // Plan mode/Auto mode, styled like the provider/model combos beside it and
@@ -5830,6 +5894,38 @@ private:
     QByteArray m_branchDiffLastPatch;
     QString m_branchDiffLastEmpty;
     bool m_branchDiffLastValid = false;
+    // Clicking a branch used to leave the *previous* branch's diff, changed-file
+    // list and sticky header on screen for as long as the new branch's range read
+    // took — seconds on a large branch — so the pane confidently attributed one
+    // branch's changes to another (adhoc #227). A selection now repaints for the
+    // branch that was clicked straight away: from this cache when that branch has
+    // been reviewed before, otherwise from a placeholder naming it. The git read
+    // still runs behind either one and replaces the patch only if it differs, so
+    // a cached paint is never the final word (stale-while-revalidate).
+    QHash<QString, BranchDiffCacheEntry> m_branchDiffCache;
+    QStringList m_branchDiffCacheOrder; // oldest key first, for eviction
+    qint64 m_branchDiffCacheBytes = 0;
+    static constexpr int kBranchDiffCacheEntries = 8;
+    static constexpr qint64 kBranchDiffCacheBytes = 8 * 1024 * 1024;
+    // Cache key for a branch's range patch: git dir, branch, compare base and the
+    // checkout the range is read from, since a different value for any of them is
+    // a different diff. Empty (uncacheable) in PR mode, whose patch comes from the
+    // pull request rather than from this read.
+    QString branchDiffCacheKey(const QString &branch, const QString &workDir) const;
+    void rememberBranchDiff(const QString &key, const QByteArray &patch,
+                            const QString &emptyMessage);
+    void forgetBranchDiff(const QString &branch); // after the branch is written to
+    void clearBranchDiffCache();
+    // Repaint the range pane for a newly selected branch before its diff is read.
+    // By value: the repaint shells git, which pumps the event loop, and a queued
+    // navigation can reassign whatever the caller passed in (the adhoc #106/#119
+    // UAF family).
+    void beginBranchDiffTransition(QString branch);
+    // Fade the diff in once real content replaces that placeholder.
+    void finishBranchDiffTransition();
+    bool m_branchDiffPendingFade = false;
+    bool m_branchDiffPaintedFromCache = false;
+    QString branchDiffViewedContext(const QString &branch) const;
     // "viewed" key for whatever scope the diff pane currently shows (whole branch,
     // a commit, or the uncommitted changes); set by renderBranchDiffPatch so the
     // per-file Viewed toggle persists against the right scope, not always "all".
@@ -6844,6 +6940,33 @@ private:
     // what the transcripts are scanned for (that box, or the top bar's).
     QString agentFilterQuery() const;
     QString agentTranscriptQuery() const;
+    // Attachment thumbnails in the sessions list (adhoc #222): a session started
+    // from — or steered with — a pasted screenshot shows it as a small square at
+    // the head of its row, and clicking that square opens the picture full size.
+    // The scan for "Attached image:" lines reads prompts and transcripts off the
+    // GUI thread and is coalesced behind m_agentImageScanPending, the way the
+    // per-row diff probes are; the decode of each thumbnail is off-thread too.
+    QHash<int, QStringList> m_agentSessionImages; // session id -> image paths
+    QHash<int, QString> m_agentImageStamps;       // session id -> scanned stamp
+    int m_agentImageScanGen = 0;
+    bool m_agentImageScanRunning = false;
+    bool m_agentImageScanQueued = false;
+    bool m_agentImageScanPending = true;
+    // image path -> its square, or a null icon once the file has been found
+    // unreadable (so a row asks for it once rather than every refresh)
+    QHash<QString, QIcon> m_agentThumbnails;
+    QSet<QString> m_agentThumbnailsPending;       // decodes in flight
+    void scanAgentSessionImages(const QList<AgentSession> &sessions,
+                                const QString &owner, const QString &name);
+    // The images a row draws from, readable-and-still-on-disk only. Cache-only:
+    // it never touches the disk, so refreshAgentTable() can call it per row.
+    QStringList agentSessionImages(int sessionId) const;
+    // The row's square for `path`, decoding it in the background (and filling the
+    // row in when that lands) the first time it is asked for.
+    QIcon agentThumbnail(const QString &path);
+    void applyAgentThumbnail(const QString &path);
+    // Open a session's attachments full size, one under another.
+    void showAgentSessionImages(int sessionId);
     // Compose row at the top of the session list (adhoc #234): type a prompt,
     // pick a repo and an agent provider, and start an ad-hoc agent right there
     // without going through the footer quick-add bar.
@@ -6887,19 +7010,17 @@ private:
                           const QString &newPath, const QString &newContents);
     // Extension-style transcript for Claude Code sessions: claude runs in
     // stream-json mode (ClaudeStreamSession) and the events render as native
-    // cards (ClaudeTranscriptView, output stack page 2). A header toggle flips
-    // to the raw process output (page 0) for debugging.
+    // cards (ClaudeTranscriptView, output stack page 2). The Transcript/Raw pair
+    // in the detail header flips to the raw process output (page 0) for
+    // debugging; both are rail-style tiles beside the session actions (adhoc
+    // #224) and are hidden for sessions that have no transcript at all.
     ClaudeTranscriptView *m_agentTranscript = nullptr;
     QPushButton *m_transcriptModeButton = nullptr;
     QPushButton *m_terminalModeButton = nullptr;
-    QWidget *m_agentOutputToggle = nullptr;
-    // The transcript-only half of that toolbar (the search box): hidden for
-    // log/terminal sessions while the toolbar's session action buttons stay put
-    // (adhoc #35).
-    QWidget *m_agentTranscriptTools = nullptr;
-    // adhoc #201: search-the-transcript box in the output toggle row, with a
-    // "3/12" match counter; Enter walks the highlighted hits (adhoc #51 dropped
-    // the prev/next steppers).
+    // adhoc #201: the transcript's search query and "3/12" match counter. Both
+    // are off-screen since adhoc #224 removed the detail pane's own search box —
+    // the window's top-bar search mirrors into this line edit, which is what
+    // drives the highlighting (see syncAgentPageSearchFromGlobal).
     QLineEdit *m_transcriptSearch = nullptr;
     QLabel *m_transcriptSearchCount = nullptr;
     QListWidget *m_agentFilesList = nullptr;     // files edited in this session
