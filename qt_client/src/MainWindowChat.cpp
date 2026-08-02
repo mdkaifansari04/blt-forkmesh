@@ -5617,10 +5617,17 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageFlight->setDuration(260);
     m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
     connect(m_topMessageFlight, &QPropertyAnimation::finished, this, [this] {
-        if (!m_topMessageSlidingOut)
-            return; // an arrival flight just landed; nothing to clean up
-        m_topMessageSlidingOut = false;
-        advanceTopMessageQueue();
+        if (m_topMessageSlidingOut) {
+            m_topMessageSlidingOut = false;
+            advanceTopMessageQueue();
+            return;
+        }
+        if (m_topMessageEntering) {
+            m_topMessageEntering = false;
+            if (m_topMessageTimer && m_topMessageSecondsLeft > 0 &&
+                !m_topMessageHovering)
+                m_topMessageTimer->start(1000);
+        }
     });
     m_topMessageContainer->hide();
 

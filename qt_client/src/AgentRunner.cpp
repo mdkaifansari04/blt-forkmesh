@@ -756,8 +756,16 @@ QString AgentRunner::defaultPromptPreamble()
         "You are running inside ForkMesh as a coding agent.\n"
         "Use the minimum context and output needed. Inspect only files relevant to the issue.\n"
         "Do not spend extra tokens on broad refactors or unrelated cleanup.\n"
-        "When possible, make the smallest patch that satisfies the issue.\n"
-        "Do not commit, push, or open network resources unless the issue explicitly requires it.");
+        "When possible, make the smallest patch that satisfies the issue.\n") +
+           commitChangesInstruction();
+}
+
+QString AgentRunner::commitChangesInstruction()
+{
+    return QStringLiteral(
+        "After completing and verifying the requested changes, commit them to the current "
+        "agent branch with a concise commit message. Do not push. Do not create an empty "
+        "commit when no repository changes are needed.");
 }
 
 QString AgentRunner::providerDisplayName(const QString &provider)
