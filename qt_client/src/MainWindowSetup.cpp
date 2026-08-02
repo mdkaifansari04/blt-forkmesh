@@ -1297,6 +1297,39 @@ QString MainWindow::testNetworkRepoCellText(int row,
     return QString();
 }
 
+bool MainWindow::testNetworkRepoHasCommitSparkline(int row) const
+{
+    if (!m_networkReposTable || row < 0 ||
+        row >= m_networkReposTable->rowCount())
+        return false;
+    for (int column = 0; column < m_networkReposTable->columnCount(); ++column) {
+        QTableWidgetItem *label =
+            m_networkReposTable->horizontalHeaderItem(column);
+        if (!label || label->text() != QLatin1String("Commit activity"))
+            continue;
+        QWidget *cell = m_networkReposTable->cellWidget(row, column);
+        return cell && cell->objectName() ==
+            QLatin1String("networkRepoCommitSparkline");
+    }
+    return false;
+}
+
+QString MainWindow::testNetworkRepoCommitActivitySummary(int row) const
+{
+    if (!m_networkReposTable || row < 0 ||
+        row >= m_networkReposTable->rowCount())
+        return QString();
+    for (int column = 0; column < m_networkReposTable->columnCount(); ++column) {
+        QTableWidgetItem *label =
+            m_networkReposTable->horizontalHeaderItem(column);
+        if (!label || label->text() != QLatin1String("Commit activity"))
+            continue;
+        QWidget *cell = m_networkReposTable->cellWidget(row, column);
+        return cell ? cell->accessibleName() : QString();
+    }
+    return QString();
+}
+
 int MainWindow::testReposNavBadgeCount() const
 {
     auto *railButton = dynamic_cast<ActivityRailButton *>(m_reposNavButton);

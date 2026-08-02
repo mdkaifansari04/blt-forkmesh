@@ -9004,6 +9004,104 @@ namespace {
 // left out: the description (prose for the repository's own page, not a grid
 // cell) and raw signatures / private-archive locators (proof material rather
 // than repository facts — their digests are shown instead).
+
+class NetworkRepoCommitSparkline final : public QWidget
+{
+public:
+    NetworkRepoCommitSparkline(const QVector<qint64> &weeks,
+                               qint64 totalCommitCount,
+                               QWidget *parent = nullptr)
+        : QWidget(parent), m_weeks(weeks), m_totalCommitCount(totalCommitCount)
+    {
+        setObjectName(QStringLiteral("networkRepoCommitSparkline"));
+        setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
+        setMinimumSize(152, 28);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+
+        qint64 activityTotal = 0;
+        QStringList values;
+        for (const qint64 value : m_weeks) {
+            activityTotal += value;
+            values << QString::number(value);
+        }
+        const auto commitLabel = [](qint64 count) {
+            return QStringLiteral("%1 commit%2")
+                .arg(formatCount(count), count == 1 ? QString() : QStringLiteral("s"));
+        };
+        m_summary = m_totalCommitCount >= 0
+            ? (activityTotal && activityTotal != m_totalCommitCount
+                   ? QStringLiteral("%1 total; %2 in the past 52 weeks")
+                         .arg(commitLabel(m_totalCommitCount),
+                              commitLabel(activityTotal))
+                   : commitLabel(m_totalCommitCount))
+            : QStringLiteral("%1 in the past 52 weeks")
+                  .arg(commitLabel(activityTotal));
+        setAccessibleName(m_summary);
+        setToolTip(QStringLiteral("%1\nCommits per week (oldest first):\n%2")
+                       .arg(m_summary, values.join(QLatin1Char(' '))));
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const QString totalLabel = m_totalCommitCount >= 0
+            ? QStringLiteral("%1 total").arg(formatCount(m_totalCommitCount))
+            : QString::fromUtf8("\xE2\x80\x94");
+        QFont valueFont = font();
+        valueFont.setPointSizeF(qMax(7.0, valueFont.pointSizeF() - 1.0));
+        const QFontMetrics valueMetrics(valueFont);
+        const int labelWidth = valueMetrics.horizontalAdvance(totalLabel) + 8;
+        const QRectF chartRect = QRectF(rect()).adjusted(1.0, 4.0,
+                                                          -labelWidth, -4.0);
+        const QRectF labelRect(chartRect.right() + 5.0, 0.0,
+                               qMax(0.0, width() - chartRect.right() - 5.0),
+                               height());
+
+        QColor track = palette().color(QPalette::WindowText);
+        track.setAlpha(30);
+        QColor emptyBar = palette().color(QPalette::WindowText);
+        emptyBar.setAlpha(45);
+        const QColor activeBar(currentThemeIsDark() ? "#3fb950" : "#1f883d");
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(track);
+        painter.drawRoundedRect(chartRect, 3.0, 3.0);
+
+        qint64 maximum = 1;
+        for (const qint64 value : m_weeks)
+            maximum = qMax(maximum, value);
+        const int count = m_weeks.size();
+        if (count > 0 && chartRect.width() > 1.0) {
+            const qreal step = chartRect.width() / count;
+            const qreal barWidth = qMax(1.0, step - 0.65);
+            for (int index = 0; index < count; ++index) {
+                const qint64 value = m_weeks.at(index);
+                const qreal height = value > 0
+                    ? qMax(2.0, (chartRect.height() - 3.0) * value / maximum)
+                    : 1.0;
+                const QRectF bar(chartRect.left() + index * step + (step - barWidth) / 2.0,
+                                 chartRect.bottom() - height - 1.0, barWidth, height);
+                painter.setBrush(value > 0 ? activeBar : emptyBar);
+                painter.drawRoundedRect(bar, 1.0, 1.0);
+            }
+        }
+
+        painter.setFont(valueFont);
+        QColor label = palette().color(QPalette::WindowText);
+        label.setAlpha(180);
+        painter.setPen(label);
+        painter.drawText(labelRect, Qt::AlignRight | Qt::AlignVCenter,
+                         totalLabel);
+    }
+
+private:
+    QVector<qint64> m_weeks;
+    qint64 m_totalCommitCount = -1;
+    QString m_summary;
+};
+
 enum NetworkRepoCol {
     kRepoColName = 0,
     kRepoColLocalFork,
@@ -9069,7 +9167,7 @@ QStringList networkRepoHeaders()
             QStringLiteral("Commits"),      QStringLiteral("Branches"),
             QStringLiteral("Pulls"),        QStringLiteral("Discussions"),
             QStringLiteral("Worktrees"),    QStringLiteral("Artifacts"),
-            QStringLiteral("Activity 52w"), QStringLiteral("Changed files"),
+            QStringLiteral("Commit activity"), QStringLiteral("Changed files"),
             QStringLiteral("Size"),         QStringLiteral("Source"),
             QStringLiteral("Hosts"),        QStringLiteral("Machine"),
             QStringLiteral("Runtime"),      QStringLiteral("Platform"),
@@ -9521,6 +9619,60 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         }
 
         QJsonObject canonical = group.at(best);
+        // A mirror can advertise a stale commit count or 52-week history while
+        // another member already has the current served branch.  Mirrors are
+        // replicas, not independent histories: take the highest total and the
+        // highest value in each week rather than summing duplicate commits.
+        // This keeps the Repos row from showing a stale mirror's "1" before
+        // the repository detail reads the current history and reports "3".
+        auto nonNegativeCount = [](const QJsonValue &value, qint64 *out) {
+            if (value.isDouble()) {
+                const double number = value.toDouble();
+                if (!std::isfinite(number) || number < 0)
+                    return false;
+                *out = qint64(number);
+                return true;
+            }
+            bool ok = false;
+            const qint64 number = value.toString().trimmed().toLongLong(&ok);
+            if (!ok || number < 0)
+                return false;
+            *out = number;
+            return true;
+        };
+        qint64 commitCount = -1;
+        QVector<qint64> activityWeeks(52, 0);
+        bool hasActivityWeeks = false;
+        for (const QJsonObject &member : group) {
+            qint64 memberCommitCount = -1;
+            if (nonNegativeCount(member.value(QStringLiteral("commitCount")),
+                                 &memberCommitCount)) {
+                commitCount = qMax(commitCount, memberCommitCount);
+            }
+            const QJsonArray memberWeeks =
+                member.value(QStringLiteral("activityWeeks")).toArray();
+            if (memberWeeks.isEmpty())
+                continue;
+            hasActivityWeeks = true;
+            const int first = qMax(0, memberWeeks.size() - activityWeeks.size());
+            const int destination = qMax(0, activityWeeks.size() - memberWeeks.size());
+            for (int index = first; index < memberWeeks.size(); ++index) {
+                qint64 commits = 0;
+                if (!nonNegativeCount(memberWeeks.at(index), &commits))
+                    continue;
+                activityWeeks[destination + index - first] =
+                    qMax(activityWeeks.at(destination + index - first), commits);
+            }
+        }
+        if (commitCount >= 0)
+            canonical.insert(QStringLiteral("commitCount"),
+                             QString::number(commitCount));
+        if (hasActivityWeeks) {
+            QJsonArray mergedWeeks;
+            for (const qint64 commits : activityWeeks)
+                mergedWeeks.append(commits);
+            canonical.insert(QStringLiteral("activityWeeks"), mergedWeeks);
+        }
         const QString source =
             canonical.value("source").toString().trimmed();
         const QString rawOwner =
@@ -9943,18 +10095,20 @@ void MainWindow::fillNetworkRepoDataCells(int row, const QJsonObject &repo)
     if (activity.isEmpty()) {
         textCell(kRepoColActivity, QString());
     } else {
-        qint64 activityTotal = 0;
-        QStringList weeks;
+        QVector<qint64> weeks;
+        weeks.reserve(activity.size());
         for (const QJsonValue &week : activity) {
-            activityTotal += qint64(week.toDouble());
-            weeks << QString::number(qint64(week.toDouble()));
+            const QVariant value = week.isDouble()
+                ? QVariant(qint64(week.toDouble()))
+                : QVariant(week.toString().trimmed().toLongLong());
+            weeks.append(qMax<qint64>(0, value.toLongLong()));
         }
-        auto *item = new QTableWidgetItem;
-        item->setData(Qt::DisplayRole, activityTotal);
-        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        item->setToolTip(QStringLiteral("Commits per week (oldest first):\n%1")
-                             .arg(weeks.join(QLatin1Char(' '))));
-        m_networkReposTable->setItem(row, kRepoColActivity, item);
+        const QVariant total = number(QStringLiteral("commitCount"));
+        m_networkReposTable->setCellWidget(
+            row, kRepoColActivity,
+            new NetworkRepoCommitSparkline(
+                weeks, total.isValid() ? total.toLongLong() : -1,
+                m_networkReposTable));
     }
 
     const QStringList changedFiles = joinArray(QStringLiteral("changedFiles"));
