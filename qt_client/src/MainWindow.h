@@ -4580,7 +4580,8 @@ private:
     // m_topMessage linkActivated handler (e.g. "fm:agent:<id>" to jump to a
     // waiting agent). Empty = a plain, non-clickable toast.
     void flashMessage(const QString &text, bool error = false,
-                      const QString &clickHref = QString());
+                      const QString &clickHref = QString(),
+                      int durationSeconds = 0);
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
     void queueTopMessage(const QString &text, bool error,
@@ -5072,6 +5073,7 @@ private:
     // animation ever drives the bubble's geometry.
     QPropertyAnimation *m_topMessageFlight = nullptr;
     bool m_topMessageSlidingOut = false;  // countdown finished; bubble is easing off the right edge
+    bool m_topMessageEntering = false;    // wait for the entry glide before starting its countdown
     QPushButton *m_topMessageCopy = nullptr;
     QPushButton *m_topMessageSendToPrompt = nullptr;
     QPushButton *m_topMessageClose = nullptr;
@@ -5088,6 +5090,7 @@ private:
         QString text;
         bool error = false;
         QString clickHref;
+        int durationSeconds = 0; // its full countdown starts when it reaches the top
     };
     QList<TopMessageQueueEntry> m_topMessageQueue;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
