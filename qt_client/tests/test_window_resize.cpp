@@ -2409,10 +2409,13 @@ int main(int argc, char *argv[])
         issueSession.baseBranch = QStringLiteral("main");
         issueSession.baseRef = agentRouteBaseRef;
         window.testAddAgentSession(issueSession);
+        // Model the intermittent stale list badge from the report. The live
+        // branch review below must reconcile it to the exact rendered set.
+        window.testSetCachedAgentDiffFiles(issueSession.id, 3);
 
         // adhoc #131: the agent detail page's "Branch" button opens that session's
-        // diff against main without repointing the graph below it. The sessions
-        // list is global, so the click still has to bind the Git view to the
+        // branch and diff against main. The sessions list is global, so the click
+        // still has to bind the Git view to the
         // session's own repository first; from another repo's detail page it
         // would otherwise render that repo's (missing) branch. Park the detail
         // view on "me/r", then take the route for the session on "me/wtrepo".
@@ -2426,10 +2429,10 @@ int main(int argc, char *argv[])
                       "session's repository (adhoc #131, git dir = %1)")
                   .arg(agentBranchDir));
         check(window.testCommitWorkspacePage() == 2 &&
-                  window.testBrowsedBranch() == QStringLiteral("main") &&
+                  window.testBrowsedBranch() == agentRouteBranch &&
                   window.testBranchDiffBranch() == agentRouteBranch,
-              QString("the agent's Branch button reviews its range without "
-                      "moving the graph off main (page = %1, graph = %2, diff = %3)")
+              QString("the agent's Branch button binds the graph and range to "
+                      "the same branch (page = %1, graph = %2, diff = %3)")
                   .arg(window.testCommitWorkspacePage())
                   .arg(window.testBrowsedBranch(), window.testBranchDiffBranch()));
         check(window.testGitFilesSlotPage() == 0 &&
@@ -2454,6 +2457,10 @@ int main(int argc, char *argv[])
               QString("an agent's Branch button always compares against main "
                       "(base = %1)")
                   .arg(window.testCompareIndicatorText()));
+        check(window.testComparedBranchText() == agentRouteBranch,
+              QString("an agent review names the agent branch on the left instead "
+                      "of displaying main -> main (left = %1)")
+                  .arg(window.testComparedBranchText()));
         bool containsPrimaryChange = false;
         for (const QString &path : window.testSourceControlPaths()) {
             if (path.startsWith(QStringLiteral("main-only/primary-unrelated-"))) {
@@ -2466,6 +2473,12 @@ int main(int argc, char *argv[])
               QString("an agent branch excludes the primary checkout's 23 unrelated "
                       "changes (files = %1)")
                   .arg(window.testSourceControlPaths().join(QStringLiteral(", "))));
+        check(window.testCachedAgentDiffFiles(issueSession.id) ==
+                  window.testSourceControlPaths().size(),
+              QString("opening an agent branch self-heals a stale 3-file badge to "
+                      "the live rendered count (badge = %1, files = %2)")
+                  .arg(window.testCachedAgentDiffFiles(issueSession.id))
+                  .arg(window.testSourceControlPaths().size()));
         QElapsedTimer agentPullTimer;
         agentPullTimer.start();
         QString agentPullCounts;
