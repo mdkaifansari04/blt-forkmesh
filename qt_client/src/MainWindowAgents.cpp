@@ -131,6 +131,11 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                                 bool probeConflict, bool autoSyncCompleted)
 {
     AgentDiffStat stat;
+    // forkmesh/pulls is the shared signed PR ledger, not an agent-authored code
+    // branch. Comparing its historical storage tree to main produces a bogus
+    // 99+ file badge and can trigger an equally bogus behind/conflict state.
+    if (session.branchName == QLatin1String("forkmesh/pulls"))
+        return stat;
     const QString patch = store.readPatch(session);
     if (!patch.isEmpty())
         summarizeAgentPatch(patch, &stat);
@@ -4894,6 +4899,17 @@ void MainWindow::initAgents()
     // Runners are created lazily by acquireAgentRunner() so multiple sessions
     // can run concurrently.
 
+    m_agentSessions = m_agentStore->loadAllSessions();
+    // Older branch-provenance backfills treated the private PR ledger as an
+    // ordinary work branch. PR metadata now has refs/pr/<n>/metadata pointers,
+    // so retire only those synthetic associations; real Agent runs are never
+    // touched by this migration.
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.associationOnly &&
+            session.branchName == QLatin1String("forkmesh/pulls")) {
+            m_agentStore->deleteSession(session);
+        }
+    }
     m_agentSessions = m_agentStore->loadAllSessions();
     for (AgentSession &session : m_agentSessions) {
         if (session.merged && (session.status == AgentStatus::Running ||

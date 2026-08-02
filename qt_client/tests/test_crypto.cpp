@@ -4979,8 +4979,20 @@ int main(int argc, char *argv[])
                     QString(), QString(), /*branchBacked=*/true, &branchError);
                 check(created == 1 && branchError.isEmpty() &&
                           refTip(QStringLiteral("refs/heads/pr/1")) == featureTip &&
-                          refTip(QStringLiteral("refs/pr/1/head")) == featureTip,
-                      "materializing a PR creates pr/1 and its compatibility ref");
+                          refTip(QStringLiteral("refs/pr/1/head")) == featureTip &&
+                          !refTip(QStringLiteral("refs/pr/1/metadata")).isEmpty(),
+                      "materializing a PR creates code and metadata refs");
+
+                const QString metadataBefore =
+                    refTip(QStringLiteral("refs/pr/1/metadata"));
+                check(branchPulls.addComment(
+                          1, QStringLiteral("metadata belongs to this PR"),
+                          &branchError) &&
+                          refTip(QStringLiteral("refs/pr/1/metadata")) !=
+                              metadataBefore &&
+                          refTip(QStringLiteral("refs/pr/1/head")) == featureTip &&
+                          refTip(QStringLiteral("refs/heads/pr/1")) == featureTip,
+                      "PR conversation advances only its metadata ref");
 
                 check(runTestGit(branchRepo,
                                  {QStringLiteral("update-ref"),
