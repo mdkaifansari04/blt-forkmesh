@@ -5436,14 +5436,18 @@ QWidget *MainWindow::buildBreadcrumb()
                             static_cast<QWidget *>(m_topMessageClose)})
         widget->installEventFilter(this);
 
-    m_topMessageOpacity = new QGraphicsOpacityEffect(m_topMessageContainer);
-    m_topMessageOpacity->setOpacity(1.0);
-    m_topMessageContainer->setGraphicsEffect(m_topMessageOpacity);
-    m_topMessageFade = new QPropertyAnimation(m_topMessageOpacity, "opacity", this);
-    m_topMessageFade->setEasingCurve(QEasingCurve::Linear);
+    // One geometry animation drives both the composer-to-bubble arrival and the
+    // slide-off exit. The bubble never fades: it stays fully readable for the
+    // whole countdown and only then leaves, so nothing dims out mid-read.
     m_topMessageFlight = new QPropertyAnimation(m_topMessageContainer, "geometry", this);
     m_topMessageFlight->setDuration(260);
     m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
+    connect(m_topMessageFlight, &QPropertyAnimation::finished, this, [this] {
+        if (!m_topMessageSlidingOut)
+            return; // an arrival flight just landed; nothing to clean up
+        m_topMessageSlidingOut = false;
+        advanceTopMessageQueue();
+    });
     m_topMessageContainer->hide();
 
     // User avatar, the rail's bottom-most Account item. Clicking it opens

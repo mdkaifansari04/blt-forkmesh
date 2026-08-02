@@ -10312,10 +10312,11 @@ void MainWindow::showLoadStatus(const QString &what)
     m_topMessage->setWordWrap(false);
     m_topMessage->show();
     if (m_topMessageContainer) {
+        // Cancel a slide-out still in flight and re-anchor, so the progress pill
+        // never inherits a half-departed position.
         if (m_topMessageFlight)
             m_topMessageFlight->stop();
-        if (m_topMessageOpacity)
-            m_topMessageOpacity->setOpacity(1.0);
+        m_topMessageSlidingOut = false;
         positionTopMessageBubble();
         m_topMessageContainer->show();
         m_topMessageContainer->raise();
@@ -10324,9 +10325,7 @@ void MainWindow::showLoadStatus(const QString &what)
     m_topMessageElided = false;
     m_topMessageExpanded = false;
     if (m_topMessageTimer)
-        m_topMessageTimer->stop(); // don't let it fade out mid-load
-    if (m_topMessageFade)
-        m_topMessageFade->stop();
+        m_topMessageTimer->stop(); // don't let it slide away mid-load
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
