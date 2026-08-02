@@ -10,6 +10,11 @@
 #include "ServerNode.h"
 #include "SingleInstance.h"
 #include "StartupSplash.h"
+// The startup timings below are the only thing this file needs from the trace
+// helpers, and they were reaching them by luck through MainWindowInternal.h;
+// main.cpp does not include that private header, so the app target stopped
+// compiling. Include the header that actually declares them. (CI builds
+// forkmesh-tests, not forkmesh, which is why the break got through.)
 #include "StartupTrace.h"
 #include "SystemStats.h"
 #include "Theme.h"
