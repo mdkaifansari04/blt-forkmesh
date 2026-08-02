@@ -5735,12 +5735,37 @@ void MainWindow::updateCommitsCompareIndicator()
         m_commitsStack->currentIndex() == kCommitWorkspaceRangePage &&
         !m_branchDiffBranch.isEmpty();
     if (!comparing) {
+        // A comparison temporarily labels the left button from its diff head,
+        // which can differ from the primary checkout. Restore the actual
+        // browsed ref when the range page closes.
+        if (m_commitsBranchButton) {
+            const QString browsed =
+                m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
+            const QString headLabel = browsed.isEmpty()
+                                          ? QStringLiteral("(detached)")
+                                          : browsed;
+            if (auto *elider =
+                    dynamic_cast<ElidingPushButton *>(m_commitsBranchButton))
+                elider->setFullText(headLabel);
+            else
+                m_commitsBranchButton->setText(headLabel);
+        }
         m_commitsCompareArrow->hide();
         m_commitsCompareBaseButton->hide();
         return;
     }
     const QString base = branchCompareBase();
     const QString label = base.isEmpty() ? QStringLiteral("(no base)") : base;
+    // The diff head is the authoritative left end of a branch/PR comparison.
+    // Do not derive this label from the primary checkout: a PR backed by an
+    // agent worktree must read "agent/... -> main", never "main -> main".
+    if (m_commitsBranchButton) {
+        if (auto *elider =
+                dynamic_cast<ElidingPushButton *>(m_commitsBranchButton))
+            elider->setFullText(m_branchDiffBranch);
+        else
+            m_commitsBranchButton->setText(m_branchDiffBranch);
+    }
     // The button elides long agent branch names; the full story goes on the
     // tooltip (mirrors the branch button beside it).
     if (auto *elider =
@@ -8189,8 +8214,13 @@ void MainWindow::applyBranchesTags(const BranchesTagsSnapshot &snap)
     // The worker's full default-branch pick corrects the cheap synchronous pin,
     // but only while the browsed ref still *is* that pin — an explicit
     // setRepoBranch() while the worker ran wins.
+    // Correct only the initial HEAD-derived guess. A snapshot can start after
+    // an explicit agent/PR branch selection; in that case checkedOut differs
+    // from the real checkout (`snap.head`) by design and must not be repinned to
+    // main when the worker returns. That race was the intermittent source of a
+    // real agent range being relabelled and reloaded as "main -> main".
     if (!snap.base.isEmpty() && m_repoBranch == snap.checkedOut &&
-        m_repoBranch != snap.base)
+        snap.checkedOut == snap.head && m_repoBranch != snap.base)
         m_repoBranch = snap.base;
     if (m_branchButton) {
         const QString label =
