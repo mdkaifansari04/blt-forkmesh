@@ -4420,7 +4420,8 @@ private:
     void loadOlderNetworkLogSegment();
     void onNetworkLogScrolled(int value);
     // Prompt-anchored success/failure bubble. It floats just above the footer
-    // composer, counts down and fades instead of taking space from the live log.
+    // composer, counts down at full opacity and then slides off to the right
+    // instead of taking space from the live log.
     // `clickHref` makes the whole toast a clickable link routed by the
     // m_topMessage linkActivated handler (e.g. "fm:agent:<id>" to jump to a
     // waiting agent). Empty = a plain, non-clickable toast.
@@ -4434,7 +4435,8 @@ private:
     void renderTopMessage(); // (re)paint the current notification bubble
     void positionTopMessageBubble(); // size + anchor the bubble above the prompt
     QRect topMessageBubbleRect(); // calculates the prompt-relative bubble geometry
-    void setTopMessagePaused(bool paused); // hover pauses both fade and countdown
+    void setTopMessagePaused(bool paused); // hover pauses the countdown
+    void slideTopMessageOut(); // countdown finished: ease the bubble off the right edge, then advance
     void showPromptBubble(const QString &prompt); // animate a submitted prompt into a bubble
     // False while the footer composer is hidden (the Git workspace does that).
     bool topMessageDockVisible() const;
@@ -4895,9 +4897,10 @@ private:
     QLabel *m_topMessage = nullptr;       // prompt-anchored success/failure bubble text
     QFrame *m_topMessageContainer = nullptr; // floating bubble wrapping text + actions
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the bubble
-    QGraphicsOpacityEffect *m_topMessageOpacity = nullptr; // fade synchronized to timer
-    QPropertyAnimation *m_topMessageFade = nullptr;
-    QPropertyAnimation *m_topMessageFlight = nullptr; // composer-to-bubble send motion
+    // Composer-to-bubble send motion, reused for the slide-off exit so only one
+    // animation ever drives the bubble's geometry.
+    QPropertyAnimation *m_topMessageFlight = nullptr;
+    bool m_topMessageSlidingOut = false;  // countdown finished; bubble is easing off the right edge
     QPushButton *m_topMessageCopy = nullptr;
     QPushButton *m_topMessageSendToPrompt = nullptr;
     QPushButton *m_topMessageClose = nullptr;
@@ -4905,7 +4908,7 @@ private:
     QString m_topMessageRaw;              // plain text of the current bubble, for copy/retry
     QString m_topMessageBaseHtml;         // bubble HTML without the countdown suffix
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
-    int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
+    int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast slides away
     // Pending messages that arrived while another toast was already counting
     // down. A burst (retries, or the run of events the Pings page now mirrors
     // here) would otherwise stomp each other before any could be read; queuing
@@ -4914,7 +4917,7 @@ private:
     // queued event keeps its colour.
     QList<QPair<QString, bool>> m_topMessageQueue;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
-    bool m_topMessageHovering = false;    // pauses countdown and fade while reading/actions
+    bool m_topMessageHovering = false;    // pauses the countdown while reading/actions
     bool m_topMessageIsPromptBubble = false; // submitted prompt gets a fuller, animated treatment
     // Red border flashed around the whole window while an error ping arrives —
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
