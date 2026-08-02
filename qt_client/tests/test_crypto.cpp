@@ -5801,6 +5801,61 @@ int main(int argc, char *argv[])
               "turns, duration and cost reload intact after restart");
     }
 
+    // Website-created organization jobs keep their exact Worker lease alongside
+    // the local session until the terminal result is acknowledged.  The binding
+    // and FIFO restart order must both survive the app process going away.
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "organization-agent store temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session = store.createSession(session);
+        session.orgAgentJob = QJsonObject{
+            {"kind", "start"},
+            {"jobId", 314},
+            {"leaseId", "lease-after-restart"},
+            {"sessionId", "remote-session"},
+        };
+        check(store.saveSession(session),
+              "saving an organization-agent lease binding succeeds");
+
+        AgentStore reopened(tmp.path());
+        const QList<AgentSession> sessions = reopened.loadAllSessions();
+        check(sessions.size() == 1 &&
+                  sessions.first().orgAgentJob.value("jobId").toInt() == 314 &&
+                  sessions.first().orgAgentJob.value("leaseId").toString() ==
+                      "lease-after-restart",
+              "organization-agent job id and lease survive an app restart");
+
+        QJsonObject legacy = session.toJson();
+        legacy.remove("orgAgentJob");
+        check(AgentSession::fromJson(legacy).orgAgentJob.isEmpty(),
+              "legacy agent sessions default to no organization-job binding");
+
+        AgentSession newest;
+        newest.id = 30;
+        newest.createdAtMs = 300;
+        newest.status = AgentStatus::Queued;
+        AgentSession oldest;
+        oldest.id = 10;
+        oldest.createdAtMs = 100;
+        oldest.status = AgentStatus::Queued;
+        AgentSession middle;
+        middle.id = 20;
+        middle.createdAtMs = 200;
+        middle.status = AgentStatus::Queued;
+        AgentSession completed;
+        completed.id = 5;
+        completed.createdAtMs = 50;
+        completed.status = AgentStatus::Success;
+        check(AgentStore::queuedSessionIdsOldestFirst(
+                  {newest, completed, oldest, middle}) ==
+                  QList<int>({10, 20, 30}),
+              "restart rebuilds the queued agent backlog oldest-first");
+    }
+
     // The quick-add "YOLO" toggle is stamped onto the session at launch (adhoc
     // #12), so the auto-merge decision survives a restart and never depends on
     // where the checkbox happens to sit when the run finishes.

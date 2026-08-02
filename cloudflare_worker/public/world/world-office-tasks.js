@@ -352,6 +352,7 @@ export function createWorldOfficeTasksController({
   let opened = false;
   let loading = false;
   let busyTaskId = "";
+  let lastMutationError = "";
   let actor = "";
   let canManage = false;
   let authorized = false;
@@ -1642,6 +1643,7 @@ export function createWorldOfficeTasksController({
   async function mutate(path, body, taskId = "", options = {}) {
     if (typeof postJSON !== "function") return false;
     const { removeOnSuccess = false, ...requestOptions } = options;
+    lastMutationError = "";
     busyTaskId = safeTaskId(taskId);
     render();
     let errorMessage = "";
@@ -1651,8 +1653,10 @@ export function createWorldOfficeTasksController({
       await refresh({ quiet: true, force: true });
       return true;
     } catch (error) {
-      errorMessage =
-        text(error?.message, 160) || "The task change could not be saved.";
+      lastMutationError =
+        String(error?.message || "").trim() ||
+        "The task change could not be saved.";
+      errorMessage = lastMutationError;
       return false;
     } finally {
       busyTaskId = "";
@@ -1711,14 +1715,18 @@ export function createWorldOfficeTasksController({
       if (saved) {
         quickForm.reset();
         renderQuickEntry();
-        if (quickStatus) quickStatus.textContent = "Task created.";
+        if (quickStatus) {
+          quickStatus.textContent =
+            assignment === "agent" ? "Agent task saved." : "Task created.";
+        }
         toast(
           assignment === "agent"
-            ? "Agent task created and queued for a linked desktop."
+            ? "Agent task saved to the organization task list."
             : "Organization task created.",
         );
       } else if (quickStatus) {
-        quickStatus.textContent = "Task could not be created.";
+        quickStatus.textContent =
+          lastMutationError || "Task could not be created.";
       }
       return;
     }

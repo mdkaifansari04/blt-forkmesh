@@ -2457,6 +2457,13 @@ void MainWindow::drainOrgAgentJobsFor(RepositoryRecord repo)
 {
     if (!m_networkAccess || !hasOwnerSigningCapability(repo.owner))
         return;
+    const QString drainKey =
+        repo.owner.trimmed().toLower() + QLatin1Char('/') +
+        repo.name.trimmed().toLower();
+    if (m_orgAgentJobDrainsInFlight.contains(drainKey)) {
+        m_orgAgentJobDrainsPending.insert(drainKey);
+        return;
+    }
     QUrl url = agentsApiUrl(repo);
     QString path = url.path();
     if (path.endsWith(QStringLiteral("/agents")))
@@ -2468,13 +2475,17 @@ void MainWindow::drainOrgAgentJobsFor(RepositoryRecord repo)
         return;
     url.setQuery(signedInboxQuery(
         repoSegment(repo.owner, QStringLiteral("owner"))));
+    m_orgAgentJobDrainsInFlight.insert(drainKey);
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, backoffKey] {
+            [this, reply, repo, backoffKey, drainKey] {
         const bool ok = reply->error() == QNetworkReply::NoError;
         const QJsonObject payload =
             QJsonDocument::fromJson(reply->readAll()).object();
         reply->deleteLater();
+        m_orgAgentJobDrainsInFlight.remove(drainKey);
+        const bool drainAgain =
+            m_orgAgentJobDrainsPending.remove(drainKey);
         if (!ok) {
             m_pollBackoff.noteFailure(
                 backoffKey, QDateTime::currentMSecsSinceEpoch());
@@ -2483,6 +2494,11 @@ void MainWindow::drainOrgAgentJobsFor(RepositoryRecord repo)
         m_pollBackoff.noteSuccess(backoffKey);
         applyOrgAgentJobsPayload(
             repo, payload.value(QStringLiteral("jobs")).toArray());
+        if (drainAgain) {
+            QTimer::singleShot(0, this, [this, repo] {
+                drainOrgAgentJobsFor(repo);
+            });
+        }
     });
 }
 
@@ -2543,7 +2559,7 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
         if (acceptedId > 0) {
             if (job.value(QStringLiteral("kind")).toString() ==
                 QLatin1String("start"))
-                m_orgAgentBindings.insert(acceptedId, job);
+                persistOrgAgentBinding(acceptedId, job);
             reportOrgAgentJob(repo, job, QStringLiteral("approved"),
                               QStringLiteral("running"), acceptedId,
                               QStringLiteral("Previously accepted exact job."));
@@ -2686,6 +2702,13 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                 job.value(QStringLiteral("model")).toString().trimmed();
             const int issueNumber =
                 job.value(QStringLiteral("issueNumber")).toInt();
+            if (repoIndex < 0) {
+                reportOrgAgentJob(
+                    repo, job, QStringLiteral("approved"),
+                    QStringLiteral("failed"), 0,
+                    QStringLiteral("No eligible local checkout could start the agent."));
+                return;
+            }
             if (issueNumber > 0) {
                 const RepositoryRecord &localRepo = m_repositories.at(repoIndex);
                 const QList<Issue> issues =
@@ -2722,7 +2745,7 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                     QStringLiteral("No eligible local checkout could start the agent."));
                 return;
             }
-            m_orgAgentBindings.insert(localAgentId, job);
+            persistOrgAgentBinding(localAgentId, job);
         } else {
             reportOrgAgentJob(repo, job, QStringLiteral("rejected"),
                               QStringLiteral("rejected"), 0,
@@ -2748,6 +2771,33 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                      "exec claude -p --model 'haiku' --max-turns 1 --tools ''")});
     proc->write(safetyPrompt.toUtf8());
     proc->closeWriteChannel();
+}
+
+void MainWindow::persistOrgAgentBinding(int localAgentId,
+                                        const QJsonObject &job)
+{
+    if (localAgentId <= 0 || job.isEmpty())
+        return;
+    m_orgAgentBindings.insert(localAgentId, job);
+    AgentSession *session = findAgentSession(localAgentId);
+    if (!session || session->orgAgentJob == job)
+        return;
+    session->orgAgentJob = job;
+    if (m_agentStore)
+        m_agentStore->saveSession(*session);
+}
+
+void MainWindow::clearOrgAgentBinding(int localAgentId)
+{
+    if (localAgentId <= 0)
+        return;
+    AgentSession *session = findAgentSession(localAgentId);
+    if (session && !session->orgAgentJob.isEmpty()) {
+        session->orgAgentJob = QJsonObject();
+        if (m_agentStore)
+            m_agentStore->saveSession(*session);
+    }
+    m_orgAgentBindings.remove(localAgentId);
 }
 
 void MainWindow::reportOrgAgentJob(const RepositoryRecord &repo,
@@ -2838,8 +2888,17 @@ void MainWindow::reportOrgAgentJob(const RepositoryRecord &repo,
         const QString token =
             QStringLiteral("%1/%2:%3").arg(repo.owner, repo.name).arg(jobId);
         m_orgAgentJobsInFlight.remove(token);
-        if (ok && status != QLatin1String("running") && localAgentId > 0)
-            m_orgAgentBindings.remove(localAgentId);
+        if (!ok)
+            return;
+        if (status != QLatin1String("running") && localAgentId > 0) {
+            clearOrgAgentBinding(localAgentId);
+            QSettings().remove(
+                QStringLiteral("orgAgentJobs/accepted/%1").arg(token));
+        }
+        // The Worker leases one FIFO job at a time.  Only a successful result
+        // releases that lane, so use its acknowledgement to claim the next job
+        // instead of polling ahead and starting concurrent safety preflights.
+        drainOrgAgentJobsFor(repo);
     });
 }
 
@@ -4087,6 +4146,15 @@ void MainWindow::initAgents()
 
     m_agentSessions = m_agentStore->loadAllSessions();
     for (AgentSession &session : m_agentSessions) {
+        const QJsonObject orgJob = session.orgAgentJob;
+        const qint64 orgJobId =
+            qint64(orgJob.value(QStringLiteral("jobId")).toDouble());
+        if (orgJobId > 0 &&
+            !orgJob.value(QStringLiteral("leaseId")).toString().isEmpty() &&
+            orgJob.value(QStringLiteral("kind")).toString() ==
+                QLatin1String("start")) {
+            m_orgAgentBindings.insert(session.id, orgJob);
+        }
         if (session.merged && (session.status == AgentStatus::Running ||
                                session.status == AgentStatus::Queued)) {
             // A merged session's work already landed in the base branch, and the
@@ -4115,13 +4183,15 @@ void MainWindow::initAgents()
             m_agentStore->saveSession(session);
             m_agentStore->appendLog(
                 session, QStringLiteral("\n==> Resuming after ForkMesh restart."));
-            m_agentQueue.append(session.id);
-            m_startupQuietAgentSessions.insert(session.id);
-        } else if (session.status == AgentStatus::Queued) {
-            m_agentQueue.append(session.id);
-            m_startupQuietAgentSessions.insert(session.id);
         }
     }
+    // AgentStore intentionally loads newest-first for the sessions UI.  The
+    // execution queue has the opposite contract: work accepted first must
+    // resume first after a restart.
+    m_agentQueue =
+        AgentStore::queuedSessionIdsOldestFirst(m_agentSessions);
+    for (int id : std::as_const(m_agentQueue))
+        m_startupQuietAgentSessions.insert(id);
     m_agentSessions = m_agentStore->loadAllSessions();
     seedSessionTokens();
     refreshAgentStatusRow(); // footer "Agents:" strip reflects sessions from the start

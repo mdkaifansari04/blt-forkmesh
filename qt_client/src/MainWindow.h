@@ -3364,6 +3364,8 @@ private:
                                   const QJsonArray &jobs);
     void runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                                 const QJsonObject &job);
+    void persistOrgAgentBinding(int localAgentId, const QJsonObject &job);
+    void clearOrgAgentBinding(int localAgentId);
     void reportOrgAgentJob(const RepositoryRecord &repo,
                            const QJsonObject &job,
                            const QString &securityVerdict,
@@ -5732,8 +5734,14 @@ private:
     QSet<QString> m_agentE2EEReady;
     QSet<QString> m_agentE2EEInFlight;
     QSet<QString> m_orgAgentJobsInFlight;
+    // One claim request per repository preserves the Worker's FIFO lease order.
+    // A result can arrive while a claim is still finishing, so remember that
+    // continuation and retry immediately after the active GET releases its lane.
+    QSet<QString> m_orgAgentJobDrainsInFlight;
+    QSet<QString> m_orgAgentJobDrainsPending;
     // local AgentSession id -> start-job transport needed to publish terminal
-    // status through the same authenticated lease after the run finishes.
+    // status through the same authenticated lease after the run finishes.  The
+    // same object is persisted on AgentSession for restart recovery.
     QHash<int, QJsonObject> m_orgAgentBindings;
     // Each running CLI session has its own worktree, transport, and buffered
     // events, so output never leaks across providers or sessions.

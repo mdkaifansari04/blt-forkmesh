@@ -69,6 +69,15 @@ def test_work_tab_has_a_compact_universal_task_creator_with_agent_routing():
     assert ".world-work-quick-entry" in css
 
 
+def test_agent_task_creator_reports_saved_state_without_claiming_dispatch():
+    tasks = source(TASKS)
+    assert "Agent task saved to the organization task list." in tasks
+    assert "Agent task created and queued for a linked desktop." not in tasks
+    assert "lastMutationError" in tasks
+    assert 'String(error?.message || "").trim()' in tasks
+    assert 'lastMutationError || "Task could not be created."' in tasks
+
+
 def test_tasks_use_https_polling_and_server_clock_without_world_socket_data():
     tasks = source(TASKS)
     assert '"/api/world/office/marketing-tasks"' in tasks

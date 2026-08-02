@@ -317,10 +317,14 @@ function mountForkMeshDashboardChat() {
   let connecting = false;
   let openCallbacks = [];
   let cachedUserSession = null;
-  // Agent conversations are not ordinary room traffic. Access is resolved
-  // against the server-authorized Engineering team before history renders or
-  // the composer offers Claude/Codex mentions. Fail closed on every error.
+  // Agent conversations are not ordinary room traffic. The server separately
+  // authorizes transcript visibility and queue admission; organization owners
+  // may queue work for their linked desktop without gaining Engineering
+  // transcript access.
   let orgAgentEngineeringAccess = false;
+  let orgAgentQueueAccess = false;
+  let orgAgentConversationAccess = false;
+  let orgAgentAccessReason = "";
   let orgAgentAccessLoaded = false;
   const seen = new Set();
   const rows = new Map();
@@ -1158,7 +1162,7 @@ function mountForkMeshDashboardChat() {
       kind: "bot",
       lastSeenMs: Date.now(),
     });
-    if (orgAgentEngineeringAccess) {
+    if (orgAgentQueueAccess) {
       for (const name of [CLAUDE_SENDER_ID, CODEX_SENDER_ID]) {
         byName.set(name, {
           name,
@@ -2122,7 +2126,7 @@ function mountForkMeshDashboardChat() {
     attachment = null,
     deferHistory = false,
   ) {
-    if (orgAgentIdentity(who, senderId) && !orgAgentEngineeringAccess) return;
+    if (orgAgentIdentity(who, senderId) && !orgAgentConversationAccess) return;
     const channelMetadata = {
       sourceLabel: CHANNEL.startsWith("#") ? CHANNEL : `#${CHANNEL}`,
     };
@@ -2342,7 +2346,7 @@ function mountForkMeshDashboardChat() {
     meta = {},
   ) {
     if (!WORLD_EMBED_BUBBLES) return;
-    if (orgAgentIdentity(sender, senderId) && !orgAgentEngineeringAccess) return;
+    if (orgAgentIdentity(sender, senderId) && !orgAgentConversationAccess) return;
     const line = String(text || "").trim().slice(0, 200);
     const attachmentName = safeAttachmentName(meta?.attachment?.fileName || "");
     if (!line && !attachmentName) return;
@@ -2446,7 +2450,7 @@ function mountForkMeshDashboardChat() {
     entry = normalizedPublicWorldFrame(entry);
     if (
       orgAgentIdentity(entry.sender, entry.senderId) &&
-      !orgAgentEngineeringAccess
+      !orgAgentConversationAccess
     ) {
       return;
     }
@@ -2859,8 +2863,101 @@ function mountForkMeshDashboardChat() {
     return { organization, owner: organization, repo: "forkmesh" };
   }
 
+  const ORG_AGENT_ERROR_MESSAGES = Object.freeze({
+    invalid_session: "Your session is no longer valid. Sign in again.",
+    forbidden: "You do not have permission to queue this agent.",
+    engineering_team_required:
+      "Engineering team membership is required to view these agent sessions.",
+    org_owner_required:
+      "Organization owner access is required to queue work for this desktop.",
+    repository_not_linked:
+      "This repository is not linked to the organization.",
+    repository_not_published:
+      "The linked desktop has not published this repository yet.",
+    target_not_owned:
+      "The selected desktop is not owned by this organization owner.",
+    target_not_desktop:
+      "The selected target is not a desktop runtime.",
+    provider_not_advertised:
+      "The linked desktop has not advertised this agent provider.",
+    preferred_target_ineligible:
+      "The selected desktop is not eligible for this agent request.",
+    no_online_agent_mirror:
+      "No eligible online agent mirror is available.",
+    no_eligible_agent_node:
+      "No eligible agent node is available for this repository.",
+    invalid_provider: "Choose Claude Code or Codex.",
+    invalid_model: "That model is not available for the selected provider.",
+    prompt_required: "Add a task for the agent.",
+    invalid_target_node: "The selected target node is not valid.",
+    invalid_task_key: "The task key is not valid.",
+    invalid_issue_number: "The issue number is not valid.",
+    invalid_issue_task_key: "The issue task key is not valid.",
+    session_not_promptable:
+      "This agent session is not accepting another prompt.",
+    agent_not_ready: "The agent is not ready for another prompt.",
+    queue_persistence_failed:
+      "The agent request could not be saved. Try again.",
+  });
+
+  function jsonResponseError(response, payload, fallback = "Request failed.") {
+    const details = payload && typeof payload === "object" ? payload : {};
+    const code = String(details.error || "").trim();
+    const serverMessage = String(details.message || "").trim();
+    const message =
+      serverMessage ||
+      ORG_AGENT_ERROR_MESSAGES[code] ||
+      code ||
+      (response?.status ? `Request returned ${response.status}.` : fallback);
+    const error = new Error(message);
+    error.code = code;
+    error.status = Number(response?.status || 0);
+    error.payload = details;
+    for (const key of [
+      "requiredTeam",
+      "targetNode",
+      "provider",
+      "requiredAction",
+      "retryable",
+    ]) {
+      if (details[key] !== undefined) error[key] = details[key];
+    }
+    return error;
+  }
+
+  function orgAgentSavedMessage(payload) {
+    const serverMessage = String(payload?.message || "").trim();
+    if (serverMessage) return serverMessage;
+    const target = String(
+      payload?.targetNode ||
+        payload?.session?.targetNode ||
+        "the linked desktop",
+    );
+    const waitingForDesktop =
+      payload?.targetOnline === false ||
+      payload?.queueState === "waiting_for_desktop";
+    return waitingForDesktop
+      ? `Saved for ${target}. It will start after the linked desktop reconnects and passes the Haiku safety check.`
+      : `Saved for ${target}. It will start after the Haiku safety check passes.`;
+  }
+
+  function savedTaskQueueError(error) {
+    const failure = new Error(
+      `The task was saved, but the agent was not queued: ${String(
+        error?.message || "The queue request failed.",
+      )}`,
+    );
+    failure.code = String(error?.code || "");
+    failure.status = Number(error?.status || 0);
+    failure.payload = error?.payload;
+    return failure;
+  }
+
   async function loadOrgAgentChatAccess() {
     orgAgentEngineeringAccess = false;
+    orgAgentQueueAccess = false;
+    orgAgentConversationAccess = false;
+    orgAgentAccessReason = "";
     orgAgentAccessLoaded = false;
     const session = userSession();
     if (!session) {
@@ -2881,13 +2978,33 @@ function mountForkMeshDashboardChat() {
         headers,
       });
       const data = await response.json().catch(() => ({}));
-      orgAgentEngineeringAccess =
-        response.ok && data?.engineeringAccess === true;
-    } catch (_) {
+      if (!response.ok || data?.ok === false) {
+        throw jsonResponseError(
+          response,
+          data,
+          "Agent access could not be checked.",
+        );
+      }
+      orgAgentEngineeringAccess = data?.engineeringAccess === true;
+      orgAgentQueueAccess =
+        data?.canQueueAgent === true || orgAgentEngineeringAccess;
+      orgAgentConversationAccess =
+        data?.canViewAgentSessions === true ||
+        orgAgentEngineeringAccess ||
+        orgAgentQueueAccess;
+      orgAgentAccessReason = String(
+        data?.accessReason || data?.message || "",
+      ).trim();
+    } catch (error) {
       orgAgentEngineeringAccess = false;
+      orgAgentQueueAccess = false;
+      orgAgentConversationAccess = false;
+      orgAgentAccessReason = String(
+        error?.message || "Agent access could not be checked.",
+      );
     }
     orgAgentAccessLoaded = true;
-    return orgAgentEngineeringAccess;
+    return orgAgentQueueAccess;
   }
 
   async function maybeAskOrgAgent(text, selectedScope = null) {
@@ -2898,8 +3015,8 @@ function mountForkMeshDashboardChat() {
         : "";
     if (!provider) return false;
     const botName = provider === "codex" ? CODEX_SENDER_ID : CLAUDE_SENDER_ID;
-    if (!userSession() || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
-      appendSystem(`Only Engineering team members can use @${botName}.`);
+    if (!userSession()) {
+      appendSystem("Sign in before asking an organization agent.");
       return false;
     }
     const prompt = String(text || "")
@@ -2909,7 +3026,18 @@ function mountForkMeshDashboardChat() {
       appendSystem(`Add a task after @${botName}.`);
       return false;
     }
-    return queueOrgAgent(provider, prompt, botName, selectedScope);
+    try {
+      return await queueOrgAgent(provider, prompt, botName, selectedScope);
+    } catch (error) {
+      appendSystem(
+        String(
+          error?.message ||
+            orgAgentAccessReason ||
+            "The agent request failed.",
+        ),
+      );
+      return false;
+    }
   }
 
   // One queue path for every bot request: the mention shortcuts pass a named
@@ -2922,11 +3050,10 @@ function mountForkMeshDashboardChat() {
     selectedScope = null,
   ) {
     const session = userSession();
-    if (!session || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
-      appendSystem("Only Engineering team members can start an org bot.");
-      return false;
+    if (!session) {
+      throw new Error("Sign in before starting an organization agent.");
     }
-    if (!prompt) return false;
+    if (!prompt) throw new Error("Add a task for the agent.");
     const scope = orgAgentScope(selectedScope);
     const taskKeyMatch = prompt.match(
       /\[(task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}\/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})\]/i,
@@ -2940,42 +3067,29 @@ function mountForkMeshDashboardChat() {
       accept: "application/json",
     };
     if (token && token !== "cookie") headers.authorization = `Bearer ${token}`;
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        cache: "no-store",
-        credentials: "same-origin",
-        headers,
-        body: JSON.stringify({
-          provider,
-          prompt: prompt.slice(0, 8000),
-          ...(taskKeyMatch ? { taskKey: taskKeyMatch[1].toLowerCase() } : {}),
-          ...(token && token !== "cookie" ? { sessionToken: token } : {}),
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false) {
-        throw new Error(String(data.error || `HTTP ${response.status}`));
-      }
-      const target = String(data.session?.targetNode || "an eligible mirror");
-      broadcastBotMessage(
-        `Queued on ${target}. Claude Haiku is checking the prompt before I start.`,
-        botName,
-      );
-      return data;
-    } catch (error) {
-      const reason = error.message === "no_eligible_headless_mirror"
-        ? "No eligible headless mirror is online."
-        : [
-            "engineering_team_required",
-            "org_member_required",
-            "forbidden",
-          ].includes(error.message)
-          ? "Only Engineering team members can start this agent."
-          : "I could not queue that task.";
-      broadcastBotMessage(reason, botName);
-      return false;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      cache: "no-store",
+      credentials: "same-origin",
+      headers,
+      body: JSON.stringify({
+        provider,
+        prompt: prompt.slice(0, 8000),
+        ...(taskKeyMatch ? { taskKey: taskKeyMatch[1].toLowerCase() } : {}),
+        ...(token && token !== "cookie" ? { sessionToken: token } : {}),
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.ok === false) {
+      throw jsonResponseError(response, data, "The agent request failed.");
     }
+    orgAgentQueueAccess = true;
+    orgAgentConversationAccess = true;
+    const target = String(
+      data?.targetNode || data?.session?.targetNode || "the linked desktop",
+    );
+    broadcastBotMessage(orgAgentSavedMessage({ ...data, targetNode: target }), botName);
+    return data;
   }
 
   function showAttachmentFeedback(control, message) {
@@ -3462,7 +3576,7 @@ function mountForkMeshDashboardChat() {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok || payload?.ok === false) {
-      throw new Error(String(payload?.error || `HTTP ${response.status}`));
+      throw jsonResponseError(response, payload, "The task request failed.");
     }
     return payload;
   }
@@ -3673,16 +3787,16 @@ function mountForkMeshDashboardChat() {
         if (botTask) {
           // The task is already on the board; queueing it on a node is the
           // follow-up, and a failure there leaves the task list authoritative.
-          const queued = await queueOrgAgent(
-            "agent",
-            `[task:${task.id}] ${title}\n\n${details}`.trim(),
-            ORG_BOT_SENDER_ID,
-            repository,
-          );
-          if (!queued) {
-            throw new Error(
-              "The task was saved to the task list, but no bot node accepted it yet.",
+          let queued;
+          try {
+            queued = await queueOrgAgent(
+              "agent",
+              `[task:${task.id}] ${title}\n\n${details}`.trim(),
+              ORG_BOT_SENDER_ID,
+              repository,
             );
+          } catch (error) {
+            throw savedTaskQueueError(error);
           }
           const sessionId = String(queued?.session?.id || "");
           if (sessionId) {
@@ -3749,16 +3863,16 @@ function mountForkMeshDashboardChat() {
           "",
           Date.now(),
         );
-        const queued = await queueOrgAgent(
-          "agent",
-          `[task:${task.id}] ${text}`,
-          ORG_BOT_SENDER_ID,
-          repository,
-        );
-        if (!queued) {
-          throw new Error(
-            "The task is in the task list, but no bot node accepted it yet.",
+        let queued;
+        try {
+          queued = await queueOrgAgent(
+            "agent",
+            `[task:${task.id}] ${text}`,
+            ORG_BOT_SENDER_ID,
+            repository,
           );
+        } catch (error) {
+          throw savedTaskQueueError(error);
         }
         const sessionId = String(queued?.session?.id || "");
         if (sessionId) {
@@ -3806,10 +3920,6 @@ function mountForkMeshDashboardChat() {
       const isOrgAgentPrompt =
         CLAUDE_MENTION_RE.test(text) || CODEX_MENTION_RE.test(text);
       if (isOrgAgentPrompt) {
-        if (!orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
-          appendSystem("Claude and Codex chat is available only to the Engineering team.");
-          return;
-        }
         if (attachmentControl?.draft.length) {
           showAttachmentFeedback(
             attachmentControl,

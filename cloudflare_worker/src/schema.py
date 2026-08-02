@@ -1759,15 +1759,6 @@ SCHEMA_STATEMENTS = [
         idx_organization_tasks_one_active_assignee
         ON organization_tasks(org_bi, active_assignee_bi)
         WHERE status='active' AND active_assignee_bi<>''""",
-    """CREATE TRIGGER IF NOT EXISTS trg_organization_task_limit
-        BEFORE INSERT ON organization_tasks
-        WHEN (
-            SELECT COUNT(*) FROM organization_tasks
-            WHERE org_bi=NEW.org_bi
-        ) >= 2000
-        BEGIN
-            SELECT RAISE(ABORT, 'organization_task_catalog_full');
-        END""",
     """CREATE TABLE IF NOT EXISTS organization_task_checkins (
         checkin_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,

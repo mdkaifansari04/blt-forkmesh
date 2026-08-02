@@ -82,6 +82,10 @@ class FakeRuntime:
             (ROOT / "migrations" /
              "0113_organization_task_priority_scale.sql")
             .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" /
+             "0114_remove_organization_task_limit.sql")
+            .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
         self.query_data = {}
@@ -1460,6 +1464,48 @@ def test_migration_has_conditional_active_constraint_and_bounded_tables():
     assert "WHERE status = 'active' AND active_assignee_bi <> ''" in migration
     assert "trg_world_office_marketing_task_limit" in migration
     assert "trg_world_office_marketing_checkin_limit" in migration
+
+
+@run_async_test
+async def test_task_history_does_not_cap_new_owner_or_agent_work():
+    runtime = FakeRuntime()
+    trigger = runtime.db.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' "
+        "AND name='trg_organization_task_limit'"
+    ).fetchone()
+    assert trigger is None
+
+    runtime.db.executemany(
+        "INSERT INTO organization_tasks "
+        "(task_id,org_bi,data,created_by_bi,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,?)",
+        [
+            (
+                f"{index:032x}",
+                "org-bi",
+                "sealed:e30=",
+                "bi-alice",
+                NOW - index,
+                NOW - index,
+            )
+            for index in range(1, 2001)
+        ],
+    )
+    runtime.ids = 3000
+    created = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Queue after a long durable history",
+            "department": "engineering",
+            "destination": "agent",
+            "assigneeKind": "agent",
+            "repository": "forkmesh/forkmesh",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert created["status"] == 201
+    assert runtime.db.execute(
+        "SELECT COUNT(*) FROM organization_tasks WHERE org_bi='org-bi'"
+    ).fetchone()[0] == 2001
 
 
 def test_entry_wiring_is_http_only_and_has_no_admin_bypass():

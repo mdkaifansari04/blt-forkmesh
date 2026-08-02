@@ -836,6 +836,10 @@ if(FORKMESH_BUILD_TESTS)
             COMMAND "${FORKMESH_PYTHON_EXECUTABLE}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/validate_owner_envelope_contract.py"
                     "$<TARGET_FILE:forkmesh-tests>")
+        add_test(
+            NAME forkmesh-org-agent-queue-contract
+            COMMAND "${FORKMESH_PYTHON_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/validate_org_agent_queue_contract.py")
     endif()
     add_test(NAME forkmesh-ide-tests COMMAND forkmesh-ide-tests)
     add_test(NAME forkmesh-world-speech-tests
