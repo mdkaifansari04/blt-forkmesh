@@ -10,6 +10,8 @@ and server-authoritative timer metadata. Nothing is stored in or published
 through the Office Durable Object.
 """
 
+import base64
+import binascii
 import re
 from urllib.parse import urlsplit
 
@@ -17,7 +19,7 @@ from urllib.parse import urlsplit
 PREFIX = "/api/world/office/marketing-tasks"
 UNIVERSAL_PREFIX = "/api/tasks"
 LEGACY_MARKETING_PREFIX = PREFIX
-BODY_MAX_BYTES = 12 * 1024
+BODY_MAX_BYTES = 64 * 1024
 MAX_TASKS = 2000
 MAX_CHECKINS_PER_TASK = 50
 MAX_TITLE = 160
@@ -25,6 +27,15 @@ MAX_DETAILS = 4000
 MAX_COMPLETION_NOTE = 4000
 MAX_CHECKIN_NOTE = 500
 MAX_AGENT_FIELD = 64
+MAX_TASK_IMAGES = 4
+MAX_TASK_IMAGE_BYTES = 256 * 1024
+MAX_TASK_IMAGE_TOTAL_BYTES = 1024 * 1024
+TASK_IMAGE_MIMES = frozenset({
+    "image/gif", "image/jpeg", "image/png", "image/webp",
+})
+MIN_PRIORITY = 1
+MAX_PRIORITY = 99
+DEFAULT_PRIORITY = 50
 MAX_ELAPSED_MS = 10 * 365 * 24 * 60 * 60 * 1000
 MAX_BOUNTY_LAMPORTS = 1_000_000 * 1_000_000_000
 MAX_PROOFS = 5000
@@ -92,26 +103,123 @@ def _text(value, maximum, fallback=""):
 
 
 def _attachments(value):
-    """Keep bounded file metadata with a task; bytes remain in encrypted chat."""
+    """Keep bounded metadata plus a tiny encrypted image preview with a task."""
     if not isinstance(value, list):
         return []
     result = []
-    for item in value[:4]:
+    for item in value[:MAX_TASK_IMAGES]:
         if not isinstance(item, dict):
             continue
+        attachment_id = str(item.get("id") or "").strip().lower()
         name = _text(item.get("name"), 180)
         mime = _text(item.get("mime"), 100, "application/octet-stream")
         try:
-            size = max(0, min(1024 * 1024, int(item.get("size") or 0)))
+            size = max(
+                0, min(MAX_TASK_IMAGE_BYTES, int(item.get("size") or 0)))
         except (TypeError, ValueError):
             size = 0
         if name and size:
-            result.append({"name": name, "mime": mime, "size": size})
+            attachment = {"name": name, "mime": mime, "size": size}
+            thumbnail = str(item.get("thumbnail") or "")
+            if (
+                mime in ("image/png", "image/jpeg", "image/webp")
+                and len(thumbnail) <= 10_000
+                and re.fullmatch(
+                    r"data:image/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+",
+                    thumbnail,
+                )
+            ):
+                attachment["thumbnail"] = thumbnail
+            result.append(attachment)
     return result
+
+
+def _image_magic_matches(mime, raw):
+    if mime == "image/png":
+        return raw.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime == "image/jpeg":
+        return raw.startswith(b"\xff\xd8\xff")
+    if mime == "image/gif":
+        return raw.startswith((b"GIF87a", b"GIF89a"))
+    if mime == "image/webp":
+        return (
+            len(raw) >= 12
+            and raw.startswith(b"RIFF")
+            and raw[8:12] == b"WEBP"
+        )
+    return False
+
+
+def _task_image_uploads(value):
+    """Decode a bounded set of raster images without accepting active SVG."""
+    if value in (None, []):
+        return [], ""
+    if not isinstance(value, list) or len(value) > MAX_TASK_IMAGES:
+        return [], "too_many_task_images"
+    uploads = []
+    total = 0
+    for item in value:
+        if not isinstance(item, dict):
+            return [], "invalid_task_image"
+        name = _text(item.get("name"), 180)
+        mime = _text(item.get("mime"), 100).lower()
+        encoded = str(item.get("file") or "")
+        if not encoded:
+            # Older clients sent display-only metadata. Preserve that contract;
+            # only records carrying validated bytes enter the image store.
+            try:
+                size = int(item.get("size") or 0)
+            except (TypeError, ValueError, OverflowError):
+                size = 0
+            if not name or not mime or size <= 0:
+                return [], "invalid_task_image"
+            uploads.append({
+                "name": name,
+                "mime": mime,
+                "size": min(size, MAX_TASK_IMAGE_TOTAL_BYTES),
+                "file": "",
+            })
+            continue
+        if not name or mime not in TASK_IMAGE_MIMES:
+            return [], "invalid_task_image"
+        if len(encoded) > ((MAX_TASK_IMAGE_BYTES + 2) // 3) * 4 + 4:
+            return [], "task_image_too_large"
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return [], "invalid_task_image"
+        if (
+            not raw
+            or len(raw) > MAX_TASK_IMAGE_BYTES
+            or not _image_magic_matches(mime, raw)
+        ):
+            return [], (
+                "task_image_too_large"
+                if len(raw) > MAX_TASK_IMAGE_BYTES
+                else "invalid_task_image"
+            )
+        total += len(raw)
+        if total > MAX_TASK_IMAGE_TOTAL_BYTES:
+            return [], "task_images_too_large"
+        uploads.append({
+            "name": name,
+            "mime": mime,
+            "size": len(raw),
+            "file": base64.b64encode(raw).decode("ascii"),
+        })
+    return uploads, ""
 
 
 def valid_id(value):
     return bool(_ID_RE.fullmatch(str(value or "").strip().lower()))
+
+
+def _priority(value, default=DEFAULT_PRIORITY):
+    try:
+        value = int(value)
+    except (TypeError, ValueError, OverflowError):
+        value = int(default)
+    return max(MIN_PRIORITY, min(MAX_PRIORITY, value))
 
 
 def _agent_ref(value):
@@ -195,6 +303,12 @@ def _route(path):
     task_id = parts[0].lower()
     if len(parts) == 1:
         return ("task", task_id, "")
+    if (
+        len(parts) == 3
+        and parts[1] == "attachments"
+        and valid_id(parts[2])
+    ):
+        return ("attachment", task_id, parts[2].lower())
     if len(parts) == 2 and parts[1] in (
             "start", "stop", "checkin", "complete", "qa", "return"):
         return ("action", task_id, parts[1])
@@ -333,6 +447,10 @@ async def _project_task(runtime, row, now, checkin=None):
         "completionNote": _text(
             data.get("completionNote"), MAX_COMPLETION_NOTE),
         "createdBy": _text(data.get("createdBy"), 64).lower(),
+        "parentTaskId": (
+            str(data.get("parentTaskId") or "").lower()
+            if valid_id(data.get("parentTaskId")) else ""
+        ),
         "bountyRequest": bounty_request,
         "assignee": (
             "agent"
@@ -343,6 +461,7 @@ async def _project_task(runtime, row, now, checkin=None):
         "department": _text(row.get("department"), 64, "general").lower(),
         "team": _text(row.get("team"), 64).lower(),
         "destination": str(row.get("destination") or "department"),
+        "priority": _priority(row.get("priority")),
         "repository": _text(data.get("repository"), 201),
         "agentSessionId": str(row.get("agent_session_id") or ""),
         "agent": _agent_run(data.get("agent")),
@@ -365,6 +484,33 @@ async def _project_task(runtime, row, now, checkin=None):
         "completedAt": int(row.get("completed_at") or 0),
         "lastCheckin": await _project_checkin(runtime, checkin),
     }
+
+
+async def _notify_activity(
+        runtime, org_bi, actor, task_id, row, now, action):
+    """Best-effort private HUD fan-out; mutations never depend on it."""
+    notifier = getattr(runtime, "notify_organization_task_activity", None)
+    if not callable(notifier) and action == "started":
+        notifier = getattr(runtime, "notify_engineering_task_started", None)
+        if callable(notifier):
+            try:
+                projected = await _project_task(runtime, row, now)
+                if projected:
+                    await notifier(org_bi, actor, task_id, projected)
+            except Exception:
+                pass
+        return
+    if not callable(notifier) or not row:
+        return
+    try:
+        projected = (
+            row if isinstance(row, dict) and "title" in row
+            else await _project_task(runtime, row, now)
+        )
+        if projected:
+            await notifier(org_bi, actor, task_id, projected, action)
+    except Exception:
+        pass
 
 
 async def _task(runtime, org_bi, task_id):
@@ -408,7 +554,7 @@ async def _list(
     rows = await runtime.d1_all(
         "SELECT * FROM organization_tasks WHERE "
         + " AND ".join(where)
-        + " ORDER BY updated_at DESC,task_id DESC LIMIT ?",
+        + " ORDER BY completed_at>0,priority,updated_at DESC,task_id DESC LIMIT ?",
         *arguments,
         MAX_TASKS,
     )
@@ -756,11 +902,47 @@ async def _create(
         if marketing_only
         else str(data.get("destination") or "department").strip().lower()
     )
-    assignee_kind = (
+    requested_assignee_kind = (
         "user"
         if marketing_only
         else str(data.get("assigneeKind") or "user").strip().lower()
     )
+    assignee_kind = requested_assignee_kind
+    parent_task_id = str(data.get("parentTaskId") or "").strip().lower()
+    parent_data = None
+    parent_row = None
+    if parent_task_id:
+        if marketing_only or not valid_id(parent_task_id):
+            return _response(
+                runtime, {"error": "invalid_parent_task"}, status=400)
+        parent_row = await _task(runtime, org_bi, parent_task_id)
+        if not parent_row:
+            return _response(
+                runtime, {"error": "parent_task_not_found"}, status=404)
+        try:
+            parent_data = await runtime.open(parent_row.get("data"))
+        except Exception:
+            parent_data = None
+        if not isinstance(parent_data, dict):
+            return _response(
+                runtime, {"error": "parent_task_unavailable"}, status=500)
+        if (
+            not can_manage
+            and str(parent_row.get("created_by_bi") or "") != account_bi
+            and str(parent_row.get("assignee_bi") or "") != account_bi
+        ):
+            return _response(runtime, {"error": "forbidden"}, status=403)
+        # A follow-up is a continuation of the routed work. The server, rather
+        # than the client, inherits its assignee and routing from the parent.
+        assignee_kind = str(
+            parent_row.get("assignee_kind") or "unassigned").lower()
+        requested_assignee_kind = assignee_kind
+        department = str(parent_row.get("department") or "general")
+        team = str(parent_row.get("team") or "")
+        destination = str(parent_row.get("destination") or "department")
+        data = dict(data)
+        data["assignee"] = parent_data.get("assignee")
+        data["repository"] = parent_data.get("repository")
     task_kind = (
         "task"
         if marketing_only
@@ -849,11 +1031,19 @@ async def _create(
         return _response(
             runtime, {"error": "repository_required"}, status=400)
     how_to_test = _text(data.get("howToTest"), 720)
-    attachments = _attachments(data.get("attachments"))
+    image_uploads, image_error = _task_image_uploads(data.get("attachments"))
+    if image_error:
+        return _response(runtime, {"error": image_error}, status=400)
+    requested_priority = _priority(data.get("priority"))
+    if "priority" in data and not can_manage:
+        return _response(runtime, {"error": "manager_required"}, status=403)
     # A desktop that launches a prompt opens the task in the same call, so the
     # run's provenance arrives with it rather than through a second round trip.
-    agent_run = _agent_run(data.get("agent")) if assignee_kind in (
-        "claude", "codex") else None
+    agent_run = (
+        _agent_run(data.get("agent"))
+        if requested_assignee_kind in AGENT_ASSIGNEE_KINDS
+        else None
+    )
     agent_session_id = _agent_ref((agent_run or {}).get("sessionId"))
     qa_requested_at = (
         now
@@ -871,6 +1061,27 @@ async def _create(
     task_id = runtime.new_id()
     if not valid_id(task_id):
         return _response(runtime, {"error": "id_generation_failed"}, status=500)
+    attachments = []
+    for upload in image_uploads:
+        if upload["file"]:
+            attachment_id = runtime.new_id()
+            if not valid_id(attachment_id):
+                return _response(
+                    runtime, {"error": "id_generation_failed"}, status=500)
+            upload["id"] = attachment_id
+            attachments.append({
+                "id": attachment_id,
+                "taskId": task_id,
+                "name": upload["name"],
+                "mime": upload["mime"],
+                "size": upload["size"],
+            })
+        else:
+            attachments.append({
+                "name": upload["name"],
+                "mime": upload["mime"],
+                "size": upload["size"],
+            })
     sealed = await runtime.seal({
         "kind": task_kind,
         "title": title,
@@ -879,6 +1090,7 @@ async def _create(
         "completionNote": "",
         "assignee": assignee,
         "createdBy": actor,
+        "parentTaskId": parent_task_id,
         "bountyRequest": bounty_request,
         "repository": repository,
         "howToTest": how_to_test,
@@ -891,8 +1103,8 @@ async def _create(
             "(task_id,org_bi,department,team,destination,assignee_kind,"
             "status,assignee_bi,data,created_by_bi,created_at,updated_at,"
             "elapsed_ms,started_at,next_checkin_at,qa_requested_at,"
-            "agent_session_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "agent_session_id,priority) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             task_id,
             org_bi,
             department,
@@ -910,8 +1122,43 @@ async def _create(
             0,
             qa_requested_at,
             agent_session_id,
+            requested_priority,
         )
+        for upload in image_uploads:
+            if not upload["file"]:
+                continue
+            await runtime.d1_run(
+                "INSERT INTO organization_task_attachments "
+                "(attachment_id,task_id,org_bi,data,created_by_bi,created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                upload["id"],
+                task_id,
+                org_bi,
+                await runtime.seal({
+                    "name": upload["name"],
+                    "mime": upload["mime"],
+                    "size": upload["size"],
+                    "file": upload["file"],
+                }),
+                account_bi,
+                now,
+            )
     except Exception as error:
+        try:
+            await runtime.d1_run(
+                "DELETE FROM organization_task_attachments "
+                "WHERE org_bi=? AND task_id=?",
+                org_bi,
+                task_id,
+            )
+            await runtime.d1_run(
+                "DELETE FROM organization_tasks "
+                "WHERE org_bi=? AND task_id=?",
+                org_bi,
+                task_id,
+            )
+        except Exception:
+            pass
         if "catalog_full" in str(error):
             return _response(
                 runtime, {"error": "task_capacity_reached"}, status=409)
@@ -936,10 +1183,14 @@ async def _create(
                     bounty_request["amountSol"] if bounty_request else ""
                 ),
                 "agentRun": bool(agent_run),
+                "priority": requested_priority,
+                "followUp": bool(parent_task_id),
             }
         ),
     )
     row = await _task(runtime, org_bi, task_id)
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, row, now, "created")
     return await _task_response(runtime, row, now, status=201)
 
 
@@ -980,9 +1231,30 @@ async def _update(
             runtime, await _task(runtime, org_bi, task_id), now)
     if not can_manage:
         return _response(runtime, {"error": "forbidden"}, status=403)
-    allowed = {"title", "details", "assignee", "sessionToken"}
+    if "priority" in data and set(data).issubset({"priority", "sessionToken"}):
+        priority = _priority(data.get("priority"))
+        await runtime.d1_run(
+            "UPDATE organization_tasks SET priority=?,updated_at=? "
+            "WHERE org_bi=? AND task_id=?",
+            priority, now, org_bi, task_id,
+        )
+        await runtime.audit(
+            actor, "organization.task_priority_changed",
+            "organization_task", task_id,
+            details={"priority": priority},
+        )
+        return await _task_response(
+            runtime, await _task(runtime, org_bi, task_id), now)
+    allowed = {
+        "title", "details", "assignee", "assigneeKind", "priority",
+        "repository", "sessionToken",
+    }
     changed = [
-        field for field in ("title", "details", "assignee") if field in data
+        field for field in (
+            "title", "details", "assignee", "assigneeKind", "priority",
+            "repository",
+        )
+        if field in data
     ]
     if not changed or any(field not in allowed for field in data):
         return _response(runtime, {"error": "invalid_update"}, status=400)
@@ -996,36 +1268,94 @@ async def _update(
         if "details" in data
         else _text(current.get("details"), MAX_DETAILS)
     )
+    assignee_kind = str(
+        data.get("assigneeKind")
+        if "assigneeKind" in data
+        else row.get("assignee_kind") or "user"
+    ).strip().lower()
+    if assignee_kind in AGENT_ASSIGNEE_KINDS:
+        assignee_kind = "agent"
+    if assignee_kind not in ("user", "agent", "unassigned"):
+        return _response(
+            runtime, {"error": "invalid_assignee_kind"}, status=400)
     assignee = (
         _text(data.get("assignee"), 64).lower()
         if "assignee" in data
         else _text(current.get("assignee"), 64).lower()
     )
-    if not title or not assignee:
-        return _response(
-            runtime, {"error": "title_and_assignee_required"}, status=400)
-    member = (
-        await runtime.marketing_member(org_bi, assignee)
-        if marketing_only
-        else await runtime.organization_member(org_bi, assignee)
+    repository = (
+        _text(data.get("repository"), 201)
+        if "repository" in data
+        else _text(current.get("repository"), 201)
     )
-    if not member:
+    if repository:
+        parts = repository.split("/", 1)
+        if (
+            len(parts) != 2
+            or not _REPO_SEGMENT_RE.fullmatch(parts[0])
+            or not _REPO_SEGMENT_RE.fullmatch(parts[1])
+        ):
+            return _response(
+                runtime, {"error": "invalid_repository"}, status=400)
+    priority = _priority(
+        data.get("priority")
+        if "priority" in data
+        else row.get("priority"),
+    )
+    if not title:
         return _response(
-            runtime,
-            {
-                "error": (
-                    "assignee_not_marketing_member"
-                    if marketing_only else "assignee_not_org_member"
-                )
-            },
-            status=400,
-        )
+            runtime, {"error": "title_required"}, status=400)
     if int(row.get("completed_at") or 0) > 0:
         return _response(
             runtime, {"error": "completed_task_cannot_be_updated"}, status=409)
     if str(row.get("status") or "") == "active":
         return _response(
             runtime, {"error": "active_task_cannot_be_updated"}, status=409)
+    member = None
+    assignee_bi = ""
+    destination = str(row.get("destination") or "department")
+    if assignee_kind == "user":
+        if not assignee:
+            return _response(
+                runtime, {"error": "assignee_required"}, status=400)
+        member = (
+            await runtime.marketing_member(org_bi, assignee)
+            if marketing_only
+            else await runtime.organization_member(org_bi, assignee)
+        )
+        if not member:
+            return _response(
+                runtime,
+                {
+                    "error": (
+                        "assignee_not_marketing_member"
+                        if marketing_only else "assignee_not_org_member"
+                    )
+                },
+                status=400,
+            )
+        assignee = member["name"]
+        assignee_bi = member["bi"]
+        if destination == "agent":
+            destination = "department"
+    elif assignee_kind == "agent":
+        if marketing_only:
+            return _response(runtime, {"error": "invalid_update"}, status=400)
+        if not repository:
+            return _response(
+                runtime, {"error": "repository_required"}, status=400)
+        assignee = "agent"
+        destination = "agent"
+    else:
+        assignee = ""
+        destination = (
+            "department" if destination == "agent" else destination
+        )
+    agent_session_id = (
+        ""
+        if "assigneeKind" in data
+        else str(row.get("agent_session_id") or "")
+    )
     sealed = await runtime.seal({
         "kind": (
             str(current.get("kind") or "task")
@@ -1034,16 +1364,21 @@ async def _update(
         ),
         "title": title,
         "details": details,
+        "attachments": _attachments(current.get("attachments")),
         "completionNote": _text(
             current.get("completionNote"), MAX_COMPLETION_NOTE),
-        "assignee": member["name"],
+        "assignee": assignee,
         "createdBy": _text(current.get("createdBy"), 64).lower(),
+        "parentTaskId": (
+            str(current.get("parentTaskId") or "").lower()
+            if valid_id(current.get("parentTaskId")) else ""
+        ),
         "bountyRequest": (
             current.get("bountyRequest")
             if isinstance(current.get("bountyRequest"), dict)
             else None
         ),
-        "repository": _text(current.get("repository"), 201),
+        "repository": repository,
         "howToTest": _text(current.get("howToTest"), 720),
         "qaReviewer": _text(current.get("qaReviewer"), 64).lower(),
         # Editing the copy never rewrites who ran the task or how.
@@ -1051,9 +1386,14 @@ async def _update(
     })
     await runtime.d1_run(
         "UPDATE organization_tasks "
-        "SET assignee_bi=?,data=?,updated_at=? "
+        "SET assignee_kind=?,assignee_bi=?,destination=?,agent_session_id=?,"
+        "priority=?,data=?,updated_at=? "
         "WHERE org_bi=? AND task_id=? AND status='idle'",
-        member["bi"],
+        assignee_kind,
+        assignee_bi,
+        destination,
+        agent_session_id,
+        priority,
         sealed,
         now,
         org_bi,
@@ -1063,7 +1403,8 @@ async def _update(
     if (
         not changed_row
         or str(changed_row.get("status") or "") != "idle"
-        or str(changed_row.get("assignee_bi") or "") != str(member["bi"])
+        or str(changed_row.get("assignee_kind") or "") != assignee_kind
+        or str(changed_row.get("assignee_bi") or "") != assignee_bi
         or str(changed_row.get("data") or "") != str(sealed)
     ):
         return _response(runtime, {"error": "task_state_conflict"}, status=409)
@@ -1135,17 +1476,8 @@ async def _start(
         task_id,
         details={"state": "active"},
     )
-    # Starting the timer also yields an encrypted per-account HUD notice for
-    # Organization Engineering. It never enters the selected chat channel or
-    # multiplayer presence, and notification fan-out remains best effort.
-    notifier = getattr(runtime, "notify_engineering_task_started", None)
-    if callable(notifier):
-        try:
-            projected = await _project_task(runtime, changed, now)
-            if projected:
-                await notifier(org_bi, actor, task_id, projected)
-        except Exception:
-            pass
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, changed, now, "started")
     return await _task_response(runtime, changed, now)
 
 
@@ -1184,8 +1516,10 @@ async def _stop(
         task_id,
         details={"state": "idle"},
     )
-    return await _task_response(
-        runtime, await _task(runtime, org_bi, task_id), now)
+    changed = await _task(runtime, org_bi, task_id)
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, changed, now, "stopped")
+    return await _task_response(runtime, changed, now)
 
 
 async def _complete(
@@ -1195,7 +1529,7 @@ async def _complete(
     # A bot-assigned task has no member assignee_bi to match, so the desktop
     # that opened it — and only that desktop — reports its run as finished.
     launched_agent_run = (
-        str(row.get("assignee_kind") or "") in ("claude", "codex")
+        str(row.get("assignee_kind") or "") in AGENT_ASSIGNEE_KINDS
         and str(row.get("created_by_bi") or "") == account_bi
     )
     if (
@@ -1311,6 +1645,8 @@ async def _complete(
             "hasCompletionNote": bool(current["completionNote"]),
         },
     )
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, changed, now, "completed")
     return await _task_response(runtime, changed, now)
 
 
@@ -1351,8 +1687,10 @@ async def _request_qa(
         actor, "organization.task_sent_to_qa", "organization_task", task_id,
         details={"qa": "requested"},
     )
-    return await _task_response(
-        runtime, await _task(runtime, org_bi, task_id), now)
+    changed = await _task(runtime, org_bi, task_id)
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, changed, now, "qa requested")
+    return await _task_response(runtime, changed, now)
 
 
 async def _return_to_list(
@@ -1397,13 +1735,22 @@ async def _return_to_list(
         actor, "organization.task_returned", "organization_task", task_id,
         details={"returned": True, "hadSession": bool(session_id)},
     )
-    return await _task_response(
-        runtime, await _task(runtime, org_bi, task_id), now)
+    changed = await _task(runtime, org_bi, task_id)
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, changed, now, "returned")
+    return await _task_response(runtime, changed, now)
 
 
 async def _delete(runtime, org_bi, actor, task_id, can_manage):
     if not can_manage:
         return _response(runtime, {"error": "forbidden"}, status=403)
+    prior = await _task(runtime, org_bi, task_id)
+    await runtime.d1_run(
+        "DELETE FROM organization_task_attachments "
+        "WHERE org_bi=? AND task_id=?",
+        org_bi,
+        task_id,
+    )
     await runtime.d1_run(
         "DELETE FROM organization_task_checkins "
         "WHERE org_bi=? AND task_id=?",
@@ -1451,7 +1798,35 @@ async def _delete(runtime, org_bi, actor, task_id, can_manage):
         task_id,
         details={"state": "deleted"},
     )
+    await _notify_activity(
+        runtime, org_bi, actor, task_id, prior, runtime.now(), "deleted")
     return _response(runtime, {"ok": True, "deleted": True, "id": task_id})
+
+
+async def _attachment(runtime, org_bi, task_id, attachment_id):
+    row = await runtime.d1_first(
+        "SELECT data FROM organization_task_attachments "
+        "WHERE org_bi=? AND task_id=? AND attachment_id=?",
+        org_bi,
+        task_id,
+        attachment_id,
+    )
+    if not row:
+        return _response(runtime, {"error": "task_image_not_found"}, status=404)
+    record = await runtime.open(row.get("data"))
+    if not isinstance(record, dict):
+        return _response(
+            runtime, {"error": "task_image_unavailable"}, status=500)
+    uploads, error = _task_image_uploads([record])
+    if error or len(uploads) != 1:
+        return _response(
+            runtime, {"error": "task_image_unavailable"}, status=500)
+    upload = uploads[0]
+    return runtime.binary_response(
+        base64.b64decode(upload["file"]),
+        upload["mime"],
+        upload["name"],
+    )
 
 
 async def _stop_active(runtime, org_bi, account_bi, actor, now):
@@ -1602,6 +1977,8 @@ async def handle(runtime, path):
     allowed = (
         ("GET", "POST")
         if route[0] in ("collection", "proofs", "initiatives")
+        else ("GET",)
+        if route[0] == "attachment"
         else ("POST",)
         if route[0] == "stop-active"
         else ("GET", "PATCH", "DELETE")
@@ -1710,6 +2087,8 @@ async def handle(runtime, path):
         )
     ):
         return _response(runtime, {"error": "task_not_found"}, status=404)
+    if kind == "attachment":
+        return await _attachment(runtime, org_bi, task_id, action)
     if kind == "task":
         if method == "GET":
             if (

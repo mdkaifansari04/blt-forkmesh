@@ -53,6 +53,42 @@ QString externalActionHeadKey(const RepositoryRecord &repo)
                    .toHex());
 }
 
+// Settings key holding the served mirror's default-branch tip this node has
+// already queued push workflows for. Keyed by repository, not by mirror path:
+// an encrypted mirror is re-materialized into a fresh temporary directory on
+// every seal, so the path is not stable but the commit is.
+QString servedActionHeadKey(const RepositoryRecord &repo)
+{
+    return QStringLiteral("actions/servedHeads/") +
+           QString::fromLatin1(
+               QCryptographicHash::hash(
+                   (repo.owner + QLatin1Char('/') + repo.name).toUtf8(),
+                   QCryptographicHash::Sha256)
+                   .toHex());
+}
+
+// The branch the served mirror's HEAD points at, as a full ref name. Detached
+// or unborn HEADs return empty — there is no branch to report a push on.
+QString gitHeadRef(const QString &repository)
+{
+    QProcess process;
+    process.setProcessChannelMode(QProcess::SeparateChannels);
+    process.start(QStringLiteral("git"),
+                  {QStringLiteral("--git-dir"), repository,
+                   QStringLiteral("symbolic-ref"), QStringLiteral("--quiet"),
+                   QStringLiteral("HEAD")});
+    if (!process.waitForStarted(2000) ||
+        !process.waitForFinished(5000) ||
+        process.exitStatus() != QProcess::NormalExit ||
+        process.exitCode() != 0) {
+        process.kill();
+        return {};
+    }
+    const QString ref =
+        QString::fromUtf8(process.readAllStandardOutput().left(512)).trimmed();
+    return kExternalActionRef.match(ref).hasMatch() ? ref : QString();
+}
+
 QString gitCommitAt(const QString &repository, const QString &ref)
 {
     QProcess process;
@@ -181,6 +217,13 @@ void MainWindow::initActions()
             m_actionQueue.append(run.id);
         }
     }
+
+    // Auto approval must also apply to runs that were already awaiting review
+    // when the setting was introduced or when the app last shut down. Recheck
+    // their workflow and full repository snapshot before promoting them; a
+    // stale or altered run remains safely parked for manual review.
+    for (const RepositoryRecord &repo : std::as_const(m_repositories))
+        autoApproveAwaitingRuns(repo);
 
     installAllPushHooks();
 
@@ -386,6 +429,14 @@ void MainWindow::scanActionSpool()
 {
     if (!m_actionStore)
         return;
+    // Never sweep from inside someone else's blocking git wait. This pass syncs
+    // mirrors, re-attests pins and (through propagateRepoUpdate) rebuilds the
+    // whole commit list; delivered mid-pump it stacks all of that on top of the
+    // render already in flight and the two freeze as one. Re-post instead — the
+    // dominant shape in the stall log (see deferredOutOfKeepAlivePump).
+    if (deferredOutOfKeepAlivePump(m_actionSpoolSweepPending,
+                                   [this] { scanActionSpool(); }))
+        return;
     syncMirrorActionsConfiguration();
     scanExternalActionsSources();
     QDir dir(m_actionStore->spoolDir());
@@ -440,6 +491,9 @@ void MainWindow::scanActionSpool()
     // Re-attest the integrity pin at most once per repo per sweep, even if several
     // pushes spooled.
     QSet<int> reattested;
+    // The commit each repository's post-receive hook reported in this sweep, so
+    // the served-head watcher below can tell "already queued" from "new".
+    QHash<int, QString> pushedCommits;
     for (const QString &file : files) {
         const QString full = dir.filePath(file);
         QFile f(full);
@@ -489,13 +543,19 @@ void MainWindow::scanActionSpool()
                 // MainWindow::syncRepository/onPeerMirrorUpdated). A push that
                 // lands directly on this served bare mirror never goes through
                 // syncRepository, so without this, peers would only notice at
-                // their next three-minute auto-sync tick instead of
+                // their next one-minute auto-sync tick instead of
                 // converging in seconds.
                 if (!r.previewOnly && m_backend)
                     m_backend->notifyMirrorUpdated(
                         catalogOwner(r) + "/" +
                             repoSegment(r.name, QStringLiteral("repository")),
                         commit);
+                // Relay frames reach the desktop peers immediately, but the
+                // SSH-fed headless fleet is outside that room. Fan the exact
+                // refs that just landed on this source mirror out to its
+                // configured SSH remotes now, rather than leaving those nodes
+                // to discover the push on the periodic safety-net sync.
+                pushToSshMirrorRemotes(idx);
             }
         }
         // Skip events with no branch update or a branch deletion (all-zero SHA).
@@ -503,10 +563,63 @@ void MainWindow::scanActionSpool()
             continue;
         if (commit.count(QLatin1Char('0')) == commit.size())
             continue;
+        const int pushedIndex = repoIndexFor(owner, name);
+        if (pushedIndex >= 0)
+            pushedCommits.insert(pushedIndex, commit.toLower());
         enqueuePushEvent(owner, name, commit, ref);
     }
+    scanServedMirrorHeads(pushedCommits);
     processActionQueue();
     updateMirrorActionsRuntimeState();
+}
+
+void MainWindow::scanServedMirrorHeads(const QHash<int, QString> &pushedCommits)
+{
+    if (!m_actionStore)
+        return;
+    QSettings settings;
+    for (int index = 0; index < m_repositories.size(); ++index) {
+        // Copy, don't reference: enqueuePushEvent below pumps the event loop
+        // (git subprocesses, cancelSupersededRuns → ActionRunner::stop), and a
+        // nested refresh can reassign m_repositories (adhoc #119).
+        const RepositoryRecord repo = m_repositories.at(index);
+        // Only the node holding the working copy owns this repository's push
+        // events. A pure mirror just replicates whatever the source serves;
+        // queueing here too would fan one merge out into a duplicate run on
+        // every mirror in the mesh. Gateway-managed Actions mirrors keep their
+        // own trigger in scanExternalActionsSources().
+        if (repo.previewOnly || !repo.actionsEnabled ||
+            repo.externallyManagedActions ||
+            repo.localPath.trimmed().isEmpty() ||
+            repo.mirrorPath.trimmed().isEmpty() ||
+            !QDir(repo.mirrorPath).exists())
+            continue;
+        const QString ref = gitHeadRef(repo.mirrorPath);
+        if (ref.isEmpty())
+            continue;
+        const QString commit = gitCommitAt(repo.mirrorPath, ref);
+        if (commit.isEmpty())
+            continue; // mid-reseal materialization, or an unborn branch
+        const QString key = servedActionHeadKey(repo);
+        const QString previous =
+            settings.value(key).toString().trimmed().toLower();
+        if (previous == commit)
+            continue;
+        // Record before queueing: a run that fails to start must not leave the
+        // watcher re-queueing the same commit on every sweep.
+        settings.setValue(key, commit);
+        // Enabling Actions (or a node's first sweep after this watcher shipped)
+        // starts from "now" — the branch's whole history is never replayed as
+        // one enormous push. Mirrors scanExternalActionsSources()'s rule.
+        if (previous.isEmpty())
+            continue;
+        // The mirror's own post-receive hook already reported this exact commit
+        // in this sweep; queueing again would duplicate every workflow run.
+        if (pushedCommits.value(index) == commit)
+            continue;
+        enqueuePushEvent(repo.owner, repo.name, commit, ref);
+    }
+    settings.sync();
 }
 
 void MainWindow::syncMirrorActionsConfiguration()
@@ -766,76 +879,138 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size() || !m_actionStore)
         return;
+    // Everything the worker needs, by value: m_repositories can be reassigned
+    // while it runs, and the apply below re-resolves the index anyway.
+    const QString mirrorPath = m_repositories.at(repoIndex).mirrorPath;
+    const QString ownerKey = owner;
+    const QString nameKey = name;
+    const QString commitKey = commit;
+    const QString refKey = ref;
+
+    runOffThread<WorkflowScan>(
+        [mirrorPath, commitKey, trigger]() -> WorkflowScan {
+            WorkflowScan scan;
+            // Every git read here runs inside the served mirror. If its
+            // directory is gone (e.g. the record's path diverged from the
+            // on-disk mirror), each read fails silently and the caller would
+            // end with the misleading "no .forkmesh/ workflow with 'on: push'"
+            // line — report what is actually wrong instead.
+            if (!QDir(mirrorPath).exists()) {
+                scan.mirrorMissing = true;
+                return scan;
+            }
+            const QStringList base{QStringLiteral("-C"), mirrorPath};
+            auto capture = [&base](const QStringList &args) -> QString {
+                QProcess process;
+                process.setProcessChannelMode(QProcess::SeparateChannels);
+                process.start(QStringLiteral("git"), base + args);
+                if (!process.waitForStarted(3000) ||
+                    !process.waitForFinished(10000)) {
+                    process.kill();
+                    process.waitForFinished(1000);
+                    return {};
+                }
+                if (process.exitCode() != 0)
+                    return {};
+                return QString::fromUtf8(process.readAllStandardOutput());
+            };
+
+            // Metadata-only pushes (issues, pull requests, commit comments)
+            // shouldn't trigger CI: they carry no code change. A release is an
+            // explicit, intentional publish, so it skips this guard.
+            if (trigger == WorkflowTrigger::Push) {
+                const QStringList changed =
+                    capture({QStringLiteral("diff-tree"),
+                             QStringLiteral("--no-commit-id"),
+                             QStringLiteral("--name-only"),
+                             QStringLiteral("-r"), commitKey})
+                        .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+                const auto isMetadataPath = [](const QString &p) {
+                    return p.startsWith(QLatin1String(".forkmesh/issues/")) ||
+                           p.startsWith(QLatin1String("pulls/")) ||
+                           p.startsWith(QLatin1String(".forkmesh/commits/"));
+                };
+                if (!changed.isEmpty() &&
+                    std::all_of(changed.cbegin(), changed.cend(),
+                                isMetadataPath)) {
+                    scan.metadataOnly = true;
+                    return scan;
+                }
+            }
+
+            // List .forkmesh/*.yml|*.yaml at the pushed commit without checking
+            // it out, then read each one's content.
+            const QStringList paths =
+                capture({QStringLiteral("ls-tree"), QStringLiteral("-r"),
+                         QStringLiteral("--name-only"), commitKey,
+                         QStringLiteral("--"), QStringLiteral(".forkmesh")})
+                    .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            for (const QString &path : paths) {
+                if (!(path.endsWith(QLatin1String(".yml")) ||
+                      path.endsWith(QLatin1String(".yaml"))))
+                    continue;
+                const QString content =
+                    capture({QStringLiteral("show"),
+                             commitKey + QLatin1Char(':') + path});
+                if (content.isEmpty())
+                    continue;
+                scan.workflows.append({path, content});
+            }
+            // Warm the repository-state digest here rather than leaving the
+            // first bindActionRepositoryState() on the GUI thread to archive and
+            // hash the whole tree. Every workflow at this commit shares the same
+            // (mirror, commit) pair, so one call fills the memo for all of them.
+            if (!scan.workflows.isEmpty()) {
+                QString tree, execution;
+                ActionStore::repositoryStateDigest(mirrorPath, commitKey, &tree,
+                                                   &execution, nullptr);
+            }
+            return scan;
+        },
+        [this, ownerKey, nameKey, commitKey, refKey, trigger](WorkflowScan scan) {
+            applyWorkflowScan(ownerKey, nameKey, commitKey, refKey, trigger,
+                              scan);
+        });
+}
+
+// GUI-thread half of queueWorkflowsForCommit: turn the workflows the worker read
+// out of the mirror into queued (or approval-pending) runs.
+void MainWindow::applyWorkflowScan(const QString &owner, const QString &name,
+                                   const QString &commit, const QString &ref,
+                                   WorkflowTrigger trigger,
+                                   const WorkflowScan &scan)
+{
+    if (!m_actionStore)
+        return;
+    // Re-resolve: the catalog can have been rewritten while the worker ran.
+    const int repoIndex = repoIndexFor(owner, name);
+    if (repoIndex < 0 || repoIndex >= m_repositories.size())
+        return;
     // Copy, don't reference: cancelSupersededRuns() below pumps the event loop
     // (ActionRunner::stop → QProcess::waitForFinished), and a nested refresh can
     // reassign m_repositories — a reference would dangle for the loop's later
     // iterations (adhoc #119).
     const RepositoryRecord repo = m_repositories.at(repoIndex);
 
-    // Every git read below runs inside the served mirror. If its directory is
-    // gone (e.g. the record's path diverged from the on-disk mirror), each read
-    // fails silently and this would end with the misleading "no .forkmesh/
-    // workflow with 'on: push'" log line — say what is actually wrong instead.
-    if (!QDir(repo.mirrorPath).exists()) {
+    if (scan.mirrorMissing) {
         logSystem(QStringLiteral(
                       "Actions: served mirror %1 for %2/%3 is missing \xE2\x80\x94 "
                       "cannot look up workflows at %4.")
                       .arg(repo.mirrorPath, owner, name, commit.left(8)));
         return;
     }
-
-    // Metadata-only pushes (issues, pull requests, commit comments) shouldn't
-    // trigger CI: they carry no code change. List the pushed commit's files and
-    // bail if every one lives under a metadata folder. A release is an explicit,
-    // intentional publish, so it skips this guard and runs regardless.
-    if (trigger == WorkflowTrigger::Push) {
-        QProcess names;
-        names.start(QStringLiteral("git"),
-                    {QStringLiteral("-C"), repo.mirrorPath,
-                     QStringLiteral("diff-tree"), QStringLiteral("--no-commit-id"),
-                     QStringLiteral("--name-only"), QStringLiteral("-r"), commit});
-        names.waitForFinished(10000);
-        const QStringList changed =
-            QString::fromUtf8(names.readAllStandardOutput())
-                .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-        const auto isMetadataPath = [](const QString &p) {
-            return p.startsWith(QLatin1String(".forkmesh/issues/")) ||
-                   p.startsWith(QLatin1String("pulls/")) ||
-                   p.startsWith(QLatin1String(".forkmesh/commits/"));
-        };
-        if (!changed.isEmpty() &&
-            std::all_of(changed.cbegin(), changed.cend(), isMetadataPath)) {
-            logSystem(QString::fromUtf8(
-                          "Actions: %1/%2 @ %3 only touches issues/PRs \xE2\x80\x94 "
-                          "skipping workflows.")
-                          .arg(owner, name, commit.left(8)));
-            return;
-        }
+    if (scan.metadataOnly) {
+        logSystem(QString::fromUtf8(
+                      "Actions: %1/%2 @ %3 only touches issues/PRs \xE2\x80\x94 "
+                      "skipping workflows.")
+                      .arg(owner, name, commit.left(8)));
+        return;
     }
 
-    // List .forkmesh/*.yml|*.yaml at the pushed commit without checking it out.
-    QProcess ls;
-    ls.start(QStringLiteral("git"),
-             {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("ls-tree"),
-              QStringLiteral("-r"), QStringLiteral("--name-only"), commit,
-              QStringLiteral("--"), QStringLiteral(".forkmesh")});
-    ls.waitForFinished(10000);
-    const QStringList paths = QString::fromUtf8(ls.readAllStandardOutput())
-                                  .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-
     bool added = false;
-    for (const QString &path : paths) {
-        if (!(path.endsWith(QLatin1String(".yml")) ||
-              path.endsWith(QLatin1String(".yaml"))))
-            continue;
-        QProcess show;
-        show.start(QStringLiteral("git"),
-                   {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("show"),
-                    commit + QLatin1Char(':') + path});
-        show.waitForFinished(10000);
-        if (show.exitCode() != 0)
-            continue;
-        const QString content = QString::fromUtf8(show.readAllStandardOutput());
+    for (const auto &entry : scan.workflows) {
+        const QString &path = entry.first;
+        const QString &content = entry.second;
         const ActionWorkflow wf = ActionFile::parse(path, content);
         const bool matchesTrigger = trigger == WorkflowTrigger::Release
                                         ? wf.triggersOnRelease()
@@ -851,11 +1026,11 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
         // A workflow dedicated to other nodes isn't ours to run: the node it
         // names sees the same push and picks it up there. Nothing is queued
         // here, so the run history stays on the node that actually executes it.
-        if (!wf.runsOnNode(actionNodeLabels())) {
+        if (!workflowRunsOnThisNode(repo, wf)) {
             logSystem(QString::fromUtf8(
                           "Actions: \xE2\x80\x9C%1\xE2\x80\x9D is dedicated to "
                           "%2 \xE2\x80\x94 this node (%3) is skipping it.")
-                          .arg(wf.name, workflowDedicationLabel(wf),
+                          .arg(wf.name, workflowDedicationLabel(repo, wf),
                                actionNodeLabels().join(QStringLiteral(", "))));
             continue;
         }
@@ -878,12 +1053,11 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
                                snapshotError));
             continue;
         }
-        // Even a release drafted by the owner requires review of the exact
-        // repository snapshot. An unchanged YAML cannot silently run a changed
-        // helper script, Makefile, package hook, or dependency.
-        const bool approved = ActionStore::isApproved(
-            run.repoKey(), path, content, run.repositoryTree,
-            run.executionDigest);
+        // The approval is always bound to the complete repository snapshot, so
+        // an unchanged YAML cannot run a changed helper script, Makefile,
+        // package hook, or dependency. Automatic approval only skips the
+        // human-review pause for repositories where the owner enabled it.
+        const bool approved = resolveActionApproval(repo, run);
         run.status =
             approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
 
@@ -972,14 +1146,24 @@ void MainWindow::refreshOpenRepoDetail()
     // at only one of them.
     const int visibleTab =
         m_repoDetailStack ? m_repoDetailStack->currentIndex() : -1;
-    if (visibleTab == 0 ||
+    // An empty browsed branch means this repo's refs weren't on disk at all when
+    // the view opened — a fresh install's first clone lands well after its detail
+    // page did. Everything derived from them is still on its empty value: the
+    // status strip's bottom-left branch button, "0 branches", "Tags 0",
+    // "Releases (0)". Re-read them whatever tab is on screen, so the sync that
+    // brings the repo down is the one that fills them in (adhoc #116). Once a
+    // branch is known the visible-tab gate keeps the per-push cost as it was.
+    const bool refsJustArrived = m_repoBranch.isEmpty();
+    if (refsJustArrived || visibleTab == 0 ||
         (m_branchesTabIndex >= 0 && visibleTab == m_branchesTabIndex))
         loadBranchesAndTags();
     if (m_commitsTable && m_commitsTable->isVisibleTo(this))
         loadCommits();
     if (visibleTab == 3)
         reloadAgents();
-    if (visibleTab == 2)
+    if (refsJustArrived)
+        refreshRepoTabCounts(); // the repo only just materialized: every badge is empty
+    else if (visibleTab == 2)
         reloadIssuesInBackground();
     // Pull metadata still feeds counts and agent state, but its git/disk load is
     // worker-backed; applying the resulting table is a single model allocation.
@@ -1026,9 +1210,59 @@ QStringList MainWindow::actionNodeLabels() const
             .toString());
 }
 
-QString MainWindow::workflowDedicationLabel(const ActionWorkflow &workflow) const
+QString MainWindow::workflowNodePin(const RepositoryRecord &repo,
+                                    const QString &path) const
 {
-    return workflow.runsOn.join(QStringLiteral(", "));
+    return ActionFile::pinnedNode(repo.workflowNodes, path);
+}
+
+QStringList
+MainWindow::workflowRunsOnLabels(const RepositoryRecord &repo,
+                                 const ActionWorkflow &workflow) const
+{
+    // The dropdown wins over the file: the owner picked this node here, on this
+    // machine, and that choice has to survive an upstream `runs-on:` edit.
+    const QString pin = workflowNodePin(repo, workflow.path);
+    if (!pin.isEmpty())
+        return QStringList{pin};
+    return workflow.runsOn;
+}
+
+bool MainWindow::workflowRunsOnThisNode(const RepositoryRecord &repo,
+                                        const ActionWorkflow &workflow) const
+{
+    ActionWorkflow probe; // only runsOn takes part in the match
+    probe.runsOn = workflowRunsOnLabels(repo, workflow);
+    return probe.runsOnNode(actionNodeLabels());
+}
+
+QString MainWindow::workflowDedicationLabel(const RepositoryRecord &repo,
+                                            const ActionWorkflow &workflow) const
+{
+    return workflowRunsOnLabels(repo, workflow).join(QStringLiteral(", "));
+}
+
+QStringList MainWindow::actionNodeCandidates() const
+{
+    QStringList out;
+    const auto add = [&out](const QString &raw) {
+        const QString node = raw.trimmed();
+        if (node.isEmpty() || out.contains(node, Qt::CaseInsensitive))
+            return;
+        out.append(node);
+    };
+    add(machineNodeName()); // this machine first: the common answer
+    for (const MemberInfo &node : m_homeRoster)
+        add(node.nodeName);
+    // Labels the repo's own workflows already name stay selectable even when no
+    // node in the roster answers to them (a Mac that's currently offline).
+    for (const ActionWorkflow &wf : m_repoWorkflows) {
+        for (const QString &label : wf.runsOn) {
+            if (label.compare(QLatin1String("any"), Qt::CaseInsensitive) != 0)
+                add(label);
+        }
+    }
+    return out;
 }
 
 void MainWindow::saveActionNodeLabels(const QString &labels)
@@ -1233,9 +1467,9 @@ void MainWindow::processActionQueue()
             continue;
         }
         // The dedication is re-checked immediately before execution, not just
-        // when the run was queued: this node's labels (or the workflow's
-        // `runs-on`) may have changed while the run sat in the queue.
-        if (!wf.runsOnNode(actionNodeLabels())) {
+        // when the run was queued: this node's labels, the "Run on" pin, or the
+        // workflow's `runs-on` may have changed while the run sat in the queue.
+        if (!workflowRunsOnThisNode(m_repositories.at(repoIndex), wf)) {
             run->status = ActionStatus::Skipped;
             m_actionStore->saveRun(*run);
             scheduleMirrorActionsSummary(0);
@@ -1243,7 +1477,8 @@ void MainWindow::processActionQueue()
                           "Actions: skipped \xE2\x80\x9C%1\xE2\x80\x9D for "
                           "%2/%3 \xE2\x80\x94 it is dedicated to %4.")
                           .arg(run->workflowName, run->owner, run->name,
-                               workflowDedicationLabel(wf)));
+                               workflowDedicationLabel(
+                                   m_repositories.at(repoIndex), wf)));
             continue;
         }
         // start() emits statusChanged synchronously (which reloads m_actionRuns),
@@ -1471,41 +1706,147 @@ void MainWindow::addNotification(const QString &title, const QString &body,
     item.body = body;
     item.warning = warning;
     item.runId = runId;
-    item.timestampMs = QDateTime::currentMSecsSinceEpoch();
-    m_notifications.prepend(item);
-    while (m_notifications.size() > 100)
-        m_notifications.removeLast();
-    updateNotificationButton();
-    // Keep the open Notifications page live as new alerts arrive.
-    if (m_notificationsTable && m_sectionStack &&
-        m_sectionStack->currentIndex() == 3)
-        refreshNotificationsTable();
+    if (runId > 0)
+        item.kind = QStringLiteral("action");
+    recordNotification(item);
 }
 
 void MainWindow::addNotification(const QString &title, const QString &body,
                                  bool warning, const NotificationLink &link)
+{
+    addNotification(title, body, warning, link, QString(), QString());
+}
+
+void MainWindow::addNotification(const QString &title, const QString &body,
+                                 bool warning, const NotificationLink &link,
+                                 const QString &kind, const QString &actor)
 {
     AppNotification item;
     item.title = title;
     item.body = body;
     item.warning = warning;
     item.link = link;
-    item.timestampMs = QDateTime::currentMSecsSinceEpoch();
+    item.kind = kind;
+    item.actor = actor;
+    recordNotification(item);
+}
+
+// Every in-app event lands here: it is filed on the Pings page, counted on the
+// bell, listed in the feed above the network log, and raised in the message
+// area above the footer's mini-log so a new event is seen without opening a
+// page (adhoc #77).
+void MainWindow::recordNotification(AppNotification item)
+{
+    item.id = m_nextNotificationId++;
+    if (item.timestampMs <= 0)
+        item.timestampMs = QDateTime::currentMSecsSinceEpoch();
+    if (item.kind.isEmpty())
+        item.kind = item.link.isValid() ? item.link.kind
+                                        : QStringLiteral("desktop");
+    if (item.repo.isEmpty() && !item.link.owner.isEmpty())
+        item.repo = item.link.owner + QLatin1Char('/') + item.link.name;
     m_notifications.prepend(item);
     while (m_notifications.size() > 100)
         m_notifications.removeLast();
     updateNotificationButton();
+    flashNotification(item);
+    refreshLogEventList();
+    // Keep the open Pings page live as new alerts arrive.
     if (m_notificationsTable && m_sectionStack &&
         m_sectionStack->currentIndex() == 3)
         refreshNotificationsTable();
 }
 
-// Jump to the screen/item a notification points at: open the owning repo, switch
+// The pill above the footer mini-log is this window's ping area, so every
+// recorded event shows there. Events that arrive while another toast is up are
+// added to its visible queue rather than stomping it; errors also flash the red
+// app border (adhoc #77).
+void MainWindow::flashNotification(const AppNotification &item)
+{
+    QString text = item.title.simplified();
+    const QString detail = item.body.simplified();
+    if (!detail.isEmpty())
+        text += QString::fromUtf8(" \xE2\x80\x94 ") + detail; // —
+    if (text.isEmpty())
+        return;
+    if (item.warning) {
+        flashMessage(text, true);
+        flashErrorBorder();
+    } else if (topMessageBusy()) {
+        queueTopMessage(text, false);
+    } else {
+        flashMessage(text, false);
+    }
+}
+
+// Flash a 3px red border (plus a soft inner glow) around the whole window for
+// 1.5 seconds — the same visual the World plays when a new error group arrives
+// (world-admin-error-arrival in world.css, adhoc #77). Re-flashing while one
+// is up restarts the countdown, exactly like the World's timer reset.
+void MainWindow::flashErrorBorder()
+{
+    if (!m_errorBorderOverlay) {
+        // A paint-only widget: transparent to the mouse, always resized over
+        // the central area, painting nothing but the border and glow.
+        class ErrorBorderWidget : public QWidget
+        {
+        public:
+            explicit ErrorBorderWidget(QWidget *parent) : QWidget(parent)
+            {
+                setAttribute(Qt::WA_TransparentForMouseEvents);
+                setAttribute(Qt::WA_NoSystemBackground);
+                setAttribute(Qt::WA_TranslucentBackground);
+            }
+
+        protected:
+            void paintEvent(QPaintEvent *) override
+            {
+                QPainter painter(this);
+                painter.setRenderHint(QPainter::Antialiasing, false);
+                // Border: rgb(248 81 73 / 0.72); glow: a few widening, fading
+                // strokes standing in for the CSS inset box-shadow.
+                QPen pen(QColor(248, 81, 73, 184), 3);
+                pen.setJoinStyle(Qt::MiterJoin);
+                painter.setPen(pen);
+                painter.drawRect(rect().adjusted(1, 1, -2, -2));
+                for (int step = 1; step <= 6; ++step) {
+                    const int inset = 2 + step * 3;
+                    QPen glow(QColor(248, 81, 73, 56 - step * 8), 3);
+                    glow.setJoinStyle(Qt::MiterJoin);
+                    painter.setPen(glow);
+                    painter.drawRect(
+                        rect().adjusted(inset, inset, -inset - 1, -inset - 1));
+                }
+            }
+        };
+        m_errorBorderOverlay = new ErrorBorderWidget(this);
+        m_errorBorderTimer = new QTimer(this);
+        m_errorBorderTimer->setSingleShot(true);
+        connect(m_errorBorderTimer, &QTimer::timeout, this, [this] {
+            if (m_errorBorderOverlay)
+                m_errorBorderOverlay->hide();
+        });
+    }
+    m_errorBorderOverlay->setGeometry(rect());
+    m_errorBorderOverlay->show();
+    m_errorBorderOverlay->raise();
+    m_errorBorderTimer->start(1500); // world-admin-error-arrival's 1.5s
+}
+
+// Jump to the screen/item a ping points at: open the owning repo, switch
 // to the right tab and select the issue / PR / discussion / commit (issue #292).
 void MainWindow::openNotificationLink(const NotificationLink &link)
 {
     if (!link.isValid())
         return;
+    if (link.kind == QLatin1String("chat")) {
+        // Chat pings (e.g. a new user greeting #welcome) carry the channel in
+        // ref and have no repository to open.
+        showChatView();
+        if (!link.ref.isEmpty())
+            switchConversation(link.ref);
+        return;
+    }
     const int index = repoIndexFor(link.owner, link.name);
     if (index < 0) {
         flashMessage(QStringLiteral("That repository isn't on this node anymore."),
@@ -1533,10 +1874,15 @@ void MainWindow::openNotificationLink(const NotificationLink &link)
         if (link.number > 0)
             showDiscussion(link.number);
     } else if (link.kind == QLatin1String("commit")) {
-        showOverviewCommits(); // the commits panel inside the Code overview
+        showOverviewCommits(); // the universal Git workspace
         if (!link.ref.isEmpty())
             showCommit(link.ref);
+    } else if (link.kind == QLatin1String("release")) {
+        if (m_releasesTabIndex >= 0)
+            selectTab(m_releasesTabIndex);
     }
+    // "repo" (host status, shares, mirror requests, pending inbox…) needs no
+    // tab switch: openRepoDetail() above already landed on the repository.
 }
 
 int MainWindow::pendingActionCount() const
@@ -1548,48 +1894,77 @@ int MainWindow::pendingActionCount() const
     return count;
 }
 
+// The recent-runs strip beside the agent fleet matrix on the window-chrome line
+// (adhoc #70): the newest ActionRunStrip::kMaxCells runs, newest top-left in the
+// same three-deep grid the agent and node dots use, each square tinted with the
+// same colour the Actions table gives that status.
+// Driven from updateNotificationButton(), which every run-state change already
+// reaches.
+void MainWindow::refreshActionRunStrip()
+{
+    if (!m_actionRunStrip)
+        return;
+    QVector<ActionRunStrip::Cell> cells;
+    QStringList lines;
+    for (const ActionRun &run : std::as_const(m_actionRuns)) {
+        if (cells.size() >= ActionRunStrip::kMaxCells)
+            break;
+        ActionRunStrip::Cell cell;
+        cell.runId = run.id;
+        cell.color = actionStatusColor(run.status);
+        cell.running = run.status == ActionStatus::Running;
+        cells.append(cell);
+        lines << QStringLiteral("%1 \xE2\x80\x94 %2 (%3)")
+                     .arg(run.workflowName.isEmpty() ? run.workflowPath
+                                                     : run.workflowName,
+                          actionStatusText(run.status), run.name);
+    }
+    m_actionRunStrip->setCells(cells);
+    m_actionRunStrip->setVisible(!cells.isEmpty());
+    updateChromeDotDivider(); // the runs' hairline follows the strip itself
+    if (cells.isEmpty()) {
+        m_actionRunStripTooltipKey.clear();
+        return;
+    }
+    // Same reasoning as the fleet matrix's tooltip: this runs on every run-state
+    // change, so skip re-formatting a string that hasn't changed.
+    const QString key = lines.join(QLatin1Char('\n'));
+    if (key == m_actionRunStripTooltipKey)
+        return;
+    m_actionRunStripTooltipKey = key;
+    m_actionRunStrip->setToolTip(
+        QStringLiteral("%1 most recent action run%2, newest first\n%3\n"
+                       "Click a square to open that run.")
+            .arg(cells.size())
+            .arg(cells.size() == 1 ? QString() : QStringLiteral("s"), key));
+}
+
 void MainWindow::updateNotificationButton()
 {
+    refreshActionRunStrip();
     if (!m_notificationButton)
         return;
-    const int pending = pendingActionCount();
+    const int approvals = pendingActionCount();
+    // Unread website alerts count towards the bell exactly like a local one, so
+    // the desktop badge matches the site's (adhoc #59).
+    const int pending = approvals + m_webAlertsUnread;
     // Icon-only bell (adhoc #137): the pending count rides on the tooltip and the
     // amber "alert" accent below rather than a "•" appended to a text label.
+    QStringList tips;
+    if (approvals > 0)
+        tips << QStringLiteral("%1 action(s) waiting for approval").arg(approvals);
+    if (m_webAlertsUnread > 0)
+        tips << QStringLiteral("%1 unread website ping(s)").arg(m_webAlertsUnread);
     m_notificationButton->setToolTip(
-        pending > 0
-            ? QStringLiteral("%1 action(s) waiting for approval").arg(pending)
-            : QStringLiteral("Notifications"));
-    // The button keeps its "topNavButton" identity (so it stays uniform and
-    // shows its checked state); the pending-approval accent rides on a dynamic
-    // property instead of swapping the object name.
-    m_notificationButton->setProperty("alert", pending > 0);
-    m_notificationButton->style()->unpolish(m_notificationButton);
-    m_notificationButton->style()->polish(m_notificationButton);
-    if (m_notificationRailBadge) {
-        if (pending > 0) {
-            const QString text =
-                pending > 99 ? QStringLiteral("99+") : QString::number(pending);
-            m_notificationRailBadge->setText(text);
-            const int height = 14; // matches #chatUnreadBadge's 7px radius
-            const int width =
-                qMax(height, m_notificationRailBadge->fontMetrics()
-                                 .horizontalAdvance(text) + 8);
-            // Ride the bell's own top-right corner, the way every other rail
-            // item paints its count (ActivityRailButton), instead of the
-            // button's far right edge — a badge parked out there forced the
-            // rail to reserve a whole empty column for it (adhoc #19).
-            const int buttonWidth = m_notificationButton->width();
-            const int iconRight = (buttonWidth + kNotificationBellIconPx) / 2;
-            m_notificationRailBadge->resize(width, height);
-            m_notificationRailBadge->move(
-                qBound(0, iconRight - width + height / 2 + 2,
-                       qMax(0, buttonWidth - width)),
-                0);
-            m_notificationRailBadge->show();
-            m_notificationRailBadge->raise();
-        } else {
-            m_notificationRailBadge->hide();
-        }
+        tips.isEmpty() ? QStringLiteral("Pings")
+                       : tips.join(QString::fromUtf8(" \xC2\xB7 ")));
+    // The bell is a regular rail item; it paints the pending count on the
+    // icon's corner itself (red "needs you" style, set at construction) and
+    // tints the glyph amber while anything waits.
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_notificationButton)) {
+        railButton->setAlertTint(pending > 0);
+        railButton->setBadgeCount(pending);
     }
 }
 
@@ -1622,6 +1997,10 @@ void MainWindow::openActionRunFromNotification(int runId)
 // ---- Notifications (its own sortable-table section) ------------------------
 
 namespace {
+// Type, Kind, Title, Detail, Repository, From, Status, When, Link — every field
+// a ping carries gets a column (adhoc #77).
+constexpr int kNotificationColumns = 9;
+
 // A table item that sorts by an epoch-millis value held in Qt::UserRole while
 // displaying a human-friendly date, so the "When" column orders chronologically
 // instead of lexicographically.
@@ -1639,21 +2018,107 @@ public:
                other.data(Qt::UserRole).toLongLong();
     }
 };
+
+// Where a website ping points inside this desktop. The relay's notification
+// payload names the repository and the item's source/number, which is exactly
+// what openNotificationLink() needs — so a ping raised on the site opens the
+// issue, pull request, discussion, release or repository here rather than only
+// in a browser (adhoc #59). Invalid when the ping isn't about a repo this
+// mapping understands; the row then falls back to its website address.
+NotificationLink webAlertLink(const QJsonObject &alert)
+{
+    const QString repo =
+        alert.value(QStringLiteral("repo")).toString().trimmed();
+    const int slash = repo.indexOf(QLatin1Char('/'));
+    if (slash <= 0 || slash + 1 >= repo.size())
+        return {};
+    const QJsonObject meta = alert.value(QStringLiteral("meta")).toObject();
+    const int number = meta.value(QStringLiteral("number")).toInt();
+    // "source" is the relay's own item kind; a thread ping carries the
+    // originating one on meta instead, so honour that first.
+    QString source = meta.value(QStringLiteral("source")).toString().trimmed();
+    if (source.isEmpty())
+        source = alert.value(QStringLiteral("source")).toString().trimmed();
+    const QString kind =
+        alert.value(QStringLiteral("kind")).toString().trimmed();
+    NotificationLink link;
+    link.owner = repo.left(slash);
+    link.name = repo.mid(slash + 1);
+    link.number = number;
+    if (number > 0 &&
+        (source == QLatin1String("issue") ||
+         source == QLatin1String("issue_assigned") ||
+         source == QLatin1String("bounty"))) {
+        // Bounty pings ride the funded/paid issue's number.
+        link.kind = QStringLiteral("issue");
+    } else if (number > 0 && source == QLatin1String("pull")) {
+        link.kind = QStringLiteral("pull");
+    } else if (number > 0 && source == QLatin1String("discussion")) {
+        link.kind = QStringLiteral("discussion");
+    } else if (source == QLatin1String("release") ||
+               kind == QLatin1String("release_published")) {
+        link.kind = QStringLiteral("release");
+    } else if (source == QLatin1String("host") ||
+               source == QLatin1String("repository_import") ||
+               kind == QLatin1String("repo_shared") ||
+               kind == QLatin1String("mirror_request") ||
+               kind == QLatin1String("pending_inbox") ||
+               kind == QLatin1String("pull_submitted")) {
+        // Repo-scoped pings without a numbered item land on the repository
+        // itself (host status, hosted imports, shares, mirror requests and
+        // pending inbox items the desktop drains from the repo view).
+        link.kind = QStringLiteral("repo");
+    }
+    return link; // invalid (no kind) when nothing above matched
+}
+
+// The Type column names every kind of ping the relay can raise
+// (NOTIFICATION_KINDS in the worker), so the table reads as a typed feed
+// instead of a generic "Web" bucket.
+QString webPingKindLabel(const QString &kind)
+{
+    static const QHash<QString, QString> labels = {
+        {QStringLiteral("mention"), QStringLiteral("Mention")},
+        {QStringLiteral("subscribed"), QStringLiteral("Thread reply")},
+        {QStringLiteral("pull_submitted"), QStringLiteral("Pull request")},
+        {QStringLiteral("issue_assigned"), QStringLiteral("Issue assigned")},
+        {QStringLiteral("repo_shared"), QStringLiteral("Repo shared")},
+        {QStringLiteral("bounty_funded"), QStringLiteral("Bounty funded")},
+        {QStringLiteral("bounty_paid"), QStringLiteral("Bounty paid")},
+        {QStringLiteral("release_published"), QStringLiteral("Release")},
+        {QStringLiteral("host_online"), QStringLiteral("Host online")},
+        {QStringLiteral("host_offline"), QStringLiteral("Host offline")},
+        {QStringLiteral("credits_refilled"), QStringLiteral("Credits")},
+        {QStringLiteral("pending_inbox"), QStringLiteral("Inbox item")},
+        {QStringLiteral("mirror_request"), QStringLiteral("Mirror request")},
+        {QStringLiteral("pending_reward"), QStringLiteral("Reward")},
+        {QStringLiteral("org_succession"), QStringLiteral("Org succession")},
+        {QStringLiteral("repository_hosted"), QStringLiteral("Repo hosted")},
+        {QStringLiteral("organization_task_started"), QStringLiteral("Org task")},
+        {QStringLiteral("organization_task_activity"), QStringLiteral("Org task")},
+        {QStringLiteral("error_group"), QStringLiteral("Error group")},
+    };
+    return labels.value(kind, QStringLiteral("Web"));
+}
 } // namespace
 
 QWidget *MainWindow::buildNotificationsSection()
 {
     auto *page = new QWidget;
 
-    auto *title = new QLabel(QStringLiteral("Notifications"));
+    auto *title = new QLabel(QStringLiteral("Pings"));
     title->setObjectName("settingsTitle");
 
     auto *refreshButton = new QPushButton(QStringLiteral("Refresh"));
     refreshButton->setObjectName("repoAction");
     refreshButton->setCursor(Qt::PointingHandCursor);
     setOcticon(refreshButton, "sync", 16);
-    connect(refreshButton, &QPushButton::clicked, this,
-            &MainWindow::refreshNotificationsTable);
+    connect(refreshButton, &QPushButton::clicked, this, [this] {
+        // Refresh means "show me what's there now", so the website inbox is
+        // re-read past its heartbeat throttle (adhoc #59).
+        refreshWebAlerts(true);
+        refreshNotificationsTable();
+    });
     addRefreshSpin(refreshButton);
 
     // Fires a real desktop toast (notify-send / tray) and logs it to the page,
@@ -1664,24 +2129,39 @@ QWidget *MainWindow::buildNotificationsSection()
     testButton->setCursor(Qt::PointingHandCursor);
     setOcticon(testButton, "bell", 16);
     testButton->setToolTip(
-        QStringLiteral("Send a test desktop notification"));
+        QStringLiteral("Send a test desktop ping"));
     connect(testButton, &QPushButton::clicked, this, [this] {
         const QString body = QStringLiteral(
-            "This is a test notification from ForkMesh — "
-            "desktop alerts are working.");
-        addNotification(QStringLiteral("Test notification"), body, false);
-        postNotification(QStringLiteral("Test notification"), body, false,
+            "This is a test ping from ForkMesh — "
+            "desktop pings are working.");
+        addNotification(QStringLiteral("Test ping"), body, false);
+        postNotification(QStringLiteral("Test ping"), body, false,
                          QStringLiteral("emblem-default"));
     });
+
+    // Row-level removal, alongside the bulk Clear below. A local event is just
+    // forgotten; a mirrored website ping is deleted from the account's inbox
+    // on the relay too, so it doesn't come back on the next refresh.
+    auto *deleteButton = new QPushButton(QStringLiteral("Delete"));
+    deleteButton->setObjectName("repoAction");
+    deleteButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(deleteButton, "x", 16);
+    deleteButton->setToolTip(
+        QStringLiteral("Delete the selected pings (Del)"));
+    connect(deleteButton, &QPushButton::clicked, this,
+            &MainWindow::deleteSelectedNotifications);
 
     auto *clearButton = new QPushButton(QStringLiteral("Clear"));
     clearButton->setObjectName("repoAction");
     clearButton->setCursor(Qt::PointingHandCursor);
     setOcticon(clearButton, "trash", 16);
-    clearButton->setToolTip(QStringLiteral("Dismiss all past notifications"));
+    clearButton->setToolTip(QStringLiteral(
+        "Dismiss all past pings and mark website pings read"));
     connect(clearButton, &QPushButton::clicked, this, [this] {
         m_notifications.clear();
+        markWebAlertsRead();
         updateNotificationButton();
+        refreshLogEventList();
         refreshNotificationsTable();
     });
 
@@ -1691,52 +2171,97 @@ QWidget *MainWindow::buildNotificationsSection()
     header->addStretch();
     header->addWidget(testButton);
     header->addWidget(refreshButton);
+    header->addWidget(deleteButton);
     header->addWidget(clearButton);
 
-    // GitHub-ish columns; the table is sortable by clicking a header section.
-    m_notificationsTable = new QTableWidget(0, 4);
+    // Every field a ping carries gets its own sortable column, so the page
+    // shows the same information the website inbox stores (adhoc #77).
+    m_notificationsTable = new QTableWidget(0, kNotificationColumns);
     installColumnHeaderMenu(m_notificationsTable); // 3-dots per-column menu (issue #318)
     m_notificationsTable->setObjectName("issueTable"); // reuse the table styling
     m_notificationsTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Type"), QStringLiteral("Title"),
-         QStringLiteral("Detail"), QStringLiteral("When")});
+        {QStringLiteral("Type"), QStringLiteral("Kind"),
+         QStringLiteral("Title"), QStringLiteral("Detail"),
+         QStringLiteral("Repository"), QStringLiteral("From"),
+         QStringLiteral("Status"), QStringLiteral("When"),
+         QStringLiteral("Link")});
     m_notificationsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_notificationsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Extended, so a run of rows can be deleted in one go.
+    m_notificationsTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_notificationsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_notificationsTable->verticalHeader()->setVisible(false);
     m_notificationsTable->setSortingEnabled(true);
     m_notificationsTable->setAlternatingRowColors(true);
-    m_notificationsTable->horizontalHeader()->setSectionResizeMode(
-        1, QHeaderView::Stretch);
+    m_notificationsTable->setContextMenuPolicy(Qt::CustomContextMenu);
     m_notificationsTable->horizontalHeader()->setSectionResizeMode(
         2, QHeaderView::Stretch);
     m_notificationsTable->horizontalHeader()->setSectionResizeMode(
-        0, QHeaderView::ResizeToContents);
-    m_notificationsTable->horizontalHeader()->setSectionResizeMode(
-        3, QHeaderView::ResizeToContents);
+        3, QHeaderView::Stretch);
+    for (int column : {0, 1, 4, 5, 6, 7, 8})
+        m_notificationsTable->horizontalHeader()->setSectionResizeMode(
+            column, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_notificationsTable);
     m_notificationsTable->horizontalHeader()->setSortIndicator(
-        3, Qt::DescendingOrder); // newest first by default
+        7, Qt::DescendingOrder); // newest first by default
     m_notificationsTable->setToolTip(
-        QStringLiteral("Double-click a row to open the related issue, pull "
-                       "request, discussion, commit or action."));
-    connect(m_notificationsTable, &QTableWidget::itemDoubleClicked, this,
+        QStringLiteral("Click a row to open the related issue, pull "
+                       "request, discussion, commit, chat or action. Del (or "
+                       "right-click) removes the selected rows."));
+    // A single click is enough to jump to what the ping is about (adhoc #88);
+    // itemClicked also fires on the first half of a double-click, so no
+    // separate double-click handler is needed. A Ctrl/Shift-click is a
+    // selection gesture (for Delete), not a navigation.
+    connect(m_notificationsTable, &QTableWidget::itemClicked, this,
             [this](QTableWidgetItem *item) {
-                if (!item)
+                if (!item ||
+                    (QGuiApplication::keyboardModifiers() &
+                     (Qt::ControlModifier | Qt::ShiftModifier)))
                     return;
-                QTableWidgetItem *first = m_notificationsTable->item(item->row(), 0);
-                if (!first)
+                openNotificationRow(item->row());
+            });
+
+    // Del removes the selection; scoped to the table so it can never fire from
+    // another page. The right-click menu offers the same, plus Open and Copy.
+    auto *deleteShortcut =
+        new QShortcut(QKeySequence::Delete, m_notificationsTable);
+    deleteShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(deleteShortcut, &QShortcut::activated, this,
+            &MainWindow::deleteSelectedNotifications);
+    connect(m_notificationsTable, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos) {
+                QTableWidgetItem *item = m_notificationsTable->itemAt(pos);
+                // Right-clicking outside the current selection moves it;
+                // inside it, the whole multi-row selection is kept.
+                if (item && !item->isSelected())
+                    m_notificationsTable->selectRow(item->row());
+                QMenu menu(this);
+                QAction *open = item ? menu.addAction(QStringLiteral("Open"))
+                                     : nullptr;
+                QAction *copy = item ? menu.addAction(QStringLiteral("Copy row"))
+                                     : nullptr;
+                if (item)
+                    menu.addSeparator();
+                QAction *remove = menu.addAction(QStringLiteral("Delete"));
+                remove->setEnabled(
+                    !m_notificationsTable->selectionModel()->selectedRows()
+                         .isEmpty());
+                QAction *chosen =
+                    menu.exec(m_notificationsTable->viewport()->mapToGlobal(pos));
+                if (!chosen)
                     return;
-                // Approval rows route to their run; everything else carries a
-                // NotificationLink to the screen/item it's about (issue #292).
-                const int runId = first->data(Qt::UserRole).toInt();
-                if (runId > 0) {
-                    openActionRunFromNotification(runId);
-                    return;
+                if (chosen == remove) {
+                    deleteSelectedNotifications();
+                } else if (chosen == open) {
+                    openNotificationRow(item->row());
+                } else if (chosen == copy) {
+                    QStringList cells;
+                    for (int column = 0; column < kNotificationColumns; ++column)
+                        if (QTableWidgetItem *cell =
+                                m_notificationsTable->item(item->row(), column))
+                            cells << cell->text();
+                    QGuiApplication::clipboard()->setText(
+                        cells.join(QStringLiteral("\t")));
                 }
-                const QVariant nav = first->data(Qt::UserRole + 1);
-                if (nav.canConvert<NotificationLink>())
-                    openNotificationLink(qvariant_cast<NotificationLink>(nav));
             });
 
     auto *layout = new QVBoxLayout(page);
@@ -1758,51 +2283,425 @@ void MainWindow::refreshNotificationsTable()
     m_notificationsTable->setSortingEnabled(false);
     m_notificationsTable->setRowCount(0);
 
-    auto addRow = [this](const QString &type, const QString &titleText,
-                         const QString &detail, qint64 whenMs, int runId,
-                         bool warning, const NotificationLink &link) {
+    // One row per event, carrying every field that event has. The row's first
+    // cell also holds the machine-readable identity the click and delete
+    // handlers read back: the run id, the in-app destination (issue #292), the
+    // website address (adhoc #59), the local ping id and the website alert id
+    // (adhoc #77).
+    struct NotificationRow {
+        QString type;
+        QString kind;
+        QString title;
+        QString detail;
+        QString repo;
+        QString actor;
+        QString status;
+        qint64 whenMs = 0;
+        QString link;
+        int runId = -1;
+        bool warning = false;
+        NotificationLink destination;
+        QString href;
+        qint64 localId = 0;
+        QString webId;
+    };
+    auto addRow = [this](const NotificationRow &data) {
         const int row = m_notificationsTable->rowCount();
         m_notificationsTable->insertRow(row);
 
-        auto *typeItem = new QTableWidgetItem(type);
-        typeItem->setData(Qt::UserRole, runId);
-        // Carry the double-click destination (issue #292) on the row's first
-        // cell; the handler reads it back to open the related screen/item.
-        if (link.isValid())
-            typeItem->setData(Qt::UserRole + 1, QVariant::fromValue(link));
-        auto *titleItem = new QTableWidgetItem(titleText);
-        auto *detailItem = new QTableWidgetItem(detail);
+        auto *typeItem = new QTableWidgetItem(data.type);
+        typeItem->setData(Qt::UserRole, data.runId);
+        if (data.destination.isValid())
+            typeItem->setData(Qt::UserRole + 1,
+                              QVariant::fromValue(data.destination));
+        if (!data.href.isEmpty())
+            typeItem->setData(Qt::UserRole + 2, data.href);
+        if (data.localId > 0)
+            typeItem->setData(Qt::UserRole + 3,
+                              static_cast<qlonglong>(data.localId));
+        if (!data.webId.isEmpty())
+            typeItem->setData(Qt::UserRole + 4, data.webId);
+
         // Sorts chronologically (by epoch millis) while showing a friendly date.
         auto *whenItem = new TimestampItem(
-            whenMs > 0 ? formatRepoDate(whenMs) : QString(), whenMs);
-
-        if (warning) {
-            const QColor red("#f85149");
-            for (QTableWidgetItem *it : {typeItem, titleItem, detailItem,
-                                         static_cast<QTableWidgetItem *>(whenItem)})
-                it->setForeground(red);
+            data.whenMs > 0 ? formatRepoDate(data.whenMs) : QString(),
+            data.whenMs);
+        QList<QTableWidgetItem *> cells{
+            typeItem,
+            new QTableWidgetItem(data.kind),
+            new QTableWidgetItem(data.title),
+            new QTableWidgetItem(data.detail),
+            new QTableWidgetItem(data.repo),
+            new QTableWidgetItem(data.actor),
+            new QTableWidgetItem(data.status),
+            whenItem,
+            new QTableWidgetItem(data.link)};
+        const QColor red("#f85149");
+        for (int column = 0; column < cells.size(); ++column) {
+            QTableWidgetItem *cell = cells.at(column);
+            // Long titles/details are elided by the column width, so keep the
+            // full text one hover away rather than only in the toast.
+            if (!cell->text().isEmpty())
+                cell->setToolTip(cell->text());
+            if (data.warning)
+                cell->setForeground(red);
+            m_notificationsTable->setItem(row, column, cell);
         }
-        m_notificationsTable->setItem(row, 0, typeItem);
-        m_notificationsTable->setItem(row, 1, titleItem);
-        m_notificationsTable->setItem(row, 2, detailItem);
-        m_notificationsTable->setItem(row, 3, whenItem);
     };
 
     for (const ActionRun &run : std::as_const(m_actionRuns)) {
         if (run.status != ActionStatus::AwaitingApproval)
             continue;
-        addRow(QStringLiteral("Approval"), run.workflowName,
-               QStringLiteral("%1/%2 at %3")
-                   .arg(run.owner, run.name, run.commit.left(8)),
-               run.createdAtMs, run.id, false, NotificationLink());
+        NotificationRow data;
+        data.type = QStringLiteral("Approval");
+        data.kind = QStringLiteral("action");
+        data.title = run.workflowName;
+        data.detail = QStringLiteral("%1/%2 at %3")
+                          .arg(run.owner, run.name, run.commit.left(8));
+        data.repo = run.owner + QLatin1Char('/') + run.name;
+        data.status = QStringLiteral("Awaiting approval");
+        data.whenMs = run.createdAtMs;
+        data.link = QStringLiteral("run #%1").arg(run.id);
+        data.runId = run.id;
+        addRow(data);
     }
     for (const AppNotification &notice : std::as_const(m_notifications)) {
-        addRow(notice.warning ? QStringLiteral("Alert") : QStringLiteral("Info"),
-               notice.title, notice.body, notice.timestampMs, notice.runId,
-               notice.warning, notice.link);
+        NotificationRow data;
+        data.type = notice.warning ? QStringLiteral("Alert")
+                                   : QStringLiteral("Info");
+        data.kind = notice.kind;
+        data.title = notice.title;
+        data.detail = notice.body;
+        data.repo = notice.repo;
+        data.actor = notice.actor;
+        data.status = QStringLiteral("Desktop");
+        data.whenMs = notice.timestampMs;
+        data.link = notificationLinkLabel(notice.link);
+        data.runId = notice.runId;
+        data.warning = notice.warning;
+        data.destination = notice.link;
+        data.localId = notice.id;
+        addRow(data);
+    }
+    // The website's ping inbox, listed alongside the local events so one page
+    // answers "what happened?" whichever side raised it (adhoc #59).
+    for (const QJsonValue &value : std::as_const(m_webAlerts)) {
+        const QJsonObject alert = value.toObject();
+        const bool unread =
+            alert.value(QStringLiteral("readAt")).toDouble() <= 0;
+        const QString kind =
+            alert.value(QStringLiteral("kind")).toString().trimmed();
+        const QString title =
+            alert.value(QStringLiteral("title")).toString().trimmed();
+        const QString body =
+            alert.value(QStringLiteral("body")).toString().trimmed();
+        const QString repo =
+            alert.value(QStringLiteral("repo")).toString().trimmed();
+        const QString href =
+            alert.value(QStringLiteral("href")).toString().trimmed();
+        const QString webUrl =
+            href.startsWith(QLatin1Char('/'))
+                ? catalogApiUrl().resolved(QUrl(href)).toString()
+                : QString();
+        NotificationRow data;
+        data.type = webPingKindLabel(kind);
+        data.kind = kind;
+        // Unread pings are dotted the way the site's bell marks them; the
+        // Status column spells the same thing out for sorting.
+        data.title = (unread ? QString::fromUtf8("\xE2\x97\x8F ") : QString()) +
+                     (title.isEmpty() ? QStringLiteral("Website ping") : title);
+        data.detail = body;
+        data.repo = repo;
+        data.actor = alert.value(QStringLiteral("actor")).toString().trimmed();
+        data.status = unread ? QStringLiteral("Unread")
+                             : QStringLiteral("Read");
+        data.whenMs = qint64(alert.value(QStringLiteral("ts")).toDouble());
+        data.link = href;
+        // The site paints error groups red the way local alerts are.
+        data.warning = kind == QLatin1String("error_group");
+        data.destination = webAlertLink(alert);
+        data.href = webUrl;
+        data.webId = alert.value(QStringLiteral("id")).toString().trimmed();
+        addRow(data);
     }
 
     m_notificationsTable->setSortingEnabled(true);
+}
+
+// The Link column's human-readable form of an in-app destination, e.g.
+// "owner/name#12" for an issue or "owner/name@abc1234" for a commit.
+QString MainWindow::notificationLinkLabel(const NotificationLink &link)
+{
+    if (!link.isValid())
+        return {};
+    if (link.kind == QLatin1String("chat"))
+        return link.ref;
+    QString label = link.owner.isEmpty()
+                        ? link.kind
+                        : link.owner + QLatin1Char('/') + link.name;
+    if (link.number > 0)
+        label += QLatin1Char('#') + QString::number(link.number);
+    else if (!link.ref.isEmpty())
+        label += QLatin1Char('@') + link.ref.left(8);
+    return label;
+}
+
+// Open whatever the row on the Pings page points at: the run behind an
+// approval, the in-app screen behind a link, or — for a website ping about a
+// repository this node doesn't mirror — its page on the site (adhoc #59).
+void MainWindow::openNotificationRow(int row)
+{
+    if (!m_notificationsTable || row < 0)
+        return;
+    QTableWidgetItem *first = m_notificationsTable->item(row, 0);
+    if (!first)
+        return;
+    const int runId = first->data(Qt::UserRole).toInt();
+    if (runId > 0) {
+        openActionRunFromNotification(runId);
+        return;
+    }
+    const QVariant nav = first->data(Qt::UserRole + 1);
+    if (nav.canConvert<NotificationLink>() &&
+        qvariant_cast<NotificationLink>(nav).isValid()) {
+        openNotificationLink(qvariant_cast<NotificationLink>(nav));
+        return;
+    }
+    const QString href = first->data(Qt::UserRole + 2).toString();
+    if (!href.isEmpty())
+        QDesktopServices::openUrl(QUrl(href));
+}
+
+// Remove the selected rows: a desktop event is simply forgotten, a mirrored
+// website ping is deleted from the account's inbox on the relay too, and a
+// pending approval is left alone (it disappears when the run is decided).
+void MainWindow::deleteSelectedNotifications()
+{
+    if (!m_notificationsTable || !m_notificationsTable->selectionModel())
+        return;
+    QSet<qlonglong> localIds;
+    QStringList webIds;
+    int approvals = 0;
+    const QModelIndexList rows =
+        m_notificationsTable->selectionModel()->selectedRows();
+    for (const QModelIndex &index : rows) {
+        QTableWidgetItem *first = m_notificationsTable->item(index.row(), 0);
+        if (!first)
+            continue;
+        const qlonglong localId = first->data(Qt::UserRole + 3).toLongLong();
+        const QString webId = first->data(Qt::UserRole + 4).toString();
+        if (localId > 0)
+            localIds.insert(localId);
+        else if (!webId.isEmpty())
+            webIds << webId;
+        else
+            ++approvals;
+    }
+    if (localIds.isEmpty() && webIds.isEmpty()) {
+        if (approvals > 0)
+            flashMessage(QStringLiteral(
+                             "Approvals clear themselves once the run is "
+                             "approved or rejected."),
+                         false);
+        return;
+    }
+    if (!localIds.isEmpty()) {
+        auto stale = [&localIds](const AppNotification &notice) {
+            return localIds.contains(static_cast<qlonglong>(notice.id));
+        };
+        m_notifications.erase(std::remove_if(m_notifications.begin(),
+                                             m_notifications.end(), stale),
+                              m_notifications.end());
+    }
+    for (const QString &alertId : std::as_const(webIds))
+        deleteWebAlert(alertId);
+    updateNotificationButton();
+    refreshLogEventList();
+    refreshNotificationsTable();
+}
+
+// Delete one mirrored website ping from this account's inbox on the relay.
+// The desktop holds no session token, so the request is signed with the
+// account key and a proof that binds the id being deleted (adhoc #77).
+void MainWindow::deleteWebAlert(const QString &alertId)
+{
+    const QString id = alertId.trimmed().toLower();
+    // Drop it locally either way: the page must not keep showing a row the
+    // user just deleted while the relay round trip is in flight.
+    QJsonArray remaining;
+    for (const QJsonValue &value : std::as_const(m_webAlerts)) {
+        const QJsonObject alert = value.toObject();
+        if (alert.value(QStringLiteral("id")).toString().trimmed().toLower() == id) {
+            if (alert.value(QStringLiteral("readAt")).toDouble() <= 0 &&
+                m_webAlertsUnread > 0)
+                --m_webAlertsUnread;
+            continue;
+        }
+        remaining.append(value);
+    }
+    m_webAlerts = remaining;
+    if (!m_networkAccess || id.isEmpty())
+        return;
+    const QString node = accountOwner().trimmed().toLower();
+    if (node.isEmpty())
+        return;
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/notifications"));
+    url.setQuery(QString());
+    QNetworkRequest request(url);
+    request.setTransferTimeout(15000);
+    request.setRawHeader(QByteArrayLiteral("Accept"),
+                         QByteArrayLiteral("application/json"));
+    if (!authenticateOrgTaskRequest(url, request, kAccountAlertDeleteProof, id))
+        return;
+    const QJsonObject body{{QStringLiteral("node"), node},
+                           {QStringLiteral("id"), id}};
+    QNetworkReply *reply = m_networkAccess->sendCustomRequest(
+        request, QByteArrayLiteral("DELETE"),
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError || status < 200 ||
+            status >= 300) {
+            flashMessage(QStringLiteral(
+                             "Couldn't delete that website ping (%1).")
+                             .arg(status),
+                         true);
+            // The relay still has it, so put it back on the next read.
+            m_webAlertsFetchedAtMs = 0;
+        }
+    });
+}
+
+// Pull this account's website alert inbox onto the Notifications page. The
+// desktop normally holds no account session token (authenticateSilently proves
+// the account key instead), so the read is signed exactly like the Tasks
+// board's — see _account_alert_signed_session in the worker (adhoc #59).
+void MainWindow::refreshWebAlerts(bool force)
+{
+    if (!m_networkAccess || m_webAlertsLoading)
+        return;
+    const QString node = accountOwner().trimmed().toLower();
+    if (node.isEmpty())
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // The heartbeat calls this every minute; one read per five minutes is
+    // plenty for an inbox and keeps the relay's request budget intact.
+    if (!force && m_webAlertsFetchedAtMs > 0 &&
+        now - m_webAlertsFetchedAtMs < 300000)
+        return;
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/notifications"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("node"), node);
+    query.addQueryItem(QStringLiteral("limit"), QStringLiteral("40"));
+    url.setQuery(query);
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setTransferTimeout(15000);
+    request.setRawHeader(QByteArrayLiteral("Accept"),
+                         QByteArrayLiteral("application/json"));
+    if (!authenticateOrgTaskRequest(url, request, kAccountAlertListProof,
+                                    QString()))
+        return; // neither a session nor this account's signing key
+    m_webAlertsLoading = true;
+    m_webAlertsFetchedAtMs = now;
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        m_webAlertsLoading = false;
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError || status < 200 ||
+            status >= 300)
+            return;
+        const QJsonObject payload =
+            QJsonDocument::fromJson(reply->readAll()).object();
+        m_webAlerts = payload.value(QStringLiteral("notifications")).toArray();
+        m_webAlertsUnread = payload.value(QStringLiteral("unread")).toInt();
+        updateNotificationButton();
+        // An unread error-group ping is an error that just happened somewhere
+        // on the mesh: raise it in the ping area (and flash the red border)
+        // the moment this poll sees it, instead of leaving it to be discovered
+        // on the Pings page. Each alert id flashes once per app run (adhoc #77).
+        for (const QJsonValue &value : std::as_const(m_webAlerts)) {
+            const QJsonObject alert = value.toObject();
+            if (alert.value(QStringLiteral("kind")).toString().trimmed() !=
+                    QLatin1String("error_group") ||
+                alert.value(QStringLiteral("readAt")).toDouble() > 0)
+                continue;
+            const QString id =
+                alert.value(QStringLiteral("id")).toString().trimmed();
+            if (id.isEmpty() || m_flashedWebAlertIds.contains(id))
+                continue;
+            m_flashedWebAlertIds.insert(id);
+            const QString title =
+                alert.value(QStringLiteral("title")).toString().trimmed();
+            AppNotification ping;
+            ping.title = title.isEmpty()
+                             ? QStringLiteral("New error group on the relay")
+                             : title;
+            ping.body = alert.value(QStringLiteral("body")).toString().trimmed();
+            ping.warning = true;
+            ping.kind = QStringLiteral("error_group");
+            flashNotification(ping);
+        }
+        // Only repaint while the page is the one on screen; it rebuilds from
+        // m_webAlerts whenever it opens anyway.
+        if (m_notificationsTable && m_sectionStack &&
+            m_sectionStack->currentIndex() == 3)
+            refreshNotificationsTable();
+    });
+}
+
+void MainWindow::markWebAlertsRead()
+{
+    if (!m_networkAccess || m_webAlerts.isEmpty() || m_webAlertsUnread <= 0)
+        return;
+    const QString node = accountOwner().trimmed().toLower();
+    if (node.isEmpty())
+        return;
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/notifications"));
+    url.setQuery(QString());
+    QNetworkRequest request(url);
+    request.setTransferTimeout(15000);
+    request.setRawHeader(QByteArrayLiteral("Accept"),
+                         QByteArrayLiteral("application/json"));
+    // A distinct proof from the list read, so a signed GET is never replayable
+    // as this mutation.
+    if (!authenticateOrgTaskRequest(url, request, kAccountAlertReadProof,
+                                    QString()))
+        return;
+    const QJsonObject body{{QStringLiteral("node"), node},
+                           {QStringLiteral("all"), true}};
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError || status < 200 ||
+            status >= 300)
+            return;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        for (int index = 0; index < m_webAlerts.size(); ++index) {
+            QJsonObject alert = m_webAlerts.at(index).toObject();
+            if (alert.value(QStringLiteral("readAt")).toDouble() <= 0) {
+                alert.insert(QStringLiteral("readAt"), double(now));
+                m_webAlerts.replace(index, alert);
+            }
+        }
+        m_webAlertsUnread = 0;
+        updateNotificationButton();
+        if (m_notificationsTable && m_sectionStack &&
+            m_sectionStack->currentIndex() == 3)
+            refreshNotificationsTable();
+    });
 }
 
 void MainWindow::showNotifications()
@@ -2069,9 +2968,16 @@ void MainWindow::updateActionsTabIndicator()
     // used to be a floating strip of draining bars above the tab (adhoc #105),
     // removed along with the rest of that band (adhoc #420); the Actions tab
     // itself lists queued and running runs.
-    const int workflows =
-        m_actionWorkflowList ? qMax(0, m_actionWorkflowList->count() - 1) : 0;
-    tab->setText(QStringLiteral("Actions (%1)").arg(formatCount(workflows)));
+    //
+    // m_repoWorkflows, not the list widget's row count: the widget is built once
+    // per window and keeps the last-visited repo's rows, so it reported that
+    // repo's count for every repo opened afterwards. m_repoWorkflows is per-repo
+    // — cleared on open, then filled by refreshRepoActions() or, when the panel
+    // stays lazy, by reloadWorkflowCountInBackground() (adhoc #116).
+    // The workflow count rides the icon's corner as a rail-style badge
+    // (adhoc #6) rather than living in the caption.
+    if (auto *b = dynamic_cast<VerticalIconButton *>(tab))
+        b->setBadgeCount(m_repoWorkflows.size());
 }
 
 // Duration of the previous finished run of the same workflow, shown as the
@@ -2123,13 +3029,11 @@ void MainWindow::updateAgentsTabIndicator()
     }
     if (!m_agentsSpinTimer) {
         m_agentsSpinTimer = new QTimer(this);
-        connect(m_agentsSpinTimer, &QTimer::timeout, this, [this] {
-            m_agentsSpinFrame = (m_agentsSpinFrame + 1) % 10;
-            animateRunningAgentIcons(); // spin the running rows' Status glyph
-        });
+        connect(m_agentsSpinTimer, &QTimer::timeout, this,
+                &MainWindow::animateRunningAgentIcons); // spin running rows' glyph
     }
     if (!m_agentsSpinTimer->isActive())
-        m_agentsSpinTimer->start(120);
+        m_agentsSpinTimer->start(kAgentSpinTickMs);
 }
 
 // The mirror-activity dot strip (adhoc #197) and the current-release pill
@@ -2181,16 +3085,19 @@ void MainWindow::maybeRestoreIssueLooper()
     looperStartNext();
 }
 
-QList<ActionWorkflow>
-MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
+// The workflow discovery behind availableWorkflowsForRepo(), with no window
+// state of its own so a worker thread can run it too (the Actions badge loads
+// off-thread — see reloadWorkflowCountInBackground).
+static QList<ActionWorkflow> workflowsInRepoPaths(const QString &mirrorPath,
+                                                  const QString &localPath)
 {
     QList<ActionWorkflow> out;
     // Prefer reading the bare mirror's default branch (HEAD); fall back to a
     // local working tree if one is configured.
-    if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists()) {
+    if (!mirrorPath.isEmpty() && QDir(mirrorPath).exists()) {
         QProcess ls;
         ls.start(QStringLiteral("git"),
-                 {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("ls-tree"),
+                 {QStringLiteral("-C"), mirrorPath, QStringLiteral("ls-tree"),
                   QStringLiteral("-r"), QStringLiteral("--name-only"),
                   QStringLiteral("HEAD"), QStringLiteral("--"),
                   QStringLiteral(".forkmesh")});
@@ -2203,7 +3110,7 @@ MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
                 continue;
             QProcess show;
             show.start(QStringLiteral("git"),
-                       {QStringLiteral("-C"), repo.mirrorPath,
+                       {QStringLiteral("-C"), mirrorPath,
                         QStringLiteral("show"), QStringLiteral("HEAD:") + path});
             show.waitForFinished(8000);
             if (show.exitCode() != 0)
@@ -2212,9 +3119,90 @@ MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
                 path, QString::fromUtf8(show.readAllStandardOutput())));
         }
     }
-    if (out.isEmpty() && !repo.localPath.isEmpty())
-        out = ActionFile::parseWorkflowsInDir(repo.localPath);
+    if (out.isEmpty() && !localPath.isEmpty())
+        out = ActionFile::parseWorkflowsInDir(localPath);
     return out;
+}
+
+QList<ActionWorkflow>
+MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
+{
+    return workflowsInRepoPaths(repo.mirrorPath, repo.localPath);
+}
+
+// The "Actions (N)" badge without building the Actions panel. Discovery shells
+// Git once per workflow file, so the panel is deliberately lazy — which left
+// every repo advertising "Actions (0)" until its Actions tab was clicked
+// (adhoc #116). Run the same discovery on a worker and keep the result in
+// m_repoWorkflows, exactly where refreshRepoActions() puts it.
+void MainWindow::reloadWorkflowCountInBackground()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int repoIndex = m_repoDetailIndex;
+    const int generation = ++m_workflowCountLoadGen;
+    // By value: the worker must touch nothing the GUI thread owns.
+    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    const QString mirrorPath = repo.mirrorPath;
+    const QString localPath = repo.localPath;
+    runOffThread<QList<ActionWorkflow>>(
+        [mirrorPath, localPath] {
+            return workflowsInRepoPaths(mirrorPath, localPath);
+        },
+        [this, repoIndex, generation](QList<ActionWorkflow> loaded) {
+            if (generation != m_workflowCountLoadGen ||
+                repoIndex != m_repoDetailIndex)
+                return; // superseded, or the user moved to another repo
+            m_repoWorkflows = std::move(loaded);
+            updateActionsTabIndicator();
+        });
+}
+
+void MainWindow::updateWorkflowListItem(QListWidgetItem *item,
+                                        const ActionWorkflow &wf,
+                                        const RepositoryRecord &repo)
+{
+    if (!item)
+        return;
+    QStringList triggers;
+    if (wf.triggersOnPush())
+        triggers << QStringLiteral("on: push");
+    if (wf.triggersOnRelease())
+        triggers << QStringLiteral("on: release");
+    if (wf.allowsManualRun())
+        triggers << QStringLiteral("manual");
+    // Dedicated workflows say where they run, and grey out here when that node
+    // isn't this one — this node will never queue them. The "Run on" dropdown
+    // pins a node the same way the file's `runs-on:` does.
+    const QStringList runsOn = workflowRunsOnLabels(repo, wf);
+    item->setText(wf.name);
+    item->setForeground(palette().color(QPalette::Active, QPalette::Text));
+    if (!runsOn.isEmpty()) {
+        const QString where = runsOn.join(QStringLiteral(", "));
+        triggers << QStringLiteral("runs-on: ") + where;
+        if (!workflowRunsOnThisNode(repo, wf)) {
+            item->setText(wf.name + QString::fromUtf8("  \xC2\xB7  ") + where);
+            item->setForeground(
+                palette().color(QPalette::Disabled, QPalette::Text));
+        }
+    }
+    // Valid workflows get a checkbox so the owner can switch each one off
+    // individually; unchecking skips it on push and hides its manual-run bar.
+    if (wf.valid) {
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(repo.disabledWorkflows.contains(wf.path)
+                                ? Qt::Unchecked
+                                : Qt::Checked);
+    }
+    item->setToolTip(
+        wf.valid ? wf.path +
+                       (triggers.isEmpty()
+                            ? QString()
+                            : QStringLiteral("  (") +
+                                  triggers.join(QStringLiteral(", ")) +
+                                  QStringLiteral(")")) +
+                       QStringLiteral("\nUntick to disable this workflow.")
+                 : wf.path + QStringLiteral("  — ") + wf.error);
 }
 
 void MainWindow::refreshRepoActions()
@@ -2225,8 +3213,8 @@ void MainWindow::refreshRepoActions()
     m_actionWorkflowList->clear();
 
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-        if (m_repoActionsTab)
-            m_repoActionsTab->setText(QStringLiteral("Actions (0)"));
+        m_repoWorkflows.clear();
+        updateActionsTabIndicator();
         refreshActionsTable();
         return;
     }
@@ -2235,6 +3223,10 @@ void MainWindow::refreshRepoActions()
     if (m_actionsEnabledCheck) {
         QSignalBlocker block(m_actionsEnabledCheck);
         m_actionsEnabledCheck->setChecked(repo.actionsEnabled);
+    }
+    if (m_actionsAutoApproveCheck) {
+        QSignalBlocker block(m_actionsAutoApproveCheck);
+        m_actionsAutoApproveCheck->setChecked(repo.actionsAutoApprove);
     }
 
     auto *all = new QListWidgetItem(QStringLiteral("All workflows"));
@@ -2245,44 +3237,9 @@ void MainWindow::refreshRepoActions()
     const QList<ActionWorkflow> wfs = availableWorkflowsForRepo(repo);
     m_repoWorkflows = wfs; // cache so the manual-run bar can look workflows up
     for (const ActionWorkflow &wf : wfs) {
-        auto *item =
-            new QListWidgetItem(wf.name);
+        auto *item = new QListWidgetItem;
         item->setData(Qt::UserRole, wf.path);
-        QStringList triggers;
-        if (wf.triggersOnPush())
-            triggers << QStringLiteral("on: push");
-        if (wf.triggersOnRelease())
-            triggers << QStringLiteral("on: release");
-        if (wf.allowsManualRun())
-            triggers << QStringLiteral("manual");
-        // Dedicated workflows say where they run, and grey out here when that
-        // node isn't this one — this node will never queue them.
-        if (!wf.runsOn.isEmpty()) {
-            triggers << QStringLiteral("runs-on: ") +
-                            workflowDedicationLabel(wf);
-            if (!wf.runsOnNode(actionNodeLabels())) {
-                item->setText(wf.name + QString::fromUtf8("  \xC2\xB7  ") +
-                              workflowDedicationLabel(wf));
-                item->setForeground(palette().color(QPalette::Disabled,
-                                                    QPalette::Text));
-            }
-        }
-        // Valid workflows get a checkbox so the owner can switch each one off
-        // individually; unchecking skips it on push and hides its manual-run bar.
-        if (wf.valid) {
-            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-            item->setCheckState(repo.disabledWorkflows.contains(wf.path)
-                                    ? Qt::Unchecked
-                                    : Qt::Checked);
-        }
-        item->setToolTip(wf.valid
-                             ? wf.path + (triggers.isEmpty()
-                                              ? QString()
-                                              : QStringLiteral("  (") +
-                                                    triggers.join(QStringLiteral(", ")) +
-                                                    QStringLiteral(")")) +
-                                   QStringLiteral("\nUntick to disable this workflow.")
-                             : wf.path + QStringLiteral("  — ") + wf.error);
+        updateWorkflowListItem(item, wf, repo);
         m_actionWorkflowList->addItem(item);
     }
     if (wfs.isEmpty()) {
@@ -2298,9 +3255,157 @@ void MainWindow::refreshRepoActions()
     refreshActionsTable();
     showLatestVisibleActionRun();
     updateManualRunBar();
-    if (m_repoActionsTab)
-        m_repoActionsTab->setText(QStringLiteral("Actions (%1)")
-                                      .arg(formatCount(qMax(0, m_actionWorkflowList->count() - 1))));
+    refreshWorkflowNodeCombo();
+    // This panel load is authoritative over any badge-only count still in flight.
+    ++m_workflowCountLoadGen;
+    updateActionsTabIndicator();
+}
+
+void MainWindow::refreshWorkflowNodeCombo()
+{
+    if (!m_actionNodeCombo)
+        return;
+    QSignalBlocker block(m_actionNodeCombo);
+    m_actionNodeCombo->clear();
+    const bool haveRepo = m_repoDetailIndex >= 0 &&
+                          m_repoDetailIndex < m_repositories.size();
+    m_actionNodeCombo->setEnabled(haveRepo);
+    if (m_actionNodeLabel)
+        m_actionNodeLabel->setEnabled(haveRepo);
+    if (!haveRepo) {
+        m_actionNodeCombo->addItem(QStringLiteral("Any node"), QString());
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+
+    // The dropdown edits whatever the list has selected: one workflow, or every
+    // workflow while "All workflows" is on top.
+    const ActionWorkflow *selected = nullptr;
+    for (const ActionWorkflow &wf : std::as_const(m_repoWorkflows)) {
+        if (wf.valid && wf.path == m_selectedWorkflowFilter) {
+            selected = &wf;
+            break;
+        }
+    }
+    if (m_actionNodeLabel) {
+        // Elide the workflow name: a QLabel refuses to shrink below its text, so
+        // "Attach desktop build to release" would push the whole pane wider.
+        const QString caption =
+            selected ? QString::fromUtf8("Run \xE2\x80\x9C%1\xE2\x80\x9D on")
+                           .arg(QFontMetrics(m_actionNodeLabel->font())
+                                    .elidedText(selected->name, Qt::ElideRight,
+                                                140))
+                     : QStringLiteral("Run every workflow on");
+        m_actionNodeLabel->setText(caption);
+        m_actionNodeLabel->setToolTip(
+            selected ? QString::fromUtf8("Run \xE2\x80\x9C%1\xE2\x80\x9D on")
+                           .arg(selected->name)
+                     : QString());
+    }
+
+    // The pin the dropdown should show: the selected workflow's, or the one all
+    // workflows agree on (a mixed repo falls back to "any", and picking a node
+    // there pins them all together).
+    QString pin;
+    if (selected) {
+        pin = workflowNodePin(repo, selected->path);
+    } else {
+        bool first = true;
+        for (const ActionWorkflow &wf : std::as_const(m_repoWorkflows)) {
+            if (!wf.valid)
+                continue;
+            const QString wfPin = workflowNodePin(repo, wf.path);
+            if (first) {
+                pin = wfPin;
+                first = false;
+            } else if (wfPin != pin) {
+                pin.clear();
+                break;
+            }
+        }
+    }
+
+    // "Any node" leaves the decision to the workflow file, so say what that
+    // means when the file itself declares a `runs-on:`.
+    const QStringList declared = selected ? selected->runsOn : QStringList();
+    m_actionNodeCombo->addItem(
+        declared.isEmpty()
+            ? QStringLiteral("Any node")
+            : QStringLiteral("Workflow default (%1)")
+                  .arg(declared.join(QStringLiteral(", "))),
+        QString());
+    const QString self = machineNodeName().trimmed();
+    for (const QString &node : actionNodeCandidates()) {
+        const bool isSelf = node.compare(self, Qt::CaseInsensitive) == 0;
+        m_actionNodeCombo->addItem(
+            isSelf ? QStringLiteral("%1 (this node)").arg(node) : node,
+            node.toLower());
+    }
+    // A node that has since left the roster still shows, so its pin is visible
+    // and clearable instead of silently reading as "Any node".
+    if (!pin.isEmpty() && m_actionNodeCombo->findData(pin) < 0)
+        m_actionNodeCombo->addItem(
+            QStringLiteral("%1 (offline)").arg(pin), pin);
+    m_actionNodeCombo->setCurrentIndex(
+        pin.isEmpty() ? 0 : qMax(0, m_actionNodeCombo->findData(pin)));
+    m_actionNodeCombo->setToolTip(QStringLiteral(
+        "Which node runs these actions. Picking a node here overrides the "
+        "workflow's own runs-on: line for this repo, and stops this node "
+        "queueing the workflow unless it is that node."));
+}
+
+void MainWindow::setWorkflowNode(const QString &node)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString label = node.trimmed().toLower();
+    QStringList targets;
+    if (m_selectedWorkflowFilter.isEmpty()) {
+        for (const ActionWorkflow &wf : std::as_const(m_repoWorkflows))
+            if (wf.valid)
+                targets.append(wf.path);
+    } else {
+        targets.append(m_selectedWorkflowFilter);
+    }
+    if (targets.isEmpty())
+        return;
+
+    RepositoryRecord &repo = m_repositories[m_repoDetailIndex];
+    const QStringList encoded =
+        ActionFile::setPinnedNode(repo.workflowNodes, targets, label);
+    if (encoded == repo.workflowNodes)
+        return;
+    repo.workflowNodes = encoded;
+    saveRepositories();
+    logSystem(QStringLiteral("Actions: %1 now %2 for %3/%4.")
+                  .arg(m_selectedWorkflowFilter.isEmpty()
+                           ? QStringLiteral("every workflow")
+                           : m_selectedWorkflowFilter,
+                       label.isEmpty()
+                           ? QStringLiteral("runs wherever the workflow says")
+                           : QStringLiteral("runs on ") + label,
+                       repo.owner, repo.name));
+
+    // Re-decorate the list in place instead of rebuilding it: a rebuild would
+    // drop the selection the dropdown is editing.
+    if (m_actionWorkflowList) {
+        QSignalBlocker block(m_actionWorkflowList);
+        const RepositoryRecord &saved = m_repositories.at(m_repoDetailIndex);
+        for (int row = 0; row < m_actionWorkflowList->count(); ++row) {
+            QListWidgetItem *item = m_actionWorkflowList->item(row);
+            const QString path = item->data(Qt::UserRole).toString();
+            if (path.isEmpty())
+                continue;
+            for (const ActionWorkflow &wf : std::as_const(m_repoWorkflows)) {
+                if (wf.path != path)
+                    continue;
+                updateWorkflowListItem(item, wf, saved);
+                break;
+            }
+        }
+    }
+    updateManualRunBar();
+    refreshWorkflowNodeCombo();
 }
 
 void MainWindow::updateManualRunBar()
@@ -2315,28 +3420,28 @@ void MainWindow::updateManualRunBar()
             break;
         }
     }
-    const bool show =
-        wf && wf->allowsManualRun() && !isWorkflowDisabled(wf->path);
+    const bool haveRepo =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size();
+    const bool show = haveRepo && wf && wf->allowsManualRun() &&
+                      !isWorkflowDisabled(wf->path);
     m_actionManualRunBar->setVisible(show);
     if (!show)
         return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     m_actionManualRunButton->setText(
         QString::fromUtf8("Run \xE2\x80\x9C%1\xE2\x80\x9D").arg(wf->name));
     // A workflow dedicated to another node can't start here, so say so on the
     // button instead of failing after the click.
-    const bool ours = wf->runsOnNode(actionNodeLabels());
+    const bool ours = workflowRunsOnThisNode(repo, *wf);
     m_actionManualRunButton->setEnabled(ours);
     m_actionManualRunButton->setToolTip(
         ours ? QString()
              : QString::fromUtf8("Dedicated to %1 \xE2\x80\x94 start this "
                                  "workflow from that node.")
-                   .arg(workflowDedicationLabel(*wf)));
+                   .arg(workflowDedicationLabel(repo, *wf)));
 
     // Populate the branch list from the repo's mirror, keeping the user's choice
     // (or defaulting to main) selected.
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
-        return;
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     QStringList branches;
     if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists()) {
         QProcess refs;
@@ -2420,11 +3525,11 @@ void MainWindow::runSelectedWorkflowManually()
     }
     // Manual runs honour the dedication too: pushing "Run" here would otherwise
     // execute an iOS build or a Cloudflare deploy on the wrong machine.
-    if (!wf.runsOnNode(actionNodeLabels())) {
+    if (!workflowRunsOnThisNode(repo, wf)) {
         flashMessage(QString::fromUtf8(
                          "\xE2\x80\x9C%1\xE2\x80\x9D runs on %2 \xE2\x80\x94 "
                          "start it from that node.")
-                         .arg(wf.name, workflowDedicationLabel(wf)));
+                         .arg(wf.name, workflowDedicationLabel(repo, wf)));
         return;
     }
 
@@ -2443,9 +3548,7 @@ void MainWindow::runSelectedWorkflowManually()
                          .arg(snapshotError));
         return;
     }
-    const bool approved = ActionStore::isApproved(
-        run.repoKey(), path, content, run.repositoryTree,
-        run.executionDigest);
+    const bool approved = resolveActionApproval(repo, run);
     run.status = approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
 
     const ActionRun created = m_actionStore->createRun(run);
@@ -2671,6 +3774,84 @@ void MainWindow::approveSelectedRun()
     processActionQueue();
 }
 
+bool MainWindow::resolveActionApproval(const RepositoryRecord &repo,
+                                       const ActionRun &run)
+{
+    const bool alreadyApproved = ActionStore::isApproved(
+        run.repoKey(), run.workflowPath, run.workflowContent,
+        run.repositoryTree, run.executionDigest);
+    if (alreadyApproved || !repo.actionsAutoApprove)
+        return alreadyApproved;
+
+    // The caller has just read the workflow from its commit and bound the
+    // complete repository state. Persisting this exact tuple gives the runner
+    // the same immediately-before-execution verification as a manual click.
+    ActionStore::approve(run.repoKey(), run.workflowPath, run.workflowContent,
+                         run.repositoryTree, run.executionDigest);
+    return ActionStore::isApproved(
+        run.repoKey(), run.workflowPath, run.workflowContent,
+        run.repositoryTree, run.executionDigest);
+}
+
+int MainWindow::autoApproveAwaitingRuns(const RepositoryRecord &repo)
+{
+    if (!m_actionStore || !repo.actionsEnabled || !repo.actionsAutoApprove)
+        return 0;
+
+    int queued = 0;
+    for (ActionRun &run : m_actionRuns) {
+        if (run.status != ActionStatus::AwaitingApproval ||
+            run.owner != repo.owner || run.name != repo.name)
+            continue;
+
+        // Never resurrect a stale saved run merely because automatic approval
+        // is on. It must still resolve to the exact workflow and repository
+        // snapshot it recorded before it is allowed into the execution queue.
+        ActionRun verified = run;
+        QString snapshotError;
+        if (workflowContentAt(repo.mirrorPath, run.commit, run.workflowPath) !=
+                run.workflowContent ||
+            !bindActionRepositoryState(&verified, repo.mirrorPath,
+                                       &snapshotError) ||
+            verified.repositoryTree != run.repositoryTree ||
+            verified.executionDigest != run.executionDigest) {
+            logSystem(QStringLiteral(
+                          "Actions: keeping \"%1\" for %2/%3 @ %4 awaiting "
+                          "review because its saved repository state could not "
+                          "be reverified%5.")
+                          .arg(run.workflowName, run.owner, run.name,
+                               run.commit.left(8),
+                               snapshotError.isEmpty()
+                                   ? QString()
+                                   : QStringLiteral(": ") + snapshotError));
+            continue;
+        }
+        if (!resolveActionApproval(repo, run)) {
+            logSystem(QStringLiteral(
+                          "Actions: keeping \"%1\" for %2/%3 @ %4 awaiting "
+                          "review because its automatic approval could not be "
+                          "saved.")
+                          .arg(run.workflowName, run.owner, run.name,
+                               run.commit.left(8)));
+            continue;
+        }
+
+        run.status = ActionStatus::Queued;
+        m_actionStore->saveRun(run);
+        if (!m_actionQueue.contains(run.id))
+            m_actionQueue.append(run.id);
+        ++queued;
+        logSystem(QStringLiteral(
+                      "Actions: automatically approved \"%1\" for %2/%3 "
+                      "@ %4.")
+                      .arg(run.workflowName, run.owner, run.name,
+                           run.commit.left(8)));
+    }
+    if (queued > 0)
+        scheduleMirrorActionsSummary(0);
+    return queued;
+}
+
 void MainWindow::rejectSelectedRun()
 {
     ActionRun *run = findRun(m_selectedRunId);
@@ -2710,12 +3891,13 @@ void MainWindow::rerunSelectedRun()
         return;
     const ActionWorkflow rerunWorkflow =
         ActionFile::parse(run.workflowPath, run.workflowContent);
-    if (!rerunWorkflow.runsOnNode(actionNodeLabels())) {
+    if (!workflowRunsOnThisNode(m_repositories.at(repoIndex), rerunWorkflow)) {
         flashMessage(QString::fromUtf8(
                          "\xE2\x80\x9C%1\xE2\x80\x9D runs on %2 \xE2\x80\x94 "
                          "rerun it from that node.")
                          .arg(run.workflowName,
-                              workflowDedicationLabel(rerunWorkflow)));
+                              workflowDedicationLabel(
+                                  m_repositories.at(repoIndex), rerunWorkflow)));
         return;
     }
     QString snapshotError;
@@ -2730,9 +3912,8 @@ void MainWindow::rerunSelectedRun()
                          .arg(snapshotError));
         return;
     }
-    const bool approved = ActionStore::isApproved(
-        run.repoKey(), run.workflowPath, run.workflowContent,
-        run.repositoryTree, run.executionDigest);
+    const bool approved = resolveActionApproval(
+        m_repositories.at(repoIndex), run);
     run.status = approved ? ActionStatus::Queued : ActionStatus::AwaitingApproval;
 
     const ActionRun created = m_actionStore->createRun(run);
@@ -2989,6 +4170,7 @@ QWidget *MainWindow::buildRepoActionsTab()
                 refreshActionsTable();
                 showLatestVisibleActionRun();
                 updateManualRunBar();
+                refreshWorkflowNodeCombo(); // the dropdown edits the selection
             });
     // Ticking/unticking a workflow's checkbox switches it on/off for this repo.
     // Refreshes block this signal, so it only fires on real user toggles.
@@ -3004,10 +4186,39 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionsEnabledCheck = new QCheckBox("Run actions on push");
     m_actionsEnabledCheck->setToolTip(
         "When a fork pushes to this repo's local mirror, run its .forkmesh/ "
-        "workflows. Changed workflows still require approval below before they "
-        "run.");
+        "workflows. New snapshots run automatically when automatic approval "
+        "is enabled below.");
     connect(m_actionsEnabledCheck, &QCheckBox::toggled, this,
             [this](bool on) { setRepoActionsEnabled(on); });
+
+    m_actionsAutoApproveCheck = new QCheckBox("Automatically approve runs");
+    m_actionsAutoApproveCheck->setToolTip(
+        "Start workflows without waiting for an approval click. Approval still "
+        "covers the exact pushed repository snapshot.");
+    connect(m_actionsAutoApproveCheck, &QCheckBox::toggled, this,
+            [this](bool on) { setRepoActionsAutoApprove(on); });
+
+    // Where the actions run: pick a node here instead of hand-editing a
+    // `runs-on:` line into the YAML. The dropdown edits whichever workflow is
+    // selected below, or all of them while "All workflows" is selected.
+    m_actionNodeLabel = new QLabel("Run every workflow on");
+    m_actionNodeLabel->setObjectName("statusLine");
+    m_actionNodeCombo = new QComboBox;
+    m_actionNodeCombo->setObjectName("actionNodeCombo");
+    m_actionNodeCombo->setMinimumWidth(150);
+    m_actionNodeCombo->setSizeAdjustPolicy(
+        QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    connect(m_actionNodeCombo, &QComboBox::currentIndexChanged, this,
+            [this](int index) {
+                if (index < 0 || !m_actionNodeCombo)
+                    return;
+                setWorkflowNode(m_actionNodeCombo->itemData(index).toString());
+            });
+    auto *nodeRow = new QHBoxLayout;
+    nodeRow->setContentsMargins(0, 0, 0, 0);
+    nodeRow->setSpacing(8);
+    nodeRow->addWidget(m_actionNodeLabel);
+    nodeRow->addWidget(m_actionNodeCombo, 1);
 
     auto *wfLayout = new QVBoxLayout(wfPane);
     wfLayout->setContentsMargins(16, 22, 8, 22);
@@ -3015,6 +4226,8 @@ QWidget *MainWindow::buildRepoActionsTab()
     wfLayout->addWidget(wfHeading);
     wfLayout->addWidget(wfHint);
     wfLayout->addWidget(m_actionsEnabledCheck);
+    wfLayout->addWidget(m_actionsAutoApproveCheck);
+    wfLayout->addLayout(nodeRow);
     wfLayout->addWidget(m_actionWorkflowList, 1);
 
     // Middle: the run list for the selected workflow (or all).
@@ -3262,7 +4475,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionFixAgentCombo->setToolTip("Which agent fixes this run");
     m_actionFixAgentCombo->addItem(QStringLiteral("Claude"), QStringLiteral("claude"));
     m_actionFixAgentCombo->addItem(QStringLiteral("OpenAI"), QStringLiteral("openai"));
-    m_actionFixAgentCombo->addItem(QStringLiteral("Claude Code"),
+    m_actionFixAgentCombo->addItem(QStringLiteral("CC"),
                                    QStringLiteral("claude-code"));
     m_actionFixAgentCombo->hide();
     // Start on the user's configured default agent (Settings -> Agents), same as
@@ -3337,6 +4550,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(splitter, 1);
+    refreshWorkflowNodeCombo(); // never show the dropdown empty
     return page;
 }
 

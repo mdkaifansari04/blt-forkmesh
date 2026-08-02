@@ -15,6 +15,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 ENTRY = ROOT / "cloudflare_worker" / "src" / "entry.py"
 QT_MAIN = ROOT / "qt_client" / "src" / "MainWindowSetup.cpp"
+QT_REPOS = ROOT / "qt_client" / "src" / "MainWindowRepos.cpp"
 DEVICE_KEY = base64.urlsafe_b64encode(b"\x11" * 32).decode().rstrip("=")
 SECOND_DEVICE_KEY = base64.urlsafe_b64encode(b"\x12" * 32).decode().rstrip("=")
 DEVICE_TS = "1783000000000"
@@ -923,6 +924,37 @@ def test_qt_login_explains_desktop_key_mismatch():
 
     assert 'err == "pubkey_mismatch"' in qt
     assert "already bound to another" in qt
+
+
+def test_qt_login_labels_the_device_it_registers():
+    qt = QT_MAIN.read_text(encoding="utf-8")
+    login = qt[qt.index("bool MainWindow::verifyTotpLogin") : qt.index("bool MainWindow::runLoginFlow")]
+
+    assert 'loginRequest.insert(QStringLiteral("deviceLabel")' in login
+    assert "machineNodeName()" in login
+    # The relay stores whatever label the desktop sends on the device row.
+    assert 'clean_string(data.get("deviceLabel", ""), 120)' in ENTRY.read_text(
+        encoding="utf-8")
+
+
+def test_qt_logout_revokes_the_website_session_and_re_authenticates():
+    repos = QT_REPOS.read_text(encoding="utf-8")
+    logout = repos[
+        repos.index("void MainWindow::logout()")
+        : repos.index("void MainWindow::loginToUserAccount")
+    ]
+
+    # Logging out on the desktop must also drop the website session...
+    assert "revokeAccountSession();" in logout
+    assert 'postAccountSync(QStringLiteral("logout")' in logout
+    assert 'QJsonObject{{QStringLiteral("sessionToken"), token}}' in logout
+    # ...and come back through the password login, which is what tells the
+    # website about this desktop's key (silent key auth never reaches it).
+    assert "promptRelogin(previousAccount);" in logout
+    assert "runLoginFlow(accountName)" in logout
+    assert "startSession();" in logout
+    # A headless node has nobody to answer the password prompt.
+    assert "if (m_headless)\n        return false;" in logout
 
 
 def test_signed_private_publish_and_direct_routing_stay_account_key_bound():

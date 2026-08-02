@@ -7,12 +7,16 @@ SCENE = (
     Path(__file__).resolve().parents[1]
     / "public/world/world-scene.js"
 ).read_text(encoding="utf-8")
+APP = (
+    Path(__file__).resolve().parents[1]
+    / "public/world/world.js"
+).read_text(encoding="utf-8")
 
 
 def test_town_square_has_a_scene_native_progress_bulletin():
     assert 'officeTaskBulletin.name = "forkmesh-office-task-bulletin"' in SCENE
     assert "world.add(officeTaskBulletin)" in SCENE
-    assert 'registerMovableObject("office-task-bulletin"' in SCENE
+    assert "placeBillboardOnIsland(officeTaskBulletin);" in SCENE
     assert "worldTaskBulletinTexture(THREE" in SCENE
     assert "officeTaskBulletin.position.set(34, 3.1, -17.5)" in SCENE
     assert "directly beside" in SCENE
@@ -56,3 +60,15 @@ def test_pending_cards_are_detailed_straight_without_the_removed_repo_issues_boa
     assert "worldRepoIssuesTexture" not in SCENE
     assert "FORKMESH · OPEN REPO ISSUES" not in SCENE
     assert '"build-task-board"' in SCENE
+
+
+def test_big_todo_board_links_to_the_canonical_video():
+    assert '"▶ WATCH VIDEO"' in SCENE
+    assert '"ForkMesh Forever"' in SCENE
+    assert 'buildVideoLink.name = "forkmesh-build-board-video-link"' in SCENE
+    assert 'buildVideoLink.userData.interactive = "build-video-link";' in SCENE
+    assert 'onBuildVideoSelect = () => {}' in SCENE
+    assert 'onBuildVideoSelect();' in SCENE
+    assert '"/assets/video/forkmesh-forever.mp4"' in APP
+    assert '"_blank",' in APP
+    assert '"noopener,noreferrer",' in APP

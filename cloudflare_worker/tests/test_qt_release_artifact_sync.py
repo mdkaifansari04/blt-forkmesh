@@ -24,12 +24,12 @@ def test_roster_artifact_adverts_trigger_release_blob_replication():
     )
 
 
-def test_mirror_dropped_event_fallback_is_jittered_three_minutes():
+def test_mirror_dropped_event_fallback_is_jittered_one_minute():
     main = MAIN.read_text(encoding="utf-8")
     internal = INTERNAL.read_text(encoding="utf-8")
     repos = REPOS.read_text(encoding="utf-8")
 
-    assert "constexpr qint64 kMirrorSyncIntervalMs = 3LL * 60 * 1000;" in internal
+    assert "constexpr qint64 kMirrorSyncIntervalMs = 60LL * 1000;" in internal
     assert "constexpr int kMirrorSyncJitterPercent = 15;" in internal
     assert (
         "int(kMirrorSyncIntervalMs * kMirrorSyncJitterPercent / 100)"
@@ -99,3 +99,48 @@ def test_release_dialog_can_prune_previous_artifacts_after_publish():
     assert "candidate.name == repo.name" in prune
     assert "candidate.mirrorPath == mirrorPath" in prune
     assert "publishRepository(i, false);" in prune
+
+
+def test_releases_table_has_per_release_push_to_mirrors_action():
+    source = RELEASES.read_text(encoding="utf-8")
+    build = source[
+        source.index("QWidget *MainWindow::buildReleasesTab()")
+        : source.index("QWidget *MainWindow::buildArtifactsTab()")
+    ]
+    load = source[
+        source.index("void MainWindow::loadReleasesPanel()")
+        : source.index("void MainWindow::fetchReleaseDownloadCounts")
+    ]
+
+    assert "new QTableWidget(0, 11)" in build
+    assert '"Downloads", "Mirrors", ""' in build
+    assert 'new QPushButton("Push to mirrors")' in load
+    assert "pushReleaseToMirrors(tag);" in load
+    assert "setCellWidget(row, 9, pushMirrors)" in load
+    assert "setCellWidget(row, 10, del)" in load
+
+
+def test_release_push_wakes_peers_and_starts_ssh_fanout_immediately():
+    source = RELEASES.read_text(encoding="utf-8")
+    push = source[
+        source.index("void MainWindow::pushReleaseToMirrors")
+        : source.index("void MainWindow::promptNewRelease()")
+    ]
+
+    assert 'QStringLiteral("refs/tags/") + tag' in push
+    assert 'tagRef + QStringLiteral("^{commit}")' in push
+    assert "m_backend->notifyMirrorUpdated(" in push
+    assert "propagateRepoUpdate(index);" in push
+    assert "pushToSshMirrorRemotes(index, /*userInitiated=*/true, tag)" in push
+    assert push.index("m_backend->notifyMirrorUpdated(") < push.index(
+        "pushToSshMirrorRemotes(index, /*userInitiated=*/true, tag)"
+    )
+    ssh_source = REPOS.read_text(encoding="utf-8")
+    ssh_push = ssh_source[
+        ssh_source.index(
+            "int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated"
+        )
+        : ssh_source.index("void MainWindow::syncRepository")
+    ]
+    assert "const bool releaseFanout =" in ssh_push
+    assert "releaseFanout\n            ? repo.localPath" in ssh_push

@@ -665,7 +665,8 @@ def test_atomic_limit_triggers_are_in_runtime_schema_and_upgrade_migration():
 
 
 def test_worker_adapter_uses_primary_apis_and_never_logs_provider_exception():
-    assert "import repository_imports as repository_import" in ENTRY_TEXT
+    assert "def _repository_import_module():" in ENTRY_TEXT
+    assert "import repository_imports" in ENTRY_TEXT
     assert "repository_import.provider_api_origin(provider) + path" in ENTRY_TEXT
     assert 'headers["x-github-api-version"] = "2026-03-10"' in ENTRY_TEXT
     assert '"private-token"' in ENTRY_TEXT

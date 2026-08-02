@@ -8,14 +8,34 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# One build job per ~3 GiB of RAM, never more than the core count: cc1plus
+# peaks between 0.6 GB and 1.6 GB on the big MainWindow*.cpp translation units,
+# so a plain -j$(nproc) on a many-core box swamps physical RAM and shoves the
+# machine into swap. (Ninja builds also gate the heavy targets behind the
+# forkmesh_heavy job pool from CMakeLists.txt; this cap is the only guard for
+# the Makefile generator, which ignores pools.)
 build_jobs() {
+    local cores=2 ram_kb=0 ram_jobs
     if command -v nproc >/dev/null 2>&1; then
-        nproc
+        cores="$(nproc)"
     elif command -v sysctl >/dev/null 2>&1; then
-        sysctl -n hw.logicalcpu
-    else
-        printf '2\n'
+        cores="$(sysctl -n hw.logicalcpu)"
     fi
+    if [ -r /proc/meminfo ]; then
+        ram_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+    elif command -v sysctl >/dev/null 2>&1; then
+        ram_kb="$(($(sysctl -n hw.memsize 2>/dev/null || printf '0') / 1024))"
+    fi
+    if [ "${ram_kb:-0}" -gt 0 ]; then
+        ram_jobs=$((ram_kb / (3 * 1024 * 1024)))
+        if [ "$ram_jobs" -lt 1 ]; then
+            ram_jobs=1
+        fi
+        if [ "$ram_jobs" -lt "$cores" ]; then
+            cores="$ram_jobs"
+        fi
+    fi
+    printf '%s\n' "$cores"
 }
 
 cmake_args() {

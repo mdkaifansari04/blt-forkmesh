@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Key-signed organization-task writes from the desktop (adhoc #18).
+"""Key-signed organization-task requests from the desktop (adhoc #18, #52).
 
 A desktop that authenticated silently owns its account's Ed25519 key and holds
-no account session token, so the Agents composer's Task toggle can only reach
-/api/tasks by signing a proof onto the URL. These checks pin how narrow that
-credential is: two operations, POST only, the completion proof bound to the one
-task it closes, and no authority for an account that is not an active user.
+no account session token, so the Agents composer's Task toggle and the Tasks
+tab's board can only reach /api/tasks by signing a proof onto the URL. These
+checks pin how narrow that credential is: three operations, each with its own
+proof, the completion proof bound to the one task it closes, and no authority
+for an account that is not an active user.
 
 AST-extraction harness in the style of test_chat_room_key.py.
 """
@@ -24,10 +25,16 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 # clean_string lives in catalog.py; parse both so it can be extracted too.
 SOURCE_TEXT = ENTRY_TEXT + "\n" + CATALOG.read_text(encoding="utf-8")
 
-FUNCS = {"_org_task_signed_session", "clean_string"}
+FUNCS = {
+    "_org_task_signed_session",
+    "_owner_signing_pubkeys",
+    "_verify_owner_signature",
+    "clean_string",
+}
 CONSTANTS = {
     "ORG_TASK_OPEN_PROOF",
     "ORG_TASK_COMPLETE_PROOF",
+    "ORG_TASK_LIST_PROOF",
     "ORG_TASK_COMPLETE_RE",
     "ORG_TASK_COLLECTION_RE",
 }
@@ -83,7 +90,9 @@ def _fake_sig(pubkey, canonical):
     return "sig-" + pubkey + "-" + digest
 
 
-def _harness(accounts, ts_ok=True):
+def _harness(accounts, ts_ok=True, devices=None):
+    devices = devices or {}
+
     async def _account_row(_env, name):
         key = str(name or "").strip().lower()
         record = accounts.get(key)
@@ -103,6 +112,12 @@ def _harness(accounts, ts_ok=True):
         # the proof's newlines never have to survive a URL round trip.
         return bool(pubkey) and sig == _fake_sig(pubkey, canonical)
 
+    async def blind_index(_env, value):
+        return "bi:" + str(value or "").strip().lower()
+
+    async def _account_devices_list(_env, account_bi):
+        return [dict(device) for device in devices.get(account_bi, [])]
+
     namespace = _load({
         "re": re,
         "parse_qs": parse_qs,
@@ -111,11 +126,21 @@ def _harness(accounts, ts_ok=True):
         "_ts_ok": lambda _ts: ts_ok,
         "_owner_pubkey": _owner_pubkey,
         "_account_row": _account_row,
+        "_account_devices_list": _account_devices_list,
+        "blind_index": blind_index,
         "_account_kind": lambda record: record.get("kind", "user"),
         "ed25519_verify": ed25519_verify,
         "MAX_NODE_NAME": 63,
     })
     return namespace, object()
+
+
+def _device(pubkey, capabilities=("owner_sign",), enabled=True):
+    return {
+        "pubkey": pubkey,
+        "capabilities": list(capabilities),
+        "enabled": enabled,
+    }
 
 
 def _signed_url(namespace, path, proof_name, resource="", node="alice",
@@ -173,16 +198,91 @@ def test_completion_proof_is_bound_to_the_task_it_names():
     assert (account_bi, record) == ("", None)
 
 
-def test_signature_authorizes_only_post_open_and_complete():
+def test_list_proof_reads_the_board_and_nothing_else():
+    """The Tasks tab's GET is signature-authorized; its edits are not (#52)."""
+
     namespace, env = _harness({"alice": _user()})
     resolve = namespace["_org_task_signed_session"]
 
-    # Reads, edits, and deletes are never signature-authorized.
-    for method in ("GET", "PATCH", "DELETE"):
-        account_bi, record = asyncio.run(resolve(env, _Request(
-            method=method,
-            url=_signed_url(namespace, "/api/tasks", "ORG_TASK_OPEN_PROOF"))))
-        assert (account_bi, record) == ("", None), method
+    account_bi, record = asyncio.run(resolve(env, _Request(
+        method="GET",
+        url=_signed_url(namespace, "/api/tasks", "ORG_TASK_LIST_PROOF"))))
+    assert account_bi == "bi:alice"
+    assert record["name"] == "alice"
+
+    # Reading one task by id, or any sub-resource, still needs a session.
+    for path in ("/api/tasks/%s" % TASK_ID, "/api/tasks/%s/qa" % TASK_ID):
+        assert asyncio.run(resolve(env, _Request(
+            method="GET",
+            url=_signed_url(
+                namespace, path, "ORG_TASK_LIST_PROOF",
+                resource=TASK_ID)))) == ("", None), path
+        assert asyncio.run(resolve(env, _Request(
+            method="GET",
+            url=_signed_url(
+                namespace, path, "ORG_TASK_LIST_PROOF")))) == ("", None), path
+
+    # A read proof must never be replayable as a write, in either direction.
+    assert asyncio.run(resolve(env, _Request(
+        url=_signed_url(
+            namespace, "/api/tasks", "ORG_TASK_LIST_PROOF")))) == ("", None)
+    assert asyncio.run(resolve(env, _Request(
+        method="GET",
+        url=_signed_url(
+            namespace, "/api/tasks", "ORG_TASK_OPEN_PROOF")))) == ("", None)
+
+
+def test_registered_device_key_reads_the_board_after_a_restart():
+    """adhoc #63: the board went "invalid session" on every restarted app.
+
+    A desktop that logged in with a password gets its key stored in
+    account_devices; the account's primary pubkey keeps naming the install that
+    created the account. The session token is memory-only, so the next launch
+    signs the list proof with the device key — which must authorize the read,
+    exactly as it authorizes GET /api/sync.
+    """
+    namespace, env = _harness(
+        {"alice": _user()},
+        devices={"bi:alice": [
+            _device("PK-alice-laptop"),
+            _device("PK-alice-retired", enabled=False),
+            _device("PK-alice-readonly", capabilities=()),
+        ]},
+    )
+    resolve = namespace["_org_task_signed_session"]
+
+    account_bi, record = asyncio.run(resolve(env, _Request(
+        method="GET",
+        url=_signed_url(namespace, "/api/tasks", "ORG_TASK_LIST_PROOF",
+                        pubkey="PK-alice-laptop"))))
+    assert account_bi == "bi:alice"
+    assert record["name"] == "alice"
+
+    # Opening a task from that same machine is signed the same way.
+    assert asyncio.run(resolve(env, _Request(
+        url=_signed_url(namespace, "/api/tasks", "ORG_TASK_OPEN_PROOF",
+                        pubkey="PK-alice-laptop"))))[0] == "bi:alice"
+
+    # A revoked/disabled device, and one without owner_sign, stay locked out.
+    for pubkey in ("PK-alice-retired", "PK-alice-readonly"):
+        assert asyncio.run(resolve(env, _Request(
+            method="GET",
+            url=_signed_url(
+                namespace, "/api/tasks", "ORG_TASK_LIST_PROOF",
+                pubkey=pubkey)))) == ("", None), pubkey
+
+
+def test_signature_authorizes_only_the_three_named_operations():
+    namespace, env = _harness({"alice": _user()})
+    resolve = namespace["_org_task_signed_session"]
+
+    # Edits and deletes are never signature-authorized, whichever proof signs.
+    for method in ("PATCH", "DELETE", "PUT"):
+        for proof in ("ORG_TASK_OPEN_PROOF", "ORG_TASK_LIST_PROOF"):
+            account_bi, record = asyncio.run(resolve(env, _Request(
+                method=method,
+                url=_signed_url(namespace, "/api/tasks", proof))))
+            assert (account_bi, record) == ("", None), (method, proof)
 
     # Neither are the other task sub-actions, whichever proof is presented.
     for action in ("start", "stop", "checkin", "qa"):
@@ -256,6 +356,22 @@ def test_desktop_and_worker_agree_on_the_canonical_proof_strings():
     qt = (
         ENTRY.parents[2] / "qt_client" / "src" / "MainWindowInternal.h"
     ).read_text(encoding="utf-8")
-    for proof in ("forkmesh-org-task-open-v1", "forkmesh-org-task-complete-v1"):
+    for proof in ("forkmesh-org-task-open-v1", "forkmesh-org-task-complete-v1",
+                  "forkmesh-org-task-list-v1"):
         assert '"%s"' % proof in ENTRY_TEXT
         assert '"%s"' % proof in qt
+
+
+def test_desktop_tasks_tab_signs_when_it_holds_no_session_token():
+    """The tab must not go back to bailing out on an empty token (#52).
+
+    Every ordinary launch authenticates silently, so a token-only Tasks tab
+    shows an empty board to an operator who is signed in.
+    """
+    tab = (
+        ENTRY.parents[2] / "qt_client" / "src" / "MainWindowTasks.cpp"
+    ).read_text(encoding="utf-8")
+    request = tab[tab.index("void MainWindow::requestOrganizationTasks("):]
+    request = request[:request.index("\nvoid MainWindow::")]
+    assert "authenticateOrgTaskRequest(" in request
+    assert "kOrgTaskListProof" in tab

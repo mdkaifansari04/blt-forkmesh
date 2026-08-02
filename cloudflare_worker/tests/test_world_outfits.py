@@ -88,7 +88,10 @@ def test_signed_in_members_can_upload_a_compact_face_photo():
     assert "WORLD_AVATAR_MAX_BYTES = 64 * 1024" in APP
     assert "for (const size of [128, 112, 96, 80, 64, 48])" in APP
     assert "data-world-avatar-upload" in APP
+    assert "Change and save avatar" in APP
     assert '"/api/accounts/profile"' in APP
+    assert "storeWorldSession({" in APP
+    assert "this.updateIdentityUI();" in APP
     assert "this.identity.accountStatus === \"Guest\"" in APP
 
 

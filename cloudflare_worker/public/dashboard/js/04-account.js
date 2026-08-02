@@ -139,10 +139,12 @@
     if (detail) {
       const status = String(account.lastEmailStatus || "");
       const kind = ACCOUNT_EMAIL_KIND_LABELS[String(account.lastEmailKind || "")] || "Email";
+      const sent = Number(account.emailSendCount || 0);
       detail.textContent = !emailedAt ? "" : kind + " · " + (
         status === "delivered" ? "Delivered to the mail provider"
           : status === "failed" ? "The mail provider rejected it"
-            : "Delivery status unknown");
+            : "Delivery status unknown") + (
+        sent > 0 ? ` · ${sent} email${sent === 1 ? "" : "s"} sent to this account` : "");
       detail.className = "mt-1 text-xs " + (
         status === "delivered" && emailedAt ? "text-emerald-400"
           : status === "failed" && emailedAt ? "text-red-400"
@@ -381,13 +383,7 @@
   const ORG_OFFICE_FLOOR_GROUPS = Object.freeze([
     { id: "marketing", label: "Marketing", aliases: ["marketing", "marketing-team", "growth", "brand", "comms", "communications"] },
     { id: "engineering", label: "Engineering", aliases: ["engineering", "engineers", "development", "developers", "platform", "frontend", "backend"] },
-    { id: "product-design", label: "Product & Design", aliases: ["product-design", "product", "design", "ux", "ui-ux"] },
-    { id: "security", label: "Security", aliases: ["security", "security-team", "trust-safety", "trust-and-safety"] },
     { id: "infrastructure", label: "Infrastructure", aliases: ["infrastructure", "infra", "devops", "site-reliability", "sre"] },
-    { id: "community", label: "Community", aliases: ["community", "community-team", "developer-relations", "devrel"] },
-    { id: "partnerships", label: "Partnerships", aliases: ["partnerships", "partnership", "business-development", "bizdev"] },
-    { id: "operations", label: "Operations", aliases: ["operations", "ops", "people-operations", "finance-operations"] },
-    { id: "executive", label: "Executive", aliases: ["executive", "executives", "leadership", "organization-leadership", "org-leadership"] },
   ]);
 
   // Worker org-endpoint error codes -> human text. Unknown codes fall through
@@ -643,6 +639,87 @@
     }
     renderOrgDetail(
       root, name, profile, members, teams, repos, fediverse, botTokens);
+  }
+
+  function orgRemoteMcpPrompt(name, mode, token) {
+    const deploy = mode === "deploy";
+    const configuration = {
+      mcpServers: {
+        forkmesh: {
+          type: "http",
+          url: window.location.origin + "/mcp",
+          headers: {
+            Authorization: "Bearer " + token,
+          },
+        },
+      },
+    };
+    const finish = deploy
+      ? [
+          "Fetch the latest main again and integrate it into the task branch without force-pushing.",
+          "Push the branch, merge only when the merge and required checks are clean, then deploy using the repository's documented deploy command.",
+          "Verify the live revision and production behavior. Only then call complete_org_task with the commit, deployed revision, tests, and exact QA steps.",
+        ]
+      : [
+          "Push the task branch and open a focused pull request against main using the repository's normal ForkMesh tooling.",
+          "Do not merge or deploy. After the pull request exists, call complete_org_task with its number, branch, tests, and exact QA steps.",
+        ];
+    return [
+      "Configure the following remote Streamable HTTP MCP server named forkmesh, then immediately use it for this assignment:",
+      "",
+      JSON.stringify(configuration, null, 2),
+      "",
+      `Work the shared task list for the ${name} organization.`,
+      "1. Call list_org_tasks. Select the highest-priority unfinished task routed to an agent or explicitly unassigned with a linked repository. Never take a task assigned to a person.",
+      "2. Call get_org_task for the selected id. Read its repository instructions and inspect the latest main branch before planning.",
+      "3. Keep the base checkout untouched. Fetch main and create a dedicated worktree and task branch. Never stash, reset, clean, commit, or edit the base checkout.",
+      "4. Work only in that task worktree. Preserve unrelated changes, implement the smallest complete fix, and run focused tests plus repository-required checks.",
+      "5. Commit only the task files with a clear message. Never force-push or bypass failing checks or conflicts.",
+      ...finish.map((line, index) => `${index + 6}. ${line}`),
+      "",
+      "If credentials, authorization, infrastructure, tests, or conflict resolution block safe completion, report the blocker and do not mark the task complete. Treat the bearer credential above as a secret; never print it in logs, commits, pull requests, task notes, or chat. It can be revoked from Organization Admin.",
+    ].join("\n");
+  }
+
+  function orgRemoteMcpSetup(name) {
+    const workflows = [
+      {
+        id: "pr",
+        icon: "git-pull-request-arrow",
+        title: "Remote MCP → pull request",
+        description: "Creates an isolated task branch and pull request, then sends the completed task to QA without deploying.",
+      },
+      {
+        id: "deploy",
+        icon: "rocket",
+        title: "Remote MCP → verified deployment",
+        description: "Creates isolated work, synchronizes it safely, deploys, verifies production, and then sends the task to QA.",
+      },
+    ];
+    return '<section class="mt-6 rounded-md border border-[#2f81f7]/30 bg-[#2f81f7]/5 p-4" data-org-remote-mcp>' +
+      '<div class="flex items-center gap-2"><i data-lucide="plug-zap" class="h-4 w-4 text-[#58a6ff]"></i>' +
+        '<h4 class="text-sm font-semibold text-foreground">Remote ForkMesh MCP</h4></div>' +
+      '<p class="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">Generate a revocable task-only credential and one complete paste block. It connects the agent directly to <span class="font-mono text-foreground">' +
+        escapeHtml(window.location.origin + "/mcp") +
+        '</span>; there is no local Python server, repository path, or Qt connector token to fill in.</p>' +
+      '<div class="mt-4 grid gap-4 xl:grid-cols-2">' +
+        workflows.map((workflow) =>
+          '<article class="rounded-md border border-border bg-card p-3" data-org-remote-mcp-workflow="' + workflow.id + '">' +
+            '<div class="flex items-start gap-2"><i data-lucide="' + workflow.icon + '" class="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"></i>' +
+              '<div class="min-w-0 flex-1"><h5 class="text-sm font-semibold text-foreground">' + workflow.title + '</h5>' +
+              '<p class="mt-1 text-[11px] leading-4 text-muted-foreground">' + workflow.description + "</p></div></div>" +
+            '<button type="button" data-org-remote-mcp-generate="' + workflow.id + '" class="' + ORG_BTN_PRIMARY + ' mt-3 gap-1">' +
+              '<i data-lucide="key-round" class="h-3.5 w-3.5"></i> Generate complete setup</button>' +
+            '<div data-org-remote-mcp-output="' + workflow.id + '" hidden class="mt-3">' +
+              '<p class="text-[11px] font-semibold text-amber-500">Shown once. This block contains a live credential.</p>' +
+              '<textarea readonly rows="20" spellcheck="false" class="mt-1 w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-[10px] leading-4 text-foreground"></textarea>' +
+              '<button type="button" data-org-remote-mcp-copy="' + workflow.id + '" class="' + ORG_BTN_SECONDARY + ' mt-2 gap-1"><i data-lucide="copy" class="h-3.5 w-3.5"></i> Copy complete prompt</button>' +
+            "</div>" +
+          "</article>"
+        ).join("") +
+      "</div>" +
+      '<p data-org-remote-mcp-status class="mt-3 min-h-4 text-xs text-muted-foreground" role="status"></p>' +
+    "</section>";
   }
 
   function renderOrgDetail(
@@ -906,7 +983,8 @@
       '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Linked repos</h4>' +
         '<div class="mt-2 grid gap-2">' + repoRows + "</div>" + repoAdd + "</section>" +
       digestControls +
-      botTokenControls;
+      botTokenControls +
+      (canManage ? orgRemoteMcpSetup(name) : "");
 
     window.lucide?.createIcons();
     wireOrgDetail(root, name, members, teams);
@@ -1127,6 +1205,66 @@
           "/api/orgs/" + encodeURIComponent(name) + "/bot-tokens",
           { tokenId: button.dataset.orgBotRevoke },
         ));
+      });
+    });
+    root.querySelectorAll("[data-org-remote-mcp-generate]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const mode = button.dataset.orgRemoteMcpGenerate || "pr";
+        const output = [...root.querySelectorAll("[data-org-remote-mcp-output]")]
+          .find((element) => element.dataset.orgRemoteMcpOutput === mode);
+        const status = root.querySelector("[data-org-remote-mcp-status]");
+        button.disabled = true;
+        if (status) {
+          status.textContent = "Creating a revocable task-only credential…";
+          status.className = "mt-3 min-h-4 text-xs text-muted-foreground";
+        }
+        try {
+          const created = await orgApiRequest(
+            "POST",
+            "/api/orgs/" + encodeURIComponent(name) + "/bot-tokens",
+            {
+              provider: "codex",
+              label: "Remote MCP " + (mode === "deploy" ? "deploy" : "pull request"),
+              expiresDays: 90,
+              scopes: [
+                "organization.tasks.read",
+                "organization.tasks.write",
+              ],
+            },
+          );
+          const prompt = orgRemoteMcpPrompt(name, mode, created.token || "");
+          const textarea = output?.querySelector("textarea");
+          if (textarea) textarea.value = prompt;
+          if (output) output.hidden = false;
+          await navigator.clipboard.writeText(prompt).catch(() => {});
+          if (status) {
+            status.textContent = "Complete remote setup generated and copied. Paste it into the agent once; no fields need editing.";
+            status.className = "mt-3 min-h-4 text-xs text-[#238636]";
+          }
+        } catch (error) {
+          if (status) {
+            status.textContent = error.message;
+            status.className = "mt-3 min-h-4 text-xs text-red-500";
+          }
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
+    root.querySelectorAll("[data-org-remote-mcp-copy]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const mode = button.dataset.orgRemoteMcpCopy || "pr";
+        const output = [...root.querySelectorAll("[data-org-remote-mcp-output]")]
+          .find((element) => element.dataset.orgRemoteMcpOutput === mode);
+        const textarea = output?.querySelector("textarea");
+        if (!textarea) return;
+        try {
+          await navigator.clipboard.writeText(textarea.value || "");
+          button.textContent = "Copied";
+        } catch (_) {
+          textarea.focus();
+          textarea.select();
+        }
       });
     });
   }
@@ -1432,6 +1570,39 @@
     return Array.isArray(session.nodes) && session.nodes.length === 0;
   }
 
+  function setEmailVerificationHint(message, kind = "") {
+    const hint = $("[data-email-verification-hint]");
+    if (!hint) return;
+    hint.textContent = message ? " " + message : "";
+    // Only utilities already present in the built dashboard/tailwind.css.
+    hint.className = kind === "bad" ? "text-red-300"
+      : kind === "good" ? "text-emerald-300"
+        : "text-amber-300";
+  }
+
+  // An unverified address blocks node renames and every account email, and the
+  // resend control used to be buried in the profile modal behind a password
+  // prompt. Surface it on every dashboard page until the address is confirmed.
+  function renderEmailVerificationBanner(session) {
+    const banner = $("[data-email-verification-banner]");
+    if (!banner) return;
+    const email = session?.email || "";
+    const signedIn = Boolean(session && (session.nodeName || email));
+    const show = signedIn && Boolean(email) && !session?.emailVerified;
+    banner.classList.toggle("hidden", !show);
+    banner.classList.toggle("flex", show);
+    if (!show) {
+      setEmailVerificationHint("");
+      return;
+    }
+    const message = $("[data-email-verification-message]");
+    if (message) {
+      message.textContent =
+        `${email} is not verified yet. Confirm it to rename your node and receive account email.`;
+    }
+    window.lucide?.createIcons();
+  }
+
   function renderProfile(session) {
     const name = session?.nodeName || session?.email || "My Profile";
     const nameEl = $("[data-dashboard-profile-name]");
@@ -1482,6 +1653,7 @@
     if (reconnect) {
       reconnect.classList.toggle("hidden", !nodeNeedsReconnect(session));
     }
+    renderEmailVerificationBanner(session);
     renderProfileModal(session);
     renderProfilePage(session);
     renderProfileAbout(session);
@@ -3060,40 +3232,63 @@
     }
   }
 
-  async function resendVerification(options = {}) {
-    const passwordSelector = options.passwordSelector || "[data-profile-password]";
-    const hintSelector = options.hintSelector || "[data-profile-hint]";
-    const buttonSelector = options.buttonSelector || "[data-profile-verify-email]";
-    const password = profilePassword(passwordSelector);
-    if (!password) {
-      const message = "Enter your current password first, then send a verification link.";
-      if (hintSelector === "[data-profile-hint]") {
-        setProfileHint(message, "bad");
-      } else {
-        setProfilePageHint(hintSelector, message, "bad");
-      }
-      return;
+  function verificationResendMessage(error, retryAfterMs) {
+    const minutes = Math.ceil((Number(retryAfterMs) || 0) / 60000);
+    if (error === "resend_too_soon") {
+      return "A verification email just went out. Check your inbox and spam folder, then try again in a minute.";
     }
+    if (error === "resend_limit_reached") {
+      return `Too many verification emails today. Try again in ${minutes > 60 ? `${Math.ceil(minutes / 60)} hours` : `${Math.max(1, minutes)} minutes`}, or ask an administrator to verify you by hand.`;
+    }
+    if (error === "already_verified") return "This email is already verified.";
+    if (error === "no_email") return "Add an email address to your account first.";
+    if (error === "unauthorized") return "Sign in again, then resend the verification email.";
+    return "Could not send the verification email. Try again in a moment.";
+  }
+
+  // Re-sending a confirmation link only needs the signed-in session, so it goes
+  // to /api/accounts/resend-verification rather than the password-gated profile
+  // POST. The Worker records every send on the account and pings administrators.
+  async function resendVerification(options = {}) {
+    const hintSelector = options.hintSelector || "";
+    const buttonSelector = options.buttonSelector || "[data-email-verification-resend]";
+    const buttonText = options.buttonText || "Resend verification email";
+    const showHint = (message, kind) => {
+      setEmailVerificationHint(message, kind);
+      if (!hintSelector) return;
+      if (hintSelector === "[data-profile-hint]") {
+        setProfileHint(message, kind);
+      } else {
+        setProfilePageHint(hintSelector, message, kind);
+      }
+    };
     const button = $(buttonSelector);
     if (button) { button.disabled = true; button.textContent = "Sending…"; }
     try {
-      const body = await postProfile({ resendVerification: true }, password);
-      const message = body.verificationSent
-        ? "Verification email sent."
-        : "Verification request queued for manual follow-up.";
-      if (hintSelector === "[data-profile-hint]") {
-        setProfileHint(message, "good");
-      } else {
-        setProfilePageHint(hintSelector, message, "good");
+      const response = await fetch("/api/accounts/resend-verification", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          ...(state.session?.sessionToken
+            ? { authorization: "Bearer " + state.session.sessionToken }
+            : {}),
+        },
+        body: JSON.stringify({ sessionToken: state.session?.sessionToken || "" }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) {
+        showHint(verificationResendMessage(body.error, body.retryAfterMs), "bad");
+        return;
       }
+      showHint(body.verificationSent
+        ? "Verification email sent. Check your inbox and spam folder."
+        : "Mail provider unavailable — an administrator was pinged to verify you by hand.",
+        body.verificationSent ? "good" : "");
     } catch (_) {
-      const message = "Could not send verification. Check your password and try again.";
-      if (hintSelector === "[data-profile-hint]") {
-        setProfileHint(message, "bad");
-      } else {
-        setProfilePageHint(hintSelector, message, "bad");
-      }
+      showHint(verificationResendMessage(""), "bad");
     } finally {
+      if (button) { button.disabled = false; button.textContent = buttonText; }
       renderProfileModal(state.session);
       renderProfilePage(state.session);
     }

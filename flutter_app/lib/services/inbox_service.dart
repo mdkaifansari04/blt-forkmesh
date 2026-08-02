@@ -291,25 +291,6 @@ class InboxService {
     });
   }
 
-  // ---- commit comments -----------------------------------------------------
-
-  Future<void> commentOnCommit(
-    String owner,
-    String name,
-    String sha,
-    String body,
-  ) async {
-    final ts = _now;
-    final contentHash = _sha256Hex(body);
-    final canonical =
-        'forkmesh-commit-comment-v1\n$sha\n$_author\n$ts\n$contentHash';
-    final sig = await _sign(canonical);
-    await _post(_repoEndpoint(owner, name, 'commits'), {
-      'sha': sha,
-      'comment': {'body': body, 'author': _author, 'ts': ts, 'sig': sig},
-    });
-  }
-
   // ---- discussions ---------------------------------------------------------
 
   String _discussionContent(String type, Map<String, dynamic> ev) {

@@ -29,8 +29,8 @@ def test_scene_places_twitter_and_reddit_banners_on_the_social_row():
     # Both banners flank the Mastodon kiosk on the ring toward the Office.
     assert "position: [37.2, 0, -9.2]" in scene
     assert "position: [27.6, 0, -26.6]" in scene
-    assert 'registerMovableObject("twitter-banner", twitterBanner);' in scene
-    assert 'registerMovableObject("reddit-banner", redditBanner);' in scene
+    assert "world.add(twitterBanner);" in scene
+    assert "world.add(redditBanner);" in scene
 
 
 def test_banners_carry_the_official_handles():
@@ -80,6 +80,9 @@ def test_repository_status_board_reuses_the_social_sign_format_near_the_office()
     assert "systems.slice(0, 8)" not in scene
     assert "last 24 hours" in scene
     assert "last 60 one-minute checks" in scene
+    assert 'unknown: "#8c959f"' in scene
+    assert '"24h data"' in scene
+    assert '["unknown", "NO DATA"]' in scene
     banner = scene[
         scene.index("function systemStatusBannerTexture("):
         scene.index("\nfunction createSocialBanner", scene.index(
@@ -94,7 +97,7 @@ def test_repository_status_board_reuses_the_social_sign_format_near_the_office()
     assert "const minuteHeight = statusCellHeight;" in banner
     assert "const hourHeight = statusCellHeight;" in banner
     assert "const dayHeight = statusCellHeight;" in banner
-    assert 'registerMovableObject("status-banner", statusBanner);' in scene
+    assert "world.add(statusBanner);" in scene
     assert "updateSystemStatusBoard," in scene
     assert 'this.fetchJSON("/api/status?view=world"' in world
     assert "this.world?.updateSystemStatusBoard?.(payload)" in world
@@ -339,7 +342,7 @@ def test_scene_places_the_blog_banner_on_the_social_row():
     scene = _source(SCENE_PATH)
     assert "BLOG_BANNER_OPTIONS" in scene
     assert "position: [19.8, 0, -32.8]" in scene
-    assert 'registerMovableObject("blog-banner", blogBanner);' in scene
+    assert "world.add(blogBanner);" in scene
     assert '"https://forkmesh.com/blog"' in scene
     assert "visiblePosts: 4" in scene
     assert "tall: true" in scene
@@ -373,6 +376,16 @@ def test_world_drives_the_banner_clocks_on_a_one_second_tick():
     # and the fetch can never drift apart.
     idx = world.index("startSocialBannersRefresh() {")
     assert "1000" in world[idx:idx + 300]
+
+
+def test_status_board_fetches_immediately_and_counts_down_to_a_fresh_read():
+    world = _source(WORLD_PATH)
+    scene = _source(SCENE_PATH)
+    assert "const WORLD_STATUS_POLL_MS = 60 * 1000;" in world
+    assert "void this.refreshSystemStatusBoard().catch(() => {});" in world
+    assert 'maxAge: 0,' in world
+    assert "this.statusBoardFetchedAt = Date.now();" in world
+    assert "[...socialBanners, statusBannerRecord]" in scene
 
 
 def test_worker_folds_the_blog_feed_into_the_social_snapshot():

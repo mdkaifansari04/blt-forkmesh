@@ -510,6 +510,36 @@ def test_payload_names_the_latest_commit_of_each_mirror():
     assert legacy["lastCommitAt"] is None
 
 
+def test_payload_stamps_when_each_mirror_last_served_a_clone_or_web_read():
+    # The serve counters on the Mirror node cards each carry "when, and to what
+    # kind of client". A node that has served none of a kind, or predates the
+    # stamps, stays None instead of borrowing its publication time.
+    now = 1_000_000
+    rows = [
+        _row("a", "mainnode", "forkmesh", root="abc", synced="990000"),
+        _row("b", "legacy", "forkmesh", root="abc", synced="980000"),
+    ]
+    rows[0]["data"].update({
+        "cloneServedAt": "1750000000000",
+        "cloneServedAgent": "git-client",
+        "websiteServedAt": "1750000900000",
+        "websiteServedAgent": "browser",
+    })
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    rich = payload["mirrors"][0]
+    assert rich["cloneServedAt"] == 1_750_000_000_000
+    assert rich["cloneServedAgent"] == "git-client"
+    assert rich["websiteServedAt"] == 1_750_000_900_000
+    assert rich["websiteServedAgent"] == "browser"
+    legacy = payload["mirrors"][1]
+    assert legacy["cloneServedAt"] is None
+    assert legacy["cloneServedAgent"] is None
+    assert legacy["websiteServedAt"] is None
+    assert legacy["websiteServedAgent"] is None
+
+
 def test_payload_defensively_bounds_or_hides_invalid_host_telemetry():
     now = 1_000_000
     rows = [
@@ -1147,6 +1177,23 @@ def test_worker_exposes_repo_mirrors_route_and_uses_payload_builder():
     assert "host_presence" in ENTRY_TEXT
     assert "repo_first_hosted" in ENTRY_TEXT
     assert '"/mirrors"' in ENTRY_TEXT or "mirrors_match" in ENTRY_TEXT
+
+
+def test_worker_exposes_exact_node_readme_reachability_probe():
+    assert "REPO_MIRROR_REACHABILITY_RE = re.compile" in URLS_TEXT
+    assert "repo_mirror_reachability_handler" in ENTRY_TEXT
+    assert 'node not in context.get("nodes", set())' in ENTRY_TEXT
+    assert 'WHERE node_name=?' in ENTRY_TEXT
+    assert '"blob", {"path": "README.md"}' in ENTRY_TEXT
+    assert '"readmeLoaded": bool(reachable)' in ENTRY_TEXT
+    assert "REPO_MIRROR_REACHABILITY_RE.match(original_url.path)" in ENTRY_TEXT
+    assert 'context["routeOwner"] = route_owner' in ENTRY_TEXT
+    assert "await _org_repo_node(env, route_owner, route_repo) == owner" in ENTRY_TEXT
+    probe_start = ENTRY_TEXT.index("async def repo_mirror_reachability_handler")
+    probe_end = ENTRY_TEXT.index("\n\ndef _https_mirror_merge_body", probe_start)
+    probe = ENTRY_TEXT[probe_start:probe_end]
+    assert "for endpoint in" not in probe
+    assert "_https_mirror_route_advance" not in probe
 
 
 def test_hydrate_live_host_probes_capped_concurrent_and_memoized():

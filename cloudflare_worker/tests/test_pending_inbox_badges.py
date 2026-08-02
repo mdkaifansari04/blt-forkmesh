@@ -68,9 +68,11 @@ def test_pending_endpoint_counts_all_four_inboxes_in_one_round_trip():
 
     captured = {}
 
-    def json_response(payload, status=200, cache_seconds=None, **_kw):
+    def json_response(
+            payload, status=200, cache_seconds=None, cache_control=None, **_kw):
         captured.update(payload)
         captured["_cache"] = cache_seconds
+        captured["_cache_control"] = cache_control
         return {"status": status, "data": payload}
 
     ns = _load()
@@ -83,11 +85,13 @@ def test_pending_endpoint_counts_all_four_inboxes_in_one_round_trip():
     assert resp["status"] == 200
     assert captured["pending"] == {
         "issues": 3, "pulls": 0, "discussions": 1, "commits": 2}
-    # One UNION statement, not four queries; briefly cacheable so page views
-    # don't re-hit D1 (the whole point is reducing load, not adding it).
+    # One UNION statement, not four queries. Counts are never cached: an online
+    # mirror can materialize the row immediately after this read.
     assert len(queries) == 1
     assert queries[0].count("UNION ALL") == 3
-    assert captured["_cache"] == 30
+    assert captured["_cache"] is None
+    assert captured["_cache_control"] == (
+        "no-store, max-age=0, must-revalidate")
 
 
 def test_pending_route_is_wired():
@@ -102,6 +106,9 @@ def test_dashboard_tabs_show_pending_badges_from_the_endpoint():
     assert "async function loadRepoPendingCounts(repo)" in DASHBOARD_JS
     assert "`${repoApiBase(repo)}/pending`" in DASHBOARD_JS
     assert "loadRepoPendingCounts(repo);" in DASHBOARD_JS
+    assert 'cache: "no-store"' in DASHBOARD_JS
+    assert "state.pendingInboxRefreshes" in DASHBOARD_JS
+    assert "void loadRepoPendingCounts(repo);" in DASHBOARD_JS
     # Badge fills for exactly the four inbox-backed tabs and hides at zero.
     assert '["issues", "pulls", "discussions", "commits"].forEach((tab) => {' in DASHBOARD_JS
     assert 'badge.classList.toggle("hidden", n <= 0);' in DASHBOARD_JS

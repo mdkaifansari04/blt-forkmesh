@@ -156,16 +156,80 @@ QWidget *MainWindow::buildDataSection()
     connect(refreshButton, &QPushButton::clicked, this,
             &MainWindow::refreshDataDirTable);
 
+    // --- log files -----------------------------------------------------------
+    // The two logs the app writes are files, not folders, so they never show up
+    // in the table above — but they are the first thing anyone needs when
+    // reporting a freeze or a failed sync, so name their exact paths here
+    // (adhoc #90).
+    auto *logsLabel = new QLabel("LOG FILES");
+    logsLabel->setObjectName("sectionLabel");
+    auto *logsHint = new QLabel(
+        "Where ForkMesh writes its diagnostics on this computer. Both are plain "
+        "text \xE2\x80\x94 open them, or hand the paths to a coding agent when "
+        "reporting a problem.");
+    logsHint->setObjectName("statusLine");
+    logsHint->setWordWrap(true);
+
+    auto *logsGrid = new QGridLayout;
+    logsGrid->setContentsMargins(0, 0, 0, 0);
+    logsGrid->setHorizontalSpacing(10);
+    logsGrid->setColumnStretch(1, 1);
+    int logRow = 0;
+    const auto addLogRow = [&](const QString &name, const QString &path,
+                               const QString &hint) {
+        if (path.isEmpty())
+            return;
+        auto *nameLabel = new QLabel(name);
+        nameLabel->setToolTip(hint);
+        auto *pathLabel = new QLabel(QDir::toNativeSeparators(path));
+        pathLabel->setObjectName("statusLine");
+        pathLabel->setToolTip(hint);
+        pathLabel->setTextFormat(Qt::PlainText);
+        pathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        auto *openButton = new QPushButton("Open");
+        openButton->setObjectName("ghostButton");
+        openButton->setCursor(Qt::PointingHandCursor);
+        openButton->setEnabled(QFileInfo::exists(path));
+        openButton->setToolTip(openButton->isEnabled()
+                                   ? QStringLiteral("Open this log in your text editor")
+                                   : QStringLiteral("Nothing written to this log yet"));
+        connect(openButton, &QPushButton::clicked, this, [path] {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        });
+        auto *copyButton = new QPushButton("Copy path");
+        copyButton->setObjectName("ghostButton");
+        copyButton->setCursor(Qt::PointingHandCursor);
+        connect(copyButton, &QPushButton::clicked, this, [this, path] {
+            QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(path));
+            setDataStatus(
+                QStringLiteral("Copied %1").arg(QDir::toNativeSeparators(path)));
+        });
+        logsGrid->addWidget(nameLabel, logRow, 0);
+        logsGrid->addWidget(pathLabel, logRow, 1);
+        logsGrid->addWidget(openButton, logRow, 2);
+        logsGrid->addWidget(copyButton, logRow, 3);
+        ++logRow;
+    };
+    addLogRow(QStringLiteral("App log"), networkLogPath(),
+              QStringLiteral("Everything the Log view shows: network calls, sync, "
+                             "agents and system messages."));
+    addLogRow(QStringLiteral("UI-stall log"), stallLogPath(),
+              QStringLiteral("Backtraces for every GUI-thread freeze the watchdog "
+                             "records; the footer's stall badge drafts a fix-it "
+                             "prompt from these."));
+
     // --- hourly snapshots ----------------------------------------------------
     auto *autoLabel = new QLabel("AUTOMATIC BACKUPS");
     autoLabel->setObjectName("sectionLabel");
     auto *autoHint = new QLabel(
-        "Every hour ForkMesh writes a snapshot of the live database \xE2\x80\x94 "
-        "your identity key, account, chat history, agents, issues and pull "
-        "requests \xE2\x80\x94 to this computer's drive. Restore any snapshot "
-        "below to roll the whole database back to that moment. Each one is an "
-        "ordinary .tar.gz, so it can also be recovered by hand with "
-        "\"tar xzf\".");
+        "With this on, every hour ForkMesh writes a snapshot of the live "
+        "database \xE2\x80\x94 your identity key, account, chat history, agents, "
+        "issues and pull requests \xE2\x80\x94 to this computer's drive. It "
+        "starts on only for control nodes (the ones holding a Cloudflare API "
+        "token), since a day of snapshots can run to gigabytes; tick the box to "
+        "turn it on here. Restore any snapshot below to roll the whole database "
+        "back to that moment. Each one is an ordinary .tar.gz, so it can also "
+        "be recovered by hand with \"tar xzf\".");
     autoHint->setObjectName("statusLine");
     autoHint->setWordWrap(true);
 
@@ -297,6 +361,10 @@ QWidget *MainWindow::buildDataSection()
     col->addWidget(m_dataDirTable, 1);
     col->addWidget(refreshButton, 0, Qt::AlignLeft);
     col->addSpacing(6);
+    col->addWidget(logsLabel);
+    col->addWidget(logsHint);
+    col->addLayout(logsGrid);
+    col->addSpacing(6);
     col->addWidget(autoLabel);
     col->addWidget(autoHint);
     col->addLayout(autoRow);
@@ -331,6 +399,12 @@ void MainWindow::refreshDataDirTable()
     nested.insert(QDir(repositoryPreviewRoot()).absolutePath());
     nested.insert(QDir(backupRoot()).absolutePath());
 
+    // Directory walking is unbounded disk I/O: a single large mirror or backup
+    // tree made opening Settings stall for seconds in the watchdog trace. Paint
+    // the stable rows immediately and let a value-only worker fill the counts.
+    // The generation makes an older scan harmless when roots change or the user
+    // presses Refresh again before it completes.
+    const quint64 generation = ++m_dataDirScanGeneration;
     m_dataDirTable->setRowCount(dirs.size());
     for (int r = 0; r < dirs.size(); ++r) {
         const DataDir &d = dirs.at(r);
@@ -344,22 +418,16 @@ void MainWindow::refreshDataDirTable()
         pathItem->setToolTip(d.path);
         m_dataDirTable->setItem(r, 1, pathItem);
 
+        auto pending = [] {
+            auto *it = new QTableWidgetItem(QStringLiteral("Calculating…"));
+            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            it->setForeground(QColor(0x8b, 0x94, 0x9e));
+            return it;
+        };
         if (exists) {
-            QSet<QString> prune = nested;
-            prune.remove(d.path); // always count the row's own subtree in full
-            DirStat st;
-            scanInto(d.path, prune, st);
-            auto num = [](int n) {
-                auto *it = new QTableWidgetItem(QLocale().toString(n));
-                it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-                return it;
-            };
-            m_dataDirTable->setItem(r, 2, num(st.folders));
-            m_dataDirTable->setItem(r, 3, num(st.files));
-            auto *sizeItem =
-                new QTableWidgetItem(QLocale().formattedDataSize(st.bytes));
-            sizeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            m_dataDirTable->setItem(r, 4, sizeItem);
+            m_dataDirTable->setItem(r, 2, pending());
+            m_dataDirTable->setItem(r, 3, pending());
+            m_dataDirTable->setItem(r, 4, pending());
         } else {
             auto dash = [] {
                 auto *it = new QTableWidgetItem(QStringLiteral("\xE2\x80\x94"));
@@ -369,8 +437,7 @@ void MainWindow::refreshDataDirTable()
             };
             m_dataDirTable->setItem(r, 2, dash());
             m_dataDirTable->setItem(r, 3, dash());
-            auto *sizeItem =
-                new QTableWidgetItem(QStringLiteral("not created yet"));
+            auto *sizeItem = new QTableWidgetItem(QStringLiteral("not created yet"));
             sizeItem->setForeground(QColor(0x8b, 0x94, 0x9e));
             m_dataDirTable->setItem(r, 4, sizeItem);
         }
@@ -404,6 +471,44 @@ void MainWindow::refreshDataDirTable()
         actionRow->addStretch();
         m_dataDirTable->setCellWidget(r, 5, actions);
     }
+
+    runOffThread<QVector<DirStat>>(
+        [dirs, nested] {
+            QVector<DirStat> stats(dirs.size());
+            for (int i = 0; i < dirs.size(); ++i) {
+                const DataDir &dir = dirs.at(i);
+                if (!QFileInfo::exists(dir.path))
+                    continue;
+                QSet<QString> prune = nested;
+                prune.remove(dir.path); // count this row's tree in full
+                scanInto(dir.path, prune, stats[i]);
+            }
+            return stats;
+        },
+        [this, generation](QVector<DirStat> stats) {
+            if (generation != m_dataDirScanGeneration || !m_dataDirTable ||
+                m_dataDirTable->rowCount() != stats.size())
+                return;
+            auto numberItem = [](qint64 number) {
+                auto *it = new QTableWidgetItem(QLocale().toString(number));
+                it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                return it;
+            };
+            for (int row = 0; row < stats.size(); ++row) {
+                // A deleted directory is represented by the static placeholder
+                // installed above; do not turn it into a misleading 0-byte row.
+                const QTableWidgetItem *path = m_dataDirTable->item(row, 1);
+                if (!path || !QFileInfo::exists(path->text()))
+                    continue;
+                const DirStat &stat = stats.at(row);
+                m_dataDirTable->setItem(row, 2, numberItem(stat.folders));
+                m_dataDirTable->setItem(row, 3, numberItem(stat.files));
+                auto *size = new QTableWidgetItem(
+                    QLocale().formattedDataSize(stat.bytes));
+                size->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                m_dataDirTable->setItem(row, 4, size);
+            }
+        });
 }
 
 void MainWindow::setDataStatus(const QString &text, bool error)
@@ -596,7 +701,12 @@ QString MainWindow::backupRoot() const
 
 bool MainWindow::autoBackupEnabled() const
 {
-    return QSettings().value(kAutoBackupEnabledSetting, true).toBool();
+    // Unset is off on every node. A stored deploy credential must not silently
+    // opt a machine into a recurring multi-gigabyte disk workload.
+    return QSettings()
+        .value(kAutoBackupEnabledSetting,
+               forkmesh::autoBackupDefault(resolvedCloudflareApiToken()))
+        .toBool();
 }
 
 int MainWindow::backupKeepCount() const

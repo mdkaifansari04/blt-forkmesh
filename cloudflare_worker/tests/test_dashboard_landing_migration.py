@@ -82,7 +82,7 @@ def test_dashboard_exposes_live_hydration_targets():
     dashboard = assembled_dashboard()
 
     assert 'src="/dashboard.js?v=' in dashboard
-    assert 'src="/dashboard-chat.js?v=' in dashboard
+    assert dashboard.count('src="/dashboard-chat.js?v=') == 1
     for marker in (
         "data-dashboard-profile-name",
         "data-sidebar-user-name",
@@ -848,6 +848,30 @@ def test_dashboard_global_header_search_has_keyboard_backed_repo_results():
     assert "renderRepoDetail(repo);" in dashboard_js
 
 
+def test_dashboard_global_header_search_also_filters_the_visible_page():
+    dashboard = assembled_dashboard()
+    dashboard_js = assembled_dashboard_js()
+
+    assert "data-global-search-page-filter" in dashboard
+    for marker in (
+        "function applyGlobalSearchPageFilter()",
+        "function renderGlobalSearchPageFilter()",
+        "function pageFilterQueries(ownQuery)",
+        "function repositoryMatchesPageFilter(repo, ownQuery)",
+        "function renderRepoPageFilter()",
+        "function networkRowsMatchingPageFilter(rows)",
+        "applyGlobalSearchPageFilter();",
+    ):
+        assert marker in dashboard_js
+    # Filtering reuses already-loaded rows and must not turn a keystroke into a
+    # repository/network fetch.
+    page_filter = dashboard_js[
+        dashboard_js.index("function renderGlobalSearchPageFilter()")
+        : dashboard_js.index("function globalSearchPageFilterCount()")
+    ]
+    assert "fetch(" not in page_filter
+
+
 def test_dashboard_has_scoped_light_dark_appearance_controls():
     dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
@@ -1240,16 +1264,16 @@ def test_dashboard_repository_tabs_keep_border_without_selected_background():
 
 def test_dashboard_repository_folder_icons_are_grey():
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    tree_loader = dashboard_js[
-        dashboard_js.index("async function loadRepositoryTree")
+    tree_renderer = dashboard_js[
+        dashboard_js.index("function renderRepoTreeRows()")
         : dashboard_js.index("async function loadRepositoryBlob")
     ]
 
     # File rows now use the shared vscode-icons SVGs (same set as the Qt
     # desktop file browser) via fileIconHtml, not a lucide folder/file glyph
     # (adhoc #87). Folders stay neutral - no text-primary tint.
-    assert 'fileIconHtml(entry, "h-4 w-4 shrink-0")' in tree_loader
-    assert '${isTree ? "text-primary" : "text-muted-foreground"}' not in tree_loader
+    assert 'fileIconHtml(entry, "h-4 w-4 shrink-0")' in tree_renderer
+    assert '${isTree ? "text-primary" : "text-muted-foreground"}' not in tree_renderer
 
 
 def test_dashboard_repository_metadata_constrains_long_values_without_fake_language_mix():
@@ -1487,6 +1511,10 @@ def test_dashboard_repository_issue_and_pull_tabs_paginate_records_at_the_bottom
         dashboard_js.index("async function loadRepoCollection")
         : dashboard_js.index("async function loadRepoCommits")
     ]
+    collection_renderer = dashboard_js[
+        dashboard_js.index("function renderRepoCollection(kind)")
+        : dashboard_js.index("async function loadRepoCollection")
+    ]
     click_handler = dashboard_js[
         dashboard_js.index('const repoCollectionPageButton = event.target.closest("[data-repo-collection-page]")')
         : dashboard_js.index('const copyButton = event.target.closest("[data-dashboard-copy]")')
@@ -1505,7 +1533,8 @@ def test_dashboard_repository_issue_and_pull_tabs_paginate_records_at_the_bottom
     ):
         assert marker in dashboard_js
 
-    assert "renderRepoRecordList(items, config, kind)" in collection_loader
+    assert "renderRepoRecordList(visible, config, kind)" in collection_renderer
+    assert "renderRepoCollection(kind);" in collection_loader
     assert "const page = state.repoCollectionPages[kind] || 1;" in record_renderer
     assert "loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);" in click_handler
     # Issue #420: paginating the Issues list must keep the open/closed/all filter
@@ -1725,21 +1754,21 @@ def test_dashboard_formats_catalog_millisecond_timestamps():
     assert "function formatTimeAgo(value) {" in formatter
 
 
-def test_worker_routes_public_history_through_direct_https_not_commit_inbox():
+def test_worker_routes_public_history_through_direct_https():
     route = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _route")
         : ENTRY_TEXT.index("async def _git_host")
     ]
-    public_history_dispatch = route.index("host_match = REPO_HOST_RE.match")
-    owner_inbox_dispatch = route.index("commits_match = REPO_COMMITS_RE.match")
-
-    assert owner_inbox_dispatch < public_history_dispatch
+    assert "host_match = REPO_HOST_RE.match" in route
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
     assert "return await _https_mirror_proxy(" in route
 
 
-def test_worker_keeps_commit_inbox_route_separate_from_public_history_route():
-    assert 'REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")' in URLS_TEXT
+def test_worker_dropped_commit_comment_inbox_route():
+    # Commit commenting was removed; the /commits inbox endpoint is gone and
+    # public history still routes through the direct HTTPS mirror proxy.
+    assert "REPO_COMMITS_RE" not in URLS_TEXT
+    assert "commits_handler" not in ENTRY_TEXT
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
     assert REPO_DIRECT_BROWSE_GATE in ENTRY_TEXT
     assert '"history", "commit"' in ENTRY_TEXT
@@ -2073,7 +2102,7 @@ def test_direct_gateway_streams_raw_repository_blobs_without_json_base64_cap():
 
 
 def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard = _read(PUBLIC / "dashboard" / "chat" / "index.html")
     chat_js = _read(PUBLIC / "dashboard-chat.js")
     visible = _strip_html_comments(dashboard)
 

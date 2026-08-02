@@ -4,7 +4,7 @@
 # The Worker serves the static site from public/ (Cloudflare Static Assets)
 # and hosts the API/relay/catalog routes, so a single deploy ships both.
 #
-#   ./deploy.sh          deploy to production (+ push secrets from .env.production)
+#   ./deploy.sh          deploy to production (+ validate/push secrets from .env.production)
 #   ./deploy.sh secrets  (re)push only the .env.production secrets, no redeploy
 #   ./deploy.sh dev      run the Worker locally instead of deploying
 #   ./deploy.sh dry-run   build and validate without uploading
@@ -32,6 +32,11 @@ cd "$(dirname "$0")"
 # secret that isn't in the config), so the admin URL keeps working. The Worker
 # reads them the same way (env.ADMIN_PATH, etc.).
 ENV_FILE=".env.production"
+# Operators with a valid Wrangler OAuth session can deliberately ignore an
+# expired API token in .env.production without rewriting the secrets file.
+# The account id is still loaded from that file and Cloudflare validates that
+# the OAuth identity owns the configured Worker and D1 database.
+USE_WRANGLER_OAUTH="${FORKMESH_USE_WRANGLER_OAUTH:-0}"
 
 # Strip a trailing CR (CRLF-saved files) and surrounding whitespace. A stray \r
 # or space on a value is a classic cause of a secret that "exists" in the
@@ -65,6 +70,12 @@ if [ -f "$ENV_FILE" ]; then
             CLOUDFLARE_ACCOUNT_ID)
                 if [ -n "$value" ]; then
                     CF_ACCOUNT_ID_SET=1
+                    export "$key=$value"
+                fi
+                continue
+                ;;
+            CLOUDFLARE_API_TOKEN)
+                if [ "$USE_WRANGLER_OAUTH" != "1" ] && [ -n "$value" ]; then
                     export "$key=$value"
                 fi
                 continue
@@ -118,6 +129,11 @@ adopt_cloudflare_token_alias() {
 # wrangler's own interactive detection (stdin && stdout), so this errors exactly
 # when wrangler would have, never sooner.
 require_cloudflare_auth() {
+    if [ "$USE_WRANGLER_OAUTH" = "1" ]; then
+        unset CLOUDFLARE_API_TOKEN
+        echo "note: using the existing Wrangler OAuth session for this deploy." >&2
+        return 0
+    fi
     adopt_cloudflare_token_alias || true
     [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && return 0
     if [ -t 0 ] && [ -t 1 ]; then
@@ -215,6 +231,9 @@ mark_interrupted_world_deploy() {
 
 build_dashboard_assets() {
     python3 tools/build_dashboard_assets.py
+    # Fail before touching production D1 or uploading a version when an eager
+    # import has pushed the Python Worker back toward its startup-memory limit.
+    python3 tools/build_worker_footprint.py
 }
 
 # Fallback HTTP GET for when curl itself is broken. Seen live (adhoc #136): a
@@ -546,6 +565,7 @@ verify_marketing_routes() {
 
     local checks=(
         "/|ForkMesh - Local-first source code preservation"
+        "/homev2|ForkMesh - A resilient, local-first Git forge"
         "/pricing|ForkMesh Pricing - Coding Reimagined for Teams"
         "/blog|Blog · ForkMesh"
         "/blog/introducing-forkmesh/|Introducing ForkMesh"
@@ -565,7 +585,7 @@ verify_marketing_routes() {
         fi
     done
     if [ "$failed" != "0" ]; then
-        echo "       The main Worker must own /, /pricing, /blog and posts before" >&2
+        echo "       The main Worker must own /, /homev2, /pricing, /blog and posts before" >&2
         echo "       the legacy marketing Worker/routes are retired." >&2
         return 1
     fi
@@ -579,9 +599,18 @@ verify_marketing_routes() {
 # publishes another Worker version, which needlessly restarts Durable Objects
 # and scheduled-runner isolates during an otherwise single deployment.
 push_secrets() {
+    local action="${1:-publish}"
+    case "$action" in
+        validate|publish) ;;
+        *)
+            echo "ERROR: internal push_secrets action must be validate or publish." >&2
+            return 2
+            ;;
+    esac
     if [ ! -f "$ENV_FILE" ]; then
-        echo "note: $ENV_FILE not found — no secrets to push." >&2
-        return 0
+        echo "ERROR: $ENV_FILE not found; production secrets cannot be validated or published." >&2
+        echo "       Copy .env.production.example, supply real values, and keep the file untracked." >&2
+        return 1
     fi
     # Worker secrets that MUST be set for the site to work; an empty/missing one
     # is a hard error, not a silent skip (that's what made a broken deploy look
@@ -590,9 +619,13 @@ push_secrets() {
     # production deploy is guaranteed to push and register it (the Worker still
     # no-ops gracefully if it's ever unset). A fork that doesn't send email can
     # drop it from this list.
-    local required=" ADMIN_PATH MAILTRAP_API_TOKEN DATA_KEY TREASURY_SOLANA_ADDRESS MIRROR_ROUTER_PUBLIC_KEY MIRROR_ROUTER_SIGNING_SEED "
+    local required=" ADMIN_PATH MAILTRAP_API_TOKEN DATA_KEY TREASURY_SOLANA_ADDRESS MIRROR_ROUTER_PUBLIC_KEY MIRROR_ROUTER_SIGNING_SEED DISCORD_CLIENT_ID DISCORD_CLIENT_SECRET DISCORD_BOT_TOKEN "
 
-    echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+    if [ "$action" = "validate" ]; then
+        echo "Validating production secrets in: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+    else
+        echo "Pushing secrets from: $(cd "$(dirname "$ENV_FILE")" && pwd)/$(basename "$ENV_FILE")"
+    fi
     local count=0
     local pushed=()
     local secret_values=()
@@ -617,6 +650,14 @@ push_secrets() {
                 key="WORKERS_OBSERVABILITY_API_TOKEN"
                 ;;
             CLOUDFLARE_*)
+                continue
+                ;;
+            # Provisioning credentials for the operator's own infrastructure:
+            # the desktop app saves the Vultr API key here beside the
+            # Cloudflare ones so it never has to ask for it twice. No Worker
+            # code path reaches Vultr, so pushing it would only widen the
+            # runtime's secret surface.
+            VULTR_API_KEY|VULTR_API_TOKEN|VULTR_TOKEN|VULTR_KEY)
                 continue
                 ;;
         esac
@@ -648,6 +689,24 @@ push_secrets() {
         echo "ERROR: required secret(s) empty or missing in $ENV_FILE: ${missing_req[*]}" >&2
         echo "       Set them (real values, not blank) and re-run './deploy.sh secrets'." >&2
         return 1
+    fi
+    # Do not infer array positions: optional secrets may appear before or after
+    # Discord values. Validate the public application ID without printing it.
+    local discord_client_id=""
+    local index
+    for index in "${!pushed[@]}"; do
+        if [ "${pushed[$index]}" = "DISCORD_CLIENT_ID" ]; then
+            discord_client_id="${secret_values[$index]}"
+            break
+        fi
+    done
+    if ! [[ "$discord_client_id" =~ ^[0-9]{17,20}$ ]]; then
+        echo "ERROR: DISCORD_CLIENT_ID must be a 17-20 digit Discord application ID." >&2
+        return 1
+    fi
+    if [ "$action" = "validate" ]; then
+        echo "Validated ${#pushed[@]} production secret(s), including Discord bot and OAuth credentials."
+        return 0
     fi
 
     # Build a JSON object in a mode-0600 temporary file, then publish every
@@ -957,6 +1016,10 @@ case "${1:-deploy}" in
     deploy)
         require_cloudflare_account
         require_cloudflare_auth
+        # Fail before migrations, deploy signalling, or a Worker upload if the
+        # complete production secret set is unavailable. The same parsed file
+        # is atomically published after the Worker version exists.
+        push_secrets validate
         build_dashboard_assets
         BUILD_REV="$(build_rev)"
         APP_VERSION="$(app_version)"

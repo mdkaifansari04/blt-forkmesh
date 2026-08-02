@@ -102,6 +102,9 @@ def test_annotated_screenshot_can_stage_in_the_hud_composer():
     assert "pendingWorldComposerPrefill" in chat
     assert "fileFromWorldComposerAttachment" in chat
     assert "stageDashboardAttachments(control, [file])" in chat
+    assert "async function taskAttachmentMetadata(file)" in chat
+    assert 'canvas.toDataURL("image/webp", 0.72)' in chat
+    assert "attachment.thumbnail = thumbnail" in chat
     assert "Choose a destination, then send." in chat
     assert "void sendDashboardDraft(control)" not in chat[
         chat.index("function applyWorldComposerPrefill()"):

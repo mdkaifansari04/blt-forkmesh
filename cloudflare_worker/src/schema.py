@@ -68,6 +68,18 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS repositories (
         key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi)",
+    # The first concrete publishing device becomes the repository authority.
+    # Additional devices owned by the same account remain useful mirrors but
+    # cannot replace its signed state merely because they cloned the checkout.
+    """CREATE TABLE IF NOT EXISTS repo_source_authorities (
+        repo_bi TEXT PRIMARY KEY, node_id TEXT NOT NULL,
+        machine_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS repo_device_mirrors (
+        repo_bi TEXT NOT NULL, node_id TEXT NOT NULL, data TEXT NOT NULL,
+        updated_at INTEGER NOT NULL, PRIMARY KEY (repo_bi, node_id))""",
+    "CREATE INDEX IF NOT EXISTS idx_repo_device_mirrors_repo "
+    "ON repo_device_mirrors(repo_bi, updated_at DESC)",
     # Per-repo collaborator ACL (issue #9): which grantee accounts an owner has
     # shared a private repo with. repo_bi = blind_index("<owner>/<repo>") (the
     # same key as repositories.key_bi); grantee_bi = blind_index(grantee account
@@ -98,10 +110,6 @@ SCHEMA_STATEMENTS = [
         mirrored_by_bi TEXT NOT NULL DEFAULT '',
         mirrored_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(repo_bi)",
-    """CREATE TABLE IF NOT EXISTS commit_inbox (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
-        data TEXT NOT NULL)""",
-    "CREATE INDEX IF NOT EXISTS idx_commit_inbox_repo ON commit_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS discussion_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
         data TEXT NOT NULL, submitter_bi TEXT,
@@ -274,6 +282,20 @@ SCHEMA_STATEMENTS = [
     # when the pin expires. The owner name is public catalog data.
     "CREATE TABLE IF NOT EXISTS clone_sticky ("
     "repo_bi TEXT PRIMARY KEY, owner TEXT NOT NULL, ts INTEGER NOT NULL)",
+    # Per-node serve tallies, counted at the router. The Worker is the only
+    # component that sees every public read it routes to a mirror endpoint —
+    # nodes stopped seeing per-request traffic when the per-repository
+    # WebSocket transport (RepoHost) was retired — so it owns the Clones /
+    # Website counters the Mirror nodes view shows. Names are public catalog
+    # identities, already listed on the repository's Mirrors tab.
+    """CREATE TABLE IF NOT EXISTS mirror_serve_counters (
+        node_name TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        clones INTEGER NOT NULL DEFAULT 0,
+        website INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (node_name, owner, repo))""",
     # Recent owner-attested repo-state pins (sha256 of the canonical heads+tags
     # advertisement), appended on every catalog publish by a working-copy holder
     # ("local-node"). Mirrors are integrity-checked against the SOURCE's pins —
@@ -477,6 +499,16 @@ SCHEMA_STATEMENTS = [
         scope TEXT NOT NULL, key TEXT NOT NULL, name TEXT,
         lamports INTEGER NOT NULL DEFAULT 0, last_ts INTEGER,
         PRIMARY KEY (scope, key))""",
+    # Last public on-chain balance read for a member's published payout address,
+    # for the "member SOL wallets" board. Both columns are public data (the
+    # address is public profile data, the balance is a public getBalance), and
+    # the row exists only so the board can rank every published address while
+    # re-reading a rotating slice per rebuild instead of all of them at once.
+    """CREATE TABLE IF NOT EXISTS wallet_balances (
+        wallet TEXT PRIMARY KEY, name TEXT,
+        lamports INTEGER NOT NULL DEFAULT 0,
+        checked_at INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS idx_wallet_balances_checked ON wallet_balances(checked_at)",
     """CREATE TABLE IF NOT EXISTS notifications (
         dedupe_bi TEXT PRIMARY KEY,
         recipient_bi TEXT NOT NULL,
@@ -619,9 +651,24 @@ SCHEMA_STATEMENTS = [
         ok INTEGER NOT NULL DEFAULT 1, reason TEXT,
         PRIMARY KEY (minute_ts, system))""",
     "CREATE INDEX IF NOT EXISTS idx_system_status_minute_ts ON system_status_minute(minute_ts)",
+    # At-most-once ownership of each minute's status sample. Two independent
+    # schedulers may call record_status_sample for the same minute — the
+    # platform Cron Trigger directly (so /status keeps its samples even while
+    # Durable Objects are failing) and the ForkMeshCronRunner alarm batch.
+    # The daily/hourly rollups are checks-counter increments, so whichever
+    # caller INSERTs this minute's row first owns the sample; the loser skips
+    # it instead of double-counting the hour. `claim` is a random token the
+    # winner reads back to recognize itself (D1's Python client exposes no
+    # reliable changes() count). Pruned alongside system_status_minute.
+    """CREATE TABLE IF NOT EXISTS system_status_sample_claim (
+        minute_ts INTEGER PRIMARY KEY, claim TEXT NOT NULL,
+        claimed_at INTEGER NOT NULL)""",
     # Edge repository-render monitor state. One row is enough to deduplicate
     # outage/recovery mail while the normal status tables retain the public
-    # minute/hour/day history.
+    # minute/hour/day history. Pings and email are independently switchable, so
+    # each channel keeps its own delivered-transition marker: pinged_state must
+    # not be inferred from notified_state or a deployment with mail off would
+    # re-announce the same recovery on every cron tick.
     """CREATE TABLE IF NOT EXISTS repository_monitor_state (
         monitor_id TEXT PRIMARY KEY,
         is_up INTEGER NOT NULL DEFAULT 1,
@@ -629,7 +676,8 @@ SCHEMA_STATEMENTS = [
         outage_started_at INTEGER NOT NULL DEFAULT 0,
         checked_at INTEGER NOT NULL,
         reason TEXT,
-        notified_state TEXT NOT NULL DEFAULT '')""",
+        notified_state TEXT NOT NULL DEFAULT '',
+        pinged_state TEXT NOT NULL DEFAULT '')""",
     # Founders-outreach team: accounts an admin has authorized to send email
     # from the shared founders address via /outreach. `name` is the public
     # account name in plaintext (like users.username) so the roster is listable
@@ -783,6 +831,19 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS about_inbox (
         repo_bi TEXT PRIMARY KEY, data TEXT NOT NULL,
         queued_at INTEGER NOT NULL)""",
+    # Repositories deleted from the website's repo Settings tab (adhoc #91).
+    # The owner's node keeps its local mirror and republishes the catalog
+    # record on every heartbeat, so a web delete used to reappear within a
+    # minute and looked like it had silently failed. This tombstone makes the
+    # deletion stick: automatic publishes for the repo are refused with HTTP
+    # 410 until it expires, and an explicit user-initiated publish from the
+    # desktop ("publishIntent":"user", owner-signed like any other publish)
+    # clears the row so the repo can be shared again.
+    """CREATE TABLE IF NOT EXISTS repo_deletions (
+        repo_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL,
+        deleted_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_repo_deletions_expires "
+    "ON repo_deletions(expires_at)",
     # Repo stars (migration 0032): which accounts starred which repo. Keyed by
     # blind indexes only (no signing needed - a star is a plain per-account
     # preference, same trust level as profile_follows), so the count and the
@@ -1022,6 +1083,17 @@ SCHEMA_STATEMENTS = [
         bytes_in INTEGER NOT NULL DEFAULT 0 CHECK (bytes_in >= 0),
         bytes_out INTEGER NOT NULL DEFAULT 0 CHECK (bytes_out >= 0),
         messages INTEGER NOT NULL DEFAULT 0 CHECK (messages >= 0),
+        updated_at INTEGER NOT NULL DEFAULT 0 CHECK (updated_at >= 0))""",
+    # Minute aggregates for platform-aborted Durable Object requests
+    # (migration 0116). A reconnect storm increments one content-free row
+    # instead of writing one error_log row per affected user. /status consumes
+    # these counters, preserving incident visibility without flooding the
+    # operator's actionable Worker-error queue.
+    """CREATE TABLE IF NOT EXISTS durable_object_abort_minute (
+        minute_ts INTEGER PRIMARY KEY CHECK (minute_ts >= 0),
+        aborts INTEGER NOT NULL DEFAULT 0 CHECK (aborts >= 0),
+        duration_aborts INTEGER NOT NULL DEFAULT 0
+            CHECK (duration_aborts >= 0),
         updated_at INTEGER NOT NULL DEFAULT 0 CHECK (updated_at >= 0))""",
     # Aggregate-only Town Square arrival odometer for the Arrival Grid plaque
     # (migration 0074). Each accepted world join adds one to a coarse
@@ -1335,6 +1407,39 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (contribution_id, intent_id))""",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_reward_contribution_intent_id "
     "ON reward_contribution_intents(intent_id)",
+    # World store element purchases. Public data only: a per-purchase Solana
+    # Pay reference address, the buyer's own finalized transfer signature, and
+    # the half owed to online mirror nodes. The purchased element itself is
+    # granted on the account record; no deposit wallet or key is ever created.
+    """CREATE TABLE IF NOT EXISTS world_element_purchases (
+        purchase_id TEXT PRIMARY KEY,
+        account_bi TEXT NOT NULL,
+        element_id TEXT NOT NULL,
+        amount_lamports INTEGER NOT NULL,
+        treasury_lamports INTEGER NOT NULL DEFAULT 0,
+        mirror_lamports INTEGER NOT NULL DEFAULT 0,
+        reference_address TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'prepared',
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        tx_signature TEXT NOT NULL DEFAULT '',
+        source_address TEXT NOT NULL DEFAULT '',
+        confirmed_at INTEGER NOT NULL DEFAULT 0,
+        distribution_intent_id TEXT NOT NULL DEFAULT '',
+        method TEXT NOT NULL DEFAULT 'direct',
+        deposit_address TEXT NOT NULL DEFAULT '',
+        deposit_secret TEXT NOT NULL DEFAULT '',
+        sweep_signature TEXT NOT NULL DEFAULT '',
+        sweep_at INTEGER NOT NULL DEFAULT 0,
+        sweep_error TEXT NOT NULL DEFAULT '')""",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_deposit "
+    "ON world_element_purchases(status, method, expires_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_world_element_purchase_signature "
+    "ON world_element_purchases(tx_signature) WHERE tx_signature<>''",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_account "
+    "ON world_element_purchases(account_bi, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_status "
+    "ON world_element_purchases(status, created_at)",
     # External provider entries are intentionally separate from `repositories`:
     # an imported metadata record or stub can never be routed as a live mirror.
     # The encrypted data blob carries public/private provider metadata; the
@@ -1740,6 +1845,8 @@ SCHEMA_STATEMENTS = [
             CHECK (qa_reviewed_at >= 0),
         qa_requested_at INTEGER NOT NULL DEFAULT 0
             CHECK (qa_requested_at >= 0),
+        priority INTEGER NOT NULL DEFAULT 50
+            CHECK (priority BETWEEN 1 AND 99),
         agent_session_id TEXT NOT NULL DEFAULT ''
             CHECK (length(agent_session_id) <= 64))""",
     "CREATE INDEX IF NOT EXISTS idx_organization_tasks_org_updated "
@@ -1750,6 +1857,9 @@ SCHEMA_STATEMENTS = [
     "ON organization_tasks(org_bi, assignee_bi, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_organization_tasks_qa "
     "ON organization_tasks(org_bi, qa_requested_at, qa_reviewed_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_organization_tasks_global_priority "
+    "ON organization_tasks(org_bi, priority, completed_at, updated_at DESC)",
+    "UPDATE organization_tasks SET priority=99 WHERE priority>99",
     """CREATE UNIQUE INDEX IF NOT EXISTS
         idx_organization_tasks_one_active_assignee
         ON organization_tasks(org_bi, active_assignee_bi)
@@ -1763,6 +1873,42 @@ SCHEMA_STATEMENTS = [
         BEGIN
             SELECT RAISE(ABORT, 'organization_task_catalog_full');
         END""",
+    """CREATE TABLE IF NOT EXISTS organization_task_attachments (
+        attachment_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        org_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_by_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_task_attachments_task "
+    "ON organization_task_attachments(org_bi, task_id, created_at)",
+    """CREATE TRIGGER IF NOT EXISTS trg_organization_task_attachment_limit
+        BEFORE INSERT ON organization_task_attachments
+        WHEN (
+            SELECT COUNT(*) FROM organization_task_attachments
+            WHERE org_bi=NEW.org_bi AND task_id=NEW.task_id
+        ) >= 4
+        BEGIN
+            SELECT RAISE(
+                ABORT, 'organization_task_attachment_catalog_full');
+        END""",
+    """CREATE TABLE IF NOT EXISTS mailtrap_email_sends (
+        send_id TEXT PRIMARY KEY,
+        account_bi TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT '',
+        sent_at INTEGER NOT NULL,
+        accepted INTEGER NOT NULL DEFAULT 0
+            CHECK (accepted IN (0, 1)),
+        status TEXT NOT NULL DEFAULT '',
+        status_at INTEGER NOT NULL DEFAULT 0,
+        message_id TEXT NOT NULL DEFAULT '')""",
+    "CREATE INDEX IF NOT EXISTS idx_mailtrap_email_sends_account "
+    "ON mailtrap_email_sends(account_bi, sent_at DESC)",
+    """CREATE TABLE IF NOT EXISTS mailtrap_webhook_events (
+        event_id TEXT PRIMARY KEY,
+        received_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_mailtrap_webhook_events_received "
+    "ON mailtrap_webhook_events(received_at)",
     """CREATE TABLE IF NOT EXISTS organization_task_checkins (
         checkin_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -2216,17 +2362,10 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_world_manual_blocks_active "
     "ON world_manual_blocks(target_type, subject_token, expires_at) "
     "WHERE revoked_at=0",
-    # Shared, administrator-curated placement overrides for the fixed Town
-    # Square scene objects. One row per scene object id holding only ground
-    # coordinates and a heading offset in radians (migration 0082); no
-    # visitor, account, or session data is stored here.
-    """CREATE TABLE IF NOT EXISTS world_object_layout (
-        object_id TEXT PRIMARY KEY,
-        x REAL NOT NULL,
-        z REAL NOT NULL,
-        rotation REAL NOT NULL DEFAULT 0,
-        updated_by_bi TEXT NOT NULL,
-        updated_at INTEGER NOT NULL)""",
+    # The administrator-curated Town Square placement overrides (migrations
+    # 0080/0082) were retired with the layout editor by migration 0115; make
+    # sure lazily-ensured DBs lose the table too.
+    "DROP TABLE IF EXISTS world_object_layout",
     # One public, last-known-good CelesTrak VISUAL OMM snapshot. A scheduled
     # refresh owns all upstream traffic; visitor reads never fetch CelesTrak.
     # This row contains no visitor location, account, session, or wallet data.
@@ -2407,6 +2546,48 @@ SCHEMA_STATEMENTS = [
     "ON org_bot_token_usage(org_bi, used_at DESC, id DESC)",
     "CREATE INDEX IF NOT EXISTS idx_org_bot_token_usage_token_time "
     "ON org_bot_token_usage(token_id, used_at DESC, id DESC)",
+    # Organization Discord connector policy.  The Worker secret used to call
+    # Discord is never persisted here: this encrypted record contains only a
+    # selected guild and bounded allowlist of public text-channel ids.
+    """CREATE TABLE IF NOT EXISTS organization_discord_connectors (
+        org_bi TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        updated_by_bi TEXT NOT NULL,
+        updated_at INTEGER NOT NULL CHECK (updated_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_discord_connectors_updated "
+    "ON organization_discord_connectors(updated_at DESC)",
+    # A single durable, unassigned human setup task per organization.  It
+    # deduplicates changing Discord setup states without storing the task text
+    # or any credential outside organization_tasks' encrypted payload.
+    """CREATE TABLE IF NOT EXISTS organization_discord_setup_tasks (
+        org_bi TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        updated_at INTEGER NOT NULL CHECK (updated_at >= 0))""",
+    # A bot's global guild membership is not organization consent. This
+    # encrypted OAuth proof binds a single guild to an org before
+    # any bot channel/message call is allowed. OAuth access/refresh tokens,
+    # authorization codes, and raw callback state are never stored.
+    """CREATE TABLE IF NOT EXISTS organization_discord_oauth_grants (
+        org_bi TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        verified_by_bi TEXT NOT NULL,
+        verified_at INTEGER NOT NULL CHECK (verified_at >= 0),
+        updated_at INTEGER NOT NULL CHECK (updated_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_discord_oauth_grants_verified "
+    "ON organization_discord_oauth_grants(verified_at DESC)",
+    # The raw state and PKCE verifier live only inside this encrypted, ten
+    # minute record. Its SHA-256 lookup digest makes the callback one-time
+    # without persisting a reusable raw state value. org_bi is metadata only,
+    # used to revoke pending attempts when an organization is deleted.
+    """CREATE TABLE IF NOT EXISTS organization_discord_oauth_states (
+        state_hash TEXT PRIMARY KEY,
+        org_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        expires_at INTEGER NOT NULL CHECK (expires_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_discord_oauth_states_org "
+    "ON organization_discord_oauth_states(org_bi, expires_at)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

@@ -43,6 +43,8 @@ def test_avatar_launcher_keeps_actionable_counts_on_their_related_tools():
     assert "border-radius: 50%;" in final_launcher_css
     assert "clip-path: circle(50%);" in final_launcher_css
     assert ".world-shirt-avatar" in CSS
+    assert "world-shirt-initial" not in WORLD
+    assert ".world-shirt-initial" not in CSS
     assert ".world-tool-count:not([hidden])" in CSS
     assert 'content: attr(data-world-tooltip);' in CSS
 
@@ -54,7 +56,8 @@ def test_hud_controls_slide_out_without_resizing_and_latch_until_movement():
     assert "const hudHoverTargets = [topActions, rightRail].filter(Boolean);" in WORLD
     assert "target.addEventListener(\"pointerenter\", openHud);" in WORLD
     assert "this.setWorldRightRailExpanded(false);" in WORLD
-    assert "if (movement?.moving === true) this.setWorldRightRailExpanded(false);" in WORLD
+    assert "if (movement?.moving === true) {" in WORLD
+    assert 'this.$("[data-world-chat-terminal]")?.removeAttribute("open");' in WORLD
 
 
 def test_touch_first_tap_reveals_the_launcher_before_opening_settings():

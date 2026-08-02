@@ -20,10 +20,11 @@ def test_chat_embed_forwards_bounded_history_and_thumbnail_metadata():
         "attachmentMime:",
         "reactionCount:",
         "attachmentPreview",
-        "emitWorldChatHistory({",
+        "emitNewestWorldChatHistory()",
     ):
         assert contract in CHAT
     assert "if (ts < newestHistoryTs) return" not in CHAT
+    assert "if (meta?.attachment && !history)" in CHAT
 
 
 def test_world_accepts_chat_only_from_its_native_same_window_controller():
@@ -46,7 +47,7 @@ def test_physical_chat_board_is_beside_events_and_opens_full_chat():
         '"forkmesh-world-general-chat-board"',
         '"forkmesh-world-general-chat-board-face"',
         '"world-general-chat-board"',
-        'registerMovableObject("world-general-chat-board"',
+        "placeBillboardOnIsland(worldGeneralChatBoard);",
         "function updateWorldGeneralChat(messages = [])",
         "updateWorldGeneralChat,",
         "onWorldGeneralChatSelect()",

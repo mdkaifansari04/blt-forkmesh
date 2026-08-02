@@ -22,6 +22,33 @@ spec.loader.exec_module(tasks_api)
 NOW = 2_100_000_000_000
 
 
+def test_task_image_thumbnails_are_tiny_and_image_only():
+    valid = "data:image/webp;base64,aGVsbG8="
+    result = tasks_api._attachments([
+        {
+            "name": "shot.webp",
+            "mime": "image/webp",
+            "size": 2048,
+            "thumbnail": valid,
+        },
+        {
+            "name": "notes.txt",
+            "mime": "text/plain",
+            "size": 50,
+            "thumbnail": valid,
+        },
+        {
+            "name": "bad.png",
+            "mime": "image/png",
+            "size": 50,
+            "thumbnail": "data:text/html;base64,PHNjcmlwdD4=",
+        },
+    ])
+    assert result[0]["thumbnail"] == valid
+    assert "thumbnail" not in result[1]
+    assert "thumbnail" not in result[2]
+
+
 def run_async_test(function):
     def wrapped(*args, **kwargs):
         return asyncio.run(function(*args, **kwargs))
@@ -46,6 +73,14 @@ class FakeRuntime:
             .read_text(encoding="utf-8"))
         self.db.executescript(
             (ROOT / "migrations" / "0108_organization_tasks_general_bot.sql")
+            .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" /
+             "0112_organization_task_global_priority.sql")
+            .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" /
+             "0113_organization_task_priority_scale.sql")
             .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
@@ -116,6 +151,14 @@ class FakeRuntime:
             "data": data,
             "cache_control": cache_control,
             "headers": dict(extra_headers or {}),
+        }
+
+    def binary_response(self, data, mime, name):
+        return {
+            "status": 200,
+            "data": data,
+            "mime": mime,
+            "name": name,
         }
 
     async def ensure_schema(self):
@@ -281,6 +324,30 @@ async def test_start_uses_optional_private_engineering_notifier():
 
 
 @run_async_test
+async def test_create_and_lifecycle_emit_private_task_activity():
+    runtime = FakeRuntime()
+    notices = []
+
+    async def notify(org_bi, actor, task_id, task, action):
+        notices.append((actor, task_id, task["title"], action))
+
+    runtime.notify_organization_task_activity = notify
+    created = await create_task(runtime)
+    task = created["data"]["task"]
+    await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/start",
+    )
+    await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/stop",
+    )
+    assert [notice[3] for notice in notices] == [
+        "created", "started", "stopped",
+    ]
+
+
+@run_async_test
 async def test_universal_tasks_are_org_private_routable_and_marketing_compatible():
     runtime = FakeRuntime()
     generic = await tasks_api.handle(
@@ -328,6 +395,112 @@ async def test_universal_tasks_are_org_private_routable_and_marketing_compatible
     )
     assert outsider["status"] == 403
     assert outsider["data"]["error"] == "org_member_required"
+
+
+@run_async_test
+async def test_global_priorities_are_manager_owned_projected_and_sorted():
+    runtime = FakeRuntime()
+    low = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Lower priority",
+            "assignee": "bob",
+            "priority": 80,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    high = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Highest priority",
+            "assignee": "bob",
+            "priority": 1,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    denied = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "title": "Member cannot self-promote",
+            "assignee": "bob",
+            "priority": 2,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert denied["status"] == 403
+    assert denied["data"]["error"] == "manager_required"
+    listing = await tasks_api.handle(
+        runtime.use("GET", "carol"), tasks_api.UNIVERSAL_PREFIX)
+    assert [
+        (task["title"], task["priority"])
+        for task in listing["data"]["tasks"]
+    ] == [
+        ("Highest priority", 1),
+        ("Lower priority", 80),
+    ]
+    reprioritized = await tasks_api.handle(
+        runtime.use("PATCH", "alice", {"priority": 3}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{low['data']['task']['id']}",
+    )
+    assert reprioritized["status"] == 200
+    assert reprioritized["data"]["task"]["priority"] == 3
+    assert high["data"]["task"]["priority"] == 1
+    assert runtime.audits[-1]["action"] == (
+        "organization.task_priority_changed")
+    clamped = await tasks_api.handle(
+        runtime.use("PATCH", "alice", {"priority": 500}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{low['data']['task']['id']}",
+    )
+    assert clamped["data"]["task"]["priority"] == 99
+    defaulted = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Normal priority",
+            "assignee": "bob",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert defaulted["data"]["task"]["priority"] == 50
+
+
+@run_async_test
+async def test_follow_up_references_parent_and_inherits_assignee_and_routing():
+    runtime = FakeRuntime()
+    parent_response = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Investigate production error",
+            "department": "engineering",
+            "destination": "agent",
+            "assigneeKind": "agent",
+            "repository": "forkmesh/forkmesh",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    parent = parent_response["data"]["task"]
+    denied = await tasks_api.handle(
+        runtime.use("POST", "carol", {
+            "title": "Unauthorized continuation",
+            "parentTaskId": parent["id"],
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert denied["status"] == 403
+
+    follow_up = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Verify the production repair",
+            "parentTaskId": parent["id"],
+            # Client attempts cannot redirect a follow-up to someone else.
+            "assigneeKind": "user",
+            "assignee": "bob",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert follow_up["status"] == 201
+    task = follow_up["data"]["task"]
+    assert task["parentTaskId"] == parent["id"]
+    assert task["assigneeKind"] == "agent"
+    assert task["assignee"] == "agent"
+    assert task["department"] == "engineering"
+    assert task["destination"] == "agent"
+    assert task["repository"] == "forkmesh/forkmesh"
+    assert runtime.audits[-1]["details"]["followUp"] is True
 
 
 @run_async_test
@@ -438,7 +611,12 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
             "howToTest": "Open the World and verify the result.",
             "attachments": [
                 {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
-                {"name": "world.png", "mime": "image/png", "size": 4096},
+                {
+                    "name": "world.png",
+                    "mime": "image/png",
+                    "size": 4096,
+                    "thumbnail": "data:image/png;base64,aGVsbG8=",
+                },
             ],
         }),
         tasks_api.UNIVERSAL_PREFIX,
@@ -452,7 +630,12 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
     assert task["repository"] == "forkmesh/forkmesh"
     assert task["attachments"] == [
         {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
-        {"name": "world.png", "mime": "image/png", "size": 4096},
+        {
+            "name": "world.png",
+            "mime": "image/png",
+            "size": 4096,
+            "thumbnail": "data:image/png;base64,aGVsbG8=",
+        },
     ]
     stored = runtime.db.execute(
         "SELECT data FROM organization_tasks WHERE task_id=?",
@@ -460,6 +643,68 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
     ).fetchone()[0]
     assert "Run the private verification" not in stored
     assert "Agent task details" not in stored
+
+
+@run_async_test
+async def test_task_image_is_encrypted_and_served_only_to_org_members():
+    runtime = FakeRuntime()
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+        "AAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    created = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Verify the status board",
+            "assignee": "alice",
+            "attachments": [{
+                "name": "status.png",
+                "mime": "image/png",
+                "size": len(png),
+                "file": base64.b64encode(png).decode("ascii"),
+            }],
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert created["status"] == 201
+    task = created["data"]["task"]
+    attachment = task["attachments"][0]
+    assert attachment["url"].startswith(
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/attachments/")
+    sealed = runtime.db.execute(
+        "SELECT data FROM organization_task_attachments "
+        "WHERE attachment_id=?",
+        (attachment["id"],),
+    ).fetchone()[0]
+    assert base64.b64encode(png).decode("ascii") not in sealed
+
+    image = await tasks_api.handle(
+        runtime.use("GET", "alice"), attachment["url"])
+    assert image["status"] == 200
+    assert image["data"] == png
+    assert image["mime"] == "image/png"
+    outsider = await tasks_api.handle(
+        runtime.use("GET", "eve"), attachment["url"])
+    assert outsider["status"] == 403
+
+
+@run_async_test
+async def test_task_image_rejects_active_or_spoofed_content():
+    runtime = FakeRuntime()
+    response = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Bad image",
+            "assignee": "alice",
+            "attachments": [{
+                "name": "not-really.png",
+                "mime": "image/png",
+                "size": 12,
+                "file": base64.b64encode(b"<svg></svg>").decode("ascii"),
+            }],
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert response["status"] == 400
+    assert response["data"]["error"] == "invalid_task_image"
 
 
 @run_async_test
@@ -1059,6 +1304,38 @@ async def test_encrypted_copy_same_origin_reassignment_and_metadata_only_audit()
     assert reassigned["status"] == 200
     assert reassigned["data"]["task"]["assignee"] == "carol"
 
+    agent = await tasks_api.handle(
+        runtime.use("PATCH", "mary", {
+            "assigneeKind": "agent",
+            "repository": "forkmesh/forkmesh",
+        }),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+    )
+    assert agent["status"] == 200
+    assert agent["data"]["task"]["assigneeKind"] == "agent"
+    assert agent["data"]["task"]["assignee"] == "agent"
+    assert agent["data"]["task"]["destination"] == "agent"
+    assert agent["data"]["task"]["repository"] == "forkmesh/forkmesh"
+
+    returned = await tasks_api.handle(
+        runtime.use("PATCH", "mary", {"assigneeKind": "unassigned"}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+    )
+    assert returned["status"] == 200
+    assert returned["data"]["task"]["assigneeKind"] == "unassigned"
+    assert returned["data"]["task"]["assignee"] == ""
+    assert returned["data"]["task"]["destination"] == "department"
+
+    missing_repository = await tasks_api.handle(
+        runtime.use("PATCH", "mary", {
+            "assigneeKind": "agent",
+            "repository": "",
+        }),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+    )
+    assert missing_repository["status"] == 400
+    assert missing_repository["data"]["error"] == "repository_required"
+
     member_update = await tasks_api.handle(
         runtime.use("PATCH", "bob", {"title": "Not allowed"}),
         f"{tasks_api.PREFIX}/{task_id}",
@@ -1140,7 +1417,7 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     )
     assert opened["status"] == 201
     task = opened["data"]["task"]
-    assert task["assigneeKind"] == "claude"
+    assert task["assigneeKind"] == "agent"
     assert task["agentSessionId"] == "418"
     assert task["agent"] == {
         "provider": "claude-code",

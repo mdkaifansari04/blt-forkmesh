@@ -87,6 +87,7 @@ public:
 
     QString spoolDir() const; // <root>/spool (push events land here)
     QString artifactsDir() const; // <root>/artifacts (validated run outputs)
+    QString sandboxDir() const; // <root>/sandbox (disposable per-run trees)
 
     // Runs
     QList<ActionRun> loadAllRuns() const;    // newest first
@@ -117,6 +118,14 @@ public:
     // paths, object ids, and submodule pins) and a deterministic tar stream of
     // every archived file, then hashes that material with SHA-256. A bounded
     // timeout prevents a damaged repository from hanging the approval UI.
+    //
+    // Successful results are memoised per (repository, commit): a commit's tree
+    // is immutable, so the same pair always hashes to the same pair of values.
+    // That matters because the whole-repo `git archive` behind it costs seconds
+    // and the same commit is digested repeatedly — queue, approve, then verify
+    // before running. The stall log caught this at 5.6s inside
+    // queueWorkflowsForCommit and 3.5s inside approveSelectedRun. Thread-safe:
+    // the run pipeline calls this from worker threads as well as the GUI thread.
     static bool repositoryStateDigest(const QString &repository,
                                       const QString &commit,
                                       QString *repositoryTree,

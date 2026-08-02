@@ -107,6 +107,7 @@ def test_only_approved_query_rows_with_public_https_origins_are_projected():
         "label": "Community Relay",
         "origin": "https://relay.example",
         "approved": True,
+        "joinedAt": NOW - 10_000,
         "health": "online",
         "online": True,
         "healthEvidence": "approved-relay-signed-fresh-node-health",

@@ -29,10 +29,12 @@ struct ActionSandboxLimits {
 
 // Executes a single approved workflow run. On Linux, every step runs fail-closed
 // inside a bubblewrap user/PID/mount/IPC/UTS namespace as uid 65534, with the
-// source snapshot mounted read-only, a disposable writable clone, no host home
-// or environment, network disabled by default, and hard resource/deadline
-// limits. Output is streamed live (signal) and persisted to the run's log.txt,
-// with explicit workflow variables redacted.
+// source snapshot mounted read-only, a disposable writable clone, no host
+// environment, and no host home beyond the node interpreter's Python
+// site-packages (read-only, so offline steps import what the node can), network
+// disabled by default, and hard resource/deadline limits. Output is streamed
+// live (signal) and persisted to the run's log.txt, with explicit workflow
+// variables redacted.
 class ActionRunner : public QObject
 {
     Q_OBJECT

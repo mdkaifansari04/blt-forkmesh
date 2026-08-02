@@ -497,6 +497,7 @@ export function createWorldSky({
     toneMapped: false,
     fog: false,
     side: THREE.DoubleSide,
+    forceSinglePass: true,
     blending: THREE.AdditiveBlending,
   });
   const celestialGlows = new THREE.InstancedMesh(

@@ -445,6 +445,17 @@ Cloudflare resources and deliberately does not retrieve or print the connector
 credential. Use `--dry-run` for read-only account/zone/existing-tunnel checks.
 Conflicting DNS fails closed unless `--replace-dns` is explicit.
 
+A new headless node can provision all of this at install time. Running
+`install.sh` with `FORKMESH_TUNNEL_HOSTNAME` and `CLOUDFLARE_API_TOKEN` set
+(optionally `FORKMESH_TUNNEL_ZONE`, `FORKMESH_CLOUDFLARE_ACCOUNT_ID`, and
+`FORKMESH_RELAY_HOSTNAME`) stages the pinned tools, installs the SHA-256-pinned
+`cloudflared`, discovers the relay's mirror-router public key, runs this
+bootstrap as the service user with the API token only in the child environment,
+and restarts the node. On startup the node then auto-starts its gateway, Tunnel
+connector, and signed endpoint registration whenever the connector token file
+exists (`control/autoStartMirrorServices`, on by default). A provisioning
+failure is soft: the plain headless install keeps running without a tunnel.
+
 ### Qt Control Node lifecycle
 
 The desktop Control Node page operates both deployment stages:

@@ -52,6 +52,7 @@
   function coarseSurface(pathname) {
     const path = String(pathname || "/").toLowerCase();
     if (path === "/") return "home";
+    if (path === "/homev2" || path === "/homev2/") return "home-v2";
     if (path === "/world" || path.startsWith("/world/")) return "world";
     if (path === "/dashboard" || path.startsWith("/dashboard/")) return "dashboard";
     if (path === "/docs" || path.startsWith("/docs/")) return "documentation";
@@ -165,6 +166,17 @@
   );
   window.addEventListener("unhandledrejection", (event) => {
     const reason = event.reason;
+    // World navigation and mobile gesture reconciliation intentionally abort
+    // stale fetches. Browsers surface those cancellations as unhandled
+    // AbortError rejections even though no request or UI action failed.
+    if (
+      reason?.name === "AbortError" ||
+      /signal is aborted|operation was aborted/i.test(
+        String(reason?.message || ""),
+      )
+    ) {
+      return;
+    }
     reportClientError(
       "unhandledrejection",
       reason instanceof Error ? reason : null,

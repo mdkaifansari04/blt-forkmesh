@@ -32,7 +32,8 @@ def test_office_lobby_has_a_bioluminescent_left_wall_marine_aquarium():
         "forkmesh-office-aquarium-light",
     ):
         assert name in aquarium
-    assert "createOfficeMarineAquarium(THREE, animated)" in SCENE
+    assert "function createOfficeMarineAquarium(THREE, animated, maxFish = 24)" in SCENE
+    assert "compactRenderer ? 12 : 24" in SCENE
 
 
 def test_marine_aquarium_stays_ambient_and_reuses_the_scene_animation_queue():
@@ -153,7 +154,12 @@ def test_aquarium_feeding_action_is_persistently_available_and_accessible():
 
 def test_aquarium_bottom_right_control_panel_combines_all_four_actions():
     assert 'aquariumControlPanel.dataset.worldAquariumControls = ""' in SCENE
-    assert 'aquariumControlTitle.textContent = "REEF CONTROL"' in SCENE
+    assert 'aquariumControlToggle.textContent = "REEF CONTROL"' in SCENE
+    assert 'aquariumControlToggle.type = "button"' in SCENE
+    assert 'aquariumControlToggle.setAttribute("aria-expanded", "false")' in SCENE
+    assert 'aquariumControlActions.hidden = true' in SCENE
+    assert "setAquariumControlsExpanded" in SCENE
+    assert "handleAquariumControlToggle" in SCENE
     assert 'aquariumTapAction.dataset.worldAquariumTap = ""' in SCENE
     assert 'aquariumTapAction.textContent = "TAP GLASS"' in SCENE
     assert 'aquariumBackdropAction.dataset.worldAquariumBackdrop = ""' in SCENE
@@ -170,6 +176,9 @@ def test_aquarium_bottom_right_control_panel_combines_all_four_actions():
     assert "officeAquarium.controlAnchor" in SCENE
     assert "aquariumDistance / 9" in SCENE
     assert ".world-aquarium-control-panel" in CSS
+    assert ".world-aquarium-control-toggle" in CSS
+    assert ".world-aquarium-control-actions" in CSS
+    assert "bottom: calc(100% + 7px)" in CSS
     assert "grid-template-columns: repeat(2" in CSS
     # The panel grows below the projected base-rail anchor. A negative Y
     # translation lifts it over the glass and makes it look detached.
@@ -231,13 +240,17 @@ def test_aquarium_background_and_light_are_real_scene_toggles():
     assert "topLight.visible = aquariumLightEnabled" in aquarium
 
 
-def test_each_public_user_gets_one_small_name_seeded_fish_in_an_activity_lane():
+def test_public_users_seed_a_bounded_activity_first_school():
     aquarium = _aquarium_block()
     assert "function aquariumUserPalette(name)" in aquarium
     assert '"outfit:" + String(name || "guest")' in aquarium
     assert "OUTFIT_COLORWAYS[rng.int(OUTFIT_COLORWAYS.length)]" in aquarium
     assert "function setUsers(users = [])" in aquarium
-    assert "normalized.forEach((user, index) =>" in aquarium
+    assert ".slice(0, fishLimit)" in aquarium
+    assert "visibleUsers.forEach((user, index) =>" in aquarium
+    assert "group.userData.accountPopulation = normalized.length" in aquarium
+    assert "group.userData.visibleFish = visibleUsers.length" in aquarium
+    assert "group.userData.fishLimit = fishLimit" in aquarium
     assert "fishStates.push({" in aquarium
     assert '"active-recent"' in aquarium
     assert '"inactive"' in aquarium
@@ -249,33 +262,12 @@ def test_each_public_user_gets_one_small_name_seeded_fish_in_an_activity_lane():
     assert "fillText(user.name" not in aquarium
 
 
-def test_fish_occasionally_school_by_public_country_browser_and_agent():
+def test_aquarium_animation_is_lobby_only_and_capped_at_twenty_hertz():
     aquarium = _aquarium_block()
-    for contract in (
-        "AQUARIUM_SCHOOL_INITIAL_DELAY_MS = 14_000",
-        "AQUARIUM_SCHOOL_MIN_IDLE_MS = 24_000",
-        "AQUARIUM_SCHOOL_MAX_IDLE_MS = 38_000",
-        "AQUARIUM_SCHOOL_DURATION_MS = 11_000",
-        "AQUARIUM_SCHOOL_TRANSITION_MS = 1_600",
-        'id: "country", label: "COUNTRY"',
-        'id: "browser", label: "BROWSER"',
-        'id: "agent", label: "AGENT"',
-    ):
-        assert contract in aquarium
-    assert "countryCode: /^[A-Z]{2}$/.test(" in aquarium
-    assert "const browser = aquariumSchoolValue(" in aquarium
-    assert "const os = aquariumSchoolValue(" in aquarium
-    assert "agent: browser && os ? `${browser} / ${os}` : \"\"" in aquarium
-    assert "userAgent" not in aquarium
-    assert "function aquariumSchoolGroupsForMode(mode)" in aquarium
-    assert ".filter(([, states]) => states.length >= 2)" in aquarium
-    assert "function beginAquariumSchool(time)" in aquarium
-    assert "function updateAquariumSchool(time, animate = true)" in aquarium
-    assert "function aquariumSchoolTarget(state, time)" in aquarium
-    assert "state.point.lerp(state.schoolPoint, schoolBlend)" in aquarium
-    assert "state.tangent" in aquarium
-    assert "getSchoolingState," in aquarium
-    # Schooling reuses the aquarium's animation callback rather than creating
-    # a competing clock.
-    assert "setTimeout(" not in aquarium
-    assert "setInterval(" not in aquarium
+    assert "const AQUARIUM_ANIMATION_MS = 1000 / 20" in aquarium
+    assert "if (!animationActive || time < nextAnimationAt) return" in aquarium
+    assert "nextAnimationAt + AQUARIUM_ANIMATION_MS" in aquarium
+    assert "setAnimationActive(value)" in aquarium
+    assert 'officeSceneMode === "lobby"' in SCENE
+    assert 'officeCurrentFloorId === "lobby"' in SCENE
+    assert "officeAquarium.setAnimationActive(aquariumAnimationActive)" in SCENE

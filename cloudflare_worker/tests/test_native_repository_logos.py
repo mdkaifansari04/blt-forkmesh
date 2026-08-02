@@ -250,6 +250,20 @@ def test_committed_logo_requires_public_repo_exact_commit_and_root_image():
                   "alice", "project") == ""
 
 
+def test_committed_root_logo_response_ships_fallback_artwork():
+    # The committed URL is streamed by a mirror, so it can fail after the card
+    # rendered. The same response carries the approved/generated artwork so a
+    # client swaps in place instead of showing a broken image.
+    handler = SOURCE[
+        SOURCE.index("async def native_repository_logo_handler")
+        : SOURCE.index("async def _repo_about_public")
+    ]
+    committed = handler[handler.index('"source": "repository"') - 600:]
+    assert '"fallbackDataUrl"' in committed
+    assert "await service._official_logo(env, repository_id)" in committed
+    assert "deterministic_logo(record)" in committed
+
+
 def test_native_logo_handler_normalizes_missing_and_unauthorized_to_404():
     handler = SOURCE[
         SOURCE.index("async def native_repository_logo_handler")

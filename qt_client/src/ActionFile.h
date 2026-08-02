@@ -90,6 +90,17 @@ public:
     // Normalize one free-form label list into distinct lower-cased labels.
     static QStringList parseLabelList(const QString &configured);
 
+    // The node pins the Actions tab's "Run on" dropdown stores on a repository,
+    // as "<workflow path>\t<node label>" entries. A pin overrides the workflow's
+    // own `runs-on:` on the node that set it.
+    // pinnedNode: the label pinned to `path`, or empty when none is.
+    static QString pinnedNode(const QStringList &pins, const QString &path);
+    // setPinnedNode: `pins` with every path in `paths` pinned to `node`, or the
+    // pin dropped when `node` is empty. Entries are sorted by path.
+    static QStringList setPinnedNode(const QStringList &pins,
+                                     const QStringList &paths,
+                                     const QString &node);
+
     // Substitute variable references with values from vars. The explicit
     // ${{ vars.NAME }} context form is always expanded (unknown names become
     // empty strings, matching CI conventions). The bare ${NAME} form is only
