@@ -9283,6 +9283,11 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                          ? lead
                          : customPreamble + QStringLiteral("\n\n") + lead;
     prompt += QStringLiteral("\n\n") + AgentRunner::commitChangesInstruction();
+    // Keep a complete recovery turn in reserve for Codex. The normal path resumes
+    // the native thread and sends only the new turn; if that saved thread was
+    // pruned or is otherwise unavailable, CodexAppServerSession starts a fresh
+    // one with this context rather than failing the Add action.
+    const QString originalTaskPrompt = prompt;
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
@@ -9327,6 +9332,17 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // No context to resume — fold the steer into the replayed prompt as before
         // (this is the original always-on-composer restart behaviour, adhoc #177).
         prompt += QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
+    }
+    QString codexResumeFallbackPrompt;
+    if (codex && !resumeId.isEmpty()) {
+        codexResumeFallbackPrompt =
+            QStringLiteral(
+                "The previous Codex thread could not be resumed. Continue the "
+                "same work from the current branch and repository state.\n\n"
+                "Original task:\n%1\n\nLatest user instruction:\n%2")
+                .arg(originalTaskPrompt,
+                     steer.isEmpty() ? QStringLiteral("Continue where you left off.")
+                                     : steer);
     }
     // This session's transcript changed; force the next show to rebuild it.
     if (m_renderedTranscriptSession == sid)
@@ -9600,8 +9616,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Auto mode (adhoc #91) routes on the task itself, not the full workflow
     // prompt — `lead` carries the user's ask (or the issue + its comments).
     const QString routeTask = lead;
-    auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
-                   selectedModel, routeTask, codex,
+    auto launch = [this, sid, prompt, codexResumeFallbackPrompt, autoMode,
+                   branchName, resumeId, selectedModel, routeTask, codex,
                    sessionMode, sessionStrength](const QString &workdir) {
         if (codex) {
             CodexAppServerSession *live = m_codexStreams.value(sid);
@@ -9641,7 +9657,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
             }
             live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
-                        effort, jailMb);
+                        effort, jailMb, codexResumeFallbackPrompt);
             return;
         }
 
