@@ -1366,6 +1366,9 @@ void MainWindow::openRepoDetail(int repoIndex)
     // seconds on a large repo. Keep the event loop alive across them so the
     // window doesn't freeze (and the WM doesn't flag it "Not Responding").
     GitKeepAlive keepAlive;
+    // Another repository's branch patches are dead weight (and their keys name a
+    // git dir this window is leaving), so let them go here (adhoc #227).
+    clearBranchDiffCache();
     m_repoDetailIndex = repoIndex;
     // Copy by value: the keep-alive pump services queued slots between git reads,
     // and a roster/network callback could mutate (and reallocate) m_repositories

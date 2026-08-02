@@ -2573,6 +2573,81 @@ int main(int argc, char *argv[])
               QStringLiteral("Branches marks a branch that still needs main merged "
                              "with the same download icon as the Agents list"));
 
+        // adhoc #227: clicking a branch has to repaint for *that* branch straight
+        // away. The range pane used to keep the previously viewed branch's diff
+        // and changed-file list on screen for as long as the new branch's git
+        // read took, so it confidently attributed one branch's changes to
+        // another; and a branch already reviewed once must come back instantly
+        // from its cached patch rather than through another read.
+        QTemporaryDir swapHome;
+        const QString swapPath = swapHome.path() + QStringLiteral("/wt-swap");
+        runGitChecked(wtRepo.path(), {"branch", "feature/fast-swap", "main"});
+        runGitChecked(wtRepo.path(),
+                      {"worktree", "add", swapPath, "feature/fast-swap"});
+        {
+            QFile swapOnly(swapPath + QStringLiteral("/fast-swap-only.txt"));
+            swapOnly.open(QIODevice::WriteOnly);
+            swapOnly.write("only on fast-swap\n");
+            swapOnly.close();
+        }
+        runGitChecked(swapPath, {"add", "fast-swap-only.txt"});
+        runGitChecked(swapPath, {"commit", "-m", "fast-swap only file"});
+
+        const auto waitForDiffText = [&window](const QString &needle) {
+            QElapsedTimer diffTimer;
+            diffTimer.start();
+            while (diffTimer.elapsed() < 5000 &&
+                   !window.testBranchDiffText().contains(needle))
+                QApplication::processEvents(QEventLoop::AllEvents, 20);
+            return window.testBranchDiffText().contains(needle);
+        };
+
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        check(waitForDiffText(QStringLiteral("branch-change.txt")),
+              QStringLiteral("the range pane renders the selected branch's own "
+                             "changed file"));
+
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/fast-swap"));
+        const QString swappedText = window.testBranchDiffText();
+        check(!swappedText.contains(QStringLiteral("branch-change.txt")),
+              QString("selecting another branch drops the previous branch's diff "
+                      "at once rather than leaving it on screen while git is read "
+                      "(adhoc #227, pane = \"%1\")")
+                  .arg(swappedText.left(60).simplified()));
+        check(!window.testSourceControlPaths().contains(
+                  QStringLiteral("branch-change.txt")),
+              QString("...and the CHANGES list stops listing the branch that was "
+                      "left (files = %1)")
+                  .arg(window.testSourceControlPaths().join(QStringLiteral(", "))));
+        check(waitForDiffText(QStringLiteral("fast-swap-only.txt")),
+              QStringLiteral("the newly selected branch's own diff arrives behind "
+                             "that placeholder"));
+        check(window.testBranchDiffCached(QStringLiteral("feature/fast-swap")),
+              QStringLiteral("a rendered branch range is kept for the next visit "
+                             "(adhoc #227)"));
+
+        // Back to the first branch: its patch is still held, so the pane repaints
+        // from memory instead of emptying for a second read of the same diff.
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        check(window.testBranchDiffPaintedFromCache() &&
+                  window.testBranchDiffText().contains(
+                      QStringLiteral("branch-change.txt")),
+              QString("returning to an already-reviewed branch repaints its diff "
+                      "without waiting on git (adhoc #227, from cache = %1)")
+                  .arg(window.testBranchDiffPaintedFromCache()
+                           ? QStringLiteral("yes")
+                           : QStringLiteral("no")));
+
+        // Leave the fixture as the branch/merge tests below expect it.
+        runGitChecked(wtRepo.path(),
+                      {"worktree", "remove", "--force", swapPath});
+        runGitChecked(wtRepo.path(), {"branch", "-D", "feature/fast-swap"});
+        window.testReloadBranchesPanel();
+        QApplication::processEvents();
+
         // adhoc #119: merging from the comparison ends it — the branch's work
         // is in main, so leaving its diff open only shows the user something
         // they're finished with. Re-open the branch, then let its "Merge to
