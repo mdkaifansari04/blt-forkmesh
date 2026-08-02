@@ -19,9 +19,13 @@ jobs:
           # for the host's shared tmpfs.
           ci_tmp="$PWD/.forkmesh-ci-tmp"
           export TMPDIR="$ci_tmp"
+          # CMake opts into ccache when it is installed. The runner's usual
+          # ccache directory may be read-only inside its disposable clone, so
+          # keep this run's cache with the other writable scratch files.
+          export CCACHE_DIR="$ci_tmp/ccache"
           logs="$ci_tmp/logs"
           rm -rf "$ci_tmp"
-          mkdir -p "$logs"
+          mkdir -p "$logs" "$CCACHE_DIR"
 
           worker_suite() {
             # Actions run in a network-isolated namespace, importing what the
@@ -77,6 +81,26 @@ jobs:
           qt_suite > "$logs/qt.log" 2>&1 &
           qt_pid=$!
 
+          # Suite output is intentionally buffered to keep the final log
+          # readable, but some runners terminate a quiet process group. Emit
+          # a small liveness line until all background suites have exited.
+          heartbeat() {
+            while :; do
+              active=0
+              for pid in "$@"; do
+                if kill -0 "$pid" 2>/dev/null; then
+                  active=1
+                  break
+                fi
+              done
+              [ "$active" -eq 1 ] || return 0
+              echo "CI suites are still running..."
+              sleep 10
+            done
+          }
+          heartbeat "$worker_pid" "$static_pid" "$qt_pid" &
+          heartbeat_pid=$!
+
           status=0
           report() {
             if wait "$2"; then
@@ -92,4 +116,5 @@ jobs:
           report "Cloudflare Worker test suite" "$worker_pid" "$logs/worker.log"
           report "Worker syntax + config" "$static_pid" "$logs/static.log"
           report "Qt client tests" "$qt_pid" "$logs/qt.log"
+          wait "$heartbeat_pid" || true
           exit "$status"
