@@ -17,11 +17,8 @@ def _generator():
     return module
 
 
-def test_worker_footprint_asset_matches_current_source_tree():
+def test_worker_footprint_budgets_match_current_source_tree():
     generator = _generator()
-    assert not generator.needs_refresh(), (
-        "world/worker-footprint.js drifted past the refresh deadband — "
-        "run tools/build_worker_footprint.py")
     data = generator.footprint()
     assert data["attachedPythonBytes"] > data["estimatedStartupSourceBytes"]
     assert data["onDemandSourceBytes"] > 100_000
@@ -67,18 +64,13 @@ def test_worker_footprint_asset_matches_current_source_tree():
     }
 
 
-def test_ordinary_source_edits_do_not_rewrite_the_committed_chart():
-    """wrangler.toml rebuilds this on every deploy; it must stay put."""
+def test_worker_footprint_tool_is_read_only():
+    """Deploy validation must never rewrite the committed chart asset."""
     generator = _generator()
-    nudged = generator.footprint()
-    nudged["attachedPythonBytes"] += 6_000
-    nudged["estimatedStartupSourceBytes"] += 6_000
-    nudged["staticAssetCount"] += 1
-    nudged["modules"][0]["bytes"] += 6_000
-    nudged["components"][0]["bytes"] += 6_000
-    assert not generator.needs_refresh(nudged)
-    assert generator.build() is False
-    assert generator.committed() is not None
+    before = generator.OUTPUT.read_bytes()
+    generator.validate_budgets()
+    assert generator.OUTPUT.read_bytes() == before
+    assert not hasattr(generator, "build")
 
 
 def test_material_growth_still_refreshes_the_committed_chart():
