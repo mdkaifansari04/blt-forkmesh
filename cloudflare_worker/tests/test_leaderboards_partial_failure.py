@@ -27,6 +27,9 @@ from pathlib import Path
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+CLIENT_TEXT = (
+    Path(__file__).resolve().parents[1] / "public" / "leaderboards.js"
+).read_text(encoding="utf-8")
 
 FUNCS = {
     "leaderboards_overview",
@@ -211,6 +214,13 @@ def test_telemetry_failure_cannot_sink_the_response():
     payload = asyncio.run(overview(object()))
     assert payload["status"] == 200
     assert payload["data"]["degraded"] == ["wallets"]
+
+
+def test_the_hub_page_tells_the_two_empty_boards_apart():
+    # The flag is only worth carrying if a visitor can see the difference.
+    assert "board.degraded" in CLIENT_TEXT
+    assert '"Temporarily unavailable."' in CLIENT_TEXT
+    assert '"No public data yet."' in CLIENT_TEXT
 
 
 def test_every_source_failing_still_answers():
