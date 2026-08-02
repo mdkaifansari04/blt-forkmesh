@@ -423,7 +423,7 @@ QWidget *MainWindow::buildChatPage()
     for (int index = 3; index <= 8; ++index)
         addDeferredSection();
     m_sectionStack->addWidget(new QWidget);              // 9 retired Firewall redirect
-    for (int index = 10; index <= 15; ++index)
+    for (int index = 10; index <= 16; ++index)
         addDeferredSection();
     logStartup(QStringLiteral("  buildChatPage: secondary sections deferred"));
 
@@ -505,7 +505,8 @@ QWidget *MainWindow::buildChatPage()
     // directly above Pings (adhoc #97).
     for (QPushButton *button :
          {m_settingsNavButton, m_logNavButton, m_navScreenshotButton,
-          m_navResizeButton, m_tasksNavButton, m_notificationButton})
+          m_navResizeButton, m_notesNavButton, m_tasksNavButton,
+          m_notificationButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
 
     // The account avatar is intentionally the bottom-most rail destination. It
@@ -5593,6 +5594,18 @@ QWidget *MainWindow::buildBreadcrumb()
         showSection(kOrganizationTasksSectionIndex);
     });
 
+    m_notesNavButton = new ActivityRailButton(QStringLiteral("note"),
+                                              QStringLiteral("Notes"));
+    m_notesNavButton->setObjectName("notesNavButton");
+    m_notesNavButton->setCheckable(true);
+    m_notesNavButton->setCursor(Qt::PointingHandCursor);
+    m_notesNavButton->setToolTip(QStringLiteral("Local and cloud Markdown notes"));
+    setOcticon(m_notesNavButton, "note", 16);
+    m_navGroup->addButton(m_notesNavButton, kNotesSectionIndex);
+    connect(m_notesNavButton, &QPushButton::clicked, this, [this] {
+        showSection(kNotesSectionIndex);
+    });
+
     m_breadcrumb = new QLabel;
     m_breadcrumb->setObjectName("breadcrumb");
     m_breadcrumb->setTextFormat(Qt::RichText);
@@ -8913,6 +8926,7 @@ void MainWindow::ensureSectionBuilt(int index)
     case 12: section = buildNetworkDiagnosticsSection(); break;
     case 14: section = buildControlNodeSection(); break;
     case 15: section = buildOrganizationTasksSection(); break;
+    case 16: section = buildNotesSection(); break;
     default: break;
     }
     if (!section)
@@ -8992,6 +9006,8 @@ void MainWindow::showSection(int index)
         refreshControlNode();
     } else if (index == kOrganizationTasksSectionIndex) {
         refreshOrganizationTasks();
+    } else if (index == kNotesSectionIndex) {
+        refreshNotes();
     }
 }
 

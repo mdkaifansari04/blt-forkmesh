@@ -5553,110 +5553,6 @@ async function dragThumbstick(
   await client.detach();
 }
 
-async function installFocusMusicAudioProbe(page) {
-  await page.addInitScript(() => {
-    const probe = {
-      created: [],
-      intervalRegistrations: 0,
-    };
-    const nativeSetInterval = window.setInterval.bind(window);
-    window.setInterval = (...args) => {
-      probe.intervalRegistrations += 1;
-      return nativeSetInterval(...args);
-    };
-    class FocusMusicAudio {
-      constructor(src) {
-        this.src = String(src || "");
-        this.currentTime = 0;
-        this.loop = false;
-        this.muted = false;
-        this.paused = true;
-        this.preload = "";
-        this.readyState = 4;
-        this.volume = 1;
-        this.playCalls = 0;
-        this.pauseCalls = 0;
-        this.loadCalls = 0;
-        this.listeners = new Map();
-        probe.created.push(this);
-      }
-      addEventListener(type, listener) {
-        const listeners = this.listeners.get(type) || [];
-        listeners.push(listener);
-        this.listeners.set(type, listeners);
-      }
-      removeEventListener(type, listener) {
-        this.listeners.set(
-          type,
-          (this.listeners.get(type) || []).filter(
-            (candidate) => candidate !== listener,
-          ),
-        );
-      }
-      load() {
-        this.loadCalls += 1;
-      }
-      pause() {
-        this.paused = true;
-        this.pauseCalls += 1;
-      }
-      async play() {
-        this.paused = false;
-        this.playCalls += 1;
-      }
-    }
-    Object.defineProperty(window, "Audio", {
-      configurable: true,
-      writable: true,
-      value: FocusMusicAudio,
-    });
-    window.__forkmeshFocusMusicProbe = probe;
-  });
-}
-
-async function focusMusicProbeSnapshot(page) {
-  return page.evaluate(() => {
-    const probe = window.__forkmeshFocusMusicProbe;
-    return {
-      intervalRegistrations: probe.intervalRegistrations,
-      created: probe.created.map((audio) => ({
-        src: audio.src,
-        currentTime: audio.currentTime,
-        loop: audio.loop,
-        muted: audio.muted,
-        paused: audio.paused,
-        preload: audio.preload,
-        volume: audio.volume,
-        playCalls: audio.playCalls,
-        pauseCalls: audio.pauseCalls,
-        loadCalls: audio.loadCalls,
-      })),
-    };
-  });
-}
-
-async function chooseFocusMusicTrack(page, trackId) {
-  await page
-    .locator(`[data-world-focus-track='${trackId}']`)
-    .evaluate((control) => {
-      const input = control.matches("input[type='radio']")
-        ? control
-        : control.querySelector("input[type='radio']");
-      if (!input) throw new Error("focus music card has no radio control");
-      if (!input.checked) input.click();
-    });
-}
-
-async function focusMusicTrackIsChecked(page, trackId) {
-  return page
-    .locator(`[data-world-focus-track='${trackId}']`)
-    .evaluate((control) => {
-      const input = control.matches("input[type='radio']")
-        ? control
-        : control.querySelector("input[type='radio']");
-      return input?.checked === true;
-    });
-}
 
 test("@critical enhanced Town Square starts in WebGL and keeps keyboard navigation", async ({
   page,
@@ -6459,7 +6355,6 @@ test("local diagnostics report renderer and existing socket state without new te
     return Boolean(shell?.distanceTimer);
   });
   await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.stopRadio(false);
     shell.lastMovementSentAt = performance.now();
     shell.queueMovementPresence({
       x: 1,
@@ -6477,16 +6372,6 @@ test("local diagnostics report renderer and existing socket state without new te
     });
     shell.sendPresence({ type: "presence" });
     shell.sendPresence({ type: "presence" });
-    shell.activeAudio = {
-      kind: "focus-music",
-      trackId: "cosmic-waves",
-      element: {
-        currentTime: 75,
-        duration: 240,
-      },
-    };
-    shell.focusMusicState = "playing";
-    shell.focusMusicAutoplayPending = false;
     shell.renderDiagnostics();
   });
   await page.waitForTimeout(1150);
@@ -6496,24 +6381,9 @@ test("local diagnostics report renderer and existing socket state without new te
   await expect(diagnostics.locator("summary")).toContainText("N online");
   await expect(diagnostics.locator("summary")).toContainText("1p");
   await expect(diagnostics.locator("summary")).toContainText("v0.7.0");
-  await expect(diagnostics.locator("summary")).toContainText(
-    "Cosmic Waves",
-  );
   await expect(
-    diagnostics.locator("[data-world-diagnostics-music-position]"),
-  ).toHaveText("1:15/4:00");
-  const playbackPosition = await diagnostics
-    .locator("[data-world-diagnostics-music-progress]")
-    .evaluate((progress) => ({
-      value: progress.value,
-      max: progress.max,
-      text: progress.getAttribute("aria-valuetext"),
-    }));
-  expect(playbackPosition).toEqual({
-    value: 75_000,
-    max: 240_000,
-    text: "Cosmic Waves, 1:15 of 4:00, playing",
-  });
+    diagnostics.locator("[data-world-diagnostics-music-progress]"),
+  ).toHaveCount(0);
   for (const compactMetric of [
     "renderer",
     "frame",
@@ -9397,9 +9267,7 @@ test("tracked public replies open a separate read-only fediverse thread", async 
     .toHaveAttribute("referrerpolicy", "no-referrer");
 });
 
-test("sound button is the master switch for local playback", async ({
-  page,
-}) => {
+test("sound button enables short effects and the sign plays only the ForkMesh song", async ({ page }) => {
   const mediaRequests = [];
   page.on("request", (request) => {
     if (
@@ -9410,9 +9278,12 @@ test("sound button is the master switch for local playback", async ({
     }
   });
   await page.addInitScript(() => {
+    window.__forkmeshEffectStarts = 0;
+    window.__forkmeshSongPlays = [];
     class AudioParam {
       setValueAtTime() {}
       exponentialRampToValueAtTime() {}
+      linearRampToValueAtTime() {}
       cancelScheduledValues() {}
       setTargetAtTime() {}
     }
@@ -9423,13 +9294,16 @@ test("sound button is the master switch for local playback", async ({
         this.detune = new AudioParam();
       }
       connect() {}
-      start() {}
+      start() {
+        window.__forkmeshEffectStarts += 1;
+      }
       stop() {}
     }
     class FakeAudioContext {
       constructor() {
         this.currentTime = 0;
         this.destination = {};
+        this.state = "running";
       }
       createGain() {
         return new Node();
@@ -9438,304 +9312,79 @@ test("sound button is the master switch for local playback", async ({
         return new Node();
       }
       async resume() {}
-      async close() {}
+      async close() {
+        this.state = "closed";
+      }
     }
     Object.defineProperty(window, "AudioContext", {
       configurable: true,
       value: FakeAudioContext,
     });
+    class ForkmeshSongAudio {
+      constructor(src) {
+        this.src = String(src || "");
+        this.currentTime = 0;
+        this.loop = false;
+        this.preload = "";
+      }
+      addEventListener() {}
+      pause() {}
+      async play() {
+        window.__forkmeshSongPlays.push(this.src);
+      }
+    }
+    Object.defineProperty(window, "Audio", {
+      configurable: true,
+      value: ForkmeshSongAudio,
+    });
   });
-  await prepareWorldPage(page, "soundtrack");
+  await prepareWorldPage(page, "short-effects");
   await waitForWorld(page);
-  expect(
-    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
-  ).toBeNull();
 
-  await page.locator("forkmesh-world").evaluate(async (shell) => {
-    const now = document.createElement("div");
-    now.dataset.worldMediaNow = "";
-    shell.append(now);
-    await shell.playRadio("forkmesh-focus");
-  });
-  await expect(page.locator("[data-world-media-now]")).toContainText(
-    "Use the Sound button",
+  await page.locator("[data-world-sound-toggle]").evaluate((button) =>
+    button.click(),
   );
-  expect(
-    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
-  ).toBeNull();
-  await page.locator("[data-world-sound-toggle]").click();
   await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
     "aria-pressed",
     "true",
   );
+  const startsAfterEnable = await page.evaluate(
+    () => window.__forkmeshEffectStarts,
+  );
+  expect(startsAfterEnable).toBeGreaterThan(0);
+
   await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.playRadio("forkmesh-focus"),
+    shell.playCountryJoinSound("US", true),
   );
-  const playback = await page.locator("forkmesh-world").evaluate((shell) => ({
-    durationMs: shell.activeAudio?.durationMs,
-    scoreOffsetMs: shell.activeAudio?.scoreOffsetMs,
-    license: shell.activeAudio?.license,
-  }));
-  expect(playback.durationMs).toBe(4 * 60 * 60 * 1000);
-  expect(playback.scoreOffsetMs).toBeGreaterThanOrEqual(0);
-  expect(playback.scoreOffsetMs).toBeLessThan(playback.durationMs);
-  expect(playback.license).toContain("CC0-1.0");
-  await expect(page.locator("[data-world-track]")).toContainText(
-    "loops independently of the UTC display",
+  expect(await page.evaluate(() => window.__forkmeshEffectStarts)).toBeGreaterThan(
+    startsAfterEnable,
   );
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.playForkmeshSong(),
+  );
+  expect(await page.evaluate(() => window.__forkmeshSongPlays)).toEqual([
+    "/assets/songs/ForkMeshForever(IndiePop).mp3",
+  ]);
   expect(mediaRequests).toEqual([]);
 
-  await page.locator("[data-world-sound-toggle]").click();
+  await page.locator("[data-world-sound-toggle]").evaluate((button) =>
+    button.click(),
+  );
   await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
     "aria-pressed",
     "false",
   );
-  await expect(page.locator("[data-world-media-now]")).toContainText(
-    "Nothing is playing",
-  );
   expect(
     await page.locator("forkmesh-world").evaluate((shell) => ({
       soundEnabled: shell.soundEnabled,
-      activeAudio: shell.activeAudio,
       soundContext: shell.soundContext,
+      hasFocusPlayer: typeof shell.playFocusMusic === "function",
     })),
   ).toEqual({
     soundEnabled: false,
-    activeAudio: null,
     soundContext: null,
+    hasFocusPlayer: false,
   });
-
-  // The same button can turn audio consent back on after a full shutdown.
-  await page.locator("[data-world-sound-toggle]").click();
-  await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-});
-
-test("the ForkMesh song button plays the first-party track only on request", async ({
-  page,
-}) => {
-  await page.addInitScript(() => {
-    window.__forkmeshSongPlays = [];
-    HTMLMediaElement.prototype.play = function play() {
-      window.__forkmeshSongPlays.push(this.getAttribute("src") || this.src);
-      return Promise.resolve();
-    };
-    HTMLMediaElement.prototype.pause = function pause() {};
-  });
-  await prepareWorldPage(page, "forkmesh-song");
-  await waitForWorld(page);
-
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-  const button = page.locator("[data-world-radio='forkmesh-song']");
-  await expect(button).toHaveText("Listen to the ForkMesh song");
-  expect(await page.evaluate(() => window.__forkmeshSongPlays)).toEqual([]);
-
-  await button.click();
-  expect(await page.evaluate(() => window.__forkmeshSongPlays)).toEqual([
-    "/assets/songs/ForkMeshForever(IndiePop).mp3",
-  ]);
-  await expect(page.locator("[data-world-media-now]")).toContainText(
-    "ForkMesh Forever (Indie Pop)",
-  );
-
-  await page.locator("[data-world-radio-stop]").click();
-  expect(
-    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
-  ).toBeNull();
-  await expect(page.locator("[data-world-media-now]")).toContainText(
-    "Nothing is playing",
-  );
-});
-
-test("focus music defaults to Cosmic Waves and preserves local controls", async ({
-  page,
-}) => {
-  const mediaRequests = [];
-  page.on("request", (request) => {
-    if (new URL(request.url()).pathname.startsWith("/assets/music/")) {
-      mediaRequests.push(request.url());
-    }
-  });
-  await installFocusMusicAudioProbe(page);
-  await prepareWorldPage(page, "focus-music-consent");
-  await waitForWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-
-  const tracks = page.locator("[data-world-focus-track]");
-  await expect(tracks).toHaveCount(3);
-  const cosmic = page.locator(
-    "[data-world-focus-track='cosmic-waves']",
-  );
-  await expect(cosmic).toBeVisible();
-  expect(await focusMusicTrackIsChecked(page, "cosmic-waves")).toBe(true);
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Cosmic Waves is selected. Press Play",
-  );
-
-  const idle = await focusMusicProbeSnapshot(page);
-  expect(idle.created).toEqual([]);
-  expect(mediaRequests).toEqual([]);
-  const intervalRegistrationsBeforePlay = idle.intervalRegistrations;
-
-  await page.locator("[data-world-focus-play]").click();
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Cosmic Waves is playing",
-  );
-  let playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created).toHaveLength(1);
-  expect(playback.created[0]).toMatchObject({
-    src: "/assets/music/cosmic-waves.ogg",
-    loop: true,
-    muted: false,
-    paused: false,
-    volume: 0.35,
-    playCalls: 1,
-  });
-  expect(playback.intervalRegistrations).toBe(
-    intervalRegistrationsBeforePlay,
-  );
-  expect(mediaRequests).toEqual([]);
-
-  await chooseFocusMusicTrack(page, "dreamscape");
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "DreamScape is playing",
-  );
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created).toHaveLength(2);
-  expect(playback.created[0]).toMatchObject({
-    currentTime: 0,
-    paused: true,
-    pauseCalls: 1,
-  });
-  expect(playback.created[1]).toMatchObject({
-    src: "/assets/music/dreamscape.ogg",
-    loop: true,
-    paused: false,
-    playCalls: 1,
-  });
-
-  await page.locator("[data-world-focus-pause]").click();
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "DreamScape is paused",
-  );
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created[1]).toMatchObject({
-    paused: true,
-    pauseCalls: 1,
-  });
-  await expect(page.locator("[data-world-focus-pause]")).toHaveText("Resume");
-
-  await page.locator("[data-world-focus-pause]").click();
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created[1]).toMatchObject({
-    paused: false,
-    playCalls: 2,
-  });
-
-  await page.locator("[data-world-focus-volume]").fill("62");
-  await expect(page.locator("[data-world-focus-volume]")).toHaveValue("62");
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created[1].volume).toBeCloseTo(0.62, 5);
-
-  await page.locator("[data-world-focus-mute]").click();
-  await expect(page.locator("[data-world-focus-mute]")).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created[1].muted).toBe(true);
-
-  const stored = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem("forkmesh.world.settings.v1")),
-  );
-  expect(stored).toMatchObject({
-    focusMusicTrackId: "dreamscape",
-    focusMusicVolume: 62,
-    focusMusicMuted: true,
-  });
-
-  await page.locator("[data-world-focus-stop]").click();
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Press Play",
-  );
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created[1]).toMatchObject({
-    currentTime: 0,
-    paused: true,
-  });
-  expect(
-    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
-  ).toBeNull();
-  expect(playback.intervalRegistrations).toBe(
-    intervalRegistrationsBeforePlay,
-  );
-});
-
-test("focus music selection and controls persist without autoplaying on reload", async ({
-  page,
-}) => {
-  await installFocusMusicAudioProbe(page);
-  await prepareWorldPage(page, "focus-music-persistence");
-  await waitForWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-
-  await chooseFocusMusicTrack(page, "too-brief-a-time");
-  await page.locator("[data-world-focus-volume]").fill("48");
-  await page.locator("[data-world-focus-mute]").click();
-  expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
-
-  await page.reload();
-  await waitForWorldReady(page);
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-  expect(await focusMusicTrackIsChecked(page, "too-brief-a-time")).toBe(true);
-  await expect(page.locator("[data-world-focus-volume]")).toHaveValue("48");
-  await expect(page.locator("[data-world-focus-mute]")).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Press Play",
-  );
-  expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
-
-  await page.locator("[data-world-focus-play]").click();
-  const restoredPlayback = await focusMusicProbeSnapshot(page);
-  expect(restoredPlayback.created).toHaveLength(1);
-  expect(restoredPlayback.created[0]).toMatchObject({
-    src: "/assets/music/too-brief-a-time.ogg",
-    loop: true,
-    muted: true,
-    paused: false,
-    volume: 0.48,
-    playCalls: 1,
-  });
-
-  await page.evaluate(() => {
-    const key = "forkmesh.world.settings.v1";
-    const settings = JSON.parse(localStorage.getItem(key));
-    settings.focusMusicTrackId = "not-a-bundled-track";
-    localStorage.setItem(key, JSON.stringify(settings));
-  });
-  await page.reload();
-  await waitForWorldReady(page);
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-  expect(await focusMusicTrackIsChecked(page, "cosmic-waves")).toBe(true);
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Cosmic Waves is selected. Press Play",
-  );
-  expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
 });
 
 test("@critical portrait coarse-pointer thumbstick and visual viewport remain usable", async ({

@@ -97,6 +97,15 @@ PAGES = {
         "title": "Tasks - ForkMesh",
         "description": "The organization-private ForkMesh task catalog: status, routing, and assignment for every task the desktop app and the World office board share.",
     },
+    "notes": {
+        "view": "notes",
+        "section": "notes",
+        "nav": "notes",
+        "route": "/dashboard/notes",
+        "asset": "dashboard/notes/index.html",
+        "title": "Notes - ForkMesh",
+        "description": "Collaborative Markdown notes with sharing, publishing, snapshots, and repository conversation links.",
+    },
     "settings": {
         "view": "settings",
         "section": "profile",
@@ -224,6 +233,7 @@ CACHE_BUSTED_BUNDLES = (
     "mirror-payouts.js",
     "referrals.js",
     "outreach.js",
+    "leaderboards.js",
 )
 
 
