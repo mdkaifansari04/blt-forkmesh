@@ -6660,15 +6660,12 @@ int main(int argc, char *argv[])
               "nothing is pruned under the limit, and keep=0 still spares the "
               "newest snapshot");
 
-        // The hourly toggle's unset-default follows the Cloudflare API token:
-        // only a control node backs itself up without being asked, because
-        // every other install (desktop or VPS) would rather not spend a day of
-        // ~1GB tarballs it never opted into.
-        check(forkmesh::autoBackupDefault(QStringLiteral("cf-token")) &&
+        // Credentials never opt a machine into recurring multi-gigabyte disk
+        // writes. Every node starts off until its operator explicitly opts in.
+        check(!forkmesh::autoBackupDefault(QStringLiteral("cf-token")) &&
                   !forkmesh::autoBackupDefault(QString()) &&
                   !forkmesh::autoBackupDefault(QStringLiteral("   ")),
-              "hourly backups default on only for control nodes, and a blank "
-              "token is not one");
+              "hourly backups require an explicit opt-in on every node");
 
         const QDateTime now =
             QDateTime::fromString(QStringLiteral("2026-07-28T10:00:00"),
