@@ -499,6 +499,16 @@ SCHEMA_STATEMENTS = [
         scope TEXT NOT NULL, key TEXT NOT NULL, name TEXT,
         lamports INTEGER NOT NULL DEFAULT 0, last_ts INTEGER,
         PRIMARY KEY (scope, key))""",
+    # Last public on-chain balance read for a member's published payout address,
+    # for the "member SOL wallets" board. Both columns are public data (the
+    # address is public profile data, the balance is a public getBalance), and
+    # the row exists only so the board can rank every published address while
+    # re-reading a rotating slice per rebuild instead of all of them at once.
+    """CREATE TABLE IF NOT EXISTS wallet_balances (
+        wallet TEXT PRIMARY KEY, name TEXT,
+        lamports INTEGER NOT NULL DEFAULT 0,
+        checked_at INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS idx_wallet_balances_checked ON wallet_balances(checked_at)",
     """CREATE TABLE IF NOT EXISTS notifications (
         dedupe_bi TEXT PRIMARY KEY,
         recipient_bi TEXT NOT NULL,
@@ -655,7 +665,10 @@ SCHEMA_STATEMENTS = [
         claimed_at INTEGER NOT NULL)""",
     # Edge repository-render monitor state. One row is enough to deduplicate
     # outage/recovery mail while the normal status tables retain the public
-    # minute/hour/day history.
+    # minute/hour/day history. Pings and email are independently switchable, so
+    # each channel keeps its own delivered-transition marker: pinged_state must
+    # not be inferred from notified_state or a deployment with mail off would
+    # re-announce the same recovery on every cron tick.
     """CREATE TABLE IF NOT EXISTS repository_monitor_state (
         monitor_id TEXT PRIMARY KEY,
         is_up INTEGER NOT NULL DEFAULT 1,
@@ -663,7 +676,8 @@ SCHEMA_STATEMENTS = [
         outage_started_at INTEGER NOT NULL DEFAULT 0,
         checked_at INTEGER NOT NULL,
         reason TEXT,
-        notified_state TEXT NOT NULL DEFAULT '')""",
+        notified_state TEXT NOT NULL DEFAULT '',
+        pinged_state TEXT NOT NULL DEFAULT '')""",
     # Founders-outreach team: accounts an admin has authorized to send email
     # from the shared founders address via /outreach. `name` is the public
     # account name in plaintext (like users.username) so the roster is listable
@@ -1393,6 +1407,39 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (contribution_id, intent_id))""",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_reward_contribution_intent_id "
     "ON reward_contribution_intents(intent_id)",
+    # World store element purchases. Public data only: a per-purchase Solana
+    # Pay reference address, the buyer's own finalized transfer signature, and
+    # the half owed to online mirror nodes. The purchased element itself is
+    # granted on the account record; no deposit wallet or key is ever created.
+    """CREATE TABLE IF NOT EXISTS world_element_purchases (
+        purchase_id TEXT PRIMARY KEY,
+        account_bi TEXT NOT NULL,
+        element_id TEXT NOT NULL,
+        amount_lamports INTEGER NOT NULL,
+        treasury_lamports INTEGER NOT NULL DEFAULT 0,
+        mirror_lamports INTEGER NOT NULL DEFAULT 0,
+        reference_address TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'prepared',
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        tx_signature TEXT NOT NULL DEFAULT '',
+        source_address TEXT NOT NULL DEFAULT '',
+        confirmed_at INTEGER NOT NULL DEFAULT 0,
+        distribution_intent_id TEXT NOT NULL DEFAULT '',
+        method TEXT NOT NULL DEFAULT 'direct',
+        deposit_address TEXT NOT NULL DEFAULT '',
+        deposit_secret TEXT NOT NULL DEFAULT '',
+        sweep_signature TEXT NOT NULL DEFAULT '',
+        sweep_at INTEGER NOT NULL DEFAULT 0,
+        sweep_error TEXT NOT NULL DEFAULT '')""",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_deposit "
+    "ON world_element_purchases(status, method, expires_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_world_element_purchase_signature "
+    "ON world_element_purchases(tx_signature) WHERE tx_signature<>''",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_account "
+    "ON world_element_purchases(account_bi, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_status "
+    "ON world_element_purchases(status, created_at)",
     # External provider entries are intentionally separate from `repositories`:
     # an imported metadata record or stub can never be routed as a live mirror.
     # The encrypted data blob carries public/private provider metadata; the

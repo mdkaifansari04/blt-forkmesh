@@ -1058,6 +1058,21 @@ int main(int argc, char *argv[])
               QStringLiteral("nodesUpdateAllBinaryButton")) != nullptr,
           QStringLiteral("Nodes offers a fleet-wide binary update action"));
 
+    // A registered account name is never a machine-node name.  In particular,
+    // a stale online presence for "jett" must not re-add the user to any node
+    // surface; the linked machine remains available instead.
+    window.testSetDirectoryUserNodes(QStringLiteral("jett"),
+                                     {QStringLiteral("jett-mirror")});
+    window.testSetRoster(
+        {testMember(QStringLiteral("jett-session"), QStringLiteral("jett"))});
+    window.testShowNodesSection();
+    const QStringList nodesAfterUserPresence = window.testNodeDirectoryNames();
+    check(!nodesAfterUserPresence.contains(QStringLiteral("jett"),
+                                           Qt::CaseInsensitive) &&
+              nodesAfterUserPresence.contains(QStringLiteral("jett-mirror"),
+                                              Qt::CaseInsensitive),
+          QStringLiteral("a directory user is never classified as a node"));
+
     // adhoc #129: a public room (#general) is open to every registered account,
     // so its users popup lists the whole database directory — not just the
     // handful of accounts that happen to be online right now.
@@ -1393,24 +1408,26 @@ int main(int argc, char *argv[])
     // real PR and Agents controls only after taking that user-visible path,
     // keeping the startup performance contract intact.
     // adhoc #7: the PR header's conflict action is a plain "Fix" that fills the
-    // prompt box — no provider dropdown to pick a resolver from — and the whole
-    // header row wears the same flat rail style (no filled primary pills).
+    // prompt box — no provider dropdown to pick a resolver from. adhoc #59: the
+    // whole header row is icon-over-caption rail tiles ("repoActionStack"), the
+    // same form as the activity rail, instead of a mix of pill shapes.
     bool prFixButtonFound = false;
     bool prHeaderStyleUniform = true;
     for (QPushButton *b : window.findChildren<QPushButton *>()) {
         if (b->text() == QStringLiteral("Fix") && !b->menu())
             prFixButtonFound = true;
-        if (b->text() == QStringLiteral("Review with AI") ||
-            b->text() == QStringLiteral("Fix all with AI") ||
+        if (b->text() == QStringLiteral("AI review") ||
+            b->text() == QStringLiteral("Fix all") ||
             b->text() == QStringLiteral("Merge") ||
-            b->text() == QStringLiteral("Fix conflicts with agent"))
-            prHeaderStyleUniform &= b->objectName() == QStringLiteral("ghostButton");
+            b->text() == QStringLiteral("Agent fix"))
+            prHeaderStyleUniform &=
+                b->objectName() == QStringLiteral("repoActionStack");
     }
     check(prFixButtonFound,
           QStringLiteral("PR header offers a plain 'Fix' button with no provider "
                          "dropdown after repository navigation"));
     check(prHeaderStyleUniform,
-          QStringLiteral("PR header actions all use the flat ghostButton style"));
+          QStringLiteral("PR header actions all use the rail-style icon tile"));
     // The Agents tab is built when it's first opened, and a repo no longer opens
     // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
     // before reading its list back. This also proves that route works for a repo
@@ -1558,6 +1575,13 @@ int main(int argc, char *argv[])
                   .arg(looperGap)
                   .arg(looperAligned)
                   .arg(navTrailingGap));
+        // Adhoc #421: the left rail's first icon sits on the tab row's icon
+        // line, so the two rows of glyphs read as one horizontal band.
+        const int railSkew = window.testRailTabIconLineSkew();
+        check(qAbs(railSkew) <= 1,
+              QString("the activity rail's icons line up with the repo tab "
+                      "row's (skew=%1px)")
+                  .arg(railSkew));
 
     // Issue #207: the commit detail page must expose a restore/revert action
     // beside the destructive delete-history action.
@@ -2168,6 +2192,100 @@ int main(int argc, char *argv[])
                       "on main (status = %1, stash = %2)")
                   .arg(restoredStatus,
                        gitOutput(wtPath, {"stash", "list"})));
+        // Advance main again and suppress the automatic path for this one view,
+        // so the actual toolbar button has to perform the update. This catches
+        // the manual route passing m_branchDiffBranch by reference across
+        // event-pumping Git calls.
+        QFile manualPullFile(wtRepo.path() + QStringLiteral("/manual-pull.txt"));
+        if (manualPullFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            manualPullFile.write("arrived through Pull main\n");
+            manualPullFile.close();
+        }
+        runGitChecked(wtRepo.path(), {"add", "manual-pull.txt"});
+        runGitChecked(wtRepo.path(), {"commit", "-m", "advance main for manual pull"});
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        window.testSuppressAutoPullForBranch(
+            QStringLiteral("feature/keep-selected"));
+        QElapsedTimer pullButtonTimer;
+        pullButtonTimer.start();
+        while (pullButtonTimer.elapsed() < 5000 &&
+               !window.testBranchPullEnabled())
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        const bool pullButtonClicked = window.testClickBranchPull();
+        QApplication::processEvents();
+        const QString manualPullCounts = gitOutput(
+            wtRepo.path(),
+            {"rev-list", "--left-right", "--count",
+             "main...feature/keep-selected"});
+        check(pullButtonClicked && manualPullCounts.startsWith(QLatin1Char('0')) &&
+                  QFileInfo::exists(wtPath + QStringLiteral("/manual-pull.txt")),
+              QString("Pull main button updates the linked branch it was clicked "
+                      "for (clicked = %1, main...branch = %2, file = %3)")
+                  .arg(pullButtonClicked)
+                  .arg(manualPullCounts)
+                  .arg(QFileInfo::exists(
+                           wtPath + QStringLiteral("/manual-pull.txt"))));
+
+        // If main edits the exact same hunk as an agent's uncommitted change,
+        // Git can finish the merge and only then fail while reapplying its
+        // autostash. Pull main is transactional: it must roll the branch back
+        // and restore the original edit instead of leaving a broad conflicted /
+        // staged worktree that later inflates every agent badge.
+        const QString beforeConflictHead =
+            gitOutput(wtPath, {"rev-parse", "HEAD"}).trimmed();
+        {
+            QFile mainShared(wtRepo.path() +
+                             QStringLiteral("/auto-stash-overlap.txt"));
+            mainShared.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            for (int i = 1; i <= 12; ++i)
+                mainShared.write((i == 1 ? QByteArray("main changed line 1\n")
+                                          : i == 12
+                                                ? QByteArray("main changed line 12\n")
+                                                : QStringLiteral("line %1\n")
+                                                      .arg(i)
+                                                      .toUtf8()));
+            mainShared.close();
+        }
+        runGitChecked(wtRepo.path(), {"add", "auto-stash-overlap.txt"});
+        runGitChecked(wtRepo.path(),
+                      {"commit", "-m", "main overlaps protected agent edit"});
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        window.testSuppressAutoPullForBranch(
+            QStringLiteral("feature/keep-selected"));
+        QElapsedTimer conflictPullTimer;
+        conflictPullTimer.start();
+        while (conflictPullTimer.elapsed() < 5000 &&
+               !window.testBranchPullEnabled())
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        const bool conflictPullClicked = window.testClickBranchPull();
+        QApplication::processEvents();
+        QFile rolledBackShared(wtPath +
+                               QStringLiteral("/auto-stash-overlap.txt"));
+        rolledBackShared.open(QIODevice::ReadOnly);
+        const QByteArray rolledBackText = rolledBackShared.readAll();
+        const QString afterConflictHead =
+            gitOutput(wtPath, {"rev-parse", "HEAD"}).trimmed();
+        const QString conflictPullCounts = gitOutput(
+            wtRepo.path(),
+            {"rev-list", "--left-right", "--count",
+             "main...feature/keep-selected"});
+        const QString unmergedAfterRollback =
+            gitOutput(wtPath, {"diff", "--name-only", "--diff-filter=U"});
+        check(conflictPullClicked && afterConflictHead == beforeConflictHead &&
+                  conflictPullCounts.startsWith(QLatin1Char('1')) &&
+                  rolledBackText.contains("agent changed line 1\n") &&
+                  !rolledBackText.contains("main changed line 1\n") &&
+                  unmergedAfterRollback.trimmed().isEmpty() &&
+                  gitOutput(wtPath, {"stash", "list"}).isEmpty(),
+              QString("Pull main rolls back an autostash overlap without "
+                      "polluting the agent worktree (clicked=%1 head=%2/%3 "
+                      "counts=%4 unmerged=%5 stash=%6)")
+                  .arg(conflictPullClicked)
+                  .arg(afterConflictHead, beforeConflictHead, conflictPullCounts,
+                       unmergedAfterRollback,
+                       gitOutput(wtPath, {"stash", "list"})));
         // Now that automatic synchronization has completed, introduce the
         // staged deletion and re-open the same branch. This isolates the diff
         // regression without making the earlier pull test reject a dirty tree.
@@ -2296,6 +2414,67 @@ int main(int argc, char *argv[])
                       "(branch = %1, page = %2)")
                   .arg(window.testBrowsedBranch())
                   .arg(window.testCommitWorkspacePage()));
+
+        // adhoc #50: the trail reaches below the tab bar. A commit's diff and an
+        // open file are places of their own, so Back returns to the list they
+        // were opened from instead of jumping a whole tab away.
+        const QString navCommit =
+            gitOutput(wtRepo.path(), {"rev-parse", "main"}).trimmed();
+        window.testShowCommit(navCommit);
+        QApplication::processEvents();
+        check(window.testOpenCommitHash() == navCommit,
+              QStringLiteral("opening a commit shows its diff in the Git view"));
+        check(window.testNavBackToolTip().contains(QStringLiteral("Git · main")),
+              QString("Back out of a commit is identified as the Git view it came "
+                      "from (%1)")
+                  .arg(window.testNavBackToolTip()));
+        window.testNavigateBack();
+        QApplication::processEvents();
+        check(window.testOpenCommitHash().isEmpty() &&
+                  window.testCommitWorkspacePage() == 0,
+              QString("Back steps out of a commit diff to the Git view "
+                      "(commit = %1, page = %2)")
+                  .arg(window.testOpenCommitHash())
+                  .arg(window.testCommitWorkspacePage()));
+        check(window.testNavForwardToolTip().contains(navCommit.left(7)),
+              QString("Forward names the commit it would reopen (%1)")
+                  .arg(window.testNavForwardToolTip()));
+        window.testNavigateForward();
+        QApplication::processEvents();
+        check(window.testOpenCommitHash() == navCommit,
+              QString("Forward reopens the commit's diff (commit = %1)")
+                  .arg(window.testOpenCommitHash()));
+
+        window.testOpenRepoFile(QStringLiteral("base-delete.txt"));
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 1 &&
+                  window.testOpenRepoFilePath() ==
+                      QStringLiteral("base-delete.txt"),
+              QString("opening a file shows it in the Code editor (page = %1, "
+                      "file = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenRepoFilePath()));
+        check(window.testNavBackToolTip().contains(navCommit.left(7)),
+              QString("Back from an open file returns to the commit it was "
+                      "opened from (%1)")
+                  .arg(window.testNavBackToolTip()));
+        window.testNavigateBack();
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 0 &&
+                  window.testOpenCommitHash() == navCommit,
+              QString("Back leaves the file editor for the previous place "
+                      "(page = %1, commit = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenCommitHash()));
+        window.testNavigateForward();
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 1 &&
+                  window.testOpenRepoFilePath() ==
+                      QStringLiteral("base-delete.txt"),
+              QString("Forward reopens the file that was on screen (page = %1, "
+                      "file = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenRepoFilePath()));
         QFile::remove(livePath);
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
@@ -2409,10 +2588,13 @@ int main(int argc, char *argv[])
         issueSession.baseBranch = QStringLiteral("main");
         issueSession.baseRef = agentRouteBaseRef;
         window.testAddAgentSession(issueSession);
+        // Model the intermittent stale list badge from the report. The live
+        // branch review below must reconcile it to the exact rendered set.
+        window.testSetCachedAgentDiffFiles(issueSession.id, 3);
 
         // adhoc #131: the agent detail page's "Branch" button opens that session's
-        // diff against main without repointing the graph below it. The sessions
-        // list is global, so the click still has to bind the Git view to the
+        // branch and diff against main. The sessions list is global, so the click
+        // still has to bind the Git view to the
         // session's own repository first; from another repo's detail page it
         // would otherwise render that repo's (missing) branch. Park the detail
         // view on "me/r", then take the route for the session on "me/wtrepo".
@@ -2426,10 +2608,10 @@ int main(int argc, char *argv[])
                       "session's repository (adhoc #131, git dir = %1)")
                   .arg(agentBranchDir));
         check(window.testCommitWorkspacePage() == 2 &&
-                  window.testBrowsedBranch() == QStringLiteral("main") &&
+                  window.testBrowsedBranch() == agentRouteBranch &&
                   window.testBranchDiffBranch() == agentRouteBranch,
-              QString("the agent's Branch button reviews its range without "
-                      "moving the graph off main (page = %1, graph = %2, diff = %3)")
+              QString("the agent's Branch button binds the graph and range to "
+                      "the same branch (page = %1, graph = %2, diff = %3)")
                   .arg(window.testCommitWorkspacePage())
                   .arg(window.testBrowsedBranch(), window.testBranchDiffBranch()));
         check(window.testGitFilesSlotPage() == 0 &&
@@ -2442,8 +2624,10 @@ int main(int argc, char *argv[])
         QElapsedTimer agentDiffTimer;
         agentDiffTimer.start();
         while (agentDiffTimer.elapsed() < 5000 &&
-               !window.testSourceControlPaths().contains(
-                   QStringLiteral("agent-live.txt")))
+               (!window.testSourceControlPaths().contains(
+                    QStringLiteral("agent-live.txt")) ||
+                window.testCachedAgentDiffFiles(issueSession.id) !=
+                    window.testSourceControlPaths().size()))
             QApplication::processEvents(QEventLoop::AllEvents, 20);
         check(window.testSourceControlPaths().contains(
                   QStringLiteral("agent-live.txt")),
@@ -2454,6 +2638,10 @@ int main(int argc, char *argv[])
               QString("an agent's Branch button always compares against main "
                       "(base = %1)")
                   .arg(window.testCompareIndicatorText()));
+        check(window.testComparedBranchText() == agentRouteBranch,
+              QString("an agent review names the agent branch on the left instead "
+                      "of displaying main -> main (left = %1)")
+                  .arg(window.testComparedBranchText()));
         bool containsPrimaryChange = false;
         for (const QString &path : window.testSourceControlPaths()) {
             if (path.startsWith(QStringLiteral("main-only/primary-unrelated-"))) {
@@ -2466,6 +2654,12 @@ int main(int argc, char *argv[])
               QString("an agent branch excludes the primary checkout's 23 unrelated "
                       "changes (files = %1)")
                   .arg(window.testSourceControlPaths().join(QStringLiteral(", "))));
+        check(window.testCachedAgentDiffFiles(issueSession.id) ==
+                  window.testSourceControlPaths().size(),
+              QString("opening an agent branch self-heals a stale 3-file badge to "
+                      "the live rendered count (badge = %1, files = %2)")
+                  .arg(window.testCachedAgentDiffFiles(issueSession.id))
+                  .arg(window.testSourceControlPaths().size()));
         QElapsedTimer agentPullTimer;
         agentPullTimer.start();
         QString agentPullCounts;
@@ -2722,10 +2916,14 @@ int main(int argc, char *argv[])
         auto *repoLinesChart = seeded.findChild<QWidget *>(QStringLiteral("repoLinesChart"));
         auto *repoFilesChart = seeded.findChild<QWidget *>(QStringLiteral("repoFilesChart"));
         auto *ratchet = seeded.findChild<QToolButton *>(QStringLiteral("repoRatchetButton"));
+        // Adhoc #421: the day trends are drawn at the same 34px side as the
+        // window chrome's CPU/MEM/DISK squares instead of a size larger, and
+        // the Ratchet toggle reads "Ratchet" under an icon.
         check(repoSizeChart && repoLinesChart && repoFilesChart && ratchet &&
-                  repoSizeChart->width() > 34 && repoLinesChart->width() > 34 &&
-                  repoFilesChart->width() > 34 && ratchet->isCheckable(),
-              QStringLiteral("repository trends and Ratchet Mode live in the top bar"));
+                  repoSizeChart->width() == 34 && repoLinesChart->width() == 34 &&
+                  repoFilesChart->width() == 34 && ratchet->isCheckable() &&
+                  ratchet->text() == QStringLiteral("Ratchet"),
+              QStringLiteral("repository trends and Ratchet live in the top bar"));
         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.
@@ -3240,6 +3438,101 @@ int main(int argc, char *argv[])
                   QStringLiteral("agent/issue-291-unrelated")),
               QStringLiteral("merging an unrelated branch flags no agent session "
                              "(issue #291)"));
+    }
+
+    // The top bar's search box searches the page in front of you: on the Agents
+    // tab it narrows the session list as each character lands, matches sessions on
+    // what their transcripts say (not just their prompt), and drives the open
+    // session's transcript search so hits highlight in place.
+    {
+        window.testOpenRepository(repoIdx); // "me/r", the Agents tab's repo
+        window.testOpenAgentsOverview();
+        QApplication::processEvents();
+
+        AgentSession titled;
+        titled.id = 7401;
+        titled.owner = QStringLiteral("me");
+        titled.name = QStringLiteral("r");
+        titled.issueTitle =
+            QStringLiteral("only seeing recovery pings, want failure pings too");
+        titled.status = AgentStatus::Success;
+        window.testAddAgentSession(titled);
+
+        AgentSession quiet;
+        quiet.id = 7402;
+        quiet.owner = QStringLiteral("me");
+        quiet.name = QStringLiteral("r");
+        quiet.issueTitle = QStringLiteral("tidy the release checklist");
+        quiet.status = AgentStatus::Success;
+        window.testAddAgentSession(quiet);
+        // Only this session's transcript mentions the query; its title does not.
+        window.testAppendAgentTranscript(
+            quiet.id, QStringLiteral("checked the recovery ping path first"));
+
+        AgentSession silent;
+        silent.id = 7403;
+        silent.owner = QStringLiteral("me");
+        silent.name = QStringLiteral("r");
+        silent.issueTitle = QStringLiteral("bump the icon cache");
+        silent.status = AgentStatus::Success;
+        window.testAddAgentSession(silent);
+
+        // Typing up top filters the list below straight away — no Enter, and no
+        // waiting on the dropdown's debounce.
+        window.testTypeGlobalSearch(QStringLiteral("recovery"));
+        QApplication::processEvents();
+        check(window.testAgentSearchText() == QStringLiteral("recovery"),
+              QString("the top-bar search mirrors into the Agents page's own "
+                      "filter (got \"%1\")")
+                  .arg(window.testAgentSearchText()));
+        check(window.testTranscriptSearchText() == QStringLiteral("recovery"),
+              QString("the same query drives the open session's transcript "
+                      "search (got \"%1\")")
+                  .arg(window.testTranscriptSearchText()));
+        QStringList titles = window.testAgentRowTitles();
+        check(titles.size() == 1 && titles.first().contains(
+                  QStringLiteral("only seeing recovery pings")),
+              QString("the list is narrowed to the session whose title matches "
+                      "(rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+
+        // The transcript scan is debounced off the GUI thread; run it now and let
+        // its result land. The session that only ever said "recovery" mid-run
+        // joins the list, and says how many times it was found.
+        window.testRunAgentTranscriptSearch();
+        QElapsedTimer transcriptSearchTimer;
+        transcriptSearchTimer.start();
+        while (transcriptSearchTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            titles = window.testAgentRowTitles();
+            if (titles.size() == 2)
+                break;
+        }
+        const QString transcriptRow = titles.filter(
+            QStringLiteral("release checklist")).value(0);
+        check(titles.size() == 2 && !transcriptRow.isEmpty(),
+              QString("a session whose transcript holds the query stays in the "
+                      "list even though its title does not (rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+        check(transcriptRow.contains(QStringLiteral("1 in transcript")),
+              QString("the row says the match came from the transcript (got "
+                      "\"%1\")")
+                  .arg(transcriptRow));
+        check(!titles.join(QLatin1Char(' ')).contains(
+                  QStringLiteral("icon cache")),
+              QString("a session that matches neither title nor transcript stays "
+                      "filtered out (rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+
+        // Clearing the top bar hands the whole list back.
+        window.testTypeGlobalSearch(QString());
+        QApplication::processEvents();
+        titles = window.testAgentRowTitles();
+        check(window.testAgentSearchText().isEmpty() && titles.size() >= 3,
+              QString("clearing the top-bar search unfilters the session list "
+                      "(filter \"%1\", %2 rows)")
+                  .arg(window.testAgentSearchText())
+                  .arg(titles.size()));
     }
 
     // adhoc #15: the network log renders only its newest segment up front, and

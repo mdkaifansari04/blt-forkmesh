@@ -11,6 +11,8 @@
 #include "PacmanProgress.h"
 
 #include <QComboBox>
+#include <QPointer>
+#include <QQueue>
 #include <QTimer>
 
 #include <algorithm>
@@ -482,32 +484,138 @@ QWidget *MainWindow::buildWorktreesTab()
     return page;
 }
 
-void MainWindow::runGitDetached(const QString &dir, const QStringList &args,
-                                std::function<void(bool, const QByteArray &)> onDone)
+namespace {
+
+// Callers fan this helper out per row, so the number of children it wants to run
+// at once scales with the repo rather than with the machine: the worktrees panel
+// starts two reads per worktree and a checkout that hosts an agent per branch
+// carries well over a hundred of them. Every live QProcess costs descriptors (a
+// pipe per standard channel plus the child watcher), so an unbounded fan-out
+// walks straight through the 1024-descriptor soft limit and the whole process
+// starts failing with "QProcess: Cannot create pipe (Too many open files)" —
+// including work that has nothing to do with git, such as the age/tar pipeline
+// behind the encrypted public mirror. Cap what is in flight and queue the rest;
+// every callback here already re-checks generation counters and widget pointers
+// before touching the UI, so a read that starts late is safe.
+constexpr int kMaxDetachedGitInFlight = 12;
+
+// Nothing this helper runs is interactive, so a read still going after a minute
+// is wedged rather than slow (a stale index.lock, an unreachable remote). Kill
+// it so one hung child can't hold a queue slot — and its descriptors — for the
+// rest of the session.
+constexpr int kDetachedGitTimeoutMs = 60000;
+
+struct DetachedGitRequest {
+    QPointer<MainWindow> window;
+    QString dir;
+    QStringList args;
+    std::function<void(bool, const QByteArray &)> onDone;
+};
+
+int g_detachedGitInFlight = 0;
+QQueue<DetachedGitRequest> g_detachedGitQueue;
+
+// Releases the queue slot from a destructor instead of a signal. MainWindow
+// teardown severs every signal of every QProcess descendant before ~QWidget
+// deletes them (the finished()-into-a-half-destroyed-window crash, adhoc #51),
+// destroyed() included — so slot bookkeeping that rides a connection is skipped
+// exactly there and the cap stays shrunken for any later window. A child object
+// is deleted by ~QProcess whatever the connections look like.
+class DetachedGitSlot : public QObject
 {
-    auto *git = new QProcess(this);
-    if (!dir.isEmpty())
-        git->setWorkingDirectory(dir);
+public:
+    DetachedGitSlot(QProcess *process, std::shared_ptr<bool> done)
+        : QObject(process), m_done(std::move(done))
+    {
+    }
+
+    ~DetachedGitSlot() override
+    {
+        if (*m_done)
+            return;
+        *m_done = true;
+        --g_detachedGitInFlight;
+    }
+
+private:
+    std::shared_ptr<bool> m_done;
+};
+
+void startDetachedGit(DetachedGitRequest request);
+
+void pumpDetachedGitQueue()
+{
+    while (g_detachedGitInFlight < kMaxDetachedGitInFlight &&
+           !g_detachedGitQueue.isEmpty()) {
+        DetachedGitRequest request = g_detachedGitQueue.dequeue();
+        if (!request.window)
+            continue; // the window closed while this read waited its turn
+        startDetachedGit(std::move(request));
+    }
+}
+
+void startDetachedGit(DetachedGitRequest request)
+{
+    const QPointer<MainWindow> window = request.window;
+    auto *git = new QProcess(window);
+    if (!request.dir.isEmpty())
+        git->setWorkingDirectory(request.dir);
+    ++g_detachedGitInFlight;
     // FailedToStart fires errorOccurred but not finished, and a crash fires both,
     // so guard the callback so it runs exactly once whichever way the process ends.
     auto done = std::make_shared<bool>(false);
-    auto finish = [git, done, onDone = std::move(onDone)](bool ok) {
+    auto finish = [git, done, window, onDone = std::move(request.onDone)](bool ok) {
         if (*done)
             return;
         *done = true;
-        if (onDone)
-            onDone(ok, git->readAllStandardOutput());
+        --g_detachedGitInFlight;
+        const QByteArray out = git->readAllStandardOutput();
         git->deleteLater();
+        if (onDone) {
+            // finished() is delivered by whatever is turning the event loop —
+            // including the keep-alive pump inside another (synchronous) git
+            // read. Running a handler there nests it inside the pass that is
+            // already mid-flight, so both freezes add up into one; re-post it so
+            // it gets its own top-level turn instead (see GuiPump.h).
+            if (forkmesh::ui::inKeepAlivePump() && window)
+                QTimer::singleShot(0, window, [onDone, ok, out] { onDone(ok, out); });
+            else
+                onDone(ok, out);
+        }
+        // Start the next queued read last: onDone may enqueue follow-up work of
+        // its own, and running the pump after it keeps the queue FIFO.
+        pumpDetachedGitQueue();
     };
-    connect(git, &QProcess::finished, this,
-            [finish](int code, QProcess::ExitStatus st) {
-                finish(st == QProcess::NormalExit && code == 0);
-            });
-    connect(git, &QProcess::errorOccurred, this,
-            [finish](QProcess::ProcessError) { finish(false); });
+    // Teardown destroys the QProcess children without either signal firing; drop
+    // the slot then too so a reopened window doesn't inherit a shrunken cap.
+    new DetachedGitSlot(git, done);
+    QObject::connect(git, &QProcess::finished, window,
+                     [finish](int code, QProcess::ExitStatus st) {
+                         finish(st == QProcess::NormalExit && code == 0);
+                     });
+    QObject::connect(git, &QProcess::errorOccurred, window,
+                     [finish](QProcess::ProcessError) { finish(false); });
+    QTimer::singleShot(kDetachedGitTimeoutMs, git, [git] {
+        if (git->state() != QProcess::NotRunning)
+            git->kill(); // finished() follows and releases the slot
+    });
     trackProcessActivity(git, QStringLiteral("git"),
-                         QStringLiteral("git ") + args.join(QLatin1Char(' ')));
-    git->start(QStringLiteral("git"), args);
+                         QStringLiteral("git ") +
+                             request.args.join(QLatin1Char(' ')));
+    git->start(QStringLiteral("git"), request.args);
+    // These reads never feed the child stdin; closing the channel now returns a
+    // descriptor per in-flight process instead of holding it open until exit.
+    git->closeWriteChannel();
+}
+
+} // namespace
+
+void MainWindow::runGitDetached(const QString &dir, const QStringList &args,
+                                std::function<void(bool, const QByteArray &)> onDone)
+{
+    g_detachedGitQueue.enqueue(
+        DetachedGitRequest{this, dir, args, std::move(onDone)});
+    pumpDetachedGitQueue();
 }
 
 void MainWindow::focusRepoDetailTable(int id)
@@ -884,7 +992,7 @@ void MainWindow::switchToWorktree(const QString &branch)
 // both ends are switchable (the branch button's dropdown, the base button's).
 // The Branches panel's refresh below keeps its rows in step and reports a
 // branch that doesn't exist (adhoc #185/#420).
-void MainWindow::switchToBranch(const QString &branch)
+void MainWindow::switchToBranch(const QString &branch, int agentSessionId)
 {
     // setRepoBranch below reassigns m_repoBranch, which some callers pass in by
     // reference — copy before the string underneath us can change.
@@ -910,12 +1018,13 @@ void MainWindow::switchToBranch(const QString &branch)
     }
     if (target.isEmpty() || target == base) {
         // The base has no range against itself: plain working-tree view.
+        m_branchDiffAgentSessionId = -1;
         setCommitWorkspacePage(kCommitWorkspaceChangesPage);
     } else {
         // Compare against the base on the right pane (merge/PR toolbar
         // included), with the left column's CHANGES + graph staying put.
         setCommitWorkspacePage(kCommitWorkspaceRangePage);
-        showBranchDiff(target);
+        showBranchDiff(target, agentSessionId);
         // Ctrl+F and the scroll-driven tools act on the diff from the first key.
         if (m_branchDiffView)
             m_branchDiffView->setFocus();
@@ -962,7 +1071,7 @@ void MainWindow::setBranchCompareBase(const QString &base)
     }
     setCommitWorkspacePage(kCommitWorkspaceRangePage);
     m_branchDiffPullNumber = -1; // a base change leaves PR mode
-    showBranchDiff(branch);
+    showBranchDiff(branch, m_branchDiffAgentSessionId);
 }
 
 // Leave the compare view entirely: working-tree diff on the right pane, graph
@@ -1216,6 +1325,15 @@ QString MainWindow::testCompareIndicatorText() const
     return m_commitsCompareBaseButton->text();
 }
 
+QString MainWindow::testComparedBranchText() const
+{
+    if (!m_commitsBranchButton)
+        return QString();
+    if (auto *elider = dynamic_cast<ElidingPushButton *>(m_commitsBranchButton))
+        return elider->fullText();
+    return m_commitsBranchButton->text();
+}
+
 void MainWindow::testSetCompareBase(const QString &base)
 {
     setBranchCompareBase(base);
@@ -1235,6 +1353,19 @@ bool MainWindow::testClickBranchReviewMerge(bool deleteAll)
     if (!button->isEnabled())
         return false;
     button->click();
+    return true;
+}
+
+bool MainWindow::testBranchPullEnabled() const
+{
+    return m_branchPullButton && m_branchPullButton->isEnabled();
+}
+
+bool MainWindow::testClickBranchPull()
+{
+    if (!testBranchPullEnabled())
+        return false;
+    m_branchPullButton->click();
     return true;
 }
 #endif
@@ -2730,8 +2861,12 @@ QWidget *MainWindow::buildBranchRangePane()
     setOcticon(m_branchPullButton, "download", 14);
     m_branchPullButton->setEnabled(false);
     connect(m_branchPullButton, &QPushButton::clicked, this, [this] {
-        if (!m_branchDiffBranch.isEmpty())
-            updateBranchFromBase(m_branchDiffBranch);
+        // Copy before Git starts: runGitCapture pumps the event loop, and a
+        // navigation callback can replace m_branchDiffBranch while this click is
+        // still updating. The button must finish the branch it was clicked for.
+        const QString branch = m_branchDiffBranch;
+        if (!branch.isEmpty())
+            updateBranchFromBase(branch);
     });
 
     // Fix with agent: only relevant when the selected branch conflicts with base,
@@ -3811,7 +3946,10 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
     // onto whatever branch the table happens to select (e.g. the checked-out
     // fallback after a not-found report).
     if (!target.isEmpty() && target == m_branchDiffBranch)
-        showBranchDiff(target);
+        // Preserve the session attachment. Dropping it during an incidental
+        // Branches-table rebuild meant the opened diff could no longer
+        // reconcile that agent's badge to the exact file set it rendered.
+        showBranchDiff(target, m_branchDiffAgentSessionId);
 }
 
 void MainWindow::promptNewBranch()
@@ -4498,11 +4636,12 @@ QString MainWindow::branchWorkDir(const QString &branch) const
     return QString();
 }
 
-void MainWindow::showBranchDiff(const QString &branch)
+void MainWindow::showBranchDiff(const QString &branch, int agentSessionId)
 {
     if (!m_branchDiffView)
         return;
     m_branchDiffBranch = branch;
+    m_branchDiffAgentSessionId = agentSessionId;
     updateCommitsCompareIndicator(); // "<branch> -> <base>" on the branch row
     // Fills in the detail bar (and, once it knows the branch is behind and
     // conflict-free, kicks off the auto-pull) from a worker thread — see
@@ -4560,6 +4699,7 @@ void MainWindow::renderBranchScopeDiff()
     // ("pull/<N>"), so a file checked off in either place stays checked in both
     // (adhoc #107).
     const int pullNumber = m_branchDiffPullNumber;
+    const int agentSessionId = m_branchDiffAgentSessionId;
     const int gen = ++m_branchScopeDiffGen;
     struct ScopeDiff {
         bool ok = true;
@@ -4600,7 +4740,7 @@ void MainWindow::renderBranchScopeDiff()
             }
             return r;
         },
-        [this, gen, branch](ScopeDiff r) {
+        [this, gen, branch, agentSessionId](ScopeDiff r) {
             // Dropped if the branch changed while the read was in flight.
             if (gen != m_branchScopeDiffGen || !m_branchDiffView ||
                 m_branchDiffBranch != branch)
@@ -4617,6 +4757,21 @@ void MainWindow::renderBranchScopeDiff()
             m_branchDiffLastValid = true;
             renderBranchDiffPatch(QString::fromUtf8(r.out), r.emptyMessage,
                                   r.viewedContext);
+            // The list refresh and this click are separated by asynchronous Git
+            // reads, so the branch may have moved in between. Reconcile the
+            // badge to the exact live file set just rendered; removing its
+            // fingerprint also makes the next ordinary Agents refresh fully
+            // revalidate line churn and branch health.
+            if (agentSessionId > 0 &&
+                m_branchDiffAgentSessionId == agentSessionId) {
+                AgentDiffStat stat = m_agentDiffStats.value(agentSessionId);
+                if (stat.files != m_branchDiffFilePaths.size()) {
+                    stat.files = m_branchDiffFilePaths.size();
+                    m_agentDiffStats.insert(agentSessionId, stat);
+                    m_agentDiffSig.remove(agentSessionId);
+                    refreshAgentTable();
+                }
+            }
         });
 }
 
@@ -4774,8 +4929,10 @@ void MainWindow::createPullFromBranch(const QString &branch)
 void MainWindow::updateBranchFromBase(const QString &branch)
 {
     const QString dir = repoGitDir();
-    const QStringList branches = repoBranches();
-    const QString base = repoDefaultBranch(branches);
+    // The detail bar already resolved the repository's default branch. Reuse
+    // the same non-blocking answer instead of listing every ref again inside a
+    // button click (that Git read pumps events before the target is validated).
+    const QString base = repoDefaultBranchFast();
     if (branch.isEmpty() || branch == base || dir.isEmpty())
         return;
     if (!repoHasWorkingTree()) {
@@ -4828,10 +4985,39 @@ void MainWindow::updateBranchFromBase(const QString &branch)
             return;
         }
 
+        QByteArray existingUnmerged;
+        if (runGitCapture(linkedWorktree,
+                          {"diff", "--name-only", "--diff-filter=U"},
+                          &existingUnmerged, nullptr) &&
+            !existingUnmerged.trimmed().isEmpty()) {
+            setRepoDetailNotice(
+                QStringLiteral("%1 already has unresolved local files; resolve "
+                               "them before updating from %2.")
+                    .arg(branch, base),
+                true);
+            return;
+        }
+
         QByteArray beforeStatus;
         runGitCapture(linkedWorktree, {"status", "--porcelain"}, &beforeStatus,
                       nullptr);
         const bool protectedLocalEdits = !beforeStatus.trimmed().isEmpty();
+        QByteArray beforeHeadOut;
+        if (!runGitCapture(linkedWorktree, {"rev-parse", "HEAD"}, &beforeHeadOut,
+                           nullptr) ||
+            beforeHeadOut.trimmed().isEmpty()) {
+            setRepoDetailNotice(
+                QStringLiteral("Couldn't identify %1's current commit before "
+                               "updating it from %2.")
+                    .arg(branch, base),
+                true);
+            return;
+        }
+        const QString beforeHead = QString::fromUtf8(beforeHeadOut).trimmed();
+        QByteArray beforeStashOut;
+        runGitCapture(linkedWorktree,
+                      {"rev-parse", "-q", "--verify", "refs/stash"},
+                      &beforeStashOut, nullptr);
         QString worktreeError;
         if (!runGitCapture(linkedWorktree,
                            {"merge", "--autostash", "--no-edit", base}, nullptr,
@@ -4859,34 +5045,86 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         }
 
         // A merge can return success after advancing the branch but still leave
-        // conflicts while reapplying the autostash. Nothing was lost: Git keeps
-        // the autostash, and the toolbar exposes a one-click conflict editor that
-        // resolves the worktree while leaving the agent's edits uncommitted.
+        // conflicts while reapplying the autostash. Treat the whole operation as
+        // transactional: put the branch back at its original commit and reapply
+        // the retained autostash there. That prevents one attempted update from
+        // turning a clean, small agent branch into a worktree containing a broad
+        // staged/conflicted snapshot of main.
         QByteArray unmerged;
         const bool restoreConflict =
             runGitCapture(linkedWorktree,
                           {"diff", "--name-only", "--diff-filter=U"}, &unmerged,
                           nullptr) &&
             !unmerged.trimmed().isEmpty();
-        logSystem(QStringLiteral("Git: merged %1 into %2 in its linked worktree.")
-                      .arg(base, branch));
         if (restoreConflict) {
             const int count = QString::fromUtf8(unmerged)
                                   .split('\n', Qt::SkipEmptyParts)
                                   .size();
-            logSystem(
-                QStringLiteral("Git: %1 local file(s) need resolution after "
-                               "restoring %2's protected edits; autostash retained.")
-                    .arg(count)
-                    .arg(branch));
+            QByteArray retainedStashOut;
+            runGitCapture(linkedWorktree,
+                          {"rev-parse", "-q", "--verify", "refs/stash"},
+                          &retainedStashOut, nullptr);
+            const QString retainedStash =
+                QString::fromUtf8(retainedStashOut).trimmed();
+            QString rollbackError;
+            const bool rolledBack =
+                runGitCapture(linkedWorktree, {"reset", "--hard", beforeHead},
+                              nullptr, &rollbackError);
+            QString restoreError;
+            const bool haveNewAutostash =
+                !retainedStash.isEmpty() &&
+                retainedStashOut.trimmed() != beforeStashOut.trimmed();
+            const bool restored =
+                rolledBack &&
+                (!protectedLocalEdits ||
+                 (haveNewAutostash &&
+                  runGitCapture(linkedWorktree,
+                                {"stash", "apply", "--index", retainedStash},
+                                nullptr, &restoreError)));
+            // A failed stash application can itself leave conflict markers.
+            // Clear those generated files once more; the retained stash is the
+            // recoverable copy of the original edits in this rare fallback.
+            if (!restored && rolledBack)
+                runGitCapture(linkedWorktree,
+                              {"reset", "--hard", beforeHead}, nullptr, nullptr);
+            if (restored && haveNewAutostash) {
+                QByteArray topStashOut;
+                runGitCapture(linkedWorktree,
+                              {"rev-parse", "-q", "--verify", "stash@{0}"},
+                              &topStashOut, nullptr);
+                if (QString::fromUtf8(topStashOut).trimmed() == retainedStash)
+                    runGitCapture(linkedWorktree,
+                                  {"stash", "drop", "stash@{0}"}, nullptr,
+                                  nullptr);
+            }
+            logSystem(QStringLiteral(
+                          "Git: rolled %1 back after %2 local file(s) conflicted "
+                          "with %3; original edits %4.")
+                          .arg(branch)
+                          .arg(count)
+                          .arg(base)
+                          .arg(restored ? QStringLiteral("restored")
+                                        : QStringLiteral("kept in the autostash")));
             setRepoDetailNotice(
-                QStringLiteral("Updated %1 from %2, but %3 restored local file(s) "
-                               "need resolution. Nothing was lost — click Resolve "
-                               "local edits; Git kept an autostash backup.")
-                    .arg(branch, base)
-                    .arg(count),
+                restored
+                    ? QStringLiteral("Couldn't update %1 from %2 because %3 local "
+                                     "file(s) overlap. The branch was rolled back "
+                                     "and its original edits were restored cleanly.")
+                          .arg(branch, base)
+                          .arg(count)
+                    : QStringLiteral("Couldn't update %1 from %2 because %3 local "
+                                     "file(s) overlap. The branch was rolled back; "
+                                     "the original edits remain safe in Git's "
+                                     "autostash (%4).")
+                          .arg(branch, base)
+                          .arg(count)
+                          .arg((rollbackError + QLatin1Char(' ') + restoreError)
+                                   .trimmed()
+                                   .left(180)),
                 true);
         } else {
+            logSystem(QStringLiteral("Git: merged %1 into %2 in its linked worktree.")
+                          .arg(base, branch));
             setRepoDetailNotice(
                 protectedLocalEdits
                     ? QStringLiteral("Updated %1 with %2 and safely restored its "
@@ -4897,7 +5135,7 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         }
         m_branchesCache.clear();
         if (m_branchDiffBranch == branch)
-            showBranchDiff(branch); // refreshed range + universal CHANGES list
+            showBranchDiff(branch, m_branchDiffAgentSessionId);
         loadWorktreesPanel();
         return;
     }
@@ -4958,7 +5196,7 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         // Re-render the detail pane's scope/files-changed lists, not just the
         // ahead/behind label — they still reflected the pre-pull commit range.
         if (m_branchDiffBranch == branch)
-            showBranchDiff(branch);
+            showBranchDiff(branch, m_branchDiffAgentSessionId);
         return;
     }
 
@@ -5120,7 +5358,7 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         // Re-render the detail pane's scope/files-changed lists, not just the
         // ahead/behind label — they still reflected the pre-pull commit range.
         if (m_branchDiffBranch == branch)
-            showBranchDiff(branch);
+            showBranchDiff(branch, m_branchDiffAgentSessionId);
         return;
     }
 
@@ -5135,7 +5373,7 @@ void MainWindow::updateBranchFromBase(const QString &branch)
     // Re-render the detail pane's scope/files-changed lists, not just the
     // ahead/behind label — they still reflected the pre-pull commit range.
     if (m_branchDiffBranch == branch)
-        showBranchDiff(branch);
+        showBranchDiff(branch, m_branchDiffAgentSessionId);
 }
 
 // Bring `branch` up to date with base via the interactive merge editor — the
@@ -5224,7 +5462,7 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
                     .arg(branch));
             m_branchesCache.clear();
             if (m_branchDiffBranch == branch)
-                showBranchDiff(branch);
+                showBranchDiff(branch, m_branchDiffAgentSessionId);
             loadWorktreesPanel();
             return;
         }
@@ -5326,7 +5564,7 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
                     .arg(branch, base),
                 true);
             if (m_branchDiffBranch == branch)
-                showBranchDiff(branch);
+                showBranchDiff(branch, m_branchDiffAgentSessionId);
             return;
         }
         logSystem(QStringLiteral("Git: merged %1 into %2.").arg(base, branch));
@@ -5371,7 +5609,7 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
                 .arg(branch, base),
             true);
         if (m_branchDiffBranch == branch)
-            showBranchDiff(branch);
+            showBranchDiff(branch, m_branchDiffAgentSessionId);
         return;
     }
     logSystem(QStringLiteral("Git: merged %1 into %2 (conflicts resolved).")
@@ -5443,14 +5681,14 @@ void MainWindow::startBranchConflictProbes(
                 // repo we probed. Rows are matched by branch name rather than by
                 // the index they had when the sweep started, so a rebuild in
                 // between can't flag the wrong one.
-                if (!m_branchesTable || repoGitDir() != dir)
+                if (repoGitDir() != dir)
                     return;
                 bool refreshDetail = false;
                 for (int i = 0; i < answered; ++i) {
                     const QString branch = pending.at(i).first;
                     if (branch == m_branchDiffBranch)
                         refreshDetail = true;
-                    if (!verdicts->at(i))
+                    if (!verdicts->at(i) || !m_branchesTable)
                         continue;
                     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
                         QTableWidgetItem *name = m_branchesTable->item(

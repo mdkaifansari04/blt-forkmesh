@@ -8,6 +8,7 @@
     "repos": initReposPage,
     "network": initNetworkPage,
     "chat": initChatPage,
+    "tasks": initTasksPage,
     "settings": initSettingsPage,
     "profile": initProfileOverviewPage,
     "profile-repositories": initProfileOverviewPage,
