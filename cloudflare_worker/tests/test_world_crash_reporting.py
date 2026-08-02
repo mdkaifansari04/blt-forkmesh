@@ -118,17 +118,20 @@ def test_crashed_sessions_reboot_into_the_compact_renderer():
     ) in WORLD
 
 
-def test_memory_constrained_renderer_paints_large_plates_at_half_resolution():
+def test_memory_constrained_renderer_reduces_large_plate_resolution():
     # The memory crash applies to phones and oversized desktop surfaces: ~96
     # full-resolution plates retain both 2D and GPU backing stores.
     assert "const CANVAS_TEXTURE_SCALE_MIN_PIXELS = 512 * 512;" in SCENE
     assert "let canvasTextureScale = 1;" in SCENE
-    assert "canvasTextureScale = memoryConstrainedRenderer ? 0.5 : 1;" in SCENE
+    assert "canvasTextureScale = compactRenderer" in SCENE
+    assert "? 0.25" in SCENE
+    assert ": memoryConstrainedRenderer\n      ? 0.5" in SCENE
+    assert "canvasTextureScale," in SCENE
     # The scale must be chosen before the first plate paints, or the phone
     # allocates the full-size buffers this is meant to avoid.
     build = SCENE[SCENE.index("export function createWorldScene("):]
     assert build.index(
-        "canvasTextureScale = memoryConstrainedRenderer"
+        "canvasTextureScale = compactRenderer"
     ) < build.index("createWorldSky({")
     # Draw code keeps its own coordinate system: only the buffer shrinks.
     assert "canvas.width = Math.max(1, Math.round(width * scale));" in SCENE
@@ -160,12 +163,23 @@ def test_crash_reports_name_the_device_renderer_and_resident_scene():
         "textures resident/live ${coarseCrashLabel(record.textures)}",
         "geometries resident/live ${coarseCrashLabel(record.geometries)}",
         "programs ${coarseCrashLabel(record.programs)}",
+        "canvas raster ${Math.round",
+        "scene objects ${coarseCrashLabel(record.objects)}",
+        "heaviest ${topElements}",
         "draws ${coarseCrashLabel(record.calls)}",
         "buffer ${buffer} at dpr ",
         "space ${String(record.space",
         "avatars ${describe(record.avatars)}",
     ):
         assert reading in report, reading
+    # Admin notifications retain only a bounded prefix. Allocation totals and
+    # scene cardinality must arrive before volatile timing/frame counters.
+    assert report.index(
+        "estimated GPU resources textures"
+    ) < report.index("uptime ${coarseCrashLabel")
+    assert report.index(
+        "scene objects ${coarseCrashLabel"
+    ) < report.index("fps ${coarseCrashLabel")
     # The device facts are read once and reused, like the GPU label.
     assert "deviceProfile()" in WORLD
     assert "navigator.hardwareConcurrency" in WORLD
@@ -187,6 +201,11 @@ def test_crash_reports_name_the_device_renderer_and_resident_scene():
         "textureMb: complexity",
         "geometryMb: complexity",
         "renderTargetMb: complexity",
+        "objects: complexity",
+        "meshes: complexity",
+        "materials: complexity",
+        "topElements:",
+        "canvasTextureScale: output",
     ):
         assert reading in guard
 
