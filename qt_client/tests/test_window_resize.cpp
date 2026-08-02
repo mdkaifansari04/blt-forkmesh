@@ -1646,6 +1646,45 @@ int main(int argc, char *argv[])
           QStringLiteral("agents list is #/Issue with the title column absorbing "
                          "the spare width (adhoc #35/#84/#92, layout = %1)")
               .arg(agentColumns));
+
+    // adhoc #1339: the chrome matrix is a live-session indicator, not a second
+    // history list. A completed, failed, stopped, or cleared run must immediately
+    // relinquish its square; work that is running, queued, or waiting for input
+    // remains visible until it reaches a terminal state.
+    {
+        const int dotsBefore = window.testAgentDotCount();
+        const auto addAgent = [&window](int id, const QString &status) {
+            AgentSession session;
+            session.id = id;
+            session.owner = QStringLiteral("me");
+            session.name = QStringLiteral("r");
+            session.prompt = QStringLiteral("Dot-matrix status fixture");
+            session.status = status;
+            window.testAddAgentSession(session);
+        };
+        addAgent(133901, AgentStatus::Running);
+        addAgent(133902, AgentStatus::Queued);
+        addAgent(133903, AgentStatus::Waiting);
+        addAgent(133904, AgentStatus::Success);
+        addAgent(133905, AgentStatus::Failed);
+        addAgent(133906, AgentStatus::Stopped);
+        addAgent(133907, AgentStatus::Cleared);
+        window.testRefreshAgentDotMatrix();
+        check(window.testAgentDotCount() == dotsBefore + 3,
+              QStringLiteral("agent matrix shows only running, queued, and waiting "
+                             "sessions (not terminal history)"));
+
+        window.testSetAgentSessionStatus(133901, AgentStatus::Success);
+        window.testSetAgentSessionStatus(133902, AgentStatus::Success);
+        window.testSetAgentSessionStatus(133903, AgentStatus::Success);
+        check(window.testAgentDotCount() == dotsBefore,
+              QStringLiteral("agent matrix removes each dot when its session "
+                             "reaches a terminal state"));
+
+        for (int id = 133901; id <= 133907; ++id)
+            window.testRemoveAgentSession(id);
+    }
+
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
     check(window.findChild<QLabel *>(

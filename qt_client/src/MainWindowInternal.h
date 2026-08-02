@@ -1454,11 +1454,11 @@ private:
     bool m_unreachable = false; // relay failed to answer the last probe
 };
 
-// A matrix of tiny squares on the window-chrome line, one per agent session,
-// sitting immediately right of the "Agents (N)" button. Each square is painted
-// in the same colour as that session's status icon in the agents list, so the
-// whole fleet reads at a glance: green running/done, red failed, amber queued,
-// purple merged, grey cleared.
+// A matrix of tiny squares on the window-chrome line, one per active agent
+// session, sitting immediately right of the "Agents (N)" button. Each square
+// is painted in the same colour as that session's status icon in the agents
+// list, so the fleet's live work reads at a glance: green running, amber
+// queued, orange waiting for input. Finished history stays in the Agents page.
 //
 // Running sessions get the night-rider treatment the agents list used to give its
 // (now dropped) Activity column: a Larson highlight travels along the matrix and

@@ -745,6 +745,9 @@ public:
     // lazily-built list back the way a user reaches it (adhoc #119).
     void testOpenAgentsOverview() { openAgentsOverview(); }
     void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
+    int testAgentDotCount() const;
+    void testSetAgentSessionStatus(int sessionId, const QString &status);
+    void testRemoveAgentSession(int sessionId);
     // Live search: type into the top bar the way a user does (textChanged drives
     // the whole feature), persist a line of a session's transcript, force the
     // debounced transcript scan to run now, and read the filtered list back.
@@ -837,6 +840,7 @@ public:
     // Rescan the working tree the way the panel's Refresh button does, so a test
     // doesn't have to wait out the 10s change-badge poll.
     void testRefreshSourceControl() { refreshSourceControl(/*force=*/true); }
+    bool testScmAutoViewedRoundTrip();
     // Select a CHANGES row and report whether the right-hand diff navigation
     // targeted that exact file.
     bool testClickSourceControlPath(const QString &path);
