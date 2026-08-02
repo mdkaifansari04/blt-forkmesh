@@ -595,6 +595,7 @@ import world_workshops  # noqa: E402
 # and its human-readable task/check-in data is encrypted at rest.
 import world_office_tasks  # noqa: E402
 import world_build_board  # noqa: E402
+import world_element_store  # noqa: E402
 import world_link_kiosk  # noqa: E402
 # Private administrator-created channel policy is kept in a pure module and
 # receives only this Worker's narrow session, crypto, D1, and audit adapter.
@@ -20998,6 +20999,395 @@ async def reward_contributions_handler(env, request):
             "distribution is not complete until its separate finalized "
             "on-chain transfer is verified."
         ),
+    }, cache_control="no-store")
+
+
+WORLD_ELEMENT_STORE_BODY_MAX_BYTES = 8 * 1024
+WORLD_ELEMENT_PURCHASE_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _world_element_library(rec, now=0):
+    return world_element_store.clean_owned(
+        (rec or {}).get("world_elements"), now)
+
+
+async def _create_element_store_split_intent(env, purchase):
+    """Write the unsigned intent paying one purchase's mirror-node half.
+
+    The treasury half needs no transfer: it is already in the pool address the
+    buyer's wallet paid. Only the mirror half moves, and only after the
+    instance owner's local signer reviews and signs this plan.
+    """
+    purchase = purchase or {}
+    if purchase.get("distribution_intent_id"):
+        return [str(purchase.get("distribution_intent_id"))]
+    rec = await _central_fund_record(env)
+    if not rec or not rec.get("signer_account"):
+        return []
+    now = int(Date.now())
+    snapshot = await _eligible_reward_snapshot(env, now)
+    eligible = list(snapshot.get("eligible") or [])
+    if not eligible:
+        return []
+    mirror_total = int(purchase.get("mirror_lamports") or 0)
+    chunk_count = (
+        len(eligible) + REWARD_TRANSFERS_PER_INTENT - 1
+    ) // REWARD_TRANSFERS_PER_INTENT
+    fee_reserve = REWARD_POOL_FEE_RESERVE_LAMPORTS * chunk_count
+    per_node = (mirror_total - fee_reserve) // len(eligible)
+    if per_node <= 0:
+        return []
+    balance = await _reward_balance_lamports(env, rec.get("address"))
+    if balance is None or int(balance) < per_node * len(eligible) + fee_reserve:
+        return []
+    transfers = [{
+        "address": item["walletAddress"],
+        "lamports": per_node,
+        "nodeId": item["nodeId"],
+    } for item in eligible]
+    purchase_id = str(purchase.get("purchase_id") or "")
+    statements = []
+    intent_ids = []
+    for chunk_index in range(chunk_count):
+        intent_id = _random_bytes(16).hex()
+        intent_ids.append(intent_id)
+        start = chunk_index * REWARD_TRANSFERS_PER_INTENT
+        plan = {
+            "v": 2,
+            "network": rec.get("network", "mainnet-beta"),
+            "sourceAddress": rec.get("address", ""),
+            "custody": {
+                "forkMeshHoldsUserKeys": False,
+                "fundsRemainInSourceWalletUntilSigned": True,
+            },
+            "signing": {
+                "required": True,
+                "performed": False,
+                "method": "external-local-qt",
+            },
+            "transfers": transfers[start:start + REWARD_TRANSFERS_PER_INTENT],
+            "eligibility": {
+                "snapshotHash": snapshot.get("snapshotHash", ""),
+                "eligibleCount": len(eligible),
+                "rejected": snapshot.get("rejected", []),
+                "policy": snapshot.get("policy", {}),
+                "limitations": snapshot.get("limitations", []),
+                "source": snapshot.get("source", ""),
+            },
+            "policy": "element-store-half-to-eligible-mirrors-v1",
+            "purchaseId": purchase_id,
+            "elementId": str(purchase.get("element_id") or ""),
+            "purchaseLamports": int(purchase.get("amount_lamports") or 0),
+            "treasuryRetainedLamports": int(
+                purchase.get("treasury_lamports") or 0),
+            "mirrorShareLamports": mirror_total,
+            "distributedLamports": per_node * len(eligible),
+            "retainedForNetworkFeesAndRemainder": (
+                mirror_total - per_node * len(eligible)
+            ),
+            "split": world_element_store.split_policy_public(),
+            "batch": {
+                "chunkIndex": chunk_index,
+                "chunkCount": chunk_count,
+                "maximumTransfersPerTransaction": REWARD_TRANSFERS_PER_INTENT,
+            },
+            "generatedAt": now,
+            "notice": (
+                "Half of a voluntary world-element purchase, shared between "
+                "online eligible mirror nodes. Not an investment and no "
+                "financial return is promised."
+            ),
+        }
+        statements.append((
+            "INSERT INTO chain_intents "
+            "(intent_id,kind,source_address,signer_account,status,data,"
+            "created_at,expires_at) "
+            "VALUES (?,?,?,?,'pending_signature',?,?,?)",
+            (
+                intent_id,
+                "world_element_store_mirror_split",
+                rec.get("address", ""),
+                rec.get("signer_account", ""),
+                json.dumps(plan, sort_keys=True, separators=(",", ":")),
+                now,
+                now + 4 * 60 * 60 * 1000,
+            ),
+        ))
+    statements.append((
+        "UPDATE world_element_purchases "
+        "SET status='awaiting_distribution', distribution_intent_id=? "
+        "WHERE purchase_id=? AND distribution_intent_id=''",
+        (intent_ids[0], purchase_id),
+    ))
+    await _contribution_run_batch(env, statements)
+    await _audit_sensitive_action(
+        env, "", "world.element_store_split_intent",
+        "world_element_purchase", purchase_id, "requested", {
+            "elementId": str(purchase.get("element_id") or ""),
+            "eligibleCount": len(eligible),
+            "snapshotHash": snapshot.get("snapshotHash", ""),
+            "mirrorShareLamports": mirror_total,
+            "distributedLamports": per_node * len(eligible),
+            "intentCount": chunk_count,
+        })
+    return intent_ids
+
+
+async def _grant_purchased_element(env, account_bi, rec, row, signature,
+                                   details):
+    """Record the finalized purchase and add the element to the account."""
+    now = int(Date.now())
+    element_id = str(row.get("element_id") or "")
+    item = world_element_store.element(element_id)
+    await d1_run(
+        env,
+        "UPDATE world_element_purchases SET status='confirmed', "
+        "tx_signature=?, source_address=?, confirmed_at=? "
+        "WHERE purchase_id=? AND status IN ('prepared','awaiting_finality')",
+        signature, details.get("sourceAddress", ""), now,
+        row.get("purchase_id"),
+    )
+    owned = _world_element_library(rec, now)
+    previous = owned.get(element_id) or {}
+    owned[element_id] = {
+        "params": world_element_store.clean_params(
+            item, previous.get("params")),
+        "placement": world_element_store.clean_placement(
+            previous.get("placement")),
+        "enabled": True,
+        "purchaseId": str(row.get("purchase_id") or ""),
+        "transactionSignature": signature,
+        "purchasedAt": now,
+        "updatedAt": now,
+    }
+    rec["world_elements"] = owned
+    await _save_account(env, account_bi, rec)
+    row = dict(row)
+    row.update({
+        "status": "confirmed",
+        "tx_signature": signature,
+        "source_address": details.get("sourceAddress", ""),
+        "confirmed_at": now,
+    })
+    intent_ids = await _create_element_store_split_intent(env, row)
+    if intent_ids:
+        row["status"] = "awaiting_distribution"
+        row["distribution_intent_id"] = intent_ids[0]
+    await _audit_sensitive_action(
+        env, "", "world.element_purchase_confirm", "world_element_purchase",
+        str(row.get("purchase_id") or ""), "success", {
+            "elementId": element_id,
+            "lamports": int(row.get("amount_lamports") or 0),
+            "treasuryLamports": int(row.get("treasury_lamports") or 0),
+            "mirrorLamports": int(row.get("mirror_lamports") or 0),
+            "transactionSignature": signature,
+        })
+    return row, owned
+
+
+async def world_element_store_handler(env, request, path):
+    """Browse, buy and configure modular World elements."""
+    await ensure_schema(env)
+    method = method_name(request)
+    route = path.rstrip("/")
+    now = int(Date.now())
+    fund = await _central_fund_record(env)
+
+    if route.endswith("/catalog"):
+        if method != "GET":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        return json_response({
+            "ok": True,
+            "elements": world_element_store.catalog_public(),
+            "split": world_element_store.split_policy_public(),
+            "poolAddress": (fund or {}).get("address", ""),
+            "network": (fund or {}).get("network", ""),
+            "purchasesEnabled": bool(fund),
+        }, cache_control="no-store")
+
+    if route.endswith("/library"):
+        if method != "GET":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        account_bi, rec = await _account_session_record(env, request)
+        if not account_bi or not rec:
+            return json_response({"error": "invalid_session"}, status=401)
+        return json_response({
+            "ok": True,
+            "owned": _world_element_library(rec, now),
+            "storage": "account-encrypted",
+        }, cache_control="no-store")
+
+    if method != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not _request_same_origin(request):
+        return json_response({"error": "origin_not_allowed"}, status=403)
+    try:
+        data = await bounded_json_request(
+            request, WORLD_ELEMENT_STORE_BODY_MAX_BYTES)
+    except RequestBodyTooLarge:
+        return json_response({"error": "payload_too_large"}, status=413)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, rec = await _account_session_record(env, request, data)
+    if not account_bi or not rec:
+        return json_response({"error": "invalid_session"}, status=401)
+    action = clean_string(data.get("action", ""), 20).lower()
+
+    if action == "configure":
+        element_id = clean_string(data.get("elementId", ""), 64).lower()
+        item = world_element_store.element(element_id)
+        owned = _world_element_library(rec, now)
+        if not item or element_id not in owned:
+            return json_response({"error": "element_not_owned"}, status=403)
+        entry = dict(owned[element_id])
+        entry["params"] = world_element_store.clean_params(
+            item, data.get("params"))
+        if isinstance(data.get("placement"), dict):
+            entry["placement"] = world_element_store.clean_placement(
+                data.get("placement"))
+        if isinstance(data.get("enabled"), bool):
+            entry["enabled"] = data.get("enabled")
+        entry["updatedAt"] = now
+        owned[element_id] = entry
+        rec["world_elements"] = owned
+        await _save_account(env, account_bi, rec)
+        return json_response({
+            "ok": True, "elementId": element_id, "element": entry,
+        }, cache_control="no-store")
+
+    if not fund:
+        return json_response(
+            {"error": "community_pool_not_configured"}, status=503)
+
+    if action == "prepare":
+        element_id = clean_string(data.get("elementId", ""), 64).lower()
+        item = world_element_store.element(element_id)
+        if not item:
+            return json_response({"error": "unknown_element"}, status=404)
+        if element_id in _world_element_library(rec, now):
+            return json_response(
+                {"error": "element_already_owned"}, status=409)
+        pending = await d1_first(
+            env,
+            "SELECT COUNT(*) AS c FROM world_element_purchases "
+            "WHERE account_bi=? AND status='prepared' AND expires_at>?",
+            account_bi, now,
+        )
+        if int((pending or {}).get("c") or 0) >= 5:
+            return json_response(
+                {"error": "too_many_pending_purchases"}, status=429)
+        amount = int(item["priceLamports"])
+        split = world_element_store.split_lamports(amount)
+        purchase_id = _random_bytes(16).hex()
+        reference = _base58_encode(_random_bytes(32))
+        expires_at = now + world_element_store.PURCHASE_EXPIRES_MS
+        await d1_run(
+            env,
+            "INSERT INTO world_element_purchases "
+            "(purchase_id,account_bi,element_id,amount_lamports,"
+            "treasury_lamports,mirror_lamports,reference_address,status,"
+            "created_at,expires_at) VALUES (?,?,?,?,?,?,?,'prepared',?,?)",
+            purchase_id, account_bi, element_id, amount,
+            split["treasuryLamports"], split["mirrorLamports"], reference,
+            now, expires_at,
+        )
+        return json_response({
+            "ok": True,
+            "purchaseId": purchase_id,
+            "elementId": element_id,
+            "amountLamports": amount,
+            "amountSol": _amount_sol(amount),
+            "poolAddress": fund.get("address", ""),
+            "network": fund.get("network", "mainnet-beta"),
+            "referenceAddress": reference,
+            "expiresAt": expires_at,
+            "uri": _solana_pay_uri(
+                fund.get("address", ""), amount, reference=reference,
+                message=f"ForkMesh world element: {item['label']}",
+            ),
+            "split": {
+                **world_element_store.split_policy_public(),
+                "treasuryLamports": split["treasuryLamports"],
+                "mirrorNodeLamports": split["mirrorLamports"],
+            },
+        }, status=201, cache_control="no-store")
+
+    if action != "confirm":
+        return json_response({"error": "invalid_action"}, status=400)
+    purchase_id = clean_string(data.get("purchaseId", ""), 32).lower()
+    signature = clean_string(data.get("transactionSignature", ""), 120).strip()
+    if (not WORLD_ELEMENT_PURCHASE_RE.fullmatch(purchase_id)
+            or not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{64,120}", signature)):
+        return json_response({"error": "invalid_confirmation"}, status=400)
+    row = await d1_first(
+        env,
+        "SELECT * FROM world_element_purchases WHERE purchase_id=?",
+        purchase_id,
+    )
+    if not row or str(row.get("account_bi") or "") != account_bi:
+        return json_response({"error": "not_found"}, status=404)
+    if row.get("status") in ("confirmed", "awaiting_distribution"):
+        if row.get("tx_signature") != signature:
+            return json_response(
+                {"error": "purchase_already_confirmed"}, status=409)
+        return json_response({
+            "ok": True,
+            "status": row.get("status"),
+            "elementId": str(row.get("element_id") or ""),
+            "owned": _world_element_library(rec, now),
+        }, cache_control="no-store")
+    if int(row.get("expires_at") or 0) <= now:
+        await d1_run(
+            env,
+            "UPDATE world_element_purchases SET status='expired' "
+            "WHERE purchase_id=? AND status='prepared'",
+            purchase_id,
+        )
+        return json_response({"error": "purchase_expired"}, status=410)
+    replay = await d1_first(
+        env,
+        "SELECT purchase_id FROM world_element_purchases "
+        "WHERE tx_signature=? AND purchase_id<>?",
+        signature, purchase_id,
+    )
+    if replay:
+        return json_response({"error": "transaction_replay"}, status=409)
+    details = await _solana_contribution_details(
+        env, signature,
+        pool_address=fund.get("address", ""),
+        reference_address=row.get("reference_address", ""),
+        amount_lamports=int(row.get("amount_lamports") or 0),
+    )
+    if details is False:
+        return json_response(
+            {"error": "purchase_transaction_mismatch"}, status=409)
+    if details is None:
+        await d1_run(
+            env,
+            "UPDATE world_element_purchases "
+            "SET status='awaiting_finality', tx_signature=? "
+            "WHERE purchase_id=? AND status='prepared'",
+            signature, purchase_id,
+        )
+        return json_response({
+            "ok": True,
+            "status": "awaiting_finality",
+            "notice": (
+                "Non-custodial: ForkMesh retained no wallet key. The element "
+                "unlocks once the direct public transfer is finalized."
+            ),
+        }, status=202, cache_control="no-store")
+    row, owned = await _grant_purchased_element(
+        env, account_bi, rec, row, signature, details)
+    return json_response({
+        "ok": True,
+        "status": row.get("status"),
+        "elementId": str(row.get("element_id") or ""),
+        "transactionSignature": signature,
+        "explorerUrl": _reward_explorer_url(
+            fund.get("network", "mainnet-beta"), signature=signature),
+        "distributionIntentId": str(row.get("distribution_intent_id") or ""),
+        "owned": owned,
     }, cache_control="no-store")
 
 
@@ -44453,6 +44843,14 @@ class Default(WorkerEntrypoint):
         if url.path in (
                 "/api/world/preferences", "/api/world/preferences/"):
             return await world_preferences_handler(self.env, request)
+
+        if (
+            url.path == "/api/world/store"
+            or url.path == "/api/world/store/"
+            or url.path.startswith("/api/world/store/")
+        ):
+            return await world_element_store_handler(
+                self.env, request, url.path)
 
         if url.path in (
                 "/api/world/office/attendance",

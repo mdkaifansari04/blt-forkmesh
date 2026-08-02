@@ -6930,6 +6930,76 @@ forkmesh-world.world-office-active .world-quick-dock {
   outline: none;
 }
 
+/* Store tab: one card per purchasable element, showing its price and declared
+   network reads before purchase and its parameter form once owned. */
+.world-store-list {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.world-store-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--world-line);
+  background: #0a1915;
+}
+
+.world-store-card header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.world-store-card[data-owned="true"] {
+  border-color: var(--world-mint);
+}
+
+.world-store-card button {
+  min-height: 34px;
+  border: 1px solid var(--world-line);
+  background: #0d241d;
+  color: var(--world-copy);
+  cursor: pointer;
+  font: 0.62rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-store-card button:hover,
+.world-store-card button:focus-visible {
+  background: #12332a;
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-store-params {
+  display: grid;
+  gap: 6px;
+}
+
+.world-store-param {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font: 0.62rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.04em;
+}
+
+.world-store-param input[type="text"],
+.world-store-param input[type="number"],
+.world-store-param select {
+  min-height: 30px;
+  border: 1px solid var(--world-line);
+  background: #061310;
+  color: var(--world-copy);
+  font: inherit;
+  padding: 0 6px;
+}
+
 /* Elements tab: one single-line row per registered world element, in a flat
    table sorted by clicking its column headers. */
 .world-element-master {

@@ -1407,6 +1407,31 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (contribution_id, intent_id))""",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_reward_contribution_intent_id "
     "ON reward_contribution_intents(intent_id)",
+    # World store element purchases. Public data only: a per-purchase Solana
+    # Pay reference address, the buyer's own finalized transfer signature, and
+    # the half owed to online mirror nodes. The purchased element itself is
+    # granted on the account record; no deposit wallet or key is ever created.
+    """CREATE TABLE IF NOT EXISTS world_element_purchases (
+        purchase_id TEXT PRIMARY KEY,
+        account_bi TEXT NOT NULL,
+        element_id TEXT NOT NULL,
+        amount_lamports INTEGER NOT NULL,
+        treasury_lamports INTEGER NOT NULL DEFAULT 0,
+        mirror_lamports INTEGER NOT NULL DEFAULT 0,
+        reference_address TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'prepared',
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        tx_signature TEXT NOT NULL DEFAULT '',
+        source_address TEXT NOT NULL DEFAULT '',
+        confirmed_at INTEGER NOT NULL DEFAULT 0,
+        distribution_intent_id TEXT NOT NULL DEFAULT '')""",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_world_element_purchase_signature "
+    "ON world_element_purchases(tx_signature) WHERE tx_signature<>''",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_account "
+    "ON world_element_purchases(account_bi, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_status "
+    "ON world_element_purchases(status, created_at)",
     # External provider entries are intentionally separate from `repositories`:
     # an imported metadata record or stub can never be routed as a live mirror.
     # The encrypted data blob carries public/private provider metadata; the

@@ -5014,6 +5014,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="work">Work</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="security">Security</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="debug">Debug</button>
+            <button type="button" role="tab" aria-selected="false" data-world-settings-tab="store">Store</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="elements" data-world-elements-tab hidden>Elements</button>
           </div>
 
@@ -5207,6 +5208,27 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <ol class="world-debug-suggestions" data-world-debug-suggestions>
                 <li data-level="caution">Collecting the first sample…</li>
               </ol>
+            </fieldset>
+          </div>
+
+          <div class="world-settings-pane" data-world-settings-pane="store" hidden>
+            <fieldset class="world-setting-group">
+              <legend>Element store · synced to your account</legend>
+              <p class="world-setting-note">
+                Elements are self-contained plugins. Buy one and it is built
+                into your world with the parameters you set; some read a live
+                ForkMesh endpoint, and every endpoint an element may read is
+                listed before you buy. Your own wallet signs one direct public
+                transfer — ForkMesh never receives your wallet key. Half of
+                each purchase stays with the treasury and half is shared
+                between online mirror nodes. Buying an element does not
+                purchase ownership, guaranteed rewards, investment returns or
+                any influence over the project.
+              </p>
+              <div class="world-store-list" data-world-store-list>
+                <p class="world-setting-note">Loading the element store…</p>
+              </div>
+              <p class="world-office-panel-status" data-world-store-status role="status" aria-live="polite"></p>
             </fieldset>
           </div>
 
@@ -5491,6 +5513,9 @@ class ForkMeshWorld extends HTMLElement {
     this.rewardState = {};
     this.pendingRewards = [];
     this.pendingContribution = null;
+    this.storeCatalog = null;
+    this.storeLibrary = {};
+    this.pendingElementPurchase = null;
     this.securityScan = null;
     this.securityHistory = [];
     this.securityRepository = "";
@@ -6942,6 +6967,7 @@ class ForkMeshWorld extends HTMLElement {
       this.syncWorldCameraModeButton();
       void this.refreshBuildBoard();
       void this.refreshQaDeck();
+      void this.refreshStoreLibrary();
       this.buildBoardTimer = window.setInterval(
         () => void this.refreshBuildBoard({ quiet: true }),
         WORLD_BUILD_BOARD_POLL_MS,
@@ -10871,6 +10897,38 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
+      const storeBuy = event.target.closest("[data-world-store-buy]");
+      if (storeBuy) {
+        void this.purchaseStoreElement(storeBuy.dataset.worldStoreBuy).then(
+          () => this.renderWorldStorePane(),
+        );
+        return;
+      }
+      const storeConfirm = event.target.closest("[data-world-store-confirm]");
+      if (storeConfirm) {
+        const signature = this.$("[data-world-store-signature]")?.value || "";
+        void this.confirmStoreElementPurchase(signature).then(() =>
+          this.renderWorldStorePane(),
+        );
+        return;
+      }
+      if (event.target.closest("[data-world-store-cancel]")) {
+        this.pendingElementPurchase = null;
+        this.renderWorldStorePane();
+        return;
+      }
+      const storeSave = event.target.closest("[data-world-store-save]");
+      if (storeSave) {
+        const elementId = storeSave.dataset.worldStoreSave;
+        const enabled = this.$(
+          `[data-world-store-enabled="${elementId}"]`,
+        )?.checked;
+        void this.configureStoreElement(elementId, {
+          params: this.collectStoreParams(elementId),
+          enabled: enabled !== false,
+        }).then(() => this.renderWorldStorePane("Saved."));
+        return;
+      }
       const elementSort = event.target.closest("[data-world-element-sort]");
       if (elementSort) {
         const key = elementSort.dataset.worldElementSort;
@@ -13100,7 +13158,7 @@ class ForkMeshWorld extends HTMLElement {
           <h4 id="world-error-analytics-title">Previous 24 hours · ${chartTotal.toLocaleString()} occurrence${chartTotal === 1 ? "" : "s"}</h4>
           <div class="world-error-chart" role="img" aria-label="24-hour error frequency">
             ${chartHours
-              .map((count, index) => `<span tabindex="0" role="img" aria-label="${hourLabel(index)}: ${count} error${count === 1 ? "" : "s"}" data-empty="${count === 0}" style="height:${chartPeak ? Math.max(2, Math.round((132 * count) / chartPeak) : 2)}px" title="${hourLabel(index)} · ${count}"></span>`)
+              .map((count, index) => `<span tabindex="0" role="img" aria-label="${hourLabel(index)}: ${count} error${count === 1 ? "" : "s"}" data-empty="${count === 0}" style="height:${chartPeak ? Math.max(2, Math.round((132 * count) / chartPeak)) : 2}px" title="${hourLabel(index)} · ${count}"></span>`)
               .join("")}
           </div>
           <div class="world-error-hours"><span>24h ago</span><span>12h ago</span><span>now</span></div>
@@ -13415,6 +13473,122 @@ class ForkMeshWorld extends HTMLElement {
         );
       }
     });
+  }
+
+  // Purchased elements are plugins: the library says which ones this account
+  // owns and with which parameters, and the scene builds each one on demand
+  // from ./elements. Nothing is downloaded for an element nobody bought.
+  async refreshStoreLibrary() {
+    if (!this.sessionAuthenticated || !validWorldSession()) {
+      this.storeLibrary = {};
+      return;
+    }
+    let owned = {};
+    try {
+      const payload = await this.fetchJSON("/api/world/store/library", {
+        timeout: 6000,
+        maxAge: 0,
+        backoff: true,
+      });
+      owned = payload?.owned && typeof payload.owned === "object"
+        ? payload.owned
+        : {};
+    } catch {
+      return;
+    }
+    const previous = this.storeLibrary || {};
+    this.storeLibrary = owned;
+    Object.keys(previous).forEach((id) => {
+      if (!owned[id]) this.world?.removeStoreElement?.(id);
+    });
+    await Promise.allSettled(
+      Object.entries(owned).map(([id, entry]) =>
+        this.world?.installStoreElement?.({ id, ...entry }),
+      ),
+    );
+  }
+
+  async refreshStoreCatalog({ force = false } = {}) {
+    try {
+      this.storeCatalog = await this.fetchJSON("/api/world/store/catalog", {
+        auth: false,
+        timeout: 6000,
+        maxAge: force ? 0 : 60_000,
+        staleIfError: true,
+      });
+    } catch {
+      this.storeCatalog = this.storeCatalog || null;
+    }
+    return this.storeCatalog;
+  }
+
+  // Same non-custodial shape as a reward contribution: the visitor's own
+  // wallet signs one public transfer to the published pool address, tagged
+  // with a per-purchase reference. ForkMesh never holds a key.
+  async purchaseStoreElement(elementId) {
+    if (!this.sessionAuthenticated) {
+      this.toast("Log in to buy world elements.");
+      return null;
+    }
+    try {
+      this.pendingElementPurchase = await this.postJSON(
+        "/api/world/store",
+        { action: "prepare", elementId },
+      );
+      return this.pendingElementPurchase;
+    } catch (error) {
+      this.toast(`Could not start the purchase. ${error?.message || ""}`.trim());
+      return null;
+    }
+  }
+
+  async confirmStoreElementPurchase(transactionSignature) {
+    const purchase = this.pendingElementPurchase;
+    if (!purchase?.purchaseId) {
+      this.toast("Start a purchase first.");
+      return null;
+    }
+    try {
+      const result = await this.postJSON("/api/world/store", {
+        action: "confirm",
+        purchaseId: purchase.purchaseId,
+        transactionSignature: String(transactionSignature || "").trim(),
+      });
+      if (result?.status === "awaiting_finality") {
+        this.toast("Waiting for the transfer to finalize…");
+        return result;
+      }
+      this.pendingElementPurchase = null;
+      this.toast("Element unlocked. Adding it to your world…");
+      await this.refreshStoreLibrary();
+      return result;
+    } catch (error) {
+      this.toast(`Could not confirm. ${error?.message || ""}`.trim());
+      return null;
+    }
+  }
+
+  async configureStoreElement(elementId, { params, placement, enabled } = {}) {
+    try {
+      const result = await this.postJSON("/api/world/store", {
+        action: "configure",
+        elementId,
+        ...(params ? { params } : {}),
+        ...(placement ? { placement } : {}),
+        ...(typeof enabled === "boolean" ? { enabled } : {}),
+      });
+      if (result?.element) {
+        this.storeLibrary = { ...this.storeLibrary, [elementId]: result.element };
+        await this.world?.installStoreElement?.({
+          id: elementId,
+          ...result.element,
+        });
+      }
+      return result;
+    } catch (error) {
+      this.toast(`Could not save. ${error?.message || ""}`.trim());
+      return null;
+    }
   }
 
   async refreshRewardState({ force = false } = {}) {
@@ -23756,6 +23930,13 @@ class ForkMeshWorld extends HTMLElement {
     if (selected === "elements") {
       this.renderWorldElementsPane();
     }
+    if (selected === "store") {
+      void this.refreshStoreCatalog().then(() => {
+        if (!this.destroyed && this.settingsTab === "store") {
+          this.renderWorldStorePane();
+        }
+      });
+    }
     if (selected === "work") {
       void this.ensureOfficeRuntime({ userInitiated: true }).then(() => {
         if (this.destroyed || this.settingsTab !== "work") return;
@@ -23801,6 +23982,121 @@ class ForkMeshWorld extends HTMLElement {
         ? "Every element is back in the game."
         : "Every element removed — an empty scene is your renderer baseline.",
     );
+  }
+
+  // One card per purchasable element. An owned element shows its parameter
+  // form; an unowned one shows its price and the endpoints it would read.
+  renderWorldStorePane(statusMessage = "") {
+    const list = this.$("[data-world-store-list]");
+    if (!list) return;
+    const status = this.$("[data-world-store-status]");
+    if (status) status.textContent = String(statusMessage || "").slice(0, 200);
+    const catalog = this.storeCatalog;
+    const elements = Array.isArray(catalog?.elements) ? catalog.elements : [];
+    if (!elements.length) {
+      list.innerHTML =
+        '<p class="world-setting-note">The element store is unavailable right now.</p>';
+      return;
+    }
+    const owned = this.storeLibrary || {};
+    const pending = this.pendingElementPurchase;
+    list.innerHTML = elements
+      .map((element) => {
+        const entry = owned[element.id];
+        const network = element.network?.length
+          ? `Reads ${element.network.map((path) => `<code>${escapeHTML(path)}</code>`).join(", ")}`
+          : "Makes no network requests";
+        const body = entry
+          ? `
+            <div class="world-store-params">
+              ${(element.params || [])
+                .map((spec) =>
+                  this.storeParamField(element.id, spec, entry.params?.[spec.key]),
+                )
+                .join("")}
+              <label class="world-store-param">
+                <span>In the world</span>
+                <input
+                  type="checkbox"
+                  data-world-store-enabled="${escapeHTML(element.id)}"
+                  ${entry.enabled === false ? "" : "checked"}
+                />
+              </label>
+            </div>
+            <button type="button" data-world-store-save="${escapeHTML(element.id)}">Save</button>`
+          : pending?.elementId === element.id
+            ? `
+            <p class="world-setting-note">
+              Send exactly <strong>${escapeHTML(String(pending.amountSol))} SOL</strong>
+              to <code>${escapeHTML(pending.poolAddress)}</code> from your own
+              wallet, then paste the transaction signature.
+              <a href="${escapeHTML(pending.uri)}" rel="noopener">Open in wallet</a>
+            </p>
+            <label class="world-store-param">
+              <span>Transaction signature</span>
+              <input type="text" data-world-store-signature spellcheck="false" />
+            </label>
+            <button type="button" data-world-store-confirm="${escapeHTML(element.id)}">Confirm purchase</button>
+            <button type="button" data-world-store-cancel>Cancel</button>`
+            : `<button type="button" data-world-store-buy="${escapeHTML(element.id)}">
+                 Buy · ${escapeHTML(String(element.priceSol))} SOL
+               </button>`;
+        return `
+        <article class="world-store-card" data-owned="${Boolean(entry)}">
+          <header>
+            <strong>${escapeHTML(element.label)}</strong>
+            <span class="world-element-group">${escapeHTML(element.category)}</span>
+          </header>
+          <p class="world-setting-note">${escapeHTML(element.summary)}</p>
+          <p class="world-setting-note">${network}</p>
+          ${body}
+        </article>`;
+      })
+      .join("");
+  }
+
+  storeParamField(elementId, spec, value) {
+    const current = value === undefined ? spec.default : value;
+    const attributes =
+      `data-world-store-param="${escapeHTML(spec.key)}" ` +
+      `data-world-store-element="${escapeHTML(elementId)}"`;
+    let control = "";
+    if (spec.type === "number") {
+      control =
+        `<input type="number" ${attributes} value="${escapeHTML(String(current))}" ` +
+        `min="${escapeHTML(String(spec.min))}" max="${escapeHTML(String(spec.max))}" ` +
+        `step="${escapeHTML(String(spec.step || 1))}" />`;
+    } else if (spec.type === "select") {
+      control = `<select ${attributes}>${(spec.options || [])
+        .map(
+          (option) =>
+            `<option value="${escapeHTML(option)}"${option === current ? " selected" : ""}>${escapeHTML(option)}</option>`,
+        )
+        .join("")}</select>`;
+    } else if (spec.type === "toggle") {
+      control = `<input type="checkbox" ${attributes}${current ? " checked" : ""} />`;
+    } else {
+      control =
+        `<input type="text" ${attributes} value="${escapeHTML(String(current))}" ` +
+        `maxlength="${escapeHTML(String(spec.maxLength || 80))}" />`;
+    }
+    return `
+      <label class="world-store-param">
+        <span>${escapeHTML(spec.label || spec.key)}</span>
+        ${control}
+      </label>`;
+  }
+
+  collectStoreParams(elementId) {
+    const params = {};
+    this.$$(`[data-world-store-element="${elementId}"]`).forEach((input) => {
+      const key = input.dataset.worldStoreParam;
+      if (!key) return;
+      if (input.type === "checkbox") params[key] = input.checked;
+      else if (input.type === "number") params[key] = Number(input.value);
+      else params[key] = input.value;
+    });
+    return params;
   }
 
   renderWorldElementsPane(statusMessage = "") {
