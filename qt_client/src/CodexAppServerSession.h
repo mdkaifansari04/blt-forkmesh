@@ -32,7 +32,8 @@ public:
                const QString &model = QString(),
                const QString &mode = QString(),
                const QString &effort = QString(),
-               int memoryLimitMb = 0);
+               int memoryLimitMb = 0,
+               const QString &resumeFallbackPrompt = QString());
     void sendUserText(const QString &text);
     void respondToRequest(const QString &token, const QString &answer);
     void setTurnOptions(const QString &model, const QString &mode,
@@ -89,6 +90,7 @@ private:
     void sendNotification(const QString &method, const QJsonObject &params);
     void sendObject(const QJsonObject &message);
     void sendThreadRequest();
+    void startFreshThreadAfterResumeFailure(const QString &failure);
     void acceptThread(const QJsonObject &result);
     void beginTurn(const QString &text);
     void flushQueuedUserText();
@@ -135,6 +137,10 @@ private:
     QString m_cwd;
     QString m_initialPrompt;
     QString m_resumeThreadId;
+    // A saved Codex thread can expire or be removed independently of the local
+    // session. In that case start a new thread with the original task plus the
+    // latest instruction rather than leaving the user with a failed Add action.
+    QString m_resumeFallbackPrompt;
     QString m_model;
     QString m_effectiveModel;
     QString m_mode;

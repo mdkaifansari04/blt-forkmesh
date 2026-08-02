@@ -415,8 +415,8 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeCoveExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoCoveExplorer(); });
 
-    // Thirty-day repository trends and the Ratchet toggle sit at the right of
-    // the code toolbar, aligned with the icon rows above.
+    // Restore the full thirty-day charts: each repository measure has its own
+    // history instead of being collapsed into a current-value meter.
     auto *repoSizeChart = new ResourceSparkline(QStringLiteral("SIZE"), nullptr,
                                                 kResourceSparklineSide, 30);
     auto *repoLinesChart = new ResourceSparkline(QStringLiteral("LOC"), nullptr,
@@ -442,11 +442,12 @@ QWidget *MainWindow::buildRepoFilesPanel()
     // the bottom status bar (see buildStatusBar). One line holds the mode
     // toggles, the branch/worktree/remote/commit/tag/release counts (moved up
     // from the overview page), the go-to-file box and the repo trends
-    // (adhoc #6).
+    // (adhoc #6). Match the tab strip's 10px rhythm so the two icon rows scan
+    // as one aligned toolbar rather than two unrelated clusters.
     m_repoFilesModeBar = new QWidget;
     auto *modeRow = new QHBoxLayout(m_repoFilesModeBar);
     modeRow->setContentsMargins(8, 0, 16, 0);
-    modeRow->setSpacing(2);
+    modeRow->setSpacing(10);
     modeRow->addWidget(m_filesModeOverviewButton);
     modeRow->addWidget(m_filesModeExplorerButton);
     modeRow->addWidget(m_filesModeCoveExplorerButton);
@@ -474,7 +475,9 @@ QWidget *MainWindow::buildRepoFilesPanel()
     auto *panel = new QWidget;
     auto *layout = new QVBoxLayout(panel);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
+    // Keep the toolbar tight to the tab row above, but give the document below
+    // enough air that the commit strip is not visually welded to its controls.
+    layout->setSpacing(8);
     layout->addWidget(m_repoFilesModeBar);
     layout->addWidget(m_filesStack, 1);
     // The trend charts were born just now (this panel builds lazily), so seed
@@ -510,8 +513,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
 
     m_overviewList = new QTreeWidget;
     m_overviewList->setObjectName("overviewList");
-    m_overviewList->setColumnCount(3);
-    m_overviewList->setHeaderLabels({"Name", "Last commit", "Updated"});
+    m_overviewList->setColumnCount(2);
+    m_overviewList->setHeaderLabels({"Name and updated time", "Last commit"});
     m_overviewList->setRootIsDecorated(false);
     m_overviewList->setUniformRowHeights(true);
     m_overviewList->setSortingEnabled(false); // we sort the cached rows ourselves
@@ -519,12 +522,11 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewList->setAllColumnsShowFocus(true);
     m_overviewList->header()->hide();
     m_overviewList->header()->setStretchLastSection(false);
-    // The name column ends at the longest filename (including its compact
-    // metrics), so commit subjects begin immediately after the file name rather
-    // than drifting across a wide empty table.
+    // Keep each entry's icon, metric tracks, name, and updated time together on
+    // the left. The commit subject then begins immediately after the widest
+    // entry cell instead of the timestamp floating at the far-right edge.
     m_overviewList->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_overviewList->header()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_overviewList->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_overviewList->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_overviewList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     enableHoverRowHighlight(m_overviewList);
@@ -635,7 +637,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     auto *filesBody = new QWidget;
     auto *filesBodyLayout = new QVBoxLayout(filesBody);
     filesBodyLayout->setContentsMargins(0, 0, 0, 0);
-    filesBodyLayout->setSpacing(0);
+    filesBodyLayout->setSpacing(8);
     filesBodyLayout->addWidget(m_overviewCrumb);
     filesBodyLayout->addWidget(m_overviewList);
     filesBodyLayout->addWidget(m_readmeView);
@@ -675,7 +677,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     auto *leftColumn = new QWidget;
     auto *leftLayout = new QVBoxLayout(leftColumn);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(0);
+    leftLayout->setSpacing(8);
     leftLayout->addWidget(m_repoOverviewChrome);
     leftLayout->addWidget(m_overviewBodyStack, 1);
 
@@ -3710,10 +3712,9 @@ void MainWindow::loadRepoOverview(const QString &path)
         page->setUpdatesEnabled(true);
 }
 
-// Three tiny tracks next to each filename summarize size, source lines and
-// recursive file count. They deliberately use a single baseline rather than
-// full table columns: the file name remains the visual anchor and the commit
-// subject can start right after the longest name.
+// Three small tracks beside the entry icon summarize size, source lines and
+// recursive file count. Their tooltips retain the exact values while the row
+// stays compact.
 static QWidget *makeOverviewMetricTrack(double fraction, const QString &toolTip)
 {
     auto *metric = new QWidget;
@@ -3732,14 +3733,12 @@ static QWidget *makeOverviewMetricTrack(double fraction, const QString &toolTip)
 }
 
 static QWidget *makeOverviewNameCell(const QIcon &icon, const QString &name,
-                                     double sizeFraction, double locFraction,
-                                     double fileFraction, qint64 size, qint64 loc,
-                                     qint64 files)
+                                     const QString &updated, double sizeFraction,
+                                     double locFraction, double fileFraction,
+                                     qint64 size, qint64 loc, qint64 files)
 {
     auto *cell = new QWidget;
     cell->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
-    // Leave the containing tree in charge of row clicks (directory navigation
-    // and opening files); this is display-only chrome.
     cell->setAttribute(Qt::WA_TransparentForMouseEvents);
     auto *layout = new QHBoxLayout(cell);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -3749,6 +3748,8 @@ static QWidget *makeOverviewNameCell(const QIcon &icon, const QString &name,
     iconLabel->setPixmap(icon.pixmap(16, 16));
     auto *nameLabel = new QLabel(name);
     nameLabel->setObjectName("overviewFileName");
+    auto *updatedLabel = new QLabel(updated);
+    updatedLabel->setObjectName("overviewUpdatedTime");
     layout->addWidget(iconLabel);
     layout->addWidget(makeOverviewMetricTrack(
         sizeFraction, QStringLiteral("Size: %1").arg(formatByteSize(size))));
@@ -3761,7 +3762,9 @@ static QWidget *makeOverviewNameCell(const QIcon &icon, const QString &name,
                   : QStringLiteral("No files")));
     layout->addSpacing(4);
     layout->addWidget(nameLabel);
-    for (QWidget *child : {iconLabel, nameLabel})
+    layout->addSpacing(4);
+    layout->addWidget(updatedLabel);
+    for (QWidget *child : {iconLabel, nameLabel, updatedLabel})
         child->setAttribute(Qt::WA_TransparentForMouseEvents);
     return cell;
 }
@@ -3830,12 +3833,12 @@ void MainWindow::populateOverviewTree()
     for (const OverviewRow &e : std::as_const(rows)) {
         auto *item = new QTreeWidgetItem(m_overviewList);
         const QIcon icon = e.isDir ? iconForDir(false) : iconForFile(e.name);
-        item->setIcon(0, icon);
-        item->setText(0, e.name);
+        const QString updated = formatShortRelativeTime(e.commitTs);
         item->setSizeHint(
             0, QSize(QFontMetrics(m_overviewList->font()).horizontalAdvance(e.name) +
-                         16 + 3 * 24 + 4 * 5,
-                     22));
+                         QFontMetrics(m_overviewList->font()).horizontalAdvance(updated) +
+                         16 + 3 * 24 + 4 * 7,
+                     28));
         item->setData(0, Qt::UserRole, e.path);
         item->setData(0, Qt::UserRole + 1, e.isDir ? 1 : 0);
         item->setToolTip(0, QStringLiteral("Size: %1\nLines of code: %2\nFiles: %3")
@@ -3843,7 +3846,7 @@ void MainWindow::populateOverviewTree()
                                      QLocale().toString(e.fileCount)));
         m_overviewList->setItemWidget(
             item, 0,
-            makeOverviewNameCell(icon, e.name,
+            makeOverviewNameCell(icon, e.name, updated,
                                  maxSize > 0 ? double(e.size) / double(maxSize) : 0.0,
                                  maxLoc > 0 ? double(e.loc) / double(maxLoc) : 0.0,
                                  maxFiles > 0 ? double(e.fileCount) / double(maxFiles)
@@ -3851,16 +3854,11 @@ void MainWindow::populateOverviewTree()
                                  e.size, e.loc, e.fileCount));
         item->setText(1, e.subject);
         item->setToolTip(1, e.subject);
-        item->setText(2, formatShortRelativeTime(e.commitTs));
-        item->setToolTip(2, e.whenText);
-        item->setForeground(2, QColor("#8b949e"));
-        QFont updatedFont = m_overviewList->font();
-        updatedFont.setPixelSize(10);
-        item->setFont(2, updatedFont);
+        item->setToolTip(0, item->toolTip(0) + QStringLiteral("\nUpdated: %1").arg(e.whenText));
     }
     int listHeight = m_overviewList->frameWidth() * 2;
     for (int row = 0; row < m_overviewList->topLevelItemCount(); ++row)
-        listHeight += qMax(22, m_overviewList->sizeHintForRow(row));
+        listHeight += qMax(28, m_overviewList->sizeHintForRow(row));
     m_overviewList->setFixedHeight(qMax(1, listHeight));
     m_overviewList->setUpdatesEnabled(true);
 }
@@ -6764,6 +6762,14 @@ void MainWindow::openCommitHashReference(const QString &hash)
     if (ref.isEmpty())
         return;
     showOverviewCommits();
+    // A transcript SHA is a history-search target as well as a navigation
+    // target. Keep it in the Git search field so the matching graph row is
+    // discoverable behind the expanded commit detail (and when the user steps
+    // back to the list), rather than jumping to a context-free diff.
+    if (m_globalSearch)
+        m_globalSearch->setText(ref);
+    if (m_commitSearch)
+        m_commitSearch->setText(ref);
     showCommit(ref);
 }
 
@@ -8365,14 +8371,10 @@ QString MainWindow::repoHeadBranch() const
     return b == QLatin1String("HEAD") ? QString() : b; // "HEAD" => detached
 }
 
-// Refresh the commits-page branch button: its label (the branch whose history is
-// on screen) and its dropdown (every branch, plus "Create new branch…").
-// Selecting a branch *browses* its commits, like the Code-tab switcher, rather
-// than checking it out. The list is driven by currentRef(), so the indicator
-// must track that same ref or the two disagree — the button claiming HEAD while
-// the list showed another branch turned a click into a heavyweight checkout.
-// Real checkouts live in the Branches panel.
-void MainWindow::refreshCommitsBranchButton()
+// Update only the label for the branch whose history is on screen. This is used
+// while refs are loading too, so it deliberately avoids rebuilding the branch
+// menu (which requires another git branch listing).
+void MainWindow::updateCommitsBranchButtonLabel()
 {
     if (!m_commitsBranchButton)
         return;
@@ -8404,6 +8406,21 @@ void MainWindow::refreshCommitsBranchButton()
                           "history here, its diff against the base on the "
                           "right) or create one")
             .arg(label));
+}
+
+// Refresh the commits-page branch button: its label (the branch whose history is
+// on screen) and its dropdown (every branch, plus "Create new branch…").
+// Selecting a branch *browses* its commits, like the Code-tab switcher, rather
+// than checking it out. The list is driven by currentRef(), so the indicator
+// must track that same ref or the two disagree — the button claiming HEAD while
+// the list showed another branch turned a click into a heavyweight checkout.
+// Real checkouts live in the Branches panel.
+void MainWindow::refreshCommitsBranchButton()
+{
+    if (!m_commitsBranchButton)
+        return;
+    updateCommitsBranchButtonLabel();
+    const QString browsed = m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
     // The compare indicator beside it names the base end of the comparison and
     // only shows while one is open (adhoc #16).
     updateCommitsCompareIndicator();
@@ -9245,9 +9262,22 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBarScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     tabBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     tabBarScroll->setMinimumWidth(0);
-    // Tall enough for the stacked icon-over-caption tabs (44px, adhoc #91),
-    // their top inset, plus the horizontal scrollbar a narrow window needs.
-    tabBarScroll->setFixedHeight(56 + kRepoTabRowTopInset);
+    // The row needs only its 44px icon-over-caption buttons plus their shared
+    // top inset.  The old 56px floor left a conspicuous blank band before the
+    // Code toolbar whenever no horizontal scrollbar was needed.  Put the
+    // scrollbar's height back only while it is actually visible, so a narrow
+    // window can still pan the complete tab strip without clipping its icons.
+    auto adjustTabBarHeight = [tabBarScroll] {
+        const int scrollbarHeight = tabBarScroll->horizontalScrollBar()->maximum() > 0
+                                       ? tabBarScroll->horizontalScrollBar()
+                                             ->sizeHint()
+                                             .height()
+                                       : 0;
+        tabBarScroll->setFixedHeight(44 + kRepoTabRowTopInset + scrollbarHeight);
+    };
+    connect(tabBarScroll->horizontalScrollBar(), &QScrollBar::rangeChanged,
+            tabBarScroll, [adjustTabBarHeight](int, int) { adjustTabBarHeight(); });
+    QTimer::singleShot(0, tabBarScroll, adjustTabBarHeight);
 
     // The integrity-pin warning ("clones are being rejected — reset the pin")
     // doesn't live in an in-page banner here; refreshRepoPinBanner surfaces it as
@@ -9553,6 +9583,9 @@ void MainWindow::updateRepoActivityRail()
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 2;
     const bool onAgents = onHome && m_repoDetailStack &&
                           m_repoDetailStack->currentIndex() == kRepoAgentsTab;
+    // Git is where notification bubbles are most useful, but its graph needs
+    // the full height of the workspace. Its prompt is moved over the lower
+    // right detail pane instead of reserving a full-width footer.
     // Git is its own activity-rail destination, so hide every Code/repository
     // header above the source-control workspace rather than leaving rows of
     // unrelated navigation on screen. The Agents tab gets the same treatment: its
@@ -9567,16 +9600,17 @@ void MainWindow::updateRepoActivityRail()
         m_repoFilesModeBar->setVisible(!onChanges);
     if (m_repoOverviewChrome)
         m_repoOverviewChrome->setVisible(!onChanges && !onBranches);
-    if (m_footerDock)
-        m_footerDock->show();
+    if (m_footerLeftRegion)
+        m_footerLeftRegion->setVisible(!onChanges);
+    setGitPromptOverlay(onChanges);
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
     if (m_agentsNavButton)
         m_agentsNavButton->setChecked(onAgents);
     // The Git page has no search box of its own: the top bar's field is the one
     // place to search from, and here it searches this repo's history, so say so.
-    // The Agents page has its own box, but the top-bar one drives it too, so it
-    // says what typing up there will do to the page below.
+    // The Agents page uses the top-bar box to filter the visible session list,
+    // so say what typing here will do below.
     if (m_globalSearch)
         m_globalSearch->setPlaceholderText(
             onChanges ? QString::fromUtf8("Search commits\xE2\x80\xA6")
@@ -9587,6 +9621,60 @@ void MainWindow::updateRepoActivityRail()
     // leaving it clears the filter so the list is whole again next time.
     syncGitCommitFilter();
     syncAgentPageSearch();
+    if (onChanges)
+        QTimer::singleShot(0, this, &MainWindow::positionTopMessageBubble);
+}
+
+void MainWindow::setGitPromptOverlay(bool enabled)
+{
+    const bool shouldFloat = enabled && m_commitsStack && m_footerDock &&
+                             m_promptWrapper;
+    if (shouldFloat == m_gitPromptOverlayVisible) {
+        if (shouldFloat)
+            positionGitPromptOverlay();
+        else if (m_footerDock)
+            m_footerDock->show();
+        return;
+    }
+
+    if (shouldFloat) {
+        if (QLayout *dockLayout = m_footerDock->layout())
+            dockLayout->removeWidget(m_promptWrapper);
+        m_promptWrapper->setParent(m_commitsStack);
+        m_promptWrapper->setMaximumWidth(560);
+        m_footerDock->hide();
+        m_gitPromptOverlayVisible = true;
+        m_promptWrapper->show();
+        QTimer::singleShot(0, this, &MainWindow::positionGitPromptOverlay);
+        return;
+    }
+
+    m_promptWrapper->hide();
+    m_promptWrapper->setParent(m_footerDock);
+    if (auto *dockLayout = qobject_cast<QHBoxLayout *>(m_footerDock->layout()))
+        dockLayout->addWidget(m_promptWrapper, 1);
+    m_promptWrapper->setMaximumWidth(QWIDGETSIZE_MAX);
+    m_gitPromptOverlayVisible = false;
+    m_footerDock->show();
+}
+
+void MainWindow::positionGitPromptOverlay()
+{
+    if (!m_gitPromptOverlayVisible || !m_promptWrapper || !m_commitsStack)
+        return;
+
+    constexpr int kMargin = 8;
+    constexpr int kMaxWidth = 560;
+    const QSize hostSize = m_commitsStack->size();
+    const int width = qMin(kMaxWidth, qMax(0, hostSize.width() - 2 * kMargin));
+    const int height = m_promptWrapper->sizeHint().height();
+    if (width <= 0 || height <= 0)
+        return;
+
+    m_promptWrapper->resize(width, height);
+    m_promptWrapper->move(hostSize.width() - kMargin - width,
+                          qMax(kMargin, hostSize.height() - kMargin - height));
+    m_promptWrapper->raise();
 }
 
 // Mirror the top-bar search into the commit-list filter while the Git page is
@@ -9605,22 +9693,15 @@ void MainWindow::syncGitCommitFilter()
     m_commitSearch->setText(query); // textChanged -> filterCommits
 }
 
-// Mirror the top-bar search into the Agents page while it is on screen, so that
-// box searches what is in front of you as you type: the session list narrows on
-// every keystroke (title, agent, status, PR — and, once the background scan
-// lands, the transcripts themselves) and the open session's transcript runs the
-// same query, so its matches highlight in place.
-//
-// The page keeps its own two boxes, and a query typed straight into one of them
-// is the user's, not ours: the mirror only overwrites a box while it still holds
-// exactly what the mirror last put there. That is what m_agentPageSearchMirror
-// remembers, and it is why clearing the top bar clears the page's boxes but
-// never a filter the user typed on the page itself.
+// The top-bar search filters the Agents list directly while it is on screen.
+// Keep the open transcript's own search box in step too, so its matches still
+// highlight in place.  The mirror only takes back a transcript query it placed
+// itself, which is what m_agentPageSearchMirror remembers.
 void MainWindow::syncAgentPageSearch()
 {
-    // The Agents tab builds lazily, so both boxes can still be null here; the
-    // mirror below no-ops on them and the transcript scan (which the dropdown
-    // needs either way) still runs.
+    // The Agents tab builds lazily, so the transcript box can still be null;
+    // the mirror then no-ops while the transcript scan still serves the
+    // global-search dropdown.
     const bool onHome = !m_sectionStack || m_sectionStack->currentIndex() == 0;
     const bool onAgents = onHome && m_repoDetailStack &&
                           m_repoDetailStack->currentIndex() == kRepoAgentsTab;
@@ -9633,11 +9714,13 @@ void MainWindow::syncAgentPageSearch()
         // is still showing our own query.
         if (query.isEmpty() && box->text() != m_agentPageSearchMirror)
             return;
-        box->setText(query); // textChanged -> list filter / transcript highlight
+        box->setText(query); // textChanged -> transcript highlight
     };
-    mirror(m_agentSearch);
     mirror(m_transcriptSearch);
+    const bool listQueryChanged = m_agentPageSearchMirror != query;
     m_agentPageSearchMirror = query;
+    if (listQueryChanged)
+        refreshAgentTable();
     // Scan even off the Agents page: the dropdown lists sessions by what their
     // transcripts say, so the hits have to be there before the page is opened.
     // A no-op once this query has been scanned for this repo.
@@ -9648,6 +9731,7 @@ void MainWindow::syncAgentPageSearch()
 QWidget *MainWindow::buildRepoCommitsTab()
 {
     m_commitsStack = new QStackedWidget;
+    m_commitsStack->installEventFilter(this);
 
     // --- Page 0: the commit list.
     auto *listPage = new QWidget;

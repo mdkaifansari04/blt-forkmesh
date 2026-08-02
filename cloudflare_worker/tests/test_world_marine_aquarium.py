@@ -188,6 +188,16 @@ def test_aquarium_bottom_right_control_panel_combines_all_four_actions():
 
 
 def test_aquarium_control_panel_reports_live_school_mode():
+    aquarium = _aquarium_block()
+    for constant in (
+        "AQUARIUM_SCHOOL_INITIAL_DELAY_MS",
+        "AQUARIUM_SCHOOL_MIN_IDLE_MS",
+        "AQUARIUM_SCHOOL_MAX_IDLE_MS",
+        "AQUARIUM_SCHOOL_DURATION_MS",
+        "AQUARIUM_SCHOOL_TRANSITION_MS",
+        "AQUARIUM_SCHOOL_MODES",
+    ):
+        assert f"const {constant}" in aquarium
     assert (
         'aquariumSchoolStatus.dataset.worldAquariumSchoolStatus = ""'
         in SCENE

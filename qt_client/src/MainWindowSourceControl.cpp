@@ -33,6 +33,7 @@
 #include <QStorageInfo>
 #include <QTemporaryFile>
 #include <QTextBlock>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 #include <QWidgetAction>
@@ -212,6 +213,39 @@ private:
 } // namespace
 
 // ---- Source Control panel (working-tree changes) ---------------------------
+
+// Git's index lock is intentionally exclusive. Background work in the desktop
+// client (agent completion, mirror refresh, branch synchronization) can hold it
+// for a few milliseconds just as a person clicks Stage or Commit. Treat that
+// narrow collision as transient instead of surfacing Git's alarming stale-lock
+// instructions immediately. We never remove the lock: a genuinely live or stale
+// lock still fails after the bounded wait and keeps Git's original diagnostic.
+static bool runSourceControlMutation(const QString &dir, const QStringList &args,
+                                     QByteArray *out, QString *err)
+{
+    constexpr int kAttempts = 8;
+    QString lastError;
+    for (int attempt = 0; attempt < kAttempts; ++attempt) {
+        lastError.clear();
+        if (runGitCapture(dir, args, out, &lastError)) {
+            if (err)
+                err->clear();
+            return true;
+        }
+        const bool indexBusy =
+            lastError.contains(QStringLiteral("index.lock"), Qt::CaseInsensitive) &&
+            (lastError.contains(QStringLiteral("File exists"),
+                                Qt::CaseInsensitive) ||
+             lastError.contains(QStringLiteral("Unable to create"),
+                                Qt::CaseInsensitive));
+        if (!indexBusy || attempt + 1 == kAttempts)
+            break;
+        QThread::msleep(static_cast<unsigned long>(100 + attempt * 50));
+    }
+    if (err)
+        *err = lastError;
+    return false;
+}
 
 // Human-readable name for a `git status --porcelain` status letter.
 static QString scmStatusTip(QChar status)
@@ -597,6 +631,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     header->addStretch();
     header->addWidget(m_scmPrevButton);
     header->addWidget(m_scmNextButton);
+    header->addWidget(m_scmAutoViewedButton);
     root->addLayout(header);
 
     m_scmTree = new QTreeWidget;
@@ -2175,7 +2210,8 @@ void MainWindow::scmStagePath(const QString &path)
 
     const QString dir = sourceControlGitDir();
     QString err;
-    if (!runGitCapture(dir, {"add", "-A", "--", path}, nullptr, &err))
+    if (!runSourceControlMutation(dir, {"add", "-A", "--", path}, nullptr,
+                                  &err))
         QMessageBox::warning(this, "Stage", err.isEmpty() ? "git add failed." : err);
     refreshSourceControl();
     if (!nextPath.isEmpty()) {
@@ -2222,7 +2258,7 @@ void MainWindow::scmStageAll()
 {
     const QString dir = sourceControlGitDir();
     QString err;
-    if (!runGitCapture(dir, {"add", "-A"}, nullptr, &err))
+    if (!runSourceControlMutation(dir, {"add", "-A"}, nullptr, &err))
         QMessageBox::warning(this, "Stage all", err.isEmpty() ? "git add failed." : err);
     refreshSourceControl();
 }
@@ -2267,7 +2303,7 @@ bool MainWindow::performScmCommit()
                 "Nothing is staged. Stage all changes and commit?") != QMessageBox::Yes)
             return false;
         QString err;
-        if (!runGitCapture(dir, {"add", "-A"}, nullptr, &err)) {
+        if (!runSourceControlMutation(dir, {"add", "-A"}, nullptr, &err)) {
             QMessageBox::warning(this, "Commit", err.isEmpty() ? "git add failed." : err);
             return false;
         }
@@ -2278,7 +2314,7 @@ bool MainWindow::performScmCommit()
         return false;
     }
     QString err;
-    if (!runGitCapture(dir, {"commit", "-m", msg}, nullptr, &err)) {
+    if (!runSourceControlMutation(dir, {"commit", "-m", msg}, nullptr, &err)) {
         QMessageBox::warning(this, "Commit",
                              err.isEmpty() ? "git commit failed." : err.left(300));
         return false;
@@ -2319,7 +2355,7 @@ void MainWindow::scmStageAllCommitAndPush()
         return;
     }
     QString err;
-    if (!runGitCapture(dir, {"add", "-A"}, nullptr, &err)) {
+    if (!runSourceControlMutation(dir, {"add", "-A"}, nullptr, &err)) {
         QMessageBox::warning(this, "Stage all",
                              err.isEmpty() ? "git add failed." : err);
         return;

@@ -33,6 +33,7 @@ def _load(*names, extra_globals=None):
 (
     _mirror_ms,
     agent_provider_mirror_candidates,
+    agent_provider_target_decision,
     build_repo_mirrors_payload,
     clone_state_pins,
     repo_mirror_group_key,
@@ -40,6 +41,7 @@ def _load(*names, extra_globals=None):
 ) = _load(
     "_mirror_ms",
     "agent_provider_mirror_candidates",
+    "agent_provider_target_decision",
     "build_repo_mirrors_payload",
     "clone_state_pins",
     "repo_mirror_group_key",
@@ -94,6 +96,144 @@ def test_agent_jobs_use_fresh_signed_provider_capability_not_https_presence():
     assert agent_provider_mirror_candidates(
         records, target, "jett", "unknown", now, 600_000
     ) == []
+
+
+def test_org_owner_can_queue_to_owned_provider_capable_desktop_while_offline():
+    now = 1_000_000
+    target = {
+        "owner": "desktop1",
+        "name": "forkmesh",
+        "runtimeMode": "desktop",
+        "updatedAt": now - 700_000,
+        "agentProviders": ["codex"],
+        "rootCommit": "abc",
+    }
+    decision = agent_provider_target_decision(
+        [target],
+        target,
+        "desktop1",
+        "codex",
+        now,
+        600_000,
+        org_owner=True,
+        source_owned=True,
+    )
+    assert decision == {
+        "ok": True,
+        "targetNode": "desktop1",
+        "targetOnline": False,
+        "queueState": "waiting_for_desktop",
+        "route": "owner_desktop",
+    }
+
+
+def test_offline_owner_target_rejections_are_exact_and_actionable():
+    now = 1_000_000
+    base = {
+        "owner": "desktop1",
+        "name": "forkmesh",
+        "runtimeMode": "desktop",
+        "updatedAt": now - 700_000,
+        "agentProviders": ["claude-code"],
+        "rootCommit": "abc",
+    }
+    cases = (
+        (None, True, "repository_not_published", "publish_repository"),
+        (base, False, "target_not_owned", "link_owned_desktop"),
+        (
+            {**base, "runtimeMode": "headless"},
+            True,
+            "target_not_desktop",
+            "link_desktop_target",
+        ),
+        (
+            base,
+            True,
+            "provider_not_advertised",
+            "publish_provider_capability",
+        ),
+    )
+    for target, source_owned, code, action in cases:
+        decision = agent_provider_target_decision(
+            [target] if target else [],
+            target,
+            "desktop1",
+            "codex",
+            now,
+            600_000,
+            org_owner=True,
+            source_owned=source_owned,
+        )
+        assert decision["ok"] is False
+        assert decision["error"] == code
+        assert decision["requiredAction"] == action
+        assert decision["message"]
+
+    preferred = agent_provider_target_decision(
+        [
+            base,
+            {
+                "owner": "desktop1",
+                "machineName": "mirror6",
+                "name": "forkmesh",
+                "lastSync": now - 1_000,
+                "agentProviders": ["codex"],
+                "rootCommit": "abc",
+            },
+        ],
+        {**base, "agentProviders": ["codex"]},
+        "desktop1",
+        "codex",
+        now,
+        600_000,
+        preferred_node="mirror6",
+        org_owner=True,
+        source_owned=True,
+    )
+    assert preferred["error"] == "preferred_target_ineligible"
+    assert preferred["requiredAction"] == "select_linked_desktop"
+
+
+def test_engineering_route_still_requires_a_fresh_capable_mirror():
+    now = 1_000_000
+    target = {
+        "owner": "desktop1",
+        "name": "forkmesh",
+        "runtimeMode": "desktop",
+        "updatedAt": now - 700_000,
+        "agentProviders": ["codex"],
+        "rootCommit": "abc",
+    }
+    mirror = {
+        "owner": "desktop1",
+        "machineName": "mirror6",
+        "name": "forkmesh",
+        "runtimeMode": "headless",
+        "lastSync": now - 1_000,
+        "agentProviders": ["codex"],
+        "rootCommit": "abc",
+    }
+    accepted = agent_provider_target_decision(
+        [target, mirror],
+        target,
+        "desktop1",
+        "codex",
+        now,
+        600_000,
+    )
+    assert accepted["targetNode"] == "mirror6"
+    assert accepted["queueState"] == "ready_for_claim"
+
+    rejected = agent_provider_target_decision(
+        [target, {**mirror, "lastSync": now - 700_000}],
+        target,
+        "desktop1",
+        "codex",
+        now,
+        600_000,
+    )
+    assert rejected["error"] == "no_online_agent_mirror"
+    assert rejected["retryable"] is True
 
 
 def test_fresh_agent_only_headless_node_is_live_but_not_clone_ready():
@@ -508,6 +648,26 @@ def test_payload_names_the_latest_commit_of_each_mirror():
     assert legacy["lastCommitMessage"] is None
     assert legacy["lastCommitAuthorName"] is None
     assert legacy["lastCommitAt"] is None
+
+
+def test_payload_carries_only_safe_changed_files_from_the_signed_head():
+    now = 1_000_000
+    rows = [
+        _row("a", "mainnode", "forkmesh", root="abc", synced="990000"),
+    ]
+    rows[0]["data"]["changedFiles"] = [
+        "src/world.js",
+        "src/world.js",
+        "../private-key",
+        "/etc/passwd",
+        "docs/onboarding.md",
+        "bad\npath",
+    ]
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    assert payload["mirrors"][0]["changedFiles"] == [
+        "src/world.js", "docs/onboarding.md"]
 
 
 def test_payload_stamps_when_each_mirror_last_served_a_clone_or_web_read():

@@ -188,6 +188,27 @@ def test_client_treats_the_frame_as_a_doorbell_and_coalesces_one_refresh():
     assert "window.clearTimeout(this.mirrorPushRefreshTimer);" in APP
 
 
+def test_verified_landing_notice_includes_publisher_avatar_and_commit_context():
+    # The WebSocket packet remains a refresh doorbell. The expanded visitor
+    # card is made only after the matching signed mirror entry is in hand.
+    handler = APP[APP.index("handleMirrorPush(message) {"):]
+    handler = handler[:handler.index("\n  }", handler.index("handleMirrorPush(message) {"))]
+    assert "this.announceMirrorPushLanding(landing)" in handler
+    announce = APP[APP.index("async announceMirrorPushLanding(pending) {"):]
+    announce = announce[:announce.index("\n  }", announce.index("async announceMirrorPushLanding(pending) {"))]
+    assert "this.verifiedMirrorPushLanding(pending)" in announce
+    assert "repository.lastCommitMessage" in announce
+    assert "repository.lastCommitAuthorName" in announce
+    assert "repository.changedFiles" in announce
+    assert "node?.ownerUser" in announce
+    assert "this.mirrorPushPublisherProfile(publisher)" in announce
+    assert "avatarPng: profile.avatarPng" in announce
+    assert "Published by" in announce
+    assert "Git author" in announce
+    assert "Changed" in announce
+    assert "world-activity-details" in APP
+
+
 def test_scene_plays_a_bounded_disposed_surge_from_verified_commit_changes():
     # The surge fires from updateNetworkNodes when a cabinet's commit changes
     # between two signed payload snapshots — the same single trigger for the

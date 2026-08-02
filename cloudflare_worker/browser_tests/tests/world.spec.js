@@ -1272,6 +1272,56 @@ async function waitForWorldReady(page) {
   await page.evaluate(() => document.fonts?.ready);
 }
 
+test("verified code landings show the publisher avatar and commit context", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "code-landing-details");
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate(async (shell) => {
+    const commit = "b".repeat(40);
+    shell.activityNoticesEnabledAt = 0;
+    shell.liveMirrorNodes = [
+      {
+        name: "mirror2",
+        ownerUser: "ada",
+        repositories: [
+          {
+            owner: "forkmesh",
+            name: "forkmesh",
+            commit,
+            branch: "main",
+            lastCommitMessage: "Show richer landing details",
+            lastCommitAuthorName: "Ada Lovelace",
+            changedFiles: ["src/world.js", "docs/onboarding.md"],
+          },
+        ],
+      },
+    ];
+    shell.mirrorPushPublisherProfile = async () => ({
+      name: "ada",
+      avatarPng:
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL/2QAAAABJRU5ErkJggg==",
+    });
+    await shell.announceMirrorPushLanding({
+      node: "mirror2",
+      owner: "forkmesh",
+      repo: "forkmesh",
+      commit: commit.slice(0, 12),
+    });
+  });
+  const card = page.locator("[data-world-activity-stream] article").first();
+  await expect(card).toContainText("Fresh code landed on “forkmesh/forkmesh”.");
+  await expect(card).toContainText("bbbbbbbbbbbb · main · mirror2");
+  await expect(card).toContainText("Message · Show richer landing details");
+  await expect(card).toContainText("Git author · Ada Lovelace");
+  await expect(card).toContainText("Published by · @ada");
+  await expect(card).toContainText("Changed · src/world.js · docs/onboarding.md");
+  await expect(card.locator(".world-activity-icon img")).toHaveAttribute(
+    "src",
+    /^data:image\/png;base64,/,
+  );
+});
+
 async function moveToOfficeEntrance(page, { unpause = false } = {}) {
   await page.locator("forkmesh-world").evaluate(
     (shell, { position, shouldUnpause }) => {
@@ -1846,6 +1896,66 @@ test("World chat opens intentionally and restores keyboard focus on close", asyn
   await page.locator("[data-world-chat-terminal-close]").click();
   await expect(terminal).not.toHaveAttribute("open", "");
   await expect(summary).toBeFocused();
+});
+
+test("World Task creates an unassigned General task instead of dispatching a bot", async ({
+  page,
+}) => {
+  const officeTaskFixture = { canManage: false, requests: [], tasks: [] };
+  await prepareWorldPage(page, "world-general-task", {
+    session: {
+      kind: "user",
+      nodeName: "alice",
+      email: "alice@example.test",
+      sessionToken: "alice-token",
+    },
+    officeTaskFixture,
+    chatPassphrase: "playwright-public-world-general-passphrase",
+  });
+  await waitForWorld(page);
+
+  const terminal = page.locator("[data-world-chat-terminal]");
+  await terminal.evaluate((element) => {
+    element.open = true;
+  });
+  const avatar = page.locator("[data-world-quick-composer-avatar]");
+  await expect(avatar).toBeVisible();
+  await expect
+    .poll(() =>
+      avatar.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return { borderTopWidth: style.borderTopWidth, boxShadow: style.boxShadow };
+      }),
+    )
+    .toEqual({ borderTopWidth: "0px", boxShadow: "none" });
+
+  await page.locator("#fullChatInput").fill("Review the onboarding checklist");
+  const taskButton = page.locator("#fullChatTaskSend");
+  await expect(taskButton).toHaveAttribute(
+    "title",
+    "Create an unassigned task in General",
+  );
+  await taskButton.click();
+
+  await expect
+    .poll(() =>
+      officeTaskFixture.requests.find(
+        (request) => request.method === "POST" && request.path === "/api/tasks",
+      ),
+    )
+    .toMatchObject({
+      body: {
+        title: "Review the onboarding checklist",
+        department: "general",
+        team: "",
+        destination: "department",
+        assigneeKind: "unassigned",
+        assignee: "",
+      },
+    });
+  await expect(
+    page.locator("[data-dashboard-chat-composer-status]"),
+  ).toHaveText("Organization task created.");
 });
 
 test("mobile World chat contains its rail, transcript, and prompt", async ({
@@ -3065,6 +3175,62 @@ test("reef controls stay tank-mounted and report a live country school", async (
     }),
   );
   expect(acrossCountries).toBeGreaterThan(withinCountry + 2);
+});
+
+test("aquarium draws one low-poly instanced fish for every public user", async ({
+  page,
+}) => {
+  const users = Array.from({ length: 31 }, (_, index) => ({
+    name: `reef-member-${String(index).padStart(2, "0")}`,
+    countryCode: index % 2 ? "US" : "CA",
+    browser: index % 2 ? "Firefox" : "Safari",
+    os: index % 2 ? "Linux" : "macOS",
+    activityBucket: index % 3 ? "24h" : "10d",
+  }));
+  await prepareWorldPage(page, "office-aquarium-all-public-users", {
+    directoryUsers: users,
+  });
+  await waitForWorld(page);
+  const school = await page.locator("forkmesh-world").evaluate(
+    (shell, userCount) => {
+      const aquarium = shell.world.scene.getObjectByName(
+        "forkmesh-office-marine-aquarium",
+      );
+      const batch = (name) =>
+        aquarium.getObjectByName(name);
+      const triangles = (mesh) =>
+        Math.floor(mesh.geometry.index.count / 3) * mesh.count;
+      const bodies = batch("forkmesh-office-aquarium-user-fish-bodies");
+      const tails = batch("forkmesh-office-aquarium-user-fish-tails");
+      const fins = batch("forkmesh-office-aquarium-user-fish-fins");
+      return {
+        accountPopulation: aquarium.userData.accountPopulation,
+        visibleFish: aquarium.userData.visibleFish,
+        allAnchorsPresent: Array.from(
+          { length: userCount },
+          (_, index) =>
+            aquarium.getObjectByName(
+              `forkmesh-office-aquarium-user-fish-${index}`,
+            ) !== undefined,
+        ).every(Boolean),
+        batches: [bodies, tails, fins].map((mesh) => ({
+          instanced: mesh.isInstancedMesh,
+          count: mesh.count,
+          triangles: triangles(mesh),
+        })),
+      };
+    },
+    users.length,
+  );
+
+  expect(school.accountPopulation).toBe(users.length);
+  expect(school.visibleFish).toBe(users.length);
+  expect(school.allAnchorsPresent).toBe(true);
+  expect(school.batches).toEqual([
+    { instanced: true, count: users.length, triangles: users.length * 36 },
+    { instanced: true, count: users.length, triangles: users.length * 2 },
+    { instanced: true, count: users.length * 4, triangles: users.length * 8 },
+  ]);
 });
 
 test("aquarium blocks lobby movement and double-click travel", async ({
@@ -6108,6 +6274,64 @@ test("mobile refresh keeps a live low-memory renderer and recovers cached pages 
   ).toBe(false);
   await expect(page.locator("[data-world-renderer-recovery]")).toBeHidden();
   expect(pageErrors).toEqual([]);
+  await context.close();
+});
+
+test("a 4K display keeps the full World inside a 1080p raster budget", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 3840, height: 2160 },
+    screen: { width: 3840, height: 2160 },
+    deviceScaleFactor: 1,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "desktop-4k-memory");
+  await waitForWorld(page);
+
+  const state = await page.locator("forkmesh-world").evaluate((shell) => {
+    const diagnostics = shell.world.getDiagnostics();
+    let scaledCanvasTextures = 0;
+    shell.world.scene.traverse((object) => {
+      const materials = Array.isArray(object.material)
+        ? object.material
+        : [object.material];
+      materials.filter(Boolean).forEach((material) => {
+        if (material.map?.image?.dataset?.textureScale === "0.5") {
+          scaledCanvasTextures += 1;
+        }
+      });
+    });
+    return {
+      compact: diagnostics.output.compactRenderer,
+      lowMemory: diagnostics.output.memoryConstrainedRenderer,
+      antialias: diagnostics.output.antialias,
+      shadows: diagnostics.shadowsEnabled,
+      drawingPixels:
+        diagnostics.output.drawingBufferWidth *
+        diagnostics.output.drawingBufferHeight,
+      pixelBudget: diagnostics.output.pixelBudget,
+      pixelRatio: diagnostics.pixelRatio,
+      triangles: diagnostics.rendererTriangles,
+      stars: diagnostics.sky.stars,
+      satelliteLimit: diagnostics.sky.satelliteLimit,
+      scaledCanvasTextures,
+    };
+  });
+
+  expect(state).toMatchObject({
+    compact: false,
+    lowMemory: true,
+    antialias: false,
+    shadows: true,
+    pixelBudget: 1920 * 1080,
+    stars: 1100,
+    satelliteLimit: 160,
+  });
+  expect(state.drawingPixels).toBeLessThanOrEqual(state.pixelBudget);
+  expect(state.pixelRatio).toBeLessThan(1);
+  expect(state.triangles).toBeGreaterThan(0);
+  expect(state.scaledCanvasTextures).toBeGreaterThan(0);
   await context.close();
 });
 
@@ -9494,6 +9718,33 @@ test("portrait coarse-pointer thumbstick and visual viewport remain usable", asy
   });
   await prepareWorldPage(page, "portrait-touch");
   await waitForWorld(page);
+
+  const compactRaster = await page
+    .locator("forkmesh-world")
+    .evaluate((shell) => {
+      const diagnostics = shell.world.getDiagnostics();
+      let quarterScaleTextures = 0;
+      shell.world.scene.traverse((object) => {
+        const materials = Array.isArray(object.material)
+          ? object.material
+          : [object.material];
+        materials.filter(Boolean).forEach((material) => {
+          if (material.map?.image?.dataset?.textureScale === "0.25") {
+            quarterScaleTextures += 1;
+          }
+        });
+      });
+      return {
+        compact: diagnostics.output.compactRenderer,
+        canvasTextureScale: diagnostics.output.canvasTextureScale,
+        quarterScaleTextures,
+      };
+    });
+  expect(compactRaster).toMatchObject({
+    compact: true,
+    canvasTextureScale: 0.25,
+  });
+  expect(compactRaster.quarterScaleTextures).toBeGreaterThan(0);
 
   await expect(page.locator("[data-world-thumbstick]")).toBeVisible();
   await page.locator("[data-world-settings-open]").first().click();

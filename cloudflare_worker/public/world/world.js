@@ -102,6 +102,80 @@ const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
 const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
 const CLAUDE_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@claude\b/i;
 const CODEX_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@codex\b/i;
+const ORG_AGENT_ERROR_MESSAGES = Object.freeze({
+  invalid_session: "Your session is no longer valid. Sign in again.",
+  forbidden: "You do not have permission to access this agent workspace.",
+  engineering_team_required:
+    "Engineering team membership is required to view these agent sessions.",
+  org_owner_required:
+    "Organization owner access is required to queue work for this desktop.",
+  repository_not_linked:
+    "This repository is not linked to the organization.",
+  repository_not_published:
+    "The linked desktop has not published this repository yet.",
+  target_not_owned:
+    "The selected desktop is not owned by this organization owner.",
+  target_not_desktop:
+    "The selected target is not a desktop runtime.",
+  provider_not_advertised:
+    "The linked desktop has not advertised this agent provider.",
+  preferred_target_ineligible:
+    "The selected desktop is not eligible for this agent request.",
+  no_online_agent_mirror: "No eligible online agent mirror is available.",
+  no_eligible_agent_node:
+    "No eligible agent node is available for this repository.",
+  invalid_provider: "Choose Claude Code or Codex.",
+  invalid_model: "That model is not available for the selected provider.",
+  prompt_required: "Add a task for the agent.",
+  invalid_target_node: "The selected target node is not valid.",
+  invalid_task_key: "The task key is not valid.",
+  invalid_issue_number: "The issue number is not valid.",
+  invalid_issue_task_key: "The issue task key is not valid.",
+  session_not_promptable:
+    "This agent session is not accepting another prompt.",
+  agent_not_ready: "The agent is not ready for another prompt.",
+  queue_persistence_failed: "The agent request could not be saved. Try again.",
+});
+
+function jsonResponseError(response, payload, fallback = "Request failed.") {
+  const details = payload && typeof payload === "object" ? payload : {};
+  const code = String(details.error || "").trim();
+  const message =
+    String(details.message || "").trim() ||
+    ORG_AGENT_ERROR_MESSAGES[code] ||
+    code ||
+    (response?.status ? `Request returned ${response.status}.` : fallback);
+  const error = new Error(message);
+  error.code = code;
+  error.status = Number(response?.status || 0);
+  error.payload = details;
+  for (const key of [
+    "requiredTeam",
+    "targetNode",
+    "provider",
+    "requiredAction",
+    "retryable",
+  ]) {
+    if (details[key] !== undefined) error[key] = details[key];
+  }
+  return error;
+}
+
+function orgAgentSavedMessage(payload) {
+  const serverMessage = String(payload?.message || "").trim();
+  if (serverMessage) return serverMessage;
+  const target = String(
+    payload?.targetNode ||
+      payload?.session?.targetNode ||
+      "the linked desktop",
+  );
+  const waitingForDesktop =
+    payload?.targetOnline === false ||
+    payload?.queueState === "waiting_for_desktop";
+  return waitingForDesktop
+    ? `Saved for ${target}. It will start after the linked desktop reconnects and passes the Haiku safety check.`
+    : `Saved for ${target}. It will start after the Haiku safety check passes.`;
+}
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
 const DETAIL_WIDTH_KEY = "forkmesh.world.detailWidth.v1";
 const DETAIL_WIDTH_MIN = 320;
@@ -391,6 +465,19 @@ function coarseCrashReading(value) {
 function coarseCrashLabel(value, unit = "") {
   const reading = coarseCrashReading(value);
   return Number.isFinite(reading) ? `${reading}${unit}` : "unknown";
+}
+
+function rendererModeLabel(output) {
+  if (output?.compactRenderer === true || output?.compact === true) {
+    return "compact";
+  }
+  if (
+    output?.memoryConstrainedRenderer === true ||
+    output?.memoryConstrained === true
+  ) {
+    return "low-memory";
+  }
+  return "full";
 }
 
 // Chromium-only heap reading; NaN elsewhere and the caller omits the figure.
@@ -4730,7 +4817,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                     <select data-dashboard-task-department aria-label="Task department"><option value="general">General</option><option value="engineering">Engineering</option><option value="product-design">Product + design</option><option value="quality-assurance">Quality assurance</option></select>
                     <select data-dashboard-task-team aria-label="Task team"><option value="">Choose a team</option></select>
                     <select data-dashboard-task-destination aria-label="Task destination"><option value="department">Department board</option><option value="personal">Personal work</option><option value="repository">Repository</option><option value="qa">QA board</option></select>
-                    <select data-dashboard-task-assignee aria-label="Task assignee"><option value="agent" selected>Bot</option><option value="unassigned">Unassigned</option></select>
+                    <select data-dashboard-task-assignee aria-label="Task assignee"><option value="unassigned" selected>Unassigned</option></select>
                   </div>
                 </div>
                 <div data-dashboard-chat-compose-row>
@@ -4751,7 +4838,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                   </span>
                   <span class="world-quick-actions" role="group" aria-label="Enter key action">
                     <button id="fullChatSend" type="button" title="Enter will send to #general" aria-pressed="true"><span data-dashboard-chat-send-label>Chat</span></button>
-                    <button id="fullChatTaskSend" type="button" title="Enter will send this task to the bot" aria-pressed="false">Task</button>
+                    <button id="fullChatTaskSend" type="button" title="Create an unassigned task in General" aria-pressed="false">Task</button>
                   </span>
                 </div>
                 <span class="world-quick-composer-status" data-dashboard-chat-composer-status role="status" aria-live="polite"></span>
@@ -5725,6 +5812,8 @@ class ForkMeshWorld extends HTMLElement {
     this.orgAgentAccess = {
       state: "loading",
       requiredTeam: "engineering",
+      canQueueAgent: false,
+      canViewAgentSessions: false,
     };
     this.infrastructureConsoleCapture = null;
     this.infrastructureConsoleEntries = [];
@@ -5952,6 +6041,7 @@ class ForkMeshWorld extends HTMLElement {
     this.instanceDirectoryTimer = 0;
     this.instanceCelebrationTimer = 0;
     this.installCelebrationTimer = 0;
+    this.lastCelebratedInstallId = "";
     this.notificationsTimer = 0;
     this.adminErrorTimer = 0;
     this.adminErrorLatestId = 0;
@@ -7105,7 +7195,11 @@ class ForkMeshWorld extends HTMLElement {
         onAgentBotChat: (botId, session = null) => {
           if (this.orgAgentAccess?.state !== "allowed") {
             this.toast(
-              "Claude and Codex chat is available only to the Engineering team.",
+              String(
+                this.orgAgentAccess?.accessReason ||
+                  this.orgAgentAccess?.message ||
+                  "You do not have access to this agent workspace.",
+              ),
             );
             return;
           }
@@ -7727,8 +7821,21 @@ class ForkMeshWorld extends HTMLElement {
         assigned: assigned.has(issue.key),
       }));
       this.world?.updateBuildBoard?.(payload);
+      this.buildBoardFailureCount = 0;
+      this.buildBoardRetryAt = 0;
       return payload;
       } catch (_) {
+        this.buildBoardFailureCount = Math.min(
+          8,
+          this.buildBoardFailureCount + 1,
+        );
+        this.buildBoardRetryAt =
+          Date.now() +
+          Math.min(
+            15 * 60_000,
+            WORLD_BUILD_BOARD_POLL_MS *
+              (2 ** (this.buildBoardFailureCount - 1)),
+          );
         if (!quiet) {
           this.toast("The shared build board is temporarily unavailable.");
         }
@@ -8323,6 +8430,9 @@ class ForkMeshWorld extends HTMLElement {
       this.orgAgentAccess = {
         state: "denied",
         requiredTeam: "engineering",
+        canQueueAgent: false,
+        canViewAgentSessions: false,
+        accessReason: "Sign in to access organization agents.",
       };
       this.world?.updateMirrorAgentTasks?.([]);
       this.world?.setAgentBotAccess?.(false);
@@ -8342,10 +8452,24 @@ class ForkMeshWorld extends HTMLElement {
         ? payload.sessions
         : [];
       this.orgAgentSessions = sessions;
+      const engineeringAccess = payload?.engineeringAccess === true;
+      const canQueueAgent =
+        payload?.canQueueAgent === true || engineeringAccess;
+      const canViewAgentSessions =
+        payload?.canViewAgentSessions === true || engineeringAccess;
       this.orgAgentAccess = {
-        state: payload?.engineeringAccess === true ? "allowed" : "denied",
+        state:
+          canQueueAgent || canViewAgentSessions
+            ? "allowed"
+            : "denied",
         requiredTeam: String(payload?.requiredTeam || "engineering"),
         memberRole: String(payload?.memberRole || ""),
+        engineeringAccess,
+        canQueueAgent,
+        canViewAgentSessions,
+        accessReason: String(
+          payload?.accessReason || payload?.message || "",
+        ),
       };
       this.world?.setAgentBotAccess?.(
         this.orgAgentAccess.state === "allowed",
@@ -8373,16 +8497,20 @@ class ForkMeshWorld extends HTMLElement {
     } catch (error) {
       this.orgAgentSessions = [];
       this.world?.updateMirrorAgentTasks?.([]);
+      const message = String(
+        error?.message || "Agent sessions are temporarily unavailable.",
+      );
       this.orgAgentAccess = {
         state:
-          Number(error?.status || 0) === 403
+          [401, 403].includes(Number(error?.status || 0))
             ? "denied"
             : "unavailable",
         requiredTeam: "engineering",
-        message:
-          String(error?.message || "") === "engineering_team_required"
-            ? "Only Engineering team members can view or control agent prompt sessions."
-            : "Agent sessions are temporarily unavailable.",
+        canQueueAgent: false,
+        canViewAgentSessions: false,
+        code: String(error?.code || ""),
+        message,
+        accessReason: message,
       };
       this.world?.setAgentBotAccess?.(false);
       return null;
@@ -8756,6 +8884,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     const renderer = snapshot?.renderer;
     const output = snapshot?.output;
+    const complexity = snapshot?.complexity;
     const memory =
       typeof performance.memory === "object" ? performance.memory : null;
     const record = {
@@ -8779,6 +8908,9 @@ class ForkMeshWorld extends HTMLElement {
       avatars: renderer ? Math.round(renderer.remoteAvatars) : -1,
       space: String(renderer?.space || "unknown").slice(0, 32),
       compact: output ? output.compactRenderer === true : false,
+      memoryConstrained: output
+        ? output.memoryConstrainedRenderer === true
+        : false,
       bufferWidth: output ? Math.round(output.drawingBufferWidth) : -1,
       bufferHeight: output ? Math.round(output.drawingBufferHeight) : -1,
       webgl2: output ? output.webgl2 === true : false,
@@ -8790,6 +8922,37 @@ class ForkMeshWorld extends HTMLElement {
         ? Math.round(Number(memory.jsHeapSizeLimit) / 1048576)
         : -1,
       contextLosses: Math.max(0, Number(this.rendererContextLosses) || 0),
+      liveTextures: complexity
+        ? Math.round(complexity.uniqueTextures)
+        : -1,
+      liveGeometries: complexity
+        ? Math.round(complexity.uniqueGeometries)
+        : -1,
+      textureMb: complexity
+        ? Math.round(Number(complexity.textureBytes) / 1048576)
+        : -1,
+      geometryMb: complexity
+        ? Math.round(Number(complexity.geometryBytes) / 1048576)
+        : -1,
+      renderTargetMb: complexity
+        ? Math.round(Number(complexity.renderTargetBytes) / 1048576)
+        : -1,
+      objects: complexity ? Math.round(complexity.objects) : -1,
+      meshes: complexity ? Math.round(complexity.meshes) : -1,
+      materials: complexity ? Math.round(complexity.uniqueMaterials) : -1,
+      canvasTextureScale: output
+        ? Number(output.canvasTextureScale) || 1
+        : 1,
+      topElements: (Array.isArray(complexity?.topElements)
+        ? complexity.topElements
+        : []
+      )
+        .slice(0, 3)
+        .map((element) => ({
+          label: String(element?.label || "").slice(0, 32),
+          triangles: Math.max(0, Math.round(Number(element?.triangles) || 0)),
+          drawables: Math.max(0, Math.round(Number(element?.drawables) || 0)),
+        })),
       safeMode: this.rendererSafeMode === true,
       gpu: this.rendererGpuLabel(),
     };
@@ -8828,6 +8991,16 @@ class ForkMeshWorld extends HTMLElement {
     // volatile readings below are bucketed so equivalent crashes group;
     // small exact counts (peers, crashes, context losses) stay exact.
     const gpu = String(record.gpu || "").slice(0, 120);
+    const topElements = (Array.isArray(record.topElements)
+      ? record.topElements
+      : []
+    )
+      .slice(0, 3)
+      .map(
+        (element) =>
+          `${String(element?.label || "unknown").slice(0, 32)} ${coarseCrashLabel(element?.triangles)}t/${coarseCrashLabel(element?.drawables)}d`,
+      )
+      .join(", ");
     const parts = [
       discarded
         ? "World reloaded after the browser discarded the tab"
@@ -8836,8 +9009,14 @@ class ForkMeshWorld extends HTMLElement {
       ...(gpu ? [`gpu ${gpu}`] : []),
       `cores ${describe(device.cores)}`,
       `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
-      `renderer ${record.compact === true ? "compact" : "full"} webgl${record.webgl2 === true ? "2" : "1"}`,
+      `renderer ${rendererModeLabel(record)} webgl${record.webgl2 === true ? "2" : "1"}`,
+      `canvas raster ${Math.round((Number(record.canvasTextureScale) || 1) * 100)}%`,
       `safe mode ${record.safeMode === true ? "on" : "off"}`,
+      `estimated GPU resources textures ${coarseCrashLabel(record.textureMb, "MB")} geometries ${coarseCrashLabel(record.geometryMb, "MB")} targets ${coarseCrashLabel(record.renderTargetMb, "MB")}`,
+      `scene objects ${coarseCrashLabel(record.objects)} meshes ${coarseCrashLabel(record.meshes)} materials ${coarseCrashLabel(record.materials)}`,
+      `textures resident/live ${coarseCrashLabel(record.textures)}/${coarseCrashLabel(record.liveTextures)}`,
+      `geometries resident/live ${coarseCrashLabel(record.geometries)}/${coarseCrashLabel(record.liveGeometries)}`,
+      ...(topElements ? [`heaviest ${topElements}`] : []),
       `uptime ${coarseCrashLabel((beatAt - Number(record.startedAt)) / 1000, "s")}`,
       `heartbeat gap ${coarseCrashLabel((Date.now() - beatAt) / 1000, "s")}`,
       `navigation ${navigation}`,
@@ -8850,8 +9029,6 @@ class ForkMeshWorld extends HTMLElement {
       `frame ${coarseCrashLabel(record.frameTimeMs, "ms")} worst ${coarseCrashLabel(record.longestFrameMs, "ms")}`,
       `triangles ${coarseCrashLabel(record.triangles)}`,
       `draws ${coarseCrashLabel(record.calls)}`,
-      `textures ${coarseCrashLabel(record.textures)}`,
-      `geometries ${coarseCrashLabel(record.geometries)}`,
       `programs ${coarseCrashLabel(record.programs)}`,
       `buffer ${buffer} at dpr ${Number(record.pixelRatio) || 0}`,
       `heap ${coarseCrashLabel(record.heapUsedMb, "MB")} of ${coarseCrashLabel(record.heapLimitMb, "MB")}`,
@@ -8925,44 +9102,54 @@ class ForkMeshWorld extends HTMLElement {
       // One report per page instance: repeated losses in the same session
       // add noise, and the rolling crash-guard heartbeat already counts them.
       this.reportedRendererContextLoss = true;
-      const renderer = this.lastDiagnosticsSnapshot?.renderer;
-      const output = this.lastDiagnosticsSnapshot?.output;
-      const complexity = this.lastDiagnosticsSnapshot?.complexity;
-      const memory = this.lastDiagnosticsSnapshot?.memory;
+      // Even when the browser restores this context, the next reload must not
+      // recreate the same high-memory renderer that just failed.
+      this.recordWorldCrash();
+      const snapshot = this.lastDiagnosticsSnapshot;
+      const renderer = snapshot?.renderer;
+      const output = snapshot?.output;
+      const complexity = snapshot?.complexity;
+      const memory = snapshot?.memory;
       const highWater = this.rendererDiagnosticsHighWater;
       const uptimeS = Math.max(
         0,
         Math.round((Date.now() - (this.crashGuardStartedAt || Date.now())) / 1000),
       );
       const device = this.deviceProfile();
+      const gpu = this.rendererGpuLabel();
+      const buffer =
+        Number(output?.drawingBufferWidth) > 0 &&
+        Number(output?.drawingBufferHeight) > 0
+          ? `${coarseCrashReading(output.drawingBufferWidth)}x${coarseCrashReading(output.drawingBufferHeight)}`
+          : "unknown";
       const parts = [
         `World renderer crashed; WebGL context lost after ${coarseCrashLabel(uptimeS)}s`,
         `device ${device.touch ? "touch" : "pointer"} ${device.screen || "unknown"} screen`,
-        `renderer ${output?.compactRenderer === true ? "compact" : "full"}`,
-        `webgl${output?.webgl2 === true ? "2" : "1"} aa ${output?.antialias === true ? "on" : "off"} shadows ${renderer?.shadowsEnabled === true ? "on" : "off"}`,
-        `visibility ${String(document.visibilityState || "unknown").slice(0, 16)}`,
+        ...(gpu ? [`gpu ${gpu}`] : []),
+        `renderer ${rendererModeLabel(output)} webgl${output?.webgl2 === true ? "2" : "1"} antialias ${output?.antialias === true ? "on" : "off"}`,
+        `shadows ${renderer?.shadowsEnabled === true ? "on" : "off"} visibility ${String(document.visibilityState || "unknown").slice(0, 16)}`,
+        `buffer ${buffer} css ${coarseCrashLabel(output?.cssWidth)}x${coarseCrashLabel(output?.cssHeight)} at dpr ${renderer ? Number(renderer.pixelRatio) || 0 : 0}`,
         `fps ${coarseCrashLabel(renderer?.fps)}`,
+        `frame ${coarseCrashLabel(renderer?.frameTimeMs, "ms")} worst ${coarseCrashLabel(renderer?.longestFrameMs, "ms")}`,
         `draws ${coarseCrashLabel(renderer?.calls)}`,
         `triangles ${coarseCrashLabel(renderer?.triangles)}`,
-        `textures ${coarseCrashLabel(renderer?.textures)}`,
-        `geometries ${coarseCrashLabel(renderer?.geometries)}`,
+        `textures resident/live ${coarseCrashLabel(renderer?.textures)}/${coarseCrashLabel(complexity?.uniqueTextures)}`,
+        `geometries resident/live ${coarseCrashLabel(renderer?.geometries)}/${coarseCrashLabel(complexity?.uniqueGeometries)}`,
         `programs ${coarseCrashLabel(renderer?.programs)}`,
-        `dpr ${renderer ? Number(renderer.pixelRatio) || 0 : 0}`,
-        `buffer ${coarseCrashLabel(output?.drawingBufferWidth)}x${coarseCrashLabel(output?.drawingBufferHeight)}`,
-        `heap ${coarseCrashLabel(memory?.heapUsedMB, "MB")} trend ${coarseCrashLabel(memory?.heapTrendMBPerMin, "MB/min")}`,
         `peak textures ${coarseCrashLabel(highWater.textures)} geometries ${coarseCrashLabel(highWater.geometries)} programs ${coarseCrashLabel(highWater.programs)} buffer ${coarseCrashLabel(highWater.bufferPixels)}px heap ${coarseCrashLabel(highWater.heapUsedMb, "MB")}`,
-        `estimated gpu ${coarseCrashLabel((Number(complexity?.textureBytes) || 0) / 1048576, "MB")} textures ${coarseCrashLabel((Number(complexity?.geometryBytes) || 0) / 1048576, "MB")} geometry`,
+        `estimated GPU resources textures ${coarseCrashLabel(Number(complexity?.textureBytes) / 1048576, "MB")} geometries ${coarseCrashLabel(Number(complexity?.geometryBytes) / 1048576, "MB")} targets ${coarseCrashLabel(Number(complexity?.renderTargetBytes) / 1048576, "MB")}`,
+        `heap ${coarseCrashLabel(memory?.heapUsedMB, "MB")} trend ${coarseCrashLabel(memory?.heapTrendMBPerMin, "MB/min")}`,
+        `space ${String(renderer?.space || "unknown").slice(0, 32)} avatars ${coarseCrashLabel(renderer?.remoteAvatars)}`,
         `context losses ${coarseCrashLabel(this.rendererContextLosses)}`,
         `cores ${coarseCrashLabel(device.cores)}`,
         `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
         `safe mode ${this.rendererSafeMode === true ? "on" : "off"}`,
+        "next boot compact",
       ];
       const statusMessage = String(detail?.statusMessage || "")
         .replace(/[^\w ().,:;/-]+/g, " ")
         .slice(0, 120);
       if (statusMessage) parts.push(`context reason ${statusMessage}`);
-      const gpu = this.rendererGpuLabel();
-      if (gpu) parts.push(`gpu ${gpu}`);
       this.reportWorldClientError(parts.join("; "));
     }
     this.beatCrashGuard();
@@ -9076,9 +9263,19 @@ class ForkMeshWorld extends HTMLElement {
           signal: controller.signal,
           credentials: "same-origin",
         });
+        let value = {};
+        let parseError = null;
+        try {
+          value = await response.json();
+        } catch (error) {
+          parseError = error;
+        }
         if (!response.ok) {
-          const error = new Error(`${path} returned ${response.status}`);
-          error.status = response.status;
+          const error = jsonResponseError(
+            response,
+            value,
+            `${path} returned ${response.status}.`,
+          );
           const retryHeader = String(response.headers.get("retry-after") || "");
           const retrySeconds = Number(retryHeader);
           const retryDate = Date.parse(retryHeader);
@@ -9089,7 +9286,7 @@ class ForkMeshWorld extends HTMLElement {
               : 0;
           throw error;
         }
-        const value = await response.json();
+        if (parseError) throw parseError;
         if (method === "GET" && (maxAge > 0 || staleIfError)) {
           if (
             !this.responseCache.has(requestKey) &&
@@ -9166,9 +9363,11 @@ class ForkMeshWorld extends HTMLElement {
       try {
         payload = await response.json();
       } catch (_) {}
-      if (!response.ok) {
-        throw new Error(
-          String(payload?.error || `Request returned ${response.status}`),
+      if (!response.ok || payload?.ok === false) {
+        throw jsonResponseError(
+          response,
+          payload,
+          `Request returned ${response.status}.`,
         );
       }
       return payload;
@@ -9829,31 +10028,30 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   // A fresh desktop install — the one-line installer's final successful
-  // "done" report, surfaced through /api/world/installs — gets the same
-  // ten-minute firework treatment as a federated instance joining. The
-  // world-instance-* classes are reused so both celebrations share one look.
+  // "done" report, surfaced through /api/world/installs, gets a ten-second
+  // firework show. The world-instance-* classes are reused so both kinds of
+  // celebration share one look.
   celebrateRecentInstall(installs = []) {
     const now = Date.now();
-    const celebrationMs = 10 * 60 * 1000;
+    const installFreshnessMs = 10 * 60 * 1000;
+    const fireworksDurationMs = 10 * 1000;
     const newest = [...(Array.isArray(installs) ? installs : [])]
       .filter(
         (install) =>
           install?.installedAt > 0 &&
           now >= install.installedAt &&
-          now - install.installedAt < celebrationMs,
+          now - install.installedAt < installFreshnessMs,
       )
       .sort((left, right) => right.installedAt - left.installedAt)[0];
     if (!newest) return;
     // The federated-instance celebration owns the overlay when both fire.
     if (this.$("[data-world-instance-celebration]")) return;
+    if (this.lastCelebratedInstallId === newest.id) return;
     const existing = this.$("[data-world-install-celebration]");
     if (existing?.dataset.installId === newest.id) return;
     existing?.remove();
     window.clearTimeout(this.installCelebrationTimer);
-    const remaining = Math.max(
-      1000,
-      celebrationMs - (now - Number(newest.installedAt)),
-    );
+    this.lastCelebratedInstallId = newest.id;
     const layer = document.createElement("section");
     layer.className = "world-instance-celebration";
     layer.dataset.worldInstallCelebration = "true";
@@ -9884,7 +10082,7 @@ class ForkMeshWorld extends HTMLElement {
     title.textContent = platform || "A new ForkMesh desktop";
     const copy = document.createElement("span");
     copy.textContent =
-      "Someone just installed the ForkMesh desktop with the one-line installer. Fireworks run for ten minutes.";
+      "Someone just installed the ForkMesh desktop with the one-line installer. Fireworks run for ten seconds.";
     const link = document.createElement("a");
     link.href = "/desktop.html";
     link.textContent = "Get the desktop app →";
@@ -9898,7 +10096,7 @@ class ForkMeshWorld extends HTMLElement {
     this.installCelebrationTimer = window.setTimeout(() => {
       layer.remove();
       this.installCelebrationTimer = 0;
-    }, remaining);
+    }, fireworksDurationMs);
   }
 
   renderCommunityPlacement() {
@@ -14642,22 +14840,31 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   mirrorNodeAgentSessionsHTML(node, options = {}) {
-    const requiredTeam = escapeHTML(
-      this.orgAgentAccess?.requiredTeam || "engineering",
-    );
     if (this.orgAgentAccess?.state !== "allowed") {
+      const configurationError = [
+        "repository_not_linked",
+        "repository_not_published",
+      ].includes(String(this.orgAgentAccess?.code || ""));
       return `
         <section class="world-feature-card" data-world-mirror-agent-workspace>
           <h3>Agent prompt sessions</h3>
           <div class="world-notice world-notice-warning">
-            <strong>Engineering access required</strong>
+            <strong>${
+              configurationError
+                ? "Repository setup required"
+                : "Agent access unavailable"
+            }</strong>
             <span>${escapeHTML(
-              this.orgAgentAccess?.message ||
-                `Only members of the ${requiredTeam} team can view transcripts or start, revise, and re-prompt these sessions.`,
+              this.orgAgentAccess?.accessReason ||
+                this.orgAgentAccess?.message ||
+                "You do not have access to this agent workspace.",
             )}</span>
           </div>
         </section>`;
     }
+    const canQueueAgent = this.orgAgentAccess?.canQueueAgent === true;
+    const canViewAgentSessions =
+      this.orgAgentAccess?.canViewAgentSessions === true;
     const nodeName = String(node?.name || node?.machineName || "")
       .trim()
       .toLowerCase();
@@ -14668,7 +14875,7 @@ class ForkMeshWorld extends HTMLElement {
       : "";
     const allNodes = options?.allNodes === true;
     const focusSessionId = String(options?.focusSessionId || "");
-    const sessions = this.orgAgentSessions
+    const sessions = (canViewAgentSessions ? this.orgAgentSessions : [])
       .filter(
         (session) =>
           (allNodes ||
@@ -14716,9 +14923,9 @@ class ForkMeshWorld extends HTMLElement {
       const history = Array.isArray(session?.history)
         ? session.history.slice(-80)
         : [];
-      const promptable = ["running", "queued"].includes(
-        String(session?.status || ""),
-      );
+      const promptable =
+        canQueueAgent &&
+        ["running", "queued"].includes(String(session?.status || ""));
       const availabilityBad =
         availability.binaryFound === false ||
         availability.loginState === "missing";
@@ -14881,12 +15088,12 @@ class ForkMeshWorld extends HTMLElement {
       <section class="world-feature-card" data-world-mirror-agent-workspace>
         <h3>${
           providerFilter
-            ? `${providerFilter === "codex" ? "Codex" : "Claude Code"} engineering workspace`
-            : "Engineering agent workspace"
+            ? `${providerFilter === "codex" ? "Codex" : "Claude Code"} agent workspace`
+            : "Organization agent workspace"
         }</h3>
-        <p>Full mirror-reported session detail, transcript, and prompt controls. Every new prompt is re-checked by the tool-free Haiku gate.</p>
+        <p>Organization owners can save work for their linked desktop while it is offline. Every new prompt is checked by the tool-free Haiku gate before the coding agent runs.</p>
         ${
-          allNodes && providerFilter
+          allNodes && providerFilter && canQueueAgent
             ? `<div class="world-detail-actions">
                 <button class="world-primary-action" type="button" data-world-agent-open-chat="${
                   providerFilter === "codex" ? "@codex " : "@claude "
@@ -14895,7 +15102,7 @@ class ForkMeshWorld extends HTMLElement {
             : ""
         }
         ${
-          nodeName
+          nodeName && canQueueAgent
             ? `<form class="world-agent-prompt-form" data-world-agent-start>
           <label>Start a session on ${escapeHTML(nodeName || "this mirror")}
             <textarea name="prompt" maxlength="8000" required rows="3" placeholder="Describe the repository task…"></textarea>
@@ -14908,14 +15115,32 @@ class ForkMeshWorld extends HTMLElement {
         </form>`
             : ""
         }
+        ${
+          !canQueueAgent
+            ? `<div class="world-notice world-notice-warning">
+                <strong>Agent queue access is unavailable</strong>
+                <span>${escapeHTML(
+                  this.orgAgentAccess?.accessReason ||
+                    "You do not have permission to queue an agent for this repository.",
+                )}</span>
+              </div>`
+            : ""
+        }
         <div class="world-agent-session-list">
-          ${sessionHTML || `<p class="world-empty-state">No ${
-            providerFilter
-              ? providerFilter === "codex"
-                ? "Codex"
-                : "Claude Code"
-              : "agent prompt"
-          } sessions are available here yet.</p>`}
+          ${
+            canViewAgentSessions
+              ? sessionHTML || `<p class="world-empty-state">No ${
+                  providerFilter
+                    ? providerFilter === "codex"
+                      ? "Codex"
+                      : "Claude Code"
+                    : "agent prompt"
+                } sessions are available here yet.</p>`
+              : `<p class="world-empty-state">${escapeHTML(
+                  this.orgAgentAccess?.accessReason ||
+                    "Session transcripts are not available with your current access.",
+                )}</p>`
+          }
         </div>
       </section>`;
   }
@@ -14936,10 +15161,19 @@ class ForkMeshWorld extends HTMLElement {
       const status = form.querySelector("[data-world-agent-form-status]");
       const controls = [...form.elements];
       controls.forEach((control) => { control.disabled = true; });
-      if (status) status.textContent = "Queueing the Haiku security check…";
+      if (status) {
+        status.textContent =
+          "Saving this request for the linked desktop. It does not need to be online yet…";
+      }
       try {
-        await this.postJSON(endpoint, { prompt, ...extra }, { timeout: 12_000 });
-        if (status) status.textContent = "Prompt queued securely.";
+        const payload = await this.postJSON(
+          endpoint,
+          { prompt, ...extra },
+          { timeout: 12_000 },
+        );
+        const message = orgAgentSavedMessage(payload);
+        if (status) status.textContent = message;
+        this.toast(message);
         await this.refreshOrgAgentBots();
         const nodeName = String(node?.name || node?.machineName || "")
           .trim()
@@ -14954,12 +15188,9 @@ class ForkMeshWorld extends HTMLElement {
       } catch (error) {
         controls.forEach((control) => { control.disabled = false; });
         if (status) {
-          status.textContent =
-            String(error?.message || "") === "no_eligible_headless_mirror"
-              ? "This mirror is not currently eligible to run the session."
-              : `Could not queue the prompt: ${String(
-                  error?.message || "unknown error",
-                )}`;
+          status.textContent = String(
+            error?.message || "The agent request failed.",
+          );
         }
       }
     };
@@ -15955,7 +16186,11 @@ class ForkMeshWorld extends HTMLElement {
   ) {
     if (this.orgAgentAccess?.state !== "allowed") {
       this.toast(
-        "Claude and Codex status is available only to the Engineering team.",
+        String(
+          this.orgAgentAccess?.accessReason ||
+            this.orgAgentAccess?.message ||
+            "You do not have access to this agent workspace.",
+        ),
       );
       return;
     }
@@ -15976,7 +16211,7 @@ class ForkMeshWorld extends HTMLElement {
     detail.innerHTML = `
       <header class="world-detail-header">
         <div>
-          <p class="world-eyebrow">ENGINEERING AGENT / LIVE SESSION STATUS</p>
+          <p class="world-eyebrow">ORGANIZATION AGENT / SESSION STATUS</p>
           <h2 id="world-detail-title">${label}</h2>
         </div>
         <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close ${label} details">×</button>
@@ -20604,9 +20839,13 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   selectRepositoryIssueAgentProvider(issue = {}) {
-    if (this.orgAgentAccess?.state !== "allowed") {
+    if (this.orgAgentAccess?.canQueueAgent !== true) {
       this.toast(
-        "Only Engineering team members can assign issues to Claude or Codex.",
+        String(
+          this.orgAgentAccess?.accessReason ||
+            this.orgAgentAccess?.message ||
+            "You do not have permission to assign this issue to an agent.",
+        ),
       );
       return false;
     }
@@ -20628,9 +20867,13 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async assignRepositoryIssueToAgent(issue = {}) {
-    if (this.orgAgentAccess?.state !== "allowed") {
+    if (this.orgAgentAccess?.canQueueAgent !== true) {
       this.toast(
-        "Only Engineering team members can assign issues to Claude or Codex.",
+        String(
+          this.orgAgentAccess?.accessReason ||
+            this.orgAgentAccess?.message ||
+            "You do not have permission to assign this issue to an agent.",
+        ),
       );
       return false;
     }
@@ -20669,7 +20912,7 @@ class ForkMeshWorld extends HTMLElement {
       } · ${model}…`,
     );
     try {
-      await this.postJSON(
+      const payload = await this.postJSON(
         this.organizationAgentEndpoint(),
         {
           provider,
@@ -20685,19 +20928,11 @@ class ForkMeshWorld extends HTMLElement {
       );
       this.world?.setRepositoryIssueAgentPicker?.(null);
       await this.refreshOrgAgentBots();
-      this.toast(
-        `Issue #${number} queued for ${
-          provider === "codex" ? "Codex" : "Claude"
-        } · ${model}; Haiku security review runs first.`,
-      );
+      this.toast(orgAgentSavedMessage(payload));
       return true;
     } catch (error) {
       this.toast(
-        String(error?.message || "") === "no_eligible_headless_mirror"
-          ? "No eligible headless mirror is online for this assignment."
-          : `Could not assign issue #${number}: ${String(
-              error?.message || "unknown error",
-            )}`,
+        String(error?.message || "The issue assignment could not be saved."),
       );
       return false;
     } finally {
@@ -25158,7 +25393,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=f73f6d2a300f";
+    script.src = "/dashboard-chat.js?v=9c7a246e1652";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {
@@ -26703,7 +26938,17 @@ class ForkMeshWorld extends HTMLElement {
     return Date.now() >= this.activityNoticesEnabledAt;
   }
 
-  activityNotice(message, { kind = "status", sender = "", transcript = true } = {}) {
+  activityNotice(
+    message,
+    {
+      kind = "status",
+      sender = "",
+      transcript = true,
+      title = "",
+      details = [],
+      avatarPng = "",
+    } = {},
+  ) {
     const copy = String(message || "")
       .replace(/\s+/g, " ")
       .trim()
@@ -26729,11 +26974,17 @@ class ForkMeshWorld extends HTMLElement {
       (entry) =>
         String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
     );
+    const suppliedAvatar = String(avatarPng || "").trim();
+    const avatarSource =
+      suppliedAvatar.length <= 90_000 &&
+      /^[A-Za-z0-9+/=]+$/.test(suppliedAvatar)
+        ? `data:image/png;base64,${suppliedAvatar}`
+        : "";
     const publicAvatar = safeHTTPURL(member?.avatar || "");
-    if (publicAvatar) {
+    if (avatarSource || publicAvatar) {
       const image = document.createElement("img");
       image.alt = "";
-      image.src = publicAvatar;
+      image.src = avatarSource || publicAvatar;
       image.onerror = () => {
         image.remove();
         icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
@@ -26742,9 +26993,42 @@ class ForkMeshWorld extends HTMLElement {
     } else {
       icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
     }
-    const body = document.createElement("p");
-    body.textContent = copy;
-    article.append(icon, body);
+    const content = document.createElement("div");
+    content.className = "world-activity-copy";
+    const cleanTitle = String(title || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180);
+    if (cleanTitle) {
+      const heading = document.createElement("strong");
+      heading.textContent = cleanTitle;
+      content.append(heading);
+    }
+    if (!cleanTitle || copy !== cleanTitle) {
+      const body = document.createElement("p");
+      body.textContent = copy;
+      content.append(body);
+    }
+    const cleanDetails = (Array.isArray(details) ? details : [])
+      .map((detail) =>
+        String(detail || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 220),
+      )
+      .filter(Boolean)
+      .slice(0, 5);
+    if (cleanDetails.length) {
+      const metadata = document.createElement("ul");
+      metadata.className = "world-activity-details";
+      cleanDetails.forEach((detail) => {
+        const item = document.createElement("li");
+        item.textContent = detail;
+        metadata.append(item);
+      });
+      content.append(metadata);
+    }
+    article.append(icon, content);
     stream.prepend(article);
     while (stream.childElementCount > 6) stream.lastElementChild?.remove();
     window.setTimeout(() => article.remove(), 10_100);
@@ -27171,6 +27455,13 @@ class ForkMeshWorld extends HTMLElement {
             webgl2: sceneOutput.webgl2 === true,
             antialias: sceneOutput.antialias === true,
             compactRenderer: sceneOutput.compactRenderer === true,
+            memoryConstrainedRenderer:
+              sceneOutput.memoryConstrainedRenderer === true,
+            canvasTextureScale: Math.max(
+              0.1,
+              Math.min(1, Number(sceneOutput.canvasTextureScale) || 1),
+            ),
+            pixelBudget: clampCount(sceneOutput.pixelBudget, 100_000_000),
             gpu: String(sceneOutput.gpu || "").slice(0, 96),
             threeRevision: String(sceneOutput.threeRevision || "").slice(
               0,
@@ -27599,7 +27890,7 @@ class ForkMeshWorld extends HTMLElement {
       output:
         renderer && output
           ? escapeHTML(
-              `${output.drawingBufferWidth}×${output.drawingBufferHeight} buffer (${output.cssWidth}×${output.cssHeight} CSS @ DPR ${renderer.pixelRatio.toFixed(2)}) · WebGL${output.webgl2 ? "2" : "1"} · AA ${output.antialias ? "on" : "off"}${output.compactRenderer ? " · compact renderer" : ""} · ${output.toneMapping} tone mapping @ ${output.exposure.toFixed(2)} · ${output.colorSpace} · camera ${Math.round(output.cameraFov)}° fov, near ${output.cameraNear} far ${output.cameraFar} · three r${output.threeRevision}${output.gpu ? ` · ${output.gpu}` : " · GPU name withheld by browser"}`,
+              `${output.drawingBufferWidth}×${output.drawingBufferHeight} buffer (${output.cssWidth}×${output.cssHeight} CSS @ DPR ${renderer.pixelRatio.toFixed(2)}) · WebGL${output.webgl2 ? "2" : "1"} · AA ${output.antialias ? "on" : "off"}${output.compactRenderer ? " · compact renderer" : output.memoryConstrainedRenderer ? " · low-memory raster" : ""} · ${output.toneMapping} tone mapping @ ${output.exposure.toFixed(2)} · ${output.colorSpace} · camera ${Math.round(output.cameraFov)}° fov, near ${output.cameraNear} far ${output.cameraFar} · three r${output.threeRevision}${output.gpu ? ` · ${output.gpu}` : " · GPU name withheld by browser"}`,
             )
           : unavailable("WebGL renderer unavailable"),
       worldState: renderer
@@ -28829,14 +29120,13 @@ class ForkMeshWorld extends HTMLElement {
           paths.indexOf(path) === index,
       )
       .slice(0, 8);
-    // The scene effect and catalog refresh below still run during the join
-    // grace; only the narration is held back so the load does not open on a
-    // push that happened before the visitor arrived.
-    if (this.activityNoticesSettled()) {
-      this.toast(
-        `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
-      );
-    }
+    const landing = {
+      node,
+      repo,
+      owner: publicOwner,
+      commit,
+      changedFiles,
+    };
     // This only arms the scene. No frame directly creates an effect: the next
     // signed catalog payload must confirm the node and commit prefix first.
     this.world?.armMirrorPushEffect?.(
@@ -28852,14 +29142,123 @@ class ForkMeshWorld extends HTMLElement {
     this.mirrorPushRefreshTimer = window.setTimeout(() => {
       this.mirrorPushRefreshTimer = 0;
       if (this.destroyed) return;
-      void this.refreshMirrorCatalogs({ force: true }).catch(() => {
-        // Preserve the last verified snapshot during a transient HTTPS
-        // failure; the regular poll retries on its own cadence.
-      });
+      const refreshed = this.refreshMirrorCatalogs({ force: true });
+      // The scene effect and catalog refresh still run during the join grace;
+      // only the narration is held back so a fresh load does not open on a
+      // push that happened before the visitor arrived.
+      if (this.activityNoticesSettled()) {
+        void refreshed.then(() => this.announceMirrorPushLanding(landing)).catch(() => {
+          // Preserve the last verified snapshot during a transient HTTPS
+          // failure; the regular poll retries on its own cadence.
+        });
+      } else {
+        void refreshed.catch(() => {
+          // Preserve the last verified snapshot during a transient HTTPS
+          // failure; the regular poll retries on its own cadence.
+        });
+      }
     // Give the catalog purge/publication transaction a moment to become
     // visible at the edge. The verified-effect arm remains live through the
     // regular fallback polls if this eager read is still early.
     }, 1_500);
+  }
+
+  verifiedMirrorPushLanding(pending) {
+    const nodeName = String(pending?.node || "").toLowerCase();
+    const commit = String(pending?.commit || "").toLowerCase();
+    const owner = String(pending?.owner || "").toLowerCase();
+    const repo = String(pending?.repo || "").toLowerCase();
+    if (!nodeName || !commit || !repo) return null;
+    const node = (Array.isArray(this.liveMirrorNodes) ? this.liveMirrorNodes : [])
+      .find((candidate) => String(candidate?.name || "").toLowerCase() === nodeName);
+    const repository = (Array.isArray(node?.repositories) ? node.repositories : [])
+      .find(
+        (candidate) =>
+          String(candidate?.name || "").toLowerCase() === repo &&
+          (!owner || String(candidate?.owner || "").toLowerCase() === owner) &&
+          String(candidate?.commit || "").toLowerCase().startsWith(commit),
+      );
+    if (!node || !repository) return null;
+    return { node, repository };
+  }
+
+  async mirrorPushPublisherProfile(name) {
+    const account = String(name || "").trim().toLowerCase();
+    if (!WORLD_ACCOUNT_NAME_RE.test(account)) return { name: "", avatarPng: "" };
+    try {
+      const profile = await this.fetchJSON(
+        `/api/accounts/${encodeURIComponent(account)}`,
+        { auth: false, timeout: 5000, maxAge: 60_000, staleIfError: true },
+      );
+      const resolvedName = String(profile?.name || "").trim().toLowerCase();
+      const avatarPng = String(profile?.avatarPng || "").trim();
+      return {
+        name: resolvedName === account ? resolvedName : account,
+        avatarPng:
+          avatarPng.length <= 90_000 && /^[A-Za-z0-9+/=]+$/.test(avatarPng)
+            ? avatarPng
+            : "",
+      };
+    } catch (_) {
+      return { name: account, avatarPng: "" };
+    }
+  }
+
+  async announceMirrorPushLanding(pending) {
+    // The room frame only asks us to refresh. Everything rendered below comes
+    // from the matching signed mirror record we just fetched.
+    if (!this.activityNoticesSettled()) return;
+    const verified = this.verifiedMirrorPushLanding(pending);
+    if (!verified) return;
+    const { node, repository } = verified;
+    const publisher = sanitizePresenceText(
+      node?.ownerUser || pending?.owner,
+      "",
+      40,
+    ).toLowerCase();
+    const profile = await this.mirrorPushPublisherProfile(publisher);
+    if (this.destroyed) return;
+    const repositoryName = `${String(repository.owner || pending.owner || "").trim()}/${String(repository.name || pending.repo || "").trim()}`.replace(
+      /^\//,
+      "",
+    );
+    const shortCommit = String(repository.commit || pending.commit || "")
+      .toLowerCase()
+      .slice(0, 12);
+    const branch = sanitizePresenceText(repository.branch, "", 120);
+    const subject = sanitizePresenceText(
+      repository.lastCommitMessage,
+      "",
+      220,
+    );
+    const author = sanitizePresenceText(
+      repository.lastCommitAuthorName,
+      "",
+      100,
+    );
+    const changedFiles = (Array.isArray(repository.changedFiles)
+      ? repository.changedFiles
+      : [])
+      .map((path) => sanitizePresenceText(path, "", 160))
+      .filter(Boolean)
+      .slice(0, 8);
+    const details = [
+      `${shortCommit || "Commit"}${branch ? ` · ${branch}` : ""} · ${node.name || pending.node}`,
+      subject ? `Message · ${subject}` : "",
+      author ? `Git author · ${author}` : "",
+      profile.name ? `Published by · @${profile.name}` : "",
+      changedFiles.length
+        ? `Changed · ${changedFiles.join(" · ")}`
+        : "",
+    ].filter(Boolean);
+    const title = `Fresh code landed on “${repositoryName || pending.repo}”.`;
+    this.activityNotice(title, {
+      kind: "success",
+      sender: profile.name || publisher || author || "ForkMesh",
+      title,
+      details,
+      avatarPng: profile.avatarPng,
+    });
   }
 
   setupBroadcastChannel() {
