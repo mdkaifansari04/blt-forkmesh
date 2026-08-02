@@ -515,6 +515,32 @@ struct DetachedGitRequest {
 int g_detachedGitInFlight = 0;
 QQueue<DetachedGitRequest> g_detachedGitQueue;
 
+// Releases the queue slot from a destructor instead of a signal. MainWindow
+// teardown severs every signal of every QProcess descendant before ~QWidget
+// deletes them (the finished()-into-a-half-destroyed-window crash, adhoc #51),
+// destroyed() included — so slot bookkeeping that rides a connection is skipped
+// exactly there and the cap stays shrunken for any later window. A child object
+// is deleted by ~QProcess whatever the connections look like.
+class DetachedGitSlot : public QObject
+{
+public:
+    DetachedGitSlot(QProcess *process, std::shared_ptr<bool> done)
+        : QObject(process), m_done(std::move(done))
+    {
+    }
+
+    ~DetachedGitSlot() override
+    {
+        if (*m_done)
+            return;
+        *m_done = true;
+        --g_detachedGitInFlight;
+    }
+
+private:
+    std::shared_ptr<bool> m_done;
+};
+
 void startDetachedGit(DetachedGitRequest request);
 
 void pumpDetachedGitQueue()
@@ -552,12 +578,7 @@ void startDetachedGit(DetachedGitRequest request)
     };
     // Teardown destroys the QProcess children without either signal firing; drop
     // the slot then too so a reopened window doesn't inherit a shrunken cap.
-    QObject::connect(git, &QObject::destroyed, git, [done](QObject *) {
-        if (*done)
-            return;
-        *done = true;
-        --g_detachedGitInFlight;
-    });
+    new DetachedGitSlot(git, done);
     QObject::connect(git, &QProcess::finished, window,
                      [finish](int code, QProcess::ExitStatus st) {
                          finish(st == QProcess::NormalExit && code == 0);

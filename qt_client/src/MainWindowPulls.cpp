@@ -3605,7 +3605,18 @@ void MainWindow::buildAndPreviewCurrentPull()
             statusPtr->setText(st.status);
         appendLog(QStringLiteral("\n$ %1 %2\n  (in %3)\n")
                       .arg(st.program, st.args.join(QLatin1Char(' ')), st.dir));
-        auto *proc = new QProcess(dlg);
+        // Parented to the window, not the dialog: ~QWidget deletes a widget's
+        // QProcess children before ~QObject severs their connections, so a
+        // dialog closed mid-build (it is WA_DeleteOnClose) emits finished()
+        // from its own teardown — which here would start the next build step
+        // and parent it to the half-destroyed dialog (adhoc #51).
+        auto *proc = new QProcess(this);
+        connect(dlg.data(), &QObject::destroyed, proc, [proc] {
+            proc->disconnect();
+            if (proc->state() != QProcess::NotRunning)
+                proc->kill();
+            proc->deleteLater();
+        });
         proc->setWorkingDirectory(st.dir);
         proc->setProcessChannelMode(QProcess::MergedChannels);
         connect(proc, &QProcess::readyReadStandardOutput, this, [proc, appendLog] {
