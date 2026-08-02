@@ -584,7 +584,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_worktreesButton->setCursor(Qt::PointingHandCursor);
     m_worktreesButton->setToolTip(
         "Open the Worktrees panel to view agent checkouts and their changes");
-    setOcticon(m_worktreesButton, "file-directory", 16);
+    setOcticon(m_worktreesButton, "worktree", 16);
     connect(m_worktreesButton, &QPushButton::clicked, this, [this] {
         // Worktrees, like Branches, has no top-level tab anymore (adhoc #170):
         // its panel lives inside the Code overview beside Branches, toggled by
@@ -8526,7 +8526,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Quality", "check-circle"},
                                 {"Insights", "graph"},
                                 {"Branches", "repo-forked"},
-                                {"Worktrees", "file-directory"},
+                                {"Worktrees", "worktree"},
                                 {"Releases", "tag"},
                                 {"Mirror nodes", "server"},
                                 {"Artifacts", "package"},
