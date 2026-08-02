@@ -2,10 +2,9 @@
 // The repository detail view: file browser, overview/about, code search,
 // navigation history, the commits list + commit detail/diff, and the Claude
 // Code IDE-extension integration that opens repo content in the editor.
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+// These are MainWindow member functions in their own translation unit; the class
+// is declared in MainWindow.h and shared helpers live in MainWindowInternal.h /
+// MainWindowShared.cpp (namespace forkmesh::ui).
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -436,8 +435,8 @@ QWidget *MainWindow::buildRepoFilesPanel()
     m_repoRatchetButton->setText(QStringLiteral("Ratchet mode"));
     m_repoRatchetButton->setCheckable(true);
     m_repoRatchetButton->setToolTip(
-        QStringLiteral("Keep each commit at or below today's tracked size and require "
-                       "at least as many removed lines as added lines."));
+        QStringLiteral("Hold the repository at or below the tracked size it started "
+                       "today at. The ceiling re-bases each day."));
     connect(m_repoRatchetButton, &QToolButton::toggled, this,
             &MainWindow::toggleRepositoryRatchet);
 
@@ -1319,16 +1318,14 @@ void MainWindow::downloadCurrentRepoZip()
          currentRef()});
 }
 
-// Every repo-scoped git helper — repoGitDir(), repoBranches(), repoDefaultBranch(),
-// and so everything built on them (mergeWorktreeIntoMain, removeWorktree, …) —
-// resolves against the repo the *detail view* currently holds. The Agents and
-// Worktrees surfaces are global, though: the session a user acts on is often not
-// the repo the detail page last loaded, and acting then reads a different repo's
-// checkout, HEAD and default branch. Bind the detail view to the repo first, then
-// act. This only reloads which repo the detail page holds; it doesn't switch the
-// visible page. Returns false when the bind didn't take (a load was already in
-// flight, or the record moved) — the caller must leave git alone in that case
-// rather than operate on someone else's checkout.
+// Every repo-scoped git helper — repoGitDir(), repoBranches(), repoDefaultBranch()
+// and everything built on them — resolves against the repo the *detail view*
+// currently holds. The Agents and Worktrees surfaces are global, though: the
+// session acted on is often not the repo the detail page last loaded, so acting
+// would read a different repo's checkout, HEAD and default branch. Bind first,
+// then act; this reloads which repo the page holds, not the visible page.
+// Returns false when the bind didn't take (a load was in flight, or the record
+// moved) — the caller must then leave git alone.
 bool MainWindow::bindRepoDetailToRepo(int repoIndex)
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size())
@@ -1477,14 +1474,11 @@ void MainWindow::openRepoDetail(int repoIndex)
     m_coveExplorerCurrentId.clear();
     m_treeLoadedForIndex = -1;
 
-    // The file-search completer is only consulted once the user starts typing a
-    // path, and ls-tree -r is the single heaviest git read on a large repo —
-    // build it just after the repo paints so it never delays first view. Re-check
-    // the index so a fast follow-up switch doesn't index the wrong repo.
-    // loadFileSearchIndex() itself is fully async (runGitDetached) now, so no
-    // GitKeepAlive scope is needed here — StallWatchdog still caught this ls-tree
-    // stalling the GUI thread even under a keep-alive poll, because the pumped
-    // event loop can land on an unrelated slow paint (see loadFileSearchIndex).
+    // The file-search completer is only consulted once the user types a path, and
+    // ls-tree -r is the heaviest git read on a large repo — build it just after
+    // the repo paints. Re-check the index so a fast follow-up switch doesn't
+    // index the wrong repo. loadFileSearchIndex() is fully async, so it needs no
+    // GitKeepAlive scope (see there for why pumping wasn't enough).
     const int searchIndexFor = m_repoDetailIndex;
     QTimer::singleShot(0, this, [this, searchIndexFor] {
         if (m_repoDetailIndex != searchIndexFor)
@@ -1492,13 +1486,11 @@ void MainWindow::openRepoDetail(int repoIndex)
         loadFileSearchIndex();
     });
     nodeSwitchStep(QStringLiteral("Loading commit history…"));
-    // Building the commit table is the single heaviest piece of per-open UI work
-    // (up to 300 rows, each with cell widgets, plus several git reads). An open
-    // lands on the Code overview and never shows it, so let the Git activity-
-    // rail destination build the table on demand.
-    // The previous repo's rows and cached tip are cleared so commitsListIsCurrent()
-    // forces a rebuild for this repo when its Commits tab is first opened.
-    // A previously open repo may have left the Git workspace showing.
+    // Building the commit table is the heaviest piece of per-open UI work (up to
+    // 300 rows of cell widgets plus several git reads) and an open lands on the
+    // Code overview, so the Git rail destination builds it on demand. Clearing
+    // the previous repo's rows and cached tip makes commitsListIsCurrent() force
+    // a rebuild; a previously open repo may have left the Git workspace showing.
     showOverviewFiles();
     if (m_commitsTable)
         m_commitsTable->setRowCount(0);
@@ -1530,13 +1522,11 @@ void MainWindow::openRepoDetail(int repoIndex)
     if (m_actionsTable)
         m_actionsTable->setRowCount(0);
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
-    // Every lazily-loaded badge above has just been reset to its empty value.
-    // Fill them in so the tab row is right without each tab having to be clicked
-    // (adhoc #116). Deferred one event-loop turn, like the file-search index
-    // above: the loads themselves are worker-backed, but the issue load applies
-    // its result straight into the table, and starting it inside the open would
-    // let that land in the same turn and count against first paint. Re-check the
-    // index so a fast follow-up switch doesn't count the repo we just left.
+    // Every lazily-loaded badge above has just been reset to empty; fill them in
+    // so the tab row is right without clicking each tab (adhoc #116). Deferred a
+    // turn like the file-search index: the issue load applies straight into the
+    // table, which would otherwise count against first paint. Re-check the index
+    // so a fast follow-up switch doesn't count the repo we just left.
     const int countsFor = m_repoDetailIndex;
     QTimer::singleShot(0, this, [this, countsFor] {
         if (m_repoDetailIndex == countsFor)
@@ -1591,15 +1581,12 @@ void MainWindow::updateRepoPullCount()
 }
 
 // Fill in the repo-tab badges whose panels load lazily. Opening a repo resets
-// every count to its empty value but only loads the landing tab's data, so a
-// repo with hundreds of issues advertised "Issues (0)" — and "Discussions (0)",
-// and "Actions (0)" — until each tab was clicked. On a fresh install, where the
-// first clone lands after the view is already up, every one of them was wrong at
-// once (adhoc #116). All three reads happen on worker threads, and the
-// Discussions and Actions ones only write their label — neither builds its
-// (still lazy) panel. Issues rides its existing background loader, which does
-// also fill the issue table; that is the same work the startup restore path has
-// always done, and it lands on a queued callback, not in the open itself.
+// every count to empty but only loads the landing tab's data, so a repo with
+// hundreds of issues advertised "Issues (0)" — and "Discussions (0)", and
+// "Actions (0)" — until each tab was clicked (adhoc #116). All three reads run
+// on worker threads; Discussions and Actions only write their label, while
+// Issues rides its existing background loader (which also fills the issue table,
+// exactly as the startup restore path has always done) on a queued callback.
 void MainWindow::refreshRepoTabCounts()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
@@ -3472,11 +3459,9 @@ void MainWindow::loadRepoOverview(const QString &path)
 
     // The whole-tree reads below (recursive ls-tree, the empty-tree numstat) and
     // the per-entry last-commit probes are pure functions of the resolved tip,
-    // yet browsing between directories re-ran every one of them per click — each
-    // a git spawn blocking the GUI thread, and the stall log caught the numstat
-    // alone taking ~2.7 s while agent builds kept the disk busy. Memoize them
-    // per checkout+commit, exactly like countCache above; the memo resets the
-    // moment the tip moves.
+    // yet browsing between directories re-ran every one per click — the stall log
+    // caught the numstat alone at ~2.7 s while agent builds kept the disk busy.
+    // Memoize per checkout+commit like countCache above; resets when the tip moves.
     struct OverviewTreeCache {
         QString key;                         // dir|head
         QByteArray sizeOut;                  // ls-tree -r -l -z output
@@ -3872,12 +3857,10 @@ void MainWindow::loadCommits()
     const int loadGen = ++m_commitsLoadGen;
     QSignalBlocker block(m_commitsTable);
     // Suspend the table's repaints for the *whole* reload, not just the row-build
-    // loop below. The git reads (the commit log, the unpushed-set walk) run
-    // under the GitKeepAlive above, which pumps the event loop — so without the
-    // guard the table, already cleared to empty by setRowCount(0), would repaint
-    // blank mid-load and flash before the rows arrive. With it the previous rows
-    // stay frozen on screen until the new ones snap in (one repaint when the guard
-    // unwinds, including on the early returns below). Matches every other loader.
+    // loop: the git reads run under the GitKeepAlive above, which pumps the event
+    // loop, so without the guard the table — already cleared by setRowCount(0) —
+    // repaints blank mid-load and flashes. With it the previous rows stay frozen
+    // until the new ones snap in, in one repaint when the guard unwinds.
     TableRepaintGuard repaintGuard(m_commitsTable);
     m_commitsTable->setRowCount(0);
     showCommitList(); // always land on the list when (re)loading
@@ -3897,19 +3880,15 @@ void MainWindow::loadCommits()
     if (currentRef() != m_commitsLoadedRef)
         m_commitsLimit = 300;
     m_commitsHasMore = false;
-    // Fetch one extra record so a full page tells us older history remains. When a
-    // search is active (m_commitsShowingAll) deepen the window to the search depth
-    // — bounded, not the whole ref: building *every* commit as table rows (each
-    // with a cell-widget button) froze the UI for 10-20s on a big history (stall
-    // log: loadCommits <- filterCommits), and the matching uncapped --numstat in
-    // fillCommitStats() froze it again. Anything deeper stays reachable by
-    // scrolling the window onward first.
+    // Fetch one extra record so a full page tells us older history remains. When
+    // a search is active (m_commitsShowingAll) deepen the window to the search
+    // depth — bounded, not the whole ref: building every commit as a table row
+    // froze the UI for 10-20s on a big history (stall log: loadCommits <-
+    // filterCommits). Anything deeper stays reachable by scrolling on.
     //
-    // Deliberately NO --numstat here: that flag makes git diff every commit in the
-    // window (~1s on a large history) and was the bulk of this load's cost, yet it
-    // only feeds the Files/+/− columns. This plain log returns in milliseconds so
-    // the list paints immediately; fillCommitStats() backfills those three columns
-    // from a deferred --numstat read once the rows are on screen.
+    // Deliberately NO --numstat: it diffs every commit in the window (~1s here)
+    // and was the bulk of this load's cost, yet only feeds the Files/+/− columns.
+    // fillCommitStats() backfills those from a deferred read once rows are up.
     const int rowLimit = m_commitsShowingAll ? kCommitSearchDepth : m_commitsLimit;
     QStringList logArgs{
         "log",
@@ -4180,11 +4159,10 @@ void MainWindow::loadCommits()
     }
     // The graph gutter needs no sizing pass: it is painted inside the summary
     // cell and each row's text indents to its own rightmost lane (capped by
-    // kGraphMaxTextIndent in CommitSummaryDelegate).
-    // Repaints stay suspended (TableRepaintGuard) through the banner update and
-    // filter re-apply below, so the whole reload lands in a single repaint when
-    // the guard unwinds at function scope. The rows stay in git-log order (no
-    // header sorting) so the graph lanes always match the topology.
+    // kGraphMaxTextIndent in CommitSummaryDelegate). Repaints stay suspended
+    // through the banner update and filter re-apply below, so the whole reload
+    // lands in one repaint. Rows stay in git-log order (no header sorting) so
+    // the graph lanes always match the topology.
 
     // Banner + expandable file view for the commits still waiting to sync
     // (m_commitsUnsyncedHashes was rebuilt by the row loop above).
@@ -4689,11 +4667,10 @@ void MainWindow::pullCurrentRepo()
 // ---------------------------------------------------------------------------
 // Top-bar global search ("search everything").
 //
-// One box in the top bar that, as you type, searches across every place the app
-// knows about — sections, relays, nodes, repositories, and (for the open repo)
-// its issues, pull requests, branches, files and commit messages — and lists the
-// hits in a floating dropdown. Pick one (mouse or arrow keys + Enter) and it
-// navigates straight there.
+// One box in the top bar that, as you type, searches every place the app knows
+// about — sections, relays, nodes, repositories, and (for the open repo) its
+// issues, pull requests, branches, files and commit messages — and lists the hits
+// in a floating dropdown that navigates straight there on pick.
 // ---------------------------------------------------------------------------
 namespace {
 // Payload roles on each dropdown item; the kind drives where activating it goes.
@@ -5119,8 +5096,8 @@ void MainWindow::hideGlobalSearchPopup()
 // Back / forward navigation trail (sits just left of the search box).
 //
 // As you move between sections and repositories, scheduleNavRecord() captures
-// where you landed onto a browser-style history. Back and Forward replay it
-// without recording new entries, so the trail behaves like a web browser's.
+// where you landed onto a browser-style history that Back and Forward replay
+// without recording new entries.
 // ---------------------------------------------------------------------------
 QWidget *MainWindow::createNavHistoryButtons()
 {
@@ -6947,18 +6924,14 @@ void MainWindow::loadRepoInsights()
                 : languageLegend);
 
     // --- Contributors & activity (merged) -----------------------------------
-    // A single git-log pass over the selected time window yields, per author,
-    // a commit count and a bucketed timeline. The window comes from
-    // m_insightsRangeCombo (0 = all time). The count, share and the embedded
-    // bar chart all reflect that same window so the table reads as one unit.
-    // The log is scoped to the selected ref (currentRef) — the same history the
-    // "Commits (N)" badge, the file tree and the Files/Code-size figures above
-    // count — rather than --all, so the totals match the branch being viewed and
-    // don't fold in every stale/unmerged ref in the repo. Merge commits are
-    // included (no --no-merges) so the per-author commit counts sum to exactly
-    // the same total `git rev-list --count` reports in that badge; excluding them
-    // here previously left the table short by every merge (each attributed to
-    // whoever performed it), which read as an inaccurate count.
+    // A single git-log pass over the selected time window yields, per author, a
+    // commit count and a bucketed timeline. The window comes from
+    // m_insightsRangeCombo (0 = all time), and count, share and bar chart all
+    // reflect it so the table reads as one unit. The log is scoped to currentRef
+    // rather than --all — the same history the "Commits (N)" badge and the file
+    // tree count — so the totals match the branch on screen. Merge commits are
+    // included (no --no-merges) so the per-author counts sum to exactly what
+    // `git rev-list --count` reports in that badge.
     const int windowDays =
         m_insightsRangeCombo ? m_insightsRangeCombo->currentData().toInt() : 0;
     constexpr int kBuckets = 32;
@@ -7796,13 +7769,11 @@ QString MainWindow::repoHeadBranch() const
 
 // Refresh the commits-page branch button: its label (the branch whose history is
 // on screen) and its dropdown (every branch, plus "Create new branch…").
-// Selecting a branch *browses* its commits — exactly like the Code-tab switcher —
-// rather than checking it out into the working tree. The commit list is driven by
-// currentRef() (the browsed ref), so the indicator must track that same ref or the
-// two disagree: e.g. after browsing a branch elsewhere the list would show it while
-// the button still claimed HEAD, and clicking then did a heavyweight checkout (also
-// blockable by uncommitted changes) instead of switching the list. Real checkouts
-// live in the Branches panel; here switching is a read-only history view change.
+// Selecting a branch *browses* its commits, like the Code-tab switcher, rather
+// than checking it out. The list is driven by currentRef(), so the indicator
+// must track that same ref or the two disagree — the button claiming HEAD while
+// the list showed another branch turned a click into a heavyweight checkout.
+// Real checkouts live in the Branches panel.
 void MainWindow::refreshCommitsBranchButton()
 {
     if (!m_commitsBranchButton)
@@ -7949,12 +7920,10 @@ QString MainWindow::chooseDefaultBranch(const QStringList &branches,
 QString MainWindow::repoDefaultBranch(const QStringList &branches) const
 {
     // The default branch is the stable base every other branch is measured and
-    // merged against — it must NOT drift just because the working tree happens to
-    // be parked on a feature branch. An explicitly configured default always wins,
-    // then the conventional main/master names. Only when none of those exist do we
-    // fall back to the checked-out HEAD; otherwise switching branches in the
-    // commits area (or a transient checkout during a branches-page merge) would
-    // silently change the default branch, which we never want to do on its own.
+    // merged against — it must NOT drift because the working tree is parked on a
+    // feature branch. A configured default wins, then main/master, and only when
+    // neither exists do we fall back to HEAD: otherwise switching branches (or a
+    // transient checkout during a branches-page merge) would silently move it.
     return chooseDefaultBranch(branches, m_repoInfo.defaultBranch.trimmed(),
                                repoGitDir(), m_repoBranch);
 }
@@ -7975,15 +7944,12 @@ QString MainWindow::repoDefaultBranchFast() const
         return QString();
     // Short-lived cache mirroring repoBranches()'s: this runs on every
     // agent-session selection, and even the cheap for-each-ref spawn showed up
-    // in the stall log when a transcript stream was being pumped at the same
-    // time (adhoc #82). The unconfigured default branch only moves on branch
-    // create/delete, so 5 s of staleness is harmless.
-    // Past 5 s the cache is still good as long as the ref store hasn't been
-    // touched: a filesystem-only fingerprint (refs/heads + packed-refs + HEAD)
-    // decides that without spawning anything. The 5 s expiry alone meant every
-    // agent-session selection past it paid the subprocess again, and the stall
-    // watchdog caught that spawn blocking the GUI thread for ~1.2 s while a
-    // transcript was streaming (adhoc #93).
+    // in the stall log while a transcript stream was pumped (adhoc #82). The
+    // unconfigured default only moves on branch create/delete, so 5 s of
+    // staleness is harmless — and past 5 s the cache is still good as long as a
+    // filesystem-only fingerprint (refs/heads + packed-refs + HEAD) says the ref
+    // store is untouched. Expiry alone re-spawned on every selection, blocking
+    // the GUI thread ~1.2 s mid-stream (adhoc #93).
     const qint64 now = QDateTime::currentSecsSinceEpoch();
     auto stamp = [&dir](const QString &leaf) {
         return QString::number(QFileInfo(QDir(dir).filePath(leaf))
@@ -8039,26 +8005,20 @@ QString MainWindow::repoDefaultBranchFast() const
 void MainWindow::loadBranchesAndTags()
 {
     // The browsed ref — and with it the status strip's bottom-left branch button
-    // — is pinned to the repo's default branch. It used to follow HEAD whenever no
-    // default was configured, and every merge path transiently checks some other
-    // branch out in this checkout ("Update from main", the merge editor, worktree
-    // teardown), so a refresh landing mid-merge parked the button on that branch
-    // and left it there (adhoc #80). repoDefaultBranch() is stable: the configured
-    // default, then main/master, and only when neither exists does it fall back to
-    // HEAD. Nothing moves the browsed ref off it automatically now — only an
-    // explicit branch pick (setRepoBranch) does.
+    // — is pinned to the repo's stable default branch, never HEAD: every merge
+    // path transiently checks some other branch out here ("Update from main",
+    // the merge editor, worktree teardown), so a refresh landing mid-merge used
+    // to park the button on that branch and leave it (adhoc #80). Only an
+    // explicit branch pick (setRepoBranch) moves it now.
     //
-    // The pin has to be synchronous — the loaders that run right after a repo
-    // open read m_repoBranch — so use repoDefaultBranchFast() (configured
-    // default, else a cached main/master probe). Everything else this function
-    // shows comes from five git reads that each blocked the GUI thread for
-    // seconds in the stall log while agent sessions kept the disk busy; those
-    // now run in readBranchesTagsGit() on a worker thread, and the worker's
-    // full chooseDefaultBranch() pick corrects the fast pin if they disagree.
-    // Only an initial repository load needs a default.  Subsequent refreshes
-    // also arrive from background mirror/branch work while the user may be
-    // browsing an agent branch; repinning here would silently change the graph
-    // back to main (and could race Back/Forward restoration).
+    // The pin must be synchronous — the loaders right after a repo open read
+    // m_repoBranch — so use repoDefaultBranchFast(); the worker's full
+    // chooseDefaultBranch() corrects it later if they disagree. Everything else
+    // here comes from five git reads that each blocked the GUI thread for
+    // seconds in the stall log, now in readBranchesTagsGit() on a worker thread.
+    // Only an initial load needs a default: later refreshes arrive from
+    // background mirror/branch work while the user may be browsing an agent
+    // branch, and repinning would snap the graph back to main.
     if (m_repoBranch.isEmpty())
         m_repoBranch = repoDefaultBranchFast();
     if (m_branchButton) {
@@ -8550,16 +8510,12 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabRow->setContentsMargins(12, 0, 12, 0);
     tabRow->setSpacing(10);
     for (int i = 0; i < tabs.size(); ++i) {
-        // Commits (id 1) no longer gets a top-bar tab: the Git workspace is
-        // reached only from the activity rail.
-        // Agents (id 3) also no longer gets a top-bar tab (adhoc #178) — it's
-        // reached via the footer status strip, spinner overlays and issue/PR
-        // links instead. Branches (id 10) likewise lost its top-bar tab: its
-        // panel now lives inside the Code overview, toggled by the toolbar's
-        // "N branches" button. Worktrees (id 11) followed Branches into the Code
-        // overview (adhoc #170), toggled by the toolbar's "N worktrees" button.
-        // All four entries stay in the list so every later tab keeps its
-        // positional id.
+        // Four ids get no top-bar tab: Commits (1), reached from the activity
+        // rail; Agents (3), reached from the footer strip, spinner overlays and
+        // issue/PR links (adhoc #178); Branches (10) and Worktrees (11), whose
+        // panels live in the Code overview behind the toolbar's "N branches" /
+        // "N worktrees" buttons (adhoc #170). All four stay in the list so every
+        // later tab keeps its positional id.
         if (i == 1 || i == 3 || i == 10 || i == 11)
             continue;
         const TabDef tab = tabs.at(i);
@@ -8683,13 +8639,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_looperToggle = looperToggle;
 
     // Nothing floats in the band above the tab row anymore (adhoc #420): the
-    // mirror-activity dots (adhoc #197), the current-release label (adhoc #69)
-    // and the in-flight Actions bars (adhoc #105) were all removed. The Releases
-    // button moved into the Code toolbar (adhoc #180), which left its release
-    // label stranded mid-page, and the overlays generally read as stray marks
-    // over the tabs. Each readout still lives in its own panel: the Mirror nodes
-    // table shows per-node activity, the Releases panel names the current tag and
-    // the Actions tab lists in-flight runs.
+    // mirror-activity dots, current-release label and in-flight Actions bars all
+    // read as stray marks over the tabs and were removed. Each readout still
+    // lives in its own panel — the Mirror nodes table, the Releases panel and
+    // the Actions tab.
 
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new CurrentPageStack;
@@ -8779,15 +8732,12 @@ QWidget *MainWindow::buildRepoDetailSection()
         }
         // id 1 is a compatibility placeholder; Git lives in the activity rail.
         else if (id == 3) {
-            // issue #289: reloadAgents() shells two git reads per session to
-            // compute Diff cells, blocking the GUI thread for a beat. Run inline
-            // it delays the tab's repaint — setCurrentIndex(3) above only queues
-            // a paint event, which can't process until this slot returns, so the
-            // Agents page visibly appears only *after* the git work ("slight lag"
-            // switching from Issues). Defer to the next event-loop tick: the tab
-            // paints first (the table keeps its prior rows), then the reload runs.
-            // Load pulls first so the agents list can show each session's PR
-            // status (open/merged/closed) from m_currentPulls.
+            // issue #289: reloadAgents() shells two git reads per session for the
+            // Diff cells. setCurrentIndex(3) above only queues a paint, which
+            // can't run until this slot returns, so inline that work delayed the
+            // tab's appearance ("slight lag" switching from Issues). Defer a
+            // tick: the tab paints with its prior rows, then the reload runs.
+            // Pulls load first so the list can show each session's PR status.
             QTimer::singleShot(0, this, [this] {
                 reloadPullsInBackground();
                 reloadAgents();
@@ -8958,13 +8908,12 @@ void MainWindow::updateRepoActivityRail()
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 2;
     const bool onAgents =
         onHome && m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
-    // Git is its own activity-rail destination. Hide every Code/repository
-    // header above the source-control workspace instead of leaving several
-    // rows of unrelated repository navigation on screen. The Agents tab gets
-    // the same treatment for the repository band: the session list is its own
-    // workspace, and the repo switcher, repo actions and Code/Issues/PRs… tabs
-    // only pushed it down the page. The activity rail's Code/Git entries stay
-    // the way back out of both.
+    // Git is its own activity-rail destination, so hide every Code/repository
+    // header above the source-control workspace rather than leaving rows of
+    // unrelated navigation on screen. The Agents tab gets the same treatment: its
+    // session list is a workspace of its own, and the repo switcher, repo actions
+    // and Code/Issues/PRs… tabs only pushed it down the page. The rail's Code/Git
+    // entries stay the way back out of both.
     if (m_repoDetailChrome)
         m_repoDetailChrome->setVisible(!onChanges && !onAgents);
     if (m_repoFilesModeBar)
@@ -9551,13 +9500,11 @@ void MainWindow::loadFileSearchIndex()
         m_fileCompleter->setModel(new QStringListModel(QStringList(), m_fileCompleter));
         return;
     }
-    // A whole-tree ls-tree -r is the heaviest single git read on a large repo
-    // (see the singleShot call site in openRepoDetail) — StallWatchdog caught it
-    // freezing the GUI thread even though the caller already ran it under a
-    // GitKeepAlive scope. That scope only pumps the event loop between polls; it
-    // doesn't bound how long any *one* pumped event (a paint, a text layout
-    // elsewhere in the app) can take, so a slow unrelated repaint landing mid-poll
-    // still stalled the frame. runGitDetached avoids the blocking wait entirely.
+    // A whole-tree ls-tree -r is the heaviest single git read on a large repo, and
+    // StallWatchdog caught it freezing the GUI thread even under a GitKeepAlive
+    // scope: pumping between polls doesn't bound how long any *one* pumped event
+    // takes, so a slow unrelated repaint still stalled the frame. runGitDetached
+    // avoids the blocking wait entirely.
     const int forIndex = m_repoDetailIndex;
     runGitDetached(dir, {"ls-tree", "-r", "--name-only", "-z", currentRef()},
                    [this, forIndex](bool ok, const QByteArray &out) {

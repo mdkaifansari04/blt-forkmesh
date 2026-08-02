@@ -1177,15 +1177,11 @@ QWidget *MainWindow::buildAgentsTab()
         "#issueTable::item:selected { background: transparent; }");
     m_agentTable->setFrameShape(QFrame::NoFrame);
     // Two columns, and only two: the issue title is what the list is scanned by,
-    // so everything that used to compete with it for width has moved into the
-    // detail header or into the leading cell instead. Turns/Time/Cost/Tokens went
-    // first (adhoc #42), Status next (adhoc #29 — its glyph and branch chip ride
-    // the "#" cell), and Agent/Model/Speed plus the night-rider "Activity" light
-    // after that (adhoc #35: Speed now reads in the detail header, and the top-bar
-    // fleet matrix is the remaining live-activity surface). "Updated" folded into
-    // the "#" cell too (adhoc #84 — the age is what the leading column shows now),
-    // and "Diff" last (adhoc #92): its churn bar now paints at the "#" cell's
-    // trailing edge and its conflict button became a glyph inside the branch chip.
+    // so everything that competed with it for width moved into the detail header
+    // or the leading cell — Turns/Time/Cost/Tokens (adhoc #42), Status (adhoc #29,
+    // glyph and branch chip on the "#" cell), Agent/Model/Speed and the "Activity"
+    // light (adhoc #35), Updated (adhoc #84, now the leading cell's age) and Diff
+    // (adhoc #92, a churn bar on that cell's trailing edge).
     m_agentTable->setHorizontalHeaderLabels({"#", "Issue"});
     m_agentTable->verticalHeader()->setVisible(false);
     // No column header either (adhoc #92): two columns, one of them unlabelled
@@ -1596,15 +1592,11 @@ QWidget *MainWindow::buildAgentsTab()
 
     // Branch / Worktree in the output toolbar (adhoc #51): a click opens that
     // branch in the Git view (adhoc #131 — switchToAgentBranch points the view at
-    // the session's own repository first) / that worktree's row in the Worktrees
-    // tab — the same targets the meta table's chips carried before those two
-    // columns moved here. adhoc #61 dropped the tiny caption-over-value styling
-    // that made them half-height oddities beside the other actions: they are
-    // plain full-size buttons now, and the names they open moved into the Info
-    // popup's list (they stay on the tooltip too).
-    // Both are green (adhoc #84): opening the branch or its checkout is the
-    // ordinary, safe thing to do from a finished run, so they read as go actions
-    // beside the red Stop/Delete pair rather than as more of the same.
+    // the session's own repository first) or that worktree's row in the Worktrees
+    // tab. They are plain full-size buttons (adhoc #61), with the names they open
+    // in the Info popup and the tooltip. Both are green (adhoc #84): opening a
+    // branch or checkout is the safe, ordinary thing to do from a finished run,
+    // so they read as go actions beside the red Stop/Delete pair.
     m_agentBranchButton = railActionButton(
         QStringLiteral("git-branch"), QStringLiteral("Branch"),
         "Open this session's branch in the Git view");
@@ -2060,16 +2052,11 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentSyncPushTimer->start(30 * 1000);
     QTimer::singleShot(10 * 1000, this, &MainWindow::pushAgentSessionsSnapshot);
 
-    // Issue #290 used to re-pull the OAuth usage endpoint on a steady one-minute
-    // timer (plus a burst of polls on launch) so the top-bar gauge stayed current
-    // even with no agent running. That meant a network round trip every minute
-    // for the lifetime of the app. Polling is gone, and adhoc #20 removed every
-    // other trigger too: the gauge renders from the last cached figures first
-    // (restored in buildBreadcrumb) and otherwise only hits the network when the
-    // user hovers the chart to check the current numbers (see the
-    // TokenUsageMiniChart::onHover wiring in buildBreadcrumb) — except adhoc #73
-    // added one more trigger: a single live check right after restart, from
-    // runDeferredStartup().
+    // The top-bar usage gauge no longer polls the OAuth usage endpoint (issue
+    // #290 did, once a minute for the life of the app). It renders from the last
+    // cached figures restored in buildBreadcrumb, and only hits the network when
+    // the user hovers the chart (TokenUsageMiniChart::onHover, adhoc #20) or on a
+    // single live check right after restart from runDeferredStartup (adhoc #73).
 
     // adhoc #178 removed the composer frame that used to hold just the
     // Continue button (adhoc #139 had already stripped it down to that) — the
@@ -5391,12 +5378,10 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
 //
 // PR-backed sessions are decided here from the loaded pull's status (so a PR
 // merged here, or synced from a peer as merged, both count — no git needed).
-// Branch-only sessions need git (rev-parse + two rev-lists per session), which
-// used to run inline: even with the GitKeepAlive pump the GUI thread still
-// blocked for the length of each subprocess and the stall watchdog kept
-// catching >500ms freezes. Those reads now run on a worker thread over
-// value-captured (id, branch, fork point) snapshots; verdicts come back to the
-// main thread and are applied by id in markAgentSessionsLanded().
+// Branch-only sessions need git (rev-parse + two rev-lists each), which inline
+// blocked the GUI thread for the length of every subprocess even under the
+// GitKeepAlive pump. Those reads run on a worker thread over value-captured
+// (id, branch, fork point) snapshots, applied by id in markAgentSessionsLanded().
 void MainWindow::refreshAgentMergeState()
 {
     if (!m_agentStore)
@@ -7335,22 +7320,16 @@ QStringList MainWindow::runningAgentBlockers() const
             *status = pending->status + QStringLiteral(" [pre-reload snapshot]");
         return pending->status == AgentStatus::Running;
     };
-    // The stored status can get stuck at "Running" while nothing is actually
-    // executing — a clarifying question the transcript heuristic failed to
-    // classify as a wait (so notifyAgentWaiting never flipped it off Running), a
-    // resume that produced no turn, or a turn whose terminal `result` never
-    // landed on the session (findAgentSession missed it before the first
-    // reloadAgents catch-up). The persistent CLI/app-server process stays alive
-    // between turns, so running() is true regardless, which left Rebuild &
-    // restart stuck on "Waiting for running actions" with no real work in flight
+    // The stored status can stick at "Running" while nothing is executing — an
+    // unclassified clarifying question, a resume that produced no turn, or a
+    // terminal `result` that never landed on the session. The CLI process stays
+    // alive between turns, so running() is true regardless, which left Rebuild &
+    // restart stuck on "Waiting for running actions" with no work in flight
     // (adhoc #157, after #91/#104/#111/#116/#134/#143). Back the status up with a
-    // liveness check: a genuinely working agent streams output continuously
-    // (partial-message deltas, tool calls), so a "Running" session that has been
-    // completely silent well past the threshold is stuck, not busy — don't let it
-    // block the rebuild forever. A freshly (re)launched session that hasn't
-    // produced output yet is covered by its startedAtMs, and a session that gets
-    // yanked here is re-queued and resumed on the next start (initAgents), so this
-    // never abandons real work.
+    // liveness check: a working agent streams output continuously, so a "Running"
+    // session silent well past the threshold is stuck, not busy. A freshly
+    // launched one is covered by startedAtMs, and anything yanked here is
+    // re-queued and resumed by initAgents, so no real work is abandoned.
     constexpr qint64 kBlockerStaleMs = 90'000;
     auto recentlyLive = [this](int id) {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -7794,14 +7773,12 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
     QStringList env;
     // The built-in Claude Code terminal authenticates with the user's claude.ai
     // login, so we deliberately do NOT inject the configured ANTHROPIC_API_KEY
-    // here (that key is for the script-based AgentRunner path, which needs raw
-    // API access). Injecting it makes Claude Code warn "Both claude.ai and
-    // ANTHROPIC_API_KEY set" and silently switch to API-usage billing. Drop any
-    // provider credential inherited from the shell too; an entry without '='
-    // tells the terminal to unset the variable in the child.  Claude's own
-    // device-local login discovery remains available through its protected
-    // provider storage; ForkMesh never injects or copies those credentials into
-    // the agent worktree or command environment.
+    // (that key is for the script-based AgentRunner path): injecting it makes
+    // Claude Code warn "Both claude.ai and ANTHROPIC_API_KEY set" and silently
+    // switch to API-usage billing. Drop any provider credential inherited from
+    // the shell too — an entry without '=' unsets the variable in the child.
+    // ForkMesh never copies Claude's own device-local credentials into the agent
+    // worktree or command environment.
     env << QStringLiteral("ANTHROPIC_API_KEY")
         << QStringLiteral("ANTHROPIC_AUTH_TOKEN")
         << QStringLiteral("ANTHROPIC_ADMIN_KEY")
@@ -8149,11 +8126,10 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     //
     // Resuming a session that already streamed a transcript — an app-restart resume
     // of a still-Running agent (issue #242), or a user-driven Continue/Revision —
-    // must KEEP that transcript: wiping events.jsonl here is what made a
-    // recently-started agent look like it lost its history after a restart. Load any
-    // persisted events back into memory and only start from a clean slate for a
-    // genuinely fresh run (a brand-new ad-hoc or issue assignment has none). The
-    // resumed CLI emits its own "session started" event, marking the boundary.
+    // must KEEP that transcript: wiping events.jsonl is what made a recently
+    // started agent look like it lost its history. Load persisted events back into
+    // memory and start clean only for a genuinely fresh run; the resumed CLI emits
+    // its own "session started" event to mark the boundary.
     ensureStreamEventsLoaded(sid);
     const bool resuming = !m_streamEvents.value(sid).isEmpty();
     if (!resuming) {
@@ -8247,16 +8223,13 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             appendAgentRawLog(QStringLiteral("[stderr] ") + text);
     };
     auto onFinished = [this, sid, codex](int exitCode) {
-        // The CLI process is meant to stay alive across turns — a genuinely
-        // finished turn is what the `result` event handler above marks Success
-        // (or Failed on an error result). Landing here with the session still
-        // Running/Waiting means the process died without ever sending one (a
-        // crash, or an app-restart resume whose `--resume` id no longer lined
-        // up), not that the task completed. Stamping Success on that was
-        // reported as "an agent I restarted mid-task shows as done" — re-queue
-        // it instead so it stays active and gets another resume attempt,
-        // mirroring initAgents()'s restart recovery (issue #242) rather than
-        // abandoning it with a false result.
+        // The CLI process stays alive across turns, and a finished turn is what
+        // the `result` handler above marks Success (or Failed). Landing here with
+        // the session still Running/Waiting means the process died without ever
+        // sending one — a crash, or a resume whose `--resume` id no longer lined
+        // up — not that the task completed; stamping Success was reported as "an
+        // agent I restarted mid-task shows as done". Re-queue it instead, so it
+        // gets another resume attempt like initAgents()'s recovery (issue #242).
         if (AgentSession *as = findAgentSession(sid)) {
             if (as->status == AgentStatus::Running ||
                 as->status == AgentStatus::Waiting) {
@@ -8606,14 +8579,12 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     const QString wtPath =
         wtRoot + QStringLiteral("/issue-%1-s%2").arg(issueNumber).arg(sid);
     // Recreate the agent's worktree, robustly. A finished session tears its worktree
-    // down asynchronously (cleanupStreamWorktree spawns a detached thread); when the
-    // user continues that session the teardown can still be in flight, so prune AND
-    // force-remove any lingering registration at this path *in the same chained
-    // command* before re-adding. That still isn't enough on its own — the teardown
-    // is a separate git process on the same repo, and `git worktree add` can lose
-    // the race with it ("branch already used by worktree"); the retry loop on the
-    // add's completion below covers that case so we don't silently fall back to the
-    // main checkout and leave `claude --resume` bailing with a red "0 turns" error.
+    // down asynchronously, so on a continue that teardown may still be in flight:
+    // prune AND force-remove any lingering registration at this path in the same
+    // chained command before re-adding. That alone isn't enough — `git worktree
+    // add` can still lose the race ("branch already used by worktree") — so the
+    // retry loop below covers it rather than silently falling back to the main
+    // checkout and leaving `claude --resume` with a red "0 turns" error.
     //
     // On a resume the branch already holds the agent's committed work, so check it
     // out as-is to continue from where it left off; only a fresh run (no resume id)
@@ -8675,20 +8646,16 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Wait for the just-finished run's teardown thread (if any) to drain before
     // touching the path so the two `git worktree` runs never overlap — this is
     // what makes the resume land in the worktree on the *first* Add (adhoc #84).
-    // isRunning() is true only until run() returns, and finished() is emitted
-    // after that and delivered to this GUI thread as a queued signal, so
-    // connecting here can't miss it. runAdd's own retry budget covers any
-    // teardown not tracked here.
+    // isRunning() is true only until run() returns and finished() arrives here as
+    // a queued signal, so connecting now can't miss it; runAdd's retry budget
+    // covers any teardown not tracked here.
     //
     // With no teardown in flight, a finished non-YOLO session's worktree is
-    // usually still there (the PR is opened by the Create PR button now, not by
-    // the run finishing) — with any uncommitted work in it. Reuse it as-is:
-    // the remove+add script would `git worktree remove --force` those
-    // uncommitted changes into oblivion. Reuse only a tree that really is this
-    // session's branch — the linked worktree's own HEAD names it without
-    // shelling git (<wtPath>/.git is "gitdir: …/.git/worktrees/<n>", and HEAD
-    // there is "ref: refs/heads/<branch>"); anything else (a half-torn-down
-    // folder, a stale tree on another branch) goes through the recreate script.
+    // usually still there, with any uncommitted work in it — reuse it as-is,
+    // since the remove+add script would `git worktree remove --force` that work
+    // into oblivion. Reuse only a tree that really is this session's branch: the
+    // linked worktree's own HEAD names it without shelling git. Anything else (a
+    // half-torn-down folder, a stale tree) goes through the recreate script.
     auto worktreeOnSessionBranch = [&wtPath, &branchName]() -> bool {
         QFile dotGit(wtPath + QStringLiteral("/.git"));
         if (!dotGit.open(QIODevice::ReadOnly | QIODevice::Text))
@@ -8742,15 +8709,12 @@ QString MainWindow::sessionWorkdir(int sessionId)
 }
 
 // Resolve a session's dedicated worktree path ("" when its branch has no separate
-// worktree / is the main checkout) without re-shelling `git worktree list` every
-// time. worktreePathForBranch() spawns a synchronous git subprocess, and the
-// click path resolved it twice per open — once for the header's worktree link and
-// once to gate the Files-changed tab — plus refreshAgentFilesPanel() drove it on
-// every transcript turn. Two subprocesses on the GUI thread is the ~0.5s stall
-// opening a session showed (adhoc #78). Sessions launched this run already know
-// their worktree from m_streamWorktree (no git at all); reloaded ones resolve it
-// once and cache it — a branch->worktree binding is fixed for the session's
-// lifetime — re-resolving only if a found path was since removed (adhoc #247).
+// worktree) without re-shelling `git worktree list` every time.
+// worktreePathForBranch() spawns a synchronous git subprocess, and the click path
+// resolved it twice per open plus once per transcript turn — the ~0.5s stall
+// opening a session showed (adhoc #78). Sessions launched this run know their
+// worktree from m_streamWorktree; reloaded ones resolve once and cache (the
+// binding is fixed for the session), re-resolving only if the path went away.
 QString MainWindow::cachedSessionWorktree(int sessionId, const QString &repoLocal,
                                           const QString &branch)
 {
@@ -8847,14 +8811,10 @@ QList<int> MainWindow::stoppableAgentSessionIds() const
 
 // "Stop all" (adhoc #433): halt every session ForkMesh is driving, across all
 // repositories — the run limit is machine-wide, so its escape hatch is too. The
-// pending queue is dropped first: stopping a running session frees a slot, and
-// leaving the queue in place would just start the next one behind it, so the
-// user would be clicking Stop forever. External (watch-only) rows belong to
-// another process and are left alone.
-//
-// Deliberately unconfirmed: it's the panic button for a runaway fleet, and each
-// stopped session keeps its work and can be continued later, so a dialog only
-// stands between the user and the thing they already asked for.
+// pending queue is dropped first, or freeing a slot would just start the next one
+// behind it and the user would click Stop forever. External (watch-only) rows
+// belong to another process and are left alone. Deliberately unconfirmed: it's
+// the panic button for a runaway fleet, and each stopped session keeps its work.
 void MainWindow::stopAllRunningAgents()
 {
     // Snapshot the ids up front: each stop below reloads m_agentSessions.
@@ -8913,15 +8873,11 @@ QList<int> MainWindow::startableAgentSessionIds() const
 }
 
 // "Start all" (adhoc #136): the way back from "Stop all" — resume every idle
-// session across all repositories in one click, instead of opening each row and
-// continuing it. Everything is queued rather than launched: the single
-// processAgentQueue() below starts as many as the machine-wide run limit allows
-// and leaves the rest waiting, so the fleet comes back at the same rate it would
-// have anyway.
-//
+// session across all repositories in one click. Everything is queued rather than
+// launched: the single processAgentQueue() below starts as many as the
+// machine-wide run limit allows, so the fleet comes back at its normal rate.
 // Unconfirmed, like its red twin: each of these is work the user already started,
-// every session is resumed with a plain "Continue where you left off.", and the
-// button beside this one calls the whole batch back off.
+// and the button beside this one calls the whole batch back off.
 void MainWindow::startAllStoppedAgents()
 {
     // Snapshot the ids up front: the resumes below rewrite session state as they go.
@@ -9681,16 +9637,13 @@ QString MainWindow::lastCodexThreadId(int sessionId) const
     return QString();
 }
 
-// The session started working again — a resumed CLI announced itself
-// (system/init, the "session started" divider) or a new user turn was steered
-// into a live one. Whatever terminal state the previous turn left behind
-// (Waiting, Failed from an error result, Success), the list must show it
-// Running now (adhoc #33). Mirrors continueSelectedAgentSession's reset: the
-// stale error/finish stamps belong to the previous run. A session whose branch
-// was already merged shows the purple "merged" badge instead of status/icon
-// (see applyAgentStatusCell) — but reusing that same branch for another turn
-// means it's no longer just a merged, done session, so clear the flag and let
-// the running spinner show again.
+// The session started working again — a resumed CLI announced itself, or a new
+// user turn was steered into a live one. Whatever terminal state the previous
+// turn left (Waiting, Failed, Success), the list must show it Running now (adhoc
+// #33); the stale error/finish stamps belong to that run, as in
+// continueSelectedAgentSession's reset. A session whose branch was merged shows
+// the purple "merged" badge instead of status/icon, but reusing that branch for
+// another turn means it isn't just a merged, done session — clear the flag.
 void MainWindow::markAgentSessionRunning(int sessionId)
 {
     AgentSession *s = findAgentSession(sessionId);
@@ -10218,18 +10171,13 @@ void MainWindow::refreshAgentFilesPanel(int sessionId)
     if (!m_agentFilesList)
         return;
     // Render the files we already know about from the session's tool calls right
-    // away — that's in-memory and cheap, so an edit shows up the instant the agent
-    // makes it. The working-tree `git diff` augmentation used to run here with a
-    // blocking waitForFinished(), which fired on *every* transcript event and
-    // froze the UI in ~1.5-2s bursts while an agent streamed. It's now coalesced
-    // and run off the event loop instead (scheduleAgentFilesDiff).
-    //
-    // Only draw the plain placeholder once, before the first rich (icon + per-file
-    // +/-) diff render for this session. Re-running it on every transcript turn is
-    // what made the panel flash back and forth: the placeholder (no icons) replaced
-    // the rich list, then ~400ms later the diff redrew the rich list, over and over.
-    // Once renderAgentDiff() has drawn the icon view we leave it in place and just
-    // reschedule the diff, which redraws in place without the flash (adhoc #260).
+    // away — in-memory and cheap, so an edit shows the instant the agent makes it.
+    // The working-tree `git diff` augmentation is coalesced off the event loop
+    // (scheduleAgentFilesDiff); blocking here fired on every transcript event and
+    // froze the UI in ~1.5-2s bursts. Draw the plain placeholder only once, before
+    // the first rich (icon + per-file +/-) render: re-running it every turn made
+    // the panel flash between the two lists. Once renderAgentDiff() has drawn the
+    // icon view, leave it and just reschedule the diff (adhoc #260).
     if (m_agentDiffRenderedSession != sessionId)
         populateAgentFilesPanel(sessionId, QStringList());
     scheduleAgentFilesDiff(sessionId);
@@ -10386,16 +10334,13 @@ QString MainWindow::sessionBaseBranch(int sessionId)
 }
 
 // Resolve what a session's diff is measured *from*. The Files-changed tab must
-// show exactly what the branch link's destination shows — the Worktrees/Branches
-// detail view diffs the worktree against the *live* base branch tip (`git diff
-// <base>`, see updateWorktreeSelection). So return the base branch name and let `git
-// diff <base>` resolve its current tip too. Diffing against merge-base(base, HEAD)
-// instead made this page disagree with that view every time the base branch moved
-// on after the fork — "it always shows something different" (adhoc #28). Diffing
-// against the live tip still avoids the #183 over-count: once the branch has main
-// merged in, `git diff <base>` cancels main's own changes and leaves only this
-// branch's net change. Fall back to the captured base commit only when the session
-// never recorded a base branch, so a diff still renders.
+// show what the branch link's destination shows, and the Worktrees/Branches view
+// diffs against the *live* base branch tip (`git diff <base>`), so return the
+// base branch name and let git resolve its tip too. Diffing merge-base(base,
+// HEAD) instead disagreed with that view every time the base moved on after the
+// fork (adhoc #28), and the live tip still avoids the #183 over-count: once main
+// is merged in, `git diff <base>` cancels its changes and leaves the net change.
+// Fall back to the captured base commit only when no base branch was recorded.
 QString MainWindow::sessionDiffBase(int sessionId, const QString &dir)
 {
     Q_UNUSED(dir);
@@ -10714,18 +10659,16 @@ void MainWindow::landAgentPullForSession(AgentSession session, const QString &pa
 }
 
 // "YOLO" auto-merge (adhoc #12): a session launched with the quick-add YOLO
-// toggle on lands its own branch in the repo's default branch as soon as its run
-// finishes cleanly — the same thing the detail page's "Merge into main" button
-// does, without waiting for a human to click it. Every safety gate lives in
-// mergeWorktreeIntoMain (dirty checkout, wrong branch, conflicts, and the
-// is-ancestor proof before anything is deleted), so a merge that can't land
-// cleanly leaves the branch and worktree exactly where they are.
+// toggle lands its branch in the repo's default branch as soon as its run
+// finishes cleanly — what "Merge into main" does, without waiting for a click.
+// Every safety gate lives in mergeWorktreeIntoMain (dirty checkout, wrong branch,
+// conflicts, the is-ancestor proof before any delete), so a merge that can't land
+// leaves the branch and worktree where they are.
 // ---- Organization tasks for prompted runs (adhoc #18) ---------------------
-// Typing a prompt starts an agent on this desktop; with the composer's "Task"
-// toggle on it also opens a task in the organization, so the run shows up for
-// everyone rather than only in this app's Agents tab. The task records the run's
-// provenance: the bot that launched it, the bot that reported it finished, and
-// the model, permission mode, and reasoning strength it was given.
+// With the composer's "Task" toggle on, a prompted run also opens a task in the
+// organization so it shows up for everyone, not just this app's Agents tab. The
+// task records provenance: the bots that launched and reported it, and the model,
+// permission mode and reasoning strength it was given.
 
 // "<provider>@<machine>": which bot on which machine. The provider alone would
 // collapse every desktop in the fleet into one "claude-code", and the machine
@@ -10985,17 +10928,14 @@ void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followU
 // point behind the detail bar's "Merge into main" / "Merge & delete agent" and the
 // YOLO auto-merge.
 //
-// mergeWorktreeIntoMain resolves the checkout, the base branch and the branch list
-// from whichever repo the *detail view* currently holds (repoGitDir /
-// m_repoDetailIndex), but the Agents tab is global: the session being acted on is
-// often not the repo the detail page last loaded. Merging then read a different
-// repo's HEAD and default branch, so "Merge & delete agent" would refuse with
-// "Switch the repo to main first (it's on <branch>)" — naming a branch of some
-// other repository — while the status strip at the bottom left showed main. Bind
-// the detail view to the session's repo first (the same shape "Update from main"
-// already carries, adhoc #28); that only reloads which repo the detail page holds,
-// it doesn't switch the visible page. Returns false when the bind didn't take, so
-// the YOLO path can log its own "merge it by hand" note.
+// mergeWorktreeIntoMain resolves the checkout, base branch and branch list from
+// whichever repo the *detail view* holds, but the Agents tab is global: the
+// session acted on is often not that repo, so merging read a different repo's
+// HEAD and "Merge & delete agent" refused with "Switch the repo to main first
+// (it's on <branch>)" naming another repository's branch. Bind the detail view to
+// the session's repo first (adhoc #28); that reloads which repo the page holds,
+// not the visible page. Returns false when the bind didn't take, so the YOLO path
+// can log its own "merge it by hand" note.
 bool MainWindow::mergeAgentBranchIntoBase(int repoIndex, const QString &branchArg,
                                           bool deleteAgent)
 {
@@ -11307,12 +11247,10 @@ void MainWindow::updateAgentActionState()
 // that tab would keep stealing Enter from Chat, Issues, or any other section.
 //
 // The on-screen test is that panel's own visibility rather than a pair of
-// stack indexes: comparing m_sectionStack/m_repoDetailStack indexes only
-// recognised one route to the transcript, so on any other way of reaching it
-// the transcript sat in plain view, clicking "add" followed up on it — and
-// Enter quietly started a brand-new agent instead (or, with an empty
-// composer, did nothing at all). Keying off the widget makes Enter agree with
-// the button it mirrors, wherever that panel is shown from.
+// stack indexes: comparing m_sectionStack/m_repoDetailStack recognised only one
+// route to the transcript, so reached any other way it sat in plain view with
+// "add" following up on it while Enter quietly started a brand-new agent.
+// Keying off the widget makes Enter agree with the button it mirrors.
 bool MainWindow::quickAddShouldFollowUpAgent() const
 {
     if (m_selectedAgentSessionId < 0)

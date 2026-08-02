@@ -4,12 +4,17 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLocale>
 #include <QProcess>
 #include <QSaveFile>
 
 namespace {
+const int kHistoryDays = 30;
+const char kStatsSkip[] = ".forkmesh/stats/";
+
 QJsonObject readDocument(const QString &path)
 {
     QFile file(path);
@@ -26,7 +31,7 @@ bool writeDocument(const QString &path, const QJsonObject &object, QString *erro
         if (error) *error = file.errorString();
         return false;
     }
-    file.write(QJsonDocument(object).toJson(QJsonDocument::Indented));
+    file.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
     if (!file.commit()) {
         if (error) *error = file.errorString();
         return false;
@@ -45,11 +50,68 @@ QByteArray git(const QString &repo, const QStringList &args, bool *ok = nullptr)
     if (ok) *ok = success;
     return success ? process.readAllStandardOutput() : QByteArray();
 }
+
+// The directory shared by every worktree of a repository ("…/.git" for a normal
+// clone). Linked worktrees each carry their own checkout of the tracked stats
+// file, so a per-repository setting has to live here instead.
+QString commonGitDir(const QString &repoDir)
+{
+    static QHash<QString, QString> cache;
+    const auto cached = cache.constFind(repoDir);
+    if (cached != cache.constEnd()) return *cached;
+    bool ok = false;
+    QString path = QString::fromUtf8(
+                       git(repoDir, {QStringLiteral("rev-parse"),
+                                     QStringLiteral("--git-common-dir")}, &ok))
+                       .trimmed();
+    if (!ok || path.isEmpty())
+        path = QDir(repoDir).filePath(QStringLiteral(".git"));
+    else if (QDir::isRelativePath(path))
+        path = QDir(repoDir).filePath(path);
+    path = QDir(path).absolutePath();
+    cache.insert(repoDir, path);
+    return path;
+}
+
+QString humanSize(qint64 bytes)
+{
+    return QLocale().formattedDataSize(bytes);
+}
+
+// Tracked bytes and file count of a committed tree, straight out of the object
+// database — history without checking anything out.
+RepoStatsSample treeSample(const QString &repoDir, const QString &sha)
+{
+    RepoStatsSample sample;
+    bool ok = false;
+    const QByteArray listing = git(repoDir, {QStringLiteral("ls-tree"),
+                                             QStringLiteral("-r"),
+                                             QStringLiteral("-l"), sha}, &ok);
+    if (!ok) return sample;
+    for (const QByteArray &line : listing.split('\n')) {
+        const int tab = line.indexOf('\t');
+        if (tab < 0 || line.mid(tab + 1).startsWith(kStatsSkip)) continue;
+        const QList<QByteArray> fields = line.left(tab).simplified().split(' ');
+        if (fields.size() < 4 || fields.at(1) != "blob") continue;
+        sample.bytes += fields.at(3).toLongLong();
+        ++sample.files;
+    }
+    return sample;
+}
 }
 
 QString RepoStatsStore::statsPath(const QString &repoDir)
 {
-    return QDir(repoDir).filePath(QStringLiteral(".forkmesh/stats/repository.json"));
+    const QDir gitDir(commonGitDir(repoDir));
+    const QString root = gitDir.dirName() == QLatin1String(".git")
+                             ? QFileInfo(gitDir.absolutePath()).absolutePath()
+                             : gitDir.absolutePath();
+    return QDir(root).filePath(QStringLiteral(".forkmesh/stats/repository.json"));
+}
+
+QString RepoStatsStore::statePath(const QString &repoDir)
+{
+    return QDir(commonGitDir(repoDir)).filePath(QStringLiteral("forkmesh-ratchet.json"));
 }
 
 RepoStatsSample RepoStatsStore::measure(const QString &repoDir, QString *error)
@@ -66,7 +128,7 @@ RepoStatsSample RepoStatsStore::measure(const QString &repoDir, QString *error)
     }
     for (const QByteArray &encoded : paths) {
         if (encoded.isEmpty()) continue;
-        if (encoded.startsWith(".forkmesh/stats/")) continue;
+        if (encoded.startsWith(kStatsSkip)) continue;
         QFile file(QDir(repoDir).filePath(QString::fromUtf8(encoded)));
         if (!file.open(QIODevice::ReadOnly)) continue;
         const QByteArray data = file.readAll();
@@ -78,6 +140,75 @@ RepoStatsSample RepoStatsStore::measure(const QString &repoDir, QString *error)
         }
     }
     return sample;
+}
+
+// Reconstructs the last 30 days from git history so a repository that never
+// recorded a sample still opens with full charts: size and file counts from each
+// day's last commit tree, lines walked back from today's measurement.
+QVector<RepoStatsSample> RepoStatsStore::backfill(const QString &repoDir,
+                                                  const RepoStatsSample &today)
+{
+    const QDate last = QDate::fromString(today.day, Qt::ISODate);
+    const QDate first = last.addDays(-(kHistoryDays - 1));
+    if (!last.isValid()) return {today};
+
+    bool ok = false;
+    QVector<QPair<QDate, QString>> commits; // newest first
+    for (const QByteArray &line : git(repoDir, {QStringLiteral("log"),
+                                                QStringLiteral("--first-parent"),
+                                                QStringLiteral("--format=%H %cs")},
+                                      &ok).split('\n')) {
+        const int space = line.indexOf(' ');
+        if (space <= 0) continue;
+        const QDate when =
+            QDate::fromString(QString::fromLatin1(line.mid(space + 1, 10)), Qt::ISODate);
+        if (when.isValid())
+            commits.append({when, QString::fromLatin1(line.left(space))});
+    }
+    if (commits.isEmpty()) return {today};
+
+    QHash<QString, qint64> lineDelta;
+    QString cursor;
+    for (const QByteArray &line : git(repoDir, {QStringLiteral("log"),
+                                                QStringLiteral("--first-parent"),
+                                                QStringLiteral("-m"),
+                                                QStringLiteral("--numstat"),
+                                                QStringLiteral("--format=%x01%cs"),
+                                                QStringLiteral("--since"),
+                                                first.toString(Qt::ISODate)},
+                                      &ok).split('\n')) {
+        if (line.startsWith('\x01')) {
+            cursor = QString::fromLatin1(line.mid(1, 10));
+            continue;
+        }
+        const QList<QByteArray> fields = line.split('\t');
+        if (fields.size() < 3 || fields.at(0) == "-") continue;
+        if (fields.at(2).startsWith(kStatsSkip)) continue;
+        lineDelta[cursor] += fields.at(0).toLongLong() - fields.at(1).toLongLong();
+    }
+
+    QHash<QString, RepoStatsSample> treeCache;
+    QVector<RepoStatsSample> days;
+    qint64 lines = today.lines;
+    for (QDate day = last; day >= first; day = day.addDays(-1)) {
+        const QString key = day.toString(Qt::ISODate);
+        if (key == today.day) {
+            days.prepend(today);
+        } else {
+            QString sha;
+            for (const QPair<QDate, QString> &commit : commits) {
+                if (commit.first <= day) { sha = commit.second; break; }
+            }
+            if (sha.isEmpty()) break; // before the repository's first commit
+            if (!treeCache.contains(sha)) treeCache.insert(sha, treeSample(repoDir, sha));
+            RepoStatsSample sample = treeCache.value(sha);
+            sample.day = key;
+            sample.lines = qMax<qint64>(0, lines);
+            days.prepend(sample);
+        }
+        lines -= lineDelta.value(key);
+    }
+    return days;
 }
 
 QVector<RepoStatsSample> RepoStatsStore::load(const QString &repoDir, QString *error)
@@ -93,7 +224,7 @@ QVector<RepoStatsSample> RepoStatsStore::load(const QString &repoDir, QString *e
         sample.files = qint64(item.value(QStringLiteral("files")).toDouble());
         if (!sample.day.isEmpty()) result.append(sample);
     }
-    if (result.size() > 30) result = result.mid(result.size() - 30);
+    if (result.size() > kHistoryDays) result = result.mid(result.size() - kHistoryDays);
     Q_UNUSED(error);
     return result;
 }
@@ -103,13 +234,17 @@ QVector<RepoStatsSample> RepoStatsStore::captureDaily(const QString &repoDir,
 {
     QVector<RepoStatsSample> days = load(repoDir, error);
     const QString today = QDate::currentDate().toString(Qt::ISODate);
-    if (!days.isEmpty() && days.last().day == today)
+    if (!days.isEmpty() && days.last().day == today) {
+        // Already sampled today: keep the ceiling pinned to that first reading.
+        if (ratchetEnabled(repoDir)) ceilingBytes(repoDir, days.last(), true);
         return days;
-    RepoStatsSample current = measure(repoDir, error);
+    }
+    const RepoStatsSample current = measure(repoDir, error);
     if (current.day.isEmpty()) return days;
+    if (days.isEmpty()) days = backfill(repoDir, current);
+    else days.append(current);
+    while (days.size() > kHistoryDays) days.removeFirst();
     QJsonObject root = readDocument(statsPath(repoDir));
-    days.append(current);
-    while (days.size() > 30) days.removeFirst();
     QJsonArray encoded;
     for (const RepoStatsSample &sample : days)
         encoded.append(QJsonObject{{QStringLiteral("day"), sample.day},
@@ -117,68 +252,68 @@ QVector<RepoStatsSample> RepoStatsStore::captureDaily(const QString &repoDir,
                                    {QStringLiteral("lines"), double(sample.lines)},
                                    {QStringLiteral("files"), double(sample.files)}});
     root.insert(QStringLiteral("days"), encoded);
-    // Each new day lowers the ceiling to the repository's new size. It never
-    // rises during that day while Ratchet Mode remains enabled.
-    if (root.value(QStringLiteral("ratchet")).toBool()) {
-        root.insert(QStringLiteral("ceilingDay"), current.day);
-        root.insert(QStringLiteral("ceilingBytes"), double(current.bytes));
-        root.insert(QStringLiteral("ceilingLines"), double(current.lines));
-    }
+    // Each new day re-bases the ceiling on the repository's size right now. It
+    // never rises again during that day while Ratchet Mode remains enabled.
+    if (ratchetEnabled(repoDir)) ceilingBytes(repoDir, current, true);
     if (!writeDocument(statsPath(repoDir), root, error)) return {};
     return days;
 }
 
 bool RepoStatsStore::ratchetEnabled(const QString &repoDir)
 {
-    return readDocument(statsPath(repoDir)).value(QStringLiteral("ratchet")).toBool();
+    return readDocument(statePath(repoDir)).value(QStringLiteral("ratchet")).toBool();
 }
 
 bool RepoStatsStore::setRatchetEnabled(const QString &repoDir, bool enabled,
                                        QString *error)
 {
-    QJsonObject root = readDocument(statsPath(repoDir));
-    root.insert(QStringLiteral("ratchet"), enabled);
+    QJsonObject state = readDocument(statePath(repoDir));
+    state.insert(QStringLiteral("ratchet"), enabled);
+    // Turning it off clears the ceiling: nothing is left that a later toggle,
+    // checkout or merge could read back as an active limit.
+    state.remove(QStringLiteral("ceilingDay"));
+    state.remove(QStringLiteral("ceilingBytes"));
     if (enabled) {
         const RepoStatsSample now = measure(repoDir, error);
         if (now.day.isEmpty()) return false;
-        root.insert(QStringLiteral("ceilingDay"), now.day);
-        root.insert(QStringLiteral("ceilingBytes"), double(now.bytes));
-        root.insert(QStringLiteral("ceilingLines"), double(now.lines));
+        state.insert(QStringLiteral("ceilingDay"), now.day);
+        state.insert(QStringLiteral("ceilingBytes"), double(now.bytes));
     }
-    return writeDocument(statsPath(repoDir), root, error);
+    return writeDocument(statePath(repoDir), state, error);
+}
+
+// Today's byte ceiling. A ceiling left over from an earlier day is stale — the
+// ratchet resets every day — so it is re-based on the current size on request.
+qint64 RepoStatsStore::ceilingBytes(const QString &repoDir, const RepoStatsSample &now,
+                                    bool refreshStaleDay)
+{
+    QJsonObject state = readDocument(statePath(repoDir));
+    const qint64 stored = qint64(state.value(QStringLiteral("ceilingBytes")).toDouble());
+    if (state.value(QStringLiteral("ceilingDay")).toString() == now.day && stored > 0)
+        return stored;
+    if (!refreshStaleDay) return stored;
+    state.insert(QStringLiteral("ceilingDay"), now.day);
+    state.insert(QStringLiteral("ceilingBytes"), double(now.bytes));
+    writeDocument(statePath(repoDir), state, nullptr);
+    return now.bytes;
 }
 
 bool RepoStatsStore::stagedCommitAllowed(const QString &repoDir, QString *reason)
 {
     if (!ratchetEnabled(repoDir)) return true;
-    bool ok = false;
-    const QByteArray numstat = git(repoDir, {QStringLiteral("diff"),
-                                            QStringLiteral("--cached"),
-                                            QStringLiteral("--numstat")}, &ok);
-    if (!ok) {
-        if (reason) *reason = QStringLiteral("Ratchet could not inspect staged changes.");
-        return false;
-    }
-    qint64 added = 0, removed = 0;
-    for (const QByteArray &line : numstat.split('\n')) {
-        const QList<QByteArray> fields = line.split('\t');
-        if (fields.size() < 2 || fields.at(0) == "-" || fields.at(1) == "-") continue;
-        added += fields.at(0).toLongLong();
-        removed += fields.at(1).toLongLong();
-    }
-    if (added > removed) {
-        if (reason) *reason = QStringLiteral("Ratchet Mode blocked this commit: %1 lines "
-                                             "added but only %2 removed.")
-                                 .arg(added).arg(removed);
-        return false;
-    }
-    const QJsonObject root = readDocument(statsPath(repoDir));
-    const qint64 ceiling = qint64(root.value(QStringLiteral("ceilingBytes")).toDouble());
     const RepoStatsSample now = measure(repoDir, nullptr);
+    if (now.day.isEmpty()) {
+        if (reason) *reason = QStringLiteral("Ratchet could not measure the repository.");
+        return false;
+    }
+    const qint64 ceiling = ceilingBytes(repoDir, now, true);
     if (ceiling > 0 && now.bytes > ceiling) {
-        if (reason) *reason = QStringLiteral("Ratchet Mode blocked this commit: tracked "
-                                             "size is %1 bytes over today's ceiling.")
-                                 .arg(now.bytes - ceiling);
+        if (reason)
+            *reason = QStringLiteral("Ratchet Mode blocked this commit: it would leave the "
+                                     "repository at %1, which is %2 over today's ceiling of "
+                                     "%3. Delete or shrink tracked files first.")
+                          .arg(humanSize(now.bytes), humanSize(now.bytes - ceiling),
+                               humanSize(ceiling));
         return false;
     }
     return true;
@@ -187,10 +322,13 @@ bool RepoStatsStore::stagedCommitAllowed(const QString &repoDir, QString *reason
 QString RepoStatsStore::agentGuidance(const QString &repoDir)
 {
     if (!ratchetEnabled(repoDir)) return {};
-    const QJsonObject root = readDocument(statsPath(repoDir));
-    return QStringLiteral("Ratchet Mode is enabled for this repository. Do not add more "
-                          "lines than you remove in any commit, and keep tracked size at "
-                          "or below today's %1-byte ceiling. Refactor or delete existing "
-                          "code before committing if necessary.")
-        .arg(qint64(root.value(QStringLiteral("ceilingBytes")).toDouble()));
+    const RepoStatsSample now = measure(repoDir, nullptr);
+    const qint64 ceiling = ceilingBytes(repoDir, now, false);
+    if (ceiling <= 0) return {};
+    return QStringLiteral("Ratchet Mode is enabled for this repository and measures size, "
+                          "not line count. Tracked files total %1 against today's ceiling "
+                          "of %2 (%3 of headroom); commits that go over are rejected, so "
+                          "delete dead code or unused assets to pay for anything you add.")
+        .arg(humanSize(now.bytes), humanSize(ceiling),
+             humanSize(qMax<qint64>(0, ceiling - now.bytes)));
 }

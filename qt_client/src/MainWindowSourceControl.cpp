@@ -921,13 +921,11 @@ void MainWindow::refreshSourceControl(bool force)
         return;
 
     // Skip the full rebuild when the working tree is unchanged since the last
-    // scan. This matters now that we rescan on tab focus / window activation:
-    // without it, every rescan would clear the tree (losing the open diff and the
-    // selection) and flicker even when nothing moved. Manual refresh skips this
-    // short-circuit via force=true.
-    // Keyed by repo as well as status output: two repos can produce byte-identical
-    // `git status`, and the short-circuit would then leave the previous repo's
-    // tree — and now its whole rendered diff — on screen.
+    // scan: we rescan on tab focus / window activation, and without this every
+    // rescan would clear the tree (losing the open diff and the selection) and
+    // flicker. Manual refresh forces past it. Keyed by repo as well as status
+    // output, since two repos can produce byte-identical `git status` and the
+    // short-circuit would leave the previous repo's tree and diff on screen.
     const QByteArray scanKey = dir.toUtf8() + '\0' + out;
     if (!force && scanKey == m_scmStatusCache && m_scmTree->topLevelItemCount() > 0)
         return;
@@ -2110,17 +2108,14 @@ QStringList MainWindow::scmDiffScopeArgs() const
     return {};
 }
 
-// A local, model-free commit-message drafter. It parses the diff to find the
-// symbols that changed — types/functions added or removed (keyword-led definitions
-// in any language, plus C++ header declarations) and the functions whose bodies
+// A local, model-free commit-message drafter. It parses the diff for the symbols
+// that changed — types/functions added or removed, plus the functions whose bodies
 // changed (from git's hunk-header context) — drops generic/internal names, then
-// builds the subject from the single most significant symbol, humanizing its
-// camelCase into words ("scmHeuristicCommitMessage" -> "scm heuristic commit
-// message"). The conventional type comes from the file kinds, the branch name, the
-// change shape and a bug-fix keyword scan. Not as good as the AI models, but
-// instant, private and free — and far more specific than "update N files"; the
-// result lands in the editable message field. `variant` > 0 rotates the symbol
-// choice and verb wording so re-clicking Generate offers alternative drafts.
+// builds the subject from the most significant one, humanizing its camelCase
+// ("scmHeuristicCommitMessage" -> "scm heuristic commit message"). The
+// conventional type comes from the file kinds, branch name, change shape and a
+// bug-fix keyword scan. Instant, private and far more specific than "update N
+// files"; `variant` > 0 rotates the symbol and verb so Generate offers drafts.
 QString MainWindow::scmHeuristicCommitMessage(int variant) const
 {
     const QString dir = sourceControlGitDir();

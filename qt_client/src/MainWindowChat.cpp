@@ -1,9 +1,8 @@
 // MainWindowChat: MainWindow feature methods, split out of MainWindow.cpp.
 // Peer chat: the server rail, favicons, and the chat page (messages, rooms, DMs).
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+// These are MainWindow member functions in their own translation unit; the class
+// is declared in MainWindow.h and shared helpers live in MainWindowInternal.h /
+// MainWindowShared.cpp (namespace forkmesh::ui).
 
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
@@ -311,12 +310,11 @@ void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
         m_faviconFetching.contains(host) || m_faviconMissing.contains(host))
         return;
 
-    // Hosts with a hardcoded mark (API endpoints such as api.anthropic.com and
-    // api.mainnet-beta.solana.com) never hit the network: their /favicon.ico
-    // requests fail and otherwise appear as error lines in the log.
-    // Cached like a downloaded icon (but never written to the disk cache) so the
-    // breadcrumb rail and both log views pick it up the same way; no breadcrumb
-    // rebuild from here, since this runs while a log line is being rendered.
+    // Hosts with a hardcoded mark (API endpoints such as api.anthropic.com) never
+    // hit the network: their /favicon.ico requests fail and show up as error lines
+    // in the log. Cached like a downloaded icon (but never written to the disk
+    // cache) so the breadcrumb rail and both log views pick it up the same way; no
+    // breadcrumb rebuild here, since this runs while a log line is rendered.
     const QPixmap builtin = builtinFavicon(host);
     if (!builtin.isNull()) {
         m_faviconCache.insert(host, builtin);
@@ -422,25 +420,19 @@ QWidget *MainWindow::buildChatPage()
     layout->setSpacing(0);
     layout->addWidget(buildSolanaNotice());
     layout->addWidget(buildWalletVerifyNotice());
-    // No page-wide QScrollArea around the sections any more (adhoc #108).
-    // Each section scrolls its own content (QScrollArea panels, tables and
-    // lists), so the outer wrapper only added a second scroll surface plus its
-    // sizeHint-driven overflow spacing. The Ignored vertical policy keeps a
-    // tall page from growing the window's minimum height (CurrentPageStack
-    // already sizes the stack to the current page, not the tallest sibling).
+    // No page-wide QScrollArea around the sections (adhoc #108): each scrolls its
+    // own content, so the outer wrapper only added a second scroll surface plus
+    // sizeHint-driven overflow spacing. The Ignored vertical policy keeps a tall
+    // page from growing the window's minimum height (CurrentPageStack already
+    // sizes the stack to the current page, not the tallest sibling).
     content->setMinimumHeight(0);
     content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
     // The main content and the always-on prompt/log footer sit one above the
-    // other with the footer pinned to a fixed height (adhoc #86). Before this,
-    // the footer was a stretch-0 strip whose height tracked its own contents,
-    // so anything that changed its size — the "Agents:" status strip
-    // appearing, an attachment thumbnail, a growing prompt — reflowed the
-    // strip and dragged the whole toolbar up or down as the interface
-    // "shifted". A user-draggable splitter (adhoc #19) fixed that but its
-    // handle flashed a bright, saturated blue on hover/drag; since the footer
-    // no longer needs to be resizable, a fixed-height widget with the same
-    // subtle divider line gives the definite height without the loud handle.
+    // other with the footer pinned to a fixed height (adhoc #86). A footer that
+    // sized to its own contents let anything inside it — the "Agents:" strip,
+    // an attachment thumbnail, a growing prompt — drag the whole toolbar up and
+    // down; a splitter fixed that but flashed a loud blue handle on hover.
     auto *bodyLayout = new QVBoxLayout;
     bodyLayout->setContentsMargins(0, 0, 0, 0);
     bodyLayout->setSpacing(0);
@@ -460,18 +452,14 @@ QWidget *MainWindow::buildChatPage()
     m_appNavigationRailLayout = new QVBoxLayout(rail);
     m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
-    // Every rail destination is the same item now (adhoc #117): one
+    // Every rail destination is the same item (adhoc #117): one
     // ActivityRailButton — a 20px octicon SVG over a 10px caption at
     // railItemWidth() x kRailItemHeight — so icons, words, hover and the
-    // checked accent line all read identically down the rail.
-    //
-    // Agents is a regular destination like the rest, badged with the
-    // running-session count; only its fleet matrix stayed on the window-chrome
-    // line (see buildBreadcrumb). The contextual Code entry is inserted above
-    // it and Git directly below it by buildRepoDetail() (adhoc #6 put Code at
-    // the head of the rail).
-    // Log and Tasks live in the bottom utility group instead of here; Tasks sits
-    // directly above Pings there (adhoc #97).
+    // checked accent line all read identically down the rail. Agents is badged
+    // with the running-session count; only its fleet matrix stayed on the
+    // window-chrome line (see buildBreadcrumb). buildRepoDetail() inserts the
+    // contextual Code entry above it and Git below it; Log and Tasks live in
+    // the bottom utility group, Tasks directly above Pings (adhoc #97).
     for (QPushButton *button :
          {m_agentsNavButton, m_reposNavButton, m_chatButton,
           m_controlNodeNavButton, m_networkNavButton})
@@ -1078,13 +1066,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     // #99): paperclip and mic at the bottom-left (opposite the send icons),
     // the Auto/Create-issue toggles, the Agent box centred by the stretches on
     // either side, then the character count immediately left of the send icons.
-    // No bottom margin (adhoc #111) so the row sits flush against the bottom
-    // edge of the prompt frame instead of leaving a gap under it.
-    // Every widget is bottom-aligned (adhoc #114): the send column is two
-    // stacked 28px icons and taller than the rest of the row, so without an
-    // explicit alignment Qt centres the shorter controls in that extra height
-    // and they read as floating above the send icons instead of level with
-    // them.
+    // No bottom margin (adhoc #111) so the row sits flush against the frame.
+    // Everything is bottom-aligned (adhoc #114): the send column is two stacked
+    // 28px icons, so without it Qt centres the shorter controls in that extra
+    // height and they float above the send icons instead of sitting level.
     auto *bottomBar = new QHBoxLayout;
     bottomBar->setContentsMargins(8, 4, 6, 0);
     bottomBar->setSpacing(5);
@@ -3096,12 +3081,9 @@ void MainWindow::updateFooterGitIdentity()
 // The tip of the branch named by the footer's branch button: date, subject and
 // author, so the strip says where that branch actually sits (adhoc #55). Read
 // detached for the same reason the identity above is — this runs from
-// openRepoDetail, where a synchronous git call blocks the GUI thread.
-//
-// The strip only has room for one elided line, so the same read also pulls the
-// fields nobody can see there — full hash, decorations, author email, committer,
-// message body, diffstat — and hovering the label pops the lot up as a rich
-// tooltip (adhoc #65).
+// openRepoDetail, where a synchronous git call blocks the GUI thread. The strip
+// fits one elided line, so the same read also pulls what it cannot show — hash,
+// decorations, emails, body, diffstat — for the hover tooltip (adhoc #65).
 void MainWindow::updateFooterCommitInfo()
 {
     if (!m_footerCommitInfo)
@@ -3478,8 +3460,9 @@ void MainWindow::toggleRepositoryRatchet(bool enabled)
         flashMessage(QStringLiteral("Could not update Ratchet Mode: %1").arg(error), true);
         return;
     }
-    flashMessage(enabled ? QStringLiteral("Ratchet Mode enabled: commits must shrink or stay flat.")
-                         : QStringLiteral("Ratchet Mode disabled."));
+    flashMessage(enabled ? QStringLiteral("Ratchet Mode enabled: the repository may not grow "
+                                          "past the size it is now until tomorrow.")
+                         : QStringLiteral("Ratchet Mode disabled: commits are no longer checked."));
     refreshRepositoryStats();
 }
 
@@ -6332,19 +6315,15 @@ void MainWindow::probeRelayLatency()
         if (reply->error() == QNetworkReply::NoError) {
             m_relayProbeFailures = 0;
             setRelayLinkSpeed(host, static_cast<int>(elapsed));
-            // A one-off slow sample (first request on a cold connection, a
-            // momentary hiccup) paints the dot amber/red and then sits there
-            // unchanged for up to a minute — not "live" at all. Once the
-            // reading is elevated, keep re-probing on a short leash (same
-            // idea as the offline fast-retry below) so the indicator either
-            // confirms the slowdown or snaps back to green within a second or
-            // two instead of lagging reality. But a link that's simply *far*
-            // from the relay (a 300ms+ round-trip is normal from across an
-            // ocean) would otherwise get re-probed every single second
-            // forever — that's the "too many network requests" flood. So back
-            // the confirm loop off exponentially (1s, 2s, 4s, ...) up to the
-            // normal once-a-minute cadence, and reset the moment latency drops
-            // back to healthy (adhoc #74).
+            // A one-off slow sample (cold connection, momentary hiccup) would
+            // otherwise leave the dot amber/red, unchanged, for a minute. Once
+            // a reading is elevated, re-probe on a short leash so the indicator
+            // confirms or clears within a second or two. But a link that is
+            // simply far from the relay (300ms+ across an ocean) would then be
+            // re-probed every second forever — the "too many network requests"
+            // flood — so back the confirm loop off exponentially (1s, 2s, 4s,
+            // …) to the normal minute, resetting once latency is healthy
+            // (adhoc #74).
             if (elapsed >= 300) {
                 const int steps = qMin(m_relayProbeElevated++, 6);
                 const qint64 delayMs = qMin<qint64>(1000LL << steps, 60 * 1000);
@@ -6360,16 +6339,12 @@ void MainWindow::probeRelayLatency()
             // back online.
             if (m_networkAccess)
                 m_networkAccess->clearConnectionCache();
-            // A single miss is usually just a stale keep-alive socket or a
-            // momentary blip (very common for the first probe right after
-            // launch, before the connection is warm) — not a real outage. Don't
-            // flip the dot to red on the strength of one failure; re-probe
-            // shortly on the now-clean connection and only declare "offline"
-            // once a second consecutive probe also fails. This stops the dot
-            // getting stranded on red while we're genuinely online.
-            // Exception: when the OS itself reports the machine has no network
-            // at all, the outage is real — skip the grace period and show it
-            // immediately (adhoc #41).
+            // A single miss is usually a stale keep-alive socket or a blip (very
+            // common on the first probe after launch), not an outage, and would
+            // strand the dot on red while we are genuinely online. Re-probe on
+            // the now-clean connection and only declare "offline" once a second
+            // consecutive probe fails. Exception: when the OS reports no network
+            // at all the outage is real, so show it at once (adhoc #41).
             const auto *netInfo = QNetworkInformation::instance();
             const bool osOffline =
                 netInfo && netInfo->reachability() ==
@@ -7490,14 +7465,11 @@ QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
 // warning only surfaces there — as a caution triangle on the self row/dot in the
 // Mirror nodes panel (m_repoPinMismatch, see loadMirrorNodesPanel), not a
 // top-bar toast; the "Reset integrity pin" action lives in that panel's header.
-//
-// And because the gates below only let the check run on the node that CAN fix
-// the pin (owner key + working copy — the source of truth), a detected mismatch
-// also re-attests immediately instead of leaving clones rejected until the
-// 15-minute reattestStalePins tick or a manual "Reset integrity pin" click: the
-// source of truth defines the correct state, so it should never sit failing its
-// own pin. Rate-limited per repo so a re-publish the relay keeps refusing can't
-// loop into a write storm.
+// Because the gates below only run on the node that CAN fix the pin (owner key
+// + working copy), a mismatch also re-attests immediately rather than leaving
+// clones rejected until the 15-minute reattestStalePins tick: the source of
+// truth should never sit failing its own pin. Rate-limited per repo so a
+// re-publish the relay keeps refusing can't loop into a write storm.
 void MainWindow::refreshRepoPinBanner()
 {
     if (!m_topMessage)
@@ -11445,19 +11417,17 @@ void MainWindow::runHostActionsConfiguration(
 // A sortable directory of every registered node the relay exposes through its
 // public user directory, merged with live roster and serving-only nodes. Each row
 // carries the node's platform badge, name, online state, owner, advertised
-// ForkMesh version, repo/mirror counts and its CPU/RAM/disk telemetry bars.
-// Selecting a row opens a detail panel with the node's full details, the repos
-// it hosts and the repos it mirrors.
+// ForkMesh version, repo/mirror counts and its CPU/RAM/disk telemetry bars;
+// selecting one opens a detail panel with the repos it hosts and mirrors.
 //
-// Online state trusts the relay's /api/network/stats "onlineNodes" list (a
-// repository update channel or a fresh signed heartbeat) as the canonical set —
-// the same signal the Mirror nodes list and the Network page use. This lets
-// headless mirror nodes that serve via the relay without joining this client's
-// chat room show online (adhoc #27), and, once the relay set is fetched, stops a
-// stale roster entry from painting a node online after it stopped serving
-// (adhoc #43). Our own node is the exception: it trusts the local backend, since
-// it may host only private repos the relay never lists. Before the first relay
-// reply we fall back to the encrypted roster's presence flag.
+// Online state trusts the relay's /api/network/stats "onlineNodes" list as the
+// canonical set — the same signal the Mirror nodes list and the Network page
+// use. That lets headless mirrors serving via the relay without joining this
+// client's chat room show online (adhoc #27) and stops a stale roster entry
+// painting a node online after it stopped serving (adhoc #43). Our own node is
+// the exception: it trusts the local backend, since it may host only private
+// repos the relay never lists. Before the first relay reply we fall back to the
+// encrypted roster's presence flag.
 
 namespace {
 enum NodeCol {
@@ -11876,13 +11846,11 @@ void MainWindow::refreshNodesTable()
     // linked node. Missing accountKind (older peers, or a name only known via
     // a locally hosted repo's owner field) still counts as a node.
     //
-    // Our own row is the same story: when this desktop is signed in as a user
-    // account (it owns a node fleet), the account name is a *user*, not a node —
-    // its nodes show as their own rows. The backend stamps this same predicate as
-    // accountKind "user" on the self roster entry, but that self row also carries
-    // live telemetry and can be painted before the "user" kind propagates, which
-    // left the user showing as a node (adhoc #37: "jett" listed as a node). Gate
-    // the self row on the local predicate directly so it never leaks through.
+    // Our own row is the same story: a desktop signed in as a user account is a
+    // *user*, not a node — its nodes show as their own rows. The backend stamps
+    // that as accountKind "user" on the self entry, but the self row carries
+    // live telemetry and can be painted before the kind propagates (adhoc #37:
+    // "jett" listed as a node), so gate it on the local predicate directly.
     const bool selfIsUserAccount =
         m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
     // A name the public account directory lists as a *user* and that no account
@@ -15327,10 +15295,9 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
 // createVultrMirrorFromForm drives an async chain over the Vultr v2 API:
 // managed keypair → SSH-key registration → cheapest US plan → newest Debian →
 // instance create → boot poll → the normal runHostInstall handoff, which
-// installs ForkMesh over SSH and auto-links the fresh node to this account so
-// it starts mirroring and syncing on its own. Every step streams into the
-// shared Live output pane. The API key is captured by value through the chain
-// and lives only in these closures and the Authorization headers.
+// installs ForkMesh over SSH and auto-links the fresh node to this account.
+// Every step streams into the shared Live output pane; the API key is captured
+// by value and lives only in these closures and the Authorization headers.
 
 void MainWindow::finishVultrProvision(bool ok, const QString &message)
 {
@@ -16663,12 +16630,10 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
     // the host over the SSH session's stdin instead of the host downloading it
     // from the relay's release endpoint. Read the bytes up front so a locked or
     // missing binary fails here, before anything touches the remote machine.
-    // A source build compiles on the host itself, so there is no binary to
-    // upload — fromSource forces the direct-upload path off.
-    // A published-binary fleet deploy and a local-executable upload are
-    // mutually exclusive contracts. The former is deliberately resolved on
-    // each target from the release manifest so a development build can never be
-    // mistaken for the release merely because both report the same version.
+    // A source build compiles on the host, so fromSource forces this path off.
+    // A published-binary fleet deploy and a local-executable upload are mutually
+    // exclusive: the former resolves per target from the release manifest so a
+    // development build can never pass for the release on a matching version.
     const bool doUpload =
         uploadBinary && !fromSource && !requirePublishedBinary;
     QByteArray bytes;
@@ -16844,14 +16809,12 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
     const bool needSudo = user != QStringLiteral("root");
     if (doUpload) {
         // The binary follows on the SSH session's stdin. Everything before the
-        // marker line is discarded remotely: when sudo -S consumes the password
-        // line the marker arrives first, and under passwordless sudo (or a
-        // future keyed login) the stray password line is skipped instead of
-        // corrupting the upload. `cat` then lands the bytes in a remote temp
-        // file, which the installer consumes as FORKMESH_LOCAL_BINARY together
-        // with this machine's platform — so a cross-platform upload degrades
-        // into the installer's normal relay download instead of installing a
-        // binary the host can't run. The temp file is removed either way.
+        // marker line is discarded remotely, so a stray password line (sudo -S,
+        // or passwordless sudo) is skipped instead of corrupting the upload.
+        // `cat` lands the bytes in a remote temp file, which the installer
+        // consumes as FORKMESH_LOCAL_BINARY together with this machine's
+        // platform — so a cross-platform upload degrades into the installer's
+        // normal relay download rather than installing an unrunnable binary.
         QString os = QSysInfo::kernelType(); // "linux" / "darwin" / "winnt"
         if (os == QStringLiteral("darwin"))
             os = QStringLiteral("macos");
