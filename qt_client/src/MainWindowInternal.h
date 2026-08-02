@@ -1723,11 +1723,15 @@ private:
 };
 
 // The CI companion to the fleet matrix (adhoc #70): the most recent action runs
-// as a row of tiny status squares sitting immediately right of the agent dots,
-// so one glance at the chrome line covers both what the agents and what the
-// workflows are doing. Newest run on the left, each square tinted with the same
-// actionStatusColor() the Actions tab uses; a running square breathes so an
-// in-flight workflow is distinguishable from a finished blue one.
+// as tiny status squares sitting immediately right of the node dots behind a
+// faint divider of their own, so one glance at the chrome line covers what the
+// agents, the machines and the workflows are doing. Each square is tinted with
+// the same actionStatusColor() the Actions tab uses; a running square breathes
+// so an in-flight workflow is distinguishable from a finished blue one.
+// The runs used to be one long row of big squares; they now use the same
+// three-deep, column-major grid as the agent and node matrices (newest run
+// top-left, filling down then right) so the three groups read as one family
+// instead of the CI one shouting over its neighbours.
 class ActionRunStrip : public QWidget
 {
 public:
@@ -1737,13 +1741,15 @@ public:
         bool running = false;
     };
 
+    static constexpr int kRows = 3;       // squares stacked per column
+    static constexpr int kMaxColumns = 6; // before the tooltip takes over
     // How many runs the strip shows before the tooltip takes over.
-    static constexpr int kMaxCells = 9;
+    static constexpr int kMaxCells = kRows * kMaxColumns;
 
     explicit ActionRunStrip(QWidget *parent = nullptr) : QWidget(parent)
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedHeight(kHeight);
+        setFixedHeight(kRows * kPitch);
         setFixedWidth(0); // nothing to show until the first setCells()
         setCursor(Qt::PointingHandCursor);
         hide();
@@ -1762,7 +1768,8 @@ public:
     void setCells(const QVector<Cell> &cells)
     {
         m_cells = cells.mid(0, kMaxCells);
-        setFixedWidth(m_cells.isEmpty() ? 0 : m_cells.size() * kPitch);
+        const int columns = (m_cells.size() + kRows - 1) / kRows;
+        setFixedWidth(columns * kPitch);
         bool anyRunning = false;
         for (const Cell &c : std::as_const(m_cells))
             anyRunning = anyRunning || c.running;
@@ -1807,26 +1814,39 @@ protected:
                 const double tri = 1.0 - std::abs(2.0 * t - 1.0);
                 color.setAlphaF(qBound(0.35, 0.55 + 0.45 * tri, 1.0));
             } else {
-                color.setAlpha(215);
+                color.setAlpha(205); // same weight as an idle agent square
             }
+            const QPointF center = cellCenter(i);
             p.setBrush(color);
-            p.drawRoundedRect(
-                QRectF(i * kPitch + (kPitch - kSide) / 2.0,
-                       (kHeight - kSide) / 2.0, kSide, kSide),
-                2.0, 2.0);
+            p.drawRoundedRect(QRectF(center.x() - kSide / 2.0,
+                                     center.y() - kSide / 2.0, kSide, kSide),
+                              1.2, 1.2);
         }
     }
 
 private:
-    int cellAt(const QPoint &pos) const
+    // Column-major fill, matching the agent and node matrices so all three
+    // grids line up row for row across their dividers.
+    QPointF cellCenter(int index) const
     {
-        const int index = pos.x() / kPitch;
-        return (index >= 0 && index < m_cells.size()) ? index : -1;
+        const int column = index / kRows;
+        const int row = index % kRows;
+        return QPointF(column * kPitch + kPitch / 2.0,
+                       row * kPitch + kPitch / 2.0);
     }
 
-    static constexpr int kPitch = 11;   // cell size, including its gap
-    static constexpr double kSide = 8.0; // painted square
-    static constexpr int kHeight = 21;  // matches AgentDotMatrix's 3x7 grid
+    int cellAt(const QPoint &pos) const
+    {
+        const int column = pos.x() / kPitch;
+        const int row = pos.y() / kPitch;
+        if (column < 0 || row < 0 || row >= kRows)
+            return -1;
+        const int index = column * kRows + row;
+        return index < m_cells.size() ? index : -1;
+    }
+
+    static constexpr int kPitch = 7;     // cell size, including its gap
+    static constexpr double kSide = 4.5; // painted square
     static constexpr double kPulseStep = 0.09; // per-square offset of the pulse
 
     QVector<Cell> m_cells;
@@ -7740,6 +7760,10 @@ constexpr int kRailItemHeight = 44; // 16px icon + 10px caption + breathing room
 // Matches VerticalIconButton's kIconPx so the rail and the repo tab row draw
 // their glyphs at one size (adhoc #421).
 constexpr int kRailIconPx = 16;
+// Air above the first row of icons under the window chrome. The rail and the
+// repo tab row both start at the top of the content area and are pinned to it
+// (adhoc #421), so this inset has to be applied to both or the two rows skew.
+constexpr int kRepoTabRowTopInset = 4;
 
 // The 42px floor fits every rail caption in each of main()'s preferred UI
 // families (Inter/SF/Segoe/Roboto/Noto/Ubuntu/Cantarell measure "Network",
