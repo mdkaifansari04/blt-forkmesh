@@ -41831,6 +41831,7 @@ def _https_mirror_endpoint_projection(row):
         "healthy": bool(row.get("healthy")),
         "integrity": row.get("integrity"),
         "abuseBlocked": bool(row.get("abuse_blocked")),
+        "refsSha256": row.get("forkmesh_refs_sha256"),
     }
 
 
@@ -41838,7 +41839,8 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
     rows = await d1_all(
         env,
         """SELECT node_name,base_url,public_key,registration_sig,issued_at,
-                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked
+                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked,
+                  forkmesh_refs_sha256
              FROM mirror_https_endpoints""",
     )
     records = [
@@ -41859,6 +41861,13 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
         str(node or "").lower()
         for node in context.get("currentNodes", set())
     }
+    # Catalog identities can nominate one preferred current host even when
+    # several healthy endpoints carry the exact same signed refs digest. Treat
+    # those byte-identical copies as equally current so this preference sort
+    # does not undo the cursor rotation and pin every request to one node.
+    current_nodes = https_routing.equivalent_current_endpoint_nodes(
+        selected, current_nodes, context.get("currentPins", set())
+    )
     if current_nodes:
         selected.sort(
             key=lambda item: (
