@@ -180,7 +180,25 @@ def test_aquarium_bottom_right_control_panel_combines_all_four_actions():
     assert ".world-aquarium-control-actions" in CSS
     assert "bottom: calc(100% + 7px)" in CSS
     assert "grid-template-columns: repeat(2" in CSS
+    # The panel grows below the projected base-rail anchor. A negative Y
+    # translation lifts it over the glass and makes it look detached.
+    assert "transform: translate(calc(-100% - 8px), 8px)" in CSS
+    assert ".world-aquarium-control-panel::before" in CSS
     assert ".world-aquarium-feed-action" not in CSS
+
+
+def test_aquarium_control_panel_reports_live_school_mode():
+    assert (
+        'aquariumSchoolStatus.dataset.worldAquariumSchoolStatus = ""'
+        in SCENE
+    )
+    assert 'aquariumSchoolStatus.setAttribute("role", "status")' in SCENE
+    assert '"SCHOOL MODE · STANDBY"' in SCENE
+    assert "`SCHOOL MODE · ${schooling.label} ACTIVE`" in SCENE
+    assert "controls.schooling" in SCENE
+    assert '.world-aquarium-school-status[data-active="true"]' in CSS
+    assert "@keyframes world-aquarium-school-pulse" in CSS
+    assert "@media (prefers-reduced-motion: reduce)" in CSS
 
 
 def test_aquarium_fish_approach_a_visitor_gently_without_a_second_loop():
