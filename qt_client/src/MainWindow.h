@@ -3940,6 +3940,7 @@ private:
     // neither is known yet.
     QStringList agentEffortLevels() const;
     void refreshQuickAddSpeedSelector();
+    void refreshQuickAddAgentModelSelector();
     // Probe the installed `claude` CLI for the effort levels it accepts and
     // cache them (kClaudeEffortLevelsCacheSetting). Cheap (`claude --help`),
     // once per app run, and a no-op while a probe is already in flight.
@@ -5367,12 +5368,16 @@ private:
     // Shift+Enter inserts a newline; Up/Down still walk the prompt history.
     QPlainTextEdit *m_issueQuickAdd = nullptr;
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
-    // Agent/model chooser (adhoc #29): also carries a "Manual (create issue)"
-    // entry that replaces the old Agent / Create-issue checkboxes — picking it
-    // files an issue from the prompt instead of starting an agent.
+    // Canonical provider state behind the combined visible picker. It also
+    // carries a "Manual (create issue)" entry, which files an issue from the
+    // prompt instead of starting an agent.
     QComboBox *m_quickAddAgentProvider = nullptr;
-    // Prompt-row model chooser (adhoc #261/#349): Claude Code gets the live
-    // Claude model list; Codex gets an editable OpenAI model list.
+    // Visible combined agent/model menu. The two legacy controls below remain
+    // as hidden state holders so all launch/session code continues to consume
+    // the same canonical provider and model values.
+    QComboBox *m_quickAddAgentModelSelector = nullptr;
+    // Canonical model state behind the combined visible picker: Claude Code
+    // gets the live Claude list and Codex gets its app-server list.
     QComboBox *m_quickAddClaudeModel = nullptr;
     // Permission-mode chooser (issue #348): Ask before edits/Edit automatically/
     // Plan mode/Auto mode, styled like the provider/model combos beside it and

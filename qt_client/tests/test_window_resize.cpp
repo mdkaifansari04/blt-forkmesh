@@ -16,6 +16,7 @@
 #include <QEventLoop>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -98,6 +99,24 @@ bool tryAcquireWithEvents(QSemaphore &semaphore, int timeoutMs)
         QApplication::processEvents(QEventLoop::AllEvents, 10);
     } while (timer.elapsed() < timeoutMs);
     return semaphore.tryAcquire();
+}
+
+bool iconContainsChromaKey(const QIcon &icon)
+{
+    const QImage image = icon.pixmap(QSize(32, 32)).toImage().convertToFormat(
+        QImage::Format_RGBA8888);
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            const bool magentaKey =
+                pixel.red() > 235 && pixel.green() < 30 && pixel.blue() > 225;
+            const bool greenKey =
+                pixel.green() > 220 && pixel.red() < 45 && pixel.blue() < 45;
+            if (pixel.alpha() > 32 && (magentaKey || greenKey))
+                return true;
+        }
+    }
+    return false;
 }
 
 QString widgetPath(QWidget *widget)
@@ -2780,25 +2799,55 @@ int main(int argc, char *argv[])
 
         QComboBox *quickProvider =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddAgentSelector"));
-        QStringList providerLabels;
-        if (quickProvider) {
-            for (int i = 0; i < quickProvider->count(); ++i)
-                providerLabels << quickProvider->itemText(i);
+        QComboBox *quickAgentModel = seeded.findChild<QComboBox *>(
+            QStringLiteral("quickAddAgentModelSelector"));
+        QStringList agentModelLabels;
+        bool allAgentModelsHaveIcons = quickAgentModel;
+        bool agentModelIconsAreClean = quickAgentModel;
+        if (quickAgentModel) {
+            for (int i = 0; i < quickAgentModel->count(); ++i) {
+                agentModelLabels << quickAgentModel->itemText(i);
+                allAgentModelsHaveIcons &= !quickAgentModel->itemIcon(i).isNull();
+                agentModelIconsAreClean &=
+                    !iconContainsChromaKey(quickAgentModel->itemIcon(i));
+            }
         }
-        // Short labels (adhoc #38) so all four composer dropdowns fit one row.
-        check(providerLabels == QStringList({QStringLiteral("Manual"),
-                                             QStringLiteral("Codex"),
-                                             QStringLiteral("OpenAI"),
-                                             QStringLiteral("Claude API"),
-                                             QStringLiteral("CC")}),
-              QStringLiteral("quick-add agent dropdown offers Manual plus the agent providers"));
-        check(quickProvider && quickProvider->maxVisibleItems() >= quickProvider->count() &&
-                  quickProvider->view() &&
-                  quickProvider->view()->verticalScrollBarPolicy() ==
-                      Qt::ScrollBarAlwaysOff,
-              QStringLiteral("quick-add agent dropdown is configured as a full non-scrolling list"));
-        check(seeded.testQuickAddModelVisible() && !seeded.testQuickAddModelEditable(),
-              QStringLiteral("Claude Code prompt picker shows the Claude model dropdown"));
+        check(quickAgentModel && quickAgentModel->isVisible() &&
+                  quickAgentModel->maxVisibleItems() >= quickAgentModel->count() &&
+                  agentModelLabels.contains(QStringLiteral("Auto · Claude Code")) &&
+                  agentModelLabels.contains(QStringLiteral("GPT-5.5 · Codex")) &&
+                  agentModelLabels.contains(QStringLiteral("OpenAI API")) &&
+                  agentModelLabels.contains(QStringLiteral("Claude API")) &&
+                  allAgentModelsHaveIcons && agentModelIconsAreClean && quickProvider &&
+                  !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
+              QString("one icon-rich composer dropdown combines agents and models (%1)")
+                  .arg(agentModelLabels.join(QStringLiteral(", "))));
+        QComboBox *canonicalModel =
+            seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));
+        int concreteClaudeChoice = -1;
+        QString concreteClaudeModel;
+        if (quickAgentModel) {
+            for (int i = 0; i < quickAgentModel->count(); ++i) {
+                const QString candidate =
+                    quickAgentModel->itemData(i, Qt::UserRole + 1).toString();
+                if (quickAgentModel->itemData(i).toString() ==
+                        QStringLiteral("claude-code") &&
+                    candidate != QStringLiteral("auto")) {
+                    concreteClaudeChoice = i;
+                    concreteClaudeModel = candidate;
+                    break;
+                }
+            }
+        }
+        if (concreteClaudeChoice >= 0)
+            quickAgentModel->setCurrentIndex(concreteClaudeChoice);
+        QApplication::processEvents();
+        check(concreteClaudeChoice >= 0 &&
+                  seeded.testQuickAddAgentProvider() ==
+                      QStringLiteral("claude-code") &&
+                  canonicalModel &&
+                  canonicalModel->currentData().toString() == concreteClaudeModel,
+              QStringLiteral("one combined-menu click updates provider and model state"));
 
         // adhoc #38: the composer's speed (reasoning-effort) picker sits next to
         // the mode selector, offers the CLI's ladder with "Ultra" for xhigh, and
@@ -2812,13 +2861,37 @@ int main(int argc, char *argv[])
                 speedLabels << quickSpeed->itemText(i);
         }
         check(quickSpeed && quickSpeed->isVisible() &&
+                  quickSpeed->width() <= 32 &&
+                  quickSpeed->accessibleName().startsWith(
+                      QStringLiteral("Reasoning effort:")) &&
                   speedLabels == QStringList({QStringLiteral("Low"),
                                               QStringLiteral("Medium"),
                                               QStringLiteral("High"),
                                               QStringLiteral("Ultra"),
-                                              QStringLiteral("Max")}),
+                                              QStringLiteral("Max")}) &&
+                  std::all_of(
+                      speedLabels.cbegin(), speedLabels.cend(),
+                      [quickSpeed](const QString &label) {
+                          const QIcon icon =
+                              quickSpeed->itemIcon(quickSpeed->findText(label));
+                          return !icon.isNull() && !iconContainsChromaKey(icon);
+                      }),
               QString("composer speed picker offers the effort ladder (%1)")
                   .arg(speedLabels.join(QStringLiteral(", "))));
+        QComboBox *quickMode =
+            seeded.findChild<QComboBox *>(QStringLiteral("quickAddModeSelector"));
+        check(quickMode && quickMode->width() <= 32 &&
+                  quickMode->accessibleName().startsWith(
+                      QStringLiteral("Permission mode:")) &&
+                  quickMode->itemText(0) == QStringLiteral("Auto") &&
+                  quickMode->itemText(1) == QStringLiteral("Ask") &&
+                  quickMode->itemText(2) == QStringLiteral("Plan") &&
+                  quickMode->itemText(3) == QStringLiteral("Edit") &&
+                  !quickMode->itemIcon(0).isNull() &&
+                  !quickMode->itemIcon(3).isNull() &&
+                  !iconContainsChromaKey(quickMode->itemIcon(0)) &&
+                  !iconContainsChromaKey(quickMode->itemIcon(3)),
+              QStringLiteral("mode picker is icon-only until its labeled menu opens"));
         if (quickSpeed) {
             const int ultra = quickSpeed->findData(QStringLiteral("xhigh"));
             quickSpeed->setCurrentIndex(ultra);
@@ -2875,8 +2948,10 @@ int main(int argc, char *argv[])
         seeded.testSetQuickAddAgentProvider(QStringLiteral("codex"));
         QApplication::processEvents();
         const QStringList codexModels = seeded.testQuickAddModelLabels();
-        check(seeded.testQuickAddModelVisible() && !seeded.testQuickAddModelEditable() &&
-                  codexModels ==
+        check(!seeded.testQuickAddModelVisible() &&
+                  quickAgentModel && quickAgentModel->isVisible() &&
+                  quickAgentModel->currentText().endsWith(QStringLiteral("· Codex")) &&
+                  !seeded.testQuickAddModelEditable() && codexModels ==
                       QStringList({QStringLiteral("GPT-5.5"),
                                    QStringLiteral("GPT-5.4"),
                                    QStringLiteral("GPT-5.4-Mini")}),
@@ -2903,8 +2978,9 @@ int main(int argc, char *argv[])
         stopChildProcesses(rememberedPromptProvider);
         seeded.testSetQuickAddAgentProvider(QStringLiteral("claude-api"));
         QApplication::processEvents();
-        check(!seeded.testQuickAddModelVisible(),
-              QStringLiteral("prompt-row model picker stays hidden for API-only providers"));
+        check(!seeded.testQuickAddModelVisible() && quickAgentModel->isVisible() &&
+                  quickAgentModel->currentText() == QStringLiteral("Claude API"),
+              QStringLiteral("combined picker stays visible for API-only providers"));
 
         // The default-agent control belongs to the independently deferred
         // Settings page. Visit it before driving the combo like a user.
