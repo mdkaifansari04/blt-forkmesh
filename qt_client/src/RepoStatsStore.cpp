@@ -10,6 +10,11 @@
 #include <QSaveFile>
 
 namespace {
+const QString kRatchetEnabled = QStringLiteral("forkmesh.ratchet.enabled");
+const QString kRatchetCeilingDay = QStringLiteral("forkmesh.ratchet.ceilingDay");
+const QString kRatchetCeilingBytes = QStringLiteral("forkmesh.ratchet.ceilingBytes");
+const QString kRatchetCeilingLines = QStringLiteral("forkmesh.ratchet.ceilingLines");
+
 QJsonObject readDocument(const QString &path)
 {
     QFile file(path);
@@ -44,6 +49,58 @@ QByteArray git(const QString &repo, const QStringList &args, bool *ok = nullptr)
                          process.exitCode() == 0;
     if (ok) *ok = success;
     return success ? process.readAllStandardOutput() : QByteArray();
+}
+
+bool readLocalConfig(const QString &repo, const QString &key, QString *value)
+{
+    bool ok = false;
+    const QByteArray output = git(repo, {QStringLiteral("config"),
+                                         QStringLiteral("--local"),
+                                         QStringLiteral("--get"), key}, &ok);
+    if (!ok) return false;
+    if (value) *value = QString::fromUtf8(output).trimmed();
+    return true;
+}
+
+bool writeLocalConfig(const QString &repo, const QString &key,
+                      const QString &value, QString *error)
+{
+    bool ok = false;
+    git(repo, {QStringLiteral("config"), QStringLiteral("--local"), key, value}, &ok);
+    if (!ok && error)
+        *error = QStringLiteral("Could not write the repository's local Git config.");
+    return ok;
+}
+
+bool localConfigBool(const QString &repo, const QString &key, bool *found)
+{
+    QString value;
+    const bool present = readLocalConfig(repo, key, &value);
+    if (found) *found = present;
+    if (!present) return false;
+    value = value.toLower();
+    return value == QStringLiteral("true") || value == QStringLiteral("yes") ||
+           value == QStringLiteral("on") || value == QStringLiteral("1");
+}
+
+qint64 localConfigInteger(const QString &repo, const QString &key,
+                          qint64 fallback)
+{
+    QString value;
+    if (!readLocalConfig(repo, key, &value)) return fallback;
+    bool ok = false;
+    const qint64 parsed = value.toLongLong(&ok);
+    return ok ? parsed : fallback;
+}
+
+bool writeRatchetCeiling(const QString &repo, const RepoStatsSample &sample,
+                         QString *error)
+{
+    return writeLocalConfig(repo, kRatchetCeilingDay, sample.day, error) &&
+           writeLocalConfig(repo, kRatchetCeilingBytes,
+                            QString::number(sample.bytes), error) &&
+           writeLocalConfig(repo, kRatchetCeilingLines,
+                            QString::number(sample.lines), error);
 }
 }
 
@@ -117,35 +174,39 @@ QVector<RepoStatsSample> RepoStatsStore::captureDaily(const QString &repoDir,
                                    {QStringLiteral("lines"), double(sample.lines)},
                                    {QStringLiteral("files"), double(sample.files)}});
     root.insert(QStringLiteral("days"), encoded);
-    // Each new day lowers the ceiling to the repository's new size. It never
-    // rises during that day while Ratchet Mode remains enabled.
-    if (root.value(QStringLiteral("ratchet")).toBool()) {
-        root.insert(QStringLiteral("ceilingDay"), current.day);
-        root.insert(QStringLiteral("ceilingBytes"), double(current.bytes));
-        root.insert(QStringLiteral("ceilingLines"), double(current.lines));
-    }
+    // Enforcement state is local-only: selecting a mode must never dirty a
+    // repository or require a commit. Each new day still lowers the ceiling,
+    // but stores it in .git/config beside the local Ratchet toggle.
+    if (ratchetEnabled(repoDir) && !writeRatchetCeiling(repoDir, current, error))
+        return {};
     if (!writeDocument(statsPath(repoDir), root, error)) return {};
     return days;
 }
 
 bool RepoStatsStore::ratchetEnabled(const QString &repoDir)
 {
+    bool found = false;
+    const bool enabled = localConfigBool(repoDir, kRatchetEnabled, &found);
+    if (found) return enabled;
+    // Compatibility only: old versions committed this switch into the stats
+    // document. The first local toggle overrides it without editing that file.
     return readDocument(statsPath(repoDir)).value(QStringLiteral("ratchet")).toBool();
 }
 
 bool RepoStatsStore::setRatchetEnabled(const QString &repoDir, bool enabled,
                                        QString *error)
 {
-    QJsonObject root = readDocument(statsPath(repoDir));
-    root.insert(QStringLiteral("ratchet"), enabled);
     if (enabled) {
         const RepoStatsSample now = measure(repoDir, error);
         if (now.day.isEmpty()) return false;
-        root.insert(QStringLiteral("ceilingDay"), now.day);
-        root.insert(QStringLiteral("ceilingBytes"), double(now.bytes));
-        root.insert(QStringLiteral("ceilingLines"), double(now.lines));
+        if (!writeRatchetCeiling(repoDir, now, error)) return false;
     }
-    return writeDocument(statsPath(repoDir), root, error);
+    // Always persist false as an explicit local override. Otherwise an older
+    // committed `ratchet: true` value would turn enforcement back on.
+    return writeLocalConfig(repoDir, kRatchetEnabled,
+                            enabled ? QStringLiteral("true")
+                                    : QStringLiteral("false"),
+                            error);
 }
 
 bool RepoStatsStore::stagedCommitAllowed(const QString &repoDir, QString *reason)
@@ -173,7 +234,9 @@ bool RepoStatsStore::stagedCommitAllowed(const QString &repoDir, QString *reason
         return false;
     }
     const QJsonObject root = readDocument(statsPath(repoDir));
-    const qint64 ceiling = qint64(root.value(QStringLiteral("ceilingBytes")).toDouble());
+    const qint64 ceiling = localConfigInteger(
+        repoDir, kRatchetCeilingBytes,
+        qint64(root.value(QStringLiteral("ceilingBytes")).toDouble()));
     const RepoStatsSample now = measure(repoDir, nullptr);
     if (ceiling > 0 && now.bytes > ceiling) {
         if (reason) *reason = QStringLiteral("Ratchet Mode blocked this commit: tracked "
@@ -188,9 +251,12 @@ QString RepoStatsStore::agentGuidance(const QString &repoDir)
 {
     if (!ratchetEnabled(repoDir)) return {};
     const QJsonObject root = readDocument(statsPath(repoDir));
+    const qint64 ceiling = localConfigInteger(
+        repoDir, kRatchetCeilingBytes,
+        qint64(root.value(QStringLiteral("ceilingBytes")).toDouble()));
     return QStringLiteral("Ratchet Mode is enabled for this repository. Do not add more "
                           "lines than you remove in any commit, and keep tracked size at "
                           "or below today's %1-byte ceiling. Refactor or delete existing "
                           "code before committing if necessary.")
-        .arg(qint64(root.value(QStringLiteral("ceilingBytes")).toDouble()));
+        .arg(ceiling);
 }
