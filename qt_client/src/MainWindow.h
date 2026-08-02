@@ -241,8 +241,15 @@ struct RepositoryRecord {
     bool isPrivate = false;
     // Run .forkmesh/ workflows when a fork pushes to this repo's bare mirror.
     // Enabled by default; can be turned off per repo on the Actions tab. Pushed
-    // workflow changes still require explicit approval before they run.
+    // workflow changes still require explicit approval before they run, unless
+    // actionsAutoApprove is on.
     bool actionsEnabled = true;
+    // Approve each new repository snapshot automatically instead of parking the
+    // run at "Awaiting approval" until someone clicks Approve. On by default so
+    // pushes just build; turn it off per repo to review every changed workflow
+    // (and every changed script it can reach) before it executes on this
+    // machine.
+    bool actionsAutoApprove = true;
     // A gateway-managed serving repository must keep its own post-receive hook
     // and object database isolated from workflow-created objects. The remote
     // Actions helper therefore maintains a separate local bare mirror and this
@@ -2320,6 +2327,19 @@ private:
                                  const QString &name, const QString &commit,
                                  const QString &ref,
                                  WorkflowTrigger trigger = WorkflowTrigger::Push);
+    // Decide whether `run`'s exact repository snapshot may execute. A snapshot
+    // that is already in the approved store passes straight through. Otherwise,
+    // with the repo's actionsAutoApprove on, the snapshot is recorded as
+    // approved here and the run proceeds instead of waiting for a click. Fails
+    // closed: an approval that cannot be persisted still parks the run in
+    // review, and every caller has already reverified the snapshot bytes, so
+    // this only ever relaxes the human-review step — never the tamper checks.
+    bool resolveActionApproval(const RepositoryRecord &repo,
+                               const ActionRun &run);
+    // Reverify and enqueue this repo's previously parked runs when automatic
+    // approval is enabled. Runs whose current repository state no longer
+    // matches their saved snapshot stay awaiting review.
+    int autoApproveAwaitingRuns(const RepositoryRecord &repo);
     // What the worker above reads out of the mirror for one commit.
     struct WorkflowScan {
         bool mirrorMissing = false;
@@ -3622,6 +3642,8 @@ private:
     void setRepoGitIdentityFromForkMesh();
     // Set "run actions on push" for the open repo and keep both toggles in sync.
     void setRepoActionsEnabled(bool on);
+    // Set "approve runs automatically" for the open repo, same two-toggle sync.
+    void setRepoActionsAutoApprove(bool on);
     // Enable or disable secret-scanning push protection for the open repo.
     void setRepoSecretScanningEnabled(bool on);
     // Switch a single workflow (by path) on or off for the open repo, persist it,
@@ -6900,6 +6922,10 @@ private:
     // checkboxes drive the same state via setRepoActionsEnabled().
     QCheckBox *m_actionsEnabledCheck = nullptr;
     QCheckBox *m_settingsActionsCheck = nullptr;
+    // Per-repo "approve runs automatically" toggle, mirrored on the same two
+    // tabs and driven by setRepoActionsAutoApprove().
+    QCheckBox *m_actionsAutoApproveCheck = nullptr;
+    QCheckBox *m_settingsAutoApproveCheck = nullptr;
     QCheckBox *m_secretScanCheck = nullptr;
     // Per-repo visibility toggle: when checked the repo is private (hidden from
     // the public catalog; browse/clone gated on the owner's view token).
