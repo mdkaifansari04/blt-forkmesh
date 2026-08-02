@@ -9561,6 +9561,10 @@ void MainWindow::updateRepoActivityRail()
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 2;
     const bool onAgents = onHome && m_repoDetailStack &&
                           m_repoDetailStack->currentIndex() == kRepoAgentsTab;
+    // Git is where notification bubbles are most useful, but its diff workspace
+    // does not need the live log or background queue beside the composer. Keep
+    // just the right-aligned prompt, capped to the bubbles' 560px maximum.
+    constexpr int kGitPromptMaxWidth = 560;
     // Git is its own activity-rail destination, so hide every Code/repository
     // header above the source-control workspace rather than leaving rows of
     // unrelated navigation on screen. The Agents tab gets the same treatment: its
@@ -9577,6 +9581,13 @@ void MainWindow::updateRepoActivityRail()
         m_repoOverviewChrome->setVisible(!onChanges && !onBranches);
     if (m_footerDock)
         m_footerDock->show();
+    if (m_footerLeftRegion)
+        m_footerLeftRegion->setVisible(!onChanges);
+    if (m_footerGitPromptSpacer)
+        m_footerGitPromptSpacer->setVisible(onChanges);
+    if (m_promptWrapper)
+        m_promptWrapper->setMaximumWidth(
+            onChanges ? kGitPromptMaxWidth : QWIDGETSIZE_MAX);
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
     if (m_agentsNavButton)
@@ -9595,6 +9606,8 @@ void MainWindow::updateRepoActivityRail()
     // leaving it clears the filter so the list is whole again next time.
     syncGitCommitFilter();
     syncAgentPageSearch();
+    if (onChanges)
+        QTimer::singleShot(0, this, &MainWindow::positionTopMessageBubble);
 }
 
 // Mirror the top-bar search into the commit-list filter while the Git page is
