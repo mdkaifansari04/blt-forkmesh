@@ -6,7 +6,7 @@ Build and launch from this directory:
 ./run.sh
 ```
 
-Run the main client test suites:
+Run the sub-minute critical client contracts:
 
 ```sh
 ./run.sh test

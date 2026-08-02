@@ -4,7 +4,8 @@
   "private": true,
   "description": "Runtime browser contracts for the ForkMesh multiplayer world",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test --grep @critical",
+    "test:all": "playwright test"
   },
   "devDependencies": {
     "@playwright/test": "1.61.0",

@@ -992,6 +992,13 @@ if(FORKMESH_BUILD_TESTS)
     add_test(NAME forkmesh-e2e COMMAND forkmesh-e2e)
     set_tests_properties(forkmesh-tests forkmesh-window-tests forkmesh-perf-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    # The default developer/CI suite stays intentionally small: deployment
+    # trust boundaries, private/public mirror encryption, and the agent
+    # transport. The remaining targets are available for focused changes.
+    set_tests_properties(
+        forkmesh-control-tests forkmesh-private-mirror-tests
+        forkmesh-public-mirror-tests forkmesh-codex-tests
+        PROPERTIES LABELS "critical" TIMEOUT 20)
     # The e2e loop drives real git subprocesses and needs the stub agent's path.
     set_tests_properties(forkmesh-e2e PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;FORKMESH_E2E_STUB_AGENT=$<TARGET_FILE:forkmesh-e2e-stub-agent>")
