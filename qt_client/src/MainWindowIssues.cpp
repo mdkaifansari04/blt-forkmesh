@@ -1162,12 +1162,16 @@ QWidget *MainWindow::buildIssuesSection()
         if (show)
             m_issueDetail->raise();
         m_issueDetailToggle->setText(show ? "Hide detail" : "Show detail");
+        // Opening / closing the detail pane moves between the list and the
+        // issue, both of which the Back button can return to.
+        scheduleNavRecord();
     });
     connect(closeDetailButton, &QPushButton::clicked, this, [this] {
         if (m_issueDetail)
             m_issueDetail->hide();
         if (m_issueDetailToggle)
             m_issueDetailToggle->setText("Show detail");
+        scheduleNavRecord();
     });
     connect(m_issuesRepoCombo, &QComboBox::currentIndexChanged, this,
             [this](int) { reloadIssues(); });
@@ -1644,6 +1648,9 @@ void MainWindow::selectIssueListTab(int id)
     m_issueDetailToggle->setVisible(tableMode || boardMode);
     if (boardMode)
         refreshIssueBoard();
+    // Issues / Milestones / Labels / Board are four distinct destinations, so
+    // Back returns to the one you came from rather than out of the tab.
+    scheduleNavRecord();
 }
 
 namespace {
@@ -2625,6 +2632,8 @@ void MainWindow::showIssue(int number)
             }
             renderIssueThread(issue);
             updateIssueActionState();
+            // An open issue is its own place on the trail (adhoc #50).
+            scheduleNavRecord();
             return;
         }
     }

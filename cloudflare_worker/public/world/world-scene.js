@@ -1,4 +1,8 @@
 import {
+  loadStoreElementModule,
+  normalizeElementParams,
+} from "./elements/index.js";
+import {
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
   OUTFIT_STYLE_OPTIONS,
@@ -15979,118 +15983,84 @@ export function createWorldScene({
     });
   }
 
-  // An element row answers "what does this feature cost". Expanding it walks
-  // one level further in: the cabinets inside Mirror node cabinets, the desks
-  // and screens inside Office interior, the portals on the ring — and each of
-  // those expands again, all the way down to a single mesh.
-  //
-  // A lone wrapper Group is scaffolding rather than a part, so the first level
-  // opens straight into its children; elements registered with many roots (one
-  // per cabinet, one per avatar) list those roots instead.
-  function elementPartRoots(element) {
-    const roots = [...element.roots];
-    if (roots.length === 1 && roots[0]?.children?.length) {
-      return [...roots[0].children];
-    }
-    return roots;
-  }
+  // Purchased store elements are plugins from ./elements: nothing in the world
+  // bundle knows their geometry, so they are built on demand and registered
+  // through the same element registry as built-in content. That gives them the
+  // Elements toggle, the diagnostics cost breakdown and disable-on-load for
+  // free.
+  const storeElementInstances = new Map();
 
-  // Parts are addressed by child index from the element down, which stays
-  // valid for as long as the subtree does. A churned root (a rebuilt cabinet,
-  // a despawned avatar) simply resolves to whatever now sits at that index, or
-  // to nothing — the panel re-reads on every render, so it never shows counts
-  // for a node that is gone.
-  function elementPartNodes(element, path) {
-    let nodes = elementPartRoots(element);
-    for (const index of path) {
-      const node = nodes[index];
-      if (!node) return [];
-      nodes = node.children || [];
-    }
-    return nodes;
-  }
-
-  function elementPartKind(node) {
-    if (node.isInstancedMesh) return "Instanced";
-    if (node.isSkinnedMesh) return "Skinned";
-    if (node.isMesh) return "Mesh";
-    if (node.isPoints) return "Points";
-    if (node.isLine) return "Line";
-    if (node.isSprite) return "Sprite";
-    if (node.isLight) return "Light";
-    if (node.isCamera) return "Camera";
-    if (node.children?.length) return "Group";
-    return node.type || "Object";
-  }
-
-  // Most pieces of the town are unnamed meshes, so name them by what they are
-  // and where they sit: "BoxGeometry #3" beats three identical "Mesh" rows.
-  function elementPartLabel(node, index) {
-    if (node.name) return node.name;
-    const kind = node.isMesh
-      ? node.geometry?.type || elementPartKind(node)
-      : elementPartKind(node);
-    return `${kind} #${index + 1}`;
-  }
-
-  // Counts use the same rules as listWorldElements — instanced batches count
-  // once — so the numbers on a part row always add up to the row above it.
-  function describeElementPart(node, index, path, interactiveSet) {
-    let objects = 0;
-    let drawables = 0;
-    let triangles = 0;
-    let interactives = 0;
-    node.traverse?.((child) => {
-      objects += 1;
-      if (interactiveSet.has(child)) interactives += 1;
-      if (!child.isMesh && !child.isPoints && !child.isLine && !child.isSprite) {
-        return;
+  // An element may only read the endpoints its manifest declared, which the
+  // store disclosed before purchase. Anything else is refused here rather than
+  // trusted to the element.
+  function storeElementFetcher(manifest) {
+    const allowed = new Set(manifest.network || []);
+    return async (path) => {
+      const target = String(path || "");
+      if (!allowed.has(target)) {
+        throw new Error(`${manifest.id} may not read ${target}`);
       }
-      if (child.userData?.raycastProxy === true) return;
-      drawables += 1;
-      const geometry = child.geometry;
-      const vertices =
-        geometry?.index?.count ?? geometry?.attributes?.position?.count ?? 0;
-      if (child.isMesh) triangles += Math.floor(vertices / 3);
-    });
-    return {
-      path: [...path, index],
-      label: elementPartLabel(node, index),
-      type: elementPartKind(node),
-      geometry: node.geometry?.type || "",
-      instances: node.isInstancedMesh ? Math.max(0, Number(node.count) || 0) : 0,
-      parts: node.children?.length || 0,
-      visible: node.visible !== false,
-      objects,
-      drawables,
-      triangles,
-      interactives,
+      const response = await fetch(target, {
+        credentials: "same-origin",
+        headers: { accept: "application/json" },
+      });
+      if (!response.ok) throw new Error(`${target} failed`);
+      return response.json();
     };
   }
 
-  function listWorldElementParts(elementId, path = []) {
-    const element = worldElements.get(String(elementId || ""));
-    if (!element) return { parts: [], total: 0 };
-    pruneDeadElementRoots(element);
-    const steps = (Array.isArray(path) ? path : [])
-      .map((step) => Number(step))
-      .filter((step) => Number.isInteger(step) && step >= 0);
-    const nodes = elementPartNodes(element, steps).filter(Boolean);
-    // A switched-off element has had its clickable children pulled out of the
-    // live raycast list, so read those back from the detached record — the
-    // click column stays truthful while the element is off.
-    const interactiveSet = new Set(interactive);
-    element.detached.forEach((record) => {
-      record.interactives?.forEach((child) => interactiveSet.add(child));
+  async function installStoreElement(spec) {
+    const id = String(spec?.id || "");
+    if (!id) return false;
+    removeStoreElement(id);
+    const module = await loadStoreElementModule(id);
+    const manifest = module.manifest;
+    const params = normalizeElementParams(manifest, spec?.params);
+    const instance = module.build({
+      THREE,
+      params,
+      net: storeElementFetcher(manifest),
     });
-    return {
-      total: nodes.length,
-      parts: nodes
-        .slice(0, ELEMENT_PART_LIMIT)
-        .map((node, index) =>
-          describeElementPart(node, index, steps, interactiveSet),
-        ),
-    };
+    const group = instance?.group;
+    if (!group) throw new Error(`store element ${id} built no group`);
+    const placement = spec?.placement || {};
+    group.name = `store-element-${id}`;
+    group.position.set(Number(placement.x) || 0, 0, Number(placement.z) || 0);
+    group.rotation.y = Number(placement.heading) || 0;
+    world.add(group);
+    storeElementInstances.set(id, instance);
+    registerWorldElement(
+      id,
+      manifest.label || id,
+      manifest.category || "Store",
+      group,
+      () => storeElementInstances.get(id) === instance,
+    );
+    if (spec?.enabled === false) setWorldElementEnabled(id, false);
+    return true;
+  }
+
+  function removeStoreElement(id) {
+    const instance = storeElementInstances.get(id);
+    if (!instance) return false;
+    storeElementInstances.delete(id);
+    instance.group?.parent?.remove?.(instance.group);
+    instance.dispose?.();
+    worldElements.delete(id);
+    return true;
+  }
+
+  function tickStoreElements(nowMs) {
+    storeElementInstances.forEach((instance, id) => {
+      if (typeof instance.tick !== "function") return;
+      if (!worldElementEnabled(id)) return;
+      try {
+        instance.tick(nowMs);
+      } catch {
+        // One bad plugin frame must not stop the world; the element keeps its
+        // last drawn state and the next frame tries again.
+      }
+    });
   }
 
   // Unnamed meshes are the norm, so fall back to the nearest named ancestor
@@ -33774,6 +33744,7 @@ export function createWorldScene({
     }
     updateCamera(delta);
     if (worldElementEnabled("sky")) worldSky.tick(Date.now(), camera.position);
+    tickStoreElements(time);
     // Spatial scans and DOM-adjacent controls do not need monitor refresh
     // cadence. Bounding them to 12.5Hz removes repeated portal walks and
     // layout writes while movement and WebGL rendering remain full-rate.
@@ -34592,7 +34563,8 @@ export function createWorldScene({
     listWorldElements,
     setWorldElementEnabled,
     listSceneObjects,
-    listWorldElementParts,
+    installStoreElement,
+    removeStoreElement,
     getEnvironmentState: () => ({
       theme: currentTheme,
       lightLevel,
