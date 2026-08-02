@@ -562,6 +562,7 @@ verify_marketing_routes() {
 
     local checks=(
         "/|ForkMesh - Local-first source code preservation"
+        "/homev2|ForkMesh - A resilient, local-first Git forge"
         "/pricing|ForkMesh Pricing - Coding Reimagined for Teams"
         "/blog|Blog · ForkMesh"
         "/blog/introducing-forkmesh/|Introducing ForkMesh"
@@ -581,7 +582,7 @@ verify_marketing_routes() {
         fi
     done
     if [ "$failed" != "0" ]; then
-        echo "       The main Worker must own /, /pricing, /blog and posts before" >&2
+        echo "       The main Worker must own /, /homev2, /pricing, /blog and posts before" >&2
         echo "       the legacy marketing Worker/routes are retired." >&2
         return 1
     fi

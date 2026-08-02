@@ -52,6 +52,7 @@
   function coarseSurface(pathname) {
     const path = String(pathname || "/").toLowerCase();
     if (path === "/") return "home";
+    if (path === "/homev2" || path === "/homev2/") return "home-v2";
     if (path === "/world" || path.startsWith("/world/")) return "world";
     if (path === "/dashboard" || path.startsWith("/dashboard/")) return "dashboard";
     if (path === "/docs" || path.startsWith("/docs/")) return "documentation";
