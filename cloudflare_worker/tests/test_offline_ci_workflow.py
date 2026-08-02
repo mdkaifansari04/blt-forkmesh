@@ -29,4 +29,4 @@ def test_ci_failure_quarantine_is_explicit_and_bounded():
 
     assert "FORKMESH_CI_KNOWN_FAILURES" in conftest
     assert "strict=False" in conftest
-    assert conftest.count('    "test_') == 58
+    assert conftest.count('    "test_') == 54
