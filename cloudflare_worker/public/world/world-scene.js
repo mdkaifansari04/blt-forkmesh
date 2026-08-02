@@ -9550,218 +9550,6 @@ function repositoryRecordPagerTexture(THREE, title, subtitle, color) {
   });
 }
 
-function repositoryAgentTerminalTexture(THREE, task = {}) {
-  const provider =
-    String(task.provider || "").toUpperCase() === "CODEX"
-      ? "CODEX"
-      : "CLAUDE";
-  const status = String(
-    task.displayStatus || task.status || "running",
-  ).toUpperCase();
-  const color = provider === "CODEX" ? "#8fffe0" : "#ef9f74";
-  const history = Array.isArray(task.history) ? task.history : [];
-  const latestTerminalLine = history
-    .slice()
-    .reverse()
-    .map((entry) =>
-      String(entry?.text || "")
-        .replace(/[\u0000-\u001f\u007f]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim(),
-    )
-    .find(Boolean);
-  return canvasTexture(THREE, 512, 384, (context) => {
-    context.fillStyle = "#06130f";
-    context.fillRect(0, 0, 512, 384);
-    context.lineWidth = 10;
-    context.strokeStyle = color;
-    context.strokeRect(7, 7, 498, 370);
-    context.textAlign = "left";
-    context.textBaseline = "middle";
-    context.fillStyle = color;
-    context.font = '900 44px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(provider, 28, 52);
-    context.textAlign = "right";
-    context.fillStyle = "#9ef7c6";
-    context.font = '800 30px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(status, 484, 52);
-    context.textAlign = "left";
-    context.fillStyle = "#f4fff8";
-    context.font = '800 31px "ForkMesh Mono", ui-monospace, monospace';
-    wrapCanvasText(
-      context,
-      String(task.title || "Agent session"),
-      28,
-      104,
-      456,
-      36,
-      2,
-    );
-    context.fillStyle = "#9ef7c6";
-    context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      clipCanvasText(
-        context,
-        latestTerminalLine ? `> ${latestTerminalLine}` : "> session is live…",
-        456,
-      ),
-      28,
-      218,
-    );
-    context.fillStyle = "#77d9ff";
-    context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      `NODE · ${String(task.targetNode || "PENDING").toUpperCase().slice(0, 24)}`,
-      28,
-      272,
-    );
-    context.fillStyle = "#91a39a";
-    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
-    const age = Number(task.updatedAt)
-      ? mirrorCommitAgeLabel(
-          Math.max(0, Date.now() - Number(task.updatedAt)),
-        )
-      : "NOW";
-    context.fillText(`UPDATED ${String(age).toUpperCase()}`, 28, 322);
-    context.textAlign = "right";
-    context.fillStyle = color;
-    context.font = '800 18px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("CLICK · TRANSCRIPT + PROMPT", 484, 354);
-  });
-}
-
-function createRepositoryAgentTerminal(THREE, task = {}) {
-  const group = new THREE.Group();
-  group.name = `repository-agent-robot-terminal:${String(task.id || "session")}`;
-  const provider =
-    String(task.provider || "").toUpperCase() === "CODEX"
-      ? "codex"
-      : "claude";
-  const accent = provider === "codex" ? "#8fffe0" : "#ef9f74";
-  const bodyMaterial = makeMaterial(THREE, "#10251f", {
-    emissive: provider === "codex" ? "#123c32" : "#3c271f",
-    emissiveIntensity: 0.34,
-    metalness: 0.34,
-    roughness: 0.48,
-  });
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(1.34, 0.42, 0.9),
-    bodyMaterial,
-  );
-  body.name = `repository-agent-robot-body:${String(task.id || "")}`;
-  body.position.set(0, 0.3, 0);
-  group.add(body);
-  for (const side of [-1, 1]) {
-    const wheel = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.23, 0.23, 0.14, 12),
-      makeMaterial(THREE, "#17201e", {
-        metalness: 0.46,
-        roughness: 0.64,
-      }),
-    );
-    wheel.name = `repository-agent-robot-wheel:${side}`;
-    wheel.rotation.z = Math.PI / 2;
-    wheel.position.set(side * 0.72, 0.24, 0.08);
-    group.add(wheel);
-    const arm = new THREE.Mesh(
-      new THREE.BoxGeometry(0.16, 0.16, 0.58),
-      bodyMaterial,
-    );
-    arm.name = `repository-agent-robot-arm:${side}`;
-    arm.position.set(side * 0.76, 0.42, -0.02);
-    group.add(arm);
-  }
-  const screenShell = new THREE.Mesh(
-    new THREE.BoxGeometry(1.48, 0.1, 1.08),
-    makeMaterial(THREE, "#0b1714", {
-      emissive: "#102820",
-      emissiveIntensity: 0.3,
-      metalness: 0.24,
-    }),
-  );
-  screenShell.name = `repository-agent-robot-screen-shell:${String(task.id || "")}`;
-  screenShell.position.set(0, 0.61, 0);
-  group.add(screenShell);
-  const screen = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.34, 0.94),
-    new THREE.MeshBasicMaterial({
-      map: repositoryAgentTerminalTexture(THREE, task),
-      side: THREE.DoubleSide,
-      forceSinglePass: true,
-      toneMapped: false,
-    }),
-  );
-  screen.name = `repository-agent-terminal-screen:${String(task.id || "")}`;
-  // The terminal is the robot's upward-facing face. Visitors can read it from
-  // above instead of looking through a row of upright slabs.
-  screen.rotation.x = -Math.PI / 2;
-  screen.position.set(0, 0.665, 0);
-  screen.userData.landmark = "repositories";
-  screen.userData.agentBotChat = provider;
-  screen.userData.repositoryAgentSession = {
-    id: String(task.id || ""),
-    provider,
-    targetNode: String(task.targetNode || ""),
-    title: String(task.title || "Agent session"),
-    status: String(task.displayStatus || task.status || "running"),
-  };
-  group.add(screen);
-  const status = new THREE.Mesh(
-    new THREE.BoxGeometry(1.48, 0.025, 0.07),
-    makeMaterial(THREE, accent, {
-      emissive: accent,
-      emissiveIntensity: 0.9,
-      roughness: 0.44,
-    }),
-  );
-  status.position.set(0, 0.68, -0.52);
-  group.add(status);
-  const viewButton = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.3, 0.18),
-    new THREE.MeshBasicMaterial({
-      map: canvasTexture(THREE, 256, 144, (context) => {
-        context.clearRect(0, 0, 256, 144);
-        roundedRect(context, 5, 5, 246, 134, 24);
-        context.fillStyle = "#071b17";
-        context.fill();
-        context.lineWidth = 9;
-        context.strokeStyle = accent;
-        context.stroke();
-        context.textAlign = "center";
-        context.textBaseline = "middle";
-        context.fillStyle = accent;
-        context.font = '900 54px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText("1P", 128, 76);
-      }),
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-      toneMapped: false,
-    }),
-  );
-  viewButton.name =
-    `repository-agent-terminal-first-person:${String(task.id || "")}`;
-  viewButton.rotation.x = -Math.PI / 2;
-  viewButton.position.set(0.48, 0.69, 0.37);
-  viewButton.renderOrder = 48;
-  const viewingPoint = new THREE.Object3D();
-  viewingPoint.name =
-    `repository-agent-terminal-viewing-point:${String(task.id || "")}`;
-  viewingPoint.position.set(0, 0, 1.58);
-  group.add(viewingPoint);
-  viewButton.userData.landmark = "repositories";
-  viewButton.userData.repositoryAgentViewingPad = {
-    target: screen,
-    standingPoint: viewingPoint,
-    sessionId: String(task.id || ""),
-    title: String(task.title || "Agent session"),
-  };
-  group.add(viewButton);
-  group.userData.screen = screen;
-  group.userData.viewButton = viewButton;
-  return group;
-}
-
 function repositoryIssueAgentProviderTexture(THREE, provider, active = false) {
   const claude = provider === "claude-code";
   const color = claude ? "#ef9f74" : "#8fffe0";
@@ -25205,58 +24993,6 @@ export function createWorldScene({
     return cameraMode;
   }
 
-  function focusRepositoryAgentTerminal(button = null) {
-    if (officeSceneMode !== "town" || !button?.isObject3D) return false;
-    const data = button.userData?.repositoryAgentViewingPad;
-    const target = data?.target;
-    const standingTarget = data?.standingPoint;
-    if (!target?.isObject3D || !standingTarget?.isObject3D) return false;
-    dismountSwing({ relocate: false });
-    dismountBike({ relocate: false });
-    dismountCar({ relocate: false });
-    dismountQuadcopter({ relocate: false });
-    standUpFromBench();
-    cancelDash();
-    const standingPoint = standingTarget.getWorldPosition(
-      new THREE.Vector3(),
-    );
-    const targetPoint = target.getWorldPosition(new THREE.Vector3());
-    player.position.set(standingPoint.x, currentFloorY, standingPoint.z);
-    lastPosition.copy(player.position);
-    const eye = player.position
-      .clone()
-      .add(new THREE.Vector3(0, FIRST_PERSON_EYE_HEIGHT, 0));
-    const delta = targetPoint.sub(eye);
-    const horizontal = Math.max(0.001, Math.hypot(delta.x, delta.z));
-    cameraYaw = Math.atan2(-delta.x, -delta.z);
-    firstPersonPitch = clamp(
-      -Math.atan2(delta.y, horizontal),
-      FIRST_PERSON_PITCH_MIN,
-      FIRST_PERSON_PITCH_MAX,
-    );
-    player.rotation.y = cameraYaw;
-    cameraFocus = null;
-    selectedLandmark = "repositories";
-    setCameraMode("first-person", "repository-agent-terminal");
-    // A mild optical zoom makes the upward-facing terminal fill the view while
-    // retaining enough robot body around it to preserve spatial context.
-    firstPersonZoom = 1.35;
-    camera.fov = clamp(44 / firstPersonZoom, 10, 110);
-    camera.updateProjectionMatrix();
-    queueMovementEvent({
-      x: Number(player.position.x.toFixed(2)),
-      y: Number(player.position.y.toFixed(2)),
-      z: Number(player.position.z.toFixed(2)),
-      heading: Number(player.rotation.y.toFixed(3)),
-      space: currentSpace,
-      moving: false,
-      activity: `reading agent terminal ${String(
-        data.sessionId || "",
-      ).slice(0, 40)}`,
-    });
-    return true;
-  }
-
   function lockOfficeElevatorCamera() {
     if (!officeElevatorCameraLocked) {
       officeElevatorPriorCameraMode = cameraMode;
@@ -31317,13 +31053,7 @@ export function createWorldScene({
           (left.createdAt || left.number),
       )
       .slice(0, REPOSITORY_RECORDS_MAX);
-    const repositoryRunningTasks = agentBotAccessAllowed
-      ? (repositoryAgentTasksByRepository.get(repositoryKey) || []).slice(0, 5)
-      : [];
-    if (
-      !mount ||
-      (!issues.length && !pulls.length && !repositoryRunningTasks.length)
-    ) {
+    if (!mount || (!issues.length && !pulls.length)) {
       return;
     }
 
@@ -31629,38 +31359,6 @@ export function createWorldScene({
       7.75,
       "#9ef7c6",
     );
-
-    if (agentBotAccessAllowed) {
-      const runningTasks = repositoryRunningTasks;
-      if (runningTasks.length) {
-        const terminalDock = new THREE.Group();
-        terminalDock.name = `repository-agent-control-dock:${repositoryKey}`;
-        const dockBase = new THREE.Mesh(
-          new THREE.BoxGeometry(7.1, 0.16, 1.34),
-          makeMaterial(THREE, "#0b1b17", {
-            emissive: "#163a30",
-            emissiveIntensity: 0.3,
-            metalness: 0.25,
-            roughness: 0.62,
-          }),
-        );
-        dockBase.position.set(0, groundY + 0.08, 5.02);
-        terminalDock.add(dockBase);
-        runningTasks.forEach((task, index) => {
-          const terminal = createRepositoryAgentTerminal(THREE, task);
-          terminal.position.set(
-            (index - (runningTasks.length - 1) / 2) * 1.36,
-            groundY + 0.12,
-            5.02,
-          );
-          terminal.scale.setScalar(0.78);
-          terminalDock.add(terminal);
-          interactive.push(terminal.userData.screen);
-          interactive.push(terminal.userData.viewButton);
-        });
-        layer.add(terminalDock);
-      }
-    }
 
     if (
       issueBoard &&
@@ -33514,10 +33212,6 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.forkbotChat) {
       onForkbotChat();
-      return;
-    }
-    if (hit?.object?.userData?.repositoryAgentViewingPad) {
-      focusRepositoryAgentTerminal(hit.object);
       return;
     }
     if (hit?.object?.userData?.agentBotChat) {
