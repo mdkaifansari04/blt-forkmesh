@@ -2355,9 +2355,9 @@ int main(int argc, char *argv[])
         check(window.testGitWorkspaceIsExclusive(),
               QStringLiteral("a branch diff gives the Git rail exclusive ownership: "
                              "no Code chrome and no visible diff outside Git"));
-        check(window.testGitFooterShowsPromptOnly(),
-              QStringLiteral("Git shows only the prompt footer, filling the "
-                             "space from its hidden live log and Background queue"));
+        check(window.testGitPromptFloatsBottomRight(),
+              QStringLiteral("Git floats only its prompt at the lower-right, "
+                             "leaving the graph's left side at full height"));
 
         // adhoc #420: following a branch link must land on the branch straight
         // away. The panel's git reads run on a worker thread now, so the
