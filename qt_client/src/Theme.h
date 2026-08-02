@@ -155,11 +155,7 @@ QPushButton {
     background-color: #21262d;
     border: 1px solid #30363d;
     border-radius: 6px;
-    /* Compact action-button geometry is the application-wide default. More
-       specialised navigation, icon and primary controls override this where
-       their layout needs a different shape. */
-    padding: 4px 10px;
-    font-size: 12px;
+    padding: 8px 16px;
     font-weight: 600;
 }
 QPushButton:hover { background-color: #30363d; }
@@ -179,21 +175,10 @@ QPushButton#scmSyncButton:disabled {
     background-color: #1f4b87; border-color: #315f91; color: #c9d1d9;
 }
 QPushButton#ghostButton {
-    /* Legacy action controls used to read like loose toolbar text.  Give every
-       remaining ghost action the compact outlined treatment used by the newer
-       repo controls, so actions stay visibly clickable across the application. */
-    background-color: #21262d; border: 1px solid #30363d; border-radius: 6px;
-    color: #e6edf3; font-size: 12px; font-weight: 600; padding: 4px 10px;
+    background: transparent; border: none; color: #8b949e;
+    font-weight: 500; padding: 4px 8px; text-align: left;
 }
-QPushButton#ghostButton:hover { background-color: #30363d; }
-QPushButton#ghostButton:pressed { background-color: #282e35; }
-/* The bottom branch switcher is deliberately a one-line status-bar control,
-   not a toolbar action, and must not inherit the compact button chrome. */
-#appStatusBar QPushButton#ghostButton {
-    background: transparent; border: none; color: #c9d1d9;
-    font-size: 11px; font-weight: 500; padding: 0 4px;
-}
-#appStatusBar QPushButton#ghostButton:hover { background: transparent; color: #58a6ff; }
+QPushButton#ghostButton:hover { color: #e6edf3; }
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
@@ -960,17 +945,6 @@ QPushButton[buttonSize="xs"] {
     min-height: 18px; max-height: 22px; padding: 1px 7px;
     font-size: 11px; border-radius: 5px;
 }
-/* Captioned Octicon actions use the same 44px icon-over-label tile on every
-   page. Extra-small row controls remain horizontal and retain the rule above. */
-QPushButton[forkmeshPageIconButton="true"] {
-    min-height: 40px; max-height: 44px; padding: 2px 8px;
-}
-QPushButton[forkmeshPageIconButton="true"][buttonSize="xs"] {
-    min-height: 18px; max-height: 22px; padding: 1px 7px;
-}
-#appStatusBar QPushButton[forkmeshPageIconButton="true"] {
-    min-height: 0; max-height: 18px; padding: 0 4px;
-}
 QPushButton#repoTab {
     background: transparent;
     border: none;
@@ -1572,10 +1546,7 @@ QPushButton {
     background-color: #f6f8fa;
     border: 1px solid #d0d7de;
     border-radius: 6px;
-    /* Keep ordinary actions aligned with the compact button system throughout
-       the Qt app; purpose-specific selectors below retain their own geometry. */
-    padding: 4px 10px;
-    font-size: 12px;
+    padding: 8px 16px;
     font-weight: 600;
 }
 QPushButton:hover { background-color: #f3f4f6; }
@@ -1595,19 +1566,10 @@ QPushButton#scmSyncButton:disabled {
     background-color: #8cbae8; border-color: #8cbae8; color: #ffffff;
 }
 QPushButton#ghostButton {
-    /* Match the newer compact repo actions instead of leaving legacy actions
-       as borderless toolbar text. */
-    background-color: #eaeef2; border: 1px solid #d0d7de; border-radius: 6px;
-    color: #1f2328; font-size: 12px; font-weight: 600; padding: 4px 10px;
-}
-QPushButton#ghostButton:hover { background-color: #d0d7de; }
-QPushButton#ghostButton:pressed { background-color: #d8dee4; }
-/* Keep the compact branch selector in the one-line status bar unboxed. */
-#appStatusBar QPushButton#ghostButton {
     background: transparent; border: none; color: #656d76;
-    font-size: 11px; font-weight: 500; padding: 0 4px;
+    font-weight: 500; padding: 4px 8px; text-align: left;
 }
-#appStatusBar QPushButton#ghostButton:hover { background: transparent; color: #0969da; }
+QPushButton#ghostButton:hover { color: #1f2328; }
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
@@ -2340,16 +2302,6 @@ QPushButton[buttonSize="sm"] {
 QPushButton[buttonSize="xs"] {
     min-height: 18px; max-height: 22px; padding: 1px 7px;
     font-size: 11px; border-radius: 5px;
-}
-/* App-wide captioned Octicon actions share the new icon-over-label tile. */
-QPushButton[forkmeshPageIconButton="true"] {
-    min-height: 40px; max-height: 44px; padding: 2px 8px;
-}
-QPushButton[forkmeshPageIconButton="true"][buttonSize="xs"] {
-    min-height: 18px; max-height: 22px; padding: 1px 7px;
-}
-#appStatusBar QPushButton[forkmeshPageIconButton="true"] {
-    min-height: 0; max-height: 18px; padding: 0 4px;
 }
 QPushButton#repoTab {
     background: transparent;
