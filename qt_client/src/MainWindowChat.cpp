@@ -3672,8 +3672,22 @@ void MainWindow::refreshRepositoryStats()
         if (widget) widget->setVisible(available);
     if (!available) return;
 
+    // Daily samples are immutable after the first capture for that day. Keep
+    // the rendered trends in memory so switching back to Code (or its periodic
+    // refresh) does not repeatedly read the stats document and git config.
+    struct TrendCacheEntry {
+        QString day;
+        QVector<RepoStatsSample> days;
+    };
+    static QHash<QString, TrendCacheEntry> trendCache;
+    const QString today = QDate::currentDate().toString(Qt::ISODate);
+    TrendCacheEntry &cached = trendCache[dir];
     QString error;
-    const QVector<RepoStatsSample> days = RepoStatsStore::captureDaily(dir, &error);
+    if (cached.day != today || cached.days.isEmpty()) {
+        cached.days = RepoStatsStore::captureDaily(dir, &error);
+        cached.day = today;
+    }
+    const QVector<RepoStatsSample> &days = cached.days;
     if (days.isEmpty()) {
         if (!error.isEmpty()) logSystem(QStringLiteral("Repository stats: %1").arg(error));
         return;
@@ -5603,10 +5617,17 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageFlight->setDuration(260);
     m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
     connect(m_topMessageFlight, &QPropertyAnimation::finished, this, [this] {
-        if (!m_topMessageSlidingOut)
-            return; // an arrival flight just landed; nothing to clean up
-        m_topMessageSlidingOut = false;
-        advanceTopMessageQueue();
+        if (m_topMessageSlidingOut) {
+            m_topMessageSlidingOut = false;
+            advanceTopMessageQueue();
+            return;
+        }
+        if (m_topMessageEntering) {
+            m_topMessageEntering = false;
+            if (m_topMessageTimer && m_topMessageSecondsLeft > 0 &&
+                !m_topMessageHovering)
+                m_topMessageTimer->start(1000);
+        }
     });
     m_topMessageContainer->hide();
 

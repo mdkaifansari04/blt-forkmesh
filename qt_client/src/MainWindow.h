@@ -4585,7 +4585,8 @@ private:
     // m_topMessage linkActivated handler (e.g. "fm:agent:<id>" to jump to a
     // waiting agent). Empty = a plain, non-clickable toast.
     void flashMessage(const QString &text, bool error = false,
-                      const QString &clickHref = QString());
+                      const QString &clickHref = QString(),
+                      int durationSeconds = 0);
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
     void queueTopMessage(const QString &text, bool error,
@@ -4599,7 +4600,7 @@ private:
     void setTopMessagePaused(bool paused); // hover pauses the countdown
     void slideTopMessageOut(); // countdown finished: ease the bubble off the right edge, then advance
     void showPromptBubble(const QString &prompt); // animate a submitted prompt into a bubble
-    // False while the footer composer is hidden (the Git workspace does that).
+    // True when the footer composer is visible and can anchor notification bubbles.
     bool topMessageDockVisible() const;
     MessageRow *addMessageRow(const ChatMessage &message);
     MessageRow *createMessageRow(const ChatMessage &message,
@@ -5077,6 +5078,7 @@ private:
     // animation ever drives the bubble's geometry.
     QPropertyAnimation *m_topMessageFlight = nullptr;
     bool m_topMessageSlidingOut = false;  // countdown finished; bubble is easing off the right edge
+    bool m_topMessageEntering = false;    // wait for the entry glide before starting its countdown
     QPushButton *m_topMessageCopy = nullptr;
     QPushButton *m_topMessageSendToPrompt = nullptr;
     QPushButton *m_topMessageClose = nullptr;
@@ -5093,6 +5095,7 @@ private:
         QString text;
         bool error = false;
         QString clickHref;
+        int durationSeconds = 0; // its full countdown starts when it reaches the top
     };
     QList<TopMessageQueueEntry> m_topMessageQueue;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
@@ -5134,8 +5137,8 @@ private:
     // be read while events keep streaming in (adhoc #92).
     QPushButton *m_footerLogPauseButton = nullptr;
     bool m_footerLogScrollPaused = false;
-    // Whole mini-log/background/agent-prompt footer. The focused Git workspace
-    // hides it to give the changes list and diff the full window height.
+    // Whole mini-log/background/agent-prompt footer. It remains available in
+    // every workspace, including Git, so users can prompt an agent from a diff.
     QWidget *m_footerDock = nullptr;
     // Background-activity strip, wedged between the live log and the prompt. One
     // row per open *kind* of work, not per ticket: dozens of concurrent git reads
@@ -6860,6 +6863,10 @@ private:
     // Website ping ids already surfaced as immediate error pings, so a poll
     // that returns the same inbox again never re-flashes them (adhoc #77).
     QSet<QString> m_flashedWebAlertIds;
+    // The first website-inbox response is a startup baseline.  Its unread
+    // pings happened before this app run and belong in the Pings page, not as
+    // fresh desktop alerts.  Later responses may surface newly-arrived pings.
+    bool m_webAlertsBaselineLoaded = false;
     QPushButton *m_notificationButton = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     // The website's alert inbox, mirrored onto that page (adhoc #59).
