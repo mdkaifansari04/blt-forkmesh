@@ -220,15 +220,19 @@ static QString scmStatusTip(QChar status)
 QWidget *MainWindow::buildSourceControlPanel()
 {
     auto *panel = new QWidget;
+    panel->setObjectName(QStringLiteral("sourceControlPanel"));
     auto *root = new QVBoxLayout(panel);
-    root->setContentsMargins(16, 10, 16, 6);
+    // This is already a narrow splitter pane. Keep its controls close to the
+    // pane edges instead of spending more than ten percent of the width on
+    // padding at each side.
+    root->setContentsMargins(6, 6, 4, 4);
     root->setSpacing(6);
 
     // A compact two-line compose field stays visible. Less-common generation
     // settings live behind the adjacent ellipsis menu so they do not consume
     // most of this narrow source-control pane.
     m_scmMessage = new QPlainTextEdit;
-    m_scmMessage->setObjectName("messageInput");
+    m_scmMessage->setObjectName("scmMessageInput");
     m_scmMessage->setPlaceholderText("Message (Ctrl+Enter to commit)");
     m_scmMessage->setTabChangesFocus(true);
     m_scmMessage->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
@@ -236,7 +240,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmMessage->setFixedHeight(
         m_scmMessage->fontMetrics().lineSpacing() * 2 + 14);
     m_scmMessage->setStyleSheet(
-        "QPlainTextEdit#messageInput{font-size:11px;padding:4px 6px;}");
+        "QPlainTextEdit#scmMessageInput{font-size:11px;padding:4px 6px;}");
     auto *commitShortcut =
         new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), m_scmMessage);
     commitShortcut->setContext(Qt::WidgetWithChildrenShortcut);
@@ -355,7 +359,9 @@ QWidget *MainWindow::buildSourceControlPanel()
                            m_scmCommitPushButton, m_scmStageCommitPushButton}) {
         if (b == m_scmCopyButton)
             b->setObjectName("ghostButton");
-        b->setProperty("buttonSize", "sm");
+        // The three always-visible commit actions need less vertical chrome
+        // than ordinary small buttons in this compact sidebar.
+        b->setProperty("buttonSize", b == m_scmCopyButton ? "sm" : "xs");
         b->setCursor(Qt::PointingHandCursor);
     }
 
@@ -406,6 +412,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     // dragged really narrow wraps instead of clipping, but at any normal width
     // the row reads as one line of commit actions.
     m_scmControlsPanel = new QWidget;
+    m_scmControlsPanel->setObjectName(QStringLiteral("scmControlsPanel"));
     auto *controlsRow = new FlowLayout(m_scmControlsPanel, 0, 6, 6);
     controlsRow->addWidget(m_scmCommitButton);
     controlsRow->addWidget(m_scmCommitPushButton);
@@ -448,23 +455,10 @@ QWidget *MainWindow::buildSourceControlPanel()
             [this] { refreshSourceControl(true); });
     addRefreshSpin(m_scmRefreshButton);
 
-    // Auto-mark-viewed toggle: while checked, a file whose end has scrolled into
-    // the diff viewport is checked off "Viewed" (and collapsed) on its own.
-    // Shares the PR review page's setting so the behaviour matches everywhere.
-    m_scmAutoViewedButton = new QPushButton;
-    m_scmAutoViewedButton->setCheckable(true);
-    m_scmAutoViewedButton->setChecked(autoMarkViewedOnScrollPref());
-    setOcticon(m_scmAutoViewedButton, "eye", 14);
-    m_scmAutoViewedButton->setToolTip(
-        "Automatically mark files as viewed while scrolling");
-    connect(m_scmAutoViewedButton, &QPushButton::clicked, this, [this](bool on) {
-        setAutoMarkViewedOnScrollPref(on);
-        if (on)
-            applyScmAutoMarkViewedOnScroll(); // catch up on where we already are
-    });
-
-    for (QPushButton *b : {m_scmPrevButton, m_scmNextButton, m_scmRefreshButton,
-                           m_scmAutoViewedButton}) {
+    // Working-tree review follows the scroll position automatically. There is
+    // deliberately no eye toggle here: reaching a file marks it viewed and
+    // scrolling back above that frontier reverses the automatic mark.
+    for (QPushButton *b : {m_scmPrevButton, m_scmNextButton, m_scmRefreshButton}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -474,7 +468,6 @@ QWidget *MainWindow::buildSourceControlPanel()
     header->addWidget(m_scmCountLabel);
     header->addWidget(m_scmViewedLabel);
     header->addStretch();
-    header->addWidget(m_scmAutoViewedButton);
     header->addWidget(m_scmPrevButton);
     header->addWidget(m_scmNextButton);
     header->addWidget(m_scmRefreshButton);
@@ -1009,10 +1002,16 @@ void MainWindow::setupScmDiffPane()
     connect(m_scmAutoViewedDebounce, &QTimer::timeout, this,
             &MainWindow::applyScmAutoMarkViewedOnScroll);
     connect(m_scmDiff->verticalScrollBar(), &QScrollBar::valueChanged, this,
-            [this] {
+            [this](int value) {
                 updateScmDiffScrollState(); // cheap, every tick
-                if (m_scmAutoViewedButton && m_scmAutoViewedButton->isChecked())
-                    m_scmAutoViewedDebounce->start(); // heavy, debounced
+                if (m_scmApplyingAutoViewed)
+                    return;
+                if (value != m_scmLastAutoViewedScrollValue) {
+                    m_scmAutoViewedScrollDirection =
+                        value < m_scmLastAutoViewedScrollValue ? -1 : 1;
+                    m_scmLastAutoViewedScrollValue = value;
+                }
+                m_scmAutoViewedDebounce->start(); // heavy, debounced
             });
 }
 
@@ -1304,22 +1303,64 @@ void MainWindow::updateScmDiffScrollState()
     m_scmStickyHeader->raise();
 }
 
-// Debounced off the diff scrollbar: check off every file the reviewer has
-// scrolled all the way through — its end has reached the viewport bottom — as
-// "Viewed", matching the read-progress chart, which fills to 100% on the same
-// threshold. Re-renders once for the whole batch (collapsing those files), then
-// restores the scroll to whichever file is still on screen, since collapsing
-// files above it shifts the document up.
+struct ScmAutoViewedDelta {
+    QStringList toView;
+    QStringList toUnview;
+    QString currentPath;
+    bool currentStaged = false;
+};
+
+static ScmAutoViewedDelta scmAutoViewedDelta(
+    const QStringList &keys, const QStringList &paths, const QList<int> &tops,
+    int docHeight, int viewTop, int viewBottom, bool scrollingUp,
+    const QSet<QString> &viewed)
+{
+    ScmAutoViewedDelta delta;
+    for (int i = 0; i < keys.size() && i < paths.size() && i < tops.size(); ++i) {
+        if (tops.at(i) < 0)
+            continue;
+        const int bottom =
+            (i + 1 < tops.size() && tops.at(i + 1) >= 0) ? tops.at(i + 1)
+                                                         : docHeight;
+        const QString path = paths.at(i);
+        if (scrollingUp) {
+            // Viewed file bodies are collapsed, so their `bottom` is normally
+            // the next compact header. As soon as that boundary moves below the
+            // viewport top, this file is the one the reviewer returned to.
+            if (bottom > viewTop) {
+                if (delta.currentPath.isEmpty()) {
+                    delta.currentPath = path;
+                    delta.currentStaged =
+                        keys.at(i).startsWith(QLatin1String("s|"));
+                }
+                if (viewed.contains(path) && !delta.toUnview.contains(path))
+                    delta.toUnview << path;
+            }
+        } else if (bottom <= viewBottom) {
+            if (!viewed.contains(path) && !delta.toView.contains(path))
+                delta.toView << path;
+        } else if (delta.currentPath.isEmpty()) {
+            delta.currentPath = path;
+            delta.currentStaged = keys.at(i).startsWith(QLatin1String("s|"));
+        }
+    }
+    return delta;
+}
+
+// Debounced off the diff scrollbar: the viewed set follows the review frontier.
+// Scrolling down checks off every file whose end reached the viewport bottom;
+// scrolling back up unchecks the current and later files once their end is below
+// the viewport top. Re-render once for the whole batch, then restore the frontier
+// file because expanding/collapsing preceding bodies moves document coordinates.
 void MainWindow::applyScmAutoMarkViewedOnScroll()
 {
-    if (!m_scmAutoViewedButton || !m_scmAutoViewedButton->isChecked())
-        return;
     if (!m_scmDiff || m_scmSectionKeys.isEmpty())
         return;
     QScrollBar *vbar = m_scmDiff->verticalScrollBar();
     if (!vbar)
         return;
-    const int viewBottom = vbar->value() + m_scmDiff->viewport()->height();
+    const int viewTop = vbar->value();
+    const int viewBottom = viewTop + m_scmDiff->viewport()->height();
     const int docHeight =
         m_scmDiff->document()->documentLayout()->documentSize().height();
     if (m_scmFileTops.size() != m_scmSectionKeys.size())
@@ -1327,32 +1368,22 @@ void MainWindow::applyScmAutoMarkViewedOnScroll()
 
     const QString ctx = scmViewedContext();
     const QSet<QString> viewed = loadDiffViewed(ctx);
-    QString currentPath; // first file not yet fully scrolled through
-    bool currentStaged = false;
-    QStringList newlyViewed;
-    for (int i = 0; i < m_scmSectionKeys.size(); ++i) {
-        if (m_scmFileTops.at(i) < 0)
-            continue;
-        const int bottom = (i + 1 < m_scmFileTops.size() &&
-                            m_scmFileTops.at(i + 1) >= 0)
-                               ? m_scmFileTops.at(i + 1)
-                               : docHeight;
-        const QString path = m_scmSectionPaths.at(i);
-        if (bottom <= viewBottom) {
-            if (!viewed.contains(path) && !newlyViewed.contains(path))
-                newlyViewed << path;
-        } else if (currentPath.isEmpty()) {
-            currentPath = path;
-            currentStaged = m_scmSectionKeys.at(i).startsWith(QLatin1String("s|"));
-        }
-    }
-    if (newlyViewed.isEmpty())
+    const bool scrollingUp = m_scmAutoViewedScrollDirection < 0;
+    const ScmAutoViewedDelta delta =
+        scmAutoViewedDelta(m_scmSectionKeys, m_scmSectionPaths, m_scmFileTops,
+                           docHeight, viewTop, viewBottom, scrollingUp, viewed);
+    if (delta.toView.isEmpty() && delta.toUnview.isEmpty())
         return;
-    for (const QString &path : std::as_const(newlyViewed))
+    m_scmApplyingAutoViewed = true;
+    for (const QString &path : delta.toView)
         setDiffViewed(ctx, path, true);
+    for (const QString &path : delta.toUnview)
+        setDiffViewed(ctx, path, false);
     renderScmCombinedDiff();
-    if (!currentPath.isEmpty())
-        scrollScmDiffToFile(currentPath, currentStaged);
+    if (!delta.currentPath.isEmpty())
+        scrollScmDiffToFile(delta.currentPath, delta.currentStaged);
+    m_scmLastAutoViewedScrollValue = vbar->value();
+    m_scmApplyingAutoViewed = false;
 }
 
 // "N of M files viewed" above the changes tree.
@@ -1373,6 +1404,23 @@ void MainWindow::updateScmViewedCount()
     m_scmViewedLabel->setText(
         QStringLiteral("%1 of %2 files viewed").arg(seen).arg(paths.size()));
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+bool MainWindow::testScmAutoViewedRoundTrip()
+{
+    const QStringList keys{QStringLiteral("u|a"), QStringLiteral("u|b")};
+    const QStringList paths{QStringLiteral("a"), QStringLiteral("b")};
+    const ScmAutoViewedDelta down =
+        scmAutoViewedDelta(keys, paths, {0, 100}, 200, 100, 200, false, {});
+    const QSet<QString> viewed(down.toView.begin(), down.toView.end());
+    // Once viewed, both bodies collapse to compact headers. Returning to the
+    // top places both boundaries below the review frontier and unviews both.
+    const ScmAutoViewedDelta up =
+        scmAutoViewedDelta(keys, paths, {0, 20}, 40, 0, 100, true, viewed);
+    return down.toView == paths && up.toUnview == paths &&
+           up.currentPath == QStringLiteral("a");
+}
+#endif
 
 // Clicking the "Viewed" checkbox inside the combined diff.
 void MainWindow::onScmDiffAnchorClicked(const QUrl &url)
