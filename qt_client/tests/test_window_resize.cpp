@@ -2478,7 +2478,8 @@ int main(int argc, char *argv[])
               QStringLiteral("clicking a branch file in CHANGES scrolls the "
                              "right-hand range diff to that file"));
         // Every diff keeps the same universal source-control composer and
-        // changes tree above the branch's commit graph.
+        // changes tree above the branch's commit graph. The global prompt stays
+        // visible below it, so an agent can be launched directly from Git.
         check(window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
               QString("comparing a branch keeps the universal source-control "
