@@ -6190,6 +6190,71 @@ int main(int argc, char *argv[])
               "the tail of a long transcript is still searched");
     }
 
+    // Attachment scan behind the sessions list's little square (adhoc #222): the
+    // pictures a run was started from — or steered with — are named as "Attached
+    // image: <path>" lines in the prompt and in the transcripts, and the list has
+    // to find them in both without reading a whole multi-megabyte transcript.
+    {
+        check(AgentStore::attachmentPathsIn("nothing attached here").isEmpty(),
+              "a prompt with no attachment line yields no images");
+        const QStringList plain = AgentStore::attachmentPathsIn(
+            "look at this\nAttached image: /tmp/shot.png\nand fix it");
+        check(plain == QStringList{"/tmp/shot.png"},
+              "an attachment path is lifted out of plain prompt text");
+        // Transcript events store the same line JSON-encoded, so the path ends at
+        // the escape or the closing quote rather than at a real newline.
+        const QStringList encoded = AgentStore::attachmentPathsIn(
+            "{\"type\":\"_local_user\",\"text\":\"fix this\\nAttached image: "
+            "/tmp/a.png\\nthanks\"}");
+        check(encoded == QStringList{"/tmp/a.png"},
+              "an attachment path is lifted out of a JSON-encoded event line");
+        const QStringList many = AgentStore::attachmentPathsIn(
+            "Attached image: /tmp/a.png\nAttached image: /tmp/b.png\n"
+            "Attached image: /tmp/a.png\n");
+        check(many == (QStringList{"/tmp/a.png", "/tmp/b.png"}),
+              "attachments keep their order and are de-duplicated");
+
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "attachment scan temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session.prompt = "make it blue\nAttached image: /tmp/launch.png";
+        session = store.createSession(session);
+
+        const QString firstStamp = store.transcriptStamp(session);
+        check(store.attachmentPaths(session) == QStringList{"/tmp/launch.png"},
+              "an ad-hoc session's launch attachment is found in its prompt");
+
+        // A follow-up only ever reaches disk as a transcript turn.
+        store.appendEvent(session,
+                          QJsonObject{{"type", "_local_user"},
+                                      {"text", "and this one\nAttached image: "
+                                               "/tmp/followup.png"}});
+        check(store.attachmentPaths(session) ==
+                  (QStringList{"/tmp/launch.png", "/tmp/followup.png"}),
+              "an attachment steered into a running session is found too");
+        check(store.transcriptStamp(session) != firstStamp,
+              "the transcript stamp moves when a session is appended to, so the "
+              "scan knows to re-read it");
+
+        // The middle of a long run is skipped, but both of its ends are read: an
+        // attachment can only be named in a prompt, and those sit at the opening
+        // turn or at the newest follow-up.
+        AgentSession chatty;
+        chatty.owner = "octo";
+        chatty.name = "demo";
+        chatty = store.createSession(chatty);
+        store.appendLog(chatty, "Attached image: /tmp/opening.png");
+        store.appendLog(chatty, QString(3 * AgentStore::kAttachmentScanBytes,
+                                        QLatin1Char('x')));
+        store.appendLog(chatty, "Attached image: /tmp/latest.png");
+        check(store.attachmentPaths(chatty) ==
+                  (QStringList{"/tmp/opening.png", "/tmp/latest.png"}),
+              "both ends of a long transcript are scanned for attachments");
+    }
+
     // The Claude Code run summary the CLI reports on finish ("done · N turns ·
     // Ms · $X") is stored on the session and survives a restart (issue #296).
     {

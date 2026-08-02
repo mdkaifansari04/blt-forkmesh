@@ -3,7 +3,9 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QVariant>
 
 #include <algorithm>
@@ -264,6 +266,40 @@ QString readTranscriptTail(const QString &path, qint64 tailBytes)
     return QString::fromUtf8(file.readAll());
 }
 
+// Both ends of a transcript file, whole lines only: the first `endBytes` and the
+// last `endBytes`, with the middle of a long run skipped. An attachment is named
+// in a prompt, and a session's prompts are either the opening turn (head) or the
+// latest follow-up (tail) — so reading the ends finds them without pulling a
+// multi-megabyte transcript through memory on every scan.
+QString readTranscriptEnds(const QString &path, qint64 endBytes)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return QString();
+    const qint64 size = file.size();
+    if (size <= 2 * endBytes)
+        return QString::fromUtf8(file.readAll());
+    QByteArray head = file.read(endBytes);
+    // Drop the trailing partial line, which also keeps the cut on a UTF-8
+    // character boundary.
+    const qsizetype lastNewline = head.lastIndexOf('\n');
+    head.truncate(lastNewline < 0 ? 0 : lastNewline + 1);
+    file.seek(size - endBytes);
+    file.readLine(); // …and the leading partial line of the tail
+    return QString::fromUtf8(head) + QString::fromUtf8(file.readAll());
+}
+
+// Size + modified time of a file, or an empty stamp when it isn't there.
+QString fileStamp(const QString &path)
+{
+    const QFileInfo info(path);
+    if (!info.exists())
+        return QStringLiteral("-");
+    return QStringLiteral("%1:%2")
+        .arg(info.size())
+        .arg(info.lastModified().toMSecsSinceEpoch());
+}
+
 // One line of context around a hit, whitespace-collapsed so a snippet lifted out
 // of a JSON event line still reads as a sentence in a tooltip.
 QString hitSnippet(const QString &text, int at, int length)
@@ -304,6 +340,48 @@ int AgentStore::searchTranscript(const AgentSession &session,
         }
     }
     return hits;
+}
+
+QStringList AgentStore::attachmentPathsIn(const QString &text)
+{
+    if (!text.contains(QLatin1String("Attached image:")))
+        return {}; // the common case: no regex pass over a whole transcript
+    // The path runs to the end of its line. The same line is read back both as
+    // plain prompt text and out of a JSON-encoded transcript event, where the
+    // line ends at the closing quote or at an escape ("\n") rather than at a real
+    // newline — so a quote and a backslash end the path too.
+    static const QRegularExpression marker(
+        QStringLiteral("Attached image:[ \\t]*([^\"\\\\\\r\\n]+)"));
+    QStringList paths;
+    QRegularExpressionMatchIterator it = marker.globalMatch(text);
+    while (it.hasNext()) {
+        const QString path = it.next().captured(1).trimmed();
+        if (!path.isEmpty() && !paths.contains(path))
+            paths.append(path);
+    }
+    return paths;
+}
+
+QStringList AgentStore::attachmentPaths(const AgentSession &session) const
+{
+    const QString dir = sessionDir(session);
+    QStringList paths = attachmentPathsIn(session.prompt);
+    for (const QString &name : {QStringLiteral("/transcript.txt"),
+                                QStringLiteral("/events.jsonl")}) {
+        const QStringList found = attachmentPathsIn(
+            readTranscriptEnds(dir + name, kAttachmentScanBytes));
+        for (const QString &path : found)
+            if (!paths.contains(path))
+                paths.append(path);
+    }
+    return paths;
+}
+
+QString AgentStore::transcriptStamp(const AgentSession &session) const
+{
+    const QString dir = sessionDir(session);
+    return fileStamp(dir + QStringLiteral("/transcript.txt")) +
+           QLatin1Char('|') + fileStamp(dir + QStringLiteral("/events.jsonl"));
 }
 
 QList<AgentSession> AgentStore::loadAllSessions() const

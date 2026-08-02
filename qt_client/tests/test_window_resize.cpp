@@ -21,6 +21,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QFileInfo>
+#include <QImage>
 #include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
@@ -3728,6 +3729,66 @@ int main(int argc, char *argv[])
                       "(filter \"%1\", %2 rows)")
                   .arg(window.testAgentSearchText())
                   .arg(titles.size()));
+    }
+
+    // adhoc #222: a session started from a pasted screenshot shows it as a little
+    // square at the head of its row, and clicking that square opens the picture.
+    // The scan for "Attached image:" lines and the decode both run off the GUI
+    // thread, so the row fills in a beat after the session appears.
+    {
+        window.testOpenRepository(repoIdx); // "me/r", the Agents tab's repo
+        window.testOpenAgentsOverview();
+        QApplication::processEvents();
+
+        QTemporaryDir shots;
+        check(shots.isValid(), QStringLiteral("attachment fixture dir is valid"));
+        const QString shotPath = shots.filePath(QStringLiteral("paste-222.png"));
+        QImage shot(48, 24, QImage::Format_ARGB32);
+        shot.fill(QColor("#3fb950"));
+        check(shot.save(shotPath),
+              QStringLiteral("the attachment fixture image is written to disk"));
+
+        AgentSession pictured;
+        pictured.id = 7411;
+        pictured.owner = QStringLiteral("me");
+        pictured.name = QStringLiteral("r");
+        pictured.issueTitle = QStringLiteral("make the toolbar match this");
+        pictured.prompt =
+            QStringLiteral("make the toolbar match this\nAttached image: %1")
+                .arg(shotPath);
+        pictured.status = AgentStatus::Success;
+        window.testAddAgentSession(pictured);
+
+        AgentSession plain;
+        plain.id = 7412;
+        plain.owner = QStringLiteral("me");
+        plain.name = QStringLiteral("r");
+        plain.issueTitle = QStringLiteral("rename the release checklist");
+        plain.prompt = QStringLiteral("rename the release checklist");
+        plain.status = AgentStatus::Success;
+        window.testAddAgentSession(plain);
+
+        // The scan is delivered from a worker and the decode that follows it is a
+        // second hop, so run the pass and then wait for the square itself.
+        window.testScanAgentSessionImages();
+        QElapsedTimer attachmentTimer;
+        attachmentTimer.start();
+        while (attachmentTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            if (window.testAgentRowHasThumbnail(7411))
+                break;
+        }
+        check(window.testAgentRowImages(7411) == QStringList{shotPath},
+              QString("the picture named in a session's prompt reaches its row "
+                      "(adhoc #222, got %1)")
+                  .arg(window.testAgentRowImages(7411).join(QStringLiteral(" | "))));
+        check(window.testAgentRowHasThumbnail(7411),
+              QStringLiteral("that row draws the attachment as a thumbnail "
+                             "(adhoc #222)"));
+        check(window.testAgentRowImages(7412).isEmpty() &&
+                  !window.testAgentRowHasThumbnail(7412),
+              QStringLiteral("a session with no attachment keeps a bare row "
+                             "(adhoc #222)"));
     }
 
     // adhoc #15: the network log renders only its newest segment up front, and
