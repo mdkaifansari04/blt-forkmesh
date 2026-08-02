@@ -3993,6 +3993,9 @@ inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
 // (kLastRepoDetailTabSetting).
 constexpr int kRepoLandingTab = 0; // Code
 
+// The Agents tab's index in m_repoDetailStack (see ensureRepoDetailTabBuilt).
+constexpr int kRepoAgentsTab = 3;
+
 // Live claude.ai OAuth access token the Claude Code CLI stores in
 // ~/.claude/.credentials.json. Empty when the user logged in with an API key
 // (or isn't signed in). Read fresh each call so a token the CLI has rotated is
