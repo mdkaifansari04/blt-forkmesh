@@ -5518,25 +5518,8 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageSendToPrompt->setFocusPolicy(Qt::NoFocus);
     setOcticon(m_topMessageSendToPrompt, "paper-airplane", 13);
     m_topMessageSendToPrompt->hide();
-    connect(m_topMessageSendToPrompt, &QPushButton::clicked, this, [this] {
-        if (!m_issueQuickAdd || m_topMessageRaw.isEmpty())
-            return;
-        QString draft = m_issueQuickAdd->toPlainText();
-        if (!draft.trimmed().isEmpty()) {
-            if (!draft.endsWith(QStringLiteral("\n\n"))) {
-                if (draft.endsWith(QLatin1Char('\n')))
-                    draft += QLatin1Char('\n');
-                else
-                    draft += QStringLiteral("\n\n");
-            }
-        } else {
-            draft.clear();
-        }
-        draft += m_topMessageRaw;
-        m_issueQuickAdd->setPlainText(draft);
-        m_issueQuickAdd->moveCursor(QTextCursor::End);
-        m_issueQuickAdd->setFocus();
-    });
+    connect(m_topMessageSendToPrompt, &QPushButton::clicked, this,
+            [this] { appendTopMessageToPrompt(m_topMessageRaw); });
 
     // Dim countdown / queue / paused text. It used to be appended to the message
     // itself; on its own row it can never push the message into an ellipsis.
