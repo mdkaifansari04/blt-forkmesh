@@ -3292,12 +3292,16 @@ private:
     // files in the checkout's .forkmesh/shortcuts/ folder (shell scripts today;
     // prompts/skills ride along as editable text), so they version and sync with
     // the repo. Each file is a clickable card — a script runs through bash with
-    // its output streamed live into the page's log pane; other kinds open in
-    // the editor. New / edit / delete round out the CRUD.
+    // its output streamed live into the page's log pane; a prompt drafts itself
+    // into the footer composer; other kinds open in the editor. New / edit /
+    // delete round out the CRUD.
     QWidget *buildShortcutsTab();
     void loadShortcutsPanel();
     QString shortcutsDirPath() const; // <working tree>/.forkmesh/shortcuts, "" without one
     void runShortcut(const QString &filePath);
+    // Fill the quick-add composer with a prompt shortcut's text (log-path
+    // placeholders resolved), ready to review and send to an agent.
+    void draftShortcutPrompt(const QString &filePath);
     void stopShortcut();
     // Create (empty filePath) or edit a shortcut via a name + content dialog.
     void openShortcutEditor(const QString &filePath);
@@ -6953,6 +6957,10 @@ private:
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
+    // "Start" on the detail page (adhoc #20): resume this one session with no
+    // follow-up text, exactly what the composer's "add" button does when nothing
+    // is typed. Hidden while the session is already in flight.
+    QPushButton *m_agentStartButton = nullptr;
     // Above the session list: stop every running agent and cancel the queue
     // (adhoc #433), and its counterpart that resumes every stopped/failed one
     // (adhoc #136).
