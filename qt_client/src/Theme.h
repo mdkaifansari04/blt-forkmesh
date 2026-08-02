@@ -274,17 +274,13 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
     background-color: #0d1117; border: none; border-radius: 0;
     color: #e6edf3; font-family: monospace; font-size: 12px;
 }
-#pullReviewSummary {
-    background-color: #161b22; border: 1px solid #30363d; border-radius: 6px;
-    color: #e6edf3;
-}
 #commitBar { background: transparent; border: none; }
 #commitBar QLabel { background: transparent; }
 #commitBarText { color: #e6edf3; }
 #overviewList { background: transparent; border: none; }
-#overviewList::item { padding: 2px 4px; color: #c9d1d9; }
+#overviewList::item { padding: 5px 4px; color: #c9d1d9; }
 /* Hover fill is painted by HoverRowDelegate so the row never shifts. */
-#overviewList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 2px 4px; }
+#overviewList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 5px 4px; }
 #overviewList QHeaderView::section {
     background-color: #0d1117; color: #8b949e; padding: 4px 8px;
     border: none; border-bottom: 1px solid #21262d;
@@ -295,6 +291,7 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #sizeBarFill { background-color: #3fb950; border-radius: 3px; }
 #overviewMetricTrack { background-color: #21262d; border-radius: 2px; }
 #overviewMetricFill { background-color: #3fb950; border-radius: 2px; }
+#overviewUpdatedTime { color: #8b949e; font-size: 10px; }
 #readmeView {
     background: transparent; border: none; padding: 0; color: #e6edf3;
 }
@@ -317,6 +314,10 @@ QPushButton#repoAction {
 QPushButton#repoAction:hover { background-color: #30363d; }
 QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #30363d; }
+#pullListFloatingBar {
+    background-color: #161b22; border: 1px solid #30363d;
+    border-radius: 8px;
+}
 /* Thin activity rail down the repo detail page's left edge (adhoc #357); its
    Code/Git items paint themselves (ActivityRailButton). */
 #repoActivityRail { background-color: #010409; border-right: 1px solid #30363d; }
@@ -613,6 +614,36 @@ QPushButton#memberDeleteButton:hover {
     background-color: #0d1117;
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 6px;
+}
+#agentQueueOverlay {
+    background-color: rgba(22,27,34,238);
+    border: 1px solid rgba(88,166,255,0.62);
+    border-radius: 12px;
+}
+#agentQueueOverlay QLabel { background: transparent; }
+QPushButton#agentQueueIcon {
+    background: transparent; border: none; padding: 0;
+}
+QPushButton#agentQueueLimitDecreaseButton,
+QPushButton#agentQueueLimitIncreaseButton {
+    background-color: rgba(88,166,255,0.12);
+    border: 1px solid rgba(88,166,255,0.48);
+    border-radius: 8px;
+    padding: 0;
+}
+QPushButton#agentQueueLimitDecreaseButton:hover,
+QPushButton#agentQueueLimitIncreaseButton:hover {
+    background-color: rgba(88,166,255,0.28);
+    border-color: #58a6ff;
+}
+QPushButton#agentQueueLimitDecreaseButton:disabled {
+    background-color: transparent;
+    border-color: #30363d;
+}
+#agentQueueStatusLabel {
+    color: #e6edf3;
+    font-size: 12px;
+    font-weight: 700;
 }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
@@ -1337,12 +1368,6 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     font-family: monospace;
     font-size: 12px;
 }
-#pullReviewSummary {
-    background-color: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    color: #e6edf3;
-}
 #readmeView {
     background: transparent;
     border: none;
@@ -1597,17 +1622,13 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
     background-color: #ffffff; border: none; border-radius: 0;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
-#pullReviewSummary {
-    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
-    color: #1f2328;
-}
 #commitBar { background: transparent; border: none; }
 #commitBar QLabel { background: transparent; }
 #commitBarText { color: #1f2328; }
 #overviewList { background: transparent; border: none; }
-#overviewList::item { padding: 2px 4px; color: #1f2328; }
+#overviewList::item { padding: 5px 4px; color: #1f2328; }
 /* Hover fill is painted by HoverRowDelegate so the row never shifts. */
-#overviewList::item:selected { background-color: #0969da; color: #ffffff; padding: 2px 4px; }
+#overviewList::item:selected { background-color: #0969da; color: #ffffff; padding: 5px 4px; }
 #overviewList QHeaderView::section {
     background-color: #ffffff; color: #656d76; padding: 4px 8px;
     border: none; border-bottom: 1px solid #d8dee4;
@@ -1618,6 +1639,7 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #sizeBarFill { background-color: #2da44e; border-radius: 3px; }
 #overviewMetricTrack { background-color: #eaeef2; border-radius: 2px; }
 #overviewMetricFill { background-color: #2da44e; border-radius: 2px; }
+#overviewUpdatedTime { color: #656d76; font-size: 10px; }
 #readmeView {
     background: transparent; border: none; padding: 0; color: #1f2328;
 }
@@ -1640,6 +1662,10 @@ QPushButton#repoAction {
 QPushButton#repoAction:hover { background-color: #f3f4f6; }
 QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #d0d7de; }
+#pullListFloatingBar {
+    background-color: #ffffff; border: 1px solid #d0d7de;
+    border-radius: 8px;
+}
 /* Thin activity rail down the repo detail page's left edge (adhoc #357). */
 #repoActivityRail { background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
 #appNavigationRail, #appNavigationRailContent {
@@ -1945,6 +1971,36 @@ QPushButton#memberDeleteButton:hover {
     background-color: #ffffff;
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 6px;
+}
+#agentQueueOverlay {
+    background-color: rgba(255,255,255,242);
+    border: 1px solid rgba(9,105,218,0.48);
+    border-radius: 12px;
+}
+#agentQueueOverlay QLabel { background: transparent; }
+QPushButton#agentQueueIcon {
+    background: transparent; border: none; padding: 0;
+}
+QPushButton#agentQueueLimitDecreaseButton,
+QPushButton#agentQueueLimitIncreaseButton {
+    background-color: rgba(9,105,218,0.08);
+    border: 1px solid rgba(9,105,218,0.34);
+    border-radius: 8px;
+    padding: 0;
+}
+QPushButton#agentQueueLimitDecreaseButton:hover,
+QPushButton#agentQueueLimitIncreaseButton:hover {
+    background-color: rgba(9,105,218,0.16);
+    border-color: #0969da;
+}
+QPushButton#agentQueueLimitDecreaseButton:disabled {
+    background-color: transparent;
+    border-color: #d0d7de;
+}
+#agentQueueStatusLabel {
+    color: #1f2328;
+    font-size: 12px;
+    font-weight: 700;
 }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
@@ -2651,12 +2707,6 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     color: #1f2328;
     font-family: monospace;
     font-size: 12px;
-}
-#pullReviewSummary {
-    background-color: #f6f8fa;
-    border: 1px solid #d0d7de;
-    border-radius: 6px;
-    color: #1f2328;
 }
 #readmeView {
     background: transparent;

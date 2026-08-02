@@ -27,6 +27,241 @@ constexpr int kCommitCopyShaRole = Qt::UserRole + 2;
 // file, so the authorship filter can hide/show it without re-reading the mbox.
 constexpr int kPullFileAgentRole = Qt::UserRole + 1;
 
+// The compact pull list deliberately has just a leading metadata cell and a
+// title cell.  These values are painted into the trailing edge of the metadata
+// cell, which preserves the information from the old spreadsheet columns
+// without asking every row to repeat a column heading.
+constexpr int kPullCreatedAtRole = Qt::UserRole + 31;
+constexpr int kPullModifiedAtRole = Qt::UserRole + 32;
+constexpr int kPullFilesChangedRole = Qt::UserRole + 33;
+constexpr int kPullAdditionsRole = Qt::UserRole + 34;
+constexpr int kPullDeletionsRole = Qt::UserRole + 35;
+
+QString pullListStatusIcon(const QString &status)
+{
+    if (status == QLatin1String("merged"))
+        return QStringLiteral("git-merge");
+    if (status == QLatin1String("closed"))
+        return QStringLiteral("circle-slash");
+    return QStringLiteral("git-pull-request");
+}
+
+QColor pullListStatusColor(const QString &status)
+{
+    if (status == QLatin1String("merged"))
+        return QColor("#a371f7");
+    if (status == QLatin1String("closed"))
+        return QColor("#f85149");
+    return QColor("#3fb950");
+}
+
+QString pullListStatusLabel(const QString &status)
+{
+    if (status == QLatin1String("merged"))
+        return QStringLiteral("Merged");
+    if (status == QLatin1String("closed"))
+        return QStringLiteral("Closed");
+    return QStringLiteral("Open");
+}
+
+// Matches the small green/red churn picture in the Agents list, but keeps the
+// rest of a pull request's summary quiet: state, both timestamps, a branch mark
+// and its changed-file count all fit beside the pull number.
+class PullCompactMetaDelegate final : public SelectionBorderRowDelegate
+{
+public:
+    explicit PullCompactMetaDelegate(QAbstractItemView *view)
+        : SelectionBorderRowDelegate(view)
+    {
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override
+    {
+        QSize size = SelectionBorderRowDelegate::sizeHint(option, index);
+        const QFont compact = compactFont(option);
+        const QFontMetrics fm(compact);
+        // Created and Modified each own a fixed-width slot.  Reserving them
+        // separately (including the centred divider) keeps every age, branch
+        // count and churn bar on one vertical guide even when values have very
+        // different widths ("1d" beside "56y", for example).
+        const int tail = 2 * ageSlotWidth(fm) + kAgeDividerWidth +
+                         kAgeToFilesGap + kBranchIconSize + kIconTextGap +
+                         filesSlotWidth(fm) + kFilesToBarsGap + kDiffBarWidth +
+                         kTrailingPad;
+        size.rwidth() = qMax(size.width(),
+                             option.fontMetrics.horizontalAdvance(QStringLiteral("#9999")) +
+                                 18 + tail);
+        size.rheight() = qMax(size.height(), kDiffBarHeight + 8);
+        return size;
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        SelectionBorderRowDelegate::paint(painter, option, index);
+
+        const bool selected = option.state & QStyle::State_Selected;
+        const bool dark = currentThemeIsDark();
+        const QColor muted(selected ? QColor("#c8e1ff")
+                                    : QColor(dark ? "#8b949e" : "#656d76"));
+        const QFont compact = compactFont(option);
+        const QFontMetrics fm(compact);
+        const QRect cell = option.rect;
+        const int added = index.data(kPullAdditionsRole).toInt();
+        const int removed = index.data(kPullDeletionsRole).toInt();
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setRenderHint(QPainter::SmoothPixmapTransform);
+
+        // The diff chart is flush to the title edge, exactly as it is in the
+        // Agents list: green is added lines and red is removed lines.
+        const int barsLeft = cell.right() - kDiffBarWidth + 1;
+        const int baseline = cell.center().y() + kDiffBarHeight / 2;
+        painter->setPen(Qt::NoPen);
+        const int addHeight = diffBarHeight(added);
+        if (addHeight > 0) {
+            painter->setBrush(QColor(dark ? "#3fb950" : "#1a7f37"));
+            painter->drawRect(barsLeft, baseline - addHeight, kDiffBarThickness,
+                              addHeight);
+        }
+        const int delHeight = diffBarHeight(removed);
+        if (delHeight > 0) {
+            painter->setBrush(QColor(dark ? "#f85149" : "#cf222e"));
+            painter->drawRect(barsLeft + kDiffBarThickness + kDiffBarGap,
+                              baseline - delHeight, kDiffBarThickness, delHeight);
+        }
+
+        // The old Base ← Head text took a wide column for a relationship that is
+        // already explained in the selected pull's detail pane.  A branch glyph
+        // keeps the cue here; hovering the row supplies the two full names.
+        const int files = index.data(kPullFilesChangedRole).toInt();
+        const QString filesText = files > 999 ? QStringLiteral("999+")
+                                               : QString::number(qMax(0, files));
+        const int filesRight = barsLeft - kFilesToBarsGap;
+        const int filesLeft = filesRight - filesSlotWidth(fm);
+        const int fileIconLeft = filesLeft - kIconTextGap - kBranchIconSize;
+        painter->drawPixmap(fileIconLeft, cell.center().y() - kBranchIconSize / 2,
+                            tintedOcticonPixmap(QStringLiteral("git-branch"), muted,
+                                               kBranchIconSize));
+        painter->setFont(compact);
+        painter->setPen(muted);
+        painter->drawText(QRect(filesLeft, cell.top(), filesSlotWidth(fm),
+                                cell.height()),
+                          Qt::AlignVCenter | Qt::AlignRight, filesText);
+
+        const qint64 created = index.data(kPullCreatedAtRole).toLongLong();
+        const qint64 modified = index.data(kPullModifiedAtRole).toLongLong();
+        const QString createdText = created > 0
+                                        ? formatShortRelativeTime(created / 1000)
+                                        : QStringLiteral("-");
+        const QString modifiedText = modified > 0
+                                         ? formatShortRelativeTime(modified / 1000)
+                                         : QStringLiteral("-");
+        const int modifiedRight = fileIconLeft - kAgeToFilesGap;
+        const int modifiedLeft = modifiedRight - ageSlotWidth(fm);
+        const int dividerLeft = modifiedLeft - kAgeDividerWidth;
+        const int createdLeft = dividerLeft - ageSlotWidth(fm);
+        painter->drawText(QRect(createdLeft, cell.top(), ageSlotWidth(fm),
+                                cell.height()),
+                          Qt::AlignVCenter | Qt::AlignRight, createdText);
+        painter->drawText(QRect(dividerLeft, cell.top(), kAgeDividerWidth,
+                                cell.height()),
+                          Qt::AlignCenter, QString::fromUtf8("·"));
+        painter->drawText(QRect(modifiedLeft, cell.top(), ageSlotWidth(fm),
+                                cell.height()),
+                          Qt::AlignVCenter | Qt::AlignRight, modifiedText);
+        painter->restore();
+    }
+
+private:
+    static constexpr int kBranchIconSize = 14;
+    static constexpr int kIconTextGap = 4;
+    static constexpr int kAgeDividerWidth = 9;
+    static constexpr int kAgeToFilesGap = 9;
+    static constexpr int kFilesToBarsGap = 8;
+    static constexpr int kTrailingPad = 16;
+    static constexpr int kDiffBarThickness = 2;
+    static constexpr int kDiffBarGap = 2;
+    static constexpr int kDiffBarWidth = 2 * kDiffBarThickness + kDiffBarGap;
+    static constexpr int kDiffBarHeight = 14;
+    static constexpr double kDiffBarFullScaleLines = 800.0;
+
+    static int ageSlotWidth(const QFontMetrics &fm)
+    {
+        return fm.horizontalAdvance(QStringLiteral("999y"));
+    }
+
+    static int filesSlotWidth(const QFontMetrics &fm)
+    {
+        return fm.horizontalAdvance(QStringLiteral("999+"));
+    }
+
+    static QFont compactFont(const QStyleOptionViewItem &option)
+    {
+        QFont font = option.font;
+        if (font.pixelSize() > 0)
+            font.setPixelSize(qMax(9, font.pixelSize() - 3));
+        else
+            font.setPointSizeF(qMax(7.0, font.pointSizeF() - 2.0));
+        font.setWeight(QFont::DemiBold);
+        return font;
+    }
+
+    static int diffBarHeight(int lines)
+    {
+        if (lines <= 0)
+            return 0;
+        const double scale =
+            std::log1p(lines) / std::log1p(kDiffBarFullScaleLines);
+        return qBound(2, qRound(qMin(1.0, scale) * kDiffBarHeight),
+                      kDiffBarHeight);
+    }
+};
+
+// A compact overlay anchored to the list's lower-right corner.  Keeping this
+// out of the pane's layout lets the pull rows use the full height while the
+// repository-wide actions remain one easy-to-find floating cluster.
+class PullListFloatingBar final : public QFrame
+{
+public:
+    explicit PullListFloatingBar(QWidget *pane) : QFrame(pane), m_pane(pane)
+    {
+        setObjectName(QStringLiteral("pullListFloatingBar"));
+        pane->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == m_pane && event->type() == QEvent::Resize)
+            anchorToCorner();
+        return QFrame::eventFilter(watched, event);
+    }
+
+    void showEvent(QShowEvent *event) override
+    {
+        QFrame::showEvent(event);
+        anchorToCorner();
+    }
+
+private:
+    void anchorToCorner()
+    {
+        if (!m_pane)
+            return;
+        layout()->activate();
+        adjustSize();
+        constexpr int kInset = 10;
+        move(qMax(kInset, m_pane->width() - width() - kInset),
+             qMax(kInset, m_pane->height() - height() - kInset));
+        raise();
+    }
+
+    QWidget *m_pane = nullptr;
+};
+
 // Every pull-request action is an icon-over-caption tile — the same form as the
 // activity rail and the repo tab row (adhoc #59), so the three bars on this page
 // read as one visual language instead of three. Bare, not Action: no pill fill
@@ -82,15 +317,17 @@ QWidget *MainWindow::buildPullsTab()
 {
     auto *page = new QWidget;
 
-    // Left: toolbar + sortable PR table.
+    // Left: compact pull-request list.  This follows the Agents list's
+    // edge-to-edge layout: the list starts at the pane's top-left corner, and
+    // its controls live below the rows instead of pushing every row down.
     auto *listPane = new QWidget;
-    listPane->setMinimumWidth(360);
-    auto *heading = new QLabel("Pull requests");
-    heading->setObjectName("channelTitle");
-    // "Hide detail" toggle (issue #274): collapse the detail panel so the PR
-    // list spans the full tab width. Re-checking restores it for the open row.
-    m_pullHideDetailButton = new QPushButton("Hide detail");
-    m_pullHideDetailButton->setObjectName("ghostButton");
+    listPane->setMinimumWidth(320);
+    // "Hide detail" belongs with the list-wide controls, not in a heading that
+    // duplicates the Pull Requests navigation item.  The icon-only form leaves
+    // the rows themselves as the visual start of this pane.
+    m_pullHideDetailButton = new QPushButton;
+    m_pullHideDetailButton->setObjectName("issueIconButton");
+    m_pullHideDetailButton->setFixedSize(30, 30);
     m_pullHideDetailButton->setCursor(Qt::PointingHandCursor);
     m_pullHideDetailButton->setCheckable(true);
     m_pullHideDetailButton->setToolTip(
@@ -98,7 +335,9 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullHideDetailButton, "chevron-right", 16);
     connect(m_pullHideDetailButton, &QPushButton::toggled, this, [this](bool hidden) {
         m_pullDetailHidden = hidden;
-        m_pullHideDetailButton->setText(hidden ? "Show detail" : "Hide detail");
+        m_pullHideDetailButton->setToolTip(
+            hidden ? "Show the detail panel"
+                   : "Hide the detail panel and show the pull-request list full width");
         setOcticon(m_pullHideDetailButton, hidden ? "arrow-left" : "chevron-right", 16);
         if (hidden) {
             if (m_pullDetail)
@@ -107,11 +346,6 @@ QWidget *MainWindow::buildPullsTab()
             m_pullDetail->show(); // reopen for the still-selected row
         }
     });
-    auto *headingRow = new QHBoxLayout;
-    headingRow->setContentsMargins(0, 0, 0, 0);
-    headingRow->setSpacing(8);
-    headingRow->addWidget(heading, 1);
-    headingRow->addWidget(m_pullHideDetailButton, 0, Qt::AlignTop);
     m_pullNewButton = pullActionButton(
         QStringLiteral("New"), "plus",
         QStringLiteral("Open a new pull request in this repository"));
@@ -134,58 +368,65 @@ QWidget *MainWindow::buildPullsTab()
                        "head branch"));
     connect(m_pullImportButton, &QPushButton::clicked, this,
             &MainWindow::importPatchAsPull);
-    auto *toolbar = new QHBoxLayout;
-    toolbar->setContentsMargins(0, 0, 0, 0);
-    // Frameless tiles need the gap the pill's border used to provide; this is
-    // the same rhythm as the repository tab row.
-    toolbar->setSpacing(10);
+    auto *floatingBar = new PullListFloatingBar(listPane);
+    auto *toolbar = new QHBoxLayout(floatingBar);
+    toolbar->setContentsMargins(6, 4, 6, 4);
+    toolbar->setSpacing(2);
     toolbar->addWidget(m_pullNewButton, 0, Qt::AlignTop);
     toolbar->addWidget(m_pullChooseDirButton, 0, Qt::AlignTop);
     toolbar->addWidget(m_pullImportButton, 0, Qt::AlignTop);
     toolbar->addWidget(m_pullSyncButton, 0, Qt::AlignTop);
     toolbar->addWidget(m_pullDeleteAllMergedButton, 0, Qt::AlignTop);
-    toolbar->addStretch();
+    toolbar->addWidget(m_pullHideDetailButton, 0, Qt::AlignVCenter);
 
-    m_pullSearch = new QLineEdit;
-    m_pullSearch->setObjectName("issueSearch");
-    m_pullSearch->setPlaceholderText("Search pull requests\xE2\x80\xA6");
-    m_pullSearch->setClearButtonEnabled(true);
-
-    m_pullTable = new QTableWidget(0, 10);
+    m_pullTable = new QTableWidget(0, 2);
     m_pullTable->setObjectName("issueTable");
-    installColumnHeaderMenu(m_pullTable); // 3-dots per-column menu (issue #318)
-    enableHoverRowHighlight(m_pullTable);
-    m_pullTable->setHorizontalHeaderLabels(
-        {"#", "Title", "Base \xE2\x86\x90 Head", "Status", "Files", "\xC2\xB1",
-         "Author", "Agent cost", "Created", "Modified"});
+    // The selected pull's green outline should meet the pane rule without a
+    // second frame or selection fill around it.  This is the same treatment as
+    // the Agents list, which is the source for this condensed PR row design.
+    m_pullTable->setItemDelegate(new SelectionBorderRowDelegate(m_pullTable));
+    m_pullTable->setStyleSheet(
+        "#issueTable { selection-background-color: transparent; border: none; }"
+        "#issueTable::item:selected { background: transparent; }");
+    m_pullTable->setFrameShape(QFrame::NoFrame);
+    m_pullTable->setHorizontalHeaderLabels({"#", "Title"});
     m_pullTable->verticalHeader()->setVisible(false);
+    m_pullTable->horizontalHeader()->setVisible(false);
     m_pullTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_pullTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_pullTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_pullTable->setShowGrid(false);
     m_pullTable->setWordWrap(false);
+    m_pullTable->setTextElideMode(Qt::ElideNone);
+    m_pullTable->setIconSize(QSize(18, 18));
     m_pullTable->setSortingEnabled(true);
     QHeaderView *ph = m_pullTable->horizontalHeader();
     ph->setHighlightSections(false);
     ph->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     ph->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int c = 2; c < m_pullTable->columnCount(); ++c)
-        ph->setSectionResizeMode(c, QHeaderView::ResizeToContents);
-    makeColumnsResizable(m_pullTable);
+    m_pullTable->setItemDelegateForColumn(0,
+                                          new PullCompactMetaDelegate(m_pullTable));
+    m_pullTable->verticalHeader()->setDefaultSectionSize(
+        qMax(m_pullTable->verticalHeader()->defaultSectionSize(), 28));
 
     auto *listLayout = new QVBoxLayout(listPane);
-    listLayout->setContentsMargins(18, 18, 12, 18);
-    listLayout->setSpacing(8);
-    listLayout->addLayout(headingRow);
-    listLayout->addLayout(toolbar);
-    listLayout->addWidget(m_pullSearch);
+    listLayout->setContentsMargins(0, 0, 0, 0);
+    listLayout->setSpacing(0);
     listLayout->addWidget(m_pullTable, 1);
+    floatingBar->show();
 
     // Right: PR detail — header + changed-files explorer + diff viewer.
     m_pullDetail = new QWidget;
     m_pullTitle = new QLabel("Select a pull request");
     m_pullTitle->setObjectName("channelTitle");
     m_pullTitle->setWordWrap(true);
+    m_pullTitle->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_pullTitle->setMinimumWidth(0);
+    // A long PR title may use a second header line instead of being squeezed
+    // into the single-line toolbar treatment shown in the markup. Keep the
+    // header compact beyond that; the full value is also exposed as a tooltip.
+    m_pullTitle->ensurePolished();
+    m_pullTitle->setMaximumHeight(m_pullTitle->fontMetrics().lineSpacing() * 2 + 2);
     // Every header action wears the same icon-over-caption tile as the activity
     // rail (adhoc #59, extending adhoc #7's flat treatment): a stacked octicon
     // over a short caption, with the long explanation in the tooltip and any
@@ -393,35 +634,6 @@ QWidget *MainWindow::buildPullsTab()
     m_pullMergeStatus->setTextFormat(Qt::RichText);
     m_pullMergeStatus->setWordWrap(true);
     m_pullMergeStatus->hide();
-
-    m_pullReviewSummary = new QLabel;
-    m_pullReviewSummary->setObjectName("pullReviewSummary");
-    m_pullReviewSummary->setTextFormat(Qt::RichText);
-    m_pullReviewSummary->setWordWrap(true);
-    m_pullReviewSummary->setOpenExternalLinks(false);
-    m_pullReviewSummary->setTextInteractionFlags(Qt::TextBrowserInteraction);
-    m_pullReviewSummary->setContentsMargins(14, 10, 14, 10);
-    m_pullReviewSummary->hide();
-    connect(m_pullReviewSummary, &QLabel::linkActivated, this,
-            [this](const QString &href) {
-                int index = -1;
-                QPushButton *button = nullptr;
-                if (href == QLatin1String("tab:conversation")) {
-                    index = 0;
-                    button = m_pullTabConversation;
-                } else if (href == QLatin1String("tab:checks")) {
-                    index = 2;
-                    button = m_pullTabChecks;
-                } else if (href == QLatin1String("tab:files")) {
-                    openPullDiffInGitView(m_currentPullNumber);
-                    return;
-                }
-                if (index < 0 || !m_pullSubStack)
-                    return;
-                if (button)
-                    button->setChecked(true);
-                m_pullSubStack->setCurrentIndex(index);
-            });
 
     m_pullFiles = new QListWidget;
     m_pullFiles->setObjectName("overviewList");
@@ -851,6 +1063,39 @@ QWidget *MainWindow::buildPullsTab()
     composerBlockLayout->addWidget(m_pullComposer);
     composerBlockLayout->addLayout(composerButtons);
 
+    // Keep the actions that finish a review at the bottom of the conversation
+    // too. The icon tiles remain in the header for quick access, while these
+    // conventional labeled buttons are visible where the reviewer finishes
+    // reading and writing.
+    m_pullConversationMergeButton = new QPushButton("Merge pull request");
+    m_pullConversationMergeButton->setObjectName("primaryButton");
+    m_pullConversationCloseButton = new QPushButton("Close pull request");
+    m_pullConversationCloseButton->setObjectName("ghostButton");
+    m_pullConversationDeleteButton = new QPushButton("Delete pull request");
+    m_pullConversationDeleteButton->setObjectName("dangerButton");
+    for (QPushButton *b : {m_pullConversationMergeButton,
+                           m_pullConversationCloseButton,
+                           m_pullConversationDeleteButton}) {
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    setOcticon(m_pullConversationMergeButton, "check-circle", 16);
+    setOcticon(m_pullConversationCloseButton, "circle-slash", 16);
+    setOcticon(m_pullConversationDeleteButton, "trash", 16);
+    connect(m_pullConversationMergeButton, &QPushButton::clicked, this,
+            &MainWindow::mergeCurrentPull);
+    connect(m_pullConversationCloseButton, &QPushButton::clicked, this,
+            &MainWindow::closeCurrentPull);
+    connect(m_pullConversationDeleteButton, &QPushButton::clicked, this,
+            &MainWindow::deleteCurrentPull);
+    auto *conversationActions = new QHBoxLayout;
+    conversationActions->setContentsMargins(0, 0, 0, 0);
+    conversationActions->setSpacing(6);
+    conversationActions->addStretch();
+    conversationActions->addWidget(m_pullConversationMergeButton);
+    conversationActions->addWidget(m_pullConversationCloseButton);
+    conversationActions->addWidget(m_pullConversationDeleteButton);
+
     // Conflicting-files card: surfaces, inline above the comment composer, which
     // files of a conflicted PR no longer apply to the base. Populated (and shown
     // only when the PR is conflicted) in updatePullActionState(). The link jumps
@@ -886,12 +1131,18 @@ QWidget *MainWindow::buildPullsTab()
     agentRevisionLayout->setSpacing(6);
     m_pullAgentRevisionEdit = new QLineEdit;
     m_pullAgentRevisionEdit->setPlaceholderText(
-        "Describe the revision for the agentâ¦");
+        "Describe the revision for the agent\xE2\x80\xA6");
     m_pullSendToAgentButton = new QPushButton("Send to agent");
     m_pullSendToAgentButton->setObjectName("primaryButton");
     m_pullSendToAgentButton->setProperty("buttonSize", "sm");
     m_pullSendToAgentButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_pullSendToAgentButton, "rocket", 16);
+    // Do not let the expanding feedback field collapse the button's contents;
+    // this was leaving only an empty green outline at narrower widths.
+    m_pullSendToAgentButton->setMinimumWidth(
+        m_pullSendToAgentButton->sizeHint().width());
+    m_pullSendToAgentButton->setSizePolicy(QSizePolicy::Minimum,
+                                           QSizePolicy::Fixed);
     m_pullSendToAgentButton->setToolTip(
         "Post this note as a PR comment and re-queue the agent with the revision "
         "instructions so it continues work on the same branch");
@@ -903,6 +1154,7 @@ QWidget *MainWindow::buildPullsTab()
             this, &MainWindow::sendPullRevisionToAgent);
     m_pullAgentRevisionRow->hide(); // only visible when this PR has a linked agent
     conversationInnerLayout->addWidget(m_pullAgentRevisionRow);
+    conversationInnerLayout->addLayout(conversationActions);
 
     conversationInnerLayout->addStretch();
 
@@ -998,7 +1250,6 @@ QWidget *MainWindow::buildPullsTab()
     detailLayout->addLayout(pullHeaderRow);
     detailLayout->addWidget(m_pullMeta);
     detailLayout->addWidget(m_pullMergeStatus);
-    detailLayout->addWidget(m_pullReviewSummary);
     detailLayout->addLayout(subTabRow);
     detailLayout->addWidget(m_pullSubStack, 1);
 
@@ -1019,8 +1270,6 @@ QWidget *MainWindow::buildPullsTab()
     layout->setSpacing(0);
     layout->addWidget(splitter);
 
-    connect(m_pullSearch, &QLineEdit::textChanged, this,
-            [this] { refreshPullList(); });
     connect(m_pullTable, &QTableWidget::itemSelectionChanged, this, [this] {
         const QModelIndexList rows = m_pullTable->selectionModel()->selectedRows();
         if (rows.isEmpty())
@@ -1304,51 +1553,14 @@ void MainWindow::queuePullConflictCheck(int number, const QString &fingerprint)
     }
 }
 
-QString MainWindow::pullConflictBadgeTooltip(int number) const
-{
-    const QString base = QStringLiteral("This pull request has merge conflicts");
-    const auto cached = m_pullConflictCache.constFind(number);
-    if (cached == m_pullConflictCache.constEnd() ||
-        cached->conflictFiles.isEmpty())
-        return base;
-    // Say the reason why the badge is showing: list the conflicting files so the
-    // flag is self-explanatory without opening the PR. Cap the list so a huge
-    // conflict doesn't produce an unreadable tooltip.
-    const QStringList &files = cached->conflictFiles;
-    constexpr int kMaxListed = 10;
-    QStringList lines;
-    for (int i = 0; i < files.size() && i < kMaxListed; ++i)
-        lines << QStringLiteral("\xE2\x80\xA2 ") + files.at(i);
-    if (files.size() > kMaxListed)
-        lines << QStringLiteral("\xE2\x80\xA6 and %1 more")
-                     .arg(files.size() - kMaxListed);
-    return QStringLiteral("%1 in %2 file%3:\n%4")
-        .arg(base)
-        .arg(files.size())
-        .arg(files.size() == 1 ? QString() : QStringLiteral("s"),
-             lines.join(QLatin1Char('\n')));
-}
-
 void MainWindow::setPullConflictBadge(int number, bool conflict)
 {
-    if (!m_pullTable)
-        return;
-    for (int row = 0; row < m_pullTable->rowCount(); ++row) {
-        const QTableWidgetItem *num = m_pullTable->item(row, 0);
-        if (!num || num->data(Qt::UserRole).toInt() != number)
-            continue;
-        QTableWidgetItem *st = m_pullTable->item(row, 3);
-        if (!st)
-            return;
-        if (conflict) {
-            st->setIcon(themedOcticon("alert", QColor("#f85149"), 13));
-            st->setToolTip(pullConflictBadgeTooltip(number));
-        } else {
-            st->setIcon(QIcon());
-            st->setToolTip(QString());
-        }
-        return;
-    }
+    // Mergeability remains cached for the detail pane and its action buttons,
+    // but it no longer takes over the list's status position.  The leading icon
+    // is reserved for the pull's actual open/closed/merged state; conflict and
+    // behind information is available once the pull is selected.
+    Q_UNUSED(number);
+    Q_UNUSED(conflict);
 }
 
 void MainWindow::refreshPullList()
@@ -1375,96 +1587,80 @@ void MainWindow::refreshPullList()
     m_pullTable->setRowCount(visiblePulls.size());
     for (int row = 0; row < visiblePulls.size(); ++row) {
         const PullRequest &pr = *visiblePulls.at(row);
-        auto *num = new QTableWidgetItem;
-        num->setData(Qt::DisplayRole, pr.number);
+        auto *num = new SortTableWidgetItem;
+        // State is the leading glyph, followed immediately by the pull number.
+        // Created and modified ages, the branch mark, file count and churn bars
+        // are painted by PullCompactMetaDelegate on this same compact cell.
+        num->setData(Qt::DisplayRole, QStringLiteral("#%1").arg(pr.number));
         num->setData(Qt::UserRole, pr.number);
+        num->setData(kTableSortRole, pr.number);
+        num->setData(kPullCreatedAtRole, pr.ts);
+        qint64 updatedAt = pr.ts;
+        for (const PullEvent &ev : pr.events)
+            updatedAt = qMax(updatedAt, ev.ts);
+        num->setData(kPullModifiedAtRole, updatedAt);
+        num->setData(kPullFilesChangedRole, pr.filesChanged);
+        num->setData(kPullAdditionsRole, pr.additions);
+        num->setData(kPullDeletionsRole, pr.deletions);
+        num->setIcon(themedOcticon(pullListStatusIcon(pr.status),
+                                   pullListStatusColor(pr.status), 14));
+        const QString createdAt =
+            pr.ts > 0 ? QDateTime::fromMSecsSinceEpoch(pr.ts)
+                           .toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+                      : QStringLiteral("unknown");
+        const QString modifiedAt =
+            updatedAt > 0 ? QDateTime::fromMSecsSinceEpoch(updatedAt)
+                               .toString(QStringLiteral("yyyy-MM-dd HH:mm"))
+                          : QStringLiteral("unknown");
+        num->setToolTip(
+            QStringLiteral("%1 pull request #%2\nCreated: %3 (%4)\nModified: %5 (%6)"
+                           "\nBranch: %7 ← %8\n%9 file%10 changed\n+%11 −%12")
+                .arg(pullListStatusLabel(pr.status))
+                .arg(pr.number)
+                .arg(createdAt, formatIssueRelativeTime(pr.ts))
+                .arg(modifiedAt, formatIssueRelativeTime(updatedAt))
+                .arg(pr.base, pr.head)
+                .arg(pr.filesChanged)
+                .arg(pr.filesChanged == 1 ? QString() : QStringLiteral("s"))
+                .arg(formatCount(pr.additions), formatCount(pr.deletions)));
         m_pullTable->setItem(row, 0, num);
         auto *titleItem = new QTableWidgetItem(pr.title);
-        m_pullTable->setItem(row, 1, titleItem);
-        m_pullTable->setItem(row, 2,
-                             new QTableWidgetItem(pr.base + QString::fromUtf8(" \xE2\x86\x90 ") +
-                                                  pr.head));
-        auto *st = new QTableWidgetItem(pr.status);
-        st->setForeground(QColor(pr.status == "merged"  ? "#a371f7"
-                                 : pr.status == "closed" ? "#f85149"
-                                                         : "#3fb950"));
-        // Badge open PRs whose patch no longer applies to the base with a small
-        // conflict icon so the list flags them without opening the detail pane.
-        if (m_pullConflictByNumber.value(pr.number, false)) {
-            st->setIcon(themedOcticon("alert", QColor("#f85149"), 13));
-            st->setToolTip(pullConflictBadgeTooltip(pr.number));
-        }
-        m_pullTable->setItem(row, 3, st);
-        auto *files = new QTableWidgetItem;
-        files->setData(Qt::DisplayRole, pr.filesChanged);
-        m_pullTable->setItem(row, 4, files);
-        m_pullTable->setItem(row, 5,
-                             new QTableWidgetItem(QStringLiteral("+%1 -%2")
-                                                      .arg(formatCount(pr.additions))
-                                                      .arg(formatCount(pr.deletions))));
-        // Author: the node that filed the PR (the submitter for inbox PRs).
+        // Author: surface the submitter as a small face directly before the
+        // title, rather than spending a narrow text column on a repeated name.
         const QString author =
             pr.authorName.trimmed().isEmpty()
                 ? (pr.author.isEmpty() ? QString::fromUtf8("\xE2\x80\x94")
                                        : pr.author.left(8))
                 : pr.authorName.trimmed();
-        auto *authorItem = new QTableWidgetItem(author);
-        authorItem->setToolTip(pr.author);
-        m_pullTable->setItem(row, 6, authorItem);
-        // An agent attached to this PR — by recorded PR number, or through the
-        // head branch it ran on (issue #257). Badge the title so the list flags
-        // it at a glance, and surface the task's cost.
+        const QPixmap knownAvatar = m_avatars.value(pr.author);
+        const QString avatarSeed = pr.author.isEmpty() ? author : pr.author;
+        const QPixmap authorAvatar =
+            knownAvatar.isNull()
+                ? roundedAvatar(forkMeshAvatarPng(avatarSeed.toLower()), 18, 0.5)
+                : roundedRectPixmap(knownAvatar, 18, 9);
+        if (!authorAvatar.isNull())
+            titleItem->setIcon(QIcon(authorAvatar));
+        QString titleTip = QStringLiteral("Opened by %1").arg(author);
+        if (!pr.author.isEmpty() && pr.author != author)
+            titleTip += QStringLiteral("\n%1").arg(pr.author);
+        // An agent attached to this pull remains discoverable in the title's
+        // tooltip now that the avatar owns the left edge of the title cell.
         const AgentSession *agent = agentSessionForPull(pr.number, pr.head);
         if (agent) {
-            titleItem->setIcon(agentStatusOcticon(*agent, 14));
-            titleItem->setToolTip(
-                QStringLiteral("Agent attached (%1)").arg(
-                    agent->prNumber == pr.number
-                        ? QStringLiteral("this PR")
-                        : QStringLiteral("branch %1").arg(pr.head)));
+            titleTip += QStringLiteral("\nAgent attached (%1)").arg(
+                agent->prNumber == pr.number
+                    ? QStringLiteral("this pull request")
+                    : QStringLiteral("branch %1").arg(pr.head));
         } else if (const PullAgentProvenance prov =
                        m_pullProvenance.value(pr.number);
                    prov.isAgent) {
-            // No local session (e.g. an agent PR from another node), but the signed
-            // commit trailer still attributes authorship (issue #365).
-            titleItem->setIcon(themedOcticon("person", QColor("#a371f7"), 14));
-            titleItem->setToolTip(
-                QStringLiteral("Agent-authored \xE2\x80\x94 %1")
-                    .arg(agentProviderName(prov.tool)));
+            // No local session (e.g. an agent pull from another node), but the
+            // signed commit trailer still attributes authorship.
+            titleTip += QStringLiteral("\nAgent-authored — %1")
+                            .arg(agentProviderName(prov.tool));
         }
-        auto *costItem = new QTableWidgetItem;
-        if (agent) {
-            costItem->setData(Qt::DisplayRole, agentCostText(agent->costUsd));
-            costItem->setData(Qt::UserRole, agent->costUsd);
-            costItem->setToolTip(
-                QStringLiteral("Estimated cost of the agent task for this PR"));
-        } else {
-            costItem->setData(Qt::DisplayRole, QString::fromUtf8("\xE2\x80\x94"));
-            costItem->setData(Qt::UserRole, 0.0);
-        }
-        m_pullTable->setItem(row, 7, costItem);
-
-        // Created date: full ISO-ish "yyyy-MM-dd HH:mm" sorts chronologically
-        // as plain text and shows the exact moment at a glance; the tooltip
-        // carries the friendly "x ago" form. Mirrors the issue list.
-        auto *created = new QTableWidgetItem(
-            pr.ts > 0
-                ? QDateTime::fromMSecsSinceEpoch(pr.ts).toString("yyyy-MM-dd HH:mm")
-                : QString());
-        created->setToolTip(formatIssueRelativeTime(pr.ts));
-        m_pullTable->setItem(row, 8, created);
-
-        // Modified date: the most recent activity on the PR (latest signed
-        // event, falling back to the created time).
-        qint64 updatedAt = pr.ts;
-        for (const PullEvent &ev : pr.events)
-            updatedAt = qMax(updatedAt, ev.ts);
-        auto *modified = new QTableWidgetItem(
-            updatedAt > 0
-                ? QDateTime::fromMSecsSinceEpoch(updatedAt).toString("yyyy-MM-dd HH:mm")
-                : QString());
-        modified->setToolTip(formatIssueRelativeTime(updatedAt));
-        m_pullTable->setItem(row, 9, modified);
+        titleItem->setToolTip(titleTip);
+        m_pullTable->setItem(row, 1, titleItem);
     }
     m_pullTable->setSortingEnabled(true);
     int selRow = -1;
@@ -1481,113 +1677,6 @@ void MainWindow::refreshPullList()
         m_currentPullNumber = -1;
         showPull(-1);
     }
-}
-
-void MainWindow::renderPullReviewSummary(PullRequest pr)
-{
-    if (!m_pullReviewSummary)
-        return;
-    if (pr.number <= 0) {
-        m_pullReviewSummary->hide();
-        return;
-    }
-
-    const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
-    const auto gate = [](const QString &label, const QString &value,
-                         const QString &color, const QString &href) {
-        return QStringLiteral(
-                   "<a href='%4' style='color:%3;text-decoration:none'>"
-                   "<b>%1</b>: %2</a>")
-            .arg(label.toHtmlEscaped(), value.toHtmlEscaped(), color, href);
-    };
-
-    QString reviewValue = QStringLiteral("Waiting");
-    QString reviewColor = QStringLiteral("#8b949e");
-    if (snapshot.reviewSummary == QLatin1String("approved")) {
-        reviewValue = QStringLiteral("Approved");
-        reviewColor = QStringLiteral("#3fb950");
-    } else if (snapshot.reviewSummary == QLatin1String("changes_requested")) {
-        reviewValue = QStringLiteral("Changes requested");
-        reviewColor = QStringLiteral("#f85149");
-    }
-
-    int passed = 0, failed = 0, running = 0, pending = 0;
-    for (const int id : runIdsForPull(pr)) {
-        const ActionRun *run = findRun(id);
-        if (!run)
-            continue;
-        if (run->status == ActionStatus::Success)
-            ++passed;
-        else if (run->status == ActionStatus::Failed ||
-                 run->status == ActionStatus::Rejected ||
-                 run->status == ActionStatus::Cancelled ||
-                 run->status == ActionStatus::Skipped)
-            ++failed;
-        else if (run->status == ActionStatus::Running)
-            ++running;
-        else
-            ++pending;
-    }
-    const int totalChecks = passed + failed + running + pending;
-    QString checksValue = QStringLiteral("Not run");
-    QString checksColor = QStringLiteral("#8b949e");
-    if (failed > 0) {
-        checksValue = QStringLiteral("%1 failed").arg(failed);
-        checksColor = QStringLiteral("#f85149");
-    } else if (running > 0) {
-        checksValue = QStringLiteral("%1 running").arg(running);
-        checksColor = QStringLiteral("#58a6ff");
-    } else if (pending > 0) {
-        checksValue = QStringLiteral("%1 pending").arg(pending);
-    } else if (totalChecks > 0) {
-        checksValue = QStringLiteral("%1 passed").arg(passed);
-        checksColor = QStringLiteral("#3fb950");
-    }
-
-    QString mergeValue =
-        pr.status == QLatin1String("merged")
-            ? QStringLiteral("Merged")
-            : pr.status == QLatin1String("closed")
-                  ? QStringLiteral("Closed")
-                  : QStringLiteral("Open");
-    QString mergeColor =
-        pr.status == QLatin1String("merged")
-            ? QStringLiteral("#a371f7")
-            : pr.status == QLatin1String("closed") ? QStringLiteral("#f85149")
-                                                    : QStringLiteral("#3fb950");
-
-    const QString threadsValue =
-        snapshot.totalThreads == 0
-            ? QStringLiteral("No threads")
-            : QStringLiteral("%1 unresolved, %2 resolved")
-                  .arg(snapshot.unresolvedThreads)
-                  .arg(snapshot.resolvedThreads);
-    const QString threadsColor =
-        snapshot.unresolvedThreads > 0 ? QStringLiteral("#d29922")
-                                       : QStringLiteral("#3fb950");
-    const int linkedIssues = issuesLinkedFromPull(pr).size();
-    const QString linksValue =
-        linkedIssues == 0
-            ? QStringLiteral("None")
-            : QStringLiteral("%1 issue%2")
-                  .arg(linkedIssues)
-                  .arg(linkedIssues == 1 ? QString() : QStringLiteral("s"));
-
-    const QStringList gates{
-        gate(QStringLiteral("Review"), reviewValue, reviewColor,
-             QStringLiteral("tab:conversation")),
-        gate(QStringLiteral("Checks"), checksValue, checksColor,
-             QStringLiteral("tab:checks")),
-        gate(QStringLiteral("Merge"), mergeValue, mergeColor,
-             QStringLiteral("tab:conversation")),
-        gate(QStringLiteral("Threads"), threadsValue, threadsColor,
-             QStringLiteral("tab:files")),
-        gate(QStringLiteral("Links"), linksValue, QStringLiteral("#58a6ff"),
-             QStringLiteral("tab:conversation"))};
-    m_pullReviewSummary->setText(
-        QStringLiteral("<b>Review summary</b><br>%1")
-            .arg(gates.join(QStringLiteral(" &nbsp; "))));
-    m_pullReviewSummary->show();
 }
 
 void MainWindow::showPull(int number)
@@ -1616,6 +1705,7 @@ void MainWindow::showPull(int number)
 
     if (!found) {
         m_pullTitle->setText("Select a pull request");
+        m_pullTitle->setToolTip(QString());
         m_pullMeta->clear();
         m_pullDiff->clear();
         m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
@@ -1625,7 +1715,6 @@ void MainWindow::showPull(int number)
         renderPullThread(PullRequest());
         renderPullChecks(PullRequest());
         renderPullChecksSummary(PullRequest());
-        renderPullReviewSummary(PullRequest());
         updatePullSubTabCounts(PullRequest());
         if (m_pullBadgeWidget)
             m_pullBadgeWidget->clearPull();
@@ -1651,7 +1740,10 @@ void MainWindow::showPull(int number)
                            m_pullRequestChangesButton})
         if (b)
             b->setEnabled(true);
-    m_pullTitle->setText(QStringLiteral("#%1  %2").arg(found->number).arg(found->title));
+    const QString pullTitle =
+        QStringLiteral("#%1  %2").arg(found->number).arg(found->title);
+    m_pullTitle->setText(pullTitle);
+    m_pullTitle->setToolTip(pullTitle);
     // Filled via a single multi-arg call rather than chained .arg() calls:
     // branchLinkHtml() percent-encodes the branch name into the href (e.g. "/"
     // becomes "%2F"), and a later standalone .arg() call rescans the whole
@@ -1845,7 +1937,6 @@ void MainWindow::showPull(int number)
     renderPullThread(*found);
     renderPullChecks(*found);
     renderPullChecksSummary(*found);
-    renderPullReviewSummary(*found);
     updatePullSubTabCounts(*found);
     updatePullActionState();
     // An open pull request is a place of its own: Back returns to the list.
@@ -3641,7 +3732,6 @@ void MainWindow::runChecksForCurrentPull()
                             QStringLiteral("refs/heads/") + reviewHead);
     renderPullChecks(pr);
     renderPullChecksSummary(pr);
-    renderPullReviewSummary(pr);
     updatePullSubTabCounts(pr);
 }
 
@@ -4120,8 +4210,9 @@ void MainWindow::updatePullActionState()
         m_pullUpdateButton->setEnabled(writable && have && open && behind);
     }
     if (m_pullMergeButton) {
-        m_pullMergeButton->setEnabled(mergeable && mergeClean && !conflictPending &&
-                                      !reviewBlocks);
+        const bool canMerge = mergeable && mergeClean && !conflictPending &&
+                              !reviewBlocks;
+        m_pullMergeButton->setEnabled(canMerge);
         m_pullMergeButton->setToolTip(
             conflictPending
                 ? QStringLiteral("Checking whether this pull request still applies "
@@ -4135,6 +4226,11 @@ void MainWindow::updatePullActionState()
                                              "\"Resolve conflicts\" to commit a fix to "
                                              "its branch, then merge.")
                             : QStringLiteral("Apply and merge this pull request"));
+        if (m_pullConversationMergeButton) {
+            m_pullConversationMergeButton->setVisible(have && open);
+            m_pullConversationMergeButton->setEnabled(canMerge);
+            m_pullConversationMergeButton->setToolTip(m_pullMergeButton->toolTip());
+        }
     }
     // "Merge + delete branch" gates on the same merge-readiness as Merge (it
     // merges first), and on no delete worker already running.
@@ -4267,6 +4363,12 @@ void MainWindow::updatePullActionState()
                                            m_pullFiles->currentItem());
     if (m_pullCloseButton)
         m_pullCloseButton->setEnabled(writable && have && open);
+    if (m_pullConversationCloseButton) {
+        m_pullConversationCloseButton->setVisible(have && open);
+        m_pullConversationCloseButton->setEnabled(writable && have && open);
+        m_pullConversationCloseButton->setToolTip(
+            QStringLiteral("Close this pull request without merging it"));
+    }
     if (m_pullReopenButton) {
         m_pullReopenButton->setVisible(writable && have && (closed || merged));
         m_pullReopenButton->setEnabled(writable && have && (closed || merged));
@@ -4283,6 +4385,13 @@ void MainWindow::updatePullActionState()
     setPullActionBadge(m_pullLinkIssueButton, have ? linkedIssues : 0);
     if (m_pullDeleteButton)
         m_pullDeleteButton->setEnabled(writable && have);
+    if (m_pullConversationDeleteButton) {
+        m_pullConversationDeleteButton->setVisible(have);
+        m_pullConversationDeleteButton->setEnabled(writable && have &&
+                                                   !m_pullDeleteInProgress);
+        m_pullConversationDeleteButton->setToolTip(
+            QStringLiteral("Permanently delete this pull request"));
+    }
     if (m_pullDeleteBranchButton)
         m_pullDeleteBranchButton->setEnabled(writable && have);
     // Show the agent revision row only when this PR was produced by an agent

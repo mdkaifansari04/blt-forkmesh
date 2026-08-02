@@ -4817,7 +4817,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                     <select data-dashboard-task-department aria-label="Task department"><option value="general">General</option><option value="engineering">Engineering</option><option value="product-design">Product + design</option><option value="quality-assurance">Quality assurance</option></select>
                     <select data-dashboard-task-team aria-label="Task team"><option value="">Choose a team</option></select>
                     <select data-dashboard-task-destination aria-label="Task destination"><option value="department">Department board</option><option value="personal">Personal work</option><option value="repository">Repository</option><option value="qa">QA board</option></select>
-                    <select data-dashboard-task-assignee aria-label="Task assignee"><option value="agent" selected>Bot</option><option value="unassigned">Unassigned</option></select>
+                    <select data-dashboard-task-assignee aria-label="Task assignee"><option value="unassigned" selected>Unassigned</option></select>
                   </div>
                 </div>
                 <div data-dashboard-chat-compose-row>
@@ -4838,7 +4838,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                   </span>
                   <span class="world-quick-actions" role="group" aria-label="Enter key action">
                     <button id="fullChatSend" type="button" title="Enter will send to #general" aria-pressed="true"><span data-dashboard-chat-send-label>Chat</span></button>
-                    <button id="fullChatTaskSend" type="button" title="Enter will send this task to the bot" aria-pressed="false">Task</button>
+                    <button id="fullChatTaskSend" type="button" title="Create an unassigned task in General" aria-pressed="false">Task</button>
                   </span>
                 </div>
                 <span class="world-quick-composer-status" data-dashboard-chat-composer-status role="status" aria-live="polite"></span>
@@ -6041,6 +6041,7 @@ class ForkMeshWorld extends HTMLElement {
     this.instanceDirectoryTimer = 0;
     this.instanceCelebrationTimer = 0;
     this.installCelebrationTimer = 0;
+    this.lastCelebratedInstallId = "";
     this.notificationsTimer = 0;
     this.adminErrorTimer = 0;
     this.adminErrorLatestId = 0;
@@ -9985,31 +9986,30 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   // A fresh desktop install — the one-line installer's final successful
-  // "done" report, surfaced through /api/world/installs — gets the same
-  // ten-minute firework treatment as a federated instance joining. The
-  // world-instance-* classes are reused so both celebrations share one look.
+  // "done" report, surfaced through /api/world/installs, gets a ten-second
+  // firework show. The world-instance-* classes are reused so both kinds of
+  // celebration share one look.
   celebrateRecentInstall(installs = []) {
     const now = Date.now();
-    const celebrationMs = 10 * 60 * 1000;
+    const installFreshnessMs = 10 * 60 * 1000;
+    const fireworksDurationMs = 10 * 1000;
     const newest = [...(Array.isArray(installs) ? installs : [])]
       .filter(
         (install) =>
           install?.installedAt > 0 &&
           now >= install.installedAt &&
-          now - install.installedAt < celebrationMs,
+          now - install.installedAt < installFreshnessMs,
       )
       .sort((left, right) => right.installedAt - left.installedAt)[0];
     if (!newest) return;
     // The federated-instance celebration owns the overlay when both fire.
     if (this.$("[data-world-instance-celebration]")) return;
+    if (this.lastCelebratedInstallId === newest.id) return;
     const existing = this.$("[data-world-install-celebration]");
     if (existing?.dataset.installId === newest.id) return;
     existing?.remove();
     window.clearTimeout(this.installCelebrationTimer);
-    const remaining = Math.max(
-      1000,
-      celebrationMs - (now - Number(newest.installedAt)),
-    );
+    this.lastCelebratedInstallId = newest.id;
     const layer = document.createElement("section");
     layer.className = "world-instance-celebration";
     layer.dataset.worldInstallCelebration = "true";
@@ -10040,7 +10040,7 @@ class ForkMeshWorld extends HTMLElement {
     title.textContent = platform || "A new ForkMesh desktop";
     const copy = document.createElement("span");
     copy.textContent =
-      "Someone just installed the ForkMesh desktop with the one-line installer. Fireworks run for ten minutes.";
+      "Someone just installed the ForkMesh desktop with the one-line installer. Fireworks run for ten seconds.";
     const link = document.createElement("a");
     link.href = "/desktop.html";
     link.textContent = "Get the desktop app →";
@@ -10054,7 +10054,7 @@ class ForkMeshWorld extends HTMLElement {
     this.installCelebrationTimer = window.setTimeout(() => {
       layer.remove();
       this.installCelebrationTimer = 0;
-    }, remaining);
+    }, fireworksDurationMs);
   }
 
   renderCommunityPlacement() {
@@ -25351,7 +25351,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=f73f6d2a300f";
+    script.src = "/dashboard-chat.js?v=9c7a246e1652";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {
@@ -26896,7 +26896,17 @@ class ForkMeshWorld extends HTMLElement {
     return Date.now() >= this.activityNoticesEnabledAt;
   }
 
-  activityNotice(message, { kind = "status", sender = "", transcript = true } = {}) {
+  activityNotice(
+    message,
+    {
+      kind = "status",
+      sender = "",
+      transcript = true,
+      title = "",
+      details = [],
+      avatarPng = "",
+    } = {},
+  ) {
     const copy = String(message || "")
       .replace(/\s+/g, " ")
       .trim()
@@ -26922,11 +26932,17 @@ class ForkMeshWorld extends HTMLElement {
       (entry) =>
         String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
     );
+    const suppliedAvatar = String(avatarPng || "").trim();
+    const avatarSource =
+      suppliedAvatar.length <= 90_000 &&
+      /^[A-Za-z0-9+/=]+$/.test(suppliedAvatar)
+        ? `data:image/png;base64,${suppliedAvatar}`
+        : "";
     const publicAvatar = safeHTTPURL(member?.avatar || "");
-    if (publicAvatar) {
+    if (avatarSource || publicAvatar) {
       const image = document.createElement("img");
       image.alt = "";
-      image.src = publicAvatar;
+      image.src = avatarSource || publicAvatar;
       image.onerror = () => {
         image.remove();
         icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
@@ -26935,9 +26951,42 @@ class ForkMeshWorld extends HTMLElement {
     } else {
       icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
     }
-    const body = document.createElement("p");
-    body.textContent = copy;
-    article.append(icon, body);
+    const content = document.createElement("div");
+    content.className = "world-activity-copy";
+    const cleanTitle = String(title || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180);
+    if (cleanTitle) {
+      const heading = document.createElement("strong");
+      heading.textContent = cleanTitle;
+      content.append(heading);
+    }
+    if (!cleanTitle || copy !== cleanTitle) {
+      const body = document.createElement("p");
+      body.textContent = copy;
+      content.append(body);
+    }
+    const cleanDetails = (Array.isArray(details) ? details : [])
+      .map((detail) =>
+        String(detail || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 220),
+      )
+      .filter(Boolean)
+      .slice(0, 5);
+    if (cleanDetails.length) {
+      const metadata = document.createElement("ul");
+      metadata.className = "world-activity-details";
+      cleanDetails.forEach((detail) => {
+        const item = document.createElement("li");
+        item.textContent = detail;
+        metadata.append(item);
+      });
+      content.append(metadata);
+    }
+    article.append(icon, content);
     stream.prepend(article);
     while (stream.childElementCount > 6) stream.lastElementChild?.remove();
     window.setTimeout(() => article.remove(), 10_100);
@@ -29025,14 +29074,13 @@ class ForkMeshWorld extends HTMLElement {
           paths.indexOf(path) === index,
       )
       .slice(0, 8);
-    // The scene effect and catalog refresh below still run during the join
-    // grace; only the narration is held back so the load does not open on a
-    // push that happened before the visitor arrived.
-    if (this.activityNoticesSettled()) {
-      this.toast(
-        `Fresh code landed on “${publicOwner ? `${publicOwner}/` : ""}${repo}”.`,
-      );
-    }
+    const landing = {
+      node,
+      repo,
+      owner: publicOwner,
+      commit,
+      changedFiles,
+    };
     // This only arms the scene. No frame directly creates an effect: the next
     // signed catalog payload must confirm the node and commit prefix first.
     this.world?.armMirrorPushEffect?.(
@@ -29048,14 +29096,123 @@ class ForkMeshWorld extends HTMLElement {
     this.mirrorPushRefreshTimer = window.setTimeout(() => {
       this.mirrorPushRefreshTimer = 0;
       if (this.destroyed) return;
-      void this.refreshMirrorCatalogs({ force: true }).catch(() => {
-        // Preserve the last verified snapshot during a transient HTTPS
-        // failure; the regular poll retries on its own cadence.
-      });
+      const refreshed = this.refreshMirrorCatalogs({ force: true });
+      // The scene effect and catalog refresh still run during the join grace;
+      // only the narration is held back so a fresh load does not open on a
+      // push that happened before the visitor arrived.
+      if (this.activityNoticesSettled()) {
+        void refreshed.then(() => this.announceMirrorPushLanding(landing)).catch(() => {
+          // Preserve the last verified snapshot during a transient HTTPS
+          // failure; the regular poll retries on its own cadence.
+        });
+      } else {
+        void refreshed.catch(() => {
+          // Preserve the last verified snapshot during a transient HTTPS
+          // failure; the regular poll retries on its own cadence.
+        });
+      }
     // Give the catalog purge/publication transaction a moment to become
     // visible at the edge. The verified-effect arm remains live through the
     // regular fallback polls if this eager read is still early.
     }, 1_500);
+  }
+
+  verifiedMirrorPushLanding(pending) {
+    const nodeName = String(pending?.node || "").toLowerCase();
+    const commit = String(pending?.commit || "").toLowerCase();
+    const owner = String(pending?.owner || "").toLowerCase();
+    const repo = String(pending?.repo || "").toLowerCase();
+    if (!nodeName || !commit || !repo) return null;
+    const node = (Array.isArray(this.liveMirrorNodes) ? this.liveMirrorNodes : [])
+      .find((candidate) => String(candidate?.name || "").toLowerCase() === nodeName);
+    const repository = (Array.isArray(node?.repositories) ? node.repositories : [])
+      .find(
+        (candidate) =>
+          String(candidate?.name || "").toLowerCase() === repo &&
+          (!owner || String(candidate?.owner || "").toLowerCase() === owner) &&
+          String(candidate?.commit || "").toLowerCase().startsWith(commit),
+      );
+    if (!node || !repository) return null;
+    return { node, repository };
+  }
+
+  async mirrorPushPublisherProfile(name) {
+    const account = String(name || "").trim().toLowerCase();
+    if (!WORLD_ACCOUNT_NAME_RE.test(account)) return { name: "", avatarPng: "" };
+    try {
+      const profile = await this.fetchJSON(
+        `/api/accounts/${encodeURIComponent(account)}`,
+        { auth: false, timeout: 5000, maxAge: 60_000, staleIfError: true },
+      );
+      const resolvedName = String(profile?.name || "").trim().toLowerCase();
+      const avatarPng = String(profile?.avatarPng || "").trim();
+      return {
+        name: resolvedName === account ? resolvedName : account,
+        avatarPng:
+          avatarPng.length <= 90_000 && /^[A-Za-z0-9+/=]+$/.test(avatarPng)
+            ? avatarPng
+            : "",
+      };
+    } catch (_) {
+      return { name: account, avatarPng: "" };
+    }
+  }
+
+  async announceMirrorPushLanding(pending) {
+    // The room frame only asks us to refresh. Everything rendered below comes
+    // from the matching signed mirror record we just fetched.
+    if (!this.activityNoticesSettled()) return;
+    const verified = this.verifiedMirrorPushLanding(pending);
+    if (!verified) return;
+    const { node, repository } = verified;
+    const publisher = sanitizePresenceText(
+      node?.ownerUser || pending?.owner,
+      "",
+      40,
+    ).toLowerCase();
+    const profile = await this.mirrorPushPublisherProfile(publisher);
+    if (this.destroyed) return;
+    const repositoryName = `${String(repository.owner || pending.owner || "").trim()}/${String(repository.name || pending.repo || "").trim()}`.replace(
+      /^\//,
+      "",
+    );
+    const shortCommit = String(repository.commit || pending.commit || "")
+      .toLowerCase()
+      .slice(0, 12);
+    const branch = sanitizePresenceText(repository.branch, "", 120);
+    const subject = sanitizePresenceText(
+      repository.lastCommitMessage,
+      "",
+      220,
+    );
+    const author = sanitizePresenceText(
+      repository.lastCommitAuthorName,
+      "",
+      100,
+    );
+    const changedFiles = (Array.isArray(repository.changedFiles)
+      ? repository.changedFiles
+      : [])
+      .map((path) => sanitizePresenceText(path, "", 160))
+      .filter(Boolean)
+      .slice(0, 8);
+    const details = [
+      `${shortCommit || "Commit"}${branch ? ` · ${branch}` : ""} · ${node.name || pending.node}`,
+      subject ? `Message · ${subject}` : "",
+      author ? `Git author · ${author}` : "",
+      profile.name ? `Published by · @${profile.name}` : "",
+      changedFiles.length
+        ? `Changed · ${changedFiles.join(" · ")}`
+        : "",
+    ].filter(Boolean);
+    const title = `Fresh code landed on “${repositoryName || pending.repo}”.`;
+    this.activityNotice(title, {
+      kind: "success",
+      sender: profile.name || publisher || author || "ForkMesh",
+      title,
+      details,
+      avatarPng: profile.avatarPng,
+    });
   }
 
   setupBroadcastChannel() {

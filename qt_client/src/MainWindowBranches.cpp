@@ -1283,14 +1283,18 @@ bool MainWindow::testGitWorkspaceIsExclusive() const
     return true;
 }
 
-bool MainWindow::testGitFooterIsCompact() const
+bool MainWindow::testGitPromptFloatsBottomRight() const
 {
-    return m_footerDock && m_footerLeftRegion && m_footerGitPromptSpacer &&
-           m_promptWrapper && !m_footerDock->isHidden() &&
+    constexpr int kPromptMargin = 8;
+    return m_footerDock && m_footerLeftRegion && m_promptWrapper &&
+           m_commitsStack && m_footerDock->isHidden() &&
            m_footerLeftRegion->isHidden() &&
-           !m_footerGitPromptSpacer->isHidden() &&
-           m_promptWrapper->width() <= 560 &&
-           m_promptWrapper->maximumWidth() == 560;
+           m_promptWrapper->parentWidget() == m_commitsStack &&
+           m_promptWrapper->isVisible() && m_promptWrapper->width() <= 560 &&
+           m_promptWrapper->x() + m_promptWrapper->width() ==
+               m_commitsStack->width() - kPromptMargin &&
+           m_promptWrapper->y() + m_promptWrapper->height() ==
+               m_commitsStack->height() - kPromptMargin;
 }
 
 int MainWindow::testCommitWorkspacePage() const

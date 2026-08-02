@@ -3,37 +3,20 @@ on: [push]
 jobs:
   test:
     steps:
-      # A run executes its steps one after another, so the three independent
-      # suites are launched together inside this one step instead: wall-clock is
-      # now the slowest suite rather than their sum. Each writes to its own log
-      # and is reported in a fixed order once it finishes, so the output stays
-      # readable instead of interleaving three builds. The step fails if any
-      # suite fails — the exit status of every one of them is checked.
-      - name: Test suites (in parallel)
+      # Each suite gets its own Actions scope. Keeping the compiler and pytest
+      # in one scope starves the test runner and leaves its shell vulnerable to
+      # a process-group SIGTERM before either suite can report a useful result.
+      - name: Cloudflare Worker test suite
         run: |
-          set -u
-          # Keep pytest and compiler temporaries beside the build output, in
-          # this disposable workspace, so one suite's scratch files cannot
-          # outlive the run. The runner gives the whole sandbox — workspace,
-          # home and /tmp alike — a disk-backed tree, so none of this competes
-          # for the host's shared tmpfs.
+          set -eu
           ci_tmp="$PWD/.forkmesh-ci-tmp"
           export TMPDIR="$ci_tmp"
-          # CMake opts into ccache when it is installed. The runner's usual
-          # ccache directory may be read-only inside its disposable clone, so
-          # keep this run's cache with the other writable scratch files.
-          export CCACHE_DIR="$ci_tmp/ccache"
-          logs="$ci_tmp/logs"
           rm -rf "$ci_tmp"
-          mkdir -p "$logs" "$CCACHE_DIR"
+          mkdir -p "$ci_tmp"
 
-          worker_suite() {
-            # Actions run in a network-isolated namespace, importing what the
-            # node's interpreter has; attempting `pip install` here can only
-            # retry DNS and turn a healthy codebase into a misleading CI
-            # failure. Check for the dependencies explicitly so a missing one
-            # names the runner problem immediately, without a package index.
-            python3 - <<'PY'
+          # Actions run with egress disabled, so CI imports the packages
+          # provided by the node instead of trying to install them.
+          python3 - <<'PY'
           import importlib.util
           import sys
           missing = [
@@ -48,73 +31,32 @@ jobs:
               )
               print(
                   "Install them for the node's own python3, system-wide or "
-                  "per-user on the host: a step imports what that interpreter "
-                  "can, and network access is intentionally disabled during "
-                  "Actions.",
+                  "per-user on the host; network access is intentionally "
+                  "disabled during Actions.",
                   file=sys.stderr,
               )
               raise SystemExit(2)
           PY
-            # Main currently carries a bounded, explicit set of historical red
-            # tests. CI still executes them as xfails, while any failure outside
-            # that reviewed list remains fatal. Remove entries as debt is fixed.
-            FORKMESH_CI_KNOWN_FAILURES=1 \
-              python3 -m pytest -q cloudflare_worker/tests
-          }
-          worker_static() {
-            python3 -c "import ast; ast.parse(open('cloudflare_worker/src/entry.py').read()); print('entry.py OK')"
-            python3 -c "import tomllib; tomllib.load(open('cloudflare_worker/wrangler.toml','rb')); print('wrangler.toml OK')"
-          }
-          qt_suite() {
-            cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON
-            # Size the build from the sandbox's published CPU budget, not the
-            # host's core count: the step cannot read its own cgroup, and it is
-            # now sharing the machine with the Worker suite.
-            cmake --build qt_client/build-ci -j "${FORKMESH_ACTIONS_CPUS:-2}" --target forkmesh-tests
-            ./qt_client/build-ci/forkmesh-tests
-          }
+          # Main currently carries a bounded, explicit set of historical red
+          # tests. CI still executes them as xfails, while any failure outside
+          # that reviewed list remains fatal.
+          FORKMESH_CI_KNOWN_FAILURES=1 \
+            python3 -m pytest -q cloudflare_worker/tests
 
-          worker_suite > "$logs/worker.log" 2>&1 &
-          worker_pid=$!
-          worker_static > "$logs/static.log" 2>&1 &
-          static_pid=$!
-          qt_suite > "$logs/qt.log" 2>&1 &
-          qt_pid=$!
+      - name: Worker syntax + config
+        run: |
+          set -eu
+          python3 -c "import ast; ast.parse(open('cloudflare_worker/src/entry.py').read()); print('entry.py OK')"
+          python3 -c "import tomllib; tomllib.load(open('cloudflare_worker/wrangler.toml','rb')); print('wrangler.toml OK')"
 
-          # Suite output is intentionally buffered to keep the final log
-          # readable, but some runners terminate a quiet process group. Emit
-          # a small liveness line until all background suites have exited.
-          heartbeat() {
-            while :; do
-              active=0
-              for pid in "$@"; do
-                if kill -0 "$pid" 2>/dev/null; then
-                  active=1
-                  break
-                fi
-              done
-              [ "$active" -eq 1 ] || return 0
-              echo "CI suites are still running..."
-              sleep 10
-            done
-          }
-          heartbeat "$worker_pid" "$static_pid" "$qt_pid" &
-          heartbeat_pid=$!
-
-          status=0
-          report() {
-            if wait "$2"; then
-              result="PASSED"
-            else
-              result="FAILED"
-              status=1
-            fi
-            echo "==== $1: $result ===="
-            cat "$3"
-            echo
-          }
-          report "Cloudflare Worker test suite" "$worker_pid" "$logs/worker.log"
-          report "Worker syntax + config" "$static_pid" "$logs/static.log"
-          report "Qt client tests" "$qt_pid" "$logs/qt.log"
-          wait "$heartbeat_pid" || true
-          exit "$status"
+      - name: Qt client tests
+        run: |
+          set -eu
+          ci_tmp="$PWD/.forkmesh-ci-tmp"
+          export TMPDIR="$ci_tmp"
+          export CCACHE_DIR="$ci_tmp/ccache"
+          rm -rf "$ci_tmp"
+          mkdir -p "$CCACHE_DIR"
+          cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON
+          cmake --build qt_client/build-ci -j "${FORKMESH_ACTIONS_CPUS:-2}" --target forkmesh-tests
+          ./qt_client/build-ci/forkmesh-tests

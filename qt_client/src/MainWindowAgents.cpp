@@ -17,6 +17,9 @@
 #include <QTextLayout>
 #include <QTextOption>
 #include <QUrl>
+#include <QEvent>
+#include <QFrame>
+#include <QShowEvent>
 
 using namespace forkmesh::ui;
 
@@ -1520,6 +1523,53 @@ ActivityRailButton *railActionButton(const QString &icon, const QString &caption
     return button;
 }
 
+// The queue belongs to the list it controls, rather than to a footer that
+// permanently steals vertical space from that list.  Keep it as a child of the
+// table viewport so rows continue underneath it, and re-anchor it whenever the
+// viewport moves or changes size.
+class AgentQueueOverlay final : public QFrame
+{
+public:
+    explicit AgentQueueOverlay(QWidget *viewport)
+        : QFrame(viewport), m_viewport(viewport)
+    {
+        setObjectName(QStringLiteral("agentQueueOverlay"));
+        setAttribute(Qt::WA_StyledBackground);
+        if (m_viewport)
+            m_viewport->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == m_viewport &&
+            (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
+            QTimer::singleShot(0, this, [this] { reposition(); });
+        }
+        return QFrame::eventFilter(watched, event);
+    }
+
+    void showEvent(QShowEvent *event) override
+    {
+        QFrame::showEvent(event);
+        QTimer::singleShot(0, this, [this] { reposition(); });
+    }
+
+private:
+    void reposition()
+    {
+        if (!m_viewport || !isVisible())
+            return;
+        adjustSize();
+        constexpr int kMargin = 12;
+        move(qMax(kMargin, m_viewport->width() - width() - kMargin),
+             qMax(kMargin, m_viewport->height() - height() - kMargin));
+        raise();
+    }
+
+    QWidget *m_viewport = nullptr;
+};
+
 } // namespace
 
 QWidget *MainWindow::buildAgentsTab()
@@ -1644,29 +1694,9 @@ QWidget *MainWindow::buildAgentsTab()
     // from the footer quick-add bar in-app and from the website's Agents view.
     // The m_agentCompose* members stay nullptr; every reader is null-guarded.
 
-    // Free-text filter over the session list (issue #82): type to narrow the
-    // table to sessions whose issue number/title, agent, status or PR match — or
-    // whose transcript does, which is scanned in the background as you type.
-    m_agentSearch = new QLineEdit;
-    m_agentSearch->setObjectName("issueSearch");
-    // Short placeholder now that the box shares the footer with the fleet
-    // buttons (adhoc #224); the full sentence rides the tooltip.
-    m_agentSearch->setPlaceholderText(
-        QString::fromUtf8("Search agents\xE2\x80\xA6"));
-    m_agentSearch->setToolTip(QString::fromUtf8(
-        "Search agents and transcripts by issue, agent, status or PR\xE2\x80\xA6"));
-    m_agentSearch->setClearButtonEnabled(true);
-    connect(m_agentSearch, &QLineEdit::textChanged, this, [this] {
-        // Narrow on what is already in memory immediately; the transcript scan
-        // widens the result a beat later, once its off-thread reads land.
-        refreshAgentTable();
-        scheduleAgentTranscriptSearch();
-    });
-
-    // The fleet buttons below are the same octicon-over-caption tiles as the
-    // detail pane's session actions and the left rail (adhoc #224) — one visual
-    // language for every action on the page — and they sit under the list rather
-    // than over it, so the list itself can start at the top of the pane.
+    // The page deliberately has no second search field: the top-bar search is
+    // the single place to filter this list and its transcripts.  That keeps the
+    // list's edge clear for fleet controls without duplicating a query.
 
     // "Delete all merged" wipes every merged session's worktree, branch and
     // agent in one batch (adhoc #235). Disabled until something is merged.
@@ -1722,21 +1752,25 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
-    // Keep the live queue size and the concurrency cap where fleet controls
-    // already live. The limit used to be adjustable only in Settings; explicit
-    // minus/plus buttons make the common "one more/fewer agent" adjustment a
-    // single click without relying on the themed QSpinBox arrows (which are
-    // intentionally hidden elsewhere in the app).
-    auto *agentQueueControl = new QWidget;
-    agentQueueControl->setObjectName("agentQueueControl");
-    auto *agentQueueLayout = new QHBoxLayout(agentQueueControl);
-    agentQueueLayout->setContentsMargins(0, 0, 0, 0);
-    agentQueueLayout->setSpacing(2);
-    m_agentQueueLimitDecreaseButton = new QPushButton(QStringLiteral("−"));
+    // Float the queue above the list's lower-right corner.  It makes live fleet
+    // capacity easy to read without reserving a footer row, while the visible
+    // list continues behind the compact, translucent panel.
+    auto *agentQueueOverlay = new AgentQueueOverlay(m_agentTable->viewport());
+    auto *agentQueueLayout = new QHBoxLayout(agentQueueOverlay);
+    agentQueueLayout->setContentsMargins(8, 6, 8, 6);
+    agentQueueLayout->setSpacing(4);
+    auto *queueIcon = new QPushButton(agentQueueOverlay);
+    queueIcon->setObjectName("agentQueueIcon");
+    queueIcon->setFixedSize(24, 28);
+    queueIcon->setFocusPolicy(Qt::NoFocus);
+    queueIcon->setToolTip("Agent queue and concurrent-run limit");
+    setOcticon(queueIcon, "workflow", 16);
+    m_agentQueueLimitDecreaseButton = new QPushButton;
     m_agentQueueLimitDecreaseButton->setObjectName("agentQueueLimitDecreaseButton");
-    m_agentQueueLimitDecreaseButton->setFixedSize(24, 30);
+    m_agentQueueLimitDecreaseButton->setFixedSize(28, 28);
     m_agentQueueLimitDecreaseButton->setCursor(Qt::PointingHandCursor);
     m_agentQueueLimitDecreaseButton->setToolTip("Run one fewer agent at once");
+    setOcticon(m_agentQueueLimitDecreaseButton, "chevron-down", 16);
     connect(m_agentQueueLimitDecreaseButton, &QPushButton::clicked, this, [this] {
         setAgentConcurrencyLimit(maxRunningAgents() - 1);
     });
@@ -1744,30 +1778,31 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentQueueStatusLabel->setObjectName("agentQueueStatusLabel");
     m_agentQueueStatusLabel->setAlignment(Qt::AlignCenter);
     m_agentQueueStatusLabel->setMinimumWidth(82);
-    m_agentQueueLimitIncreaseButton = new QPushButton("+");
+    m_agentQueueLimitIncreaseButton = new QPushButton;
     m_agentQueueLimitIncreaseButton->setObjectName("agentQueueLimitIncreaseButton");
-    m_agentQueueLimitIncreaseButton->setFixedSize(24, 30);
+    m_agentQueueLimitIncreaseButton->setFixedSize(28, 28);
     m_agentQueueLimitIncreaseButton->setCursor(Qt::PointingHandCursor);
     m_agentQueueLimitIncreaseButton->setToolTip("Run one more agent at once");
+    setOcticon(m_agentQueueLimitIncreaseButton, "chevron-up", 16);
     connect(m_agentQueueLimitIncreaseButton, &QPushButton::clicked, this, [this] {
         setAgentConcurrencyLimit(maxRunningAgents() + 1);
     });
+    agentQueueLayout->addWidget(queueIcon);
     agentQueueLayout->addWidget(m_agentQueueLimitDecreaseButton);
     agentQueueLayout->addWidget(m_agentQueueStatusLabel);
     agentQueueLayout->addWidget(m_agentQueueLimitIncreaseButton);
     refreshAgentQueueControls();
 
-    // Fleet toolbar, now the pane's footer (adhoc #224): the list gets the top
-    // of the page, and the controls that act on the whole fleet sit under the
-    // rows they act on rather than between them and the top of the window.
+    // The remaining bulk actions stay in a compact footer.  The queue itself
+    // lives above the rows, so no search field or queue controls consume width
+    // down here.
     auto *agentListToolbar = new QHBoxLayout;
     agentListToolbar->setContentsMargins(10, 2, 10, 8);
     agentListToolbar->setSpacing(6);
     agentListToolbar->addWidget(m_agentStartAllButton, 0);
-    agentListToolbar->addWidget(agentQueueControl, 0, Qt::AlignVCenter);
     agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
-    agentListToolbar->addWidget(m_agentSearch, 1, Qt::AlignVCenter);
+    agentListToolbar->addStretch(1);
     agentListToolbar->addWidget(m_agentHideDetailButton, 0, Qt::AlignVCenter);
 
     listLayout->addWidget(m_agentTable, 1);
@@ -5384,12 +5419,15 @@ void MainWindow::testRemoveAgentSession(int sessionId)
 }
 #endif
 
-// What the Agents list is filtered by right now. The top bar's box mirrors into
-// this one while the page is on screen (syncAgentPageSearch), so reading it here
-// covers both places a query can be typed.
+// What the Agents list is filtered by right now.  Its only search entry point
+// is the top bar, and it applies while this page is open.
 QString MainWindow::agentFilterQuery() const
 {
-    return m_agentSearch ? m_agentSearch->text().trimmed() : QString();
+    const bool onHome = !m_sectionStack || m_sectionStack->currentIndex() == 0;
+    const bool onAgents = onHome && m_repoDetailStack &&
+                          m_repoDetailStack->currentIndex() == kRepoAgentsTab;
+    return onAgents && m_globalSearch ? m_globalSearch->text().trimmed()
+                                      : QString();
 }
 
 // The repository whose sessions a scan covers ("owner/name", empty off a repo).
@@ -5401,15 +5439,10 @@ QString MainWindow::agentTranscriptSearchRepoKey() const
     return repo.owner + QLatin1Char('/') + repo.name;
 }
 
-// What the transcripts are being scanned for. The Agents page's own box wins
-// while it holds something, so a filter typed on the page searches transcripts
-// too; otherwise it follows the top bar, which is what lets the dropdown offer
-// transcript matches from anywhere in the app.
+// Transcript matches remain available to the global search dropdown even off
+// the Agents page, so this always follows the top-bar query.
 QString MainWindow::agentTranscriptQuery() const
 {
-    const QString page = agentFilterQuery();
-    if (!page.isEmpty())
-        return page;
     return m_globalSearch ? m_globalSearch->text().trimmed() : QString();
 }
 
@@ -6148,7 +6181,7 @@ void MainWindow::testTypeGlobalSearch(const QString &text)
 
 QString MainWindow::testAgentSearchText() const
 {
-    return m_agentSearch ? m_agentSearch->text() : QString();
+    return agentFilterQuery();
 }
 
 QString MainWindow::testTranscriptSearchText() const
@@ -9325,6 +9358,11 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                          ? lead
                          : customPreamble + QStringLiteral("\n\n") + lead;
     prompt += QStringLiteral("\n\n") + AgentRunner::commitChangesInstruction();
+    // Keep a complete recovery turn in reserve for Codex. The normal path resumes
+    // the native thread and sends only the new turn; if that saved thread was
+    // pruned or is otherwise unavailable, CodexAppServerSession starts a fresh
+    // one with this context rather than failing the Add action.
+    const QString originalTaskPrompt = prompt;
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
@@ -9369,6 +9407,17 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // No context to resume — fold the steer into the replayed prompt as before
         // (this is the original always-on-composer restart behaviour, adhoc #177).
         prompt += QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
+    }
+    QString codexResumeFallbackPrompt;
+    if (codex && !resumeId.isEmpty()) {
+        codexResumeFallbackPrompt =
+            QStringLiteral(
+                "The previous Codex thread could not be resumed. Continue the "
+                "same work from the current branch and repository state.\n\n"
+                "Original task:\n%1\n\nLatest user instruction:\n%2")
+                .arg(originalTaskPrompt,
+                     steer.isEmpty() ? QStringLiteral("Continue where you left off.")
+                                     : steer);
     }
     // This session's transcript changed; force the next show to rebuild it.
     if (m_renderedTranscriptSession == sid)
@@ -9642,8 +9691,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Auto mode (adhoc #91) routes on the task itself, not the full workflow
     // prompt — `lead` carries the user's ask (or the issue + its comments).
     const QString routeTask = lead;
-    auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
-                   selectedModel, routeTask, codex,
+    auto launch = [this, sid, prompt, codexResumeFallbackPrompt, autoMode,
+                   branchName, resumeId, selectedModel, routeTask, codex,
                    sessionMode, sessionStrength](const QString &workdir) {
         if (codex) {
             CodexAppServerSession *live = m_codexStreams.value(sid);
@@ -9683,7 +9732,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
             }
             live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
-                        effort, jailMb);
+                        effort, jailMb, codexResumeFallbackPrompt);
             return;
         }
 

@@ -158,13 +158,17 @@ void CodexAppServerSession::start(const QString &cwd,
                                   const QString &initialPrompt,
                                   const QString &resumeThreadId,
                                   const QString &model, const QString &mode,
-                                  const QString &effort, int memoryLimitMb)
+                                  const QString &effort, int memoryLimitMb,
+                                  const QString &resumeFallbackPrompt)
 {
     stop();
     resetProtocolState();
     m_cwd = cwd;
     m_initialPrompt = initialPrompt;
     m_resumeThreadId = resumeThreadId.trimmed();
+    m_resumeFallbackPrompt = resumeFallbackPrompt.trimmed();
+    if (m_resumeFallbackPrompt.isEmpty())
+        m_resumeFallbackPrompt = m_initialPrompt;
     m_model = model.trimmed();
     m_mode = mode;
     m_effort = effort.trimmed();
@@ -548,6 +552,15 @@ void CodexAppServerSession::handleResponse(const QJsonObject &message)
         const QString detail = messageText(message.value(QStringLiteral("error")));
         const QString failure =
             QStringLiteral("Codex %1 failed: %2").arg(method, detail);
+        // A persisted thread id is only a best-effort handle. It can disappear
+        // after an app-server update, cleanup, or a sign-in change while the
+        // local branch and transcript remain perfectly usable. Retrying the
+        // same id would loop forever, so switch once to a fresh thread carrying
+        // the host-provided recovery prompt instead of failing the user's Add.
+        if (method == QStringLiteral("thread/resume")) {
+            startFreshThreadAfterResumeFailure(failure);
+            return;
+        }
         emitLocalNotice(QStringLiteral("error"), failure);
         if (method == QStringLiteral("turn/start")) {
             m_turnActive = false;
@@ -568,24 +581,10 @@ void CodexAppServerSession::handleResponse(const QJsonObject &message)
             if (!m_turnActive)
                 flushQueuedUserText();
         } else if (method == QStringLiteral("initialize") ||
-                   method == QStringLiteral("thread/start") ||
-                   method == QStringLiteral("thread/resume")) {
-            if (method == QStringLiteral("thread/resume")) {
-                // The host may still have the old persisted thread id. Mark the
-                // run terminal before finished() so it is not re-queued into an
-                // endless resume-failure loop.
-                emit event(QJsonObject{
-                    {QStringLiteral("type"), QStringLiteral("result")},
-                    {QStringLiteral("subtype"), QStringLiteral("error")},
-                    {QStringLiteral("is_error"), true},
-                    {QStringLiteral("result"), failure},
-                    {QStringLiteral("session_id"), m_resumeThreadId},
-                    {QStringLiteral("thread_id"), m_resumeThreadId},
-                    {QStringLiteral("num_turns"), 0}});
-            }
-            // A session cannot recover from a failed handshake or missing
-            // thread. Preserve the normal finished() path so the host clears
-            // its Running state and reports the launch failure.
+                   method == QStringLiteral("thread/start")) {
+            // A session cannot recover from a failed handshake or a fresh-thread
+            // launch failure. Preserve the normal finished() path so the host
+            // clears its Running state and reports the launch failure.
             QProcess *proc = m_proc;
             if (proc) {
                 proc->closeWriteChannel();
@@ -633,6 +632,25 @@ void CodexAppServerSession::handleResponse(const QJsonObject &message)
     } else if (method == QStringLiteral("turn/steer")) {
         m_pendingSteerTexts.remove(id);
     }
+}
+
+void CodexAppServerSession::startFreshThreadAfterResumeFailure(
+    const QString &failure)
+{
+    m_resumeThreadId.clear(); // sendThreadRequest() now issues thread/start.
+    m_threadId.clear();
+    m_turnId.clear();
+    m_threadReady = false;
+    m_turnActive = false;
+    m_initialTurnSent = false;
+    m_initialPrompt = m_resumeFallbackPrompt;
+    emitLocalNotice(
+        QStringLiteral("warning"),
+        QStringLiteral("%1. The saved Codex thread is unavailable, so ForkMesh "
+                       "started a new thread with the saved task and latest "
+                       "instruction.")
+            .arg(failure));
+    sendThreadRequest();
 }
 
 void CodexAppServerSession::sendThreadRequest()
