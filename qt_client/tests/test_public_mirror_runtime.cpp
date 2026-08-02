@@ -261,6 +261,21 @@ raise SystemExit(2)
               QDir::cleanPath(archiveRoot) + QLatin1Char('/')),
           "plaintext materialization is outside durable archive storage");
 
+    QStringList unchangedProgress;
+    auto unchanged = PublicMirrorRuntime::syncRepository(
+        source, archiveRoot, vaultPath, vaultSecret,
+        created.metadata.archiveId, tools, &error,
+        [&](const QString &line) { unchangedProgress.append(line); });
+    check(unchanged.isValid() && !unchanged.created &&
+              unchanged.metadata.ciphertextSha256 ==
+                  created.metadata.ciphertextSha256 &&
+              unchangedProgress.contains(QStringLiteral(
+                  "Repository unchanged — reopening the sealed archive…")) &&
+              !unchangedProgress.contains(QStringLiteral(
+                  "Copying the repository to seal…")),
+          "an unchanged source reopens its verified seal without making a mirror clone");
+    unchanged.materialization.reset();
+
     const QString firstMaterialization =
         created.materialization->repositoryPath();
     created.materialization.reset();
@@ -336,25 +351,64 @@ raise SystemExit(2)
                     QStringLiteral("refs/heads/agent/local-only")}),
           "managed mirror seals fetched origin branches without exposing local agent refs");
 
+    QStringList managedProgress;
+    auto managedUnchanged = PublicMirrorRuntime::syncManagedCheckout(
+        source, root.filePath(QStringLiteral("managed-archive")),
+        root.filePath(QStringLiteral("identity/managed-vault.json")),
+        vaultSecret, managed.metadata.archiveId, tools, &error,
+        [&](const QString &line) { managedProgress.append(line); });
+    check(managedUnchanged.isValid() &&
+              managedUnchanged.metadata.ciphertextSha256 ==
+                  managed.metadata.ciphertextSha256 &&
+              managedProgress.contains(QStringLiteral(
+                  "Repository unchanged — reopening the sealed archive…")) &&
+              !managedProgress.contains(QStringLiteral(
+                  "Copying the managed checkout…")),
+          "an unchanged managed checkout skips its canonical mirror clone");
+    check(git(source,
+              {QStringLiteral("branch"), QStringLiteral("-D"),
+               QStringLiteral("agent/local-only")}) &&
+              git(source,
+                  {QStringLiteral("update-ref"), QStringLiteral("-d"),
+                   QStringLiteral("refs/remotes/origin/main")}),
+          "managed-checkout-only refs are removed before the ordinary race test");
+
     const QByteArray secondPlaintext =
         QByteArrayLiteral("public-repository-content-v2");
-    check(writeFile(QDir(source).filePath(QStringLiteral("README.md")),
-                    secondPlaintext) &&
-              git(source, {QStringLiteral("add"), QStringLiteral("README.md")}) &&
-              git(source, {QStringLiteral("commit"), QStringLiteral("-q"),
-                           QStringLiteral("-m"), QStringLiteral("update")}),
-          "public source is updated");
     const QString archiveId = created.metadata.archiveId;
     const QString firstDigest = created.metadata.ciphertextSha256;
+    QStringList racedProgress;
+    bool racedSourceUpdate = false;
+    bool racedSourceUpdateOk = false;
     auto updated = PublicMirrorRuntime::syncRepository(
         source, archiveRoot, vaultPath, vaultSecret, archiveId,
-        tools, &error);
-    check(updated.isValid() && !updated.created &&
+        tools, &error, [&](const QString &line) {
+            racedProgress.append(line);
+            if (racedSourceUpdate ||
+                line != QStringLiteral(
+                    "Repository unchanged — reopening the sealed archive…"))
+                return;
+            racedSourceUpdate = true;
+            racedSourceUpdateOk =
+                writeFile(QDir(source).filePath(QStringLiteral("README.md")),
+                          secondPlaintext) &&
+                git(source,
+                    {QStringLiteral("add"), QStringLiteral("README.md")}) &&
+                git(source,
+                    {QStringLiteral("commit"), QStringLiteral("-q"),
+                     QStringLiteral("-m"), QStringLiteral("update")});
+        });
+    check(racedSourceUpdate && racedSourceUpdateOk && updated.isValid() &&
+              !updated.created &&
               updated.metadata.archiveId == archiveId &&
               updated.metadata.ciphertextSha256 != firstDigest &&
               updated.metadata.expectedRefsSha256 !=
-                  created.metadata.expectedRefsSha256,
-          "public sync atomically rotates ciphertext while retaining its opaque archive id");
+                  created.metadata.expectedRefsSha256 &&
+              racedProgress.contains(QStringLiteral(
+                  "Repository refs changed during verification — rebuilding the seal…")) &&
+              racedProgress.contains(QStringLiteral(
+                  "Copying the repository to seal…")),
+          "a ref update racing the fast reopen falls back to a fresh atomic seal");
     shown.clear();
     check(git(updated.materialization->repositoryPath(),
               {QStringLiteral("show"),
