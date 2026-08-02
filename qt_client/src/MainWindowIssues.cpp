@@ -3986,6 +3986,7 @@ void MainWindow::quickAddIssue()
                                    model) > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();
+            showPromptBubble(title);
             // No issue exists in this mode (that's the point of it), so saying
             // "no issue created" is just noise — show what actually happened
             // instead: which agent, model, and permission mode picked up the
@@ -4032,6 +4033,7 @@ void MainWindow::quickAddIssue()
                 if (ok) {
                     quickAddGuard->clear();
                     clearQuickAddImages();
+                    showPromptBubble(title);
                     setIssueInlineNotice("Your signed issue was sent to the "
                                          "maintainer's inbox. It appears once "
                                          "they sync it.");
@@ -4055,6 +4057,7 @@ void MainWindow::quickAddIssue()
     }
     m_issueQuickAdd->clear();
     clearQuickAddImages();
+    showPromptBubble(title);
     m_currentIssueNumber = number;
     appendCreatedIssue(store, created);
     propagateRepoUpdate(issuesRepoIndex());
@@ -4881,6 +4884,28 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (handleFramelessResizeEvent(obj, event))
         return true;
 
+    // Notification bubbles are deliberately transient, but reading, selecting,
+    // copying, or sending one back to the prompt must never race its countdown.
+    // The deferred leave check avoids a false resume while the pointer moves from
+    // the bubble text onto one of its action buttons.
+    const bool topMessageWidget =
+        obj == m_topMessageContainer || obj == m_topMessage ||
+        obj == m_topMessageScroll || obj == m_topMessageActions ||
+        obj == m_topMessageMeta || obj == m_topMessageCopy ||
+        obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
+        (m_topMessageScroll && obj == m_topMessageScroll->viewport());
+    if (topMessageWidget && event->type() == QEvent::Enter) {
+        setTopMessagePaused(true);
+    } else if (topMessageWidget && event->type() == QEvent::Leave) {
+        QTimer::singleShot(0, this, [this] {
+            if (!m_topMessageContainer || !m_topMessageContainer->isVisible())
+                return;
+            const QRect bubble(m_topMessageContainer->mapToGlobal(QPoint()),
+                               m_topMessageContainer->size());
+            setTopMessagePaused(bubble.contains(QCursor::pos()));
+        });
+    }
+
     // A Claude model combo's popup list view was shown: apply whatever's
     // cached so the dropdown reflects the last live fetch. No network call
     // here (see applyLiveClaudeModelsToCombos) — that only happens on the
@@ -4930,19 +4955,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         if (maybeShowSendToPromptMenu(obj, static_cast<QContextMenuEvent *>(event)))
             return true;
     }
-    // Hovering the top-bar balance is what spends a Solana getBalance call —
-    // every other path renders the cached figure, so the app no longer re-queries
-    // the public RPC endpoints on each profile refresh. Don't consume: the label
-    // still needs the enter event for its tooltip/hover styling.
+    // Hovering the rail balance under the account avatar is what spends a Solana
+    // getBalance call — every other path renders the cached figure, so the app no
+    // longer re-queries the public RPC endpoints on each profile refresh. Don't
+    // consume: the label still needs the enter event for its tooltip/hover
+    // styling. Clicking no longer cycles SOL/USD/INR — the tiny line is always
+    // SOL now (adhoc #96) — so the only click target left is its "Add SOL" link.
     if (obj == m_navSolanaBalance && event->type() == QEvent::Enter)
         refreshNavSolanaBalance();
-    // Click the top-bar balance to cycle its display currency (SOL/USD/INR).
-    if (obj == m_navSolanaBalance &&
-        event->type() == QEvent::MouseButtonRelease &&
-        !m_navSolanaBalanceAddress.isEmpty()) {
-        cycleNavSolanaCurrency();
-        return true;
-    }
     // Click a row (or effort dot) in the footer slash-actions popup (adhoc
     // #116): every activatable widget in that popup carries a "slashKind"
     // dynamic property, dispatched generically in activateSlashActionRow.

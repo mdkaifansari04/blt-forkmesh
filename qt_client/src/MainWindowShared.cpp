@@ -314,20 +314,21 @@ namespace {
 
 // Progressive diff rendering (adhoc #421), see the declarations in
 // MainWindowInternal.h. Above this many chars of HTML a diff is laid out one
-// batch at a time instead of in a single blocking pass; the first batch covers
-// well over a screenful, so the visible window is complete on arrival.
-constexpr qsizetype kDiffFirstPaintChars = 70'000;
+// batch at a time instead of in a single blocking pass. The 70k-char batches
+// still produced 0.5–7s QTextDocument layouts in the stall log; keep a turn
+// below roughly one small file and let the rest arrive on subsequent turns.
+constexpr qsizetype kDiffFirstPaintChars = 12'000;
 // Chars of HTML per streamed batch. Each batch is a separate GUI-thread layout,
 // so this trades how fast the rest lands against how long any one turn blocks.
-constexpr qsizetype kDiffStreamBatchChars = 70'000;
+constexpr qsizetype kDiffStreamBatchChars = 12'000;
 
 // QTextDocument is not virtualized: inserting another row can relayout the
 // entire table already above it. Multi-megabyte generated HTML therefore gets
 // progressively *slower* even when it arrives in event-loop-sized batches. Keep
 // each file body and the complete rich-text body bounded. Headers/anchors remain
 // for every file, and a clear placeholder points readers to the full patch.
-constexpr qsizetype kDiffFileRichTextChars = 60'000;
-constexpr qsizetype kDiffTotalRichTextChars = 420'000;
+constexpr qsizetype kDiffFileRichTextChars = 12'000;
+constexpr qsizetype kDiffTotalRichTextChars = 180'000;
 
 QString responsiveDiffBlock(const QString &block, bool headerOnly)
 {
@@ -558,11 +559,11 @@ void flushDiffStream(QTextEdit *view)
     auto it = diffStreams().find(view);
     if (it == diffStreams().end() || it->pending.isEmpty())
         return;
-    ++it->gen; // the queued batch bails; the whole remainder lands here instead
-    const QString rest = it->pending.join(QString());
-    it->pending.clear();
-    appendDiffStreamBatch(view, rest);
-    finishDiffStream(view);
+    // Never append the remainder synchronously. A file navigation/search used to
+    // concatenate and lay out the entire pending document here, turning a click
+    // into the exact 45–70k+ `diff html append` stalls captured by the watchdog.
+    // scheduleDiffStreamBatch() always queues the next bounded batch before the
+    // event loop can deliver another user action, so there is nothing to do here.
 }
 
 void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook)
@@ -800,19 +801,6 @@ bool agentSessionActive(const AgentSession *s)
                  s->status == AgentStatus::Queued);
 }
 
-QString solanaDisplayCurrency()
-{
-    QSettings s;
-    QString cur = s.value(kSolanaDisplayCurrencySetting).toString().toLower();
-    if (cur.isEmpty())
-        cur = s.value(kSolanaDisplayUsdSetting, false).toBool()
-                  ? QStringLiteral("usd")
-                  : QStringLiteral("sol");
-    if (cur != QLatin1String("usd") && cur != QLatin1String("inr"))
-        cur = QStringLiteral("sol");
-    return cur;
-}
-
 QColor agentStatusColor(const QString &status)
 {
     if (status == AgentStatus::Success) return QColor("#3fb950");
@@ -1031,8 +1019,9 @@ QString diffBinaryRowHtml(const DiffFileEntry &f, int columns)
         verb = QStringLiteral("removed");
     else if (f.status == QLatin1String("renamed"))
         verb = QStringLiteral("renamed");
-    return QStringLiteral("<tr><td class='code ctx' colspan='%1'>"
-                          "<i>Binary file %2 \xE2\x80\x94 content not shown</i></td></tr>")
+    return QString::fromUtf8("<tr><td class='code ctx' colspan='%1'>"
+                             "<i>Binary file %2 \xE2\x80\x94 content not shown</i>"
+                             "</td></tr>")
         .arg(columns)
         .arg(verb);
 }
@@ -1064,20 +1053,26 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
     }
     const QString badge =
         QStringLiteral("<span class='stbadge' title='%1'>%2</span>")
-            .arg(word, octiconMarkup(icon, 14, tint));
+            .arg(word, octiconMarkup(icon, 16, tint));
 
     const QString encPath = QString::fromLatin1(QUrl::toPercentEncoding(f.path));
-    // "Viewed" checkbox toggle (the diff is collapsed when checked).
+    // "Viewed" checkbox toggle (the diff is collapsed when checked). It is the
+    // control a reviewer aims at most often on this row, so it gets a real
+    // click target: a boxed pill with an oversized checkbox glyph rather than
+    // the 11px scrap of text it used to be (adhoc #223).
     const QString viewedLink =
-        QStringLiteral("<a class='viewedtoggle%1' href='viewed:%2'>"
-                       "<span style='font-size:19px'>%3</span> Viewed</a>")
+        QStringLiteral("<a class='viewedtoggle%1' href='viewed:%2' title='%4'>"
+                       "&nbsp;<span class='viewedbox'>%3</span> Viewed&nbsp;</a>")
             .arg(viewed ? QStringLiteral(" on") : QString(), encPath,
                  viewed ? QString::fromUtf8("\xE2\x98\x91")
-                        : QString::fromUtf8("\xE2\x98\x90"));
+                        : QString::fromUtf8("\xE2\x98\x90"),
+                 viewed ? QStringLiteral("Reopen this file")
+                        : QStringLiteral("Collapse this file and mark it viewed"));
     // Per-file comment icon, only in the PR view (anchors enabled).
     const QString commentIcon =
         anchors ? QStringLiteral("<a class='filecomment' href='filecomment:%1' "
-                                 "title='Comment on this file'>%2</a>")
+                                 "title='Comment on this file'>&nbsp;%2&nbsp;</a>"
+                                 "&nbsp;&nbsp;")
                       .arg(encPath, QString::fromUtf8("\xF0\x9F\x92\xAC"))
                 : QString();
 
@@ -1117,18 +1112,35 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
     const QString statHtml =
         f.binary
             ? QStringLiteral("<span class='fstat'> BIN</span>")
-            : QStringLiteral("<span class='fstat'> <span class='sadd'>+%1</span> "
-                             "<span class='sdel'>\xE2\x88\x92%2</span> %3</span>")
+            : QString::fromUtf8("<span class='fstat'> <span class='sadd'>+%1</span> "
+                                "<span class='sdel'>\xE2\x88\x92%2</span> %3</span>")
                   .arg(QString::number(f.adds), QString::number(f.dels), bar);
+
+    // Second header line: what happened to the file in words, plus the totals
+    // the +/- pair alone leaves you to add up. The status used to be a tooltip
+    // on the octicon, which is invisible while scanning a long diff (adhoc #223).
+    QString metaHtml = QStringLiteral("<span class='fkind %1'>%2</span>")
+                           .arg(f.status, word.toUpper());
+    if (!f.binary) {
+        metaHtml += QString::fromUtf8("<span class='fmeta'> \xC2\xB7 %1 changed "
+                                      "line%2</span>")
+                        .arg(QString::number(total),
+                             total == 1 ? QString() : QStringLiteral("s"));
+    } else {
+        metaHtml += QString::fromUtf8("<span class='fmeta'> \xC2\xB7 binary</span>");
+    }
+    if (viewed)
+        metaHtml += QString::fromUtf8("<span class='fmeta'> \xC2\xB7 collapsed</span>");
 
     return QString::fromUtf8(
                "<a name=\"%1\"></a><div class='fileblock%6'>"
                "<div class='fileheader'>"
                "<table width='100%' cellspacing='0' cellpadding='0'><tr>"
-               "<td>%2<span class='fpath'>%3</span>%4</td>"
+               "<td>%2<span class='fpath'>%3</span>%4<br>"
+               "<span class='fmetaline'>%8</span></td>"
                "<td align='right'>%5%7</td></tr></table></div>")
         .arg(f.anchor, badge, pathHtml, statHtml, commentIcon,
-             viewed ? QStringLiteral(" viewed") : QString(), viewedLink);
+             viewed ? QStringLiteral(" viewed") : QString(), viewedLink, metaHtml);
 }
 
 QString diffStickyLabelHtml(const DiffFileEntry &f)
@@ -1159,8 +1171,9 @@ QString diffStickyLabelHtml(const DiffFileEntry &f)
     const QString statHtml =
         f.binary
             ? QStringLiteral(" <span style='color:%1'>BIN</span>").arg(muted)
-            : QStringLiteral(" <span style='color:#3fb950;font-weight:700'>+%1</span> "
-                             "<span style='color:#f85149;font-weight:700'>\xE2\x88\x92%2</span>")
+            : QString::fromUtf8(" <span style='color:#3fb950;font-weight:700'>+%1</span> "
+                                "<span style='color:#f85149;font-weight:700'>"
+                                "\xE2\x88\x92%2</span>")
                   .arg(QString::number(f.adds), QString::number(f.dels));
 
     return QStringLiteral("<span title='%1' style='font-family:monospace;"
@@ -1337,7 +1350,8 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                                curPath()) +
                 gutterCellHtml(cls, newCell, QStringLiteral("new"), anchors,
                                curPath());
-        fileBody += QStringLiteral("<tr>%1<td class='code %2'>%3</td></tr>")
+        fileBody += QStringLiteral(
+                        "<tr>%1<td class='code %2' width='99%'>%3</td></tr>")
                         .arg(gutters, cls,
                              text.isEmpty() ? QStringLiteral("&nbsp;")
                                             : text.toHtmlEscaped());
@@ -1419,9 +1433,9 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                 addOnly ? QStringLiteral("new") : QStringLiteral("old");
             for (const QString &t : buf) {
                 const QString ln = QString::number(addOnly ? newNo++ : oldNo++);
-                fileBody +=
-                    QStringLiteral("<tr>%1<td class='code %2'>%3</td></tr>")
-                        .arg(gut(cls, ln, side), cls, emitText(t));
+                fileBody += QStringLiteral(
+                                 "<tr>%1<td class='code %2' width='99%'>%3</td></tr>")
+                                 .arg(gut(cls, ln, side), cls, emitText(t));
                 if (anchors)
                     fileBody += lineNoteRows(lineNotes, curPath(),
                                              addOnly ? QString() : ln,
@@ -1539,15 +1553,17 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                 newNo = m.captured(2).toInt();
             }
             // One-sided files use the 2-column layout (see flushPairs).
+            // In the split layout the hunk banner spans the whole table: it is
+            // the one row whose text has no side, and leaving it in the left
+            // code column let a long "@@ … @@" line set that column's width for
+            // the entire file, tipping the two halves off-centre (adhoc #223).
             fileBody += oneSidedKind()
                             ? QStringLiteral("<tr><td class='ln hunk'></td>"
-                                             "<td class='code hunk'>%1</td></tr>")
+                                             "<td class='code hunk' width='99%'>"
+                                             "%1</td></tr>")
                                   .arg(line.toHtmlEscaped())
-                            : QStringLiteral(
-                                  "<tr><td class='ln hunk'></td>"
-                                  "<td class='code hunk'>%1</td>"
-                                  "<td class='ln nln hunk'></td>"
-                                  "<td class='code hunk'>&nbsp;</td></tr>")
+                            : QStringLiteral("<tr><td class='code hunk' "
+                                             "colspan='4'>%1</td></tr>")
                                   .arg(line.toHtmlEscaped());
             continue;
         }
@@ -1568,11 +1584,14 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             // sides as context so neither column drifts.
             fileBody += oneSidedKind()
                             ? QStringLiteral("<tr><td class='ln'></td>"
-                                             "<td class='code'>%1</td></tr>")
+                                             "<td class='code' width='99%'>%1</td>"
+                                             "</tr>")
                                   .arg(line.toHtmlEscaped())
                             : QStringLiteral(
-                                  "<tr><td class='ln'></td><td class='code'>%1</td>"
-                                  "<td class='ln nln'></td><td class='code'>%1</td></tr>")
+                                  "<tr><td class='ln'></td>"
+                                  "<td class='code ocode' width='49%'>%1</td>"
+                                  "<td class='ln nln'></td>"
+                                  "<td class='code ncode' width='49%'>%1</td></tr>")
                                   .arg(line.toHtmlEscaped());
         } else if (const int kind = oneSidedKind()) {
             // Context line in a one-sided file (rare): single gutter + code.
@@ -1583,7 +1602,8 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                 ++oldNo;
             else
                 ++newNo;
-            fileBody += QStringLiteral("<tr>%1<td class='code'>%2</td></tr>")
+            fileBody += QStringLiteral(
+                            "<tr>%1<td class='code' width='99%'>%2</td></tr>")
                             .arg(gut(QString(), ln,
                                      addOnly ? QStringLiteral("new")
                                              : QStringLiteral("old")),
@@ -1696,21 +1716,36 @@ QString diffStyleSheet(int fontPt)
     const QString fg = dark ? "#e6edf3" : "#1f2328";
     return QStringLiteral(
                ".fileblock { margin:0; }"
-               ".fileheader { background:%1; padding:6px 10px; font-family:"
-               "monospace; font-size:12px; border:1px solid %7; }"
+               ".fileheader { background:%1; padding:9px 12px; font-family:"
+               "monospace; font-size:13px; border:1px solid %7; }"
                // Status octicon badge (image) sat next to the path.
                ".stbadge { margin-right:8px; vertical-align:middle; }"
                ".fpath { vertical-align:middle; }"
                ".fdir { color:%2; }"
-               ".fname { font-weight:600; color:%8; }"
-               ".fstat { color:%2; font-size:11px; }"
+               ".fname { font-weight:700; color:%8; font-size:14px; }"
+               ".fstat { color:%2; font-size:12px; }"
+               // Second header line: status word + change total (adhoc #223).
+               ".fmetaline { font-size:11px; }"
+               ".fkind { font-weight:700; letter-spacing:1px; color:%2; }"
+               ".fkind.added { color:#3fb950; }"
+               ".fkind.deleted { color:#f85149; }"
+               ".fkind.renamed { color:#58a6ff; }"
+               ".fkind.modified { color:#d29922; }"
+               ".fmeta { color:%2; }"
                // GitHub-style green/red proportion bar (filled block glyphs).
                ".barblk { font-family:monospace; letter-spacing:-1px; }"
                ".barblk.add { color:#3fb950; } .barblk.del { color:#f85149; }"
-               ".viewedtoggle { color:%2; text-decoration:none; font-size:11px; }"
+               // The Viewed pill and the per-file comment button: both are aimed
+               // at often enough to deserve a real target rather than 11px of
+               // text (adhoc #223). Qt's rich text has no inline border/padding,
+               // so the tap area is made of background + font size, and the
+               // markup pads with &nbsp; either side.
+               ".viewedtoggle { color:%8; text-decoration:none; font-size:13px; "
+               "font-weight:700; background:%9; }"
                ".viewedtoggle.on { color:#3fb950; }"
-               ".filecomment { color:%2; text-decoration:none; font-size:15px; "
-               "margin-right:14px; }"
+               ".viewedbox { font-size:24px; }"
+               ".filecomment { color:%8; text-decoration:none; font-size:20px; "
+               "background:%9; }"
                ".sadd { color:#3fb950; font-weight:700; }"
                ".sdel { color:#f85149; font-weight:700; }"
                ".difftable { font-family:monospace; font-size:%10px; width:100%; "
