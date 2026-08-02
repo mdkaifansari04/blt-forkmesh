@@ -1286,8 +1286,31 @@ void runResumeFailureTest(const QString &executable)
     QObject::connect(&session, &CodexAppServerSession::finished,
                      [&](int) { finished = true; });
     session.start(temp.path(), QStringList(), QStringLiteral("resume"),
-                  QStringLiteral("missing-thread"));
-    check(pump([&] { return finished; }), "failed resume terminates transport");
+                  QStringLiteral("missing-thread"), QString(), QString(),
+                  QString(), 0, QStringLiteral("recover the saved work"));
+    check(pump([&] { return finished; }),
+          "missing Codex thread falls back to a fresh transport thread");
+    const QList<QJsonObject> sent = readMessages(logPath);
+    int resumeRequests = 0;
+    int freshThreadRequests = 0;
+    QString fallbackTurnText;
+    for (const QJsonObject &message : sent) {
+        const QString method = message.value(QStringLiteral("method")).toString();
+        if (method == QStringLiteral("thread/resume"))
+            ++resumeRequests;
+        else if (method == QStringLiteral("thread/start"))
+            ++freshThreadRequests;
+        else if (method == QStringLiteral("turn/start")) {
+            const QJsonArray input = message.value(QStringLiteral("params"))
+                                         .toObject()
+                                         .value(QStringLiteral("input"))
+                                         .toArray();
+            if (!input.isEmpty())
+                fallbackTurnText = input.first().toObject()
+                                       .value(QStringLiteral("text"))
+                                       .toString();
+        }
+    }
     QJsonObject terminalResult;
     for (const QJsonObject &event : events) {
         if (event.value(QStringLiteral("type")).toString() ==
@@ -1295,12 +1318,11 @@ void runResumeFailureTest(const QString &executable)
             event.value(QStringLiteral("is_error")).toBool())
             terminalResult = event;
     }
-    check(terminalResult.value(QStringLiteral("thread_id")).toString() ==
-                  QStringLiteral("missing-thread") &&
-              terminalResult.value(QStringLiteral("result"))
-                  .toString()
-                  .contains(QStringLiteral("thread missing")),
-          "failed resume emits a terminal error before finished");
+    check(resumeRequests == 1 && freshThreadRequests == 1 &&
+              fallbackTurnText == QStringLiteral("recover the saved work"),
+          "missing Codex thread starts one fresh thread with recovery context");
+    check(terminalResult.isEmpty(),
+          "missing Codex thread does not leave the session terminally failed");
 }
 
 void runInterruptTest(const QString &executable)
