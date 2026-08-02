@@ -9,6 +9,7 @@
 #include <QComboBox>
 #include <QClipboard>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QFile>
 #include <QCheckBox>
 #include <QDebug>
@@ -477,6 +478,41 @@ int main(int argc, char *argv[])
           QString("startup log names and times every material constructor phase "
                   "(detailed steps=%1)")
               .arg(detailedStartupSteps));
+
+    // Codex can explicitly mark either account-rate-limit window unavailable.
+    // The two prompt gauges must show their independent live percentages first,
+    // then clear rather than displaying stale figures from a previous plan.
+    {
+        const qint64 resetSeconds =
+            QDateTime::currentMSecsSinceEpoch() / 1000 + 6 * 60 * 60;
+        window.testApplyCodexRateLimits(
+            QJsonObject{{QStringLiteral("primary"),
+                         QJsonObject{{QStringLiteral("usedPercent"), 25},
+                                     {QStringLiteral("resetsAt"), resetSeconds},
+                                     {QStringLiteral("windowDurationMins"), 300}}},
+                        {QStringLiteral("secondary"),
+                         QJsonObject{{QStringLiteral("usedPercent"), 65},
+                                     {QStringLiteral("resetsAt"),
+                                      resetSeconds + 7 * 24 * 60 * 60},
+                                     {QStringLiteral("windowDurationMins"),
+                                      7 * 24 * 60}}}});
+        const QString liveTip = window.testCodexUsageToolTip();
+        check(liveTip.contains(QStringLiteral("5-hour remaining: 75%")) &&
+                  liveTip.contains(QStringLiteral("Weekly remaining: 35%")) &&
+                  liveTip.contains(QStringLiteral("resets in")),
+              QStringLiteral("Codex 5-hour and weekly gauges show live usage"));
+
+        window.testApplyCodexRateLimits(
+            QJsonObject{{QStringLiteral("primary"), QJsonValue::Null},
+                        {QStringLiteral("secondary"), QJsonValue::Null}});
+        const QString unavailableTip = window.testCodexUsageToolTip();
+        check(unavailableTip.contains(
+                  QString::fromUtf8("5-hour remaining: \xE2\x80\x94")) &&
+                  unavailableTip.contains(
+                      QString::fromUtf8("Weekly remaining: \xE2\x80\x94")) &&
+                  !unavailableTip.contains(QStringLiteral("resets in")),
+              QStringLiteral("Codex gauges clear unavailable windows"));
+    }
 
     // adhoc #115: the first-run screen that asked for a username and a relay
     // host is retired — it only ever loaded straight into the app — so a freshly
