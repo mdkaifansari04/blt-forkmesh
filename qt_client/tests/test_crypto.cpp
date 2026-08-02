@@ -4858,6 +4858,138 @@ int main(int argc, char *argv[])
         git({"commit", "-q", "-m", "test: settle pre-pull-tests state",
             "--allow-empty"});
 
+        // --- PullStore materializes durable, visible per-PR branches ------
+        // Every PR gets refs/heads/pr/<n> in addition to the historical
+        // refs/pr/<n>/head compatibility ref. Re-materialization is idempotent,
+        // while a branch whose tip diverged is never force-overwritten.
+        {
+            QTemporaryDir branchRoot;
+            const QString branchRepo = branchRoot.path();
+            bool branchSetup =
+                branchRoot.isValid() &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("init"), QStringLiteral("-q"),
+                            QStringLiteral("-b"), QStringLiteral("main")}) &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("config"), QStringLiteral("user.name"),
+                            QStringLiteral("PR Branch Tester")}) &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("config"), QStringLiteral("user.email"),
+                            QStringLiteral("pr-branch@example.test")}) &&
+                writeTestFile(branchRepo + QStringLiteral("/base.txt"),
+                              QByteArrayLiteral("base\n")) &&
+                commitTestTree(branchRepo, QStringLiteral("base"),
+                               QStringLiteral("2026-08-01T10:00:00Z"),
+                               QStringLiteral("PR Branch Tester"),
+                               QStringLiteral("pr-branch@example.test")) &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("checkout"), QStringLiteral("-q"),
+                            QStringLiteral("-b"), QStringLiteral("feature-pr")}) &&
+                writeTestFile(branchRepo + QStringLiteral("/feature.txt"),
+                              QByteArrayLiteral("feature\n")) &&
+                commitTestTree(branchRepo, QStringLiteral("feature"),
+                               QStringLiteral("2026-08-01T11:00:00Z"),
+                               QStringLiteral("PR Branch Tester"),
+                               QStringLiteral("pr-branch@example.test"));
+            const QString featureTip = testGitHead(branchRepo);
+            branchSetup = branchSetup && !featureTip.isEmpty() &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("branch"),
+                                      QStringLiteral("feature-pr-idempotent"),
+                                      featureTip}) &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("branch"),
+                                      QStringLiteral("feature-pr-divergent"),
+                                      featureTip}) &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("checkout"),
+                                      QStringLiteral("-q"),
+                                      QStringLiteral("main")}) &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("checkout"),
+                                      QStringLiteral("-q"),
+                                      QStringLiteral("-b"),
+                                      QStringLiteral("independent-pr-work")}) &&
+                          writeTestFile(branchRepo +
+                                            QStringLiteral("/independent.txt"),
+                                        QByteArrayLiteral("independent\n")) &&
+                          commitTestTree(
+                              branchRepo, QStringLiteral("independent"),
+                              QStringLiteral("2026-08-01T12:00:00Z"),
+                              QStringLiteral("PR Branch Tester"),
+                              QStringLiteral("pr-branch@example.test"));
+            const QString divergentTip = testGitHead(branchRepo);
+            branchSetup = branchSetup && !divergentTip.isEmpty() &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("checkout"),
+                                      QStringLiteral("-q"),
+                                      QStringLiteral("main")});
+            check(branchSetup, "set up durable per-PR branch fixtures");
+
+            auto refTip = [&](const QString &ref) {
+                QByteArray output;
+                return runTestGit(branchRepo,
+                                  {QStringLiteral("rev-parse"),
+                                   QStringLiteral("--verify"), ref},
+                                  &output)
+                           ? QString::fromUtf8(output).trimmed()
+                           : QString();
+            };
+            if (branchSetup) {
+                PullStore branchPulls(branchRepo, QString(), &identity,
+                                      QStringLiteral("tester"));
+                QString branchError;
+                const int created = branchPulls.createPull(
+                    QStringLiteral("Visible branch"), QStringLiteral("body"),
+                    QStringLiteral("main"), QStringLiteral("feature-pr"),
+                    QString(), QString(), /*branchBacked=*/true, &branchError);
+                check(created == 1 && branchError.isEmpty() &&
+                          refTip(QStringLiteral("refs/heads/pr/1")) == featureTip &&
+                          refTip(QStringLiteral("refs/pr/1/head")) == featureTip,
+                      "materializing a PR creates pr/1 and its compatibility ref");
+
+                check(runTestGit(branchRepo,
+                                 {QStringLiteral("update-ref"),
+                                  QStringLiteral("refs/heads/pr/2"), featureTip}),
+                      "pre-create an idempotent PR branch at the desired tip");
+                const int idempotent = branchPulls.createPull(
+                    QStringLiteral("Idempotent branch"), QStringLiteral("body"),
+                    QStringLiteral("main"),
+                    QStringLiteral("feature-pr-idempotent"), QString(), QString(),
+                    /*branchBacked=*/true, &branchError);
+                check(idempotent == 2 &&
+                          refTip(QStringLiteral("refs/heads/pr/2")) == featureTip &&
+                          refTip(QStringLiteral("refs/pr/2/head")) == featureTip,
+                      "re-materializing the same PR tip is idempotent");
+
+                check(runTestGit(branchRepo,
+                                 {QStringLiteral("update-ref"),
+                                  QStringLiteral("refs/heads/pr/3"), divergentTip}),
+                      "pre-create a divergent visible PR branch");
+                const int divergent = branchPulls.createPull(
+                    QStringLiteral("Preserve divergence"),
+                    QStringLiteral("body"), QStringLiteral("main"),
+                    QStringLiteral("feature-pr-divergent"), QString(), QString(),
+                    /*branchBacked=*/true, &branchError);
+                PullRequest divergentRecord;
+                for (const PullRequest &candidate : branchPulls.loadAll()) {
+                    if (candidate.number == divergent)
+                        divergentRecord = candidate;
+                }
+                check(divergent == 3 &&
+                          refTip(QStringLiteral("refs/heads/pr/3")) == divergentTip &&
+                          refTip(QStringLiteral("refs/pr/3/head")) == featureTip,
+                      "materialization preserves a divergent pr/3 branch");
+                check(divergentRecord.head ==
+                              QStringLiteral("feature-pr-divergent") &&
+                          verifyEd25519(divergentRecord.author,
+                                        divergentRecord.sig,
+                                        PullStore::canonicalString(
+                                            divergentRecord)),
+                      "canonical branch materialization preserves signed pr.head metadata");
+            }
+        }
+
         // --- PullStore conversation round-trip ---------------------------
         PullStore pulls(tmp.path(), QString(), &identity, "tester");
         const int pn = pulls.createPull(
