@@ -142,7 +142,12 @@ MainWindow::~MainWindow()
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
     logStartup(QStringLiteral("MainWindow ctor begin"));
-    const auto startupStep = [](const QString &name, auto &&work) {
+    // traceStep() scopes one unit of construction work in the startup trace: it
+    // opens a StartupTraceStep, runs the work, and closes it on the way out. It
+    // is deliberately NOT named startupStep — the coarse
+    // forkmesh::ui::startupStep(label) calls below announce splash phases, and a
+    // same-named local would shadow every one of them.
+    const auto traceStep = [](const QString &name, auto &&work) {
         forkmesh::StartupTraceStep step(
             QStringLiteral("MainWindow: %1").arg(name));
         std::forward<decltype(work)>(work)();
@@ -150,17 +155,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 #ifndef FORKMESH_WINDOW_TESTS
     // Start the durable action journal before initialization launches network,
     // git, agent, or worker activity. The writer owns all later disk I/O.
-    startupStep(QStringLiteral("start durable action telemetry"), [] {
+    traceStep(QStringLiteral("start durable action telemetry"), [] {
         forkmesh::ActionTelemetry::initialize(
             QDir::homePath() +
             QStringLiteral("/.forkmesh/diagnostics/actions.jsonl"));
     });
 #endif
-    logStartup(QStringLiteral("MainWindow ctor begin"));
     // Each startupStep() below names the work that is about to run, and the
     // logStartup() that follows the work closes it. Together they are the
     // launch splash's live list (adhoc #39) as well as the terminal's timing
     // log; both are no-ops when no splash is up.
+    QElapsedTimer chromeTimer;
+    chromeTimer.start();
     startupStep(QStringLiteral("Installing shortcuts and window chrome"));
     // App-wide filter so right-click on ANY selected text (transcript, diff,
     // README, logs — not just the prompt boxes themselves) can offer "Send to
@@ -216,6 +222,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // doesn't get hammered by every independent call site's own retry. It also
     // hosts the app-level whitelist firewall: default-on, with user-approved
     // rules persisted in QSettings.
+    QElapsedTimer networkTimer;
+    networkTimer.start();
     startupStep(QStringLiteral("Bringing up networking and the request firewall"));
     auto *network = new BackoffNetworkAccessManager(this);
     const bool firewallOn =
@@ -314,23 +322,25 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         QStringLiteral("DONE  MainWindow: configure shared network manager and "
                        "firewall (%1ms)")
             .arg(networkTimer.elapsed()));
-    startupStep(QStringLiteral("read connection state and cached model list"),
-                [this] {
-                    m_totalConnectionMs =
-                        QSettings().value(kConnectionTotalSetting).toLongLong();
-                    m_nodeOffline =
-                        QSettings().value(kNodeOfflineSetting, false).toBool();
-    // Seed the live Claude model cache from disk *before* buildChatPage() builds
-    // the composer's model combo, so it lists the real models on the first frame
-    // instead of just "Auto" while this session's live /v1/models fetch is still
-    // in flight (refreshClaudeModelCombo overwrites this once that lands).
-                    m_liveClaudeModels =
-                        QJsonDocument::fromJson(
-                            QSettings()
-                                .value(kClaudeModelsCacheSetting)
-                                .toByteArray())
-                            .array();
-                });
+    traceStep(QStringLiteral("read connection state and cached model list"),
+              [this] {
+                  m_totalConnectionMs =
+                      QSettings().value(kConnectionTotalSetting).toLongLong();
+                  m_nodeOffline =
+                      QSettings().value(kNodeOfflineSetting, false).toBool();
+                  // Seed the live Claude model cache from disk *before*
+                  // buildChatPage() builds the composer's model combo, so it
+                  // lists the real models on the first frame instead of just
+                  // "Auto" while this session's live /v1/models fetch is still
+                  // in flight (refreshClaudeModelCombo overwrites this once
+                  // that lands).
+                  m_liveClaudeModels =
+                      QJsonDocument::fromJson(
+                          QSettings()
+                              .value(kClaudeModelsCacheSetting)
+                              .toByteArray())
+                          .array();
+              });
 
     startupStep(QStringLiteral("Loading relays, favicons and the network log"));
     loadServers();
@@ -340,8 +350,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // frame, then record this session's start time. Crash records from a prior
     // unclean exit are already in the loaded log (the crash handler writes to
     // network_log.txt directly), so no separate crash-file scan is needed.
-    startupStep(QStringLiteral("restore persisted network log"),
-                [this] { loadNetworkLog(); });
+    traceStep(QStringLiteral("restore persisted network log"),
+              [this] { loadNetworkLog(); });
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logSystem(QStringLiteral("Session started - ForkMesh v" FORKMESH_VERSION "."));
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
@@ -356,21 +366,22 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // these still empty and paints a generic placeholder, which then visibly
     // swaps to the real avatar a few seconds later when silent-auth/startSession
     // finally loads the same values.
-    startupStep(QStringLiteral("restore profile name and avatar"), [this] {
+    traceStep(QStringLiteral("restore profile name and avatar"), [this] {
         m_userAvatar = QSettings().value(kAvatarSetting).toByteArray();
-    // A headless mirror deployed via the installer arrives with the operator's
-    // chosen name in FORKMESH_NODE_NAME. That typed name is the source of truth,
-    // so adopt it whenever the installer supplied a valid one that differs from
-    // whatever is saved here — this includes re-running the installer on a box
-    // that already ran under an old name, which must actually rename the node
-    // (previously the old saved name silently won, so a host installed as
-    // "mirror1" kept showing up as its earlier "vm1"). Persist it before
-    // buildSetupPage() seeds m_nameEdit from savedProfileName(), so the deferred
-    // auto-connect path picks it up and the node re-joins the network under the
-    // chosen name unattended. FORKMESH_NODE_NAME is only present on the
-    // installer-launched process (a plain relaunch leaves it unset), so a normal
-    // launch — where envName is empty or already matches — is a no-op and never
-    // touches an existing name.
+        // A headless mirror deployed via the installer arrives with the
+        // operator's chosen name in FORKMESH_NODE_NAME. That typed name is the
+        // source of truth, so adopt it whenever the installer supplied a valid
+        // one that differs from whatever is saved here — this includes
+        // re-running the installer on a box that already ran under an old name,
+        // which must actually rename the node (previously the old saved name
+        // silently won, so a host installed as "mirror1" kept showing up as its
+        // earlier "vm1"). Persist it before buildSetupPage() seeds m_nameEdit
+        // from savedProfileName(), so the deferred auto-connect path picks it up
+        // and the node re-joins the network under the chosen name unattended.
+        // FORKMESH_NODE_NAME is only present on the installer-launched process
+        // (a plain relaunch leaves it unset), so a normal launch — where envName
+        // is empty or already matches — is a no-op and never touches an existing
+        // name.
         {
             const QString envName =
                 accountNameFromInput(qEnvironmentVariable("FORKMESH_NODE_NAME"),
@@ -379,25 +390,27 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                 envName.compare(savedProfileName(), Qt::CaseInsensitive) != 0)
                 QSettings().setValue(kAccountNameSetting, envName);
         }
-    // True first run: no saved name, no installer-supplied env override. Rather
-    // than leave m_nameEdit blank and strand the node on the welcome screen
-    // until someone picks a name, hand it a fun generated one now — before
-    // buildSetupPage() seeds the field and before the deferred auto-connect
-    // below decides whether to enter the app shell — so a first launch can
-    // register and start mirroring on its own. The name is still editable from
-    // Settings afterwards.
-    if (savedProfileName().isEmpty()) {
-        m_freshInstall = true;
-        const QString generated = randomFunNodeName();
-        QSettings().setValue(kAccountNameSetting, generated);
-        // Record that this name was handed out, not chosen. While it is still
-        // the account name (and no user account is linked), chat speaks as a
-        // guest — the generated name stays the machine's node identity, but it
-        // is not the person's username (see chatIdentityIsGuest()).
-        QSettings().setValue(kGeneratedNodeNameSetting, generated);
-    }
-    if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
-        m_userName = saved;
+        // True first run: no saved name, no installer-supplied env override.
+        // Rather than leave m_nameEdit blank and strand the node on the welcome
+        // screen until someone picks a name, hand it a fun generated one now —
+        // before buildSetupPage() seeds the field and before the deferred
+        // auto-connect below decides whether to enter the app shell — so a first
+        // launch can register and start mirroring on its own. The name is still
+        // editable from Settings afterwards.
+        if (savedProfileName().isEmpty()) {
+            m_freshInstall = true;
+            const QString generated = randomFunNodeName();
+            QSettings().setValue(kAccountNameSetting, generated);
+            // Record that this name was handed out, not chosen. While it is
+            // still the account name (and no user account is linked), chat
+            // speaks as a guest — the generated name stays the machine's node
+            // identity, but it is not the person's username (see
+            // chatIdentityIsGuest()).
+            QSettings().setValue(kGeneratedNodeNameSetting, generated);
+        }
+        if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
+            m_userName = saved;
+    });
     startupDetail(m_freshInstall
                       ? QStringLiteral("First run — this node is now \"%1\"")
                             .arg(savedProfileName())
@@ -627,14 +640,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // React to the OS's own connectivity signal so the radar flips to
     // offline/online the moment the link changes, instead of lagging the
     // minute cadence (adhoc #41).
-    startupStep(QStringLiteral("start operating-system reachability watch"),
-                [this] { initRelayReachabilityWatch(); });
+    traceStep(QStringLiteral("start operating-system reachability watch"),
+              [this] { initRelayReachabilityWatch(); });
     // Tasks rail badge: the count is only produced by the Tasks page, which is
     // built lazily, so before this a restart left the rail blank until someone
     // opened it (adhoc #79). Paint the persisted count right away and re-read
     // the board once the account session has had time to come up.
-    startupStep(QStringLiteral("restore cached organization task badge"),
-                [this] { restoreOrganizationTaskBadge(); });
+    traceStep(QStringLiteral("restore cached organization task badge"),
+              [this] { restoreOrganizationTaskBadge(); });
     QTimer::singleShot(25000, this, [this] {
         forkmesh::StartupTraceStep step(
             QStringLiteral("delayed startup: refresh organization task badge"));
@@ -693,10 +706,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     updateHomeStats();
     // Populate the Hosts/Relays nav button counts up front — Nodes' count
     // follows the roster and updates itself via updateNodeSwitcher().
-    startupStep(QStringLiteral("populate Hosts navigation count"),
-                [this] { refreshHostsTable(); });
-    startupStep(QStringLiteral("populate Relays navigation count"),
-                [this] { refreshRelaysTable(); });
+    traceStep(QStringLiteral("populate Hosts navigation count"),
+              [this] { refreshHostsTable(); });
+    traceStep(QStringLiteral("populate Relays navigation count"),
+              [this] { refreshRelaysTable(); });
     logStartup(QStringLiteral("MainWindow ctor complete"));
 }
 
