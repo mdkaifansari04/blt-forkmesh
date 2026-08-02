@@ -135,3 +135,32 @@ def test_admin_hud_counts_only_rows_after_the_local_seen_cursor():
     assert "relativeTime(group.firstSeen)" in WORLD
     assert 'title="${escapeHTML(exactTime(group.firstSeen))}"' in WORLD
     assert ".world-error-actor-stack" in WORLD_CSS
+
+
+def test_newly_logged_errors_are_announced_not_only_counted():
+    # adhoc #57: the badge said a number had changed somewhere off screen, so
+    # new errors never reached the activity stream the operational pings use.
+    assert (
+        '"SELECT id,ts,status,method,path FROM error_log ORDER BY id DESC "'
+        in ENTRY)
+    assert '"latestStatus": latest_status,' in ENTRY
+    assert '"latestSource": _admin_error_source(' in ENTRY
+    start = WORLD.index("  async refreshAdminErrors() {")
+    refresh = WORLD[start:WORLD.index("\n  }", start)]
+    assert "const previousCount = this.adminErrorCount;" in refresh
+    assert "const arrived = nextCount > previousCount;" in refresh
+    assert "this.activityNoticesSettled() &&" in refresh
+    # An error storm is one card a minute carrying the real total, and the
+    # arrivals in between are carried forward rather than dropped.
+    assert "this.adminErrorPendingAnnounce =" in refresh
+    assert "ADMIN_ERROR_ANNOUNCE_GAP_MS" in refresh
+    assert "this.adminErrorPendingAnnounce = 0;" in refresh
+    assert "New error logged" in refresh
+    assert "new errors logged" in refresh
+    assert '{ kind: "error" },' in refresh
+    # Status and source only: no route, message, ray or actor in the HUD.
+    assert "payload?.latestStatus" in refresh
+    assert "payload?.latestSource" in refresh
+    assert "payload?.path" not in refresh
+    assert "payload?.message" not in refresh
+    assert "payload?.ray" not in refresh
