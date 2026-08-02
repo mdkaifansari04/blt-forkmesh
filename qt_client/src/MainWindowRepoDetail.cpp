@@ -8254,8 +8254,13 @@ void MainWindow::applyBranchesTags(const BranchesTagsSnapshot &snap)
     // The worker's full default-branch pick corrects the cheap synchronous pin,
     // but only while the browsed ref still *is* that pin — an explicit
     // setRepoBranch() while the worker ran wins.
+    // Correct only the initial HEAD-derived guess. A snapshot can start after
+    // an explicit agent/PR branch selection; in that case checkedOut differs
+    // from the real checkout (`snap.head`) by design and must not be repinned to
+    // main when the worker returns. That race was the intermittent source of a
+    // real agent range being relabelled and reloaded as "main -> main".
     if (!snap.base.isEmpty() && m_repoBranch == snap.checkedOut &&
-        m_repoBranch != snap.base)
+        snap.checkedOut == snap.head && m_repoBranch != snap.base)
         m_repoBranch = snap.base;
     if (m_branchButton) {
         const QString label =

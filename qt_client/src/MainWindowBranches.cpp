@@ -3915,7 +3915,10 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
     // onto whatever branch the table happens to select (e.g. the checked-out
     // fallback after a not-found report).
     if (!target.isEmpty() && target == m_branchDiffBranch)
-        showBranchDiff(target);
+        // Preserve the session attachment. Dropping it during an incidental
+        // Branches-table rebuild meant the opened diff could no longer
+        // reconcile that agent's badge to the exact file set it rendered.
+        showBranchDiff(target, m_branchDiffAgentSessionId);
 }
 
 void MainWindow::promptNewBranch()
