@@ -3455,6 +3455,9 @@ private:
     void captureNavSubPlace(NavPlace &place) const;
     void applyNavSubPlace(const NavPlace &place);
     QString openRepoFilePath() const; // file the code editor is showing
+    // Whether the Git workspace is the view on screen right now (see the
+    // definition): async page re-asserts must not fire once it isn't.
+    bool gitWorkspaceIsVisible() const;
     QString navPlaceLabel(const NavPlace &place) const; // human-readable trail destination
     void navigateBack();
     void navigateForward();

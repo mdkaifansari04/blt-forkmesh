@@ -3265,13 +3265,20 @@ void MainWindow::showOverviewCommits()
     // in case a queued repository refresh completed during navigation.
     updateRepoActivityRail();
     QTimer::singleShot(0, this, [this] {
-        const bool stillOnGit =
-            m_repoDetailStack && m_repoDetailStack->currentIndex() == 0 &&
-            m_filesStack && m_filesStack->currentIndex() == 0 &&
-            m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
-        if (stillOnGit)
+        if (gitWorkspaceIsVisible())
             updateRepoActivityRail();
     });
+}
+
+// True when the Git workspace is the view actually on screen: the repo's Code
+// tab, with the overview body on the Git page and the file list rather than the
+// editor showing. Async loads consult this before re-asserting a page, so a
+// diff landing late can't yank the user out of wherever they navigated to.
+bool MainWindow::gitWorkspaceIsVisible() const
+{
+    return m_repoDetailStack && m_repoDetailStack->currentIndex() == 0 &&
+           m_filesStack && m_filesStack->currentIndex() == 0 &&
+           m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
 }
 
 // Swap the overview body back to the file list + README.
@@ -7025,7 +7032,13 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
     }
 
     stopCommitDiffSpin();
-    setCommitWorkspacePage(kCommitWorkspaceCommitPage);
+    // Only re-assert the commit page while the Git workspace is still the view
+    // on screen. This render lands one or two async git reads after the click,
+    // and pressing Back (or opening a file, or leaving the tab) in that window
+    // used to be undone by this line — the Back button appeared not to work on
+    // a commit at all (adhoc #50).
+    if (gitWorkspaceIsVisible())
+        setCommitWorkspacePage(kCommitWorkspaceCommitPage);
 }
 
 void MainWindow::loadRepoInsights()
