@@ -565,7 +565,7 @@ verify_marketing_routes() {
 
     local checks=(
         "/|ForkMesh - Local-first source code preservation"
-        "/homev2|ForkMesh - A resilient, local-first Git forge"
+        "/homev2|ForkMesh - Git, team chat, and coding agents in one workspace"
         "/pricing|ForkMesh Pricing - Coding Reimagined for Teams"
         "/blog|Blog · ForkMesh"
         "/blog/introducing-forkmesh/|Introducing ForkMesh"

@@ -524,7 +524,7 @@ from mirrors import (  # noqa: E402
     accepted_mirror_requests,
     ack_mirror_requests,
     add_mirror_request,
-    agent_provider_mirror_candidates,
+    agent_provider_target_decision,
     browse_mirror_candidates,
     build_repo_mirrors_payload,
     clone_state_pins,
@@ -15276,16 +15276,21 @@ async def repo_mirrors_handler(env, request, owner, repo):
     # shows the human owner without each publisher having to know it.
     for mirror in payload.get("mirrors", []):
         node_name = str(mirror.get("node") or "").strip().lower()
-        counted = serve_counts.get(node_name)
-        if counted:
-            legacy_clones = mirror.get("clonesServed")
-            legacy_website = mirror.get("websiteServed")
-            mirror["clonesServed"] = (
-                legacy_clones if isinstance(legacy_clones, int)
-                and legacy_clones > 0 else 0) + counted[0]
-            mirror["websiteServed"] = (
-                legacy_website if isinstance(legacy_website, int)
-                and legacy_website > 0 else 0) + counted[1]
+        # The router counts for every node it routes to, so each served node
+        # gets a concrete figure: counted-so-far (zero included) plus whatever
+        # positive legacy tally the node still publishes. Keeping the record's
+        # -1 "never advertised" sentinel when no counter row existed yet left
+        # nodes that predate the counters — the SSH-fed headless mirrors — as a
+        # permanent em-dash even though the router was already counting them.
+        counted = serve_counts.get(node_name, (0, 0))
+        legacy_clones = mirror.get("clonesServed")
+        legacy_website = mirror.get("websiteServed")
+        mirror["clonesServed"] = (
+            legacy_clones if isinstance(legacy_clones, int)
+            and legacy_clones > 0 else 0) + counted[0]
+        mirror["websiteServed"] = (
+            legacy_website if isinstance(legacy_website, int)
+            and legacy_website > 0 else 0) + counted[1]
         endpoint = endpoint_by_node.get(node_name) or {}
         try:
             operations = json.loads(
@@ -36884,38 +36889,83 @@ ORG_AGENT_MAX_HISTORY = 80
 ORG_AGENT_JOB_LEASE_MS = 2 * 60 * 1000
 
 
+def _org_agent_error(
+    code, message, status, *, retryable=False, required_action="",
+    provider="", target_node="", degraded=False,
+):
+    payload = {
+        "ok": False,
+        "error": clean_string(code, 80),
+        "message": clean_string(message, 500),
+        "retryable": bool(retryable),
+    }
+    if required_action:
+        payload["requiredAction"] = clean_string(required_action, 80)
+    if provider:
+        payload["provider"] = clean_string(provider, 40)
+    if target_node:
+        payload["targetNode"] = clean_string(target_node, MAX_NODE_NAME)
+    return json_response(
+        payload,
+        status=status,
+        cache_control="no-store",
+        extra_headers=EXPECTED_DEGRADED_HEADERS if degraded else None,
+    )
+
+
 async def _org_agent_member_context(env, request, org, repo, data=None):
     org = clean_string(org, MAX_NODE_NAME).strip().lower()
     repo = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
     if not valid_node_name(org) or not safe_segment(repo):
-        return None, json_response({"error": "not_found"}, status=404)
+        return None, _org_agent_error(
+            "not_found",
+            "The requested organization or repository was not found.",
+            404,
+        )
     org_bi, org_row = await _org_row(env, org)
     if not org_row:
-        return None, json_response({"error": "not_found"}, status=404)
+        return None, _org_agent_error(
+            "not_found",
+            "The requested organization or repository was not found.",
+            404,
+        )
     account_bi, account = await _account_session_record(
         env, request, data if isinstance(data, dict) else None)
     actor = clean_string(
         (account or {}).get("name"), MAX_NODE_NAME).strip().lower()
     if not account_bi or not actor:
-        return None, json_response({"error": "invalid_session"}, status=401)
+        return None, _org_agent_error(
+            "invalid_session",
+            "Sign in again before queueing an organization agent.",
+            401,
+            required_action="sign_in",
+        )
     role = await _org_role(env, org_bi, actor)
     if role not in ORG_ROLES:
-        return None, json_response({"error": "forbidden"}, status=403)
+        return None, _org_agent_error(
+            "forbidden",
+            "You must be a member of this organization to view agent work.",
+            403,
+            required_action="join_organization",
+        )
     engineering = await d1_first(
         env,
         "SELECT 1 AS one FROM org_team_members "
         "WHERE org_bi=? AND team='engineering' AND member_bi=?",
         org_bi, str(account_bi),
     )
-    if not engineering:
-        return None, json_response(
-            {
-                "error": "engineering_team_required",
-                "requiredTeam": "engineering",
-            },
-            status=403,
-            cache_control="no-store",
+    is_engineering = bool(engineering)
+    if role != "owner" and not is_engineering:
+        response = _org_agent_error(
+            "engineering_team_required",
+            (
+                "Only organization owners or members of the Engineering team "
+                "can view or queue repository agents."
+            ),
+            403,
+            required_action="join_engineering_team",
         )
+        return None, response
     linked = await d1_first(
         env,
         "SELECT node_owner FROM org_repos WHERE org_bi=? AND repo=?",
@@ -36924,7 +36974,15 @@ async def _org_agent_member_context(env, request, org, repo, data=None):
     node_owner = clean_string(
         (linked or {}).get("node_owner"), MAX_NODE_NAME).strip().lower()
     if not valid_node_name(node_owner):
-        return None, json_response({"error": "repository_not_linked"}, status=404)
+        return None, _org_agent_error(
+            "repository_not_linked",
+            (
+                "This repository is not linked to the organization. Link it "
+                "to an owned desktop before queueing an agent."
+            ),
+            404,
+            required_action="link_repository",
+        )
     return {
         "org": org,
         "orgBi": org_bi,
@@ -36933,6 +36991,10 @@ async def _org_agent_member_context(env, request, org, repo, data=None):
         "accountBi": str(account_bi),
         "actor": actor,
         "role": role,
+        "engineeringAccess": is_engineering,
+        "accessBasis": (
+            "organization_owner" if role == "owner" else "engineering_team"
+        ),
     }, None
 
 
@@ -36955,62 +37017,21 @@ async def _org_agent_target_mirror(
             == context["repo"].lower()
         )
     ), None)
-    if not target:
-        return ""
-    # An attended desktop is a separate trust class from a headless mirror.
-    # Only a platform administrator may route a web-created task to it, and
-    # only when the source account/node is theirs, the desktop signed the exact
-    # provider capability, and its short publication lease is still fresh.
-    # The Qt client still applies the mandatory tool-free Haiku preflight after
-    # leasing the job, so this does not turn administrator status into code
-    # execution authority by itself.
     source_node = context["nodeOwner"].lower()
-    source_providers = {
-        str(value or "").strip().lower()
-        for value in (
-            target.get("agentProviders")
-            if isinstance(target.get("agentProviders"), list)
-            else []
-        )
-    }
-    try:
-        source_seen_at = int(
-            target.get("updatedAt") or target.get("lastSync") or 0)
-    except (TypeError, ValueError):
-        source_seen_at = 0
-    desktop_eligible = bool(
-        str(target.get("runtimeMode") or "").strip().lower() == "desktop"
-        and provider in source_providers
-        and source_seen_at >= now - 10 * 60 * 1000
-        and await _is_admin(env, context["actor"])
-        and await _account_owns_node(
-            env, context["actor"], source_node)
-    )
-    eligible = agent_provider_mirror_candidates(
+    return agent_provider_target_decision(
         records,
         target,
-        context["nodeOwner"],
+        source_node,
         provider,
         now,
         10 * 60 * 1000,
+        preferred_node=clean_string(
+            preferred_node, MAX_NODE_NAME).strip().lower(),
+        org_owner=context["role"] == "owner",
+        source_owned=await _account_owns_node(
+            env, context["actor"], source_node),
+        platform_admin=await _is_admin(env, context["actor"]),
     )
-    preferred = clean_string(
-        preferred_node, MAX_NODE_NAME).strip().lower()
-    if preferred:
-        if desktop_eligible and preferred == source_node:
-            return source_node
-        return (
-            preferred
-            if valid_node_name(preferred) and preferred in eligible
-            else ""
-        )
-    if desktop_eligible:
-        return source_node
-    if eligible and valid_node_name(eligible[0]):
-        return eligible[0]
-    # A source node is not described as a headless mirror. Fail closed rather
-    # than silently running an org member's prompt on a different trust class.
-    return ""
 
 
 def _org_agent_info_projection(value):
@@ -37188,15 +37209,29 @@ async def org_agent_bots_handler(env, request, org, repo):
     await ensure_schema(env)
     method = method_name(request)
     if method not in ("GET", "POST"):
-        return json_response({"error": "method_not_allowed"}, status=405)
+        return _org_agent_error(
+            "method_not_allowed",
+            "Use GET to view agent sessions or POST to queue one.",
+            405,
+        )
     data = {}
     if method == "POST":
         if not _request_same_origin(request):
-            return json_response({"error": "origin_not_allowed"}, status=403)
+            return _org_agent_error(
+                "origin_not_allowed",
+                "Queue agent work from the signed-in ForkMesh site.",
+                403,
+                required_action="use_same_origin",
+            )
         try:
             data = await bounded_json_request(request)
         except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
+            return _org_agent_error(
+                "invalid_json",
+                "The agent request body is not valid JSON.",
+                400,
+                required_action="retry_request",
+            )
     context, error = await _org_agent_member_context(
         env, request, org, repo, data)
     if error:
@@ -37224,14 +37259,24 @@ async def org_agent_bots_handler(env, request, org, repo):
             "repository": context["repo"],
             "memberRole": context["role"],
             "requiredTeam": "engineering",
-            "engineeringAccess": True,
+            "engineeringAccess": context["engineeringAccess"],
+            "canQueueAgent": True,
+            "canViewAgentSessions": True,
+            "accessBasis": context["accessBasis"],
+            "accessReason": (
+                "Organization owner access for the linked desktop."
+                if context["role"] == "owner"
+                else "Engineering team access for eligible agent mirrors."
+            ),
             "providers": list(ORG_AGENT_PROVIDERS),
             "models": {
                 provider: list(ORG_AGENT_MODEL_ALIASES[provider].keys())
                 for provider in ORG_AGENT_PROVIDERS
             },
             "sessions": sessions,
-            "privacyBoundary": "engineering-team-encrypted-at-rest",
+            "privacyBoundary": (
+                "organization-owner-or-engineering-encrypted-at-rest"
+            ),
             "securityGate": "claude-haiku-tool-free-fail-closed",
         }, cache_control="no-store")
 
@@ -37241,34 +37286,86 @@ async def org_agent_bots_handler(env, request, org, repo):
     if general_bot:
         provider = ORG_AGENT_PROVIDERS[0]
     if provider not in ORG_AGENT_PROVIDERS:
-        return json_response({"error": "invalid_provider"}, status=400)
+        return _org_agent_error(
+            "invalid_provider",
+            "Choose Claude Code, Codex, or the automatic agent option.",
+            400,
+            required_action="select_supported_provider",
+        )
     model_alias = clean_string(data.get("model"), 30).strip().lower()
     model = ORG_AGENT_MODEL_ALIASES.get(provider, {}).get(model_alias)
     if model_alias and not model:
-        return json_response({"error": "invalid_model"}, status=400)
+        return _org_agent_error(
+            "invalid_model",
+            "Choose a model offered for the selected agent provider.",
+            400,
+            required_action="select_supported_model",
+            provider=provider,
+        )
     if not prompt:
-        return json_response({"error": "prompt_required"}, status=400)
+        return _org_agent_error(
+            "prompt_required",
+            "Enter the task you want the agent to perform.",
+            400,
+            required_action="enter_prompt",
+        )
     preferred_node = clean_string(
         data.get("targetNode"), MAX_NODE_NAME).strip().lower()
     if preferred_node and not valid_node_name(preferred_node):
-        return json_response({"error": "invalid_target_node"}, status=400)
-    target_node = await _org_agent_target_mirror(
+        return _org_agent_error(
+            "invalid_target_node",
+            "Select a valid linked desktop or repository mirror.",
+            400,
+            required_action="select_eligible_target",
+        )
+    target_decision = await _org_agent_target_mirror(
         env, context, provider, preferred_node)
-    if not target_node and general_bot:
+    if not target_decision.get("ok") and general_bot:
         # A general bot is runtime-agnostic: take the first supported runtime
-        # with a fresh, capable mirror instead of failing on one vendor.
+        # accepted by the linked desktop instead of failing on one vendor.
         for candidate in ORG_AGENT_PROVIDERS[1:]:
-            target_node = await _org_agent_target_mirror(
+            candidate_decision = await _org_agent_target_mirror(
                 env, context, candidate, preferred_node)
-            if target_node:
+            target_decision = candidate_decision
+            if candidate_decision.get("ok"):
                 provider = candidate
                 model = ORG_AGENT_MODEL_ALIASES.get(
                     candidate, {}).get(model_alias) or ""
                 break
-    if not target_node:
-        return json_response(
-            {"error": "no_eligible_agent_node"}, status=503,
-            extra_headers=EXPECTED_DEGRADED_HEADERS)
+    if not target_decision.get("ok"):
+        target_error = clean_string(
+            target_decision.get("error"), 80) or "no_online_agent_mirror"
+        target_status = {
+            "target_not_owned": 403,
+            "org_owner_required": 403,
+            "repository_not_published": 409,
+            "target_not_desktop": 409,
+            "provider_not_advertised": 409,
+            "preferred_target_ineligible": 409,
+            "no_online_agent_mirror": 503,
+        }.get(target_error, 409)
+        return _org_agent_error(
+            target_error,
+            target_decision.get("message") or (
+                "The selected agent target is not eligible."
+            ),
+            target_status,
+            retryable=target_decision.get("retryable") is True,
+            required_action=target_decision.get("requiredAction") or "",
+            provider=target_decision.get("provider") or provider,
+            target_node=target_decision.get("targetNode") or "",
+            degraded=target_status == 503,
+        )
+    target_node = clean_string(
+        target_decision.get("targetNode"), MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(target_node):
+        return _org_agent_error(
+            "preferred_target_ineligible",
+            "The selected agent target is not eligible.",
+            409,
+            required_action="select_eligible_target",
+            provider=provider,
+        )
     now = int(Date.now())
     session_id = _ap_uuid()
     task_key = clean_string(data.get("taskKey"), 96).strip()
@@ -37277,17 +37374,32 @@ async def org_agent_bots_handler(env, request, org, repo):
         r"issue:[a-z0-9-]{1,40}/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})",
         task_key,
     ):
-        return json_response({"error": "invalid_task_key"}, status=400)
+        return _org_agent_error(
+            "invalid_task_key",
+            "The linked task reference is invalid.",
+            400,
+            required_action="select_valid_task",
+        )
     try:
         issue_number = int(data.get("issueNumber") or 0)
     except (TypeError, ValueError):
         issue_number = 0
     if issue_number < 0 or issue_number > 10_000_000:
-        return json_response({"error": "invalid_issue_number"}, status=400)
+        return _org_agent_error(
+            "invalid_issue_number",
+            "The linked issue number is invalid.",
+            400,
+            required_action="select_valid_issue",
+        )
     if issue_number and task_key != (
         "issue:%s/%s#%d" % (context["org"], context["repo"], issue_number)
     ):
-        return json_response({"error": "invalid_issue_task_key"}, status=400)
+        return _org_agent_error(
+            "invalid_issue_task_key",
+            "The issue reference does not match this organization repository.",
+            400,
+            required_action="select_matching_issue",
+        )
     title = clean_string(
         data.get("title") or prompt.split("\n", 1)[0], 160).strip()
     record = {
@@ -37331,23 +37443,46 @@ async def org_agent_bots_handler(env, request, org, repo):
             "failClosed": True,
         },
     }
-    await d1_run(
-        env,
-        "INSERT INTO org_agent_sessions "
-        "(session_id,org_bi,repo,target_node,provider,status,created_by_bi,"
-        "data,created_at,updated_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,0)",
-        session_id, context["orgBi"], context["repo"], target_node, provider,
-        "security_pending", context["accountBi"],
-        await encrypt_row(env, record), now, now,
-    )
-    await d1_run(
-        env,
-        "INSERT INTO org_agent_jobs "
-        "(session_id,org_bi,target_node,repo,provider,status,lease_id,data,"
-        "created_at,updated_at) VALUES (?,?,?,?,?,'queued','',?,?,?)",
-        session_id, context["orgBi"], target_node, context["repo"], provider,
-        await encrypt_row(env, job), now, now,
-    )
+    session_data = await encrypt_row(env, record)
+    job_data = await encrypt_row(env, job)
+    try:
+        await _contribution_run_batch(env, [
+            (
+                "INSERT INTO org_agent_sessions "
+                "(session_id,org_bi,repo,target_node,provider,status,"
+                "created_by_bi,data,created_at,updated_at,completed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,0)",
+                (
+                    session_id, context["orgBi"], context["repo"],
+                    target_node, provider, "security_pending",
+                    context["accountBi"], session_data, now, now,
+                ),
+            ),
+            (
+                "INSERT INTO org_agent_jobs "
+                "(session_id,org_bi,target_node,repo,provider,status,lease_id,"
+                "data,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,'queued','',?,?,?)",
+                (
+                    session_id, context["orgBi"], target_node,
+                    context["repo"], provider, job_data, now, now,
+                ),
+            ),
+        ])
+    except Exception:
+        return _org_agent_error(
+            "queue_persistence_failed",
+            (
+                "The task could not be saved to the agent queue. No execution "
+                "was authorized; try again."
+            ),
+            503,
+            retryable=True,
+            required_action="retry_queue",
+            provider=provider,
+            target_node=target_node,
+            degraded=True,
+        )
     await _audit_sensitive_action(
         env, context["actor"], "organization.agent_start",
         "organization_agent", context["org"] + "/" + context["repo"] +
@@ -37359,8 +37494,23 @@ async def org_agent_bots_handler(env, request, org, repo):
             "targetNode": target_node,
         })
     await notify_repo_host(env, target_node, context["repo"], "org-agents")
+    queue_state = clean_string(
+        target_decision.get("queueState"), 40) or "ready_for_claim"
+    if queue_state == "waiting_for_desktop":
+        queue_message = (
+            f"Saved for {target_node}. It will run after ForkMesh reconnects "
+            "and the required security preflight approves it."
+        )
+    else:
+        queue_message = (
+            f"Saved for {target_node}. It will run after the required "
+            "security preflight approves it."
+        )
     return json_response({
         "ok": True,
+        "queueState": queue_state,
+        "targetOnline": target_decision.get("targetOnline") is True,
+        "message": queue_message,
         "session": _org_agent_session_projection({
             "session_id": session_id,
             "repo": context["repo"],
@@ -37378,15 +37528,29 @@ async def org_agent_bot_handler(env, request, org, repo, session_id):
     await ensure_schema(env)
     method = method_name(request)
     if method not in ("GET", "POST"):
-        return json_response({"error": "method_not_allowed"}, status=405)
+        return _org_agent_error(
+            "method_not_allowed",
+            "Use GET to view this session or POST to send a follow-up.",
+            405,
+        )
     data = {}
     if method == "POST":
         if not _request_same_origin(request):
-            return json_response({"error": "origin_not_allowed"}, status=403)
+            return _org_agent_error(
+                "origin_not_allowed",
+                "Send agent follow-ups from the signed-in ForkMesh site.",
+                403,
+                required_action="use_same_origin",
+            )
         try:
             data = await bounded_json_request(request)
         except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
+            return _org_agent_error(
+                "invalid_json",
+                "The agent follow-up body is not valid JSON.",
+                400,
+                required_action="retry_request",
+            )
     context, error = await _org_agent_member_context(
         env, request, org, repo, data)
     if error:
@@ -37394,20 +37558,45 @@ async def org_agent_bot_handler(env, request, org, repo, session_id):
     row, record = await _org_agent_session_row(
         env, context, clean_string(session_id, 64))
     if not row:
-        return json_response({"error": "not_found"}, status=404)
+        return _org_agent_error(
+            "not_found",
+            "This agent session was not found in the selected repository.",
+            404,
+        )
     if method == "GET":
         return json_response({
             "ok": True,
             "session": _org_agent_session_projection(row, record),
         }, cache_control="no-store")
     if str(row.get("status") or "") not in ("running", "queued"):
-        return json_response({"error": "session_not_promptable"}, status=409)
+        return _org_agent_error(
+            "session_not_promptable",
+            "This agent session is not running and cannot accept a follow-up.",
+            409,
+            required_action="start_new_session",
+        )
     local_agent_id = int(record.get("localAgentId") or 0)
     if local_agent_id <= 0:
-        return json_response({"error": "agent_not_ready"}, status=409)
+        return _org_agent_error(
+            "agent_not_ready",
+            (
+                "The desktop has not started this agent session yet. Wait for "
+                "it to reconnect and finish the security preflight."
+            ),
+            409,
+            retryable=True,
+            required_action="wait_for_agent",
+            provider=str(row.get("provider") or ""),
+            target_node=str(row.get("target_node") or ""),
+        )
     prompt = clean_string(data.get("prompt"), ORG_AGENT_MAX_PROMPT).strip()
     if not prompt:
-        return json_response({"error": "prompt_required"}, status=400)
+        return _org_agent_error(
+            "prompt_required",
+            "Enter the follow-up you want to send to the agent.",
+            400,
+            required_action="enter_prompt",
+        )
     now = int(Date.now())
     history = record.get("history")
     if not isinstance(history, list):
@@ -37439,36 +37628,78 @@ async def org_agent_bot_handler(env, request, org, repo, session_id):
             "failClosed": True,
         },
     }
-    await d1_run(
-        env,
-        "UPDATE org_agent_sessions SET status='security_pending',data=?,"
-        "updated_at=? WHERE session_id=? AND org_bi=?",
-        await encrypt_row(env, record), now, row["session_id"], context["orgBi"],
-    )
-    await d1_run(
-        env,
-        "INSERT INTO org_agent_jobs "
-        "(session_id,org_bi,target_node,repo,provider,status,lease_id,data,"
-        "created_at,updated_at) VALUES (?,?,?,?,?,'queued','',?,?,?)",
-        row["session_id"], context["orgBi"], row["target_node"],
-        context["repo"], row["provider"], await encrypt_row(env, job), now, now,
-    )
+    session_data = await encrypt_row(env, record)
+    job_data = await encrypt_row(env, job)
+    try:
+        await _contribution_run_batch(env, [
+            (
+                "UPDATE org_agent_sessions SET status='security_pending',"
+                "data=?,updated_at=? WHERE session_id=? AND org_bi=?",
+                (
+                    session_data, now, row["session_id"],
+                    context["orgBi"],
+                ),
+            ),
+            (
+                "INSERT INTO org_agent_jobs "
+                "(session_id,org_bi,target_node,repo,provider,status,lease_id,"
+                "data,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,'queued','',?,?,?)",
+                (
+                    row["session_id"], context["orgBi"], row["target_node"],
+                    context["repo"], row["provider"], job_data, now, now,
+                ),
+            ),
+        ])
+    except Exception:
+        return _org_agent_error(
+            "queue_persistence_failed",
+            (
+                "The follow-up could not be saved to the agent queue. No "
+                "execution was authorized; try again."
+            ),
+            503,
+            retryable=True,
+            required_action="retry_queue",
+            provider=str(row.get("provider") or ""),
+            target_node=str(row.get("target_node") or ""),
+            degraded=True,
+        )
     await _audit_sensitive_action(
         env, context["actor"], "organization.agent_prompt",
         "organization_agent", context["org"] + "/" + context["repo"] +
         "/" + row["session_id"], "success")
     await notify_repo_host(
         env, row["target_node"], context["repo"], "org-agents")
-    return json_response({"ok": True, "status": "security_pending"},
-                         status=202, cache_control="no-store")
+    return json_response({
+        "ok": True,
+        "status": "security_pending",
+        "queueState": "ready_for_claim",
+        "message": (
+            "Follow-up saved. It will run after the required security "
+            "preflight approves it."
+        ),
+    }, status=202, cache_control="no-store")
 
 
 async def repo_org_agent_jobs_handler(env, request, owner, repo):
     await ensure_schema(env)
     if method_name(request) != "GET":
-        return json_response({"error": "method_not_allowed"}, status=405)
+        return _org_agent_error(
+            "method_not_allowed",
+            "Use GET to claim the next organization-agent job.",
+            405,
+        )
     if not await _authorize_owner(env, request, owner):
-        return json_response({"error": "unauthorized"}, status=401)
+        return _org_agent_error(
+            "unauthorized",
+            (
+                "This desktop could not prove current ownership of the target "
+                "node. Re-link it to the account and try again."
+            ),
+            401,
+            required_action="relink_desktop",
+        )
     owner = clean_string(owner, MAX_NODE_NAME).strip().lower()
     repo = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
     now = int(Date.now())
@@ -37478,17 +37709,39 @@ async def repo_org_agent_jobs_handler(env, request, owner, repo):
         "WHERE target_node=? AND repo=? AND status='leased' AND updated_at<?",
         now, owner, repo, now - ORG_AGENT_JOB_LEASE_MS,
     )
-    rows = await d1_all(
-        env,
-        "SELECT id,session_id,data FROM org_agent_jobs "
-        "WHERE target_node=? AND repo=? AND status='queued' ORDER BY id LIMIT 8",
-        owner, repo,
-    )
     jobs = []
-    for row in rows or []:
+    # Lease one FIFO item at a time. A second poll cannot pass the NOT EXISTS
+    # guard while the first job is in its bounded preflight lease, and the
+    # post-update read verifies the conditional queued->leased CAS before the
+    # job is exposed. The client asks again immediately after reporting a
+    # result, so this is backpressure, not an admission cap.
+    for _attempt in range(8):
+        row = await d1_first(
+            env,
+            "SELECT id,session_id,data FROM org_agent_jobs queued "
+            "WHERE queued.target_node=? AND queued.repo=? "
+            "AND queued.status='queued' AND NOT EXISTS ("
+            "SELECT 1 FROM org_agent_jobs active "
+            "WHERE active.target_node=? AND active.repo=? "
+            "AND active.status='leased') "
+            "ORDER BY queued.id LIMIT 1",
+            owner, repo, owner, repo,
+        )
+        if not row:
+            break
         job_id = int(row.get("id") or 0)
-        record = await decrypt_row(env, row.get("data"))
+        try:
+            record = await decrypt_row(env, row.get("data"))
+        except Exception:
+            record = None
         if not job_id or not isinstance(record, dict):
+            if job_id:
+                await d1_run(
+                    env,
+                    "UPDATE org_agent_jobs SET status='failed',updated_at=? "
+                    "WHERE id=? AND target_node=? AND status='queued'",
+                    now, job_id, owner,
+                )
             continue
         lease_id = _ap_uuid()
         await d1_run(
@@ -37497,11 +37750,20 @@ async def repo_org_agent_jobs_handler(env, request, owner, repo):
             "WHERE id=? AND target_node=? AND status='queued'",
             lease_id, now, job_id, owner,
         )
+        claimed = await d1_first(
+            env,
+            "SELECT id FROM org_agent_jobs WHERE id=? AND target_node=? "
+            "AND repo=? AND status='leased' AND lease_id=?",
+            job_id, owner, repo, lease_id,
+        )
+        if not claimed:
+            break
         jobs.append({
             "jobId": job_id,
             "leaseId": lease_id,
             **record,
         })
+        break
     return json_response({
         "ok": True,
         "jobs": jobs,
@@ -37513,13 +37775,30 @@ async def repo_org_agent_job_result_handler(
         env, request, owner, repo, job_id):
     await ensure_schema(env)
     if method_name(request) != "POST":
-        return json_response({"error": "method_not_allowed"}, status=405)
+        return _org_agent_error(
+            "method_not_allowed",
+            "Use POST to report an organization-agent job result.",
+            405,
+        )
     if not await _authorize_owner(env, request, owner):
-        return json_response({"error": "unauthorized"}, status=401)
+        return _org_agent_error(
+            "unauthorized",
+            (
+                "This desktop could not prove current ownership of the target "
+                "node. Re-link it before reporting the result."
+            ),
+            401,
+            required_action="relink_desktop",
+        )
     try:
         data = await bounded_json_request(request)
     except Exception:
-        return json_response({"error": "invalid_json"}, status=400)
+        return _org_agent_error(
+            "invalid_json",
+            "The agent result body is not valid JSON.",
+            400,
+            required_action="retry_result",
+        )
     owner = clean_string(owner, MAX_NODE_NAME).strip().lower()
     repo = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
     lease_id = clean_string(data.get("leaseId"), 64)
@@ -37532,7 +37811,17 @@ async def repo_org_agent_job_result_handler(
         int(job_id), owner, repo, lease_id,
     )
     if not row:
-        return json_response({"error": "lease_not_found"}, status=409)
+        return _org_agent_error(
+            "lease_not_found",
+            (
+                "This job lease is no longer current. Refresh the desktop "
+                "queue before reporting another result."
+            ),
+            409,
+            retryable=True,
+            required_action="refresh_agent_queue",
+            target_node=owner,
+        )
     job = await decrypt_row(env, row.get("data"))
     session_row = await d1_first(
         env,
@@ -37544,7 +37833,16 @@ async def repo_org_agent_job_result_handler(
         await decrypt_row(env, session_row.get("data"))
         if session_row else None)
     if not isinstance(job, dict) or not isinstance(session, dict):
-        return json_response({"error": "invalid_job_state"}, status=409)
+        return _org_agent_error(
+            "invalid_job_state",
+            (
+                "The leased job is incomplete and was not authorized to run. "
+                "Refresh the desktop queue."
+            ),
+            409,
+            required_action="refresh_agent_queue",
+            target_node=owner,
+        )
     verdict = clean_string(data.get("securityVerdict"), 20).lower()
     run_status = clean_string(data.get("status"), 20).lower()
     if verdict not in ("approved", "rejected"):

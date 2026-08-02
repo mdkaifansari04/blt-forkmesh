@@ -34,6 +34,13 @@ def test_clean_marketing_urls_are_backed_by_canonical_main_assets():
     assert "/blog/:slug/ /blog/:slug/index.html 200" in REDIRECTS
 
 
+def test_homev2_deploy_marker_is_present_in_the_shipped_document():
+    marker = "ForkMesh - Git, team chat, and coding agents in one workspace"
+    homev2 = (ROOT / "public" / "homev2.html").read_text(encoding="utf-8")
+    assert marker in homev2
+    assert f'"/homev2|{marker}"' in DEPLOY
+
+
 def test_main_deploy_verifies_world_pricing_blog_and_post_parity():
     assert "verify_deploy \"$BUILD_REV\"" in DEPLOY
     assert "verify_public_assets" in DEPLOY
@@ -49,6 +56,7 @@ def test_main_deploy_verifies_world_pricing_blog_and_post_parity():
     assert "pywrangler delete --name forkmesh-marketing --force" in DEPLOY
     for path in (
         '"/|ForkMesh - Local-first source code preservation"',
+        '"/homev2|ForkMesh - Git, team chat, and coding agents in one workspace"',
         '"/pricing|ForkMesh Pricing - Coding Reimagined for Teams"',
         '"/blog|Blog · ForkMesh"',
         '"/blog/introducing-forkmesh/|Introducing ForkMesh"',

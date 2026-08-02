@@ -1283,6 +1283,20 @@ bool MainWindow::testGitWorkspaceIsExclusive() const
     return true;
 }
 
+bool MainWindow::testGitPromptFloatsBottomRight() const
+{
+    constexpr int kPromptMargin = 8;
+    return m_footerDock && m_footerLeftRegion && m_promptWrapper &&
+           m_commitsStack && m_footerDock->isHidden() &&
+           m_footerLeftRegion->isHidden() &&
+           m_promptWrapper->parentWidget() == m_commitsStack &&
+           m_promptWrapper->isVisible() && m_promptWrapper->width() <= 560 &&
+           m_promptWrapper->x() + m_promptWrapper->width() ==
+               m_commitsStack->width() - kPromptMargin &&
+           m_promptWrapper->y() + m_promptWrapper->height() ==
+               m_commitsStack->height() - kPromptMargin;
+}
+
 int MainWindow::testCommitWorkspacePage() const
 {
     return m_commitsStack ? m_commitsStack->currentIndex() : -1;
@@ -1661,7 +1675,7 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                            : QStringLiteral("Merged %1 into %2").arg(branch, base))
                 + QStringLiteral("."),
             false);
-        if (deletedAgents.isEmpty()) {
+        if (!deleteAgent) {
             // Issue #291: flag any agent session that produced this branch. This is
             // idempotent when the cleanup path marked it above.
             markAgentSessionsMerged(0, branch, branchInBase);

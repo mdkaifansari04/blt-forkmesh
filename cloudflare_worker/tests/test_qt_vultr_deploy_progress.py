@@ -163,3 +163,45 @@ def test_header_declares_durable_ui_and_resume_state():
         "m_vultrInstanceIp",
     ):
         assert symbol in HEADER
+
+
+def test_each_vultr_deploy_stage_reports_one_ping_outcome():
+    ping = _slice(
+        CHAT,
+        "void MainWindow::pingVultrProvisionStage",
+        "void MainWindow::restoreVultrProvision",
+    )
+    for label in (
+        "Credentials",
+        "Plan + image",
+        "Create server",
+        "Boot + connect",
+        "Install",
+        "Live traffic",
+    ):
+        assert f'QStringLiteral("{label}")' in ping
+    assert "addNotification(" in ping
+    assert "Vultr mirror deployment" in ping
+
+    transition = _slice(
+        CHAT,
+        "void MainWindow::setVultrProvisionStage",
+        "void MainWindow::pingVultrProvisionStage",
+    )
+    assert "m_vultrProvisionStage > previousStage" in transition
+    assert "pingVultrProvisionStage(previousStage, true" in transition
+    assert "pingVultrProvisionStage(m_vultrProvisionStage, false" in transition
+
+    finish = _slice(
+        CHAT,
+        "void MainWindow::finishVultrProvision",
+        "void MainWindow::waitForVultrMirrorPublication",
+    )
+    assert "pingVultrProvisionStage(m_vultrProvisionStage, ok, message)" in finish
+
+    install = _slice(
+        CHAT,
+        "void MainWindow::startVultrHostInstall",
+        "namespace {\n// Foreground colours",
+    )
+    assert "setVultrProvisionStage(\n        5" in install

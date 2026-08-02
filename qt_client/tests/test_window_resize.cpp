@@ -35,6 +35,7 @@
 #include <QTimer>
 #include <QPushButton>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QSplitter>
@@ -387,6 +388,8 @@ int main(int argc, char *argv[])
     app.setApplicationName(testApplicationName);
     const bool fleetBinaryInstallOnly =
         app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
+    const bool hostsLayoutOnly =
+        app.arguments().contains(QStringLiteral("--hosts-layout-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -881,6 +884,39 @@ int main(int argc, char *argv[])
                 QJsonDocument::Compact)));
     window.testShowHostsSection();
     QApplication::processEvents();
+    QWidget *hostsPageBody =
+        window.findChild<QWidget *>(QStringLiteral("hostsPageBody"));
+    QLayout *hostsPageLayout = hostsPageBody ? hostsPageBody->layout() : nullptr;
+    QLayout *hostsProvisioningRow = window.findChild<QLayout *>(
+        QStringLiteral("hostsProvisioningRow"));
+    QTableWidget *hostsPageTable =
+        hostsPageBody
+            ? hostsPageBody->findChild<QTableWidget *>(QStringLiteral("issueTable"))
+            : nullptr;
+    check(hostsPageLayout && hostsPageTable && hostsProvisioningRow &&
+              hostsPageLayout->indexOf(hostsPageTable) == 0 &&
+              hostsPageLayout->indexOf(hostsProvisioningRow) == 1,
+          QStringLiteral(
+              "Hosts puts the saved-host fleet first and provisioning cards next"));
+    const QList<QPushButton *> inlineHelpButtons =
+        window.findChildren<QPushButton *>(QStringLiteral("inlineHelpButton"));
+    QSet<QString> inlineHelpNames;
+    for (const QPushButton *button : inlineHelpButtons)
+        inlineHelpNames.insert(button->accessibleName());
+    const bool completeInlineHelp =
+        inlineHelpNames.contains(QStringLiteral("About network diagnostics")) &&
+        inlineHelpNames.contains(QStringLiteral("About saved hosts")) &&
+        inlineHelpNames.contains(QStringLiteral("About adding a host")) &&
+        inlineHelpNames.contains(QStringLiteral("About Vultr mirrors")) &&
+        std::all_of(inlineHelpButtons.cbegin(), inlineHelpButtons.cend(),
+                    [](const QPushButton *button) {
+                        return !button->toolTip().isEmpty() &&
+                               !button->accessibleName().isEmpty() &&
+                               !button->accessibleDescription().isEmpty();
+                    });
+    check(completeInlineHelp,
+          QStringLiteral(
+              "Network and Hosts guidance is available from four accessible hover helpers"));
     check(window.findChild<QPushButton *>(
               QStringLiteral("hostActionsButton")) != nullptr,
           QStringLiteral(
@@ -900,6 +936,10 @@ int main(int argc, char *argv[])
           QStringLiteral(
               "Actions secret-entry widgets exist only inside the explicit dialog"));
     QSettings().remove(QStringLiteral("hosts/list"));
+    if (hostsLayoutOnly) {
+        stopChildProcesses(window);
+        return failures == 0 ? 0 : 1;
+    }
 
     // Settings is deferred independently from the Control Node. Navigate there
     // before checking its one-way legacy-custody migration and controls.
@@ -1142,6 +1182,10 @@ int main(int argc, char *argv[])
     // exposes an explicit Switch action.
     const QString rootA(40, QLatin1Char('a'));
     const QString rootB(40, QLatin1Char('b'));
+    QJsonArray widgetActivity;
+    for (int week = 0; week < 52; ++week)
+        widgetActivity.append(0);
+    widgetActivity[51] = 1;
     QJsonArray catalogFixture{
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-a")},
                     {QStringLiteral("name"), QStringLiteral("widget")},
@@ -1150,6 +1194,8 @@ int main(int argc, char *argv[])
                      QStringLiteral("Never shown in the grid")},
                     {QStringLiteral("branch"), QStringLiteral("main")},
                     {QStringLiteral("issueCount"), QStringLiteral("7")},
+                    {QStringLiteral("commitCount"), QStringLiteral("3")},
+                    {QStringLiteral("activityWeeks"), widgetActivity},
                     {QStringLiteral("platform"), QStringLiteral("linux")},
                     {QStringLiteral("source"), QStringLiteral("local-node")}},
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-b")},
@@ -1165,6 +1211,8 @@ int main(int argc, char *argv[])
                      QStringLiteral("Never shown in the grid")},
                     {QStringLiteral("branch"), QStringLiteral("main")},
                     {QStringLiteral("issueCount"), QStringLiteral("7")},
+                    {QStringLiteral("commitCount"), QStringLiteral("1")},
+                    {QStringLiteral("activityWeeks"), widgetActivity},
                     {QStringLiteral("platform"), QStringLiteral("linux")},
                     {QStringLiteral("source"),
                      QStringLiteral("organization-alias")},
@@ -1187,6 +1235,10 @@ int main(int argc, char *argv[])
           QStringLiteral("Repos uses a compact mirror-count column"));
     check(window.testNetworkRepoActionText(0) == QStringLiteral("Switch"),
           QStringLiteral("Repos provides an explicit Switch button"));
+    check(window.testNetworkRepoHasCommitSparkline(0) &&
+              window.testNetworkRepoCommitActivitySummary(0) ==
+                  QStringLiteral("3 commits total; 1 commit in the past 52 weeks"),
+          QStringLiteral("Repos sparkline uses the grouped catalog commit total"));
 
     // adhoc #118: the page shows the full catalog record per repository -- every
     // published field gets its own column, except the description.
@@ -1557,6 +1609,45 @@ int main(int argc, char *argv[])
     // prompt box — no provider dropdown to pick a resolver from. adhoc #59: the
     // whole header row is icon-over-caption rail tiles ("repoActionStack"), the
     // same form as the activity rail, instead of a mix of pill shapes.
+    window.testClickRepoDetailTab(4); // Pull requests
+    QApplication::processEvents();
+    // The pull-list actions float over the lower-right corner instead of
+    // consuming a footer row.  Keep the geometry contract explicit: all five
+    // repository actions form one horizontal cluster, anchored inside the
+    // list pane and overlapping the table's layout area.
+    {
+        QWidget *bar = window.findChild<QWidget *>(
+            QStringLiteral("pullListFloatingBar"));
+        QWidget *pane = bar ? bar->parentWidget() : nullptr;
+        QTableWidget *table =
+            pane ? pane->findChild<QTableWidget *>(QStringLiteral("issueTable"))
+                 : nullptr;
+        check(bar && pane && table,
+              QStringLiteral("pull actions are hosted by a floating list bar"));
+        if (bar && pane && table) {
+            check(pane->width() - bar->geometry().right() <= 12 &&
+                      pane->height() - bar->geometry().bottom() <= 12 &&
+                      bar->geometry().intersects(table->geometry()),
+                  QStringLiteral("pull action bar floats at the list's lower-right "
+                                 "corner"));
+            const QList<QPushButton *> buttons =
+                bar->findChildren<QPushButton *>(QString(),
+                                                 Qt::FindDirectChildrenOnly);
+            const QStringList expected = {QStringLiteral("New"),
+                                          QStringLiteral("Directory"),
+                                          QStringLiteral("Import"),
+                                          QStringLiteral("Inbox"),
+                                          QStringLiteral("Merged")};
+            QStringList captions;
+            for (QPushButton *button : buttons) {
+                if (!button->text().isEmpty())
+                    captions.append(button->text());
+            }
+            check(captions == expected,
+                  QStringLiteral("all pull-list actions stay aligned in one "
+                                 "floating row"));
+        }
+    }
     bool prFixButtonFound = false;
     bool prHeaderStyleUniform = true;
     for (QPushButton *b : window.findChildren<QPushButton *>()) {
@@ -1598,8 +1689,8 @@ int main(int argc, char *argv[])
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
-    // The fleet toolbar shows the live queue plus concurrent-agent limit beside
-    // Start all, and lets the common capacity adjustment happen in one click.
+    // The queue floats over the list's lower-right corner, preserving the rows
+    // behind it while keeping the common capacity adjustment one click away.
     {
         QLabel *queueStatus = window.findChild<QLabel *>(
             QStringLiteral("agentQueueStatusLabel"));
@@ -1609,10 +1700,19 @@ int main(int argc, char *argv[])
             QStringLiteral("agentQueueLimitIncreaseButton"));
         QLineEdit *settingsLimit = window.findChild<QLineEdit *>(
             QStringLiteral("maxRunningAgentsEdit"));
-        check(queueStatus && decrease && increase && settingsLimit &&
+        QWidget *queueOverlay = window.findChild<QWidget *>(
+            QStringLiteral("agentQueueOverlay"));
+        check(queueStatus && decrease && increase && settingsLimit && queueOverlay &&
+                  queueOverlay->parentWidget() &&
+                  queueOverlay->parentWidget()->parentWidget() &&
+                  queueOverlay->parentWidget()->parentWidget()->objectName() ==
+                      QStringLiteral("issueTable") &&
+                  queueOverlay->isVisible() &&
+                  queueOverlay->x() + queueOverlay->width() + 12 ==
+                      queueOverlay->parentWidget()->width() &&
                   queueStatus->text() == QStringLiteral("Queue: 0 / 5"),
-              QStringLiteral("Agents toolbar shows the queued count and run limit "
-                             "beside Start all"));
+              QStringLiteral("Agents queue floats over the list viewport with its "
+                             "queued count and run limit"));
         if (queueStatus && decrease && increase && settingsLimit) {
             increase->click();
             check(QSettings().value(QStringLiteral("agents/maxRunning")).toInt() == 6 &&
@@ -1646,6 +1746,45 @@ int main(int argc, char *argv[])
           QStringLiteral("agents list is #/Issue with the title column absorbing "
                          "the spare width (adhoc #35/#84/#92, layout = %1)")
               .arg(agentColumns));
+
+    // adhoc #1339: the chrome matrix is a live-session indicator, not a second
+    // history list. A completed, failed, stopped, or cleared run must immediately
+    // relinquish its square; work that is running, queued, or waiting for input
+    // remains visible until it reaches a terminal state.
+    {
+        const int dotsBefore = window.testAgentDotCount();
+        const auto addAgent = [&window](int id, const QString &status) {
+            AgentSession session;
+            session.id = id;
+            session.owner = QStringLiteral("me");
+            session.name = QStringLiteral("r");
+            session.prompt = QStringLiteral("Dot-matrix status fixture");
+            session.status = status;
+            window.testAddAgentSession(session);
+        };
+        addAgent(133901, AgentStatus::Running);
+        addAgent(133902, AgentStatus::Queued);
+        addAgent(133903, AgentStatus::Waiting);
+        addAgent(133904, AgentStatus::Success);
+        addAgent(133905, AgentStatus::Failed);
+        addAgent(133906, AgentStatus::Stopped);
+        addAgent(133907, AgentStatus::Cleared);
+        window.testRefreshAgentDotMatrix();
+        check(window.testAgentDotCount() == dotsBefore + 3,
+              QStringLiteral("agent matrix shows only running, queued, and waiting "
+                             "sessions (not terminal history)"));
+
+        window.testSetAgentSessionStatus(133901, AgentStatus::Success);
+        window.testSetAgentSessionStatus(133902, AgentStatus::Success);
+        window.testSetAgentSessionStatus(133903, AgentStatus::Success);
+        check(window.testAgentDotCount() == dotsBefore,
+              QStringLiteral("agent matrix removes each dot when its session "
+                             "reaches a terminal state"));
+
+        for (int id = 133901; id <= 133907; ++id)
+            window.testRemoveAgentSession(id);
+    }
+
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
     check(window.findChild<QLabel *>(
@@ -2129,7 +2268,7 @@ int main(int argc, char *argv[])
                           "(got id %1)").arg(mirror1Id));
             check(!sawOffline,
                   QStringLiteral("offline mirror nodes are hidden while Online only is checked"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 1) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 2) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
             // Columns: Node, Owner, Latest commit, Message, Author, Synced,
@@ -2295,6 +2434,9 @@ int main(int argc, char *argv[])
         check(window.testGitWorkspaceIsExclusive(),
               QStringLiteral("a branch diff gives the Git rail exclusive ownership: "
                              "no Code chrome and no visible diff outside Git"));
+        check(window.testGitPromptFloatsBottomRight(),
+              QStringLiteral("Git floats only its prompt at the lower-right, "
+                             "leaving the graph's left side at full height"));
 
         // adhoc #420: following a branch link must land on the branch straight
         // away. The panel's git reads run on a worker thread now, so the
@@ -2520,6 +2662,13 @@ int main(int argc, char *argv[])
                       "(tree = %1, diff = %2)")
                   .arg(window.testSourceControlPaths().join(QStringLiteral(", ")),
                        window.testBranchDiffFiles().join(QStringLiteral(", "))));
+        const QString branchCommitControls =
+            window.testScmCommitControlsState();
+        check(window.testSourceControlGitDir() == wtPath &&
+                  branchCommitControls.contains(QStringLiteral("commit=enabled")),
+              QString("Git can commit an open branch's uncommitted changes in "
+                      "that branch's own worktree (target = %1, controls = %2)")
+                  .arg(window.testSourceControlGitDir(), branchCommitControls));
         check(window.testClickSourceControlPath(
                   QStringLiteral("live-uncommitted.txt")) &&
                   window.testCommitWorkspacePage() == 2,
@@ -3295,15 +3444,15 @@ int main(int argc, char *argv[])
         auto *repoSizeChart = seeded.findChild<QWidget *>(QStringLiteral("repoSizeChart"));
         auto *repoLinesChart = seeded.findChild<QWidget *>(QStringLiteral("repoLinesChart"));
         auto *repoFilesChart = seeded.findChild<QWidget *>(QStringLiteral("repoFilesChart"));
+        auto *overviewList = seeded.findChild<QTreeWidget *>(QStringLiteral("overviewList"));
         auto *ratchet = seeded.findChild<QToolButton *>(QStringLiteral("repoRatchetButton"));
-        // Adhoc #421: the day trends are drawn at the same 34px side as the
-        // window chrome's CPU/MEM/DISK squares instead of a size larger, and
-        // the Ratchet toggle reads "Ratchet" under an icon.
         check(repoSizeChart && repoLinesChart && repoFilesChart && ratchet &&
                   repoSizeChart->width() == 34 && repoLinesChart->width() == 34 &&
                   repoFilesChart->width() == 34 && ratchet->isCheckable() &&
                   ratchet->text() == QStringLiteral("Ratchet"),
-              QStringLiteral("repository trends and Ratchet live in the top bar"));
+              QStringLiteral("repository trends use three history charts"));
+        check(overviewList && overviewList->columnCount() == 2,
+              QStringLiteral("overview keeps entry metrics and updated time on the left"));
         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.
@@ -3624,6 +3773,10 @@ int main(int argc, char *argv[])
                   QStringLiteral("see [#123](forkmesh-ref:123) and "
                                  "[a1b2c3d](forkmesh-commit:a1b2c3d)"),
               QStringLiteral("agent transcript links issue and commit references"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("show d6c14744")) ==
+                  QStringLiteral("show [d6c14744](forkmesh-commit:d6c14744)"),
+              QStringLiteral("agent transcript links hexadecimal commit references"));
         check(ClaudeTranscriptView::linkifyReferences(
                   QStringLiteral("```\nMainWindow.h\nfeat/not-a-link\n```")) ==
                   QStringLiteral("```\nMainWindow.h\nfeat/not-a-link\n```"),

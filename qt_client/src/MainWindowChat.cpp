@@ -1452,6 +1452,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     logPanelLayout->addWidget(m_footerUpdateLog, 1);
 
     auto *leftRegion = new QWidget;
+    m_footerLeftRegion = leftRegion;
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
     auto *leftRegionLayout = new QHBoxLayout(leftRegion);
     leftRegionLayout->setContentsMargins(0, 0, 0, 0);
@@ -3682,8 +3683,8 @@ void MainWindow::checkFileDescriptorPressure()
 
 void MainWindow::refreshRepositoryStats()
 {
-    // The trend charts and Ratchet toggle live on the Code overview's mode row
-    // (adhoc #6), which is built lazily with the repo detail's Code tab.
+    // The trend charts and Ratchet toggle live on the Code overview's mode row,
+    // which is built lazily with the repo detail's Code tab.
     if (!m_repoSizeChart || !m_repoLinesChart || !m_repoFilesChart)
         return;
     const QString dir = repoGitDir();
@@ -3717,7 +3718,9 @@ void MainWindow::refreshRepositoryStats()
     QVector<double> sizes, lines, files;
     double maxSize = 1, maxLines = 1, maxFiles = 1;
     for (const RepoStatsSample &day : days) {
-        sizes << double(day.bytes); lines << double(day.lines); files << double(day.files);
+        sizes << double(day.bytes);
+        lines << double(day.lines);
+        files << double(day.files);
         maxSize = qMax(maxSize, double(day.bytes));
         maxLines = qMax(maxLines, double(day.lines));
         maxFiles = qMax(maxFiles, double(day.files));
@@ -4120,13 +4123,14 @@ void MainWindow::showDiagnosticsDialog()
 }
 
 // Column layout of the "High memory usage" table; adhoc #98 added the trend
-// square and the command line and adhoc #96 the agent attribution, so the
-// indexes are worth naming.
+// square and the command line, adhoc #96 the agent attribution and adhoc #228
+// the parent process, so the indexes are worth naming.
 static constexpr int kHighMemoryTrendColumn = 1;
-static constexpr int kHighMemoryAgentColumn = 6;
-static constexpr int kHighMemoryCommandColumn = 7;
-static constexpr int kHighMemoryActionColumn = 8;
-static constexpr int kHighMemoryColumnCount = 9;
+static constexpr int kHighMemoryParentColumn = 3;
+static constexpr int kHighMemoryAgentColumn = 7;
+static constexpr int kHighMemoryCommandColumn = 8;
+static constexpr int kHighMemoryActionColumn = 9;
+static constexpr int kHighMemoryColumnCount = 10;
 // How many rows carry a trend square. One per row for all 30 would be mostly
 // noise; the top ten are the ones worth watching grow.
 static constexpr int kHighMemoryTrendRows = 10;
@@ -4148,9 +4152,9 @@ void MainWindow::showHighMemoryProcessPanel()
     dialog->setModal(false);
     dialog->setWindowTitle(QStringLiteral("High memory usage"));
     // Wide enough for the command-line column to be worth reading (adhoc #98)
-    // beside the agent column (adhoc #96), clamped to the screen so it still
-    // fits on smaller displays.
-    QSize preferred(1420, 620);
+    // beside the agent (adhoc #96) and parent (adhoc #228) columns, clamped to
+    // the screen so it still fits on smaller displays.
+    QSize preferred(1680, 620);
     if (QScreen *screen = QGuiApplication::primaryScreen())
         preferred =
             preferred.boundedTo(screen->availableGeometry().size() * 0.92);
@@ -4161,8 +4165,11 @@ void MainWindow::showHighMemoryProcessPanel()
         "<b>Host memory is above 85%</b><br>"
         "Processes are sorted by resident memory, and the top ten carry a "
         "trend square showing how their memory has moved since this panel "
-        "opened. Anything an agent run started — the agent itself and every "
-        "build, test or tool below it — names that run in the Agent column. "
+        "opened. The Parent column names the process that started each row — "
+        "hover it for the whole ancestry chain. Anything an agent run started "
+        "— the agent itself and every build, test or tool below it — names "
+        "that run in the Agent column, and “Stop agent” ends that run "
+        "cleanly instead of killing one process out from under it. "
         "“Kill” requests a normal termination and “Kill all” does the "
         "same for every listed process sharing that name; ForkMesh and PID 1 "
         "are protected."));
@@ -4178,10 +4185,10 @@ void MainWindow::showHighMemoryProcessPanel()
     m_highMemoryProcessTable = new QTableWidget(0, kHighMemoryColumnCount);
     m_highMemoryProcessTable->setHorizontalHeaderLabels(
         {QStringLiteral("Process"), QStringLiteral("Trend"),
-         QStringLiteral("PID"), QStringLiteral("Owner"),
-         QStringLiteral("Memory"), QStringLiteral("Host %"),
-         QStringLiteral("Agent"), QStringLiteral("Command line"),
-         QStringLiteral("Action")});
+         QStringLiteral("PID"), QStringLiteral("Parent"),
+         QStringLiteral("Owner"), QStringLiteral("Memory"),
+         QStringLiteral("Host %"), QStringLiteral("Agent"),
+         QStringLiteral("Command line"), QStringLiteral("Action")});
     m_highMemoryProcessTable->verticalHeader()->setVisible(false);
     m_highMemoryProcessTable->setSelectionBehavior(
         QAbstractItemView::SelectRows);
@@ -4200,12 +4207,13 @@ void MainWindow::showHighMemoryProcessPanel()
     m_highMemoryProcessTable->setColumnWidth(0, 180);
     m_highMemoryProcessTable->setColumnWidth(kHighMemoryTrendColumn, 46);
     m_highMemoryProcessTable->setColumnWidth(2, 72);
-    m_highMemoryProcessTable->setColumnWidth(3, 110);
-    m_highMemoryProcessTable->setColumnWidth(4, 105);
-    m_highMemoryProcessTable->setColumnWidth(5, 72);
+    m_highMemoryProcessTable->setColumnWidth(kHighMemoryParentColumn, 170);
+    m_highMemoryProcessTable->setColumnWidth(4, 110);
+    m_highMemoryProcessTable->setColumnWidth(5, 105);
+    m_highMemoryProcessTable->setColumnWidth(6, 72);
     m_highMemoryProcessTable->setColumnWidth(kHighMemoryAgentColumn, 190);
     m_highMemoryProcessTable->setColumnWidth(kHighMemoryActionColumn,
-                                            160); // Kill + Kill all
+                                            250); // Kill + Kill all + Stop agent
     // Tall enough for a trend square to sit inside a row.
     m_highMemoryProcessTable->verticalHeader()->setDefaultSectionSize(38);
     layout->addWidget(m_highMemoryProcessTable, 1);
@@ -4301,8 +4309,11 @@ void MainWindow::refreshHighMemoryProcessTable()
                 // Parent of every process on the host, so a listed row can be
                 // walked back to the agent run that spawned it (adhoc #96).
                 // `ps` already reports it, which keeps the attribution free of
-                // a second /proc pass.
+                // a second /proc pass. The names ride along because a parent is
+                // usually *not* itself a listed row (adhoc #228): the ninja that
+                // spawned a fat cc1plus barely shows up in the memory list.
                 QHash<qint64, qint64> parentOf;
+                QHash<qint64, QString> nameOf;
                 const QList<QByteArray> lines = output.split('\n');
                 int validProcesses = 0;
                 for (const QByteArray &raw : lines) {
@@ -4334,6 +4345,7 @@ void MainWindow::refreshHighMemoryProcessTable()
                         name = name.mid(slash + 1);
                     if (name.isEmpty())
                         name = commandLine;
+                    nameOf.insert(pid, name);
                     ++validProcesses;
                     // `ps` is already RSS-sorted. Only materialize the top
                     // culprits: hundreds of cell widgets and repeated
@@ -4375,6 +4387,8 @@ void MainWindow::refreshHighMemoryProcessTable()
                 // and the cc1plus swarm an agent kicked off say whose they are.
                 struct AgentOwner {
                     qint64 rootPid = 0;
+                    int sessionId = 0;
+                    bool stoppable = false;
                     QString label;
                     QString detail;
                 };
@@ -4391,6 +4405,8 @@ void MainWindow::refreshHighMemoryProcessTable()
                         title = QStringLiteral("Agent run #%1").arg(session.id);
                     AgentOwner owner;
                     owner.rootPid = rootPid;
+                    owner.sessionId = session.id;
+                    owner.stoppable = isStoppableAgentSession(session.id);
                     owner.label =
                         session.issueNumber > 0
                             ? QStringLiteral("#%1 %2").arg(session.issueNumber).arg(title)
@@ -4426,6 +4442,26 @@ void MainWindow::refreshHighMemoryProcessTable()
                     return nullptr;
                 };
 
+                // The chain a row hangs off, parent first and init last, for the
+                // Parent column's tooltip (adhoc #228). Same hop cap as above,
+                // and for the same reason: a `ps` snapshot taken while processes
+                // exit can hand back a parent chain that loops.
+                auto ancestryOf = [&parentOf, &nameOf](qint64 pid) {
+                    QStringList chain;
+                    qint64 current = parentOf.value(pid, 0);
+                    for (int hops = 0; current > 0 && hops < 64; ++hops) {
+                        chain << QStringLiteral("%1 (%2)")
+                                     .arg(nameOf.value(
+                                         current, QStringLiteral("?")))
+                                     .arg(current);
+                        const qint64 parent = parentOf.value(current, 0);
+                        if (parent <= 0 || parent == current)
+                            break;
+                        current = parent;
+                    }
+                    return chain.join(QStringLiteral("\n  ↑ "));
+                };
+
                 m_highMemoryProcessTable->setUpdatesEnabled(false);
                 m_highMemoryProcessTable->clearContents();
                 m_highMemoryProcessTable->setRowCount(rows.size());
@@ -4443,10 +4479,33 @@ void MainWindow::refreshHighMemoryProcessTable()
                     };
                     put(0, process.name);
                     put(2, QString::number(process.pid), process.pid);
-                    put(3, process.owner);
-                    put(4, SystemStats::formatBytes(process.rssKb * 1024),
+                    // Who started this process (adhoc #228). A bare PID says
+                    // little on a pressured host, so the cell names the parent
+                    // and the tooltip walks the chain up to init — that is what
+                    // turns "another cc1plus" into "the ninja under agent #12".
+                    const qint64 parentPid = parentOf.value(process.pid, 0);
+                    const QString parentName =
+                        nameOf.value(parentPid, QStringLiteral("?"));
+                    put(kHighMemoryParentColumn,
+                        parentPid > 0 ? QStringLiteral("%1 (%2)")
+                                            .arg(parentName)
+                                            .arg(parentPid)
+                                      : QStringLiteral("—"),
+                        parentPid);
+                    if (QTableWidgetItem *parentCell =
+                            m_highMemoryProcessTable->item(
+                                row, kHighMemoryParentColumn))
+                        parentCell->setToolTip(
+                            parentPid > 0
+                                ? QStringLiteral("Ancestry:\n%1")
+                                      .arg(ancestryOf(process.pid))
+                                : QStringLiteral(
+                                      "No parent reported — the process "
+                                      "exited during the scan, or it is PID 1."));
+                    put(4, process.owner);
+                    put(5, SystemStats::formatBytes(process.rssKb * 1024),
                         process.rssKb);
-                    put(5, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
+                    put(6, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
                         process.percent);
                     // Whose run this is, if any (adhoc #96). The agent's own
                     // process names the session outright; anything it started
@@ -4568,6 +4627,36 @@ void MainWindow::refreshHighMemoryProcessTable()
                     actionRow->setSpacing(4);
                     actionRow->addWidget(kill);
                     actionRow->addWidget(killAll);
+
+                    // "Stop agent" on any row an agent run owns (adhoc #228).
+                    // SIGTERMing a cc1plus only makes the run fail confusingly;
+                    // stopping the session takes its whole process tree down and
+                    // leaves the row in a state the Agents section understands.
+                    if (agent) {
+                        auto *stop = new QPushButton(QStringLiteral("Stop agent"));
+                        stop->setProperty("buttonSize", "sm");
+                        stop->setEnabled(agent->stoppable);
+                        stop->setToolTip(
+                            agent->stoppable
+                                ? QStringLiteral("Stop the agent run “%1” "
+                                                 "and everything it started")
+                                      .arg(agent->label)
+                                : QStringLiteral("“%1” is no longer running")
+                                      .arg(agent->label));
+                        // Deferred out of the click: the confirmation below runs
+                        // a nested event loop, the panel's 5s auto-refresh fires
+                        // inside it, and the rebuild deletes this very button —
+                        // so nothing may return into its clicked() emission.
+                        connect(stop, &QPushButton::clicked, this,
+                                [this, sessionId = agent->sessionId,
+                                 label = agent->label] {
+                                    QTimer::singleShot(
+                                        0, this, [this, sessionId, label] {
+                                            stopHighMemoryAgent(sessionId, label);
+                                        });
+                                });
+                        actionRow->addWidget(stop);
+                    }
                     m_highMemoryProcessTable->setCellWidget(
                         row, kHighMemoryActionColumn, actions);
                 }
@@ -4655,6 +4744,55 @@ void MainWindow::killHighMemoryProcess(qint64 pid, const QString &name)
         QStringLiteral("Per-process termination is not supported on this "
                        "platform yet."));
 #endif
+}
+
+// Row-level "Stop agent" (adhoc #228). The panel lists processes, but the thing
+// worth stopping is usually the run above them: killing one compiler out of a
+// build leaves the agent alive, confused and still holding its memory, whereas
+// stopping the session ends the whole tree and marks the row Stopped.
+void MainWindow::stopHighMemoryAgent(int sessionId, const QString &label)
+{
+    if (sessionId <= 0)
+        return;
+    // The button is disabled for finished runs, so this is the race where the
+    // session ended between the scan and the click.
+    if (!isStoppableAgentSession(sessionId)) {
+        if (m_highMemoryProcessStatus)
+            m_highMemoryProcessStatus->setText(
+                QStringLiteral("“%1” is no longer running.").arg(label));
+        return;
+    }
+    auto *parent = m_highMemoryDialog
+                       ? static_cast<QWidget *>(m_highMemoryDialog.data())
+                       : static_cast<QWidget *>(this);
+    // External (watch-only) rows run their own confirmation inside
+    // stopExternalSession — asking twice for one click reads like a bug.
+    if (!isExternalSession(sessionId) &&
+        QMessageBox::warning(
+            parent, QStringLiteral("Stop agent"),
+            QStringLiteral("Stop the agent run “%1”?\n\n"
+                           "Everything it started — builds, tests and tools — "
+                           "goes down with it. Its worktree and branch are "
+                           "kept, so the run can be started again.")
+                .arg(label),
+            QMessageBox::Cancel | QMessageBox::Yes,
+            QMessageBox::Cancel) != QMessageBox::Yes)
+        return;
+
+    if (!stopAgentSessionById(sessionId)) {
+        if (m_highMemoryProcessStatus)
+            m_highMemoryProcessStatus->setText(
+                QStringLiteral("Could not stop “%1” — it is no longer "
+                               "running.")
+                    .arg(label));
+        return;
+    }
+    if (m_highMemoryProcessStatus)
+        m_highMemoryProcessStatus->setText(
+            QStringLiteral("Stop requested for the agent run “%1”.")
+                .arg(label));
+    // The tree takes a moment to wind down; re-scan once it has.
+    QTimer::singleShot(750, this, &MainWindow::refreshHighMemoryProcessTable);
 }
 
 void MainWindow::killAllHighMemoryProcesses(const QString &name,
@@ -8871,6 +9009,104 @@ namespace {
 // left out: the description (prose for the repository's own page, not a grid
 // cell) and raw signatures / private-archive locators (proof material rather
 // than repository facts — their digests are shown instead).
+
+class NetworkRepoCommitSparkline final : public QWidget
+{
+public:
+    NetworkRepoCommitSparkline(const QVector<qint64> &weeks,
+                               qint64 totalCommitCount,
+                               QWidget *parent = nullptr)
+        : QWidget(parent), m_weeks(weeks), m_totalCommitCount(totalCommitCount)
+    {
+        setObjectName(QStringLiteral("networkRepoCommitSparkline"));
+        setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
+        setMinimumSize(152, 28);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+
+        qint64 activityTotal = 0;
+        QStringList values;
+        for (const qint64 value : m_weeks) {
+            activityTotal += value;
+            values << QString::number(value);
+        }
+        const auto commitLabel = [](qint64 count) {
+            return QStringLiteral("%1 commit%2")
+                .arg(formatCount(count), count == 1 ? QString() : QStringLiteral("s"));
+        };
+        m_summary = m_totalCommitCount >= 0
+            ? (activityTotal && activityTotal != m_totalCommitCount
+                   ? QStringLiteral("%1 total; %2 in the past 52 weeks")
+                         .arg(commitLabel(m_totalCommitCount),
+                              commitLabel(activityTotal))
+                   : commitLabel(m_totalCommitCount))
+            : QStringLiteral("%1 in the past 52 weeks")
+                  .arg(commitLabel(activityTotal));
+        setAccessibleName(m_summary);
+        setToolTip(QStringLiteral("%1\nCommits per week (oldest first):\n%2")
+                       .arg(m_summary, values.join(QLatin1Char(' '))));
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const QString totalLabel = m_totalCommitCount >= 0
+            ? QStringLiteral("%1 total").arg(formatCount(m_totalCommitCount))
+            : QString::fromUtf8("\xE2\x80\x94");
+        QFont valueFont = font();
+        valueFont.setPointSizeF(qMax(7.0, valueFont.pointSizeF() - 1.0));
+        const QFontMetrics valueMetrics(valueFont);
+        const int labelWidth = valueMetrics.horizontalAdvance(totalLabel) + 8;
+        const QRectF chartRect = QRectF(rect()).adjusted(1.0, 4.0,
+                                                          -labelWidth, -4.0);
+        const QRectF labelRect(chartRect.right() + 5.0, 0.0,
+                               qMax(0.0, width() - chartRect.right() - 5.0),
+                               height());
+
+        QColor track = palette().color(QPalette::WindowText);
+        track.setAlpha(30);
+        QColor emptyBar = palette().color(QPalette::WindowText);
+        emptyBar.setAlpha(45);
+        const QColor activeBar(currentThemeIsDark() ? "#3fb950" : "#1f883d");
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(track);
+        painter.drawRoundedRect(chartRect, 3.0, 3.0);
+
+        qint64 maximum = 1;
+        for (const qint64 value : m_weeks)
+            maximum = qMax(maximum, value);
+        const int count = m_weeks.size();
+        if (count > 0 && chartRect.width() > 1.0) {
+            const qreal step = chartRect.width() / count;
+            const qreal barWidth = qMax(1.0, step - 0.65);
+            for (int index = 0; index < count; ++index) {
+                const qint64 value = m_weeks.at(index);
+                const qreal height = value > 0
+                    ? qMax(2.0, (chartRect.height() - 3.0) * value / maximum)
+                    : 1.0;
+                const QRectF bar(chartRect.left() + index * step + (step - barWidth) / 2.0,
+                                 chartRect.bottom() - height - 1.0, barWidth, height);
+                painter.setBrush(value > 0 ? activeBar : emptyBar);
+                painter.drawRoundedRect(bar, 1.0, 1.0);
+            }
+        }
+
+        painter.setFont(valueFont);
+        QColor label = palette().color(QPalette::WindowText);
+        label.setAlpha(180);
+        painter.setPen(label);
+        painter.drawText(labelRect, Qt::AlignRight | Qt::AlignVCenter,
+                         totalLabel);
+    }
+
+private:
+    QVector<qint64> m_weeks;
+    qint64 m_totalCommitCount = -1;
+    QString m_summary;
+};
+
 enum NetworkRepoCol {
     kRepoColName = 0,
     kRepoColLocalFork,
@@ -8936,7 +9172,7 @@ QStringList networkRepoHeaders()
             QStringLiteral("Commits"),      QStringLiteral("Branches"),
             QStringLiteral("Pulls"),        QStringLiteral("Discussions"),
             QStringLiteral("Worktrees"),    QStringLiteral("Artifacts"),
-            QStringLiteral("Activity 52w"), QStringLiteral("Changed files"),
+            QStringLiteral("Commit activity"), QStringLiteral("Changed files"),
             QStringLiteral("Size"),         QStringLiteral("Source"),
             QStringLiteral("Hosts"),        QStringLiteral("Machine"),
             QStringLiteral("Runtime"),      QStringLiteral("Platform"),
@@ -9388,6 +9624,60 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         }
 
         QJsonObject canonical = group.at(best);
+        // A mirror can advertise a stale commit count or 52-week history while
+        // another member already has the current served branch.  Mirrors are
+        // replicas, not independent histories: take the highest total and the
+        // highest value in each week rather than summing duplicate commits.
+        // This keeps the Repos row from showing a stale mirror's "1" before
+        // the repository detail reads the current history and reports "3".
+        auto nonNegativeCount = [](const QJsonValue &value, qint64 *out) {
+            if (value.isDouble()) {
+                const double number = value.toDouble();
+                if (!std::isfinite(number) || number < 0)
+                    return false;
+                *out = qint64(number);
+                return true;
+            }
+            bool ok = false;
+            const qint64 number = value.toString().trimmed().toLongLong(&ok);
+            if (!ok || number < 0)
+                return false;
+            *out = number;
+            return true;
+        };
+        qint64 commitCount = -1;
+        QVector<qint64> activityWeeks(52, 0);
+        bool hasActivityWeeks = false;
+        for (const QJsonObject &member : group) {
+            qint64 memberCommitCount = -1;
+            if (nonNegativeCount(member.value(QStringLiteral("commitCount")),
+                                 &memberCommitCount)) {
+                commitCount = qMax(commitCount, memberCommitCount);
+            }
+            const QJsonArray memberWeeks =
+                member.value(QStringLiteral("activityWeeks")).toArray();
+            if (memberWeeks.isEmpty())
+                continue;
+            hasActivityWeeks = true;
+            const int first = qMax(0, memberWeeks.size() - activityWeeks.size());
+            const int destination = qMax(0, activityWeeks.size() - memberWeeks.size());
+            for (int index = first; index < memberWeeks.size(); ++index) {
+                qint64 commits = 0;
+                if (!nonNegativeCount(memberWeeks.at(index), &commits))
+                    continue;
+                activityWeeks[destination + index - first] =
+                    qMax(activityWeeks.at(destination + index - first), commits);
+            }
+        }
+        if (commitCount >= 0)
+            canonical.insert(QStringLiteral("commitCount"),
+                             QString::number(commitCount));
+        if (hasActivityWeeks) {
+            QJsonArray mergedWeeks;
+            for (const qint64 commits : activityWeeks)
+                mergedWeeks.append(commits);
+            canonical.insert(QStringLiteral("activityWeeks"), mergedWeeks);
+        }
         const QString source =
             canonical.value("source").toString().trimmed();
         const QString rawOwner =
@@ -9810,18 +10100,20 @@ void MainWindow::fillNetworkRepoDataCells(int row, const QJsonObject &repo)
     if (activity.isEmpty()) {
         textCell(kRepoColActivity, QString());
     } else {
-        qint64 activityTotal = 0;
-        QStringList weeks;
+        QVector<qint64> weeks;
+        weeks.reserve(activity.size());
         for (const QJsonValue &week : activity) {
-            activityTotal += qint64(week.toDouble());
-            weeks << QString::number(qint64(week.toDouble()));
+            const QVariant value = week.isDouble()
+                ? QVariant(qint64(week.toDouble()))
+                : QVariant(week.toString().trimmed().toLongLong());
+            weeks.append(qMax<qint64>(0, value.toLongLong()));
         }
-        auto *item = new QTableWidgetItem;
-        item->setData(Qt::DisplayRole, activityTotal);
-        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        item->setToolTip(QStringLiteral("Commits per week (oldest first):\n%1")
-                             .arg(weeks.join(QLatin1Char(' '))));
-        m_networkReposTable->setItem(row, kRepoColActivity, item);
+        const QVariant total = number(QStringLiteral("commitCount"));
+        m_networkReposTable->setCellWidget(
+            row, kRepoColActivity,
+            new NetworkRepoCommitSparkline(
+                weeks, total.isValid() ? total.toLongLong() : -1,
+                m_networkReposTable));
     }
 
     const QStringList changedFiles = joinArray(QStringLiteral("changedFiles"));
@@ -10146,6 +10438,25 @@ QWidget *MainWindow::buildHostsSection()
 
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(6);
+
+    auto *hostsLabel = new QLabel(QStringLiteral("Hosts"));
+    QFont hlf = hostsLabel->font();
+    hlf.setBold(true);
+    hostsLabel->setFont(hlf);
+    titleRow->addWidget(hostsLabel);
+    titleRow->addWidget(makeInlineHelpButton(
+        QStringLiteral("About saved hosts"), QString::fromUtf8(
+            "Click Update on a saved host to re-run the installer and bring it up to "
+            "the latest ForkMesh release. Click Uninstall to completely remove "
+            "ForkMesh \xE2\x80\x94 binary, launcher and ALL data \xE2\x80\x94 from "
+            "that host. Click Actions to enable its executor and optionally replace "
+            "its device-local variables through a one-shot SSH stdin request; secret "
+            "values are never saved by this controller. Click Logs to open a live "
+            "SSH tail for that host, or Size map to browse what is filling that "
+            "host's disk. Click Remove to drop a host from this list without "
+            "touching it \xE2\x80\x94 no SSH session is opened. Double-click a host "
+            "instead to reload it into the form below for editing.")));
     titleRow->addStretch(1);
     // Bulk one-click install: make every saved host install the current
     // published, checksum-verified release in parallel. This deliberately does
@@ -10193,31 +10504,14 @@ QWidget *MainWindow::buildHostsSection()
     titleRow->addWidget(m_hostUpdateAllSourceButton);
     outer->addLayout(titleRow);
 
-    auto *subtitle = new QLabel(QString::fromUtf8(
-        "Provision a remote machine onto the network. Enter its address and SSH "
-        "login and give it a node name, then click Add host to save it. With the "
-        "host saved, click Install ForkMesh and it will SSH in and run the hosted "
-        "installer in a plain shell. ForkMesh remembers the first host key in "
-        "its private trust store and rejects later mismatches. Your SSH agent, "
-        "default keys and ~/.ssh/config are used when the optional password is "
-        "blank; entered passwords remain in memory only. When installation "
-        "finishes the new node joins the network and shows up in each "
-        "repository's Mirror nodes list. Install "
-        "(binary) on one saved host uploads this app's own binary. Install from "
-        "binary (all hosts) instead makes every host download and checksum-verify "
-        "the current published release, then confirms the installed version and "
-        "exact source commit. No server yet? Create a Vultr mirror below "
-        "provisions a brand-new VPS from just an API key."));
-    subtitle->setObjectName("mutedLabel");
-    subtitle->setWordWrap(true);
-    outer->addWidget(subtitle);
-
     auto *scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     auto *body = new QWidget;
+    body->setObjectName(QStringLiteral("hostsPageBody"));
     auto *bodyCol = new QVBoxLayout(body);
+    bodyCol->setObjectName(QStringLiteral("hostsPageLayout"));
     bodyCol->setContentsMargins(0, 0, 0, 0);
     bodyCol->setSpacing(10);
 
@@ -10228,6 +10522,31 @@ QWidget *MainWindow::buildHostsSection()
     auto *formCol = new QVBoxLayout(formCard);
     formCol->setContentsMargins(12, 10, 12, 10);
     formCol->setSpacing(6);
+
+    auto *formTitleRow = new QHBoxLayout;
+    formTitleRow->setContentsMargins(0, 0, 0, 0);
+    formTitleRow->setSpacing(6);
+    auto *formTitle = new QLabel(QStringLiteral("Add a host"));
+    QFont ftf = formTitle->font();
+    ftf.setBold(true);
+    formTitle->setFont(ftf);
+    formTitleRow->addWidget(formTitle);
+    formTitleRow->addWidget(makeInlineHelpButton(
+        QStringLiteral("About adding a host"), QString::fromUtf8(
+            "Provision a remote machine onto the network. Enter its address and SSH "
+            "login and give it a node name, then click Add host to save it. With the "
+            "host saved, click Install ForkMesh and it will SSH in and run the hosted "
+            "installer in a plain shell. ForkMesh remembers the first host key in "
+            "its private trust store and rejects later mismatches. Your SSH agent, "
+            "default keys and ~/.ssh/config are used when the optional password is "
+            "blank; entered passwords remain in memory only. When installation "
+            "finishes the new node joins the network and shows up in each "
+            "repository's Mirror nodes list. Install (binary) on one saved host "
+            "uploads this app's own binary. Install from binary (all hosts) instead "
+            "makes every host download and checksum-verify the current published "
+            "release, then confirms the installed version and exact source commit.")));
+    formTitleRow->addStretch(1);
+    formCol->addLayout(formTitleRow);
 
     auto *form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignRight);
@@ -10295,7 +10614,6 @@ QWidget *MainWindow::buildHostsSection()
     m_hostInstallStatus->setWordWrap(true);
     runRow->addWidget(m_hostInstallStatus, 1);
     formCol->addLayout(runRow);
-    bodyCol->addWidget(formCard);
 
     // --- Create a Vultr mirror (adhoc #315) --------------------------------
     // Fully automated alternative to the manual form above: given only a Vultr
@@ -10310,36 +10628,36 @@ QWidget *MainWindow::buildHostsSection()
     vultrCol->setContentsMargins(12, 10, 12, 10);
     vultrCol->setSpacing(6);
 
+    auto *vultrTitleRow = new QHBoxLayout;
+    vultrTitleRow->setContentsMargins(0, 0, 0, 0);
+    vultrTitleRow->setSpacing(6);
     auto *vultrTitle = new QLabel(QStringLiteral("Create a Vultr mirror"));
     QFont vtf = vultrTitle->font();
     vtf.setBold(true);
     vultrTitle->setFont(vtf);
-    vultrCol->addWidget(vultrTitle);
-
-    auto *vultrHint = new QLabel(QString::fromUtf8(
-        "One click deploys a brand-new cloud mirror on your Vultr account: "
-        "ForkMesh picks the cheapest available US IPv4 plan with at least 1 GB "
-        "RAM, preferring New Jersey/New York metro and then Atlanta (smaller "
-        "plans cannot hold the encrypted mirror's temporary "
-        "working set; Vultr's IPv6-only tiers are also unreachable for the "
-        "mesh) running the latest Debian, "
-        "creates and manages the SSH key for it automatically, boots the "
-        "instance, installs ForkMesh over SSH and links the new node to your "
-        "account so it starts mirroring and syncing right away. The API key "
-        "(Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is saved once "
-        "Vultr accepts it \xE2\x80\x94 into this device's VULTR_API_KEY "
-        "variable (Settings \xE2\x86\x92 Variables / Secrets) and into "
-        "cloudflare_worker/.env.production \xE2\x80\x94 so you never have to "
-        "enter it again; it travels only in the Authorization header of this "
-        "app's HTTPS calls to Vultr, never in a command line. When a "
-        "CLOUDFLARE_API_TOKEN device variable and a Cloudflare zone are "
-        "configured, the new node also gets a <node>.<zone> DNS record so it "
-        "joins the mesh under a stable name like your other mirrors. The "
-        "instance is billed by Vultr to your account until you destroy it "
-        "there."));
-    vultrHint->setObjectName("mutedLabel");
-    vultrHint->setWordWrap(true);
-    vultrCol->addWidget(vultrHint);
+    vultrTitleRow->addWidget(vultrTitle);
+    vultrTitleRow->addWidget(makeInlineHelpButton(
+        QStringLiteral("About Vultr mirrors"), QString::fromUtf8(
+            "One click deploys a brand-new cloud mirror on your Vultr account: "
+            "ForkMesh picks the cheapest available US IPv4 plan with at least 1 GB "
+            "RAM, preferring New Jersey/New York metro and then Atlanta (smaller "
+            "plans cannot hold the encrypted mirror's temporary working set; "
+            "Vultr's IPv6-only tiers are also unreachable for the mesh) running the "
+            "latest Debian, creates and manages the SSH key for it automatically, "
+            "boots the instance, installs ForkMesh over SSH and links the new node "
+            "to your account so it starts mirroring and syncing right away. The API "
+            "key (Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is saved once "
+            "Vultr accepts it \xE2\x80\x94 into this device's VULTR_API_KEY variable "
+            "(Settings \xE2\x86\x92 Variables / Secrets) and into "
+            "cloudflare_worker/.env.production \xE2\x80\x94 so you never have to "
+            "enter it again; it travels only in the Authorization header of this "
+            "app's HTTPS calls to Vultr, never in a command line. When a "
+            "CLOUDFLARE_API_TOKEN device variable and a Cloudflare zone are "
+            "configured, the new node also gets a <node>.<zone> DNS record so it "
+            "joins the mesh under a stable name like your other mirrors. The "
+            "instance is billed by Vultr to your account until you destroy it there.")));
+    vultrTitleRow->addStretch(1);
+    vultrCol->addLayout(vultrTitleRow);
 
     // A compact, GitHub-Actions-style deployment rail. Every numbered stage is
     // backed by the durable checkpoint restored below; the last stage becomes
@@ -10450,14 +10768,11 @@ QWidget *MainWindow::buildHostsSection()
     m_vultrStatus->setWordWrap(true);
     vultrRow->addWidget(m_vultrStatus, 1);
     vultrCol->addLayout(vultrRow);
-    bodyCol->addWidget(vultrCard);
-
     // --- Live session / install output ------------------------------------
     auto *logLabel = new QLabel(QStringLiteral("Live output"));
     QFont llf = logLabel->font();
     llf.setBold(true);
     logLabel->setFont(llf);
-    bodyCol->addWidget(logLabel);
 
     m_hostInstallLog = new QPlainTextEdit;
     m_hostInstallLog->setObjectName("actionLog");
@@ -10469,7 +10784,6 @@ QWidget *MainWindow::buildHostsSection()
     m_hostInstallLog->setFont(mono);
     m_hostInstallLog->setPlaceholderText(QString::fromUtf8(
         "The SSH session and installer output will stream here\xE2\x80\xA6"));
-    bodyCol->addWidget(m_hostInstallLog);
 
     // --- Parallel fleet deploy: split live output --------------------------
     // When an "all hosts" action runs, every saved host deploys at once and
@@ -10481,38 +10795,14 @@ QWidget *MainWindow::buildHostsSection()
     dlf.setBold(true);
     m_hostDeployLabel->setFont(dlf);
     m_hostDeployLabel->setVisible(false);
-    bodyCol->addWidget(m_hostDeployLabel);
 
     m_hostDeployPanel = new QWidget;
     m_hostDeployGrid = new QGridLayout(m_hostDeployPanel);
     m_hostDeployGrid->setContentsMargins(0, 0, 0, 0);
     m_hostDeployGrid->setSpacing(10);
     m_hostDeployPanel->setVisible(false);
-    bodyCol->addWidget(m_hostDeployPanel);
 
     // --- Provisioned hosts list -------------------------------------------
-    auto *hostsLabel = new QLabel(QStringLiteral("Hosts"));
-    QFont hlf = hostsLabel->font();
-    hlf.setBold(true);
-    hostsLabel->setFont(hlf);
-    bodyCol->addWidget(hostsLabel);
-
-    auto *hostsHint = new QLabel(QString::fromUtf8(
-        "Click Update on a saved host to re-run the installer and bring it up to "
-        "the latest ForkMesh release. Click Uninstall to completely remove "
-        "ForkMesh \xE2\x80\x94 binary, launcher and ALL data \xE2\x80\x94 from "
-        "that host. Click Actions to enable its executor and optionally replace "
-        "its device-local variables through a one-shot SSH stdin request; secret "
-        "values are never saved by this controller. Click Logs to open a live "
-        "SSH tail for that host, or Size map to browse what is filling that "
-        "host's disk. Click Remove to drop a host from this list "
-        "without touching it \xE2\x80\x94 no SSH session is opened. "
-        "Double-click a host instead to reload it into the form "
-        "above for editing."));
-    hostsHint->setObjectName("mutedLabel");
-    hostsHint->setWordWrap(true);
-    bodyCol->addWidget(hostsHint);
-
     m_hostsTable = new QTableWidget(0, 7);
     installColumnHeaderMenu(m_hostsTable); // 3-dots per-column menu (issue #318)
     m_hostsTable->setObjectName("issueTable");
@@ -10537,7 +10827,22 @@ QWidget *MainWindow::buildHostsSection()
     // was entered or migrated during this process; otherwise key auth is used.
     connect(m_hostsTable, &QTableWidget::cellDoubleClicked, this,
             &MainWindow::loadHostIntoForm);
+
+    // Keep the fleet at the top of the page where it is visible immediately.
+    // The two provisioning paths share the next row, followed by output that
+    // spans the full width so neither form stretches into a long, sparse strip.
     bodyCol->addWidget(m_hostsTable);
+    auto *provisioningRow = new QHBoxLayout;
+    provisioningRow->setObjectName(QStringLiteral("hostsProvisioningRow"));
+    provisioningRow->setContentsMargins(0, 0, 0, 0);
+    provisioningRow->setSpacing(10);
+    provisioningRow->addWidget(vultrCard, 1);
+    provisioningRow->addWidget(formCard, 1);
+    bodyCol->addLayout(provisioningRow);
+    bodyCol->addWidget(logLabel);
+    bodyCol->addWidget(m_hostInstallLog);
+    bodyCol->addWidget(m_hostDeployLabel);
+    bodyCol->addWidget(m_hostDeployPanel);
     if (!m_hostProbeTimer) {
         m_hostProbeTimer = new QTimer(this);
         m_hostProbeTimer->setInterval(30000);
@@ -14006,6 +14311,12 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
     title->setFont(titleFont);
     header->addWidget(title);
 
+    header->addWidget(makeInlineHelpButton(
+        QStringLiteral("About network diagnostics"), QStringLiteral(
+            "The relays, nodes and hosts this client talks to, plus live endpoint "
+            "usage, websocket Durable Object details and the outbound request "
+            "firewall in one place.")));
+
     m_networkDiagnosticsStatus = new QLabel;
     m_networkDiagnosticsStatus->setObjectName("mutedLabel");
     header->addWidget(m_networkDiagnosticsStatus, 1);
@@ -14021,14 +14332,6 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
             });
     header->addWidget(m_networkDiagnosticsRefreshButton);
     outer->addLayout(header);
-
-    auto *summary = new QLabel(QStringLiteral(
-        "The relays, nodes and hosts this client talks to, plus live endpoint "
-        "usage, websocket Durable Object details and the outbound request "
-        "firewall in one place."));
-    summary->setObjectName("mutedLabel");
-    summary->setWordWrap(true);
-    outer->addWidget(summary);
 
     auto *tabs = new QTabWidget;
     // Its own object name, styled alongside #settingsTabs: sharing that name
@@ -15941,17 +16244,60 @@ void MainWindow::setVultrProvisionStage(int stage, const QString &detail,
                                         bool failed)
 {
     const int bounded = qBound(1, stage, kVultrProvisionStageCount);
+    const int previousStage = m_vultrProvisionStage;
+    const QString previousDetail = m_vultrProvisionDetail;
     m_vultrProvisionStage = m_vultrResumeChain
                                 ? qMax(m_vultrProvisionStage, bounded)
                                 : bounded;
     if (!detail.isEmpty())
         m_vultrProvisionDetail = detail;
+    if (failed) {
+        pingVultrProvisionStage(m_vultrProvisionStage, false,
+                                m_vultrProvisionDetail);
+    } else if (previousStage > 0 &&
+               m_vultrProvisionStage > previousStage) {
+        // Advancing proves that the preceding numbered step completed. Status
+        // refreshes within a step (such as boot polls) keep the same stage and
+        // therefore cannot flood the Pings page.
+        pingVultrProvisionStage(previousStage, true, previousDetail);
+    }
     if (m_vultrStatus && !m_vultrProvisionDetail.isEmpty())
         m_vultrStatus->setText(m_vultrProvisionDetail);
     renderVultrProvisionProgress(failed);
     persistVultrProvisionState(failed ? QStringLiteral("failed")
                                       : QStringLiteral("active"),
                                  failed ? m_vultrProvisionDetail : QString());
+}
+
+void MainWindow::pingVultrProvisionStage(int stage, bool ok,
+                                         const QString &detail)
+{
+    static const QStringList stageNames = {
+        QStringLiteral("Credentials"),
+        QStringLiteral("Plan + image"),
+        QStringLiteral("Create server"),
+        QStringLiteral("Boot + connect"),
+        QStringLiteral("Install"),
+        QStringLiteral("Live traffic"),
+    };
+    const int bounded = qBound(1, stage, kVultrProvisionStageCount);
+    const QString node = m_vultrProvisionNode.isEmpty()
+                             ? QStringLiteral("new mirror")
+                             : m_vultrProvisionNode;
+    const QString outcome = ok ? QStringLiteral("succeeded")
+                               : QStringLiteral("failed");
+    QString body = QStringLiteral("%1 · step %2 of %3 %4.")
+                       .arg(node)
+                       .arg(bounded)
+                       .arg(kVultrProvisionStageCount)
+                       .arg(outcome);
+    const QString summary = detail.simplified();
+    if (!summary.isEmpty())
+        body += QLatin1Char(' ') + summary;
+    addNotification(
+        QStringLiteral("Vultr mirror deployment · %1 %2")
+            .arg(stageNames.at(bounded - 1), outcome),
+        body, !ok);
 }
 
 void MainWindow::restoreVultrProvision()
@@ -16115,6 +16461,10 @@ void MainWindow::findVultrProvisionInstance(
 
 void MainWindow::finishVultrProvision(bool ok, const QString &message)
 {
+    // A late reply from a cancelled/finished network or SSH operation must not
+    // emit a second terminal ping for the same deployment.
+    if (!m_vultrProvisionActive)
+        return;
     m_vultrProvisionActive = false;
     // A knock still in flight would otherwise outlive the run it belongs to.
     if (m_vultrSshProbeProcess) {
@@ -16137,6 +16487,7 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
             (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
                 : QString::fromUtf8("\n\xE2\x9C\x98 ")) +
             message + QStringLiteral("\n"));
+    pingVultrProvisionStage(m_vultrProvisionStage, ok, message);
     saveVultrProvisionLog();
     m_vultrProvisionActive = false;
     m_vultrResumeRequested = !ok;
@@ -16728,6 +17079,9 @@ void MainWindow::createVultrMirrorFromForm()
 
     const bool resumedPreInstance = m_vultrResumeChain;
     m_vultrProvisionActive = true;
+    // Set this before the first transition so every stage ping identifies the
+    // mirror it belongs to, including credentials and plan discovery.
+    m_vultrProvisionNode = node;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
     m_vultrSshWaitCount = 0;
@@ -17244,6 +17598,11 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
         m_hostNameEdit->setText(node);
     if (m_hostUploadBinaryCheck)
         m_hostUploadBinaryCheck->setChecked(false);
+    // SSH has answered, so Boot + connect is complete and the install stage is
+    // now active. This also ensures an installer error pings "Install", not
+    // the preceding connectivity step.
+    setVultrProvisionStage(
+        5, QStringLiteral("SSH is ready — installing ForkMesh…"));
     ++m_vultrInstallAttempts;
     m_vultrProvisionNode = node;
     m_vultrInstanceIp = ip;

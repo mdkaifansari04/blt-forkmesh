@@ -2228,6 +2228,12 @@
       if (pullFileButton) {
         const article = pullFileButton.closest("[data-repo-record-detail]");
         const path = pullFileButton.dataset.repoPullFile || "";
+        pullFileButton.setAttribute("aria-current", "true");
+        article?.querySelectorAll("[data-repo-pull-file]").forEach((button) => {
+          const current = button === pullFileButton;
+          if (!current) button.removeAttribute("aria-current");
+          button.classList.toggle("bg-primary/10", current);
+        });
         const target = Array.from(
           article?.querySelectorAll("[data-repo-pull-diff-file]") || [],
         ).find((block) => block.dataset.repoPullDiffFile === path);
@@ -2262,6 +2268,12 @@
               panel.dataset.repoRecordPanel !== tab,
             );
           });
+          const layout = article.querySelector("[data-repo-record-layout]");
+          const sidebar = article.querySelector("[data-repo-record-sidebar]");
+          const conversation = tab === "conversation";
+          layout?.classList.toggle("xl:grid-cols-[minmax(0,1fr)_18rem]", conversation);
+          layout?.classList.toggle("xl:grid-cols-1", !conversation);
+          sidebar?.classList.toggle("hidden", !conversation);
         }
         return;
       }

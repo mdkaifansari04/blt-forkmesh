@@ -9063,7 +9063,7 @@
       row.dataset.viewed = selected ? "true" : "false";
       const icon = row.querySelector("[data-lucide]");
       if (icon) {
-        icon.setAttribute("data-lucide", selected ? "check-circle-2" : "circle");
+        icon.setAttribute("data-lucide", selected ? "check-circle-2" : "file");
         icon.classList.toggle("text-primary", selected);
         icon.classList.toggle("text-muted-foreground", !selected);
       }
@@ -9092,18 +9092,52 @@
 
   function renderRepoPullFiles(files, viewed = new Set()) {
     const rows = Array.isArray(files) ? files : [];
-    if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No committed patch file summary is available for this pull request.</div>';
-    return rows.slice(0, 100).map((file) => {
-      const path = file.path || "file";
-      const isViewed = viewed.has(path);
+    if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No changed files are available from this mirror.</div>';
+
+    // GitHub's file tree is substantially easier to scan than a flat list once
+    // a pull touches more than one directory. Build a small in-memory tree and
+    // keep the full path on each file button so it still targets the matching
+    // diff block on the right.
+    const root = { dirs: new Map(), files: [] };
+    rows.forEach((file) => {
+      const path = String(file?.path || "file");
+      const parts = path.split("/").filter(Boolean);
+      let node = root;
+      parts.slice(0, -1).forEach((part) => {
+        if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
+        node = node.dirs.get(part);
+      });
+      node.files.push({ ...file, path, name: parts.at(-1) || path });
+    });
+
+    const renderFile = (file) => {
+      const isViewed = viewed.has(file.path);
       return `
-      <button type="button" data-repo-pull-file="${escapeHtml(path)}" data-viewed="${isViewed ? "true" : "false"}" class="grid w-full grid-cols-[1rem_minmax(0,1fr)_auto_auto] items-center gap-2 border-t border-border px-3 py-2 text-left text-xs transition-colors hover:bg-secondary/50 first:border-t-0">
-        <i data-lucide="${isViewed ? "check-circle-2" : "circle"}" class="h-3.5 w-3.5 ${isViewed ? "text-primary" : "text-muted-foreground"}"></i>
-        <span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(file.path || "file")}</span>
-        <span class="font-mono text-primary">+${formatCount(file.adds || 0)}</span>
-        <span class="font-mono text-destructive">-${formatCount(file.dels || 0)}</span>
-      </button>`;
-    }).join("");
+        <button type="button" data-repo-pull-file="${escapeHtml(file.path)}" data-viewed="${isViewed ? "true" : "false"}" title="${escapeHtml(file.path)}" class="grid w-full grid-cols-[1rem_minmax(0,1fr)_auto_auto] items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary">
+          <i data-lucide="${isViewed ? "check-circle-2" : "file"}" class="h-3.5 w-3.5 ${isViewed ? "text-primary" : "text-muted-foreground"}"></i>
+          <span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(file.name)}</span>
+          <span class="font-mono text-[10px] text-primary">+${formatCount(file.adds || 0)}</span>
+          <span class="font-mono text-[10px] text-destructive">-${formatCount(file.dels || 0)}</span>
+        </button>`;
+    };
+    const renderNode = (node) => {
+      const directories = [...node.dirs.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, child]) => `
+          <details open class="group">
+            <summary class="flex cursor-pointer list-none items-center gap-1.5 rounded px-2 py-1.5 text-xs font-medium text-foreground hover:bg-secondary">
+              <i data-lucide="chevron-right" class="h-3 w-3 shrink-0 transition-transform group-open:rotate-90"></i>
+              <i data-lucide="folder" class="h-3.5 w-3.5 shrink-0 text-primary"></i>
+              <span class="min-w-0 truncate font-mono">${escapeHtml(name)}</span>
+            </summary>
+            <div class="ml-3 border-l border-border pl-1">${renderNode(child)}</div>
+          </details>`).join("");
+      const fileRows = [...node.files]
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .map(renderFile).join("");
+      return directories + fileRows;
+    };
+    return `<div data-repo-pull-file-tree class="grid gap-0.5 p-2">${renderNode(root)}</div>`;
   }
 
   // Pull-request badge (adhoc #44): a visual fingerprint of the PR. One tile
@@ -9323,11 +9357,11 @@
   }
 
   function renderRepoPullPatch(patch, viewed = new Set()) {
-    if (!String(patch || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual patch is committed for this pull request. Branch-backed PRs are reconstructed by the desktop client.</div>';
+    if (!String(patch || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">The diff is unavailable from the current mirror.</div>';
     return `<div data-repo-pull-patch>${renderDiffFiles(parseDiffFiles(patch), [], viewed)}</div>`;
   }
 
-  async function loadRepoPullPatch(repo, number, metadataCommit = "") {
+  async function loadRepoPullPatch(repo, number, metadataCommit = "", values = {}) {
     const patchPath = `pulls/${number}/changes.patch`;
     try {
       const commit = immutableGitCommit(metadataCommit)
@@ -9337,9 +9371,24 @@
         ref: commit,
       }));
       const patch = blobText(blob);
+      if (patch.trim()) return { patch, files: parsePatchStats(patch), unavailable: false };
+    } catch (_) {}
+
+    // Current branch-backed pull requests intentionally do not commit a large
+    // changes.patch to the collaboration branch. Reconstruct their immutable
+    // review diff from the creation OIDs through the mirror's bounded compare
+    // endpoint, the same endpoint used while opening a web pull request.
+    const base = immutableGitCommit(values.creationBaseOid);
+    const head = immutableGitCommit(values.creationHeadOid);
+    if (!base || !head) return { patch: "", files: [], unavailable: true };
+    try {
+      const comparison = await fetchRepoJson(repoLiveUrl(repo, "compare", {
+        base,
+        head,
+      }));
+      const patch = String(comparison?.patch || "");
       return { patch, files: parsePatchStats(patch), unavailable: false };
-    } catch (error) {
-      if (isMissingMirrorFolder(error)) return { patch: "", files: [], unavailable: true };
+    } catch (_) {
       return { patch: "", files: [], unavailable: true };
     }
   }
@@ -10288,8 +10337,8 @@
             <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="files" class="h-3.5 w-3.5 text-primary"></i>${formatCount(pullPatch.files.length)} files changed</span>
             <span data-repo-pull-viewed-summary class="font-mono text-[10px] text-muted-foreground">${formatCount(pullViewed.size)} of ${formatCount(pullPatch.files.length)} viewed</span>
           </div>
-          <div class="grid min-w-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
-            <nav data-repo-pull-file-list aria-label="Changed files" class="max-h-[70vh] overflow-auto border-b border-border bg-secondary/20 lg:sticky lg:top-0 lg:border-b-0 lg:border-r">${renderRepoPullFiles(pullPatch.files, pullViewed)}</nav>
+          <div class="grid min-w-0 lg:grid-cols-[20rem_minmax(0,1fr)]">
+            <nav data-repo-pull-file-list aria-label="Changed files" class="max-h-[75vh] overflow-auto border-b border-border bg-secondary/20 lg:sticky lg:top-3 lg:self-start lg:border-b-0 lg:border-r">${renderRepoPullFiles(pullPatch.files, pullViewed)}</nav>
             <div data-repo-pull-diff-list class="min-w-0">${renderRepoPullPatch(pullPatch.patch, pullViewed)}</div>
           </div>
         </section>` : "";
@@ -10390,7 +10439,7 @@
           </p>
           ${recordTabs}
         </header>
-        <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
+        <div data-repo-record-layout class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
           <div class="grid min-w-0 gap-4">
             <div data-repo-record-panel="conversation" class="grid min-w-0 gap-4">
               ${isDiscussions ? discussionConversationSection : `
@@ -10508,7 +10557,7 @@
         ? issueDetailParsed(blobText(blob), number)
         : parseFrontMatter(blobText(blob));
       const pullPatch = kind === "pulls"
-        ? await loadRepoPullPatch(repo, number, pullMetadataCommit)
+        ? await loadRepoPullPatch(repo, number, pullMetadataCommit, parsed.values || {})
         : null;
       if (pullPatch) parsed.pullPatch = pullPatch;
       if (kind === "pulls") {
@@ -12870,23 +12919,106 @@
       </article>`;
   }
 
-  async function orgAgentPost(path, body) {
+  const ORG_AGENT_ERROR_MESSAGES = Object.freeze({
+    invalid_session: "Your session is no longer valid. Sign in again.",
+    forbidden: "You do not have permission to access these agent sessions.",
+    engineering_team_required:
+      "Engineering team membership is required to view these agent sessions.",
+    org_owner_required:
+      "Organization owner access is required to queue work for this desktop.",
+    repository_not_linked:
+      "This repository is not linked to the organization.",
+    repository_not_published:
+      "The linked desktop has not published this repository yet.",
+    target_not_owned:
+      "The selected desktop is not owned by this organization owner.",
+    target_not_desktop:
+      "The selected target is not a desktop runtime.",
+    provider_not_advertised:
+      "The linked desktop has not advertised this agent provider.",
+    preferred_target_ineligible:
+      "The selected desktop is not eligible for this agent request.",
+    no_online_agent_mirror:
+      "No eligible online agent mirror is available.",
+    no_eligible_agent_node:
+      "No eligible agent node is available for this repository.",
+    invalid_provider: "Choose Claude Code or Codex.",
+    invalid_model: "That model is not available for the selected provider.",
+    prompt_required: "Add a task for the agent.",
+    invalid_target_node: "The selected target node is not valid.",
+    session_not_promptable:
+      "This agent session is not accepting another prompt.",
+    agent_not_ready: "The agent is not ready for another prompt.",
+    queue_persistence_failed:
+      "The agent request could not be saved. Try again.",
+  });
+
+  function orgAgentResponseError(response, payload) {
+    const details = payload && typeof payload === "object" ? payload : {};
+    const code = String(details.error || "").trim();
+    const message =
+      String(details.message || "").trim() ||
+      ORG_AGENT_ERROR_MESSAGES[code] ||
+      code ||
+      `Request returned ${response.status}.`;
+    const error = new Error(message);
+    error.code = code;
+    error.status = response.status;
+    error.payload = details;
+    for (const key of [
+      "requiredTeam",
+      "targetNode",
+      "provider",
+      "requiredAction",
+      "retryable",
+    ]) {
+      if (details[key] !== undefined) error[key] = details[key];
+    }
+    return error;
+  }
+
+  function orgAgentSavedMessage(payload) {
+    const serverMessage = String(payload?.message || "").trim();
+    if (serverMessage) return serverMessage;
+    const target = String(
+      payload?.targetNode ||
+        payload?.session?.targetNode ||
+        "the linked desktop",
+    );
+    const waitingForDesktop =
+      payload?.targetOnline === false ||
+      payload?.queueState === "waiting_for_desktop";
+    return waitingForDesktop
+      ? `Saved for ${target}. It will start after the linked desktop reconnects and passes the Haiku safety check.`
+      : `Saved for ${target}. It will start after the Haiku safety check passes.`;
+  }
+
+  async function orgAgentRequest(method, path, body = null) {
     const token = state.session?.sessionToken || "";
+    const headers = { accept: "application/json" };
+    if (body !== null) headers["content-type"] = "application/json";
+    if (token && token !== "cookie") {
+      headers.authorization = `Bearer ${token}`;
+    }
     const response = await fetch(path, {
-      method: "POST",
+      method,
       cache: "no-store",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ ...body, sessionToken: token }),
+      credentials: "same-origin",
+      headers,
+      ...(body === null
+        ? {}
+        : {
+            body: JSON.stringify({
+              ...body,
+              ...(token && token !== "cookie"
+                ? { sessionToken: token }
+                : {}),
+            }),
+          }),
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok || payload.ok === false) {
-      const error = new Error(payload.error || `HTTP ${response.status}`);
-      error.status = response.status;
-      throw error;
+    if (!response.ok || payload?.ok === false) {
+      throw orgAgentResponseError(response, payload);
     }
     return payload;
   }
@@ -12900,17 +13032,23 @@
       const provider = event.submitter?.value || "";
       const hint = form.querySelector("[data-org-agent-hint]");
       if (!prompt || !["claude-code", "codex"].includes(provider)) return;
-      if (hint) hint.textContent = "Selecting an eligible mirror and queuing the Haiku security check…";
+      if (hint) {
+        hint.className = "text-[11px] text-muted-foreground";
+        hint.textContent =
+          "Saving this request for the linked desktop. It does not need to be online yet…";
+      }
       Array.from(form.elements).forEach((element) => { element.disabled = true; });
       try {
-        await orgAgentPost(orgAgentEndpoint(repo), { provider, prompt, taskKey });
-        await loadRepoAgents(repo);
+        const payload = await orgAgentRequest(
+          "POST",
+          orgAgentEndpoint(repo),
+          { provider, prompt, taskKey },
+        );
+        await loadRepoAgents(repo, { notice: orgAgentSavedMessage(payload) });
       } catch (error) {
         if (hint) {
           hint.className = "text-[11px] text-destructive";
-          hint.textContent = error.message === "no_eligible_headless_mirror"
-            ? "No integrity-approved headless mirror is online for this repository."
-            : `Could not start the agent: ${error.message}`;
+          hint.textContent = String(error?.message || "The agent request failed.");
         }
         Array.from(form.elements).forEach((element) => { element.disabled = false; });
       }
@@ -12922,13 +13060,19 @@
         if (!prompt) return;
         Array.from(form.elements).forEach((element) => { element.disabled = true; });
         try {
-          await orgAgentPost(orgAgentEndpoint(repo, form.dataset.orgAgentFollowup), { prompt });
-          await loadRepoAgents(repo);
+          const payload = await orgAgentRequest(
+            "POST",
+            orgAgentEndpoint(repo, form.dataset.orgAgentFollowup),
+            { prompt },
+          );
+          await loadRepoAgents(repo, { notice: orgAgentSavedMessage(payload) });
         } catch (error) {
           const input = form.querySelector("input");
           if (input) {
             input.disabled = false;
-            input.setCustomValidity(`Could not send: ${error.message}`);
+            input.setCustomValidity(
+              String(error?.message || "The follow-up request failed."),
+            );
             input.reportValidity();
             input.setCustomValidity("");
           }
@@ -12939,15 +13083,30 @@
     container.querySelector("[data-org-agent-refresh]")?.addEventListener("click", () => loadRepoAgents(repo));
   }
 
-  async function loadRepoAgents(repo) {
+  async function loadRepoAgents(repo, { notice = "" } = {}) {
     const container = $("[data-repo-agents]");
     if (!container || !repo) return;
     state.agentsView.agents = [];
     state.agentsView.selectedAgentId = null;
     if (state.session?.sessionToken) {
       try {
-        const payload = await fetchJson(orgAgentEndpoint(repo), { fresh: true });
-        const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+        const payload = await orgAgentRequest(
+          "GET",
+          orgAgentEndpoint(repo),
+        );
+        const canQueueAgent =
+          payload?.canQueueAgent === true ||
+          payload?.engineeringAccess === true;
+        const canViewAgentSessions =
+          payload?.canViewAgentSessions === true ||
+          payload?.engineeringAccess === true;
+        const sessions = canViewAgentSessions &&
+            Array.isArray(payload.sessions)
+          ? payload.sessions
+          : [];
+        const accessReason = String(
+          payload?.accessReason || payload?.message || "",
+        ).trim();
         container.innerHTML = `
           <section class="grid gap-0">
             <header class="grid gap-3 px-4 py-4">
@@ -12957,39 +13116,51 @@
                 <span class="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">${escapeHtml(payload.memberRole || "member")}</span>
                 <button type="button" data-org-agent-refresh class="ml-auto inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs hover:bg-secondary"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button>
               </div>
-              <p class="max-w-3xl text-xs leading-5 text-muted-foreground">Start Claude Code or Codex on an integrity-approved headless mirror. Every new or revised prompt must receive an exact tool-free Claude Haiku approval before the coding agent runs. Sessions, transcripts, controls, and audit history are restricted to current Engineering team members.</p>
-              <form data-org-agent-start class="grid gap-2 rounded-md border border-border bg-secondary/20 p-3">
+              <p class="max-w-3xl text-xs leading-5 text-muted-foreground">Organization owners can save agent work for their linked desktop even while it is offline. Authorized Engineering members may also use eligible mirrors. Every new or revised prompt must pass the tool-free Claude Haiku safety check before the coding agent runs.</p>
+              ${canQueueAgent ? `
+                <form data-org-agent-start class="grid gap-2 rounded-md border border-border bg-secondary/20 p-3">
                 <textarea name="prompt" required maxlength="8000" rows="3" class="w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-xs text-foreground" placeholder="Describe the repository task…"></textarea>
                 <input name="taskKey" maxlength="96" pattern="(?:task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})" class="h-9 rounded-md border border-input bg-background px-3 font-mono text-xs text-foreground" placeholder="Optional tracked board key, e.g. task:codex-world" />
                 <div class="flex flex-wrap items-center gap-2">
                   <button type="submit" name="provider" value="claude-code" class="h-9 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90">Start Claude Code</button>
                   <button type="submit" name="provider" value="codex" class="h-9 rounded-md border border-border bg-background px-3 text-xs font-semibold text-foreground hover:bg-secondary">Start Codex</button>
-                  <span data-org-agent-hint class="text-[11px] text-muted-foreground">Prompt text is encrypted at rest; the selected mirror performs the Haiku preflight.</span>
+                  <span data-org-agent-hint class="text-[11px] ${notice ? "text-emerald-600" : "text-muted-foreground"}">${escapeHtml(notice || "The request is durable while the linked desktop is offline; execution starts only after its Haiku preflight.")}</span>
                 </div>
-              </form>
+              </form>` : `
+                <div class="grid gap-1 rounded-md border border-border bg-secondary/20 p-3 text-xs text-muted-foreground">
+                  <strong class="text-foreground">Agent queue access is unavailable</strong>
+                  <span>${escapeHtml(accessReason || "You do not have permission to queue an agent for this repository.")}</span>
+                </div>`}
+              ${!canViewAgentSessions && canQueueAgent ? `
+                <p class="text-xs text-muted-foreground">${escapeHtml(accessReason || "Session transcripts are not available with your current access.")}</p>` : ""}
             </header>
-            <div>${sessions.length ? sessions.map(renderOrgAgentSession).join("") : '<div class="border-t border-border px-4 py-4 text-sm text-muted-foreground">No organization agent sessions yet.</div>'}</div>
+            <div>${canViewAgentSessions
+              ? sessions.length
+                ? sessions.map(renderOrgAgentSession).join("")
+                : '<div class="border-t border-border px-4 py-4 text-sm text-muted-foreground">No organization agent sessions yet.</div>'
+              : ""}</div>
           </section>`;
         wireOrgAgentPanel(repo, container);
         window.lucide?.createIcons();
         return;
       } catch (error) {
-        if (
-          Number(error.status || 0) === 403 &&
-          error.message === "engineering_team_required"
-        ) {
-          container.innerHTML = `
-            <div class="grid gap-3 px-4 py-4 text-sm text-muted-foreground">
-              <div class="flex items-center gap-2 font-medium text-foreground"><i data-lucide="shield-alert" class="h-4 w-4 text-amber-500"></i>Engineering access required</div>
-              <p class="max-w-2xl leading-6">Only members of this organization’s <strong class="text-foreground">engineering</strong> team can view agent transcripts or start, revise, and re-prompt Claude Code and Codex sessions.</p>
-            </div>`;
-          window.lucide?.createIcons();
-          return;
-        }
-        if (![403, 404].includes(Number(error.status || 0))) {
-          container.innerHTML = `<div class="px-4 py-3 text-sm text-destructive">Organization agents are unavailable: ${escapeHtml(error.message)}</div>`;
-          return;
-        }
+        const configurationError = [
+          "repository_not_linked",
+          "repository_not_published",
+        ].includes(String(error?.code || ""));
+        const accessError = [401, 403].includes(Number(error?.status || 0));
+        const heading = configurationError
+          ? "Repository setup required"
+          : accessError
+            ? "Agent access unavailable"
+            : "Organization agents are unavailable";
+        container.innerHTML = `
+          <div class="grid gap-3 px-4 py-4 text-sm text-muted-foreground">
+            <div class="flex items-center gap-2 font-medium text-foreground"><i data-lucide="shield-alert" class="h-4 w-4 text-amber-500"></i>${heading}</div>
+            <p class="max-w-2xl leading-6">${escapeHtml(String(error?.message || "The agent request failed."))}</p>
+          </div>`;
+        window.lucide?.createIcons();
+        return;
       }
     }
     container.innerHTML = `
@@ -16918,6 +17089,12 @@
       if (pullFileButton) {
         const article = pullFileButton.closest("[data-repo-record-detail]");
         const path = pullFileButton.dataset.repoPullFile || "";
+        pullFileButton.setAttribute("aria-current", "true");
+        article?.querySelectorAll("[data-repo-pull-file]").forEach((button) => {
+          const current = button === pullFileButton;
+          if (!current) button.removeAttribute("aria-current");
+          button.classList.toggle("bg-primary/10", current);
+        });
         const target = Array.from(
           article?.querySelectorAll("[data-repo-pull-diff-file]") || [],
         ).find((block) => block.dataset.repoPullDiffFile === path);
@@ -16952,6 +17129,12 @@
               panel.dataset.repoRecordPanel !== tab,
             );
           });
+          const layout = article.querySelector("[data-repo-record-layout]");
+          const sidebar = article.querySelector("[data-repo-record-sidebar]");
+          const conversation = tab === "conversation";
+          layout?.classList.toggle("xl:grid-cols-[minmax(0,1fr)_18rem]", conversation);
+          layout?.classList.toggle("xl:grid-cols-1", !conversation);
+          sidebar?.classList.toggle("hidden", !conversation);
         }
         return;
       }

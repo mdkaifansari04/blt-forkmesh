@@ -17,6 +17,9 @@
 #include <QTextLayout>
 #include <QTextOption>
 #include <QUrl>
+#include <QEvent>
+#include <QFrame>
+#include <QShowEvent>
 
 using namespace forkmesh::ui;
 
@@ -1520,6 +1523,53 @@ ActivityRailButton *railActionButton(const QString &icon, const QString &caption
     return button;
 }
 
+// The queue belongs to the list it controls, rather than to a footer that
+// permanently steals vertical space from that list.  Keep it as a child of the
+// table viewport so rows continue underneath it, and re-anchor it whenever the
+// viewport moves or changes size.
+class AgentQueueOverlay final : public QFrame
+{
+public:
+    explicit AgentQueueOverlay(QWidget *viewport)
+        : QFrame(viewport), m_viewport(viewport)
+    {
+        setObjectName(QStringLiteral("agentQueueOverlay"));
+        setAttribute(Qt::WA_StyledBackground);
+        if (m_viewport)
+            m_viewport->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == m_viewport &&
+            (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
+            QTimer::singleShot(0, this, [this] { reposition(); });
+        }
+        return QFrame::eventFilter(watched, event);
+    }
+
+    void showEvent(QShowEvent *event) override
+    {
+        QFrame::showEvent(event);
+        QTimer::singleShot(0, this, [this] { reposition(); });
+    }
+
+private:
+    void reposition()
+    {
+        if (!m_viewport || !isVisible())
+            return;
+        adjustSize();
+        constexpr int kMargin = 12;
+        move(qMax(kMargin, m_viewport->width() - width() - kMargin),
+             qMax(kMargin, m_viewport->height() - height() - kMargin));
+        raise();
+    }
+
+    QWidget *m_viewport = nullptr;
+};
+
 } // namespace
 
 QWidget *MainWindow::buildAgentsTab()
@@ -1644,29 +1694,9 @@ QWidget *MainWindow::buildAgentsTab()
     // from the footer quick-add bar in-app and from the website's Agents view.
     // The m_agentCompose* members stay nullptr; every reader is null-guarded.
 
-    // Free-text filter over the session list (issue #82): type to narrow the
-    // table to sessions whose issue number/title, agent, status or PR match — or
-    // whose transcript does, which is scanned in the background as you type.
-    m_agentSearch = new QLineEdit;
-    m_agentSearch->setObjectName("issueSearch");
-    // Short placeholder now that the box shares the footer with the fleet
-    // buttons (adhoc #224); the full sentence rides the tooltip.
-    m_agentSearch->setPlaceholderText(
-        QString::fromUtf8("Search agents\xE2\x80\xA6"));
-    m_agentSearch->setToolTip(QString::fromUtf8(
-        "Search agents and transcripts by issue, agent, status or PR\xE2\x80\xA6"));
-    m_agentSearch->setClearButtonEnabled(true);
-    connect(m_agentSearch, &QLineEdit::textChanged, this, [this] {
-        // Narrow on what is already in memory immediately; the transcript scan
-        // widens the result a beat later, once its off-thread reads land.
-        refreshAgentTable();
-        scheduleAgentTranscriptSearch();
-    });
-
-    // The fleet buttons below are the same octicon-over-caption tiles as the
-    // detail pane's session actions and the left rail (adhoc #224) — one visual
-    // language for every action on the page — and they sit under the list rather
-    // than over it, so the list itself can start at the top of the pane.
+    // The page deliberately has no second search field: the top-bar search is
+    // the single place to filter this list and its transcripts.  That keeps the
+    // list's edge clear for fleet controls without duplicating a query.
 
     // "Delete all merged" wipes every merged session's worktree, branch and
     // agent in one batch (adhoc #235). Disabled until something is merged.
@@ -1722,21 +1752,25 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
-    // Keep the live queue size and the concurrency cap where fleet controls
-    // already live. The limit used to be adjustable only in Settings; explicit
-    // minus/plus buttons make the common "one more/fewer agent" adjustment a
-    // single click without relying on the themed QSpinBox arrows (which are
-    // intentionally hidden elsewhere in the app).
-    auto *agentQueueControl = new QWidget;
-    agentQueueControl->setObjectName("agentQueueControl");
-    auto *agentQueueLayout = new QHBoxLayout(agentQueueControl);
-    agentQueueLayout->setContentsMargins(0, 0, 0, 0);
-    agentQueueLayout->setSpacing(2);
-    m_agentQueueLimitDecreaseButton = new QPushButton(QStringLiteral("−"));
+    // Float the queue above the list's lower-right corner.  It makes live fleet
+    // capacity easy to read without reserving a footer row, while the visible
+    // list continues behind the compact, translucent panel.
+    auto *agentQueueOverlay = new AgentQueueOverlay(m_agentTable->viewport());
+    auto *agentQueueLayout = new QHBoxLayout(agentQueueOverlay);
+    agentQueueLayout->setContentsMargins(8, 6, 8, 6);
+    agentQueueLayout->setSpacing(4);
+    auto *queueIcon = new QPushButton(agentQueueOverlay);
+    queueIcon->setObjectName("agentQueueIcon");
+    queueIcon->setFixedSize(24, 28);
+    queueIcon->setFocusPolicy(Qt::NoFocus);
+    queueIcon->setToolTip("Agent queue and concurrent-run limit");
+    setOcticon(queueIcon, "workflow", 16);
+    m_agentQueueLimitDecreaseButton = new QPushButton;
     m_agentQueueLimitDecreaseButton->setObjectName("agentQueueLimitDecreaseButton");
-    m_agentQueueLimitDecreaseButton->setFixedSize(24, 30);
+    m_agentQueueLimitDecreaseButton->setFixedSize(28, 28);
     m_agentQueueLimitDecreaseButton->setCursor(Qt::PointingHandCursor);
     m_agentQueueLimitDecreaseButton->setToolTip("Run one fewer agent at once");
+    setOcticon(m_agentQueueLimitDecreaseButton, "chevron-down", 16);
     connect(m_agentQueueLimitDecreaseButton, &QPushButton::clicked, this, [this] {
         setAgentConcurrencyLimit(maxRunningAgents() - 1);
     });
@@ -1744,30 +1778,31 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentQueueStatusLabel->setObjectName("agentQueueStatusLabel");
     m_agentQueueStatusLabel->setAlignment(Qt::AlignCenter);
     m_agentQueueStatusLabel->setMinimumWidth(82);
-    m_agentQueueLimitIncreaseButton = new QPushButton("+");
+    m_agentQueueLimitIncreaseButton = new QPushButton;
     m_agentQueueLimitIncreaseButton->setObjectName("agentQueueLimitIncreaseButton");
-    m_agentQueueLimitIncreaseButton->setFixedSize(24, 30);
+    m_agentQueueLimitIncreaseButton->setFixedSize(28, 28);
     m_agentQueueLimitIncreaseButton->setCursor(Qt::PointingHandCursor);
     m_agentQueueLimitIncreaseButton->setToolTip("Run one more agent at once");
+    setOcticon(m_agentQueueLimitIncreaseButton, "chevron-up", 16);
     connect(m_agentQueueLimitIncreaseButton, &QPushButton::clicked, this, [this] {
         setAgentConcurrencyLimit(maxRunningAgents() + 1);
     });
+    agentQueueLayout->addWidget(queueIcon);
     agentQueueLayout->addWidget(m_agentQueueLimitDecreaseButton);
     agentQueueLayout->addWidget(m_agentQueueStatusLabel);
     agentQueueLayout->addWidget(m_agentQueueLimitIncreaseButton);
     refreshAgentQueueControls();
 
-    // Fleet toolbar, now the pane's footer (adhoc #224): the list gets the top
-    // of the page, and the controls that act on the whole fleet sit under the
-    // rows they act on rather than between them and the top of the window.
+    // The remaining bulk actions stay in a compact footer.  The queue itself
+    // lives above the rows, so no search field or queue controls consume width
+    // down here.
     auto *agentListToolbar = new QHBoxLayout;
     agentListToolbar->setContentsMargins(10, 2, 10, 8);
     agentListToolbar->setSpacing(6);
     agentListToolbar->addWidget(m_agentStartAllButton, 0);
-    agentListToolbar->addWidget(agentQueueControl, 0, Qt::AlignVCenter);
     agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
-    agentListToolbar->addWidget(m_agentSearch, 1, Qt::AlignVCenter);
+    agentListToolbar->addStretch(1);
     agentListToolbar->addWidget(m_agentHideDetailButton, 0, Qt::AlignVCenter);
 
     listLayout->addWidget(m_agentTable, 1);
@@ -3117,6 +3152,13 @@ void MainWindow::drainOrgAgentJobsFor(RepositoryRecord repo)
 {
     if (!m_networkAccess || !hasOwnerSigningCapability(repo.owner))
         return;
+    const QString drainKey =
+        repo.owner.trimmed().toLower() + QLatin1Char('/') +
+        repo.name.trimmed().toLower();
+    if (m_orgAgentJobDrainsInFlight.contains(drainKey)) {
+        m_orgAgentJobDrainsPending.insert(drainKey);
+        return;
+    }
     QUrl url = agentsApiUrl(repo);
     QString path = url.path();
     if (path.endsWith(QStringLiteral("/agents")))
@@ -3128,13 +3170,17 @@ void MainWindow::drainOrgAgentJobsFor(RepositoryRecord repo)
         return;
     url.setQuery(signedInboxQuery(
         repoSegment(repo.owner, QStringLiteral("owner"))));
+    m_orgAgentJobDrainsInFlight.insert(drainKey);
     QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, backoffKey] {
+            [this, reply, repo, backoffKey, drainKey] {
         const bool ok = reply->error() == QNetworkReply::NoError;
         const QJsonObject payload =
             QJsonDocument::fromJson(reply->readAll()).object();
         reply->deleteLater();
+        m_orgAgentJobDrainsInFlight.remove(drainKey);
+        const bool drainAgain =
+            m_orgAgentJobDrainsPending.remove(drainKey);
         if (!ok) {
             m_pollBackoff.noteFailure(
                 backoffKey, QDateTime::currentMSecsSinceEpoch());
@@ -3143,6 +3189,11 @@ void MainWindow::drainOrgAgentJobsFor(RepositoryRecord repo)
         m_pollBackoff.noteSuccess(backoffKey);
         applyOrgAgentJobsPayload(
             repo, payload.value(QStringLiteral("jobs")).toArray());
+        if (drainAgain) {
+            QTimer::singleShot(0, this, [this, repo] {
+                drainOrgAgentJobsFor(repo);
+            });
+        }
     });
 }
 
@@ -3203,7 +3254,7 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
         if (acceptedId > 0) {
             if (job.value(QStringLiteral("kind")).toString() ==
                 QLatin1String("start"))
-                m_orgAgentBindings.insert(acceptedId, job);
+                persistOrgAgentBinding(acceptedId, job);
             reportOrgAgentJob(repo, job, QStringLiteral("approved"),
                               QStringLiteral("running"), acceptedId,
                               QStringLiteral("Previously accepted exact job."));
@@ -3346,6 +3397,13 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                 job.value(QStringLiteral("model")).toString().trimmed();
             const int issueNumber =
                 job.value(QStringLiteral("issueNumber")).toInt();
+            if (repoIndex < 0) {
+                reportOrgAgentJob(
+                    repo, job, QStringLiteral("approved"),
+                    QStringLiteral("failed"), 0,
+                    QStringLiteral("No eligible local checkout could start the agent."));
+                return;
+            }
             if (issueNumber > 0) {
                 const RepositoryRecord &localRepo = m_repositories.at(repoIndex);
                 const QList<Issue> issues =
@@ -3382,7 +3440,7 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                     QStringLiteral("No eligible local checkout could start the agent."));
                 return;
             }
-            m_orgAgentBindings.insert(localAgentId, job);
+            persistOrgAgentBinding(localAgentId, job);
         } else {
             reportOrgAgentJob(repo, job, QStringLiteral("rejected"),
                               QStringLiteral("rejected"), 0,
@@ -3408,6 +3466,33 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                      "exec claude -p --model 'haiku' --max-turns 1 --tools ''")});
     proc->write(safetyPrompt.toUtf8());
     proc->closeWriteChannel();
+}
+
+void MainWindow::persistOrgAgentBinding(int localAgentId,
+                                        const QJsonObject &job)
+{
+    if (localAgentId <= 0 || job.isEmpty())
+        return;
+    m_orgAgentBindings.insert(localAgentId, job);
+    AgentSession *session = findAgentSession(localAgentId);
+    if (!session || session->orgAgentJob == job)
+        return;
+    session->orgAgentJob = job;
+    if (m_agentStore)
+        m_agentStore->saveSession(*session);
+}
+
+void MainWindow::clearOrgAgentBinding(int localAgentId)
+{
+    if (localAgentId <= 0)
+        return;
+    AgentSession *session = findAgentSession(localAgentId);
+    if (session && !session->orgAgentJob.isEmpty()) {
+        session->orgAgentJob = QJsonObject();
+        if (m_agentStore)
+            m_agentStore->saveSession(*session);
+    }
+    m_orgAgentBindings.remove(localAgentId);
 }
 
 void MainWindow::reportOrgAgentJob(const RepositoryRecord &repo,
@@ -3498,8 +3583,17 @@ void MainWindow::reportOrgAgentJob(const RepositoryRecord &repo,
         const QString token =
             QStringLiteral("%1/%2:%3").arg(repo.owner, repo.name).arg(jobId);
         m_orgAgentJobsInFlight.remove(token);
-        if (ok && status != QLatin1String("running") && localAgentId > 0)
-            m_orgAgentBindings.remove(localAgentId);
+        if (!ok)
+            return;
+        if (status != QLatin1String("running") && localAgentId > 0) {
+            clearOrgAgentBinding(localAgentId);
+            QSettings().remove(
+                QStringLiteral("orgAgentJobs/accepted/%1").arg(token));
+        }
+        // The Worker leases one FIFO job at a time.  Only a successful result
+        // releases that lane, so use its acknowledgement to claim the next job
+        // instead of polling ahead and starting concurrent safety preflights.
+        drainOrgAgentJobsFor(repo);
     });
 }
 
@@ -5094,6 +5188,15 @@ void MainWindow::initAgents()
     }
     m_agentSessions = m_agentStore->loadAllSessions();
     for (AgentSession &session : m_agentSessions) {
+        const QJsonObject orgJob = session.orgAgentJob;
+        const qint64 orgJobId =
+            qint64(orgJob.value(QStringLiteral("jobId")).toDouble());
+        if (orgJobId > 0 &&
+            !orgJob.value(QStringLiteral("leaseId")).toString().isEmpty() &&
+            orgJob.value(QStringLiteral("kind")).toString() ==
+                QLatin1String("start")) {
+            m_orgAgentBindings.insert(session.id, orgJob);
+        }
         if (session.merged && (session.status == AgentStatus::Running ||
                                session.status == AgentStatus::Queued)) {
             // A merged session's work already landed in the base branch, and the
@@ -5122,13 +5225,15 @@ void MainWindow::initAgents()
             m_agentStore->saveSession(session);
             m_agentStore->appendLog(
                 session, QStringLiteral("\n==> Resuming after ForkMesh restart."));
-            m_agentQueue.append(session.id);
-            m_startupQuietAgentSessions.insert(session.id);
-        } else if (session.status == AgentStatus::Queued) {
-            m_agentQueue.append(session.id);
-            m_startupQuietAgentSessions.insert(session.id);
         }
     }
+    // AgentStore intentionally loads newest-first for the sessions UI.  The
+    // execution queue has the opposite contract: work accepted first must
+    // resume first after a restart.
+    m_agentQueue =
+        AgentStore::queuedSessionIdsOldestFirst(m_agentSessions);
+    for (int id : std::as_const(m_agentQueue))
+        m_startupQuietAgentSessions.insert(id);
     m_agentSessions = m_agentStore->loadAllSessions();
     seedSessionTokens();
     refreshAgentDotMatrix(); // the top-bar fleet matrix reflects sessions from the start
@@ -5208,11 +5313,14 @@ void MainWindow::updateAgentsNavBadge()
     refreshAgentDotMatrix();
 }
 
-// The fleet matrix beside that button: one tiny square per session, tinted to
-// the same colour as its status icon in the agents list, with each running
-// session's live-output meter feeding the night-rider sweep so the row shows
-// real activity rather than a decorative animation. Cheap enough to call from
-// the scanner tick — the vector is small and the widget repaints itself.
+// The fleet matrix beside that button: one tiny square per active session,
+// tinted to the same colour as its status icon in the agents list. Completed
+// history belongs in the Agents page; keeping it out of the chrome means a
+// square always represents work that is running, queued, or waiting for input.
+// Each running session's live-output meter feeds the night-rider sweep so the
+// row shows real activity rather than a decorative animation. Cheap enough to
+// call from the scanner tick — the vector is small and the widget repaints
+// itself.
 void MainWindow::refreshAgentDotMatrix()
 {
     if (!m_agentDotMatrix)
@@ -5221,10 +5329,17 @@ void MainWindow::refreshAgentDotMatrix()
     dots.reserve(m_agentSessions.size());
     QHash<QString, int> tally; // status label -> count, for the tooltip
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        const bool active =
+            !session.merged &&
+            (session.status == AgentStatus::Running ||
+             session.status == AgentStatus::Queued ||
+             session.status == AgentStatus::Waiting);
+        if (!active)
+            continue;
         AgentDotMatrix::Dot dot;
         dot.sessionId = session.id;
         dot.color = agentStatusIconColor(session);
-        dot.running = !session.merged && session.status == AgentStatus::Running;
+        dot.running = session.status == AgentStatus::Running;
         if (dot.running) {
             dot.intensity = m_scannerStates.value(session.id).intensity;
             // Token throughput, scaled against a flat-out run, so the blink rate
@@ -5260,7 +5375,7 @@ void MainWindow::refreshAgentDotMatrix()
     if (key == m_agentDotTooltipKey)
         return;
     m_agentDotTooltipKey = key;
-    QString tip = QStringLiteral("%1 agent session%2 \xE2\x80\x94 %3")
+    QString tip = QStringLiteral("%1 active agent session%2 \xE2\x80\x94 %3")
                       .arg(dots.size())
                       .arg(dots.size() == 1 ? QString() : QStringLiteral("s"),
                            key);
@@ -5272,12 +5387,47 @@ void MainWindow::refreshAgentDotMatrix()
     m_agentDotMatrix->setToolTip(tip);
 }
 
-// What the Agents list is filtered by right now. The top bar's box mirrors into
-// this one while the page is on screen (syncAgentPageSearch), so reading it here
-// covers both places a query can be typed.
+#ifdef FORKMESH_WINDOW_TESTS
+int MainWindow::testAgentDotCount() const
+{
+    return m_agentDotMatrix && !m_agentDotMatrix->isHidden()
+               ? m_agentDotMatrix->shownCount()
+               : 0;
+}
+
+void MainWindow::testSetAgentSessionStatus(int sessionId, const QString &status)
+{
+    if (AgentSession *session = findAgentSession(sessionId)) {
+        session->status = status;
+        if (m_agentStore)
+            m_agentStore->saveSession(*session);
+        refreshAgentDotMatrix();
+    }
+}
+
+void MainWindow::testRemoveAgentSession(int sessionId)
+{
+    for (auto it = m_agentSessions.begin(); it != m_agentSessions.end(); ++it) {
+        if (it->id != sessionId)
+            continue;
+        if (m_agentStore)
+            m_agentStore->deleteSession(*it);
+        m_agentSessions.erase(it);
+        refreshAgentDotMatrix();
+        return;
+    }
+}
+#endif
+
+// What the Agents list is filtered by right now.  Its only search entry point
+// is the top bar, and it applies while this page is open.
 QString MainWindow::agentFilterQuery() const
 {
-    return m_agentSearch ? m_agentSearch->text().trimmed() : QString();
+    const bool onHome = !m_sectionStack || m_sectionStack->currentIndex() == 0;
+    const bool onAgents = onHome && m_repoDetailStack &&
+                          m_repoDetailStack->currentIndex() == kRepoAgentsTab;
+    return onAgents && m_globalSearch ? m_globalSearch->text().trimmed()
+                                      : QString();
 }
 
 // The repository whose sessions a scan covers ("owner/name", empty off a repo).
@@ -5289,15 +5439,10 @@ QString MainWindow::agentTranscriptSearchRepoKey() const
     return repo.owner + QLatin1Char('/') + repo.name;
 }
 
-// What the transcripts are being scanned for. The Agents page's own box wins
-// while it holds something, so a filter typed on the page searches transcripts
-// too; otherwise it follows the top bar, which is what lets the dropdown offer
-// transcript matches from anywhere in the app.
+// Transcript matches remain available to the global search dropdown even off
+// the Agents page, so this always follows the top-bar query.
 QString MainWindow::agentTranscriptQuery() const
 {
-    const QString page = agentFilterQuery();
-    if (!page.isEmpty())
-        return page;
     return m_globalSearch ? m_globalSearch->text().trimmed() : QString();
 }
 
@@ -6036,7 +6181,7 @@ void MainWindow::testTypeGlobalSearch(const QString &text)
 
 QString MainWindow::testAgentSearchText() const
 {
-    return m_agentSearch ? m_agentSearch->text() : QString();
+    return agentFilterQuery();
 }
 
 QString MainWindow::testTranscriptSearchText() const
@@ -9213,6 +9358,11 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                          ? lead
                          : customPreamble + QStringLiteral("\n\n") + lead;
     prompt += QStringLiteral("\n\n") + AgentRunner::commitChangesInstruction();
+    // Keep a complete recovery turn in reserve for Codex. The normal path resumes
+    // the native thread and sends only the new turn; if that saved thread was
+    // pruned or is otherwise unavailable, CodexAppServerSession starts a fresh
+    // one with this context rather than failing the Add action.
+    const QString originalTaskPrompt = prompt;
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
@@ -9257,6 +9407,17 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // No context to resume — fold the steer into the replayed prompt as before
         // (this is the original always-on-composer restart behaviour, adhoc #177).
         prompt += QStringLiteral("\n\nAdditional user instruction:\n%1\n").arg(steer);
+    }
+    QString codexResumeFallbackPrompt;
+    if (codex && !resumeId.isEmpty()) {
+        codexResumeFallbackPrompt =
+            QStringLiteral(
+                "The previous Codex thread could not be resumed. Continue the "
+                "same work from the current branch and repository state.\n\n"
+                "Original task:\n%1\n\nLatest user instruction:\n%2")
+                .arg(originalTaskPrompt,
+                     steer.isEmpty() ? QStringLiteral("Continue where you left off.")
+                                     : steer);
     }
     // This session's transcript changed; force the next show to rebuild it.
     if (m_renderedTranscriptSession == sid)
@@ -9530,8 +9691,8 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Auto mode (adhoc #91) routes on the task itself, not the full workflow
     // prompt — `lead` carries the user's ask (or the issue + its comments).
     const QString routeTask = lead;
-    auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
-                   selectedModel, routeTask, codex,
+    auto launch = [this, sid, prompt, codexResumeFallbackPrompt, autoMode,
+                   branchName, resumeId, selectedModel, routeTask, codex,
                    sessionMode, sessionStrength](const QString &workdir) {
         if (codex) {
             CodexAppServerSession *live = m_codexStreams.value(sid);
@@ -9571,7 +9732,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
             }
             live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
-                        effort, jailMb);
+                        effort, jailMb, codexResumeFallbackPrompt);
             return;
         }
 
@@ -9949,6 +10110,58 @@ void MainWindow::stopAllRunningAgents()
     flashMessage(QStringLiteral("Stopped %1 agent session%2.")
                      .arg(ids.size())
                      .arg(ids.size() == 1 ? QString() : QStringLiteral("s")));
+}
+
+// One session's worth of "Stop all", for callers outside the Agents section that
+// hold an id and nothing else — the high-memory panel's per-row "Stop agent"
+// (adhoc #228). Same three moves as the loop above: drop it from the queue, stop
+// whatever is executing it, and force the status transition a queued or wedged
+// row would otherwise never make on its own.
+bool MainWindow::isStoppableAgentSession(int sessionId) const
+{
+    const AgentSession *session = nullptr;
+    for (const AgentSession &candidate : std::as_const(m_agentSessions)) {
+        if (candidate.id == sessionId) {
+            session = &candidate;
+            break;
+        }
+    }
+    if (!session || session->merged)
+        return false;
+    // External (watch-only) rows belong to another process, but Stop on them
+    // signals that CLI directly, so they count here too.
+    return session->status == AgentStatus::Running ||
+           session->status == AgentStatus::Waiting ||
+           session->status == AgentStatus::Queued;
+}
+
+bool MainWindow::stopAgentSessionById(int sessionId)
+{
+    if (sessionId <= 0 || !isStoppableAgentSession(sessionId))
+        return false;
+    if (isExternalSession(sessionId)) {
+        stopExternalSession(sessionId);
+        return true;
+    }
+    m_agentQueue.removeAll(sessionId);
+    if (AgentRunner *runner = runnerForSession(sessionId))
+        runner->stop();
+    stopStreamSession(sessionId, /*refreshUi=*/false);
+    if (AgentSession *as = findAgentSession(sessionId);
+        as && (as->status == AgentStatus::Queued ||
+               as->status == AgentStatus::Running ||
+               as->status == AgentStatus::Waiting)) {
+        as->status = AgentStatus::Stopped;
+        as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+        if (m_agentStore)
+            m_agentStore->saveSession(*as);
+    }
+    scheduleAgentSessionsPush(); // adhoc #182: mirror the new status to the web
+    reloadAgents();
+    if (sessionId == m_selectedAgentSessionId)
+        showAgentSession(sessionId);
+    updateAgentActionState();
+    return true;
 }
 
 // The sessions "Start all" would act on: our own idle work, in any repository —
