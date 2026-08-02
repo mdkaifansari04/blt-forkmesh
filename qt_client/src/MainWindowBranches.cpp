@@ -556,7 +556,7 @@ void pumpDetachedGitQueue()
 
 void startDetachedGit(DetachedGitRequest request)
 {
-    MainWindow *window = request.window;
+    const QPointer<MainWindow> window = request.window;
     auto *git = new QProcess(window);
     if (!request.dir.isEmpty())
         git->setWorkingDirectory(request.dir);
@@ -564,14 +564,24 @@ void startDetachedGit(DetachedGitRequest request)
     // FailedToStart fires errorOccurred but not finished, and a crash fires both,
     // so guard the callback so it runs exactly once whichever way the process ends.
     auto done = std::make_shared<bool>(false);
-    auto finish = [git, done, onDone = std::move(request.onDone)](bool ok) {
+    auto finish = [git, done, window, onDone = std::move(request.onDone)](bool ok) {
         if (*done)
             return;
         *done = true;
         --g_detachedGitInFlight;
-        if (onDone)
-            onDone(ok, git->readAllStandardOutput());
+        const QByteArray out = git->readAllStandardOutput();
         git->deleteLater();
+        if (onDone) {
+            // finished() is delivered by whatever is turning the event loop —
+            // including the keep-alive pump inside another (synchronous) git
+            // read. Running a handler there nests it inside the pass that is
+            // already mid-flight, so both freezes add up into one; re-post it so
+            // it gets its own top-level turn instead (see GuiPump.h).
+            if (forkmesh::ui::inKeepAlivePump() && window)
+                QTimer::singleShot(0, window, [onDone, ok, out] { onDone(ok, out); });
+            else
+                onDone(ok, out);
+        }
         // Start the next queued read last: onDone may enqueue follow-up work of
         // its own, and running the pump after it keeps the queue FIFO.
         pumpDetachedGitQueue();

@@ -181,6 +181,7 @@ set(FORKMESH_APP_SOURCES
     src/NodeEventSocket.h
     src/NodeEventSocket.cpp
     src/BackgroundActivity.h
+    src/GuiPump.h
     src/ActionTelemetry.h
     src/ActionTelemetry.cpp
     src/NetworkBackoff.h
