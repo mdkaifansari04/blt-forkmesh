@@ -3,11 +3,19 @@
 #include "MainWindow.h"
 #include "CrashHandler.h"
 #include "MainWindowInternal.h"
+#include "StartupSplash.h"
 #include "WorldSpeechBridge.h"
 
 using namespace forkmesh::ui;
 
 namespace {
+
+// How long after the first painted frame deferred startup runs when the launch
+// splash is still on screen, instead of showEvent()'s five-second interactive
+// runway (see MainWindow::paintEvent). Long enough for the frame to reach the
+// compositor and the splash to tick over, short enough that the card is never
+// sitting there with nothing to say.
+constexpr int kSplashedDeferredStartupDelayMs = 250;
 
 // ForkMesh is event-driven: every HTTP request fires in response to some
 // action/event (a relay sync frame, a catalog publish, an agent poll…). The
@@ -55,23 +63,43 @@ MainWindow::~MainWindow()
     // a raw `this`.
     forkmesh::BackgroundActivity::setListener(nullptr);
 
+    // QProcess children outlive this destructor body: QObject teardown deletes
+    // them from ~QWidget's deleteChildren(), and ~QProcess kills the child and
+    // waits for it, emitting finished()/errorOccurred() from there. MainWindow
+    // is still a live QObject at that point, so those connections have NOT been
+    // severed yet — but every derived member the handlers touch was destroyed
+    // when MainWindow's members were, so the slot runs on freed memory. The SSH
+    // mirror push handler crashed exactly here: finishPush() reached
+    // m_sshMirrorPushing.remove() on an already-destroyed QSet (SIGSEGV in
+    // QHash::findBucket during "MainWindow teardown"). Sever every signal of
+    // every process descendant now — nothing started before teardown needs to
+    // report back once the window is going away.
+    const QList<QProcess *> processChildren = findChildren<QProcess *>();
+    for (QProcess *process : processChildren)
+        process->disconnect();
+
     // Revoke the browser's memory-only voice capability and stop any local
     // capture while MainWindow's voice state is still alive.
     if (m_worldSpeechBridge)
         m_worldSpeechBridge->stop();
 
-    // Deployment children may still hold a session API token or Tunnel
-    // connector token in their private process environment. Stop all of them
-    // before QObject teardown, drop the retained QProcess environments, and
-    // overwrite our short-lived redaction copy. No token is persisted in
-    // settings or argv.
-    for (QProcess *process :
-         {m_cloudflareBootstrapProcess,
-          m_cloudflareTunnelBootstrapProcess,
-          m_cloudflaredInstallProcess, m_cloudflaredProcess,
-          m_mirrorGatewayProcess}) {
+    // QProcess::~QProcess() waits for a running child and can synchronously
+    // emit finished() while QObject is deleting MainWindow's children. At that
+    // point MainWindow's QWidget state has already been torn down, so a
+    // finished handler which repaints a view can dereference invalid state.
+    // Disconnect every child process first, then settle it while this window is
+    // still fully alive. This also covers one-shot git and setup processes, not
+    // only the long-lived deployment children below.
+    QList<QPointer<QProcess>> processes;
+    const QList<QProcess *> childProcesses = findChildren<QProcess *>();
+    processes.reserve(childProcesses.size());
+    for (QProcess *process : childProcesses)
+        processes.append(process);
+    for (const QPointer<QProcess> &guardedProcess : std::as_const(processes)) {
+        QProcess *process = guardedProcess.data();
         if (!process)
             continue;
+        QObject::disconnect(process, nullptr, nullptr, nullptr);
         if (process->state() != QProcess::NotRunning) {
             process->terminate();
             if (!process->waitForFinished(2000)) {
@@ -79,6 +107,19 @@ MainWindow::~MainWindow()
                 process->waitForFinished(1000);
             }
         }
+    }
+
+    // Deployment children may hold a session API token or Tunnel connector
+    // token in their private process environment. Drop the retained
+    // environments and overwrite our short-lived redaction copy. No token is
+    // persisted in settings or argv.
+    for (QProcess *process :
+         {m_cloudflareBootstrapProcess,
+          m_cloudflareTunnelBootstrapProcess,
+          m_cloudflaredInstallProcess, m_cloudflaredProcess,
+          m_mirrorGatewayProcess}) {
+        if (!process)
+            continue;
         process->setProcessEnvironment(QProcessEnvironment());
     }
     m_cloudflareActiveSecret.fill(QChar(u'\0'));
@@ -107,14 +148,33 @@ MainWindow::~MainWindow()
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
+    logStartup(QStringLiteral("MainWindow ctor begin"));
+    // traceStep() scopes one unit of construction work in the startup trace: it
+    // opens a StartupTraceStep, runs the work, and closes it on the way out. It
+    // is deliberately NOT named startupStep — the coarse
+    // forkmesh::ui::startupStep(label) calls below announce splash phases, and a
+    // same-named local would shadow every one of them.
+    const auto traceStep = [](const QString &name, auto &&work) {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("MainWindow: %1").arg(name));
+        std::forward<decltype(work)>(work)();
+    };
 #ifndef FORKMESH_WINDOW_TESTS
     // Start the durable action journal before initialization launches network,
     // git, agent, or worker activity. The writer owns all later disk I/O.
-    forkmesh::ActionTelemetry::initialize(
-        QDir::homePath() +
-        QStringLiteral("/.forkmesh/diagnostics/actions.jsonl"));
+    traceStep(QStringLiteral("start durable action telemetry"), [] {
+        forkmesh::ActionTelemetry::initialize(
+            QDir::homePath() +
+            QStringLiteral("/.forkmesh/diagnostics/actions.jsonl"));
+    });
 #endif
-    logStartup(QStringLiteral("MainWindow ctor begin"));
+    // Each startupStep() below names the work that is about to run, and the
+    // logStartup() that follows the work closes it. Together they are the
+    // launch splash's live list (adhoc #39) as well as the terminal's timing
+    // log; both are no-ops when no splash is up.
+    QElapsedTimer chromeTimer;
+    chromeTimer.start();
+    startupStep(QStringLiteral("Installing shortcuts and window chrome"));
     // App-wide filter so right-click on ANY selected text (transcript, diff,
     // README, logs — not just the prompt boxes themselves) can offer "Send to
     // Prompt", without wiring a custom context menu into every text widget
@@ -143,11 +203,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     if (!savedGeometry.isEmpty())
         restoreGeometry(savedGeometry);
 
+    startupDetail(savedGeometry.isEmpty()
+                      ? QStringLiteral("No saved geometry; opening at 1060x700")
+                      : QStringLiteral("Restored the last window geometry"));
+
+    startupStep(QStringLiteral("Registering the system tray icon"));
     m_trayIcon = new QSystemTrayIcon(this);
     m_trayIcon->setIcon(style()->standardIcon(QStyle::SP_MessageBoxInformation));
     m_trayIcon->setToolTip("ForkMesh");
     if (QSystemTrayIcon::isSystemTrayAvailable())
         m_trayIcon->show();
+    logStartup(
+        QStringLiteral("DONE  MainWindow: configure window chrome, shortcuts, "
+                       "geometry and tray icon (%1ms)")
+            .arg(chromeTimer.elapsed()));
 
     // The self-update relaunch exits via QCoreApplication::quit(), which never
     // reaches closeEvent(); flush chat history (messages + unread state) on
@@ -160,9 +229,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // doesn't get hammered by every independent call site's own retry. It also
     // hosts the app-level whitelist firewall: default-on, with user-approved
     // rules persisted in QSettings.
+    QElapsedTimer networkTimer;
+    networkTimer.start();
+    startupStep(QStringLiteral("Bringing up networking and the request firewall"));
     auto *network = new BackoffNetworkAccessManager(this);
-    network->setFirewallEnabled(
-        QSettings().value(kRequestFirewallEnabledSetting, true).toBool());
+    const bool firewallOn =
+        QSettings().value(kRequestFirewallEnabledSetting, true).toBool();
+    startupDetail(firewallOn
+                      ? QStringLiteral("Request firewall: on")
+                      : QStringLiteral("Request firewall: off"));
+    network->setFirewallEnabled(firewallOn);
     network->setFirewallRules(requestFirewallWhitelistWithDefaults());
     network->setFirewallPrompt(
         [this](const QString &method, const QUrl &url, QString *allowRuleOut) {
@@ -249,17 +325,31 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                               .arg(verb, status, reply->url().toString(),
                                    networkRequestEventFor(reply->url())));
             });
-    m_totalConnectionMs = QSettings().value(kConnectionTotalSetting).toLongLong();
-    m_nodeOffline = QSettings().value(kNodeOfflineSetting, false).toBool();
-    // Seed the live Claude model cache from disk *before* buildChatPage() builds
-    // the composer's model combo, so it lists the real models on the first frame
-    // instead of just "Auto" while this session's live /v1/models fetch is still
-    // in flight (refreshClaudeModelCombo overwrites this once that lands).
-    m_liveClaudeModels =
-        QJsonDocument::fromJson(
-            QSettings().value(kClaudeModelsCacheSetting).toByteArray())
-            .array();
+    logStartup(
+        QStringLiteral("DONE  MainWindow: configure shared network manager and "
+                       "firewall (%1ms)")
+            .arg(networkTimer.elapsed()));
+    traceStep(QStringLiteral("read connection state and cached model list"),
+              [this] {
+                  m_totalConnectionMs =
+                      QSettings().value(kConnectionTotalSetting).toLongLong();
+                  m_nodeOffline =
+                      QSettings().value(kNodeOfflineSetting, false).toBool();
+                  // Seed the live Claude model cache from disk *before*
+                  // buildChatPage() builds the composer's model combo, so it
+                  // lists the real models on the first frame instead of just
+                  // "Auto" while this session's live /v1/models fetch is still
+                  // in flight (refreshClaudeModelCombo overwrites this once
+                  // that lands).
+                  m_liveClaudeModels =
+                      QJsonDocument::fromJson(
+                          QSettings()
+                              .value(kClaudeModelsCacheSetting)
+                              .toByteArray())
+                          .array();
+              });
 
+    startupStep(QStringLiteral("Loading relays, favicons and the network log"));
     loadServers();
     loadCachedFavicons();
     // Restore the network log from disk *before* the log section is built so the
@@ -267,11 +357,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // frame, then record this session's start time. Crash records from a prior
     // unclean exit are already in the loaded log (the crash handler writes to
     // network_log.txt directly), so no separate crash-file scan is needed.
-    loadNetworkLog();
+    traceStep(QStringLiteral("restore persisted network log"),
+              [this] { loadNetworkLog(); });
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logSystem(QStringLiteral("Session started - ForkMesh v" FORKMESH_VERSION "."));
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logStartup(QStringLiteral("servers + favicons loaded"));
+    startupDetail(QStringLiteral("%1 relay(s) known").arg(m_servers.size()));
+
+    startupStep(QStringLiteral("Restoring the profile and node name"));
 
     // Load the persisted profile state (custom avatar + node name) *before* the
     // UI is built, so the top-right avatar renders correctly on the very first
@@ -279,48 +373,57 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // these still empty and paints a generic placeholder, which then visibly
     // swaps to the real avatar a few seconds later when silent-auth/startSession
     // finally loads the same values.
-    m_userAvatar = QSettings().value(kAvatarSetting).toByteArray();
-    // A headless mirror deployed via the installer arrives with the operator's
-    // chosen name in FORKMESH_NODE_NAME. That typed name is the source of truth,
-    // so adopt it whenever the installer supplied a valid one that differs from
-    // whatever is saved here — this includes re-running the installer on a box
-    // that already ran under an old name, which must actually rename the node
-    // (previously the old saved name silently won, so a host installed as
-    // "mirror1" kept showing up as its earlier "vm1"). Persist it before
-    // buildSetupPage() seeds m_nameEdit from savedProfileName(), so the deferred
-    // auto-connect path picks it up and the node re-joins the network under the
-    // chosen name unattended. FORKMESH_NODE_NAME is only present on the
-    // installer-launched process (a plain relaunch leaves it unset), so a normal
-    // launch — where envName is empty or already matches — is a no-op and never
-    // touches an existing name.
-    {
-        const QString envName =
-            accountNameFromInput(qEnvironmentVariable("FORKMESH_NODE_NAME"),
-                                 QString());
-        if (isValidNodeName(envName) &&
-            envName.compare(savedProfileName(), Qt::CaseInsensitive) != 0)
-            QSettings().setValue(kAccountNameSetting, envName);
-    }
-    // True first run: no saved name, no installer-supplied env override. Rather
-    // than leave m_nameEdit blank and strand the node on the welcome screen
-    // until someone picks a name, hand it a fun generated one now — before
-    // buildSetupPage() seeds the field and before the deferred auto-connect
-    // below decides whether to enter the app shell — so a first launch can
-    // register and start mirroring on its own. The name is still editable from
-    // Settings afterwards.
-    if (savedProfileName().isEmpty()) {
-        m_freshInstall = true;
-        const QString generated = randomFunNodeName();
-        QSettings().setValue(kAccountNameSetting, generated);
-        // Record that this name was handed out, not chosen. While it is still
-        // the account name (and no user account is linked), chat speaks as a
-        // guest — the generated name stays the machine's node identity, but it
-        // is not the person's username (see chatIdentityIsGuest()).
-        QSettings().setValue(kGeneratedNodeNameSetting, generated);
-    }
-    if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
-        m_userName = saved;
+    traceStep(QStringLiteral("restore profile name and avatar"), [this] {
+        m_userAvatar = QSettings().value(kAvatarSetting).toByteArray();
+        // A headless mirror deployed via the installer arrives with the
+        // operator's chosen name in FORKMESH_NODE_NAME. That typed name is the
+        // source of truth, so adopt it whenever the installer supplied a valid
+        // one that differs from whatever is saved here — this includes
+        // re-running the installer on a box that already ran under an old name,
+        // which must actually rename the node (previously the old saved name
+        // silently won, so a host installed as "mirror1" kept showing up as its
+        // earlier "vm1"). Persist it before buildSetupPage() seeds m_nameEdit
+        // from savedProfileName(), so the deferred auto-connect path picks it up
+        // and the node re-joins the network under the chosen name unattended.
+        // FORKMESH_NODE_NAME is only present on the installer-launched process
+        // (a plain relaunch leaves it unset), so a normal launch — where envName
+        // is empty or already matches — is a no-op and never touches an existing
+        // name.
+        {
+            const QString envName =
+                accountNameFromInput(qEnvironmentVariable("FORKMESH_NODE_NAME"),
+                                     QString());
+            if (isValidNodeName(envName) &&
+                envName.compare(savedProfileName(), Qt::CaseInsensitive) != 0)
+                QSettings().setValue(kAccountNameSetting, envName);
+        }
+        // True first run: no saved name, no installer-supplied env override.
+        // Rather than leave m_nameEdit blank and strand the node on the welcome
+        // screen until someone picks a name, hand it a fun generated one now —
+        // before buildSetupPage() seeds the field and before the deferred
+        // auto-connect below decides whether to enter the app shell — so a first
+        // launch can register and start mirroring on its own. The name is still
+        // editable from Settings afterwards.
+        if (savedProfileName().isEmpty()) {
+            m_freshInstall = true;
+            const QString generated = randomFunNodeName();
+            QSettings().setValue(kAccountNameSetting, generated);
+            // Record that this name was handed out, not chosen. While it is
+            // still the account name (and no user account is linked), chat
+            // speaks as a guest — the generated name stays the machine's node
+            // identity, but it is not the person's username (see
+            // chatIdentityIsGuest()).
+            QSettings().setValue(kGeneratedNodeNameSetting, generated);
+        }
+        if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
+            m_userName = saved;
+    });
+    startupDetail(m_freshInstall
+                      ? QStringLiteral("First run — this node is now \"%1\"")
+                            .arg(savedProfileName())
+                      : QStringLiteral("Node name: %1").arg(savedProfileName()));
 
+    startupStep(QStringLiteral("Building the account surface"));
     m_stack = new QStackedWidget(this);
     // The setup page is no longer a screen anyone sees (adhoc #115): it only ever
     // asked for a username and a relay host that both already have working
@@ -329,6 +432,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // which the session, settings and update paths all still read and write.
     m_stack->addWidget(buildSetupPage());
     logStartup(QStringLiteral("setup page built"));
+    startupStep(QStringLiteral("Building the application shell"));
     m_stack->addWidget(buildChatPage());
     logStartup(QStringLiteral("chat/app page built"));
     m_stack->setCurrentIndex(1); // open in the app shell, always
@@ -339,17 +443,29 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // click and the first Code/Issues switch below a frame-scale budget instead
     // of freezing an already-visible window for ~230ms each. Less common repo
     // tabs remain lazy.
+    startupStep(QStringLiteral("Warming the Code and Issues surfaces"));
     ensureRepoDetailSectionBuilt();
     ensureRepoDetailTabBuilt(0); // Code (also owns Branches/Worktrees panels)
     ensureRepoDetailTabBuilt(2); // Issues
     logStartup(QStringLiteral("core repository surfaces warmed"));
+    startupStep(QStringLiteral("Loading repositories"));
     initializeWorldSpeechBridge();
     loadRepositories();
     refreshRepositoryList();
     logStartup(QStringLiteral("repositories loaded"));
+    startupDetail(
+        QStringLiteral("%1 repositor%2 on this node")
+            .arg(m_repositories.size())
+            .arg(m_repositories.size() == 1 ? QStringLiteral("y")
+                                            : QStringLiteral("ies")));
+    startupStep(QStringLiteral("Restoring actions and agent sessions"));
     initActions();
     initAgents();
     logStartup(QStringLiteral("actions + agents initialized"));
+    if (!m_agentQueue.isEmpty())
+        startupDetail(QStringLiteral("%1 agent session(s) queued to resume")
+                          .arg(m_agentQueue.size()));
+    startupStep(QStringLiteral("Choosing the repository to reopen"));
     const QString lastRepository =
         QSettings().value(kLastRepositorySetting).toString();
     if (!lastRepository.isEmpty()) {
@@ -368,13 +484,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         }
     }
     logStartup(QStringLiteral("last repository restore scheduled"));
+    startupDetail(m_pendingRestoreRepoIndex >= 0
+                      ? QStringLiteral("Will reopen %1").arg(lastRepository)
+                      : QStringLiteral("Nothing to reopen"));
+    startupStep(QStringLiteral("Selecting the active relay"));
     loadActiveServerIntoEdits();
     updateBreadcrumb();
     logStartup(QStringLiteral("active server + breadcrumb"));
+    startupStep(QStringLiteral("Fetching relay favicons"));
     for (int i = 0; i < m_servers.size(); ++i)
         fetchFavicon(i);
     logStartup(QStringLiteral("favicons fetched"));
 
+    startupStep(QStringLiteral("Arming background timers"));
     m_typingStopTimer = new QTimer(this);
     m_typingStopTimer->setSingleShot(true);
     connect(m_typingStopTimer, &QTimer::timeout, this, [this] {
@@ -386,6 +508,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_homeStatsTimer, &QTimer::timeout, this,
             &MainWindow::refreshRepositoryList);
     m_homeStatsTimer->start(60000);
+    logStartup(QStringLiteral("  timer armed: home/repository stats every 60s"));
 
     // The activity rail's Git badge has to be right whichever repo tab is on
     // screen — the working tree moves under us constantly here (an agent
@@ -400,10 +523,17 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
             refreshRepoChangeBadge();
     });
     m_repoChangeBadgeTimer->start(10000);
+    logStartup(QStringLiteral("  timer armed: Git rail status every 10s"));
 
     // Footer diagnostics + UI-stall watchdog. Deferred one event-loop turn so the
     // heartbeat starts measuring a real, interactive loop (not constructor work).
-    QTimer::singleShot(0, this, [this] { startDiagnostics(); });
+    QTimer::singleShot(0, this, [this] {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("delayed startup: diagnostics and UI-stall watchdog"));
+        startDiagnostics();
+    });
+    logStartup(QStringLiteral(
+        "  startup job scheduled: diagnostics on first event-loop turn"));
 
     // Keep mirrors fresh: periodically fetch each repo so a mirror tracks the
     // owner's repo as it updates. Push events are the primary signal now —
@@ -425,7 +555,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_mirrorSyncTimer->start(int(kMirrorSyncIntervalMs) +
                              QRandomGenerator::global()->bounded(
                                  -mirrorJitterSpanMs, mirrorJitterSpanMs + 1));
-    QTimer::singleShot(15000, this, &MainWindow::autoSyncMirrors);
+    logStartup(QStringLiteral("  timer armed: mirror safety sync every %1ms")
+                   .arg(m_mirrorSyncTimer->interval()));
+    QTimer::singleShot(15000, this, [this] {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("delayed startup: initial mirror synchronization"));
+        autoSyncMirrors();
+    });
+    logStartup(QStringLiteral(
+        "  startup job scheduled: initial mirror synchronization in 15000ms"));
     // Source-of-truth nodes pick up issues/PRs/comments/agent-prompts filed by
     // other nodes through the relay's event push: a minimal frame on the
     // per-owner node event socket (NodeEventSocket -> ForkMeshNodes DO)
@@ -438,7 +576,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     m_inboxPollTimer = new QTimer(this);
     connect(m_inboxPollTimer, &QTimer::timeout, this, &MainWindow::performRelaySync);
     m_inboxPollTimer->start(5 * 60 * 1000);
-    QTimer::singleShot(20000, this, &MainWindow::performRelaySync);
+    logStartup(QStringLiteral("  timer armed: relay inbox safety sync every 300000ms"));
+    QTimer::singleShot(20000, this, [this] {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("delayed startup: initial relay inbox sync"));
+        performRelaySync();
+    });
+    logStartup(QStringLiteral(
+        "  startup job scheduled: initial relay inbox sync in 20000ms"));
     // Settings → "Automatically update ForkMesh" (off by default on desktop, on
     // by default headless — see kAutoUpdateSetting): hourly check for a new
     // tagged release, plus one shortly after launch so a stale headless install
@@ -454,10 +599,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         60 * 60 * 1000 +
         int(QRandomGenerator::global()->bounded(-10 * 60 * 1000,
                                                 10 * 60 * 1000 + 1)));
-    QTimer::singleShot(
+    const int initialUpdateDelayMs =
         5 * 60 * 1000 +
-            int(QRandomGenerator::global()->bounded(10 * 60 * 1000)),
-        this, &MainWindow::maybeAutoUpdate);
+        int(QRandomGenerator::global()->bounded(10 * 60 * 1000));
+    QTimer::singleShot(initialUpdateDelayMs, this, [this] {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("delayed startup: automatic update check"));
+        maybeAutoUpdate();
+    });
+    logStartup(QStringLiteral(
+                   "  timer armed: automatic update every %1ms; first check in %2ms")
+                   .arg(m_autoUpdateTimer->interval())
+                   .arg(initialUpdateDelayMs));
     // Chat messages are retained for 7 days (kChatMessageRetentionMs); sweep
     // local history hourly so a node left running that long doesn't keep
     // showing/serving messages the relay has already dropped (adhoc #49).
@@ -465,6 +618,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(m_chatExpiryTimer, &QTimer::timeout, this,
             &MainWindow::pruneExpiredChatHistory);
     m_chatExpiryTimer->start(60 * 60 * 1000);
+    logStartup(QStringLiteral("  timer armed: expired chat pruning every 3600000ms"));
     // Radar: probe the active relay's round-trip latency once a minute (issue
     // #144), plus a first reading shortly after launch so the dish isn't stuck
     // on "…" while the UI settles.
@@ -476,35 +630,66 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // readout).
     connect(m_relayLatencyTimer, &QTimer::timeout, this,
             &MainWindow::updateNodeOnlineControls);
+    // …and keep the chrome-line node dots on the same tick, so node status is
+    // reported continuously instead of only while the Mirror nodes page is built
+    // and open (adhoc #44). Roster-derived, so this costs no git/network.
+    connect(m_relayLatencyTimer, &QTimer::timeout, this,
+            &MainWindow::refreshNodeDotMatrix);
     m_relayLatencyTimer->start(60 * 1000);
-    QTimer::singleShot(2500, this, &MainWindow::probeRelayLatency);
+    logStartup(QStringLiteral("  timer armed: relay latency and uptime every 60000ms"));
+    QTimer::singleShot(2500, this, [this] {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("delayed startup: first relay latency probe"));
+        probeRelayLatency();
+    });
+    logStartup(QStringLiteral(
+        "  startup job scheduled: first relay latency probe in 2500ms"));
     // React to the OS's own connectivity signal so the radar flips to
     // offline/online the moment the link changes, instead of lagging the
     // minute cadence (adhoc #41).
-    initRelayReachabilityWatch();
+    traceStep(QStringLiteral("start operating-system reachability watch"),
+              [this] { initRelayReachabilityWatch(); });
     // Tasks rail badge: the count is only produced by the Tasks page, which is
     // built lazily, so before this a restart left the rail blank until someone
     // opened it (adhoc #79). Paint the persisted count right away and re-read
     // the board once the account session has had time to come up.
-    restoreOrganizationTaskBadge();
-    QTimer::singleShot(25000, this, &MainWindow::refreshOrganizationTaskBadge);
+    traceStep(QStringLiteral("restore cached organization task badge"),
+              [this] { restoreOrganizationTaskBadge(); });
+    QTimer::singleShot(25000, this, [this] {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("delayed startup: refresh organization task badge"));
+        refreshOrganizationTaskBadge();
+    });
+    logStartup(QStringLiteral(
+        "  startup job scheduled: organization task refresh in 25000ms"));
     // Bootstrap the flagship ForkMesh mirror shortly after launch so a freshly
     // installed client shows the project repo without manual setup.
-    QTimer::singleShot(3000, this, &MainWindow::ensureFlagshipRepo);
+    QTimer::singleShot(3000, this, [this] {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("delayed startup: ensure flagship repository"));
+        ensureFlagshipRepo();
+    });
+    logStartup(QStringLiteral(
+        "  startup job scheduled: flagship repository check in 3000ms"));
 
     logStartup(QStringLiteral("timers started"));
+    startupDetail(QStringLiteral(
+        "Mirror sync, relay sync, chat expiry, latency, auto-update"));
+
+    startupStep(QStringLiteral("Loading the node signing key"));
     if (!m_profileIdentity.load()) {
+        startupStepFailed(m_profileIdentity.errorString());
         m_setupError->setText(m_profileIdentity.errorString());
         m_setupError->show();
     } else {
         // The stack already opens on the app shell, so there is no login/setup
         // screen left to flash past here — the persisted-capability check that
         // used to decide it is gone with the screen (adhoc #115).
-        if (m_pubkeyLabel) {
-            m_pubkeyLabel->setText("Ed25519 public key: " +
-                                   m_profileIdentity.shortPublicKey());
-            m_pubkeyLabel->setToolTip(m_profileIdentity.publicKey());
-        }
+            if (m_pubkeyLabel) {
+                m_pubkeyLabel->setText("Ed25519 public key: " +
+                                       m_profileIdentity.shortPublicKey());
+                m_pubkeyLabel->setToolTip(m_profileIdentity.publicKey());
+            }
         // A first run already got a generated fun name saved above, so
         // m_nameEdit is never blank here — the deferred auto-connect below
         // treats every launch the same way instead of stopping first runs on
@@ -513,14 +698,26 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         // GUI thread, so running them before the window is exposed shows a black
         // frame on launch.
         m_pendingSilentAuth = true;
+        startupDetail(QStringLiteral("Ed25519 key %1")
+                          .arg(m_profileIdentity.shortPublicKey()));
     }
     logStartup(QStringLiteral("identity loaded"));
+    // A provisioned headless mirror never builds or opens the Control Node
+    // page, which used to be the only path that armed its gateway/tunnel
+    // services. Defer until construction and setHeadlessMode() have completed;
+    // the helper still requires the persisted hostname plus an owner-only
+    // connector token, so ordinary clients with no endpoint are a no-op.
+    QTimer::singleShot(
+        0, this, &MainWindow::maybeAutoStartDirectMirrorServices);
+    startupStep(QStringLiteral("Computing home statistics"));
     updateHomeStats();
     // Populate the Hosts/Relays nav button counts up front — Nodes' count
     // follows the roster and updates itself via updateNodeSwitcher().
-    refreshHostsTable();
-    refreshRelaysTable();
-    logStartup(QStringLiteral("home stats updated (ctor end)"));
+    traceStep(QStringLiteral("populate Hosts navigation count"),
+              [this] { refreshHostsTable(); });
+    traceStep(QStringLiteral("populate Relays navigation count"),
+              [this] { refreshRelaysTable(); });
+    logStartup(QStringLiteral("MainWindow ctor complete"));
 }
 
 void MainWindow::showEvent(QShowEvent *event)
@@ -529,6 +726,9 @@ void MainWindow::showEvent(QShowEvent *event)
     if (m_deferredStartupStarted)
         return;
     m_deferredStartupStarted = true;
+    logStartup(QStringLiteral(
+        "first window show observed; deferred authentication and repository "
+        "restore intentionally scheduled in 5000ms to protect first paint"));
     // An Expose event is not proof that Qt has painted the first frame (notably
     // with the offscreen QPA and some compositors). Starting silent auth from
     // that event let key/account work run ahead of paint and restored the black
@@ -536,15 +736,56 @@ void MainWindow::showEvent(QShowEvent *event)
     // bounded five-second interactive runway so silent authentication and session
     // restoration cannot collide with the user's first repository/tab navigation,
     // then run the idempotent startup regardless of platform. Headless launches
-    // use the same deterministic fallback.
+    // use the same deterministic fallback. A launch with the splash up beats
+    // this timer to it from paintEvent — there, the frame is proven and there
+    // is no interactive runway to protect because the card is over the app.
     QTimer::singleShot(5000, this, &MainWindow::runDeferredStartup);
+}
+
+void MainWindow::paintEvent(QPaintEvent *event)
+{
+    QMainWindow::paintEvent(event);
+    if (m_firstFramePainted)
+        return;
+    m_firstFramePainted = true;
+    // The launch splash has been narrating startup over an empty screen; this
+    // is the first frame with the real window behind it. That used to be where
+    // the splash said "Ready" and faded — but the window is only half started
+    // here: runDeferredStartup() still has to sign in, open the last
+    // repository, resume agent sessions and bring up the mesh session, and the
+    // app visibly loads through all of it. So this is one more completed step,
+    // not the end; finish comes from the end of deferred startup. A no-op when
+    // no splash is up (adhoc #39).
+    startupWindowPainted(QStringLiteral("Main window painted"));
+    if (!activeStartupSplash())
+        return;
+    // showEvent() arms deferred startup five seconds out to leave the user an
+    // interactive runway before those blocking calls take the GUI thread. With
+    // the splash still on screen there is nothing to interact with, and that
+    // runway is five seconds of a card narrating nothing — so with a frame now
+    // painted (which is what the runway was really waiting for), get on with
+    // it. runDeferredStartup() is idempotent, so whichever timer lands first
+    // wins and the other returns.
+    QTimer::singleShot(kSplashedDeferredStartupDelayMs, this, [this] {
+        // Unless the user clicked the splash away in the meantime — then they
+        // do have an app in front of them, the runway is worth protecting
+        // again, and showEvent()'s five-second timer runs this instead.
+        if (!activeStartupSplash())
+            return;
+        runDeferredStartup();
+    });
 }
 
 void MainWindow::runDeferredStartup()
 {
-    if (m_deferredStartupRun)
+    if (m_deferredStartupRun) {
+        logStartup(QStringLiteral(
+            "deferred startup requested again; ignored because it already ran"));
         return;
+    }
     m_deferredStartupRun = true;
+    forkmesh::StartupTraceStep deferredStep(
+        QStringLiteral("deferred startup: restore repository, session and agents"));
     if (QWindow *handle = windowHandle())
         handle->removeEventFilter(this);
 
@@ -553,10 +794,14 @@ void MainWindow::runDeferredStartup()
         if (!m_headless)
             return;
         headlessBootstrapQueued = true;
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("deferred startup: headless flagship bootstrap"));
         logSystem(QStringLiteral(
             "Startup: checking forkmesh/forkmesh mirror bootstrap."));
         ensureFlagshipRepo();
         QTimer::singleShot(10000, this, [this] {
+            forkmesh::StartupTraceStep step(QStringLiteral(
+                "delayed startup: recheck headless flagship bootstrap"));
             logSystem(QStringLiteral(
                 "Startup: rechecking forkmesh/forkmesh mirror bootstrap."));
             ensureFlagshipRepo();
@@ -573,16 +818,34 @@ void MainWindow::runDeferredStartup()
     // screen either; the app stays put and the top-bar sign-in pill is the way
     // in (adhoc #115).
     auto startNetworking = [&] {
+        forkmesh::StartupTraceStep networkingStep(
+            QStringLiteral("deferred startup: authenticate and start networking"));
         if (m_pendingSilentAuth) {
             m_pendingSilentAuth = false;
             const QString name = m_nameEdit
                                      ? m_nameEdit->text().trimmed().toLower()
                                      : QString();
             if (!name.isEmpty() && isValidNodeName(name)) {
-                authenticateSilently(name);
-                startSession();
+                {
+                    forkmesh::StartupTraceStep step(
+                        QStringLiteral("deferred startup: silent authentication"));
+                    startupStep(QStringLiteral("Signing in as %1").arg(name));
+                    authenticateSilently(name);
+                }
+                {
+                    forkmesh::StartupTraceStep step(
+                        QStringLiteral("deferred startup: start mesh session"));
+                    startupStep(QStringLiteral("Connecting to the mesh"));
+                    startSession();
+                }
                 runHeadlessBootstrap();
+            } else {
+                logStartup(QStringLiteral(
+                    "  silent authentication skipped: no valid saved node name"));
             }
+        } else {
+            logStartup(QStringLiteral(
+                "  silent authentication skipped: no pending authentication"));
         }
 
         // Headless/offscreen launches should never depend on the setup-page
@@ -596,8 +859,16 @@ void MainWindow::runDeferredStartup()
                 if (!m_backend) {
                     if (m_nameEdit)
                         m_nameEdit->setText(name);
-                    authenticateSilently(name);
-                    startSession();
+                    {
+                        forkmesh::StartupTraceStep step(QStringLiteral(
+                            "deferred startup: headless silent authentication"));
+                        authenticateSilently(name);
+                    }
+                    {
+                        forkmesh::StartupTraceStep step(QStringLiteral(
+                            "deferred startup: start headless mesh session"));
+                        startSession();
+                    }
                 }
                 runHeadlessBootstrap();
             }
@@ -626,10 +897,22 @@ void MainWindow::runDeferredStartup()
     if (m_pendingRestoreRepoIndex >= 0 &&
         m_pendingRestoreRepoIndex < m_repositories.size()) {
         const int index = m_pendingRestoreRepoIndex;
-        logStartup(QStringLiteral("restoring last repository (deferred)"));
+        logStartup(QStringLiteral("restoring saved repository index %1")
+                       .arg(index));
         m_selectedNode = m_repositories.at(index).owner;
-        refreshRepositoryList();
-        openRepoDetail(index);
+        startupStep(QStringLiteral("Reopening %1/%2")
+                        .arg(m_repositories.at(index).owner,
+                             m_repositories.at(index).name));
+        {
+            forkmesh::StartupTraceStep step(QStringLiteral(
+                "deferred startup: refresh repository list before restore"));
+            refreshRepositoryList();
+        }
+        {
+            forkmesh::StartupTraceStep step(
+                QStringLiteral("deferred startup: open saved repository detail"));
+            openRepoDetail(index);
+        }
         // Land back on whichever tab was actually open last (adhoc #101) — a
         // relaunch should stay on whatever page it's on. Nothing overrides that
         // any more: openRepoDetail() above lands on the Code overview, and the
@@ -643,16 +926,28 @@ void MainWindow::runDeferredStartup()
             // every other tab — it never lazily builds the real page itself. Build
             // it explicitly here so restoring the Agents tab can't leave it showing
             // its unbuilt placeholder.
-            ensureRepoDetailTabBuilt(savedTab);
+            startupStep(QStringLiteral("Restoring the last open tab"));
+            {
+                forkmesh::StartupTraceStep step(QStringLiteral(
+                    "deferred startup: build saved repository tab %1")
+                                                    .arg(savedTab));
+                ensureRepoDetailTabBuilt(savedTab);
+            }
             NavPlace target;
             target.section = 0;
             target.repoIndex = index;
             target.detailTab = savedTab;
-            applyNavDetailTab(target);
+            {
+                forkmesh::StartupTraceStep step(QStringLiteral(
+                    "deferred startup: restore saved repository navigation"));
+                applyNavDetailTab(target);
+            }
         }
-        logStartup(QStringLiteral("last repository detail loaded"));
+        logStartup(QStringLiteral("saved repository detail restore complete"));
         // Issue metadata is worker-loaded; applyLoadedIssues resumes the looper
         // only after its backlog has arrived.
+        logStartup(QStringLiteral(
+            "  scheduling background issue metadata reload after restore"));
         reloadIssuesInBackground();
     } else if (m_repoDetailIndex < 0) {
         // No saved repository to restore: land on the selected node's first repo
@@ -663,8 +958,17 @@ void MainWindow::runDeferredStartup()
                 firstRepo = entry.index;
                 break;
             }
-        if (firstRepo >= 0)
+        if (firstRepo >= 0) {
+            forkmesh::StartupTraceStep step(
+                QStringLiteral("deferred startup: open first available repository"));
+            startupStep(QStringLiteral("Opening %1/%2")
+                            .arg(m_repositories.at(firstRepo).owner,
+                                 m_repositories.at(firstRepo).name));
             openRepoDetail(firstRepo);
+        } else {
+            logStartup(QStringLiteral(
+                "  repository restore skipped: no saved or available repository"));
+        }
     }
     m_pendingRestoreRepoIndex = -1;
 
@@ -672,7 +976,12 @@ void MainWindow::runDeferredStartup()
     // the transcripts that reference them keep their thumbnails past the next
     // reboot (adhoc #66). Deferred: it touches the disk and nothing on screen
     // needs it before the first frame.
-    AgentPromptImages::migrateLegacy();
+    {
+        forkmesh::StartupTraceStep step(QStringLiteral(
+            "deferred startup: migrate legacy prompt image attachments"));
+        startupStep(QStringLiteral("Checking prompt attachments"));
+        AgentPromptImages::migrateLegacy();
+    }
 
     // Resume the agent sessions initAgents() re-queued after the restart, only
     // now that the first frame is up and the last repository is restored.
@@ -681,10 +990,17 @@ void MainWindow::runDeferredStartup()
     // (~2s of git reads) before the window could paint, which the restore above
     // then redid. Quiet mode keeps the resumed runs from stealing the view.
     if (!m_agentQueue.isEmpty()) {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("deferred startup: resume %1 queued agent session(s)")
+                .arg(m_agentQueue.size()));
+        startupStep(QStringLiteral("Resuming %1 agent session(s)")
+                        .arg(m_agentQueue.size()));
         m_agentQuietResume = true;
         processAgentQueue();
         m_agentQuietResume = false;
-        logStartup(QStringLiteral("agent sessions resumed (deferred)"));
+    } else {
+        logStartup(QStringLiteral(
+            "  agent resume skipped: no queued sessions from the prior run"));
     }
 
     // Desktop: connect only now, after the restore, so silent auth never
@@ -699,13 +1015,23 @@ void MainWindow::runDeferredStartup()
     // has no equivalent oauth/usage-style endpoint; its chart already
     // recomputes from the locally tracked window on every launch via
     // buildBreadcrumb's refreshCodexUsageRemaining() call).
-    refreshClaudeCodeUsage();
+    {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("deferred startup: refresh Claude Code usage"));
+        startupStep(QStringLiteral("Refreshing Claude Code usage"));
+        refreshClaudeCodeUsage();
+    }
 
     // Hourly snapshot of the live database to the local drive (Settings -> Data
     // -> Automatic backups). Armed for every launch, headless included, but it
     // only starts a timer where backups are actually on: control nodes by
     // default, anyone who ticked the box.
-    startAutoBackups();
+    {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("deferred startup: arm automatic backups"));
+        startupStep(QStringLiteral("Arming automatic backups"));
+        startAutoBackups();
+    }
 
     // A provisioned direct HTTPS mirror (hostname configured + owner-only
     // connector token on disk) used to stay dark after every restart until
@@ -714,8 +1040,22 @@ void MainWindow::runDeferredStartup()
     // gateway/Tunnel/registration chain, deferred a further beat so spawning
     // the gateway and cloudflared doesn't compete with the startup sync burst
     // (autoSyncMirrors/performRelaySync fire in this same window).
-    QTimer::singleShot(10000, this,
-                       &MainWindow::maybeAutoStartDirectMirrorServices);
+    QTimer::singleShot(10000, this, [this] {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("delayed startup: auto-start direct mirror services"));
+        maybeAutoStartDirectMirrorServices();
+    });
+    logStartup(QStringLiteral(
+        "  startup job scheduled: direct mirror service auto-start in 10000ms"));
+
+    // This is the end of startup as a user experiences it: signed in, session
+    // up, last repository open on its last tab, agents resumed. The splash has
+    // narrated the whole way here rather than bowing out at first paint, so
+    // this is where it says Ready and fades. What is left below this line is
+    // long-fuse background work (the ten-second mirror auto-start above, the
+    // sync timers armed in the constructor) that the app is fully usable
+    // without. No-op when no splash is up — headless, or the user turned it off.
+    finishStartupSplash(QStringLiteral("Ready"));
 }
 
 void MainWindow::applyTheme()

@@ -22,6 +22,7 @@
     // blob up front is what flooded the host with requests and tripped the rate
     // limit after a few refreshes; this map remembers which tabs have loaded.
     state.loadedRepoTabs = {};
+    state.repoAboutLoaded = false;
     // Show the clean, shareable /owner/name URL in the address bar instead of
     // the /dashboard/owner/name... path that 404.html bounces refreshed repo
     // links (including /owner/name/issues etc.) to. Carry over whatever tab or
@@ -286,7 +287,7 @@
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
             ${repo.isPrivate ? "" : `
             <div data-repo-social-badge class="-mx-4 -mt-4 mb-4 overflow-hidden rounded-t-lg border-b border-border">
-              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center" style="background-image:url('/assets/fediverse-banner.png')"></div>
+              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center"></div>
               <div class="flex items-end gap-3 px-4 pb-3">
                 <img data-repo-social-logo alt="Repository logo" class="-mt-7 hidden h-14 w-14 shrink-0 rounded-xl border-2 border-background bg-background object-cover shadow" />
                 <div class="min-w-0 pb-0.5">
@@ -399,20 +400,23 @@
     const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";
     setRepoTab(initialTab);
     window.lucide?.createIcons();
-    // When the URL restored a feature tab (or a record detail), the tree/README
-    // load is only a warm-up for a later click on Code — run it in background
-    // mode so it can't flip the visible tab or rewrite the restored URL.
-    loadRepositoryTree(repo, routeKind === "tree" ? routePath : "", { background: initialTab !== "code" });
+    // Only fetch code when Code is visible. Warming the tree/README behind an
+    // Issues or Pulls deep link multiplied cold-cache mirror traffic and made
+    // the requested panel compete with data the visitor could not see.
+    if (initialTab === "code") {
+      state.loadedRepoTabs.code = true;
+      if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
+      else loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
+      scheduleRepoAboutRail(repo);
+    }
     // A deep link into a subfolder (or a blob) loads a subpath/blob tree that
     // carries no served counts, so the tab badges would stay on the stale
     // catalog seed (e.g. Issues showing 7 while the open/ folder holds 11).
     // Refresh them from the mirror's root counts in that case; the root code
     // view and the feature-tab routes already fetch the root tree themselves.
     if ((routeKind === "tree" || routeKind === "blob") && routePath) refreshServedCounts(repo);
-    if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo, recordRoute);
     loadRepoPendingCounts(repo);
-    loadRepoAboutRail(repo);
     loadRepoStarState(repo, $("[data-repo-action-star]"));
     consumeWorkshopAgentDeepLink(repo, workshopDeepLink);
   }
@@ -620,11 +624,27 @@
     return state.networkOnlineOnly !== false;
   }
 
-  function renderNetworkRows(rows) {
+  // Header-search page filter for the Connected nodes list (adhoc #37): match
+  // the name plus the identifying fields the row's chips already show, so a
+  // hit is always something visible on the row.
+  function networkRowsMatchingPageFilter(rows) {
+    const queries = pageFilterQueries("");
+    if (!queries.length) return rows;
+    return rows.filter((row) => {
+      const haystack = [
+        row.name, row.platform, row.version, row.nodeId, row.commit,
+        row.online ? "online live" : "offline",
+      ].join(" ").toLowerCase();
+      return queries.every((query) => haystack.includes(query));
+    });
+  }
+
+  function renderNetworkRows(allRows) {
     const list = $("[data-network-node-list]");
     const count = $("[data-network-node-count]");
     const toggle = $("[data-network-online-only]");
     const onlineOnly = networkOnlineOnly();
+    const rows = networkRowsMatchingPageFilter(allRows);
     const onlineCount = rows.filter((row) => row.online).length;
     const offlineCount = rows.length - onlineCount;
     const visible = onlineOnly ? rows.filter((row) => row.online) : rows;
@@ -657,7 +677,7 @@
             <div class="mt-2 flex flex-wrap gap-1.5 pl-4">${nodeDetailChips(row)}</div>
           </div>
         `).join("")
-        : `<div class="px-4 py-3 text-sm text-muted-foreground">${onlineOnly ? "No nodes online right now." : "No nodes yet."}</div>`;
+        : `<div class="px-4 py-3 text-sm text-muted-foreground">${globalSearchPageQuery() && allRows.length ? "No nodes match this search." : (onlineOnly ? "No nodes online right now." : "No nodes yet.")}</div>`;
     }
   }
 
@@ -2509,6 +2529,10 @@
   $("[data-global-search]")?.addEventListener("input", () => {
     state.globalSearch.open = true;
     state.globalSearch.selectedIndex = 0;
+    // The dropdown searches the whole catalog; the page filter narrows what is
+    // already on screen. Both run per keystroke (adhoc #37) — the page filter
+    // only re-renders in-memory lists, so there is no fetch behind it.
+    applyGlobalSearchPageFilter();
     renderGlobalSearchResults();
   });
   $("[data-global-search]")?.addEventListener("keydown", (event) => {

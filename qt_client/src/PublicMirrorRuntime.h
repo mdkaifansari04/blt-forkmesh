@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
 #include <memory>
 
 class QTemporaryDir;
@@ -50,6 +51,12 @@ public:
         QString git;
     };
 
+    // Optional one-line notes about the stage a seal is in ("Cloning the
+    // source…", "Encrypting the mirror…"). Sealing a large repository is
+    // minutes of silence otherwise. Invoked on whichever thread runs the sync,
+    // so a GUI caller must marshal the string across itself.
+    using Progress = std::function<void(const QString &)>;
+
     struct Metadata {
         QString archiveId;
         QString ciphertextSha256;
@@ -82,7 +89,18 @@ public:
         const QString &repositoryPath, const QString &archiveRoot,
         const QString &vaultPath, const QByteArray &vaultSecret,
         const QString &existingArchiveId = QString(),
-        const Tools &tools = Tools(), QString *error = nullptr);
+        const Tools &tools = Tools(), QString *error = nullptr,
+        const Progress &progress = Progress());
+
+    // A service-managed headless checkout may contain local agent branches.
+    // Seal only its fetched origin branch view so those in-flight refs remain
+    // private to the working checkout and cannot invalidate the source pin.
+    static SyncResult syncManagedCheckout(
+        const QString &repositoryPath, const QString &archiveRoot,
+        const QString &vaultPath, const QByteArray &vaultSecret,
+        const QString &existingArchiveId = QString(),
+        const Tools &tools = Tools(), QString *error = nullptr,
+        const Progress &progress = Progress());
 
     // The remote form accepts only credential-free HTTPS URLs and deliberately
     // restricted `-c http.extraHeader=Authorization: Basic ...` arguments.
@@ -93,7 +111,8 @@ public:
         const QString &archiveRoot, const QString &vaultPath,
         const QByteArray &vaultSecret,
         const QString &existingArchiveId = QString(),
-        const Tools &tools = Tools(), QString *error = nullptr);
+        const Tools &tools = Tools(), QString *error = nullptr,
+        const Progress &progress = Progress());
 
     static Metadata readMetadata(const QString &archiveRoot,
                                  const QString &archiveId,
@@ -123,6 +142,13 @@ public:
     static QString ciphertextPath(const QString &archiveRoot,
                                   const QString &archiveId);
     static QString keyReference(const QString &archiveId);
+
+    // A supervised node keeps TMPDIR on persistent local disk so large mirror
+    // materializations do not exhaust a RAM-backed /tmp. Crashes cannot run
+    // QTemporaryDir/Python cleanup, so remove only exact ForkMesh-owned
+    // temporary-directory shapes after the single-instance lock is held.
+    static int cleanupStaleTemporaryDirectories(
+        const QString &temporaryRoot, QString *error = nullptr);
 
     // Remove a legacy durable bare mirror only when it resolves beneath the
     // explicitly managed root and after the replacement ciphertext has been

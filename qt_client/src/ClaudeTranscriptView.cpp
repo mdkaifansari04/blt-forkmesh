@@ -1,6 +1,7 @@
 #include "ClaudeTranscriptView.h"
 
 #include "AgentPromptImages.h"
+#include "CodexTranscriptStyle.h"
 #include "ScrollJumpButtons.h"
 
 #include <QDateTime>
@@ -41,6 +42,7 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 
 namespace {
@@ -49,6 +51,22 @@ QString esc(const QString &s) { return s.toHtmlEscaped(); }
 // The transcript renders in the system monospace face throughout, like the
 // terminal the CLI actually runs in.
 QFont monoFont() { return QFontDatabase::systemFont(QFontDatabase::FixedFont); }
+
+// The permission mode a CLI init event reports, spelled the way the composer's
+// mode selector does. Used only for sessions ForkMesh didn't launch (surfaced
+// external ones), where no stored mode label is available.
+QString permissionModeLabel(const QString &raw)
+{
+    if (raw == QLatin1String("bypassPermissions") || raw == QLatin1String("acceptAll"))
+        return QStringLiteral("Auto");
+    if (raw == QLatin1String("acceptEdits"))
+        return QStringLiteral("Edit");
+    if (raw == QLatin1String("plan"))
+        return QStringLiteral("Plan");
+    if (raw == QLatin1String("default"))
+        return QStringLiteral("Ask");
+    return raw; // an unknown/future mode reads better verbatim than dropped
+}
 
 // Search-match highlight colours, fixed rather than theme-derived so they read
 // clearly on both light and dark canvases (dark text on a warm fill). The
@@ -90,6 +108,174 @@ int countMatchesIn(const QString &orig, Qt::TextFormat fmt, const QString &query
     for (QTextCursor c = d.find(query); !c.isNull(); c = d.find(query, c))
         ++n;
     return n;
+}
+
+// References that are useful inside an Agent transcript. Branch prefixes are
+// deliberately explicit so prose containing an ordinary slash never becomes a
+// link; filenames require a real extension or one of the conventional extension-
+// free project names. The host validates the target against the open repository
+// again when clicked.
+const QRegularExpression &transcriptReferenceRegex()
+{
+    static const QRegularExpression re(QStringLiteral(
+        "(forkmesh://(?:issue|pull|commit)/[^\\s<>()\\[\\]]*[^\\s<>()\\[\\].,;:!?'\"])"
+        "|(?<![\\w/#])#(\\d+)\\b"
+        "|(?<![\\w./-])(?=[0-9a-f]{7,40}(?![0-9a-f]))(?=[0-9a-f]*[a-f])([0-9a-f]{7,40})(?![\\w./-])"
+        "|(?<![\\w./-])((?:(?:api-pr|feature|feat|fix|bugfix|hotfix|release|agent|pr|chore|refactor|docs|test|ci|build|perf|style)/[A-Za-z0-9._/-]*[A-Za-z0-9_-]|main|master|develop|development|trunk))(?![\\w./-])"
+        "|(?<![\\w./-])((?:/|\\./)?(?:(?:[A-Za-z0-9_.-]+/)+)?(?:[A-Za-z_][A-Za-z0-9_.-]*\\.[A-Za-z][A-Za-z0-9]{0,11}|CMakeLists\\.txt|Dockerfile|Makefile|README(?:\\.[A-Za-z0-9]+)?|LICENSE(?:\\.[A-Za-z0-9]+)?))(?::(\\d+)|#L(\\d+))?"));
+    return re;
+}
+
+enum class TranscriptRefKind { Permalink, Issue, Commit, Branch, File };
+
+TranscriptRefKind transcriptRefKind(const QRegularExpressionMatch &m)
+{
+    if (!m.captured(1).isEmpty())
+        return TranscriptRefKind::Permalink;
+    if (!m.captured(2).isEmpty())
+        return TranscriptRefKind::Issue;
+    if (!m.captured(3).isEmpty())
+        return TranscriptRefKind::Commit;
+    if (!m.captured(4).isEmpty())
+        return TranscriptRefKind::Branch;
+    return TranscriptRefKind::File;
+}
+
+QString transcriptRefHref(const QRegularExpressionMatch &m)
+{
+    switch (transcriptRefKind(m)) {
+    case TranscriptRefKind::Permalink:
+        return m.captured(1);
+    case TranscriptRefKind::Issue:
+        return QStringLiteral("forkmesh-ref:%1").arg(m.captured(2));
+    case TranscriptRefKind::Commit:
+        return QStringLiteral("forkmesh-commit:%1").arg(m.captured(3));
+    case TranscriptRefKind::Branch:
+        return QStringLiteral("forkmesh-branch:%1")
+            .arg(QString::fromLatin1(QUrl::toPercentEncoding(m.captured(4))));
+    case TranscriptRefKind::File: {
+        QString href = QStringLiteral("forkmesh-file:%1")
+                           .arg(QString::fromLatin1(
+                               QUrl::toPercentEncoding(m.captured(5))));
+        const QString line = !m.captured(6).isEmpty() ? m.captured(6)
+                                                       : m.captured(7);
+        if (!line.isEmpty())
+            href += QStringLiteral("?line=%1").arg(line);
+        return href;
+    }
+    }
+    return QString();
+}
+
+QString linkifyTranscriptText(const QString &text, bool html)
+{
+    QString out;
+    int last = 0;
+    auto it = transcriptReferenceRegex().globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        const QString before = text.mid(last, m.capturedStart() - last);
+        out += html ? esc(before) : before;
+        const QString shown = m.captured(0);
+        const QString href = transcriptRefHref(m);
+        if (transcriptRefKind(m) == TranscriptRefKind::Permalink && !html)
+            out += QStringLiteral("<%1>").arg(href);
+        else if (html)
+            out += QStringLiteral("<a href=\"%1\">%2</a>")
+                       .arg(href.toHtmlEscaped(), shown.toHtmlEscaped());
+        else
+            out += QStringLiteral("[%1](%2)").arg(shown, href);
+        last = m.capturedEnd();
+    }
+    out += html ? esc(text.mid(last)) : text.mid(last);
+    return out;
+}
+
+int transcriptMarkdownLinkEnd(const QString &line, int start)
+{
+    const int close = line.indexOf(QLatin1Char(']'), start + 1);
+    if (close < 0 || close + 1 >= line.size() ||
+        line.at(close + 1) != QLatin1Char('('))
+        return -1;
+    const int end = line.indexOf(QLatin1Char(')'), close + 2);
+    return end < 0 ? -1 : end + 1;
+}
+
+int transcriptAutolinkEnd(const QString &line, int start)
+{
+    const int close = line.indexOf(QLatin1Char('>'), start + 1);
+    if (close < 0 ||
+        !line.mid(start + 1, close - start - 1).contains(QStringLiteral("://")))
+        return -1;
+    return close + 1;
+}
+
+bool exactBranchOrFileReference(const QString &text)
+{
+    const QRegularExpressionMatch m = transcriptReferenceRegex().match(text);
+    if (!m.hasMatch() || m.capturedStart() != 0 || m.capturedEnd() != text.size())
+        return false;
+    const TranscriptRefKind kind = transcriptRefKind(m);
+    return kind == TranscriptRefKind::Branch || kind == TranscriptRefKind::File;
+}
+
+QString linkifyTranscriptLine(const QString &line)
+{
+    QString out;
+    int i = 0;
+    while (i < line.size()) {
+        const QChar c = line.at(i);
+        if (c == QLatin1Char('`')) {
+            int run = 1;
+            while (i + run < line.size() && line.at(i + run) == QLatin1Char('`'))
+                ++run;
+            const QString ticks = line.mid(i, run);
+            const int close = line.indexOf(ticks, i + run);
+            if (close >= 0) {
+                const QString code = line.mid(i + run, close - i - run);
+                out += exactBranchOrFileReference(code)
+                           ? linkifyTranscriptText(code, false)
+                           : line.mid(i, close + run - i);
+                i = close + run;
+            } else {
+                out += ticks;
+                i += run;
+            }
+            continue;
+        }
+        if (c == QLatin1Char('[')) {
+            const int end = transcriptMarkdownLinkEnd(line, i);
+            if (end > i) {
+                out += line.mid(i, end - i);
+                i = end;
+                continue;
+            }
+        }
+        if (c == QLatin1Char('<')) {
+            const int end = transcriptAutolinkEnd(line, i);
+            if (end > i) {
+                out += line.mid(i, end - i);
+                i = end;
+                continue;
+            }
+        }
+        int next = i;
+        while (next < line.size()) {
+            const QChar d = line.at(next);
+            if (d == QLatin1Char('`') || d == QLatin1Char('[') ||
+                d == QLatin1Char('<'))
+                break;
+            ++next;
+        }
+        if (next == i) {
+            out += c;
+            ++i;
+        } else {
+            out += linkifyTranscriptText(line.mid(i, next - i), false);
+            i = next;
+        }
+    }
+    return out;
 }
 } // namespace
 
@@ -302,9 +488,12 @@ public:
     static constexpr int kHead = 2;
     static constexpr int kTail = 2;
 
+    // plusLabel spells the hidden middle as Codex does ("… +12 lines") rather
+    // than as Claude Code's "⋯ 12 lines".
     OutputPeek(const QString &text, const QString &fg,
-               const ClaudeTranscriptView::Palette &p, QWidget *parent = nullptr)
-        : QWidget(parent)
+               const ClaudeTranscriptView::Palette &p, bool plusLabel = false,
+               QWidget *parent = nullptr)
+        : QWidget(parent), m_plus(plusLabel)
     {
         auto *v = new QVBoxLayout(this);
         v->setContentsMargins(0, 0, 0, 0);
@@ -321,10 +510,17 @@ public:
 
         m_toggle = new QPushButton(this);
         m_toggle->setCursor(Qt::PointingHandCursor);
-        m_toggle->setStyleSheet(QStringLiteral(
-            "QPushButton{border:none;background:transparent;text-align:left;"
-            "color:%1;font-size:11px;padding:1px 0;}"
-            "QPushButton:hover{color:%2;}").arg(p.muted, p.accent));
+        // Codex's elision note sits in the output's own column, so it reads as
+        // one of its lines rather than as a smaller caption.
+        if (m_plus)
+            m_toggle->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        m_toggle->setStyleSheet(
+            QStringLiteral("QPushButton{border:none;background:transparent;"
+                           "text-align:left;color:%1;%2padding:1px 0;}"
+                           "QPushButton:hover{color:%3;}")
+                .arg(p.muted,
+                     m_plus ? QString() : QStringLiteral("font-size:11px;"),
+                     p.accent));
         v->addWidget(m_toggle, 0, Qt::AlignLeft);
 
         m_middle = monoSlice(lines.mid(kHead, m_hidden).join(QLatin1Char('\n')), fg, true);
@@ -356,15 +552,16 @@ private:
             return;
         const QString unit = m_hidden == 1 ? QStringLiteral("line")
                                            : QStringLiteral("lines");
-        m_toggle->setText((m_open ? QStringLiteral("hide %1 %2")
-                                  : QStringLiteral("⋯ %1 %2"))
-                              .arg(m_hidden)
-                              .arg(unit));
+        const QString shape = m_open ? QStringLiteral("hide %1 %2")
+                                     : (m_plus ? QStringLiteral("… +%1 %2")
+                                               : QStringLiteral("⋯ %1 %2"));
+        m_toggle->setText(shape.arg(m_hidden).arg(unit));
     }
     QPushButton *m_toggle = nullptr;
     QWidget *m_middle = nullptr;
     int m_hidden = 0;
     bool m_open = false;
+    bool m_plus = false;
 };
 
 // One transcript row: a narrow glyph gutter (the CLI's ● / > / ✻ marker) beside
@@ -656,9 +853,35 @@ void ClaudeTranscriptView::jumpToBottom()
 
 void ClaudeTranscriptView::setSplitDiffs(bool on) { m_splitDiffs = on; }
 
-// A playful, ForkMesh-flavoured gerund for the live "what it's doing" ticker.
+void ClaudeTranscriptView::setCodexStyle(bool on) { m_codexStyle = on; }
+
+void ClaudeTranscriptView::setSessionContext(const QString &branch,
+                                             const QString &mode,
+                                             const QString &strength)
+{
+    m_ctxBranch = branch.trimmed();
+    m_ctxMode = mode.trimmed();
+    m_ctxStrength = strength.trimmed();
+}
+
+// A playful, ForkMesh-flavoured gerund for the live "what it's doing" ticker —
+// except under Codex's dialect, where the CLI just counts the turn's seconds.
 void ClaudeTranscriptView::cycleActivityWord()
 {
+    if (m_codexStyle) {
+        if (!m_activityLabel)
+            return;
+        const qint64 secs =
+            qMax(qint64(0), (QDateTime::currentMSecsSinceEpoch() - m_activityStartMs)
+                                / 1000);
+        const QString elapsed =
+            secs < 60 ? QStringLiteral("%1s").arg(secs)
+                      : QStringLiteral("%1m %2s")
+                            .arg(secs / 60)
+                            .arg(secs % 60, 2, 10, QLatin1Char('0'));
+        m_activityLabel->setText(QStringLiteral("Working (%1)").arg(elapsed));
+        return;
+    }
     static const char *kWords[] = {
         "Thinking", "Pondering", "Cogitating", "Percolating", "Noodling",
         "Conjuring", "Ruminating", "Tinkering", "Synthesizing", "Scheming",
@@ -684,14 +907,22 @@ void ClaudeTranscriptView::ensureActivity()
     m_activityLabel->setStyleSheet(QStringLiteral(
         "color:%1;background:transparent;border:none;font-style:italic;")
         .arg(m_p.muted));
+    m_activityStartMs = QDateTime::currentMSecsSinceEpoch();
     cycleActivityWord();
-    m_activity = addRow(m_activityLabel, m_p.accent, GlyphStar);
+    // The ticker is transient scaffolding, not transcript content: it must not
+    // close an "Explored" block that the next tool call still wants to join.
+    m_keepExplore = true;
+    m_activity = addRow(m_activityLabel, m_p.accent,
+                        m_codexStyle ? GlyphDot : GlyphStar);
+    m_keepExplore = false;
     if (!m_activityTimer) {
         m_activityTimer = new QTimer(this);
         connect(m_activityTimer, &QTimer::timeout, this,
                 &ClaudeTranscriptView::cycleActivityWord);
     }
-    m_activityTimer->start(2200);
+    // Codex counts seconds, so it needs a per-second tick; the gerunds read
+    // better at a slower cadence.
+    m_activityTimer->start(m_codexStyle ? 1000 : 2200);
 }
 
 void ClaudeTranscriptView::clearActivity()
@@ -729,6 +960,24 @@ void ClaudeTranscriptView::applyScheme()
         m_jumpButtons->setButtonStyle(btnCss);
 }
 
+void ClaudeTranscriptView::enableReferenceLinks(QLabel *label)
+{
+    if (!label)
+        return;
+    label->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                   Qt::LinksAccessibleByMouse);
+    label->setOpenExternalLinks(false);
+    connect(label, &QLabel::linkActivated, this,
+            [this](const QString &href) { emit referenceActivated(href); });
+}
+
+QString ClaudeTranscriptView::referenceHtml(const QString &plainText) const
+{
+    QString html = linkifyTranscriptText(plainText, true);
+    html.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
+    return html;
+}
+
 void ClaudeTranscriptView::clear()
 {
     clearActivity();
@@ -748,6 +997,8 @@ void ClaudeTranscriptView::clear()
     m_loadEarlierPending = false;
     m_prependCompensationPending = false;
     m_prependAt = -1;
+    m_exploreBlock = nullptr;
+    m_exploreLines = nullptr;
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
     m_thinkingText.clear();
@@ -788,6 +1039,12 @@ QString ClaudeTranscriptView::accentFor(const QString &name) const
 QWidget *ClaudeTranscriptView::addRow(QWidget *card, const QString &nodeColor,
                                       RowGlyph glyph, const QString &bandColor)
 {
+    // Anything that isn't the block itself (or the live ticker) ends the run of
+    // exploration Codex was folding together — the next read starts a new one.
+    if (!m_keepExplore) {
+        m_exploreBlock = nullptr;
+        m_exploreLines = nullptr;
+    }
     int pos;
     if (m_prependAt >= 0) {
         // Loading earlier history: rows land at a fixed, advancing column index
@@ -912,6 +1169,10 @@ void ClaudeTranscriptView::prependEarlierEvents(const QList<QJsonObject> &events
 
     setBulkPopulate(true); // no per-row fade-in for a whole batch landing at once
     m_prependAt = 0;
+    // The batch builds its own "Explored" blocks from scratch; an open one from
+    // the tail is far below and must not swallow these older lines.
+    m_exploreBlock = nullptr;
+    m_exploreLines = nullptr;
     if (stillSkipped > 0) {
         addSkippedNotice(stillSkipped); // replaces the old notice, at the prepend head
     } else if (m_skippedNotice) {
@@ -928,6 +1189,8 @@ void ClaudeTranscriptView::prependEarlierEvents(const QList<QJsonObject> &events
     }
     m_prependAt = -1;
     setBulkPopulate(false);
+    m_exploreBlock = nullptr; // the batch's last block ends with the batch
+    m_exploreLines = nullptr;
 
     // Settle anything the batch left dangling (it was cut off mid-turn): this
     // ticker/thinking card belongs to now-static history, not live state, so
@@ -997,9 +1260,45 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
     if (type == QLatin1String("system")) {
         const QString sub = ev.value(QStringLiteral("subtype")).toString();
         if (sub == QLatin1String("init")) {
-            auto *l = new QLabel(QStringLiteral("session started %1 %2")
-                                     .arg(esc(ev.value(QStringLiteral("model")).toString()),
-                                          esc(ev.value(QStringLiteral("cwd")).toString())));
+            // What the CLI announces (model, cwd) plus the run's own context —
+            // branch, permission mode, reasoning strength — which only the host
+            // knows (adhoc #9). Empty parts drop out rather than leaving gaps.
+            QStringList parts{ev.value(QStringLiteral("model")).toString().trimmed(),
+                              ev.value(QStringLiteral("cwd")).toString().trimmed()};
+            QStringList context;
+            if (!m_ctxBranch.isEmpty())
+                context << QStringLiteral("branch %1").arg(m_ctxBranch);
+            const QString mode =
+                m_ctxMode.isEmpty()
+                    ? permissionModeLabel(
+                          ev.value(QStringLiteral("permissionMode")).toString().trimmed())
+                    : m_ctxMode;
+            if (!mode.isEmpty())
+                context << mode;
+            if (!m_ctxStrength.isEmpty())
+                context << QStringLiteral("%1 thinking").arg(m_ctxStrength);
+            parts.removeAll(QString());
+            QString line = QStringLiteral("session started ") + parts.join(QLatin1Char(' '));
+            if (!context.isEmpty())
+                line += QStringLiteral(" · ") + context.join(QStringLiteral(" · "));
+            QString lineHtml = referenceHtml(line);
+            if (!m_ctxBranch.isEmpty()) {
+                const QString encoded = QString::fromLatin1(
+                    QUrl::toPercentEncoding(m_ctxBranch));
+                const QString href = QStringLiteral("forkmesh-branch:%1").arg(encoded);
+                if (!lineHtml.contains(href)) {
+                    const QString needle = esc(
+                        QStringLiteral("branch %1").arg(m_ctxBranch));
+                    const QString replacement = QStringLiteral(
+                        "branch <a href=\"%1\">%2</a>")
+                                                    .arg(href, esc(m_ctxBranch));
+                    lineHtml.replace(needle, replacement);
+                }
+            }
+            auto *l = new QLabel(lineHtml);
+            l->setTextFormat(Qt::RichText);
+            l->setWordWrap(true); // long branch names shouldn't widen the view
+            enableReferenceLinks(l);
             l->setFont(monoFont());
             l->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
             addRow(l, QString(), GlyphNone);
@@ -1106,9 +1405,11 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
         // Synthetic, host-injected status row — e.g. the auto model router
         // explaining which model it picked and why (adhoc #91). Muted, like
         // the "session started" divider; persists and replays with the stream.
-        auto *l = new QLabel(ev.value(QStringLiteral("text")).toString());
-        l->setTextFormat(Qt::PlainText);
+        auto *l = new QLabel(
+            referenceHtml(ev.value(QStringLiteral("text")).toString()));
+        l->setTextFormat(Qt::RichText);
         l->setWordWrap(true);
+        enableReferenceLinks(l);
         l->setFont(monoFont());
         l->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
@@ -1125,9 +1426,7 @@ void ClaudeTranscriptView::appendAgentText(const QString &id, const QString &tex
         auto *created = new CacheLabel;
         created->setTextFormat(Qt::MarkdownText);
         created->setWordWrap(true);
-        created->setTextInteractionFlags(Qt::TextSelectableByMouse |
-                                         Qt::LinksAccessibleByMouse);
-        created->setOpenExternalLinks(true);
+        enableReferenceLinks(created);
         created->setFont(monoFont());
         created->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;border:none;")
@@ -1138,7 +1437,7 @@ void ClaudeTranscriptView::appendAgentText(const QString &id, const QString &tex
     }
     QString &value = m_liveAgentTextValue[id];
     value += text;
-    label->setText(value);
+    label->setText(linkifyReferences(value));
 }
 
 void ClaudeTranscriptView::completeAgentText(const QString &id,
@@ -1147,7 +1446,7 @@ void ClaudeTranscriptView::completeAgentText(const QString &id,
     QPointer<QLabel> label = m_liveAgentText.value(id);
     if (label) {
         const QString complete = text.isEmpty() ? m_liveAgentTextValue.value(id) : text;
-        label->setText(complete);
+        label->setText(linkifyReferences(complete));
         m_liveAgentTextValue[id] = complete;
         return;
     }
@@ -1217,8 +1516,9 @@ void ClaudeTranscriptView::ensureLiveThinking()
     m_thinkingTokens = 0;
     m_thinkingStartMs = QDateTime::currentMSecsSinceEpoch();
     m_thinkingBody = new CacheLabel(QStringLiteral("…"));
+    m_thinkingBody->setTextFormat(Qt::RichText);
     m_thinkingBody->setWordWrap(true);
-    m_thinkingBody->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    enableReferenceLinks(m_thinkingBody);
     m_thinkingBody->setFont(monoFont());
     m_thinkingBody->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.muted));
     m_liveThinking = makeCollapsible(QStringLiteral("Thinking…"), m_thinkingBody, false);
@@ -1240,7 +1540,7 @@ void ClaudeTranscriptView::appendThinkingDelta(const QString &text)
         return;
     m_thinkingText += text;
     if (m_thinkingBody)
-        m_thinkingBody->setText(m_thinkingText);
+        m_thinkingBody->setText(referenceHtml(m_thinkingText));
     // live estimate from accumulated text; server setThinkingTokens overrides when available
     const int est = qMax(1, m_thinkingText.length() / 4);
     if (m_liveThinking)
@@ -1254,9 +1554,10 @@ void ClaudeTranscriptView::finalizeThinking(const QString &fullText)
     if (!m_liveThinking) {
         if (completed.isEmpty() || completed == m_lastFinalizedThinkingText)
             return;
-        auto *body = new CacheLabel(completed);
+        auto *body = new CacheLabel(referenceHtml(completed));
+        body->setTextFormat(Qt::RichText);
         body->setWordWrap(true);
-        body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        enableReferenceLinks(body);
         body->setFont(monoFont());
         body->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;border:none;")
@@ -1278,7 +1579,7 @@ void ClaudeTranscriptView::finalizeThinking(const QString &fullText)
     m_liveThinking->setHeaderText(label);
     m_liveThinking->setExpanded(false);
     if (m_thinkingBody)
-        m_thinkingBody->setText(finalText);
+        m_thinkingBody->setText(referenceHtml(finalText));
     m_lastFinalizedThinkingText = finalText;
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
@@ -1300,6 +1601,37 @@ Collapsible *ClaudeTranscriptView::makeCollapsible(const QString &header,
 
 // Assistant prose renders as plain, full-width text (no card), matching the
 // Claude Code conversation view where only the user's turns are boxed.
+QString ClaudeTranscriptView::linkifyReferences(const QString &markdown)
+{
+    if (markdown.isEmpty())
+        return markdown;
+    QString out;
+    out.reserve(markdown.size() + 48);
+    bool inFence = false;
+    QString fenceMarker;
+    const QStringList lines = markdown.split(QLatin1Char('\n'));
+    for (int i = 0; i < lines.size(); ++i) {
+        if (i > 0)
+            out += QLatin1Char('\n');
+        const QString &line = lines.at(i);
+        const QString trimmed = line.trimmed();
+        const bool fenceLine = trimmed.startsWith(QStringLiteral("```")) ||
+                               trimmed.startsWith(QStringLiteral("~~~"));
+        if (inFence) {
+            out += line;
+            if (fenceLine && trimmed.startsWith(fenceMarker))
+                inFence = false;
+        } else if (fenceLine) {
+            inFence = true;
+            fenceMarker = trimmed.left(3);
+            out += line;
+        } else {
+            out += linkifyTranscriptLine(line);
+        }
+    }
+    return out;
+}
+
 bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringList &options)
 {
     // A markdown ordered-list item: "1. ..." or "1) ...", one per line. Capture
@@ -1350,10 +1682,9 @@ bool ClaudeTranscriptView::addAssistantText(const QString &markdown)
 {
     auto *l = new CacheLabel;
     l->setTextFormat(Qt::MarkdownText);
-    l->setText(markdown);
+    l->setText(linkifyReferences(markdown));
     l->setWordWrap(true);
-    l->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
-    l->setOpenExternalLinks(true);
+    enableReferenceLinks(l);
     l->setFont(monoFont());
     l->setStyleSheet(
         QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
@@ -1415,9 +1746,10 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
 
     const QString bodyText = prose.join(QLatin1Char('\n')).trimmed();
     if (!bodyText.isEmpty()) {
-        auto *body = new CacheLabel(bodyText);
+        auto *body = new CacheLabel(referenceHtml(bodyText));
+        body->setTextFormat(Qt::RichText);
         body->setWordWrap(true);
-        body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        enableReferenceLinks(body);
         body->setFont(monoFont());
         body->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
         v->addWidget(body);
@@ -1432,9 +1764,24 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
 void ClaudeTranscriptView::addToolUse(const QString &id, const QString &name,
                                       const QJsonObject &input)
 {
+    if (m_codexStyle) {
+        // Codex narrates by action: a burst of reads is one "Explored" block and
+        // a real command is "Ran <command>", not a Bash card.
+        if (addCodexExplore(id, name, input))
+            return;
+        if (name == QLatin1String("Bash")) {
+            const QString cmd = CodexTranscriptStyle::commandText(input);
+            if (!cmd.isEmpty()) {
+                addCodexCommand(id, cmd);
+                return;
+            }
+        }
+    }
+
     // The CLI titles a subagent by its agent type — "Explore(Find the…)" — and
     // a todo update as "Update Todos".
     QString shown = name;
+    bool bare = false;
     if (name == QLatin1String("Task")) {
         const QString sub =
             input.value(QStringLiteral("subagent_type")).toString().trimmed();
@@ -1443,13 +1790,21 @@ void ClaudeTranscriptView::addToolUse(const QString &id, const QString &name,
     } else if (name == QLatin1String("TodoWrite")) {
         shown = QStringLiteral("Update Todos");
     }
+    if (m_codexStyle) {
+        // "Edited src/foo.cpp", not "FileChange(src/foo.cpp)".
+        const QString verb = CodexTranscriptStyle::toolVerb(name);
+        if (!verb.isEmpty()) {
+            shown = verb;
+            bare = true;
+        }
+    }
 
     auto *card = new QFrame;
     card->setStyleSheet(QStringLiteral("QFrame{background:transparent;border:none;}"));
     auto *v = new QVBoxLayout(card);
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(4);
-    v->addWidget(dotHeader(shown, toolSubtitle(name, input)));
+    v->addWidget(dotHeader(shown, toolSubtitle(name, input), bare));
 
     if (QWidget *inBody = toolBody(name, input))
         v->addWidget(connectorRow(inBody));
@@ -1459,6 +1814,10 @@ void ClaudeTranscriptView::addToolUse(const QString &id, const QString &name,
     tc.summarizeResult = name == QLatin1String("Read")
         || name == QLatin1String("Grep") || name == QLatin1String("Glob");
     tc.suppressResult = name == QLatin1String("TodoWrite");
+    // Codex's own display of a write is the diff; the transport's echo of the
+    // changed paths back as a "result" adds nothing under it.
+    if (m_codexStyle && name == QLatin1String("FileChange"))
+        tc.suppressResult = true;
     m_toolCards.insert(id, tc);
     addRow(card, accentFor(name));
 }
@@ -1470,8 +1829,23 @@ void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
     if (it == m_toolCards.end() || text.trimmed().isEmpty())
         return;
     ToolCard &tc = it.value();
+    if (tc.exploreLine) {
+        // A line in an "Explored" block: Codex doesn't echo what a read
+        // returned, but a read that *failed* can't just look like it worked.
+        tc.hasResult = true;
+        if (isError)
+            tc.exploreLine->setText(
+                tc.exploreLine->text()
+                + QStringLiteral("<span style='color:%1'> (failed)</span>")
+                      .arg(m_p.del));
+        return;
+    }
     if (!tc.io || tc.hasResult)
         return; // a result already attached
+    if (tc.codexCommand) {
+        addCodexCommandResult(id, text, isError);
+        return;
+    }
     if (tc.suppressResult) {
         tc.hasResult = true;
         return;
@@ -1506,7 +1880,8 @@ void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
     }
     // Peek the output: first/last two lines visible, the middle behind a toggle
     // that says how many lines it hides (dimmed like the CLI; errors tinted red).
-    QWidget *out = new OutputPeek(text, isError ? m_p.del : m_p.muted, m_p);
+    QWidget *out =
+        new OutputPeek(text, isError ? m_p.del : m_p.muted, m_p, m_codexStyle);
     tc.io->addWidget(connectorRow(out));
 }
 
@@ -1528,7 +1903,12 @@ void ClaudeTranscriptView::appendToolOutput(const QString &id,
         label->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;border:none;")
                 .arg(m_p.muted));
-        tc.io->addWidget(connectorRow(label));
+        // A Codex command's output shares one block with the exit= line that
+        // follows it; everything else hangs off its own connector.
+        if (tc.codexCommand)
+            codexResultColumn(tc)->addWidget(label);
+        else
+            tc.io->addWidget(connectorRow(label));
         tc.liveOutput = label;
     }
     tc.liveOutputText += text;
@@ -1790,9 +2170,47 @@ void ClaudeTranscriptView::lockInlineChoices(QWidget *box)
         m_openInlineChoices = nullptr;
 }
 
+bool ClaudeTranscriptView::resultIsError(const QJsonObject &ev)
+{
+    return ev.value(QStringLiteral("is_error")).toBool()
+           || ev.value(QStringLiteral("subtype")).toString()
+                  .startsWith(QLatin1String("error"));
+}
+
+// Why a run failed, in words. The CLI usually puts its own message in `result`
+// ("Credit balance is too low", an execution traceback); Codex/app-server
+// failures land there too. When there's no message at all, spell out the
+// machine-readable subtype rather than leaving the transcript with a bare
+// "✗ Failed" and nothing to act on.
+QString ClaudeTranscriptView::failureReason(const QJsonObject &ev)
+{
+    QString detail = ev.value(QStringLiteral("result")).toString().trimmed();
+    if (detail.isEmpty()) {
+        const QJsonValue e = ev.value(QStringLiteral("error"));
+        detail = e.isObject()
+                     ? e.toObject().value(QStringLiteral("message")).toString().trimmed()
+                     : e.toString().trimmed();
+    }
+    if (!detail.isEmpty())
+        return detail;
+
+    QString sub = ev.value(QStringLiteral("subtype")).toString().trimmed();
+    if (sub == QLatin1String("error_max_turns"))
+        return QStringLiteral("the run hit its maximum number of turns");
+    if (sub == QLatin1String("error_during_execution"))
+        return QStringLiteral("the CLI hit an error while running the turn");
+    if (sub.isEmpty() || sub == QLatin1String("error"))
+        return QStringLiteral("the CLI reported an error but sent no detail — "
+                              "check the raw log for this session");
+    // Any future error_* subtype still reads as words, not as a token.
+    if (sub.startsWith(QLatin1String("error_")))
+        sub = sub.mid(6);
+    return sub.replace(QLatin1Char('_'), QLatin1Char(' '));
+}
+
 void ClaudeTranscriptView::addResult(const QJsonObject &ev)
 {
-    const bool err = ev.value(QStringLiteral("is_error")).toBool();
+    const bool err = resultIsError(ev);
     const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
     const double ms = ev.value(QStringLiteral("duration_ms")).toDouble();
     const int turns = ev.value(QStringLiteral("num_turns")).toInt();
@@ -1818,7 +2236,260 @@ void ClaudeTranscriptView::addResult(const QJsonObject &ev)
     l->setFont(monoFont());
     l->setStyleSheet(QStringLiteral("color:%1;font-weight:600;background:transparent;")
                          .arg(err ? m_p.del : m_p.add));
-    addRow(l, err ? m_p.del : m_p.add);
+    if (!err) {
+        addRow(l, m_p.add);
+        return;
+    }
+
+    // A failure says why, right under the headline: the CLI's message (or the
+    // subtype spelled out) in a wrapped, selectable block so the user doesn't
+    // have to dig through the raw log to find out what went wrong.
+    auto *card = new QWidget;
+    card->setStyleSheet(QStringLiteral("background:transparent;"));
+    auto *v = new QVBoxLayout(card);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(4);
+    v->addWidget(l);
+    v->addWidget(makeMono(failureReason(ev), true));
+    addRow(card, m_p.del);
+}
+
+// ---- Codex CLI dialect (see setCodexStyle) ---------------------------------
+
+bool ClaudeTranscriptView::addCodexExplore(const QString &id, const QString &name,
+                                           const QJsonObject &input)
+{
+    QString verb, target;
+    if (name == QLatin1String("Bash")) {
+        if (!CodexTranscriptStyle::exploreLine(
+                CodexTranscriptStyle::commandText(input), verb, target))
+            return false;
+    } else if (name == QLatin1String("Read")) {
+        verb = QStringLiteral("Read");
+        target = input.value(QStringLiteral("file_path")).toString();
+    } else if (name == QLatin1String("Grep")) {
+        verb = QStringLiteral("Search");
+        target = input.value(QStringLiteral("pattern")).toString();
+        const QString path = input.value(QStringLiteral("path")).toString();
+        if (!path.isEmpty())
+            target += QStringLiteral(" in ") + path;
+    } else if (name == QLatin1String("Glob")) {
+        verb = QStringLiteral("List");
+        target = input.value(QStringLiteral("pattern")).toString();
+    } else {
+        return false;
+    }
+    if (target.trimmed().isEmpty())
+        return false;
+
+    if (!m_exploreBlock)
+        m_exploreLines = nullptr; // the row itself went away; start a new block
+    if (!m_exploreLines) {
+        auto *card = new QFrame;
+        card->setStyleSheet(
+            QStringLiteral("QFrame{background:transparent;border:none;}"));
+        auto *v = new QVBoxLayout(card);
+        v->setContentsMargins(0, 0, 0, 0);
+        v->setSpacing(4);
+        v->addWidget(dotHeader(QStringLiteral("Explored"), QString()));
+        auto *lines = new QWidget;
+        lines->setStyleSheet(QStringLiteral("background:transparent;"));
+        m_exploreLines = new QVBoxLayout(lines);
+        m_exploreLines->setContentsMargins(0, 0, 0, 0);
+        m_exploreLines->setSpacing(2);
+        v->addWidget(connectorRow(lines));
+        // This row *is* the block, so it mustn't close the one it opens.
+        m_keepExplore = true;
+        m_exploreBlock = addRow(card, m_p.muted);
+        m_keepExplore = false;
+    }
+
+    auto *l = new CacheLabel;
+    l->setTextFormat(Qt::RichText);
+    l->setWordWrap(true);
+    enableReferenceLinks(l);
+    l->setFont(monoFont());
+    l->setText(QStringLiteral("<span style='color:%1'>%2</span> "
+                              "<span style='color:%3'>%4</span>")
+                   .arg(m_p.accent, esc(verb), m_p.text,
+                        linkifyTranscriptText(target.trimmed(), true)));
+    l->setStyleSheet(QStringLiteral("background:transparent;border:none;"));
+    m_exploreLines->addWidget(l);
+
+    // No card of its own: the line is the whole rendering, so a result has
+    // nowhere to attach (addToolResult only tints it if the read failed).
+    ToolCard tc;
+    tc.exploreLine = l;
+    m_toolCards.insert(id, tc);
+    return true;
+}
+
+QString ClaudeTranscriptView::codexCommandHtml(const QString &line) const
+{
+    QString out;
+    bool commandWord = true; // the next word starts a command
+    int i = 0;
+    const int n = line.size();
+    while (i < n) {
+        const int space = i;
+        while (i < n && line.at(i).isSpace())
+            ++i;
+        if (i > space)
+            out += esc(line.mid(space, i - space));
+        if (i >= n)
+            break;
+        // One word, quotes included — they're part of what the user typed.
+        const int start = i;
+        QChar quote;
+        while (i < n) {
+            const QChar c = line.at(i);
+            if (!quote.isNull()) {
+                if (c == quote)
+                    quote = QChar();
+            } else if (c == QLatin1Char('\'') || c == QLatin1Char('"')) {
+                quote = c;
+            } else if (c.isSpace()) {
+                break;
+            }
+            ++i;
+        }
+        const QString token = line.mid(start, i - start);
+        static const QRegularExpression assignment(
+            QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*="));
+        QString colour = m_p.text;
+        if (CodexTranscriptStyle::isShellOperator(token)) {
+            colour = m_p.accent;
+            commandWord = true; // what follows is a command again
+        } else if (assignment.match(token).hasMatch()) {
+            // VAR=value in front of a command; the command is still to come.
+        } else if (commandWord) {
+            colour = m_p.accent;
+            commandWord = false;
+        } else if (token.size() > 1 && token.startsWith(QLatin1Char('-'))) {
+            colour = m_p.del; // a flag
+        }
+        out += QStringLiteral("<span style='color:%1'>%2</span>")
+                   .arg(colour, esc(token));
+    }
+    return out;
+}
+
+QWidget *ClaudeTranscriptView::codexMoreLines(int n)
+{
+    auto *l = new QLabel(QStringLiteral("… +%1 lines").arg(n));
+    l->setFont(monoFont());
+    l->setStyleSheet(
+        QStringLiteral("color:%1;background:transparent;border:none;")
+            .arg(m_p.muted));
+    return l;
+}
+
+void ClaudeTranscriptView::addCodexCommand(const QString &id,
+                                           const QString &command)
+{
+    // A script's first line rides in the header and the next couple hang under
+    // it; the rest is counted, the way the CLI keeps a heredoc from taking over
+    // the transcript.
+    constexpr int kScriptPreview = 2;
+    QStringList lines = command.split(QLatin1Char('\n'));
+    while (!lines.isEmpty() && lines.last().trimmed().isEmpty())
+        lines.removeLast();
+    if (lines.isEmpty())
+        return;
+
+    auto *card = new QFrame;
+    card->setStyleSheet(QStringLiteral("QFrame{background:transparent;border:none;}"));
+    auto *v = new QVBoxLayout(card);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(4);
+    v->addWidget(dotHeader(QStringLiteral("Ran"), codexCommandHtml(lines.first()),
+                           /*bareSubtitle=*/true, /*html=*/true));
+
+    const QStringList rest = lines.mid(1);
+    if (!rest.isEmpty()) {
+        auto *body = new QWidget;
+        body->setStyleSheet(QStringLiteral("background:transparent;"));
+        auto *bv = new QVBoxLayout(body);
+        bv->setContentsMargins(0, 0, 0, 0);
+        bv->setSpacing(2);
+        for (const QString &script : rest.mid(0, kScriptPreview)) {
+            auto *l = new CacheLabel;
+            l->setTextFormat(Qt::RichText);
+            l->setWordWrap(true);
+            l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            l->setFont(monoFont());
+            l->setText(codexCommandHtml(script));
+            l->setStyleSheet(QStringLiteral("background:transparent;border:none;"));
+            bv->addWidget(l);
+        }
+        if (rest.size() > kScriptPreview)
+            bv->addWidget(codexMoreLines(rest.size() - kScriptPreview));
+        v->addWidget(connectorRow(body, QStringLiteral("│")));
+    }
+
+    ToolCard tc;
+    tc.io = v;
+    tc.codexCommand = true;
+    m_toolCards.insert(id, tc);
+    addRow(card, accentFor(QStringLiteral("Bash")));
+}
+
+QVBoxLayout *ClaudeTranscriptView::codexResultColumn(ToolCard &tc)
+{
+    if (!tc.codexResult) {
+        auto *box = new QWidget;
+        box->setStyleSheet(QStringLiteral("background:transparent;"));
+        tc.codexResult = new QVBoxLayout(box);
+        tc.codexResult->setContentsMargins(0, 0, 0, 0);
+        tc.codexResult->setSpacing(2);
+        tc.io->addWidget(connectorRow(box));
+    }
+    return tc.codexResult;
+}
+
+void ClaudeTranscriptView::addCodexCommandResult(const QString &id,
+                                                 const QString &text,
+                                                 bool isError)
+{
+    auto it = m_toolCards.find(id);
+    if (it == m_toolCards.end() || !it.value().io)
+        return;
+    ToolCard &tc = it.value();
+    tc.hasResult = true;
+
+    // The transport appends "Exit code: N" to a finished command's output (see
+    // CodexAppServerSession::toolOutput); Codex leads with that instead, so peel
+    // it back off the tail.
+    QString body = text;
+    QLabel *exitLabel = nullptr;
+    static const QRegularExpression exitTail(
+        QStringLiteral("\\n?Exit code: (-?\\d+)\\s*$"));
+    const QRegularExpressionMatch m = exitTail.match(body);
+    if (m.hasMatch()) {
+        const int code = m.captured(1).toInt();
+        body = body.left(m.capturedStart());
+        exitLabel = new QLabel(QStringLiteral("exit=%1").arg(code));
+        exitLabel->setFont(monoFont());
+        exitLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        exitLabel->setStyleSheet(
+            QStringLiteral("color:%1;background:transparent;border:none;")
+                .arg(code == 0 ? m_p.add : m_p.del));
+    }
+
+    if (tc.liveOutput) {
+        // The output already streamed into the block; the exit line slots in
+        // above it rather than trailing what it describes.
+        tc.liveOutput->setText(capLabelText(body, true));
+        tc.liveOutputText = body;
+        if (exitLabel)
+            codexResultColumn(tc)->insertWidget(0, exitLabel);
+        return;
+    }
+    if (exitLabel)
+        codexResultColumn(tc)->addWidget(exitLabel);
+    if (!body.trimmed().isEmpty())
+        codexResultColumn(tc)->addWidget(
+            new OutputPeek(body, isError ? m_p.del : m_p.muted, m_p, true));
 }
 
 // ---- per-tool rendering ----------------------------------------------------
@@ -1830,12 +2501,14 @@ QString ClaudeTranscriptView::toolSubtitle(const QString &name,
         return input.value(QStringLiteral("description")).toString();
     if (name == QLatin1String("Read")) {
         const QString fp = input.value(QStringLiteral("file_path")).toString();
-        const QString base = fp.section(QLatin1Char('/'), -1);
         const int off = input.value(QStringLiteral("offset")).toInt();
         const int lim = input.value(QStringLiteral("limit")).toInt();
         if (off > 0 && lim > 0)
-            return QStringLiteral("%1 (lines %2-%3)").arg(base).arg(off).arg(off + lim - 1);
-        return base.isEmpty() ? fp : base;
+            return QStringLiteral("%1:%2 (lines %2-%3)")
+                .arg(fp)
+                .arg(off)
+                .arg(off + lim - 1);
+        return fp;
     }
     if (name == QLatin1String("Edit") || name == QLatin1String("Write")
         || name == QLatin1String("MultiEdit") || name == QLatin1String("NotebookEdit"))
@@ -1928,7 +2601,10 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
         layout->setSpacing(8);
         for (const QJsonValue &value : input.value(QStringLiteral("changes")).toArray()) {
             const QJsonObject change = value.toObject();
-            auto *path = new QLabel(change.value(QStringLiteral("path")).toString());
+            auto *path = new QLabel(
+                referenceHtml(change.value(QStringLiteral("path")).toString()));
+            path->setTextFormat(Qt::RichText);
+            enableReferenceLinks(path);
             path->setStyleSheet(
                 QStringLiteral("color:%1;font-weight:600;background:transparent;")
                     .arg(m_p.muted));
@@ -1950,34 +2626,50 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
 }
 
 // "Name(args)" — bold tool name with the muted argument in parens, the way the
-// CLI titles a tool call; the row's gutter supplies the ● glyph.
-QWidget *ClaudeTranscriptView::dotHeader(const QString &name, const QString &subtitle)
+// CLI titles a tool call; the row's gutter supplies the ● glyph. Codex phrases
+// the same line as a sentence instead — "Ran git status", "Edited src/foo.cpp"
+// — so bareSubtitle drops the parens and html keeps pre-built markup (a
+// shell-highlighted command) intact.
+QWidget *ClaudeTranscriptView::dotHeader(const QString &name,
+                                         const QString &subtitle,
+                                         bool bareSubtitle, bool html)
 {
     auto *l = new CacheLabel;
     l->setTextFormat(Qt::RichText);
     l->setWordWrap(true);
-    l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    enableReferenceLinks(l);
     l->setFont(monoFont());
-    QString html = QStringLiteral("<span style='color:%1;font-weight:700'>%2</span>")
-                       .arg(m_p.text, esc(name));
-    if (!subtitle.trimmed().isEmpty())
-        html += QStringLiteral("<span style='color:%1'>(%2)</span>")
-                    .arg(m_p.muted, esc(subtitle.trimmed()));
-    l->setText(html);
+    QString markup = QStringLiteral("<span style='color:%1;font-weight:700'>%2</span>")
+                         .arg(m_p.text, esc(name));
+    if (!subtitle.trimmed().isEmpty()) {
+        const QString arg = html ? subtitle.trimmed()
+                                 : linkifyTranscriptText(subtitle.trimmed(), true);
+        if (bareSubtitle)
+            markup += QStringLiteral(" <span style='color:%1'>%2</span>")
+                          .arg(m_p.text, arg);
+        else
+            markup += QStringLiteral("<span style='color:%1'>(%2)</span>")
+                          .arg(m_p.muted, arg);
+    }
+    l->setText(markup);
     l->setStyleSheet(QStringLiteral("background:transparent;border:none;"));
     return l;
 }
 
 // The CLI's "  ⎿  result" shape: a muted L-connector in a small gutter with the
-// content hanging beside it.
-QWidget *ClaudeTranscriptView::connectorRow(QWidget *content)
+// content hanging beside it. Codex draws the same gutter with a plain "└".
+QWidget *ClaudeTranscriptView::connectorRow(QWidget *content, const QString &glyph)
 {
     auto *row = new QWidget;
     row->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *h = new QHBoxLayout(row);
     h->setContentsMargins(2, 0, 0, 0);
     h->setSpacing(8);
-    auto *lab = new QLabel(QStringLiteral("⎿"));
+    const QString mark = !glyph.isEmpty()
+                             ? glyph
+                             : (m_codexStyle ? QStringLiteral("└")
+                                             : QStringLiteral("⎿"));
+    auto *lab = new QLabel(mark);
     lab->setFont(monoFont());
     lab->setStyleSheet(QStringLiteral(
         "color:%1;background:transparent;border:none;").arg(m_p.muted));
@@ -2022,10 +2714,10 @@ QWidget *ClaudeTranscriptView::makeMono(const QString &text, bool collapsedIfLon
     // resulting size so repaints stay cheap.
     const QString shown = capLabelText(text, collapsedIfLong);
     auto *l = new CacheLabel;
-    l->setTextFormat(Qt::PlainText);
-    l->setText(shown);
+    l->setTextFormat(Qt::RichText);
+    l->setText(referenceHtml(shown));
     l->setWordWrap(true);
-    l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    enableReferenceLinks(l);
     l->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     l->setStyleSheet(
         QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));

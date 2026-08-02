@@ -89,6 +89,11 @@ def test_treasury_balance_refreshes_on_hover_instead_of_on_a_timer():
 
 def test_status_board_counts_down_each_second_and_fetches_once_per_minute():
     assert "const WORLD_STATUS_POLL_MS = 60 * 1000;" in APP
+    assert "const WORLD_STATUS_ISSUE_WINDOW_MS = 60 * 1000;" in APP
+    assert "function statusPayloadHasRecentIssue(payload, now = Date.now())" in APP
+    assert "data-world-admin-status-light" in APP
+    assert "this.renderAdminStatusLight(statusPayloadHasRecentIssue(payload));" in APP
+    assert "world-admin-status-spin" in (ROOT / "public" / "world" / "world.css").read_text(encoding="utf-8")
     start = _between("  startStatusBoardPolling() {", "\n  }")
     assert "}, 1000);" in start
     timer = _between("  syncSystemStatusBoardTimer() {", "\n  }")

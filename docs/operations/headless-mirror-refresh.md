@@ -382,6 +382,10 @@ refs, and caches a successful proof for no more than one minute before
 revalidating it on later use.
 Renewal and repository refresh share the same exclusive owner-only lock, so a
 push refresh completes before a queued renewal can publish.
+The root post-receive orchestrator pauses the renewal timer before changing a
+gateway generation and resumes it after the new generation is published. This
+prevents a restart-triggered renewal from racing the post-push publication.
+Transient standalone renewal failures retry after twenty seconds.
 
 ## Configure the public Actions capability
 

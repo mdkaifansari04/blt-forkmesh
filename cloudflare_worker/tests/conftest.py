@@ -43,7 +43,6 @@ KNOWN_MAIN_FAILURES = {
     "test_qt_pull_badge.py::test_badge_widget_scrolls_and_is_fed_per_file_stats",
     "test_qt_repo_action_strip.py::test_action_strip_is_parented_to_repo_detail_page_not_tab_viewport",
     "test_qt_top_bar_identity.py::test_top_bar_merges_user_identity_into_node_name_and_avatar",
-    "test_sentry_worker.py::test_forkmesh_actions_run_full_worker_pytest_suite",
     "test_signup_world_band.py::test_signup_page_mounts_the_world_band",
     "test_surface_capability_matrix.py::test_world_has_entry_points_from_qt_flutter_and_dashboard",
     "test_users_nodes_claim_link.py::test_wire_contracts_across_worker_qt_and_installer",

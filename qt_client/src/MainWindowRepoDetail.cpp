@@ -2,10 +2,9 @@
 // The repository detail view: file browser, overview/about, code search,
 // navigation history, the commits list + commit detail/diff, and the Claude
 // Code IDE-extension integration that opens repo content in the editor.
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+// These are MainWindow member functions in their own translation unit; the class
+// is declared in MainWindow.h and shared helpers live in MainWindowInternal.h /
+// MainWindowShared.cpp (namespace forkmesh::ui).
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -147,7 +146,7 @@ void MainWindow::refreshIssueFilesPanel(const Issue &issue)
             m_issueDetailTabs->setCurrentIndex(0);
         m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, false);
         m_issueDetailTabs->setTabText(m_issueFilesTabIndex,
-                                      QStringLiteral("Files changed"));
+                                      QStringLiteral("Changes in Git"));
     };
 
     if (issue.number <= 0) {
@@ -240,8 +239,8 @@ void MainWindow::renderIssueDiff(int issueNumber, const QByteArray &patch,
     if (m_issueDetailTabs && m_issueFilesTabIndex >= 0)
         m_issueDetailTabs->setTabText(
             m_issueFilesTabIndex,
-            n > 0 ? QStringLiteral("Files changed (%1)").arg(n)
-                  : QStringLiteral("Files changed"));
+            n > 0 ? QStringLiteral("Changes in Git (%1)").arg(n)
+                  : QStringLiteral("Changes in Git"));
     if (m_issueFilesChangedSummary)
         m_issueFilesChangedSummary->setText(
             QStringLiteral("%1 file%2 changed").arg(n).arg(n == 1 ? "" : "s"));
@@ -378,7 +377,11 @@ QWidget *MainWindow::buildRepoFilesPanel()
     m_filesStack->addWidget(buildRepoEditorPage());        // 1 editor
     m_filesStack->addWidget(buildRepoCoveExplorerPage());  // 2 secure cove
 
-    m_filesModeOverviewButton = new QPushButton("Code overview");
+    // The three mode toggles take the same icon-over-caption form as the
+    // activity rail and the repo tabs (adhoc #6), so the whole mode row —
+    // toggles, toolbar counts and trends — reads as one line.
+    m_filesModeOverviewButton =
+        new VerticalIconButton("Overview", VerticalIconButton::Tab);
     m_filesModeOverviewButton->setObjectName("repoTab");
     m_filesModeOverviewButton->setCheckable(true);
     m_filesModeOverviewButton->setChecked(true);
@@ -389,7 +392,8 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeOverviewButton, &QPushButton::clicked, this,
             [this] { showRepoOverview(); });
 
-    m_filesModeExplorerButton = new QPushButton("Explorer");
+    m_filesModeExplorerButton =
+        new VerticalIconButton("Explorer", VerticalIconButton::Tab);
     m_filesModeExplorerButton->setObjectName("repoTab");
     m_filesModeExplorerButton->setCheckable(true);
     m_filesModeExplorerButton->setCursor(Qt::PointingHandCursor);
@@ -399,7 +403,8 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoEditor(); });
 
-    m_filesModeCoveExplorerButton = new QPushButton("Cove Explorer");
+    m_filesModeCoveExplorerButton =
+        new VerticalIconButton("Coves", VerticalIconButton::Tab);
     m_filesModeCoveExplorerButton->setObjectName("repoTab");
     m_filesModeCoveExplorerButton->setCheckable(true);
     m_filesModeCoveExplorerButton->setCursor(Qt::PointingHandCursor);
@@ -409,8 +414,37 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeCoveExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoCoveExplorer(); });
 
+    // Thirty-day repository trends and the Ratchet toggle, moved down from the
+    // window-chrome line onto this row (adhoc #6). Each sparkline point
+    // represents a day. They are drawn at exactly the chrome CPU/MEM/DISK
+    // squares' side (adhoc #421) so the two rows of charts read as one family
+    // instead of two sizes of the same card.
+    auto *repoSizeChart = new ResourceSparkline(QStringLiteral("SIZE"), nullptr,
+                                                kResourceSparklineSide, 30);
+    auto *repoLinesChart = new ResourceSparkline(QStringLiteral("LOC"), nullptr,
+                                                 kResourceSparklineSide, 30);
+    auto *repoFilesChart = new ResourceSparkline(
+        QStringLiteral("FILES"), nullptr, kResourceSparklineSide, 30);
+    repoSizeChart->setObjectName(QStringLiteral("repoSizeChart"));
+    repoLinesChart->setObjectName(QStringLiteral("repoLinesChart"));
+    repoFilesChart->setObjectName(QStringLiteral("repoFilesChart"));
+    m_repoSizeChart = repoSizeChart;
+    m_repoLinesChart = repoLinesChart;
+    m_repoFilesChart = repoFilesChart;
+    m_repoRatchetButton = new RatchetToggleButton;
+    m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
+    m_repoRatchetButton->setToolTip(
+        QStringLiteral("Hold the repository at or below the tracked size it started "
+                       "today at. The ceiling re-bases each day."));
+    m_repoRatchetButton->setAccessibleName(QStringLiteral("Ratchet mode"));
+    connect(m_repoRatchetButton, &QToolButton::toggled, this,
+            &MainWindow::toggleRepositoryRatchet);
+
     // The git identity that used to sit beside these mode toggles now lives in
-    // the bottom status bar (see buildStatusBar).
+    // the bottom status bar (see buildStatusBar). One line holds the mode
+    // toggles, the branch/worktree/remote/commit/tag/release counts (moved up
+    // from the overview page), the go-to-file box and the repo trends
+    // (adhoc #6).
     m_repoFilesModeBar = new QWidget;
     auto *modeRow = new QHBoxLayout(m_repoFilesModeBar);
     modeRow->setContentsMargins(16, 6, 16, 0);
@@ -418,7 +452,25 @@ QWidget *MainWindow::buildRepoFilesPanel()
     modeRow->addWidget(m_filesModeOverviewButton);
     modeRow->addWidget(m_filesModeExplorerButton);
     modeRow->addWidget(m_filesModeCoveExplorerButton);
-    modeRow->addStretch();
+    modeRow->addSpacing(10);
+    modeRow->addWidget(m_branchesButton);
+    modeRow->addWidget(m_worktreesButton);
+    modeRow->addWidget(m_remotesButton);
+    // No toolbar Commits button here: it duplicated the commit strip's own
+    // "N Commits" toggle and was retired on main (aa108e5cf).
+    modeRow->addWidget(m_tagsButton);
+    // Releases (adhoc #180): moved out of the top tab bar to sit beside Tags.
+    // The button itself is created with the other repo tabs in
+    // buildRepoDetailSection (kept in m_repoDetailTabs so tab switching and
+    // the Releases badge keep working) — here we just place it in the row.
+    if (m_repoReleasesTab)
+        modeRow->addWidget(m_repoReleasesTab);
+    modeRow->addSpacing(10);
+    modeRow->addWidget(m_fileSearch, 1);
+    modeRow->addWidget(repoSizeChart);
+    modeRow->addWidget(repoLinesChart);
+    modeRow->addWidget(repoFilesChart);
+    modeRow->addWidget(m_repoRatchetButton);
 
     auto *panel = new QWidget;
     auto *layout = new QVBoxLayout(panel);
@@ -426,6 +478,9 @@ QWidget *MainWindow::buildRepoFilesPanel()
     layout->setSpacing(0);
     layout->addWidget(m_repoFilesModeBar);
     layout->addWidget(m_filesStack, 1);
+    // The trend charts were born just now (this panel builds lazily), so seed
+    // them immediately instead of waiting for the next 60s footer tick.
+    refreshRepositoryStats();
     return panel;
 }
 
@@ -433,49 +488,17 @@ QWidget *MainWindow::buildRepoOverviewPage()
 {
     auto *page = new QWidget;
 
-    // Latest-commit bar with a history button, like GitHub's commit strip.
+    // Latest-commit bar. Commit history has one entry point: the Git activity
+    // rail, so the Code overview cannot open a second copy of the workspace.
     auto *commitCard = new QWidget;
     commitCard->setObjectName("commitBar");
     m_commitBar = new QLabel;
     m_commitBar->setObjectName("commitBarText");
     m_commitBar->setTextFormat(Qt::RichText);
     m_commitBar->setWordWrap(true);
-    m_historyButton = new QPushButton("Commits");
-    // Ghost-button look plus a scoped :checked highlight (see Theme.h) — the
-    // shared #ghostButton style can't take a :checked rule without also
-    // restyling the split-diff and Issues sub-tab toggles.
-    m_historyButton->setObjectName("commitsToggle");
-    m_historyButton->setCheckable(true); // lit while the commits panel shows
-    m_historyButton->setCursor(Qt::PointingHandCursor);
-    m_historyButton->setToolTip(
-        "Show the full commit history below; click again for the file list");
-    setOcticon(m_historyButton, "git-branch", 16);
-    connect(m_historyButton, &QPushButton::clicked, this, [this](bool checked) {
-        if (!checked) {
-            showOverviewFiles();
-            return;
-        }
-        showOverviewCommits();
-        // Same deferred build the old Commits tab click ran: the panel paints
-        // first, then the table work runs. Rebuilding an identical 300-row
-        // table is the expensive part, so skip it when nothing changed.
-        QTimer::singleShot(0, this, [this] {
-            if (commitsListIsCurrent()) {
-                // The list may be current, but the working tree can still have
-                // moved (an agent staged/edited files) — always rescan the
-                // changes panel so it's fresh on open.
-                refreshSourceControl();
-            } else {
-                loadCommits();
-            }
-            // Land on the newest commit's change view, not an empty list.
-            openMostRecentCommit();
-        });
-    });
     auto *commitRow = new QHBoxLayout(commitCard);
     commitRow->setContentsMargins(12, 8, 8, 8);
     commitRow->addWidget(m_commitBar, 1);
-    commitRow->addWidget(m_historyButton);
 
     m_overviewCrumb = new QLabel;
     m_overviewCrumb->setObjectName("statusLine");
@@ -535,28 +558,32 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_readmeView->setObjectName("readmeView");
     m_readmeView->setOpenExternalLinks(true);
 
-    // Toolbar: branch counts + tags + "go to file" search. The branch switcher
-    // itself moved to the bottom status bar (see buildStatusBar).
-    m_branchesButton = new QPushButton("0 branches");
-    m_branchesButton->setObjectName("ghostButton");
+    // Toolbar: branch counts + tags + "go to file" search, every button the
+    // same icon-over-caption form as the activity rail with its count as a
+    // corner badge (adhoc #6). The buttons are created here but placed on the
+    // Code overview's mode row, beside the Code overview / Explorer / Cove
+    // Explorer toggles (see buildRepoFilesPanel). The branch switcher itself
+    // moved to the bottom status bar (see buildStatusBar).
+    m_branchesButton =
+        new VerticalIconButton("Branches", VerticalIconButton::Tab);
     m_branchesButton->setCursor(Qt::PointingHandCursor);
     m_branchesButton->setToolTip(
         "Open the Branches panel to manage branches \xE2\x80\x94 click one to "
-        "review its commits and diff in the Git view");
+        "open it in the Git view, where its history and its diff against the "
+        "base branch show side by side");
     setOcticon(m_branchesButton, "git-branch", 16);
     connect(m_branchesButton, &QPushButton::clicked, this, [this] {
         // Branches has no top-level tab anymore: its panel lives inside the Code
-        // overview, under the toolbar, toggled by this button (same pattern as
-        // the commit strip's "N Commits" toggle for the Commits panel).
+        // overview under this toolbar button.
         showOverviewBranches();
         loadBranchesPanel();
     });
-    m_worktreesButton = new QPushButton("Worktrees");
-    m_worktreesButton->setObjectName("ghostButton");
+    m_worktreesButton =
+        new VerticalIconButton("Worktrees", VerticalIconButton::Tab);
     m_worktreesButton->setCursor(Qt::PointingHandCursor);
     m_worktreesButton->setToolTip(
         "Open the Worktrees panel to view agent checkouts and their changes");
-    setOcticon(m_worktreesButton, "file-directory", 16);
+    setOcticon(m_worktreesButton, "worktree", 16);
     connect(m_worktreesButton, &QPushButton::clicked, this, [this] {
         // Worktrees, like Branches, has no top-level tab anymore (adhoc #170):
         // its panel lives inside the Code overview beside Branches, toggled by
@@ -564,25 +591,14 @@ QWidget *MainWindow::buildRepoOverviewPage()
         showOverviewWorktrees();
         loadWorktreesPanel();
     });
-    m_remotesButton = new QPushButton("Remotes");
-    m_remotesButton->setObjectName("ghostButton");
+    m_remotesButton =
+        new VerticalIconButton("Remotes", VerticalIconButton::Tab);
     m_remotesButton->setCursor(Qt::PointingHandCursor);
     m_remotesButton->setToolTip(
         "List this repository's git remotes; pick one to copy its URL");
     setOcticon(m_remotesButton, "server", 16);
     // The menu itself is rebuilt with the remote list in loadBranchesAndTags,
     // alongside the branch menu and the branches/worktrees counts.
-    m_toolbarCommitsButton = new QPushButton("Commits");
-    m_toolbarCommitsButton->setObjectName("ghostButton");
-    m_toolbarCommitsButton->setCursor(Qt::PointingHandCursor);
-    m_toolbarCommitsButton->setToolTip("Show the full commit history");
-    setOcticon(m_toolbarCommitsButton, "history", 16);
-    connect(m_toolbarCommitsButton, &QPushButton::clicked, this, [this] {
-        // Reuse the commit strip's toggle: it already handles the deferred
-        // list build (loadCommits/refreshSourceControl + openMostRecentCommit).
-        if (m_historyButton && !m_historyButton->isChecked())
-            m_historyButton->click();
-    });
     m_tagsButton = new QPushButton("Tags");
     m_tagsButton->setObjectName("ghostButton");
     m_tagsButton->setCursor(Qt::PointingHandCursor);
@@ -618,7 +634,6 @@ QWidget *MainWindow::buildRepoOverviewPage()
     toolbar->addWidget(m_branchesButton);
     toolbar->addWidget(m_worktreesButton);
     toolbar->addWidget(m_remotesButton);
-    toolbar->addWidget(m_toolbarCommitsButton);
     toolbar->addWidget(m_tagsButton);
     // Releases (adhoc #180): moved out of the top tab bar to sit beside Tags on
     // the Code overview page. The button itself is created with the other repo
@@ -629,10 +644,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
         toolbar->addWidget(m_repoReleasesTab);
     toolbar->addWidget(m_fileSearch, 1);
 
-    // Everything below the latest-commit bar swaps between the file browser
-    // (crumb + file list + README) and the commits panel: the commit strip's
-    // "N Commits" button toggles between them now that Commits no longer has
-    // its own top-level tab.
+    // This internal stack shares the Code layout, but its Git workspace page is
+    // reachable only through the activity rail.
     auto *filesBody = new QWidget;
     auto *filesBodyLayout = new QVBoxLayout(filesBody);
     filesBodyLayout->setContentsMargins(0, 0, 0, 0);
@@ -653,15 +666,15 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewBodyStack->setSizePolicy(
         QSizePolicy::Expanding, QSizePolicy::Ignored);
 
-    // Left column: toolbar, latest commit, then the swappable body. The first
-    // two live in one wrapper so the activity-rail Git view can remove the
-    // entire Code-only upper section and give its commits/changes workspace
-    // the full available height.
+    // Left column: latest commit, then the swappable body. The commit strip
+    // lives in its own wrapper so the activity-rail Git view can remove the
+    // Code-only upper section and give its commits/changes workspace the full
+    // available height. (The toolbar that used to sit above it moved onto the
+    // mode row, adhoc #6.)
     m_repoOverviewChrome = new QWidget;
     auto *overviewChromeLayout = new QVBoxLayout(m_repoOverviewChrome);
     overviewChromeLayout->setContentsMargins(0, 0, 0, 0);
     overviewChromeLayout->setSpacing(8);
-    overviewChromeLayout->addLayout(toolbar);
     overviewChromeLayout->addWidget(commitCard);
 
     auto *leftColumn = new QWidget;
@@ -787,8 +800,12 @@ QWidget *MainWindow::buildRepoEditorPage()
             showRepoOverview();
         updateRepoFileSaveActions();
     });
-    connect(m_repoFileTabs, &QTabWidget::currentChanged, this,
-            [this] { updateRepoFileSaveActions(); });
+    connect(m_repoFileTabs, &QTabWidget::currentChanged, this, [this] {
+        updateRepoFileSaveActions();
+        // Each open file is a place on the Back/Forward trail, so opening one
+        // from the file list (or switching tabs) is a step (adhoc #50).
+        scheduleNavRecord();
+    });
     // Ctrl+S saves the current tab: commit direct when this node owns a working
     // tree, otherwise fall back to opening a PR (the only save path on a mirror).
     auto *saveShortcut = new QShortcut(QKeySequence::Save, m_repoFileTabs);
@@ -1305,16 +1322,14 @@ void MainWindow::downloadCurrentRepoZip()
          currentRef()});
 }
 
-// Every repo-scoped git helper — repoGitDir(), repoBranches(), repoDefaultBranch(),
-// and so everything built on them (mergeWorktreeIntoMain, removeWorktree, …) —
-// resolves against the repo the *detail view* currently holds. The Agents and
-// Worktrees surfaces are global, though: the session a user acts on is often not
-// the repo the detail page last loaded, and acting then reads a different repo's
-// checkout, HEAD and default branch. Bind the detail view to the repo first, then
-// act. This only reloads which repo the detail page holds; it doesn't switch the
-// visible page. Returns false when the bind didn't take (a load was already in
-// flight, or the record moved) — the caller must leave git alone in that case
-// rather than operate on someone else's checkout.
+// Every repo-scoped git helper — repoGitDir(), repoBranches(), repoDefaultBranch()
+// and everything built on them — resolves against the repo the *detail view*
+// currently holds. The Agents and Worktrees surfaces are global, though: the
+// session acted on is often not the repo the detail page last loaded, so acting
+// would read a different repo's checkout, HEAD and default branch. Bind first,
+// then act; this reloads which repo the page holds, not the visible page.
+// Returns false when the bind didn't take (a load was in flight, or the record
+// moved) — the caller must then leave git alone.
 bool MainWindow::bindRepoDetailToRepo(int repoIndex)
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size())
@@ -1351,6 +1366,12 @@ void MainWindow::openRepoDetail(int repoIndex)
     // seconds on a large repo. Keep the event loop alive across them so the
     // window doesn't freeze (and the WM doesn't flag it "Not Responding").
     GitKeepAlive keepAlive;
+    // Another repository's branch patches are dead weight (and their keys name a
+    // git dir this window is leaving), so let them go here (adhoc #227). Only on
+    // an actual change of repository — reopening the one already on screen must
+    // keep its branches repainting from memory.
+    if (repoIndex != m_repoDetailIndex)
+        clearBranchDiffCache();
     m_repoDetailIndex = repoIndex;
     // Copy by value: the keep-alive pump services queued slots between git reads,
     // and a roster/network callback could mutate (and reallocate) m_repositories
@@ -1372,17 +1393,22 @@ void MainWindow::openRepoDetail(int repoIndex)
     m_repoBranch.clear();
     loadRepoInfo();
     loadBranchesAndTags();
-    if (m_forkButton)
-        m_forkButton->setText(QStringLiteral("Fork %1").arg(formatCount(m_repoInfo.forks)));
-    if (m_mirrorButton) {
+    // Fork/Mirror counts ride the icons' corners as rail-style badges
+    // (adhoc #6) instead of living in the captions.
+    if (auto *fork = dynamic_cast<VerticalIconButton *>(m_forkButton)) {
+        fork->setText(QStringLiteral("Fork"));
+        fork->setBadgeCount(m_repoInfo.forks);
+    }
+    if (auto *mirror = dynamic_cast<VerticalIconButton *>(m_mirrorButton)) {
         if (repo.previewOnly) {
-            m_mirrorButton->setText(QStringLiteral("Mirror it"));
-            m_mirrorButton->setToolTip(
+            mirror->setText(QStringLiteral("Mirror it"));
+            mirror->setBadgeCount(0);
+            mirror->setToolTip(
                 "Clone this preview into your local mirrors and host it");
         } else {
-            m_mirrorButton->setText(
-                QStringLiteral("Mirror %1").arg(qMax(1, m_repoInfo.mirrors)));
-            m_mirrorButton->setToolTip("Sync this repository's mirror now");
+            mirror->setText(QStringLiteral("Mirror"));
+            mirror->setBadgeCount(qMax(1, m_repoInfo.mirrors));
+            mirror->setToolTip("Sync this repository's mirror now");
         }
     }
     updateRepoDetailStatus();
@@ -1458,14 +1484,11 @@ void MainWindow::openRepoDetail(int repoIndex)
     m_coveExplorerCurrentId.clear();
     m_treeLoadedForIndex = -1;
 
-    // The file-search completer is only consulted once the user starts typing a
-    // path, and ls-tree -r is the single heaviest git read on a large repo —
-    // build it just after the repo paints so it never delays first view. Re-check
-    // the index so a fast follow-up switch doesn't index the wrong repo.
-    // loadFileSearchIndex() itself is fully async (runGitDetached) now, so no
-    // GitKeepAlive scope is needed here — StallWatchdog still caught this ls-tree
-    // stalling the GUI thread even under a keep-alive poll, because the pumped
-    // event loop can land on an unrelated slow paint (see loadFileSearchIndex).
+    // The file-search completer is only consulted once the user types a path, and
+    // ls-tree -r is the heaviest git read on a large repo — build it just after
+    // the repo paints. Re-check the index so a fast follow-up switch doesn't
+    // index the wrong repo. loadFileSearchIndex() is fully async, so it needs no
+    // GitKeepAlive scope (see there for why pumping wasn't enough).
     const int searchIndexFor = m_repoDetailIndex;
     QTimer::singleShot(0, this, [this, searchIndexFor] {
         if (m_repoDetailIndex != searchIndexFor)
@@ -1473,15 +1496,12 @@ void MainWindow::openRepoDetail(int repoIndex)
         loadFileSearchIndex();
     });
     nodeSwitchStep(QStringLiteral("Loading commit history…"));
-    // Building the commit table is the single heaviest piece of per-open UI work
-    // (up to 300 rows, each with cell widgets, plus several git reads). An open
-    // lands on the Code overview and never shows it, so just refresh the cheap
-    // "Commits (N)" badge and let the tab-click handler build the table on demand.
-    // The previous repo's rows and cached tip are cleared so commitsListIsCurrent()
-    // forces a rebuild for this repo when its Commits tab is first opened.
-    // A previously open repo may have left the commits panel showing.
+    // Building the commit table is the heaviest piece of per-open UI work (up to
+    // 300 rows of cell widgets plus several git reads) and an open lands on the
+    // Code overview, so the Git rail destination builds it on demand. Clearing
+    // the previous repo's rows and cached tip makes commitsListIsCurrent() force
+    // a rebuild; a previously open repo may have left the Git workspace showing.
     showOverviewFiles();
-    updateRepoCommitCount();
     if (m_commitsTable)
         m_commitsTable->setRowCount(0);
     m_commitsLoadedTip.clear();
@@ -1512,13 +1532,11 @@ void MainWindow::openRepoDetail(int repoIndex)
     if (m_actionsTable)
         m_actionsTable->setRowCount(0);
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
-    // Every lazily-loaded badge above has just been reset to its empty value.
-    // Fill them in so the tab row is right without each tab having to be clicked
-    // (adhoc #116). Deferred one event-loop turn, like the file-search index
-    // above: the loads themselves are worker-backed, but the issue load applies
-    // its result straight into the table, and starting it inside the open would
-    // let that land in the same turn and count against first paint. Re-check the
-    // index so a fast follow-up switch doesn't count the repo we just left.
+    // Every lazily-loaded badge above has just been reset to empty; fill them in
+    // so the tab row is right without clicking each tab (adhoc #116). Deferred a
+    // turn like the file-search index: the issue load applies straight into the
+    // table, which would otherwise count against first paint. Re-check the index
+    // so a fast follow-up switch doesn't count the repo we just left.
     const int countsFor = m_repoDetailIndex;
     QTimer::singleShot(0, this, [this, countsFor] {
         if (m_repoDetailIndex == countsFor)
@@ -1529,6 +1547,9 @@ void MainWindow::openRepoDetail(int repoIndex)
     // repo's uncommitted count now instead of leaving the previous repo's
     // number (or a blank icon) until the changes panel is first opened.
     refreshRepoChangeBadge();
+    // Re-tint the chrome-line node dots for this repo right away, for as long as
+    // the Mirror nodes page itself is still unbuilt (adhoc #44).
+    refreshNodeDotMatrix();
     m_repoDetailLoading = false;
 }
 
@@ -1543,23 +1564,6 @@ void MainWindow::updateRepoCodeSize()
     m_repoCodeSizePath.clear();
 }
 
-void MainWindow::updateRepoCommitCount()
-{
-    // The count badge lives on the commit strip's "N Commits" toggle now that
-    // the top-bar Commits tab is gone (same text loadRepoOverview renders).
-    if (!m_historyButton)
-        return;
-    const QString dir = repoGitDir();
-    QByteArray out;
-    int count = 0;
-    if (!dir.isEmpty() &&
-        runGitCapture(dir, {"rev-list", "--count", currentRef()}, &out, nullptr))
-        count = QString::fromUtf8(out).trimmed().toInt();
-    m_historyButton->setText(
-        count > 0 ? QStringLiteral("%1 Commits").arg(formatCount(count))
-                  : QStringLiteral("Commits"));
-}
-
 void MainWindow::updateRepoIssueCount()
 {
     if (m_repoIssuesTab) {
@@ -1570,36 +1574,32 @@ void MainWindow::updateRepoIssueCount()
             if (issue.status != "closed" && !issue.isDeleted())
                 ++openCount;
         }
-        m_repoIssuesTab->setText(
-            QStringLiteral("Issues (%1)").arg(formatCount(openCount)));
+        // The open count rides the icon's corner as a rail-style badge
+        // (adhoc #6) rather than living in the caption.
+        if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoIssuesTab))
+            b->setBadgeCount(openCount);
     }
 }
 
 void MainWindow::updateRepoDiscussionCount()
 {
-    if (m_repoDiscussionsTab)
-        m_repoDiscussionsTab->setText(
-            QStringLiteral("Discussions (%1)")
-                .arg(formatCount(m_currentDiscussions.size())));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoDiscussionsTab))
+        b->setBadgeCount(m_currentDiscussions.size());
 }
 
 void MainWindow::updateRepoPullCount()
 {
-    if (m_repoPullsTab)
-        m_repoPullsTab->setText(
-            QStringLiteral("PRs (%1)").arg(formatCount(m_currentPulls.size())));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoPullsTab))
+        b->setBadgeCount(m_currentPulls.size());
 }
 
 // Fill in the repo-tab badges whose panels load lazily. Opening a repo resets
-// every count to its empty value but only loads the landing tab's data, so a
-// repo with hundreds of issues advertised "Issues (0)" — and "Discussions (0)",
-// and "Actions (0)" — until each tab was clicked. On a fresh install, where the
-// first clone lands after the view is already up, every one of them was wrong at
-// once (adhoc #116). All three reads happen on worker threads, and the
-// Discussions and Actions ones only write their label — neither builds its
-// (still lazy) panel. Issues rides its existing background loader, which does
-// also fill the issue table; that is the same work the startup restore path has
-// always done, and it lands on a queued callback, not in the open itself.
+// every count to empty but only loads the landing tab's data, so a repo with
+// hundreds of issues advertised "Issues (0)" — and "Discussions (0)", and
+// "Actions (0)" — until each tab was clicked (adhoc #116). All three reads run
+// on worker threads; Discussions and Actions only write their label, while
+// Issues rides its existing background loader (which also fills the issue table,
+// exactly as the startup restore path has always done) on a queued callback.
 void MainWindow::refreshRepoTabCounts()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
@@ -3205,8 +3205,8 @@ void MainWindow::showRepoOverview()
         m_filesModeExplorerButton->setChecked(false);
     if (m_filesModeCoveExplorerButton)
         m_filesModeCoveExplorerButton->setChecked(false);
-    // "Code overview" always means the file list + README: if the commits
-    // panel was left showing (via the commit strip's toggle), swap it back.
+    // "Code overview" always means the file list + README: if the Git
+    // workspace was left showing, swap it back.
     showOverviewFiles();
 }
 
@@ -3245,11 +3245,9 @@ void MainWindow::showRepoCoveExplorer()
         m_filesModeCoveExplorerButton->setChecked(true);
 }
 
-// Show the commits panel in the Code overview, under the latest-commit bar,
-// and light up the commit strip's "N Commits" toggle. Pure navigation — no
+// Show the universal Git workspace. Pure navigation — no
 // loading — so callers that jump straight to one commit (showCommit) aren't
-// clobbered by an openMostRecentCommit; the history-button click handler and
-// the repo-open landing path layer the list build on top.
+// clobbered by an automatic selection; each route layers its list build on top.
 void MainWindow::showOverviewCommits()
 {
     // Callers can be anywhere (another tab, the explorer, a search result):
@@ -3268,17 +3266,35 @@ void MainWindow::showOverviewCommits()
         m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(1);
-    if (m_historyButton)
-        m_historyButton->setChecked(true);
+    // This is an activity-rail destination, not a Code Overview sub-page. Some
+    // routes arrive while every stack is already on index 0/1, so no
+    // currentChanged signal fires and the Code chrome would otherwise remain
+    // visible above the Git workspace. Apply the ownership state explicitly
+    // after all stacks have moved, then reassert it on the next event-loop turn
+    // in case a queued repository refresh completed during navigation.
+    updateRepoActivityRail();
+    QTimer::singleShot(0, this, [this] {
+        if (gitWorkspaceIsVisible())
+            updateRepoActivityRail();
+    });
 }
 
-// Swap the overview body back to the file list + README and dim the toggle.
+// True when the Git workspace is the view actually on screen: the repo's Code
+// tab, with the overview body on the Git page and the file list rather than the
+// editor showing. Async loads consult this before re-asserting a page, so a
+// diff landing late can't yank the user out of wherever they navigated to.
+bool MainWindow::gitWorkspaceIsVisible() const
+{
+    return m_repoDetailStack && m_repoDetailStack->currentIndex() == 0 &&
+           m_filesStack && m_filesStack->currentIndex() == 0 &&
+           m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+}
+
+// Swap the overview body back to the file list + README.
 void MainWindow::showOverviewFiles()
 {
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(0);
-    if (m_historyButton)
-        m_historyButton->setChecked(false);
 }
 
 // Show the branches panel in the Code overview, under the toolbar — the same
@@ -3302,9 +3318,10 @@ void MainWindow::showOverviewBranches()
         m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(2);
-    // The commits toggle isn't lit when branches show.
-    if (m_historyButton)
-        m_historyButton->setChecked(false);
+    // The panel owns the page's upper chrome (the latest-commit bar comes off
+    // while the branch list is up). Apply it explicitly: a route that arrives
+    // with the body stack already on 2 emits no currentChanged.
+    updateRepoActivityRail();
 }
 
 // Show the worktrees panel in the Code overview, beside the branches panel —
@@ -3326,8 +3343,6 @@ void MainWindow::showOverviewWorktrees()
         m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(3);
-    if (m_historyButton)
-        m_historyButton->setChecked(false);
 }
 
 void MainWindow::openRepoReadme()
@@ -3388,6 +3403,7 @@ void MainWindow::loadRepoOverview(const QString &path)
                             .arg(path, currentRef(), head);
     if (key == m_overviewLoadedKey && m_overviewList->topLevelItemCount() > 0) {
         m_overviewPath = path;
+        scheduleNavRecord();
         return;
     }
     m_overviewLoadedKey.clear(); // cleared until this load completes successfully
@@ -3399,6 +3415,9 @@ void MainWindow::loadRepoOverview(const QString &path)
     GitKeepAlive keepAlive;
 
     m_overviewPath = path;
+    // Walking into (or out of) a directory in the file list is a browser-style
+    // step, so Back returns to the directory you came from (adhoc #50).
+    scheduleNavRecord();
 
     // Gather phase: every git read below lands in locals only. The keep-alive
     // pump services paint events between reads, so any widget cleared or
@@ -3436,32 +3455,6 @@ void MainWindow::loadRepoOverview(const QString &path)
             commitBarText = "<span style='color:#8b949e'>No commits yet</span>";
         }
     }
-    QString historyText = QStringLiteral("Commits");
-    if (m_historyButton) {
-        // `rev-list --count` walks the entire history, so on a large repo it is
-        // one of the slowest reads here — the watchdog caught the GUI thread
-        // inside it (adhoc #90). The answer can only change when the ref's tip
-        // moves, and the tip is already resolved above, so memoize per
-        // checkout+commit: browsing into a directory re-runs this rebuild but
-        // does not re-count.
-        static QHash<QString, QString> countCache;
-        const QString countKey = dir + QLatin1Char('|') + head;
-        QString count = head.isEmpty() ? QString() : countCache.value(countKey);
-        if (count.isEmpty() && !dir.isEmpty()) {
-            QByteArray countOut;
-            if (runGitCapture(dir, {"rev-list", "--count", currentRef()}, &countOut,
-                              nullptr))
-                count = QString::fromUtf8(countOut).trimmed();
-            if (!count.isEmpty() && !head.isEmpty()) {
-                if (countCache.size() > 64)
-                    countCache.clear(); // bounded; every entry is re-derivable
-                countCache.insert(countKey, count);
-            }
-        }
-        if (!count.isEmpty())
-            historyText = QStringLiteral("%1 Commits").arg(formatCount(count.toLongLong()));
-    }
-
     // Breadcrumb for directory navigation.
     QString crumbText = QStringLiteral("<a href=\"/\">root</a>");
     {
@@ -3490,11 +3483,9 @@ void MainWindow::loadRepoOverview(const QString &path)
 
     // The whole-tree reads below (recursive ls-tree, the empty-tree numstat) and
     // the per-entry last-commit probes are pure functions of the resolved tip,
-    // yet browsing between directories re-ran every one of them per click — each
-    // a git spawn blocking the GUI thread, and the stall log caught the numstat
-    // alone taking ~2.7 s while agent builds kept the disk busy. Memoize them
-    // per checkout+commit, exactly like countCache above; the memo resets the
-    // moment the tip moves.
+    // yet browsing between directories re-ran every one per click — the stall log
+    // caught the numstat alone at ~2.7 s while agent builds kept the disk busy.
+    // Memoize per checkout+commit like countCache above; resets when the tip moves.
     struct OverviewTreeCache {
         QString key;                         // dir|head
         QByteArray sizeOut;                  // ls-tree -r -l -z output
@@ -3641,8 +3632,6 @@ void MainWindow::loadRepoOverview(const QString &path)
         page->setUpdatesEnabled(false);
     if (m_commitBar)
         m_commitBar->setText(commitBarText);
-    if (m_historyButton)
-        m_historyButton->setText(historyText);
     if (m_overviewCrumb)
         m_overviewCrumb->setText(crumbText);
     m_overviewRows = rows;
@@ -3857,6 +3846,33 @@ bool MainWindow::commitsListIsCurrent()
     return currentMirrorTip() == m_commitsLoadedMirrorTip;
 }
 
+QString MainWindow::commitMarkerProbeSignature() const
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return {};
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    auto stamp = [](const QString &base, const QString &leaf) -> QString {
+        if (base.trimmed().isEmpty())
+            return QString();
+        const QFileInfo info(QDir(base).filePath(leaf));
+        return QString::number(info.lastModified().toMSecsSinceEpoch()) +
+               QLatin1Char(':') + QString::number(info.size());
+    };
+    // refs/heads rather than refs: git updates a loose ref by writing <ref>.lock
+    // and renaming it over the old file, which moves the mtime of the directory
+    // *holding* the ref but not of refs/ above it. packed-refs and logs/HEAD
+    // cover the packed and reflog cases.
+    QString signature = currentRef();
+    for (const QString &leaf :
+         {QStringLiteral("HEAD"), QStringLiteral("packed-refs"),
+          QStringLiteral("refs/heads"), QStringLiteral("logs/HEAD")}) {
+        signature += QLatin1Char('|') + stamp(repo.mirrorPath, leaf) +
+                     QLatin1Char('|') +
+                     stamp(repo.localPath, QStringLiteral(".git/") + leaf);
+    }
+    return signature;
+}
+
 void MainWindow::refreshCommitMarkersIfStale()
 {
     // Only while the commit list is actually on screen — isVisible() is false
@@ -3866,8 +3882,79 @@ void MainWindow::refreshCommitMarkersIfStale()
     // mirror tip), so there's nothing to keep in sync in the background.
     if (!m_commitsListPage || !m_commitsListPage->isVisible())
         return;
-    if (!commitsListIsCurrent())
+    if (m_commitMarkerProbeInFlight)
+        return;
+    // Nothing loaded yet, or the branch being browsed changed: that needs a real
+    // load, not a staleness probe. (What commitsListIsCurrent() answers false to
+    // before it reaches any git.)
+    if (!m_commitsTable || m_commitsTable->rowCount() == 0 ||
+        m_commitsLoadedTip.isEmpty() || m_commitsLoadedRef != currentRef()) {
         loadCommits();
+        return;
+    }
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const QString signature = commitMarkerProbeSignature();
+    // Neither ref store has been touched since the last probe, so no tip can
+    // have moved and there is nothing to rebuild — the common case, and now
+    // free. The ceiling bounds how long a filesystem signal we failed to notice
+    // could pin stale markers on screen; the floor keeps a repo that is being
+    // written continuously (an agent committing in a loop) from queueing a
+    // worker per sweep.
+    constexpr qint64 kProbeCeilingMs = 10 * 1000;
+    constexpr qint64 kProbeFloorMs = 750;
+    if (now - m_commitMarkerProbedAtMs < kProbeFloorMs)
+        return;
+    if (!signature.isEmpty() && signature == m_commitMarkerProbeSig &&
+        now - m_commitMarkerProbedAtMs < kProbeCeilingMs)
+        return;
+    m_commitMarkerProbeSig = signature;
+    m_commitMarkerProbedAtMs = now;
+
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    // Everything the worker touches is captured BY VALUE — m_repositories can be
+    // reassigned underneath us while it runs (adhoc #119).
+    const QString ref = currentRef();
+    const QString mirrorBranch = m_repoBranch;
+    QString mirrorPath;
+    {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists())
+            mirrorPath = repo.mirrorPath;
+    }
+    const int index = m_repoDetailIndex;
+    m_commitMarkerProbeInFlight = true;
+    runOffThread<CommitMarkerProbe>(
+        [dir, ref, mirrorPath, mirrorBranch]() -> CommitMarkerProbe {
+            CommitMarkerProbe probe;
+            QByteArray out;
+            if (runGitCapture(dir, {QStringLiteral("rev-parse"), ref}, &out,
+                              nullptr))
+                probe.localTip = QString::fromUtf8(out).trimmed();
+            if (!mirrorPath.isEmpty())
+                probe.mirrorTip = mirrorBranchCommit(
+                    mirrorPath, mirrorBranch.isEmpty()
+                                    ? mirrorHeadBranch(mirrorPath)
+                                    : mirrorBranch);
+            return probe;
+        },
+        [this, index, ref](CommitMarkerProbe probe) {
+            m_commitMarkerProbeInFlight = false;
+            // The user navigated while the probe ran; whatever is on screen now
+            // was loaded after it started.
+            if (index != m_repoDetailIndex || ref != currentRef())
+                return;
+            if (!m_commitsListPage || !m_commitsListPage->isVisible())
+                return;
+            if (probe.localTip.isEmpty())
+                return; // unreadable ref: leave the list alone
+            if (probe.localTip == m_commitsLoadedTip &&
+                probe.mirrorTip == m_commitsLoadedMirrorTip)
+                return; // nothing moved
+            loadCommits();
+        });
 }
 
 // How deep a commit search widens the table window (see filterCommits). Bounded:
@@ -3892,16 +3979,16 @@ void MainWindow::loadCommits()
     const int loadGen = ++m_commitsLoadGen;
     QSignalBlocker block(m_commitsTable);
     // Suspend the table's repaints for the *whole* reload, not just the row-build
-    // loop below. The git reads (the commit log, the unpushed-set walk) run
-    // under the GitKeepAlive above, which pumps the event loop — so without the
-    // guard the table, already cleared to empty by setRowCount(0), would repaint
-    // blank mid-load and flash before the rows arrive. With it the previous rows
-    // stay frozen on screen until the new ones snap in (one repaint when the guard
-    // unwinds, including on the early returns below). Matches every other loader.
+    // loop: the git reads run under the GitKeepAlive above, which pumps the event
+    // loop, so without the guard the table — already cleared by setRowCount(0) —
+    // repaints blank mid-load and flashes. With it the previous rows stay frozen
+    // until the new ones snap in, in one repaint when the guard unwinds.
     TableRepaintGuard repaintGuard(m_commitsTable);
     m_commitsTable->setRowCount(0);
+    // Drop the previous window's lane pitch: a load that bails out early must
+    // not leave the next repo's graph compressed to this repo's depth.
+    m_commitsTable->setProperty(kGraphLaneCountProperty, 0);
     showCommitList(); // always land on the list when (re)loading
-    updateRepoCommitCount();
     // The Insights "Contributors & activity" counts are derived from the same
     // history; keep them in step when it moves underneath an open Insights tab
     // (a background sync, agent commit, revert or commit can advance it). A tab
@@ -3918,30 +4005,44 @@ void MainWindow::loadCommits()
     if (currentRef() != m_commitsLoadedRef)
         m_commitsLimit = 300;
     m_commitsHasMore = false;
-    // Fetch one extra record so a full page tells us older history remains. When a
-    // search is active (m_commitsShowingAll) deepen the window to the search depth
-    // — bounded, not the whole ref: building *every* commit as table rows (each
-    // with a cell-widget button) froze the UI for 10-20s on a big history (stall
-    // log: loadCommits <- filterCommits), and the matching uncapped --numstat in
-    // fillCommitStats() froze it again. Anything deeper stays reachable by
-    // scrolling the window onward first.
+    // Fetch one extra record so a full page tells us older history remains. When
+    // a search is active (m_commitsShowingAll) deepen the window to the search
+    // depth — bounded, not the whole ref: building every commit as a table row
+    // froze the UI for 10-20s on a big history (stall log: loadCommits <-
+    // filterCommits). Anything deeper stays reachable by scrolling on.
     //
-    // Deliberately NO --numstat here: that flag makes git diff every commit in the
-    // window (~1s on a large history) and was the bulk of this load's cost, yet it
-    // only feeds the Files/+/− columns. This plain log returns in milliseconds so
-    // the list paints immediately; fillCommitStats() backfills those three columns
-    // from a deferred --numstat read once the rows are on screen.
+    // Deliberately NO --numstat: it diffs every commit in the window (~1s here)
+    // and was the bulk of this load's cost, yet only feeds the Files/+/− columns.
+    // fillCommitStats() backfills those from a deferred read once rows are up.
     const int rowLimit = m_commitsShowingAll ? kCommitSearchDepth : m_commitsLimit;
     QStringList logArgs{
         "log",
+        "--topo-order",
+        "--decorate=full",
         "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P%x1f%D%x1f%b"};
     logArgs << "-n" << QString::number(rowLimit + 1);
     logArgs << currentRef();
     if (!runGitCapture(dir, logArgs, &out, nullptr))
         return;
     // Local commits the network mirror doesn't have yet, so the list can flag
-    // (and the banner can count) what hasn't synced.
-    const QSet<QString> unpushed = unpushedCommitHashes();
+    // and link the pending-sync marker to the actual tip in the graph.
+    QSet<QString> unpushed = unpushedCommitHashes();
+    // A locally opened upstream checkout does not necessarily have a ForkMesh
+    // mirror record. In that case the graph must still reflect exactly the same
+    // pending commits as the Sync Changes action, which compares upstream..HEAD.
+    if (unpushed.isEmpty()) {
+        QByteArray pendingOut;
+        if (runGitCapture(dir,
+                          {QStringLiteral("rev-list"),
+                           QStringLiteral("@{upstream}..") + currentRef()},
+                          &pendingOut, nullptr)) {
+            for (const QByteArray &line : pendingOut.split('\n')) {
+                const QString hash = QString::fromUtf8(line).trimmed();
+                if (!hash.isEmpty())
+                    unpushed.insert(hash);
+            }
+        }
+    }
     m_commitsUnsyncedHashes.clear();
     // The newest commit (git log's first record, before the table is sorted) is
     // the branch tip; remember it so a later tab click can skip an identical rebuild.
@@ -3950,6 +4051,40 @@ void MainWindow::loadCommits()
     // is the hash the lane is currently waiting to reach; an empty entry is a free
     // slot a new branch can reuse.
     QList<QString> activeLanes;
+    // Widest the graph gets anywhere in this window. The delegate needs it up
+    // front to pick one lane pitch for every row (see commitGraphMetrics).
+    int graphLaneCount = 0;
+    // Put outgoing work in the graph itself.  The synthetic dotted node's
+    // bottom lane is the first real commit's top lane, so the connector reads
+    // as one continuous graph rather than a detached warning card.
+    if (!unpushed.isEmpty()) {
+        const int row = m_commitsTable->rowCount();
+        m_commitsTable->insertRow(row);
+        auto *graphItem = new QTableWidgetItem;
+        graphItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        graphItem->setData(kGraphNodeLaneRole, 0);
+        graphItem->setData(kGraphBottomLanesRole, QVariantList{0});
+        graphItem->setData(kGraphIsMergeRole, false);
+        m_commitsTable->setItem(row, kCommitGraphCol, graphItem);
+
+        auto *summary = new SortTableWidgetItem(QStringLiteral("Outgoing Changes"));
+        summary->setData(kCommitRowKindRole, 2); // decorative graph-state row
+        summary->setData(kCommitOutgoingRole, true);
+        summary->setData(kCommitAuthorRole,
+                         QStringLiteral("%1 pending sync")
+                             .arg(unpushed.size()));
+        summary->setData(kCommitRefsRole,
+                         QStringList{QStringLiteral("%1 %2↑")
+                                         .arg(currentRef())
+                                         .arg(unpushed.size())});
+        summary->setData(kCommitRefKindsRole, QStringList{QStringLiteral("local")});
+        summary->setToolTip(
+            QStringLiteral("%1 local commit%2 waiting to sync. Use Sync Changes "
+                           "above to publish them.")
+                .arg(unpushed.size())
+                .arg(unpushed.size() == 1 ? QString() : QStringLiteral("s")));
+        m_commitsTable->setItem(row, kCommitSummaryCol, summary);
+    }
     // Repaints stay suspended by the TableRepaintGuard above while up to 300 rows
     // (each with a cell-widget button) are built: otherwise the table repaints on
     // every insertRow/setItem, which is what made a refresh feel sluggish.
@@ -4026,6 +4161,13 @@ void MainWindow::loadCommits()
             if (!activeLanes.at(i).isEmpty())
                 botLaneCols.append(i);
         }
+        graphLaneCount = std::max({graphLaneCount, nodeLane + 1,
+                                   laneCols.isEmpty()
+                                       ? 0
+                                       : laneCols.last().toInt() + 1,
+                                   botLaneCols.isEmpty()
+                                       ? 0
+                                       : botLaneCols.last().toInt() + 1});
 
         const int row = m_commitsTable->rowCount();
         m_commitsTable->insertRow(row);
@@ -4052,27 +4194,44 @@ void MainWindow::loadCommits()
         const QString msgBody = f.value(8).trimmed();
         if (!msgBody.isEmpty())
             summary->setData(kCommitBodyRole, msgBody);
-        // Branch / tag pills (git log %D), drawn ahead of the summary text like
-        // the VS Code graph. Capped: a tip carrying many refs would otherwise
-        // crowd out the message.
+        // Branch / tag pills (git log %D), anchored at the right of the summary
+        // like the source graph. Capped: a tip carrying many refs would
+        // otherwise crowd out the message.
         {
             QStringList refs;
+            QStringList refKinds;
             const QStringList rawRefs = f.value(7).split(
                 QStringLiteral(", "), Qt::SkipEmptyParts);
             for (QString ref : rawRefs) {
                 ref = ref.trimmed();
-                if (ref.startsWith(QLatin1String("HEAD -> ")))
+                QString kind = QStringLiteral("local");
+                if (ref.startsWith(QLatin1String("HEAD -> "))) {
                     ref = ref.mid(8);
-                else if (ref == QLatin1String("HEAD"))
+                } else if (ref == QLatin1String("HEAD")) {
                     continue; // detached HEAD marker, not a ref
-                if (ref.startsWith(QLatin1String("tag: ")))
+                } else if (ref.startsWith(QLatin1String("tag: "))) {
                     ref = ref.mid(5);
+                    kind = QStringLiteral("tag");
+                }
+                if (ref.startsWith(QLatin1String("refs/heads/"))) {
+                    ref = ref.mid(11);
+                    kind = QStringLiteral("local");
+                } else if (ref.startsWith(QLatin1String("refs/remotes/"))) {
+                    ref = ref.mid(13);
+                    kind = QStringLiteral("remote");
+                } else if (ref.startsWith(QLatin1String("refs/tags/"))) {
+                    ref = ref.mid(10);
+                    kind = QStringLiteral("tag");
+                }
                 refs << ref;
+                refKinds << kind;
                 if (refs.size() >= 3)
                     break;
             }
-            if (!refs.isEmpty())
+            if (!refs.isEmpty()) {
                 summary->setData(kCommitRefsRole, refs);
+                summary->setData(kCommitRefKindsRole, refKinds);
+            }
         }
         // Action/check status badge for this commit (green check / red x /
         // spinning-blue dot), shown as a leading icon when a workflow ran for it.
@@ -4134,12 +4293,14 @@ void MainWindow::loadCommits()
         updateCommitRowHover(row);
     }
     // The graph gutter needs no sizing pass: it is painted inside the summary
-    // cell and each row's text indents to its own rightmost lane (capped by
-    // kGraphMaxTextIndent in CommitSummaryDelegate).
-    // Repaints stay suspended (TableRepaintGuard) through the banner update and
-    // filter re-apply below, so the whole reload lands in a single repaint when
-    // the guard unwinds at function scope. The rows stay in git-log order (no
-    // header sorting) so the graph lanes always match the topology.
+    // cell and each row's text indents to its own rightmost lane. What the
+    // delegate does need is the window's widest lane count, so every row draws
+    // its lanes at the same pitch and the whole graph fits the gutter instead
+    // of striping across the messages (adhoc #60). Repaints stay suspended
+    // through the banner update and filter re-apply below, so the whole reload
+    // lands in one repaint. Rows stay in git-log order (no header sorting) so
+    // the graph lanes always match the topology.
+    m_commitsTable->setProperty(kGraphLaneCountProperty, graphLaneCount);
 
     // Banner + expandable file view for the commits still waiting to sync
     // (m_commitsUnsyncedHashes was rebuilt by the row loop above).
@@ -4538,72 +4699,13 @@ void MainWindow::updateCommitRowHover(int row)
 
 void MainWindow::updateCommitsUnsyncedFilesPanel()
 {
-    const int pending = m_commitsUnsyncedHashes.size();
-    if (m_commitsUnsyncedBanner) {
-        if (pending > 0)
-            showCommitsBanner(
-                QString::fromUtf8(
-                    "<span style='color:#d29922'>\xE2\x96\xB2 %1 commit%2 pending "
-                    "sync to the network mirror.</span> "
-                    "<a href='files' style='color:#d29922'>%3</a>")
-                    .arg(pending)
-                    .arg(pending == 1 ? QString() : QStringLiteral("s"))
-                    .arg(m_commitsUnsyncedExpanded
-                             ? QString::fromUtf8("Hide files \xE2\x96\xB4")
-                             : QString::fromUtf8("Show files \xE2\x96\xBE")));
-        else
-            hideCommitsBanner(); // also hides the file view
-    }
-    if (!m_commitsUnsyncedFiles)
-        return;
-    if (pending == 0 || !m_commitsUnsyncedExpanded) {
+    // This status is a linked, dotted top row in the graph now. Keeping a
+    // second banner or expandable list above it makes the graph look detached
+    // and pushes the newest state away from the rest of its history.
+    if (m_commitsUnsyncedBanner)
+        m_commitsUnsyncedBanner->hide();
+    if (m_commitsUnsyncedFiles)
         m_commitsUnsyncedFiles->hide();
-        return;
-    }
-    const QString dir = repoGitDir();
-    if (dir.isEmpty())
-        return;
-    m_commitsUnsyncedFiles->clear();
-    // Bounded: the pending set is normally a handful; anything deeper is still
-    // reachable per commit from the list below.
-    const int cap = qMin(pending, 20);
-    for (int i = 0; i < cap; ++i) {
-        const QString hash = m_commitsUnsyncedHashes.at(i);
-        QByteArray meta;
-        runGitCapture(dir,
-                      {QStringLiteral("show"), QStringLiteral("--no-patch"),
-                       QStringLiteral("--format=%h%x1f%s"), hash},
-                      &meta, nullptr);
-        const QStringList mf =
-            QString::fromUtf8(meta).trimmed().split(QLatin1Char('\x1f'));
-        auto *top = new QTreeWidgetItem(
-            m_commitsUnsyncedFiles,
-            {QStringLiteral("%1  %2").arg(mf.value(0), mf.value(1))});
-        top->setIcon(0, themedOcticon("upload", QColor("#d29922"), 14));
-        top->setData(0, Qt::UserRole, hash);
-        top->setToolTip(0, QStringLiteral(
-                               "Waiting to sync \xE2\x80\x94 click to view the "
-                               "commit"));
-        const QList<CommitFileStat> files = commitFileStats(dir, hash);
-        for (const CommitFileStat &f : files) {
-            auto *child = new QTreeWidgetItem(
-                top, {QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
-                          .arg(f.path)
-                          .arg(f.adds)
-                          .arg(f.dels)});
-            child->setData(0, Qt::UserRole, hash);
-            child->setData(0, Qt::UserRole + 1, f.path);
-            child->setToolTip(0, f.path);
-        }
-        top->setExpanded(true);
-    }
-    if (pending > cap)
-        new QTreeWidgetItem(
-            m_commitsUnsyncedFiles,
-            {QString::fromUtf8("\xE2\x80\xA6 and %1 more commit%2")
-                 .arg(pending - cap)
-                 .arg(pending - cap == 1 ? QString() : QStringLiteral("s"))});
-    m_commitsUnsyncedFiles->show();
 }
 
 void MainWindow::fetchCurrentRepo()
@@ -4703,11 +4805,10 @@ void MainWindow::pullCurrentRepo()
 // ---------------------------------------------------------------------------
 // Top-bar global search ("search everything").
 //
-// One box in the top bar that, as you type, searches across every place the app
-// knows about — sections, relays, nodes, repositories, and (for the open repo)
-// its issues, pull requests, branches, files and commit messages — and lists the
-// hits in a floating dropdown. Pick one (mouse or arrow keys + Enter) and it
-// navigates straight there.
+// One box in the top bar that, as you type, searches every place the app knows
+// about — sections, relays, nodes, repositories, and (for the open repo) its
+// issues, pull requests, branches, files and commit messages — and lists the hits
+// in a floating dropdown that navigates straight there on pick.
 // ---------------------------------------------------------------------------
 namespace {
 // Payload roles on each dropdown item; the kind drives where activating it goes.
@@ -4726,6 +4827,7 @@ enum GlobalSearchKind {
     GsBranch,     // branch name (str1) in the open repo
     GsFile,       // path (str1) in the open repo
     GsCommit,     // full hash (str1) in the open repo
+    GsAgent,      // agent session id (num) in the open repo
     GsDeepSearch, // open the streaming full-search page for the typed query
 };
 } // namespace
@@ -4773,6 +4875,12 @@ QWidget *MainWindow::createGlobalSearchBox()
     connect(m_globalSearchTimer, &QTimer::timeout, this,
             &MainWindow::rebuildGlobalSearchResults);
     connect(m_globalSearch, &QLineEdit::textChanged, this, [this](const QString &t) {
+        // The Agents page filters live, on every keystroke and ahead of the
+        // debounce: it is plain in-memory string matching, and the one part that
+        // touches disk (the transcript scan) is debounced off the GUI thread on
+        // its own. Waiting on the dropdown's timer here only made the page below
+        // lag behind what is typed.
+        syncAgentPageSearch();
         if (t.trimmed().isEmpty()) {
             m_globalSearchTimer->stop();
             hideGlobalSearchPopup();
@@ -4950,6 +5058,38 @@ void MainWindow::rebuildGlobalSearchResults()
                 break;
         }
 
+        // Agent sessions, matched on their prompt/issue title and on whatever the
+        // live transcript scan has found for this same query — so a run is
+        // findable by something it said, not just by what it was asked to do.
+        // Picking one opens the Agents tab on that session.
+        header = false;
+        const QString repoOwner = m_repositories.at(m_repoDetailIndex).owner;
+        for (const AgentSession &session : std::as_const(m_agentSessions)) {
+            if (session.owner != repoOwner || session.name != repoName)
+                continue;
+            const AgentTranscriptHit hit = agentTranscriptHit(session.id);
+            const QString title =
+                session.issueNumber > 0
+                    ? QStringLiteral("#%1 %2").arg(session.issueNumber)
+                          .arg(session.issueTitle)
+                    : session.issueTitle;
+            if (!title.toLower().contains(needle) && hit.count == 0)
+                continue;
+            if (!header) {
+                addHeader(QStringLiteral("Agent sessions") + suffix);
+                header = true;
+            }
+            QString label = title.simplified();
+            if (label.size() > 80)
+                label = label.left(79) + QString::fromUtf8("\xE2\x80\xA6");
+            if (hit.count > 0)
+                label += QString::fromUtf8("   \xC2\xB7  %1 in transcript")
+                             .arg(hit.count);
+            if (!addResult("dependabot", agentStatusIconColor(session), label,
+                           GsAgent, QString(), QString(), session.id))
+                break;
+        }
+
         // Branches.
         header = false;
         const QString ref = currentRef();
@@ -5075,8 +5215,13 @@ void MainWindow::activateGlobalSearchItem(QListWidgetItem *item)
 
     hideGlobalSearchPopup();
     if (m_globalSearch) {
-        QSignalBlocker block(m_globalSearch); // clearing must not re-trigger a rebuild
-        m_globalSearch->clear();
+        {
+            QSignalBlocker block(m_globalSearch); // clearing must not re-trigger a rebuild
+            m_globalSearch->clear();
+        }
+        // The blocked signal also skips the live page mirror, which would leave
+        // the Agents list narrowed by a query that is no longer on screen.
+        syncAgentPageSearch();
     }
 
     const bool repoOpen =
@@ -5118,6 +5263,9 @@ void MainWindow::activateGlobalSearchItem(QListWidgetItem *item)
     case GsCommit:
         if (repoOpen) { showSection(0); showOverviewCommits(); showCommit(s1); }
         break;
+    case GsAgent:
+        switchToAgentsTab(num); // binds the repo, opens the tab, selects the run
+        break;
     default:
         break;
     }
@@ -5133,8 +5281,8 @@ void MainWindow::hideGlobalSearchPopup()
 // Back / forward navigation trail (sits just left of the search box).
 //
 // As you move between sections and repositories, scheduleNavRecord() captures
-// where you landed onto a browser-style history. Back and Forward replay it
-// without recording new entries, so the trail behaves like a web browser's.
+// where you landed onto a browser-style history that Back and Forward replay
+// without recording new entries.
 // ---------------------------------------------------------------------------
 QWidget *MainWindow::createNavHistoryButtons()
 {
@@ -5190,6 +5338,18 @@ void MainWindow::recordNavLocation()
     here.detailTab = (here.repoIndex >= 0 && m_repoDetailStack)
                          ? m_repoDetailStack->currentIndex()
                          : -1;
+    if (here.detailTab == 0 && m_filesStack && m_filesStack->currentIndex() == 0 &&
+        m_overviewBodyStack)
+        here.overviewPage = m_overviewBodyStack->currentIndex();
+    if (here.overviewPage == 1) {
+        here.branch = m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
+        // A commit's diff is its own place on the Git view, so Back from a
+        // commit returns to the list rather than leaving the repo.
+        if (m_commitsStack &&
+            m_commitsStack->currentIndex() == kCommitWorkspaceCommitPage)
+            here.commit = m_currentCommitHash;
+    }
+    captureNavSubPlace(here);
 
     // Remember the tab actually being viewed so a relaunch can restore it
     // (see kLastRepoDetailTabSetting / runDeferredStartup) instead of always
@@ -5212,6 +5372,167 @@ void MainWindow::recordNavLocation()
     updateNavHistoryButtons();
 }
 
+// Repo-relative path of the file the editor is showing, or an empty string when
+// no file tab is open.
+QString MainWindow::openRepoFilePath() const
+{
+    if (!m_repoFileTabs)
+        return QString();
+    QWidget *current = m_repoFileTabs->currentWidget();
+    if (!current)
+        return QString();
+    return m_openFileTabs.key(current);
+}
+
+// Fill in the half of a place that lives *below* the tab bar (adhoc #50): which
+// sub-menu the view is on and which item it has open. Kept next to
+// applyNavSubPlace so capture and replay stay in step — every view added to one
+// needs the matching arm in the other.
+void MainWindow::captureNavSubPlace(NavPlace &place) const
+{
+    if (place.section == 2) {
+        // Chat: the open room/DM is the destination, not "Chat" as a whole.
+        place.conversation = m_currentConversation;
+        return;
+    }
+    if (place.section == 1) {
+        if (m_settingsTabs)
+            place.subTab = m_settingsTabs->currentIndex();
+        return;
+    }
+    if (place.section == kControlNodeSectionIndex) {
+        if (m_controlNodeTabs)
+            place.subTab = m_controlNodeTabs->currentIndex();
+        return;
+    }
+    if (place.section == kNetworkDiagnosticsSectionIndex ||
+        place.section == kNodesSectionIndex) {
+        // Both sections are views onto the same tab widget (Nodes is one of its
+        // tabs), so the open tab is what distinguishes the places.
+        if (m_networkTabs)
+            place.subTab = m_networkTabs->currentIndex();
+        return;
+    }
+    if (place.repoIndex < 0)
+        return;
+    switch (place.detailTab) {
+    case 0: // Code
+        if (m_filesStack && m_filesStack->currentIndex() == 1)
+            place.filePath = openRepoFilePath();
+        else if (place.overviewPage <= 0)
+            // Walking into a directory in the file list is a step of its own.
+            place.overviewDir = m_overviewPath;
+        break;
+    case 2: // Issues
+        if (m_issueListStack)
+            place.subTab = m_issueListStack->currentIndex();
+        if (m_issueDetail && !m_issueDetail->isHidden())
+            place.itemNumber = m_currentIssueNumber;
+        break;
+    case 3: // Agents — the selected session is what the pane shows
+        place.itemNumber = m_selectedAgentSessionId;
+        break;
+    case 4: // Pull requests
+        place.itemNumber = m_currentPullNumber;
+        if (m_pullSubStack && m_currentPullNumber > 0)
+            place.subTab = m_pullSubStack->currentIndex();
+        break;
+    case 5: // Discussions
+        place.itemNumber = m_currentDiscussionNumber;
+        break;
+    default:
+        // Projects sits at a runtime index, so it can't be a case label.
+        if (place.detailTab == m_projectsTabIndex && m_projectViewStack)
+            place.subTab = m_projectViewStack->currentIndex(); // List / Gantt
+        break;
+    }
+}
+
+// Replay the sub-menu / open item captured by captureNavSubPlace, driving the
+// same entry points a click would so each view loads its data.
+void MainWindow::applyNavSubPlace(const NavPlace &place)
+{
+    if (place.section == 2) {
+        if (!place.conversation.isEmpty())
+            switchConversation(place.conversation);
+        return;
+    }
+    if (place.section == 1) {
+        if (m_settingsTabs && place.subTab >= 0 &&
+            place.subTab < m_settingsTabs->count())
+            m_settingsTabs->setCurrentIndex(place.subTab);
+        return;
+    }
+    if (place.section == kControlNodeSectionIndex) {
+        if (m_controlNodeTabs && place.subTab >= 0 &&
+            place.subTab < m_controlNodeTabs->count())
+            m_controlNodeTabs->setCurrentIndex(place.subTab);
+        return;
+    }
+    if (place.section == kNetworkDiagnosticsSectionIndex ||
+        place.section == kNodesSectionIndex) {
+        if (m_networkTabs && place.subTab >= 0 &&
+            place.subTab < m_networkTabs->count())
+            showNetworkTab(place.subTab);
+        return;
+    }
+    if (place.repoIndex < 0 || place.repoIndex != m_repoDetailIndex)
+        return;
+    switch (place.detailTab) {
+    case 0: // Code
+        if (!place.filePath.isEmpty()) {
+            openRepoFile(place.filePath);
+        } else if (place.overviewPage <= 0) {
+            // Leaving the editor behind: back to the file list, at the
+            // directory this place was recorded in.
+            if (m_filesStack && m_filesStack->currentIndex() != 0)
+                m_filesStack->setCurrentIndex(0);
+            if (m_overviewPath != place.overviewDir)
+                loadRepoOverview(place.overviewDir);
+        }
+        break;
+    case 2: // Issues
+        if (place.subTab >= 0)
+            selectIssueListTab(place.subTab);
+        if (place.itemNumber > 0) {
+            showIssue(place.itemNumber);
+        } else if (m_issueDetail && !m_issueDetail->isHidden()) {
+            // The recorded place had no issue open — close the detail pane so
+            // Back out of an issue lands on the bare list.
+            m_issueDetail->hide();
+            if (m_issueDetailToggle)
+                m_issueDetailToggle->setText(QStringLiteral("Show detail"));
+        }
+        break;
+    case 3: // Agents
+        if (place.itemNumber > 0 && m_selectedAgentSessionId != place.itemNumber &&
+            findAgentSession(place.itemNumber))
+            showAgentSession(place.itemNumber);
+        break;
+    case 4: // Pull requests
+        if (place.itemNumber > 0) {
+            if (m_currentPullNumber != place.itemNumber)
+                showPull(place.itemNumber);
+            if (place.subTab >= 0 && m_pullSubTabs &&
+                m_pullSubTabs->button(place.subTab) &&
+                m_pullSubStack->currentIndex() != place.subTab)
+                m_pullSubTabs->button(place.subTab)->click();
+        }
+        break;
+    case 5: // Discussions
+        if (place.itemNumber > 0 && m_currentDiscussionNumber != place.itemNumber)
+            showDiscussion(place.itemNumber);
+        break;
+    default:
+        if (place.detailTab == m_projectsTabIndex && place.subTab >= 0 &&
+            m_projectViewStack &&
+            m_projectViewStack->currentIndex() != place.subTab && m_projectViewTabs &&
+            m_projectViewTabs->button(place.subTab))
+            m_projectViewTabs->button(place.subTab)->click();
+        break;
+    }
+}
+
 void MainWindow::restoreNavEntry(int index)
 {
     if (index < 0 || index >= m_navHistory.size())
@@ -5231,6 +5552,7 @@ void MainWindow::restoreNavEntry(int index)
         const NavPlace target = place;
         QTimer::singleShot(0, this, [this, target] {
             applyNavDetailTab(target);
+            applyNavSubPlace(target);
             m_navRestoring = false;
             updateNavHistoryButtons();
         });
@@ -5238,6 +5560,7 @@ void MainWindow::restoreNavEntry(int index)
     }
     showSection(place.section);
     applyNavDetailTab(place);
+    applyNavSubPlace(place);
     m_navRestoring = false;
     updateNavHistoryButtons();
 }
@@ -5251,12 +5574,48 @@ void MainWindow::applyNavDetailTab(const NavPlace &place)
         return;
     if (!m_repoDetailTabs || !m_repoDetailStack)
         return;
-    if (m_repoDetailStack->currentIndex() == place.detailTab)
-        return; // already on this tab
-    if (QAbstractButton *b = m_repoDetailTabs->button(place.detailTab)) {
-        b->click(); // switches the tab and loads its data, like a real click
+    if (m_repoDetailStack->currentIndex() != place.detailTab) {
+        if (QAbstractButton *b = m_repoDetailTabs->button(place.detailTab))
+            b->click(); // switches the tab and loads its data, like a real click
+    }
+    if (place.detailTab == 0) {
+        if (place.overviewPage == 2) {
+            showOverviewBranches();
+            loadBranchesPanel();
+            return;
+        }
+        if (place.overviewPage == 3) {
+            showOverviewWorktrees();
+            loadWorktreesPanel();
+            return;
+        }
+        if (place.overviewPage != 1) {
+            showOverviewFiles();
+            return;
+        }
+        showOverviewCommits();
+        const QString base = repoDefaultBranchFast();
+        if (!place.branch.isEmpty() && place.branch != base) {
+            switchToBranch(place.branch);
+        } else {
+            closeBranchCompareView();
+            showOverviewCommits();
+            if (commitsListIsCurrent())
+                refreshSourceControl();
+            else
+                loadCommits();
+        }
+        // A commit diff is a place inside the Git view: reopen the one this
+        // entry was recorded on, or step back out of whichever is on screen.
+        if (!place.commit.isEmpty())
+            showCommit(place.commit);
+        else if (m_commitsStack &&
+                 m_commitsStack->currentIndex() == kCommitWorkspaceCommitPage)
+            setCommitWorkspacePage(kCommitWorkspaceChangesPage);
         return;
     }
+    if (m_repoDetailStack->currentIndex() == place.detailTab)
+        return;
     // Agents (id 3) lost its top-bar button when it moved to the footer status
     // strip (adhoc #178), so there's no button here to click and this used to
     // silently no-op — Back/Forward would get stuck whenever the recorded spot
@@ -5280,14 +5639,165 @@ void MainWindow::navigateForward()
         restoreNavEntry(m_navHistoryIndex + 1);
 }
 
+QString MainWindow::navPlaceLabel(const NavPlace &place) const
+{
+    QString repo;
+    if (place.repoIndex >= 0 && place.repoIndex < m_repositories.size()) {
+        const RepositoryRecord &record = m_repositories.at(place.repoIndex);
+        repo = record.owner + QLatin1Char('/') + record.name;
+    }
+
+    QString destination;
+    if (place.section == 0 && place.repoIndex >= 0) {
+        if (place.detailTab == 0) {
+            switch (place.overviewPage) {
+            case 1:
+                destination = QStringLiteral("Git · %1")
+                                  .arg(place.branch.isEmpty()
+                                           ? QStringLiteral("main")
+                                           : place.branch);
+                // A commit diff names the commit it is showing, so Back out of
+                // one reads as a step rather than a repeat of "Git · main".
+                if (!place.commit.isEmpty())
+                    destination = QStringLiteral("%1 · %2")
+                                      .arg(destination, place.commit.left(7));
+                break;
+            case 2:
+                destination = QStringLiteral("Branches");
+                break;
+            case 3:
+                destination = QStringLiteral("Worktrees");
+                break;
+            default:
+                destination = QStringLiteral("Code");
+                if (!place.filePath.isEmpty())
+                    destination = QStringLiteral("Code · %1").arg(place.filePath);
+                else if (!place.overviewDir.isEmpty())
+                    destination =
+                        QStringLiteral("Code · %1/").arg(place.overviewDir);
+                break;
+            }
+        } else if (place.detailTab == 3) {
+            // Agents lost its top-bar button (adhoc #178), so name it directly.
+            destination = place.itemNumber > 0
+                              ? QStringLiteral("Agent session %1").arg(place.itemNumber)
+                              : QStringLiteral("Agents");
+        } else if (m_repoDetailTabs && m_repoDetailTabs->button(place.detailTab)) {
+            destination = m_repoDetailTabs->button(place.detailTab)->text();
+            if (place.detailTab == 2) { // Issues
+                if (place.subTab > 0 && m_issueTabGroup &&
+                    m_issueTabGroup->button(place.subTab))
+                    destination = m_issueTabGroup->button(place.subTab)->text();
+                if (place.itemNumber > 0)
+                    destination = QStringLiteral("Issue #%1").arg(place.itemNumber);
+            } else if (place.detailTab == 5 && place.itemNumber > 0) { // Discussions
+                destination =
+                    QStringLiteral("Discussion #%1").arg(place.itemNumber);
+            } else if (place.detailTab == 4 && place.itemNumber > 0) { // Pulls
+                destination = QStringLiteral("PR #%1").arg(place.itemNumber);
+                if (place.subTab > 0 && m_pullSubTabs &&
+                    m_pullSubTabs->button(place.subTab))
+                    destination =
+                        QStringLiteral("%1 · %2")
+                            .arg(destination,
+                                 m_pullSubTabs->button(place.subTab)->text());
+            }
+        } else {
+            destination = QStringLiteral("Repository");
+        }
+    } else {
+        switch (place.section) {
+        case 1:
+            destination = QStringLiteral("Settings");
+            if (m_settingsTabs && place.subTab >= 0 &&
+                place.subTab < m_settingsTabs->count())
+                destination = QStringLiteral("Settings · %1")
+                                  .arg(m_settingsTabs->tabText(place.subTab));
+            break;
+        case 2: {
+            destination = QStringLiteral("Chat");
+            if (!place.conversation.isEmpty()) {
+                // Same naming switchConversation puts in the channel header, so
+                // the tooltip reads like the room the user sees.
+                const QString room =
+                    isDirectConversation(place.conversation)
+                        ? kDmPrefix + m_dmNames.value(dmPeerId(place.conversation),
+                                                      QStringLiteral("unknown"))
+                        : place.conversation;
+                destination = QStringLiteral("Chat · %1").arg(room);
+            }
+            break;
+        }
+        case kControlNodeSectionIndex:
+            destination = QStringLiteral("Control node");
+            if (m_controlNodeTabs && place.subTab >= 0 &&
+                place.subTab < m_controlNodeTabs->count())
+                destination = QStringLiteral("Control node · %1")
+                                  .arg(m_controlNodeTabs->tabText(place.subTab));
+            break;
+        case kNetworkDiagnosticsSectionIndex:
+        case kNodesSectionIndex:
+            destination = QStringLiteral("Network");
+            if (m_networkTabs && place.subTab >= 0 &&
+                place.subTab < m_networkTabs->count())
+                destination = QStringLiteral("Network · %1")
+                                  .arg(m_networkTabs->tabText(place.subTab));
+            break;
+        default:
+            destination = QStringLiteral("Home");
+            break;
+        }
+    }
+
+    return repo.isEmpty() ? destination
+                          : QStringLiteral("%1 · %2").arg(repo, destination);
+}
+
 void MainWindow::updateNavHistoryButtons()
 {
-    if (m_navBackButton)
-        m_navBackButton->setEnabled(m_navHistoryIndex > 0);
-    if (m_navForwardButton)
-        m_navForwardButton->setEnabled(m_navHistoryIndex >= 0 &&
-                                       m_navHistoryIndex < m_navHistory.size() - 1);
+    const bool canBack = m_navHistoryIndex > 0;
+    const bool canForward = m_navHistoryIndex >= 0 &&
+                            m_navHistoryIndex < m_navHistory.size() - 1;
+    if (m_navBackButton) {
+        m_navBackButton->setEnabled(canBack);
+        m_navBackButton->setToolTip(
+            canBack ? QStringLiteral("Back to %1")
+                          .arg(navPlaceLabel(m_navHistory.at(m_navHistoryIndex - 1)))
+                    : QStringLiteral("Back"));
+    }
+    if (m_navForwardButton) {
+        m_navForwardButton->setEnabled(canForward);
+        m_navForwardButton->setToolTip(
+            canForward ? QStringLiteral("Forward to %1")
+                             .arg(navPlaceLabel(m_navHistory.at(m_navHistoryIndex + 1)))
+                       : QStringLiteral("Forward"));
+    }
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testNavBackToolTip() const
+{
+    return m_navBackButton ? m_navBackButton->toolTip() : QString();
+}
+
+QString MainWindow::testNavForwardToolTip() const
+{
+    return m_navForwardButton ? m_navForwardButton->toolTip() : QString();
+}
+
+int MainWindow::testFilesStackPage() const
+{
+    return m_filesStack ? m_filesStack->currentIndex() : -1;
+}
+
+QString MainWindow::testOpenCommitHash() const
+{
+    return (m_commitsStack &&
+            m_commitsStack->currentIndex() == kCommitWorkspaceCommitPage)
+               ? m_currentCommitHash
+               : QString();
+}
+#endif
 
 namespace {
 // Result-tree payload roles for the deep-search page.
@@ -5629,28 +6139,122 @@ void MainWindow::updateSearchStatus()
 }
 
 
-// Switch the Git view's right pane, keeping its left column in step (adhoc
-// #110). Reviewing a branch/PR range lends the left column's two slots to that
-// range's changed files and commits; every other page hands them back to the
-// working-tree changes and the commit history.
+// Switch only the Git view's right pane. The universal source-control composer,
+// changes tree, and commit graph stay in place for every diff kind.
 void MainWindow::setCommitWorkspacePage(int page)
 {
     if (!m_commitsStack)
         return;
+    // Commit and range diffs are valid only inside the standalone Git
+    // destination. Centralising the transition here makes it impossible for a
+    // caller to expose one beneath Code Overview chrome by forgetting the
+    // navigation step first.
+    if (page == kCommitWorkspaceCommitPage ||
+        page == kCommitWorkspaceRangePage)
+        showOverviewCommits();
     m_commitsStack->setCurrentIndex(page);
-    const int slot = page == kCommitWorkspaceRangePage ? 1 : 0;
-    for (QStackedWidget *stack : {m_gitFilesSlot, m_gitHistorySlot})
-        if (stack && stack->count() > slot)
-            stack->setCurrentIndex(slot);
+    if (m_gitFilesSlot)
+        m_gitFilesSlot->setCurrentIndex(0);
+    if (m_gitHistorySlot)
+        m_gitHistorySlot->setCurrentIndex(0);
+    updateCommitsCompareIndicator();
+    updateRepoActivityRail();
+    // Opening a commit's diff (and stepping back out of it) is a move the
+    // Back/Forward arrows can replay. Debounced, so the capture reads the
+    // commit hash showCommit assigns right after this call.
+    scheduleNavRecord();
+}
+
+// The "<branch> -> <base>" compare indicator on the graph's branch row: while a
+// branch/PR comparison is open on the right pane, the arrow and the base button
+// appear after the branch button, so the branch button reads as the left end of
+// the comparison and the base button as the right (adhoc #16). Both are
+// dropdowns, so either end can be moved. Hidden on every other page, leaving
+// the branch button alone as a plain history-browsing switcher.
+void MainWindow::updateCommitsCompareIndicator()
+{
+    if (!m_commitsCompareBaseButton || !m_commitsCompareArrow)
+        return;
+    const bool comparing =
+        m_commitsStack &&
+        m_commitsStack->currentIndex() == kCommitWorkspaceRangePage &&
+        !m_branchDiffBranch.isEmpty();
+    if (!comparing) {
+        // A comparison temporarily labels the left button from its diff head,
+        // which can differ from the primary checkout. Restore the actual
+        // browsed ref when the range page closes.
+        if (m_commitsBranchButton) {
+            const QString browsed =
+                m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
+            const QString headLabel = browsed.isEmpty()
+                                          ? QStringLiteral("(detached)")
+                                          : browsed;
+            if (auto *elider =
+                    dynamic_cast<ElidingPushButton *>(m_commitsBranchButton))
+                elider->setFullText(headLabel);
+            else
+                m_commitsBranchButton->setText(headLabel);
+        }
+        m_commitsCompareArrow->hide();
+        m_commitsCompareBaseButton->hide();
+        return;
+    }
+    const QString base = branchCompareBase();
+    const QString label = base.isEmpty() ? QStringLiteral("(no base)") : base;
+    // The diff head is the authoritative left end of a branch/PR comparison.
+    // Do not derive this label from the primary checkout: a PR backed by an
+    // agent worktree must read "agent/... -> main", never "main -> main".
+    if (m_commitsBranchButton) {
+        if (auto *elider =
+                dynamic_cast<ElidingPushButton *>(m_commitsBranchButton))
+            elider->setFullText(m_branchDiffBranch);
+        else
+            m_commitsBranchButton->setText(m_branchDiffBranch);
+    }
+    // The button elides long agent branch names; the full story goes on the
+    // tooltip (mirrors the branch button beside it).
+    if (auto *elider =
+            dynamic_cast<ElidingPushButton *>(m_commitsCompareBaseButton))
+        elider->setFullText(label);
+    else
+        m_commitsCompareBaseButton->setText(label);
+    m_commitsCompareBaseButton->setToolTip(
+        QString::fromUtf8("Comparing %1 against %2 \xE2\x80\x94 the diff on the "
+                          "right is everything %1 adds over %2. Click to compare "
+                          "against a different branch.")
+            .arg(m_branchDiffBranch, label));
+
+    // Rebuild the base dropdown so it lists this repo's branches, ticking the
+    // one currently on the right-hand end of the comparison.
+    auto *menu = new QMenu(m_commitsCompareBaseButton);
+    const QStringList branches = repoBranches();
+    for (const QString &b : branches) {
+        if (b == m_branchDiffBranch)
+            continue; // a branch can't be compared against itself
+        QAction *a = menu->addAction(b);
+        a->setCheckable(true);
+        a->setChecked(b == base);
+        connect(a, &QAction::triggered, this,
+                [this, b] { setBranchCompareBase(b); });
+    }
+    if (menu->isEmpty())
+        menu->addAction(QStringLiteral("No other branches"))->setEnabled(false);
+    QMenu *old = m_commitsCompareBaseButton->menu();
+    m_commitsCompareBaseButton->setMenu(menu);
+    if (old)
+        old->deleteLater();
+
+    m_commitsCompareArrow->show();
+    m_commitsCompareBaseButton->show();
 }
 
 void MainWindow::showCommitList()
 {
     if (!m_commitsStack)
         return;
-    // A branch/PR review parked on the range page survives commit-list reloads
-    // (adhoc #107): it re-renders itself, so only the single-commit page needs
-    // resetting to the working-tree changes.
+    // A branch/PR comparison parked on the range page survives commit-list
+    // reloads (adhoc #107): it re-renders itself, so only the single-commit page
+    // needs resetting to the working-tree changes.
     if (m_commitsStack->currentIndex() == kCommitWorkspaceRangePage)
         return;
     setCommitWorkspacePage(kCommitWorkspaceChangesPage);
@@ -6254,6 +6858,26 @@ void MainWindow::applyCommitIssueClosures()
     if (dir.isEmpty())
         return;
 
+    // This runs off the commits tab landing and every repo refresh behind it, and
+    // both halves of it are heavy: reading 500 full commit messages, then parsing
+    // every signed event of every issue in the repo (IssueStore::loadAll) — the
+    // stall log has this pair blocking the GUI thread for half a second at a time.
+    // Nothing can have changed unless the branch tip moved, and resolving the tip
+    // is one short rev-parse, so gate the whole pass on it.
+    QByteArray tipOut;
+    if (!runGitCapture(dir, {"rev-parse", currentRef()}, &tipOut, nullptr))
+        return;
+    // The store's content signature rides along so an issue filed (or reopened)
+    // after the commit that names it is still picked up without a new commit. It
+    // is empty when it can't be computed, which means "unknown" — don't skip.
+    const QString issuesSignature = store.contentSignature();
+    const QString scanKey = dir + QLatin1Char('\x1f') + currentRef() +
+                            QLatin1Char('\x1f') +
+                            QString::fromUtf8(tipOut).trimmed() +
+                            QLatin1Char('\x1f') + issuesSignature;
+    if (!issuesSignature.isEmpty() && scanKey == m_commitClosureScanKey)
+        return;
+
     // Full commit messages so we catch closing keywords in the body, not just
     // the subject. Records separated by RS (0x1e); fields by US (0x1f).
     QByteArray out;
@@ -6262,17 +6886,27 @@ void MainWindow::applyCommitIssueClosures()
                         currentRef()},
                        &out, nullptr))
         return;
-
-    QList<Issue> issues = store.loadAll();
-    QHash<int, const Issue *> byNumber;
-    for (const Issue &issue : issues)
-        byNumber.insert(issue.number, &issue);
+    // Only mark the tip scanned once the log actually read: a failed read must be
+    // retried, not remembered as "already handled".
+    m_commitClosureScanKey = scanKey;
 
     // GitHub-style closing keywords followed by #<number>.
     static const QRegularExpression closeRe(
         QStringLiteral("\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*"
                        "#(\\d+)"),
         QRegularExpression::CaseInsensitiveOption);
+
+    // Loading (and parsing the signed event log of) every issue in the repo is
+    // the expensive half. The overwhelmingly common case is a window of commits
+    // that names no issue at all, so scan the text first and only pay for the
+    // issues when there is something to close.
+    if (!closeRe.match(QString::fromUtf8(out)).hasMatch())
+        return;
+
+    QList<Issue> issues = store.loadAll();
+    QHash<int, const Issue *> byNumber;
+    for (const Issue &issue : issues)
+        byNumber.insert(issue.number, &issue);
 
     int closedCount = 0;
     QString lastClosed;
@@ -6598,7 +7232,13 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
     }
 
     stopCommitDiffSpin();
-    setCommitWorkspacePage(kCommitWorkspaceCommitPage);
+    // Only re-assert the commit page while the Git workspace is still the view
+    // on screen. This render lands one or two async git reads after the click,
+    // and pressing Back (or opening a file, or leaving the tab) in that window
+    // used to be undone by this line — the Back button appeared not to work on
+    // a commit at all (adhoc #50).
+    if (gitWorkspaceIsVisible())
+        setCommitWorkspacePage(kCommitWorkspaceCommitPage);
 }
 
 void MainWindow::loadRepoInsights()
@@ -6790,18 +7430,14 @@ void MainWindow::loadRepoInsights()
                 : languageLegend);
 
     // --- Contributors & activity (merged) -----------------------------------
-    // A single git-log pass over the selected time window yields, per author,
-    // a commit count and a bucketed timeline. The window comes from
-    // m_insightsRangeCombo (0 = all time). The count, share and the embedded
-    // bar chart all reflect that same window so the table reads as one unit.
-    // The log is scoped to the selected ref (currentRef) — the same history the
-    // "Commits (N)" badge, the file tree and the Files/Code-size figures above
-    // count — rather than --all, so the totals match the branch being viewed and
-    // don't fold in every stale/unmerged ref in the repo. Merge commits are
-    // included (no --no-merges) so the per-author commit counts sum to exactly
-    // the same total `git rev-list --count` reports in that badge; excluding them
-    // here previously left the table short by every merge (each attributed to
-    // whoever performed it), which read as an inaccurate count.
+    // A single git-log pass over the selected time window yields, per author, a
+    // commit count and a bucketed timeline. The window comes from
+    // m_insightsRangeCombo (0 = all time), and count, share and bar chart all
+    // reflect it so the table reads as one unit. The log is scoped to currentRef
+    // rather than --all — the same history the "Commits (N)" badge and the file
+    // tree count — so the totals match the branch on screen. Merge commits are
+    // included (no --no-merges) so the per-author counts sum to exactly what
+    // `git rev-list --count` reports in that badge.
     const int windowDays =
         m_insightsRangeCombo ? m_insightsRangeCombo->currentData().toInt() : 0;
     constexpr int kBuckets = 32;
@@ -7639,13 +8275,11 @@ QString MainWindow::repoHeadBranch() const
 
 // Refresh the commits-page branch button: its label (the branch whose history is
 // on screen) and its dropdown (every branch, plus "Create new branch…").
-// Selecting a branch *browses* its commits — exactly like the Code-tab switcher —
-// rather than checking it out into the working tree. The commit list is driven by
-// currentRef() (the browsed ref), so the indicator must track that same ref or the
-// two disagree: e.g. after browsing a branch elsewhere the list would show it while
-// the button still claimed HEAD, and clicking then did a heavyweight checkout (also
-// blockable by uncommitted changes) instead of switching the list. Real checkouts
-// live in the Branches panel; here switching is a read-only history view change.
+// Selecting a branch *browses* its commits, like the Code-tab switcher, rather
+// than checking it out. The list is driven by currentRef(), so the indicator
+// must track that same ref or the two disagree — the button claiming HEAD while
+// the list showed another branch turned a click into a heavyweight checkout.
+// Real checkouts live in the Branches panel.
 void MainWindow::refreshCommitsBranchButton()
 {
     if (!m_commitsBranchButton)
@@ -7661,9 +8295,13 @@ void MainWindow::refreshCommitsBranchButton()
     else
         m_commitsBranchButton->setText(label);
     m_commitsBranchButton->setToolTip(
-        QString::fromUtf8("%1 \xE2\x80\x94 click to browse another branch's "
-                          "history or create one")
+        QString::fromUtf8("%1 \xE2\x80\x94 click to open another branch (its "
+                          "history here, its diff against the base on the "
+                          "right) or create one")
             .arg(label));
+    // The compare indicator beside it names the base end of the comparison and
+    // only shows while one is open (adhoc #16).
+    updateCommitsCompareIndicator();
 
     auto *menu = new QMenu(m_commitsBranchButton);
     QAction *create =
@@ -7675,7 +8313,10 @@ void MainWindow::refreshCommitsBranchButton()
         QAction *a = menu->addAction(b);
         a->setCheckable(true);
         a->setChecked(b == browsed);
-        connect(a, &QAction::triggered, this, [this, b] { setRepoBranch(b); });
+        // switchToBranch, not setRepoBranch: picking a branch here opens the
+        // combined view — its history in this graph plus its diff against the
+        // compare base on the right pane (adhoc #16).
+        connect(a, &QAction::triggered, this, [this, b] { switchToBranch(b); });
     }
     if (branches.isEmpty())
         menu->addAction(QStringLiteral("No branches"))->setEnabled(false);
@@ -7770,11 +8411,15 @@ QString MainWindow::chooseDefaultBranch(const QStringList &branches,
     if (branches.contains(QStringLiteral("master")))
         return QStringLiteral("master");
 
-    QByteArray head;
-    if (!dir.isEmpty() &&
-        runGitCapture(dir, {"symbolic-ref", "--short", "HEAD"}, &head, nullptr)) {
-        const QString branch = QString::fromUtf8(head).trimmed();
-        if (branches.contains(branch))
+    if (!dir.isEmpty()) {
+        QString branch = headBranchFromFile(dir);
+        if (branch.isEmpty()) {
+            QByteArray head;
+            if (runGitCapture(dir, {"symbolic-ref", "--short", "HEAD"}, &head,
+                              nullptr))
+                branch = QString::fromUtf8(head).trimmed();
+        }
+        if (!branch.isEmpty() && branches.contains(branch))
             return branch;
     }
     if (!checkedOut.isEmpty() && branches.contains(checkedOut))
@@ -7785,12 +8430,10 @@ QString MainWindow::chooseDefaultBranch(const QStringList &branches,
 QString MainWindow::repoDefaultBranch(const QStringList &branches) const
 {
     // The default branch is the stable base every other branch is measured and
-    // merged against — it must NOT drift just because the working tree happens to
-    // be parked on a feature branch. An explicitly configured default always wins,
-    // then the conventional main/master names. Only when none of those exist do we
-    // fall back to the checked-out HEAD; otherwise switching branches in the
-    // commits area (or a transient checkout during a branches-page merge) would
-    // silently change the default branch, which we never want to do on its own.
+    // merged against — it must NOT drift because the working tree is parked on a
+    // feature branch. A configured default wins, then main/master, and only when
+    // neither exists do we fall back to HEAD: otherwise switching branches (or a
+    // transient checkout during a branches-page merge) would silently move it.
     return chooseDefaultBranch(branches, m_repoInfo.defaultBranch.trimmed(),
                                repoGitDir(), m_repoBranch);
 }
@@ -7811,15 +8454,12 @@ QString MainWindow::repoDefaultBranchFast() const
         return QString();
     // Short-lived cache mirroring repoBranches()'s: this runs on every
     // agent-session selection, and even the cheap for-each-ref spawn showed up
-    // in the stall log when a transcript stream was being pumped at the same
-    // time (adhoc #82). The unconfigured default branch only moves on branch
-    // create/delete, so 5 s of staleness is harmless.
-    // Past 5 s the cache is still good as long as the ref store hasn't been
-    // touched: a filesystem-only fingerprint (refs/heads + packed-refs + HEAD)
-    // decides that without spawning anything. The 5 s expiry alone meant every
-    // agent-session selection past it paid the subprocess again, and the stall
-    // watchdog caught that spawn blocking the GUI thread for ~1.2 s while a
-    // transcript was streaming (adhoc #93).
+    // in the stall log while a transcript stream was pumped (adhoc #82). The
+    // unconfigured default only moves on branch create/delete, so 5 s of
+    // staleness is harmless — and past 5 s the cache is still good as long as a
+    // filesystem-only fingerprint (refs/heads + packed-refs + HEAD) says the ref
+    // store is untouched. Expiry alone re-spawned on every selection, blocking
+    // the GUI thread ~1.2 s mid-stream (adhoc #93).
     const qint64 now = QDateTime::currentSecsSinceEpoch();
     auto stamp = [&dir](const QString &leaf) {
         return QString::number(QFileInfo(QDir(dir).filePath(leaf))
@@ -7875,23 +8515,22 @@ QString MainWindow::repoDefaultBranchFast() const
 void MainWindow::loadBranchesAndTags()
 {
     // The browsed ref — and with it the status strip's bottom-left branch button
-    // — is pinned to the repo's default branch. It used to follow HEAD whenever no
-    // default was configured, and every merge path transiently checks some other
-    // branch out in this checkout ("Update from main", the merge editor, worktree
-    // teardown), so a refresh landing mid-merge parked the button on that branch
-    // and left it there (adhoc #80). repoDefaultBranch() is stable: the configured
-    // default, then main/master, and only when neither exists does it fall back to
-    // HEAD. Nothing moves the browsed ref off it automatically now — only an
-    // explicit branch pick (setRepoBranch) does.
+    // — is pinned to the repo's stable default branch, never HEAD: every merge
+    // path transiently checks some other branch out here ("Update from main",
+    // the merge editor, worktree teardown), so a refresh landing mid-merge used
+    // to park the button on that branch and leave it (adhoc #80). Only an
+    // explicit branch pick (setRepoBranch) moves it now.
     //
-    // The pin has to be synchronous — the loaders that run right after a repo
-    // open read m_repoBranch — so use repoDefaultBranchFast() (configured
-    // default, else a cached main/master probe). Everything else this function
-    // shows comes from five git reads that each blocked the GUI thread for
-    // seconds in the stall log while agent sessions kept the disk busy; those
-    // now run in readBranchesTagsGit() on a worker thread, and the worker's
-    // full chooseDefaultBranch() pick corrects the fast pin if they disagree.
-    m_repoBranch = repoDefaultBranchFast();
+    // The pin must be synchronous — the loaders right after a repo open read
+    // m_repoBranch — so use repoDefaultBranchFast(); the worker's full
+    // chooseDefaultBranch() corrects it later if they disagree. Everything else
+    // here comes from five git reads that each blocked the GUI thread for
+    // seconds in the stall log, now in readBranchesTagsGit() on a worker thread.
+    // Only an initial load needs a default: later refreshes arrive from
+    // background mirror/branch work while the user may be browsing an agent
+    // branch, and repinning would snap the graph back to main.
+    if (m_repoBranch.isEmpty())
+        m_repoBranch = repoDefaultBranchFast();
     if (m_branchButton) {
         m_branchButton->setText(
             m_repoBranch.isEmpty() ? QStringLiteral("HEAD") : m_repoBranch);
@@ -8060,8 +8699,13 @@ void MainWindow::applyBranchesTags(const BranchesTagsSnapshot &snap)
     // The worker's full default-branch pick corrects the cheap synchronous pin,
     // but only while the browsed ref still *is* that pin — an explicit
     // setRepoBranch() while the worker ran wins.
+    // Correct only the initial HEAD-derived guess. A snapshot can start after
+    // an explicit agent/PR branch selection; in that case checkedOut differs
+    // from the real checkout (`snap.head`) by design and must not be repinned to
+    // main when the worker returns. That race was the intermittent source of a
+    // real agent range being relabelled and reloaded as "main -> main".
     if (!snap.base.isEmpty() && m_repoBranch == snap.checkedOut &&
-        m_repoBranch != snap.base)
+        snap.checkedOut == snap.head && m_repoBranch != snap.base)
         m_repoBranch = snap.base;
     if (m_branchButton) {
         const QString label =
@@ -8078,33 +8722,25 @@ void MainWindow::applyBranchesTags(const BranchesTagsSnapshot &snap)
                       .arg(label, snap.head));
     }
 
+    // Counts ride each button's icon corner as rail-style badges (adhoc #6);
+    // the captions stay the fixed words set at construction.
     if (m_branchesButton) {
-        m_branchesButton->setText(
-            QStringLiteral("%1 %2")
-                .arg(formatCount(snap.branches.size()))
-                .arg(snap.branches.size() == 1 ? QStringLiteral("branch")
-                                               : QStringLiteral("branches")));
+        if (auto *b = dynamic_cast<VerticalIconButton *>(m_branchesButton))
+            b->setBadgeCount(snap.branches.size());
         m_branchesButton->setEnabled(!snap.branches.isEmpty());
     }
     if (m_repoBranchesTab)
         m_repoBranchesTab->setText(
             QStringLiteral("Branches (%1)").arg(formatCount(snap.branches.size())));
 
-    if (m_worktreesButton)
-        m_worktreesButton->setText(
-            QStringLiteral("%1 %2")
-                .arg(formatCount(snap.worktreeCount))
-                .arg(snap.worktreeCount == 1 ? QStringLiteral("worktree")
-                                             : QStringLiteral("worktrees")));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_worktreesButton))
+        b->setBadgeCount(snap.worktreeCount);
 
     // Git remotes on the "N remotes" toolbar dropdown: one entry per remote,
     // "name — url", picking one copies its URL.
     if (m_remotesButton) {
-        m_remotesButton->setText(
-            QStringLiteral("%1 %2")
-                .arg(formatCount(snap.remotes.size()))
-                .arg(snap.remotes.size() == 1 ? QStringLiteral("remote")
-                                              : QStringLiteral("remotes")));
+        if (auto *b = dynamic_cast<VerticalIconButton *>(m_remotesButton))
+            b->setBadgeCount(snap.remotes.size());
         auto *menu = new QMenu(m_remotesButton);
         menu->setToolTipsVisible(true); // fetch/push URLs hover per row
         for (const BranchesTagsSnapshot::Remote &remote : snap.remotes) {
@@ -8159,12 +8795,10 @@ void MainWindow::applyBranchesTags(const BranchesTagsSnapshot &snap)
             old->deleteLater();
     }
 
-    if (m_tagsButton)
-        m_tagsButton->setText(
-            QStringLiteral("Tags %1").arg(formatCount(snap.tagCount)));
-    if (m_repoReleasesTab)
-        m_repoReleasesTab->setText(
-            QStringLiteral("Releases (%1)").arg(formatCount(snap.tagCount)));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_tagsButton))
+        b->setBadgeCount(snap.tagCount);
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoReleasesTab))
+        b->setBadgeCount(snap.tagCount);
 }
 
 bool MainWindow::repoHasWorkingTree() const
@@ -8289,9 +8923,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_notifyButton = notifyButton;
     notifyButton->setToolTip("Pings");
     setOcticon(notifyButton, "bell", 16);
-    m_forkButton = new VerticalIconButton("Fork 0", VerticalIconButton::Action);
+    m_forkButton = new VerticalIconButton("Fork", VerticalIconButton::Action);
     m_mirrorButton =
-        new VerticalIconButton("Mirror 1", VerticalIconButton::Action);
+        new VerticalIconButton("Mirror", VerticalIconButton::Action);
     m_sourceButton =
         new VerticalIconButton("Source", VerticalIconButton::Action);
     // Open-in-browser link, mirroring the relay switcher's open button: takes
@@ -8327,26 +8961,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     connect(m_sourceMenu, &QMenu::aboutToShow, this,
             &MainWindow::updateRepoActionMenus);
 
-    auto *headerRow = new QHBoxLayout;
-    headerRow->setContentsMargins(16, 12, 16, 4);
-    headerRow->setSpacing(8);
-    // Left cluster (Code / Chat / Notifications / Settings) is filled in later by
-    // buildBreadcrumb, which creates those buttons and adds them here so they sit
-    // on the same line as the repo actions, below the Solana notice.
-    m_repoHeaderLeft = new QHBoxLayout;
-    m_repoHeaderLeft->setContentsMargins(0, 0, 0, 0);
-    m_repoHeaderLeft->setSpacing(8);
-    // Repository identity belongs to repository detail, not the global chrome.
-    // updateRepoSwitcher renders owner/repo and only adds a caret when this
-    // owner/organization has another repository available.
-    m_repoHeaderLeft->addWidget(m_repoMenuButton);
-    headerRow->addLayout(m_repoHeaderLeft);
-    headerRow->addStretch();
-    headerRow->addWidget(notifyButton);
-    headerRow->addWidget(m_forkButton);
-    headerRow->addWidget(m_mirrorButton);
-    headerRow->addWidget(m_sourceButton);
-    headerRow->addWidget(m_repoOpenButton);
+    // No dedicated header row any more (adhoc #6): the owner/repo switcher
+    // moved up onto the window-chrome line (buildBreadcrumb, between the
+    // instance logo and the SOL balance) and the action cluster (Notify / Fork
+    // / Mirror / Source / Open) rides the right end of the tab row below.
 
     m_repoDetailNotice = new QLabel;
     m_repoDetailNotice->setObjectName("repoInlineNotice");
@@ -8380,16 +8998,16 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Commits", "git-branch"},
                                 {"Issues", "issue-opened"},
                                 {"Agents", "terminal"},
-                                {"PRs", "git-pull-request"},
+                                {"Pulls", "git-pull-request"},
                                 {"Discussions", "comment"},
                                 {"Actions", "workflow"},
                                 {"Security", "shield-check"},
                                 {"Quality", "check-circle"},
                                 {"Insights", "graph"},
                                 {"Branches", "repo-forked"},
-                                {"Worktrees", "file-directory"},
+                                {"Worktrees", "worktree"},
                                 {"Releases", "tag"},
-                                {"Mirror nodes", "server"},
+                                {"Mirrors", "server"},
                                 {"Artifacts", "package"},
                                 {"Shortcuts", "rocket"},
                                 {"Settings", "gear"},
@@ -8404,32 +9022,28 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
-    tabRow->setContentsMargins(12, 0, 12, 0);
+    // 4px of air above the icons so the row doesn't sit flush against the
+    // window-chrome line. The rail carries the same inset (buildBreadcrumb's
+    // m_appNavigationRailLayout) so its first icon stays on this row's line.
+    tabRow->setContentsMargins(12, kRepoTabRowTopInset, 12, 0);
     tabRow->setSpacing(10);
     for (int i = 0; i < tabs.size(); ++i) {
-        // Commits (id 1) no longer gets a top-bar tab: its panel lives inside
-        // the Code overview, toggled by the commit strip's "N Commits" button.
-        // Agents (id 3) also no longer gets a top-bar tab (adhoc #178) — it's
-        // reached via the footer status strip, spinner overlays and issue/PR
-        // links instead. Branches (id 10) likewise lost its top-bar tab: its
-        // panel now lives inside the Code overview, toggled by the toolbar's
-        // "N branches" button. Worktrees (id 11) followed Branches into the Code
-        // overview (adhoc #170), toggled by the toolbar's "N worktrees" button.
-        // All four entries stay in the list so every later tab keeps its
-        // positional id.
+        // Four ids get no top-bar tab: Commits (1), reached from the activity
+        // rail; Agents (3), reached from the footer strip, spinner overlays and
+        // issue/PR links (adhoc #178); Branches (10) and Worktrees (11), whose
+        // panels live in the Code overview behind the toolbar's "N branches" /
+        // "N worktrees" buttons (adhoc #170). All four stay in the list so every
+        // later tab keeps its positional id.
         if (i == 1 || i == 3 || i == 10 || i == 11)
             continue;
         const TabDef tab = tabs.at(i);
-        // Releases (id 12) is styled like a toolbar button, not a tab: it lives in
-        // the Code overview toolbar next to Tags (adhoc #180), not the tab row.
-        // Every real tab stacks its icon over a small caption (adhoc #91), the
-        // same form as the activity rail, so the row reads compact.
-        QPushButton *b =
-            i == 12 ? new QPushButton(QString::fromLatin1(tab.label))
-                    : static_cast<QPushButton *>(new VerticalIconButton(
-                          QString::fromLatin1(tab.label),
-                          VerticalIconButton::Tab));
-        b->setObjectName(i == 12 ? "ghostButton" : "repoTab");
+        // Releases (id 12) lives in the Overview's mode row next to Tags
+        // (adhoc #180), not the tab row, but takes the same form as every real
+        // tab: icon stacked over a small caption (adhoc #91), the same shape
+        // as the activity rail, so both rows read compact.
+        QPushButton *b = new VerticalIconButton(QString::fromLatin1(tab.label),
+                                                VerticalIconButton::Tab);
+        b->setObjectName("repoTab");
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
         setOcticon(b, QString::fromLatin1(tab.icon), 16);
@@ -8456,35 +9070,60 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 17)
             m_repoProjectsTab = b; // handle for the Projects (N) badge
         m_repoDetailTabs->addButton(b, i);
-        if (i == 12)
+        if (i == 0) {
+            // Code (adhoc #421): no top-bar tab. The activity rail already owns a
+            // "Code" destination that runs exactly this click path, and the
+            // Overview / Explorer / Coves row below is the code view's own
+            // navigation — three "Code" affordances stacked on top of each other
+            // read as a duplicate. The button stays in m_repoDetailTabs (id 0),
+            // parented but hidden, so every switchTo*/idClicked path, the checked
+            // state and the stack's index-addressing are untouched.
+            b->setParent(this);
+            b->hide();
+        } else if (i == 12)
             // Releases (adhoc #180): no top-bar tab. Its button is placed in the
-            // Code overview toolbar next to Tags (see buildRepoOverviewPage), so
-            // releases sit beside tags instead of between Insights and Mirror
-            // nodes. It stays in m_repoDetailTabs (id 12) so tab switching, the
+            // Overview toolbar next to Tags (see buildRepoOverviewPage), so
+            // releases sit beside tags instead of between Insights and Mirrors.
+            // It stays in m_repoDetailTabs (id 12) so tab switching, the
             // Releases (N) badge and the Tags button shortcut all keep working.
             (void)b; // added to the toolbar layout below, not the tab row
         else if (i == 17)
-            // Projects sits right after Issues in the row (Code=0, Issues=1
-            // among the visible buttons) despite its appended positional id.
-            tabRow->insertWidget(2, b);
+            // Projects sits right after Issues in the row (Issues is the first
+            // visible button now that Code is rail-only) despite its appended
+            // positional id.
+            tabRow->insertWidget(1, b, 0, Qt::AlignTop);
         else if (i == 18)
             // Size map sits right after Insights. By this point the row holds
-            // Code, Issues, Projects, PRs, Discussions, Actions, Security,
-            // Quality, Insights (indices 0-8), so index 9 drops it between
-            // Insights and Releases; its positional id stays 18.
-            tabRow->insertWidget(9, b);
+            // Issues, Projects, Pulls, Discussions, Actions, Security, Quality,
+            // Insights (indices 0-7), so index 8 drops it between Insights and
+            // Mirrors; its positional id stays 18.
+            tabRow->insertWidget(8, b, 0, Qt::AlignTop);
         else if (i == 14)
-            // Artifacts sits right after Releases (the tag list) instead of
-            // between Mirror nodes and Shortcuts (adhoc #181). By this point the
-            // row holds Code, Issues, PRs, Discussions, Actions, Security,
-            // Quality, Insights, Releases, Mirror nodes (indices 0-9), so index 9
-            // drops Artifacts between Releases and Mirror nodes. Its positional
-            // id stays 14 so the stack-page index-addressing is unchanged.
-            tabRow->insertWidget(9, b);
+            // Artifacts follows Mirrors rather than leading Shortcuts
+            // (adhoc #181). By this point the row holds Issues, Pulls,
+            // Discussions, Actions, Security, Quality, Insights, Mirrors
+            // (indices 0-7) — Projects and Size map are inserted later — so
+            // index 8 lands it just past Mirrors. Its positional id stays 14 so
+            // the stack-page index-addressing is unchanged.
+            tabRow->insertWidget(8, b, 0, Qt::AlignTop);
         else
-            tabRow->addWidget(b);
+            tabRow->addWidget(b, 0, Qt::AlignTop);
     }
     tabRow->addStretch();
+    // Repo actions (Notify / Fork / Mirror / Source / Open) on the same line
+    // as the tabs (adhoc #6), right-aligned past the stretch. Same
+    // icon-over-caption form as everything else in the row; Fork/Mirror carry
+    // their counts as corner badges.
+    // Top-aligned like the tabs (adhoc #421). The row lives in a fixed-56px
+    // scroll area that only sometimes shows a horizontal scrollbar, so leaving
+    // these 44px buttons to centre themselves moved the whole line up and down
+    // by 6px with the window width — and with it the line the icons sit on,
+    // which the activity rail is now aligned to.
+    tabRow->addWidget(notifyButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_forkButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_mirrorButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_sourceButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_repoOpenButton, 0, Qt::AlignTop);
     auto *tabBar = new QWidget;
     tabBar->setObjectName("repoTabBar");
     tabBar->setLayout(tabRow);
@@ -8500,9 +9139,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBarScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     tabBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     tabBarScroll->setMinimumWidth(0);
-    // Tall enough for the stacked icon-over-caption tabs (44px, adhoc #91)
-    // plus the horizontal scrollbar a narrow window needs.
-    tabBarScroll->setFixedHeight(56);
+    // Tall enough for the stacked icon-over-caption tabs (44px, adhoc #91),
+    // their top inset, plus the horizontal scrollbar a narrow window needs.
+    tabBarScroll->setFixedHeight(56 + kRepoTabRowTopInset);
 
     // The integrity-pin warning ("clones are being rejected — reset the pin")
     // doesn't live in an in-page banner here; refreshRepoPinBanner surfaces it as
@@ -8534,13 +9173,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_looperToggle = looperToggle;
 
     // Nothing floats in the band above the tab row anymore (adhoc #420): the
-    // mirror-activity dots (adhoc #197), the current-release label (adhoc #69)
-    // and the in-flight Actions bars (adhoc #105) were all removed. The Releases
-    // button moved into the Code toolbar (adhoc #180), which left its release
-    // label stranded mid-page, and the overlays generally read as stray marks
-    // over the tabs. Each readout still lives in its own panel: the Mirror nodes
-    // table shows per-node activity, the Releases panel names the current tag and
-    // the Actions tab lists in-flight runs.
+    // mirror-activity dots, current-release label and in-flight Actions bars all
+    // read as stray marks over the tabs and were removed. Each readout still
+    // lives in its own panel — the Mirror nodes table, the Releases panel and
+    // the Actions tab.
 
     // --- Inner stack: one page per tab.
     m_repoDetailStack = new CurrentPageStack;
@@ -8611,19 +9247,12 @@ QWidget *MainWindow::buildRepoDetailSection()
             m_agentsNavButton->setChecked(id == 3);
         if (id == 0) {
             // A Code click always lands on the file browser: if the overview
-            // body was left on the commits panel, swap it back (and dim the
-            // commit strip's toggle). The explorer/overview mode is untouched.
+            // body was left on the Git workspace, swap it back. The
+            // explorer/overview mode is untouched.
             showOverviewFiles();
             if (m_overviewLoadedKey.isEmpty())
                 QTimer::singleShot(0, this,
                                    [this] { loadRepoOverview(QString()); });
-        } else if (m_historyButton) {
-            // The commit toggle belongs to the Code overview. Do not leave it
-            // visually armed after navigating to another repository tab: a
-            // subsequent return to history must take the real checked-click
-            // path and rebuild/open the commit content instead of mistaking a
-            // hidden, stale panel for the active view.
-            m_historyButton->setChecked(false);
         }
         if (id == 2) {
             // Opening Issues: clear any filter the user left set on a prior visit
@@ -8635,19 +9264,14 @@ QWidget *MainWindow::buildRepoDetailSection()
                 // other nodes show immediately instead of next poll tick.
                 drainIssuesInboxFor(m_repositories.at(m_repoDetailIndex), false);
         }
-        // id 1 (Commits) has no top-bar button anymore; the equivalent deferred
-        // list build lives in the commit strip's "N Commits" click handler
-        // (see buildRepoOverviewPage).
+        // id 1 is a compatibility placeholder; Git lives in the activity rail.
         else if (id == 3) {
-            // issue #289: reloadAgents() shells two git reads per session to
-            // compute Diff cells, blocking the GUI thread for a beat. Run inline
-            // it delays the tab's repaint — setCurrentIndex(3) above only queues
-            // a paint event, which can't process until this slot returns, so the
-            // Agents page visibly appears only *after* the git work ("slight lag"
-            // switching from Issues). Defer to the next event-loop tick: the tab
-            // paints first (the table keeps its prior rows), then the reload runs.
-            // Load pulls first so the agents list can show each session's PR
-            // status (open/merged/closed) from m_currentPulls.
+            // issue #289: reloadAgents() shells two git reads per session for the
+            // Diff cells. setCurrentIndex(3) above only queues a paint, which
+            // can't run until this slot returns, so inline that work delayed the
+            // tab's appearance ("slight lag" switching from Issues). Defer a
+            // tick: the tab paints with its prior rows, then the reload runs.
+            // Pulls load first so the list can show each session's PR status.
             QTimer::singleShot(0, this, [this] {
                 reloadPullsInBackground();
                 reloadAgents();
@@ -8723,6 +9347,7 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (m_repoDetailTabs && m_repoDetailTabs->button(0))
             m_repoDetailTabs->button(0)->click();
         updateRepoActivityRail();
+        scheduleNavRecord();
     });
     m_railGitButton = new ActivityRailButton(QStringLiteral("git-branch"),
                                              QStringLiteral("Git"));
@@ -8730,37 +9355,34 @@ QWidget *MainWindow::buildRepoDetailSection()
         QStringLiteral("Source control \xE2\x80\x94 view the current changes"));
     connect(m_railGitButton, &QPushButton::clicked, this, [this] {
         showSection(0);
-        // Git opens on the repo's default branch (adhoc #133). Browsing another
-        // branch is an explicit Code-view detour (the strip's branch button, a
-        // row in the branches panel) and setRepoBranch keeps that ref until
-        // something moves it, so entering source control from the rail used to
-        // land on that branch's history instead of the main-branch view this
-        // destination otherwise always shows. Reset the browsed ref first, then
-        // open the panel below so its list is built for the default branch.
-        const QString base = repoDefaultBranchFast();
-        if (!base.isEmpty() && base != m_repoBranch)
-            setRepoBranch(base);
-        // Open the commits/changes workspace inside the Code overview. Going
-        // through the commit strip's toggle runs its deferred list build and
-        // change rescan; when it's already showing, just re-assert the view.
-        if (m_historyButton && !m_historyButton->isChecked())
-            m_historyButton->click();
-        else
-            showOverviewCommits();
+        // Git always starts from the default branch's source-control view.
+        // Branch/worktree/PR comparisons remain available from their links,
+        // but they never become a second persistent Git destination.
+        closeBranchCompareView();
+        showOverviewCommits();
+        QTimer::singleShot(0, this, [this] {
+            if (commitsListIsCurrent())
+                refreshSourceControl();
+            else
+                loadCommits();
+        });
         updateRepoActivityRail();
+        scheduleNavRecord();
     });
     if (m_appNavigationRailLayout) {
-        // Directly below the global Agents entry, which heads the rail (adhoc
-        // #70). indexOf() rather than a literal 1/2 so the pair still lands at
-        // the top if the rail hasn't been built with Agents yet.
-        const int after =
+        // Code heads the rail with the global Agents entry directly beneath it
+        // (adhoc #6 swapped the two), then Git. indexOf() rather than a literal
+        // 0/2 so the pair still lands at the top if the rail hasn't been built
+        // with Agents yet.
+        const int codeAt =
             m_agentsNavButton
-                ? m_appNavigationRailLayout->indexOf(m_agentsNavButton) + 1
+                ? m_appNavigationRailLayout->indexOf(m_agentsNavButton)
                 : 0;
         m_appNavigationRailLayout->insertWidget(
-            after, m_railCodeButton, 0, Qt::AlignLeft);
+            codeAt, m_railCodeButton, 0, Qt::AlignLeft);
         m_appNavigationRailLayout->insertWidget(
-            after + 1, m_railGitButton, 0, Qt::AlignLeft);
+            m_agentsNavButton ? codeAt + 2 : codeAt + 1, m_railGitButton, 0,
+            Qt::AlignLeft);
     }
     // The checked states mirror the visible view (Code tab, and which body the
     // overview shows), so track every stack the navigation helpers drive.
@@ -8768,17 +9390,24 @@ QWidget *MainWindow::buildRepoDetailSection()
             [this](int) { updateRepoActivityRail(); });
     if (m_overviewBodyStack)
         connect(m_overviewBodyStack, &QStackedWidget::currentChanged, this,
-                [this](int) { updateRepoActivityRail(); });
+                [this](int) {
+                    updateRepoActivityRail();
+                    scheduleNavRecord();
+                });
     if (m_filesStack)
         connect(m_filesStack, &QStackedWidget::currentChanged, this,
-                [this](int) { updateRepoActivityRail(); });
+                [this](int) {
+                    updateRepoActivityRail();
+                    // Crossing between the file list and the editor is a move
+                    // Back can undo.
+                    scheduleNavRecord();
+                });
     updateRepoActivityRail();
 
     m_repoDetailChrome = new QWidget;
     auto *chromeLayout = new QVBoxLayout(m_repoDetailChrome);
     chromeLayout->setContentsMargins(0, 0, 0, 0);
     chromeLayout->setSpacing(6);
-    chromeLayout->addLayout(headerRow);
     chromeLayout->addWidget(m_repoDetailNotice);
     chromeLayout->addWidget(metaBand);
     chromeLayout->addWidget(tabBarScroll);
@@ -8810,21 +9439,26 @@ void MainWindow::updateRepoActivityRail()
     const bool onChanges =
         onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
-    const bool onAgents =
-        onHome && m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
-    // Git is its own activity-rail destination. Hide every Code/repository
-    // header above the source-control workspace instead of leaving several
-    // rows of unrelated repository navigation on screen. The Agents tab gets
-    // the same treatment for the repository band: the session list is its own
-    // workspace, and the repo switcher, repo actions and Code/Issues/PRs… tabs
-    // only pushed it down the page. The activity rail's Code/Git entries stay
-    // the way back out of both.
+    // The Branches panel is a full-height list of its own: the latest-commit bar
+    // above it belongs to the files/README overview and says nothing about the
+    // branch being looked for, so it only pushed the list down the page.
+    const bool onBranches =
+        onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
+        m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 2;
+    const bool onAgents = onHome && m_repoDetailStack &&
+                          m_repoDetailStack->currentIndex() == kRepoAgentsTab;
+    // Git is its own activity-rail destination, so hide every Code/repository
+    // header above the source-control workspace rather than leaving rows of
+    // unrelated navigation on screen. The Agents tab gets the same treatment: its
+    // session list is a workspace of its own, and the repo switcher, repo actions
+    // and Code/Issues/PRs… tabs only pushed it down the page. The rail's Code/Git
+    // entries stay the way back out of both.
     if (m_repoDetailChrome)
         m_repoDetailChrome->setVisible(!onChanges && !onAgents);
     if (m_repoFilesModeBar)
         m_repoFilesModeBar->setVisible(!onChanges);
     if (m_repoOverviewChrome)
-        m_repoOverviewChrome->setVisible(!onChanges);
+        m_repoOverviewChrome->setVisible(!onChanges && !onBranches);
     if (m_footerDock)
         m_footerDock->setVisible(!onChanges);
     m_railCodeButton->setChecked(onCode && !onChanges);
@@ -8833,13 +9467,18 @@ void MainWindow::updateRepoActivityRail()
         m_agentsNavButton->setChecked(onAgents);
     // The Git page has no search box of its own: the top bar's field is the one
     // place to search from, and here it searches this repo's history, so say so.
+    // The Agents page has its own box, but the top-bar one drives it too, so it
+    // says what typing up there will do to the page below.
     if (m_globalSearch)
         m_globalSearch->setPlaceholderText(
             onChanges ? QString::fromUtf8("Search commits\xE2\x80\xA6")
-                      : QString::fromUtf8("Search\xE2\x80\xA6"));
+            : onAgents
+                ? QString::fromUtf8("Search agents & transcripts\xE2\x80\xA6")
+                : QString::fromUtf8("Search\xE2\x80\xA6"));
     // Arriving on the page applies whatever is typed up there to the graph;
     // leaving it clears the filter so the list is whole again next time.
     syncGitCommitFilter();
+    syncAgentPageSearch();
 }
 
 // Mirror the top-bar search into the commit-list filter while the Git page is
@@ -8856,6 +9495,45 @@ void MainWindow::syncGitCommitFilter()
     if (m_commitSearch->text() == query)
         return;
     m_commitSearch->setText(query); // textChanged -> filterCommits
+}
+
+// Mirror the top-bar search into the Agents page while it is on screen, so that
+// box searches what is in front of you as you type: the session list narrows on
+// every keystroke (title, agent, status, PR — and, once the background scan
+// lands, the transcripts themselves) and the open session's transcript runs the
+// same query, so its matches highlight in place.
+//
+// The page keeps its own two boxes, and a query typed straight into one of them
+// is the user's, not ours: the mirror only overwrites a box while it still holds
+// exactly what the mirror last put there. That is what m_agentPageSearchMirror
+// remembers, and it is why clearing the top bar clears the page's boxes but
+// never a filter the user typed on the page itself.
+void MainWindow::syncAgentPageSearch()
+{
+    // The Agents tab builds lazily, so both boxes can still be null here; the
+    // mirror below no-ops on them and the transcript scan (which the dropdown
+    // needs either way) still runs.
+    const bool onHome = !m_sectionStack || m_sectionStack->currentIndex() == 0;
+    const bool onAgents = onHome && m_repoDetailStack &&
+                          m_repoDetailStack->currentIndex() == kRepoAgentsTab;
+    const QString query =
+        onAgents && m_globalSearch ? m_globalSearch->text().trimmed() : QString();
+    auto mirror = [&](QLineEdit *box) {
+        if (!box || box->text() == query)
+            return;
+        // Off the page, or with the top bar emptied, only take back a box that
+        // is still showing our own query.
+        if (query.isEmpty() && box->text() != m_agentPageSearchMirror)
+            return;
+        box->setText(query); // textChanged -> list filter / transcript highlight
+    };
+    mirror(m_agentSearch);
+    mirror(m_transcriptSearch);
+    m_agentPageSearchMirror = query;
+    // Scan even off the Agents page: the dropdown lists sessions by what their
+    // transcripts say, so the hits have to be there before the page is opened.
+    // A no-op once this query has been scanned for this repo.
+    scheduleAgentTranscriptSearch();
 }
 
 
@@ -8920,7 +9598,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
                     showCommit(item->data(Qt::UserRole).toString());
                     return;
                 }
-                toggleCommitFilesRows(row);
+                if (item->data(kCommitRowKindRole).toInt() == 0)
+                    toggleCommitFilesRows(row);
             });
     // Double click (or Enter) on a commit opens its full detail page — diff,
     // conversation, and the Delete / Restore commit actions.
@@ -8994,7 +9673,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsFetchButton = new QPushButton("Fetch");
     m_commitsFetchButton->setObjectName("ghostButton");
     m_commitsFetchButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_commitsFetchButton, "cloud", 16);
+    setOcticon(m_commitsFetchButton, "cloud", 14);
     m_commitsFetchButton->setToolTip(
         "Fetch the latest history from the network without changing your "
         "working tree, then reload this list");
@@ -9004,7 +9683,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsPullButton = new QPushButton("Pull");
     m_commitsPullButton->setObjectName("ghostButton");
     m_commitsPullButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_commitsPullButton, "download", 16);
+    setOcticon(m_commitsPullButton, "download", 14);
     m_commitsPullButton->setToolTip(
         "Fast-forward the working tree to the latest fetched history "
         "(git pull --ff-only)");
@@ -9022,11 +9701,32 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsBranchButton->setCursor(Qt::PointingHandCursor);
     m_commitsBranchButton->setToolTip(
         "Branch shown below — click to browse another branch's history or create one");
-    setOcticon(m_commitsBranchButton, "git-branch", 16);
+    setOcticon(m_commitsBranchButton, "git-branch", 14);
+
+    // "<branch> -> <base>": while a branch/PR comparison is open on the right
+    // pane, an arrow and the base branch follow the branch button, so the row
+    // reads as the comparison itself rather than a plain branch indicator
+    // (adhoc #16). Text, dropdown and visibility live in
+    // updateCommitsCompareIndicator().
+    m_commitsCompareArrow = new QLabel(QString::fromUtf8("\xE2\x86\x92"));
+    m_commitsCompareArrow->setObjectName("hintLabel");
+    m_commitsCompareArrow->setToolTip(
+        QStringLiteral("The branch on the left is being compared against the "
+                       "branch on the right"));
+    m_commitsCompareArrow->hide();
+
+    auto *compareBaseButton = new ElidingPushButton;
+    m_commitsCompareBaseButton = compareBaseButton;
+    m_commitsCompareBaseButton->setObjectName("ghostButton");
+    m_commitsCompareBaseButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitsCompareBaseButton, "git-merge", 14);
+    m_commitsCompareBaseButton->hide();
 
     auto *searchRow = new QHBoxLayout;
     searchRow->setSpacing(8);
     searchRow->addWidget(m_commitsBranchButton, 1);
+    searchRow->addWidget(m_commitsCompareArrow);
+    searchRow->addWidget(m_commitsCompareBaseButton, 1);
     searchRow->addWidget(m_commitsFetchButton);
     searchRow->addWidget(m_commitsPullButton);
 
@@ -9298,13 +9998,15 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     // Left column: working-tree changes above commit history. The column is one
     // resizable splitter pane, so the user can give lists just enough room and
-    // keep the right side dedicated to the active diff/detail view.
-    //
-    // Each half is a stack (adhoc #110): while a branch/PR range is under review
-    // the same two slots show that range's changed files and its commits, so the
-    // review reuses the places files and commits already live instead of opening
-    // a third column beside the diff. setCommitWorkspacePage() does the swap.
+    // keep the right side dedicated to the active diff/detail view. (Each half
+    // is a stack for historical reasons — the range review used to borrow the
+    // two slots (adhoc #110); it no longer does (adhoc #12), so each hosts its
+    // single working-tree page.)
     auto *scmPanel = buildSourceControlPanel();
+    // Keep the rescan control with the graph navigation rather than the
+    // blocking changes controls. It shares the small 14px icon language of the
+    // source-control header and sits beside Fetch/Pull where it refreshes.
+    searchRow->addWidget(m_scmRefreshButton);
     m_gitFilesSlot = new QStackedWidget;
     m_gitFilesSlot->addWidget(scmPanel); // 0: working-tree CHANGES
     m_gitHistorySlot = new QStackedWidget;
@@ -9348,17 +10050,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     m_commitsStack->addWidget(changesPage); // kCommitWorkspaceChangesPage
     m_commitsStack->addWidget(detailPage);  // kCommitWorkspaceCommitPage
-    // The branch/PR range review pane (adhoc #107): the branch diff viewer moved
-    // in from the Branches panel, so a branch or PR opens its commits, files and
-    // diff right here in the Git view.
+    // The branch/PR range review pane lives only on the right. The source-control
+    // composer and working changes stay visible above the graph on the left.
     m_commitsStack->addWidget(buildBranchRangePane()); // kCommitWorkspaceRangePage
     m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
-    // Page 1 of each left slot: the range's files and commits (adhoc #110). Built
-    // by buildBranchRangePane() just above, parked here until a range opens.
-    if (m_branchFilesPane)
-        m_gitFilesSlot->addWidget(m_branchFilesPane);
-    if (m_branchScopePane)
-        m_gitHistorySlot->addWidget(m_branchScopePane);
 
     auto *workspaceSplit = new QSplitter(Qt::Horizontal);
     workspaceSplit->setChildrenCollapsible(false);
@@ -9388,13 +10083,11 @@ void MainWindow::loadFileSearchIndex()
         m_fileCompleter->setModel(new QStringListModel(QStringList(), m_fileCompleter));
         return;
     }
-    // A whole-tree ls-tree -r is the heaviest single git read on a large repo
-    // (see the singleShot call site in openRepoDetail) — StallWatchdog caught it
-    // freezing the GUI thread even though the caller already ran it under a
-    // GitKeepAlive scope. That scope only pumps the event loop between polls; it
-    // doesn't bound how long any *one* pumped event (a paint, a text layout
-    // elsewhere in the app) can take, so a slow unrelated repaint landing mid-poll
-    // still stalled the frame. runGitDetached avoids the blocking wait entirely.
+    // A whole-tree ls-tree -r is the heaviest single git read on a large repo, and
+    // StallWatchdog caught it freezing the GUI thread even under a GitKeepAlive
+    // scope: pumping between polls doesn't bound how long any *one* pumped event
+    // takes, so a slow unrelated repaint still stalled the frame. runGitDetached
+    // avoids the blocking wait entirely.
     const int forIndex = m_repoDetailIndex;
     runGitDetached(dir, {"ls-tree", "-r", "--name-only", "-z", currentRef()},
                    [this, forIndex](bool ok, const QByteArray &out) {
@@ -9713,6 +10406,8 @@ void MainWindow::showLoadStatus(const QString &what)
 {
     if (!m_topMessage || what.isEmpty())
         return;
+    m_topMessageIsPromptBubble = false;
+    m_topMessageHovering = false;
     m_topMessageRaw = what;
     // Blue, persistent progress pill — distinct from the green success / red
     // error toast — naming the current step. The node/repo button spinner and the
@@ -9721,21 +10416,30 @@ void MainWindow::showLoadStatus(const QString &what)
         QStringLiteral("<span style='color:#58a6ff'>%1 %2</span>")
             .arg(QString::fromUtf8("\xE2\x9F\xB3"), // ⟳
                  what.toHtmlEscaped()));
-    m_topMessage->setWordWrap(false);
     m_topMessage->show();
-    if (m_topMessageContainer)
+    // A progress pill carries no countdown and no actions, so the row under the
+    // text goes away entirely and the pill stays as compact as it ever was.
+    if (m_topMessageMeta)
+        m_topMessageMeta->clear();
+    if (m_topMessageActions)
+        m_topMessageActions->hide();
+    if (m_topMessageContainer) {
+        // Cancel a slide-out still in flight and re-anchor, so the progress pill
+        // never inherits a half-departed position.
+        if (m_topMessageFlight)
+            m_topMessageFlight->stop();
+        m_topMessageSlidingOut = false;
+        positionTopMessageBubble();
         m_topMessageContainer->show();
+        m_topMessageContainer->raise();
+    }
     m_loadStatusShowing = true;
-    m_topMessageElided = false;
-    m_topMessageExpanded = false;
     if (m_topMessageTimer)
-        m_topMessageTimer->stop(); // don't let it fade out mid-load
-    if (m_topMessageOverlay)
-        m_topMessageOverlay->hide(); // drop any leftover expanded panel
-    if (m_topMessageExpand)
-        m_topMessageExpand->hide();
+        m_topMessageTimer->stop(); // don't let it slide away mid-load
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
+    if (m_topMessageSendToPrompt)
+        m_topMessageSendToPrompt->hide();
     if (m_topMessageClose)
         m_topMessageClose->hide();
 }

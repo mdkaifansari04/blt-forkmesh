@@ -116,18 +116,20 @@ def test_org_admin_lists_every_office_floor_group_for_each_user():
         "orgMemberFloorGroups(member, canManage)",
         '"Marketing"',
         '"Engineering"',
-        '"Product & Design"',
-        '"Security"',
         '"Infrastructure"',
-        '"Community"',
-        '"Partnerships"',
-        '"Operations"',
-        '"Executive"',
         '"frontend"',
         '"sre"',
-        '"devrel"',
     ):
         assert contract in DASHBOARD_JS
+    # Retired office storeys no longer appear as floor groups; their team
+    # names remain ordinary organization teams.
+    for retired in (
+        '"Product & Design"',
+        '"Partnerships"',
+        '"Executive"',
+        '"devrel"',
+    ):
+        assert retired not in DASHBOARD_JS
 
 
 def test_org_admin_floor_group_chips_toggle_team_membership():

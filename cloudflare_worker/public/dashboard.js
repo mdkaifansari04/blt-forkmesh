@@ -69,6 +69,11 @@
     homeOrganizationRepositories: [],
     repoCommitDetail: null,
     repoRecordDetail: null,
+    // Last rendered pull/discussion list per kind, and the last rendered code
+    // tree listing. Both are held so the header search box can re-filter what
+    // is already on screen (adhoc #37) without a second mirror read.
+    repoCollectionItems: {},
+    repoTreeView: null,
     profileContributions: {
       range: null,
       data: null,
@@ -81,10 +86,26 @@
     settingsView: {
       section: "public-profile",
     },
+    // /dashboard/tasks (adhoc #24): the organization-private task catalog, read
+    // whole and then filtered and paged in the browser. `actor` is the relay's
+    // name for the signed-in member, used by the "Assigned to me" filter.
+    tasksView: {
+      items: [],
+      filter: "open",
+      query: "",
+      page: 1,
+      loading: true,
+      error: "",
+      actor: "",
+    },
     globalSearch: {
       open: false,
       selectedIndex: 0,
       results: [],
+      // The header search box also filters the page you are on, live, on top of
+      // whatever that page's own filter box holds (adhoc #37). Kept here rather
+      // than read off the input so a re-render after navigation still sees it.
+      pageQuery: "",
     },
   };
 
@@ -2364,13 +2385,7 @@
   const ORG_OFFICE_FLOOR_GROUPS = Object.freeze([
     { id: "marketing", label: "Marketing", aliases: ["marketing", "marketing-team", "growth", "brand", "comms", "communications"] },
     { id: "engineering", label: "Engineering", aliases: ["engineering", "engineers", "development", "developers", "platform", "frontend", "backend"] },
-    { id: "product-design", label: "Product & Design", aliases: ["product-design", "product", "design", "ux", "ui-ux"] },
-    { id: "security", label: "Security", aliases: ["security", "security-team", "trust-safety", "trust-and-safety"] },
     { id: "infrastructure", label: "Infrastructure", aliases: ["infrastructure", "infra", "devops", "site-reliability", "sre"] },
-    { id: "community", label: "Community", aliases: ["community", "community-team", "developer-relations", "devrel"] },
-    { id: "partnerships", label: "Partnerships", aliases: ["partnerships", "partnership", "business-development", "bizdev"] },
-    { id: "operations", label: "Operations", aliases: ["operations", "ops", "people-operations", "finance-operations"] },
-    { id: "executive", label: "Executive", aliases: ["executive", "executives", "leadership", "organization-leadership", "org-leadership"] },
   ]);
 
   // Worker org-endpoint error codes -> human text. Unknown codes fall through
@@ -5669,8 +5684,42 @@
       repo.description,
       repo.channel,
       repo.source,
+      // Catalog records advertise the current head and stable root commits.
+      // Include both so a pasted full SHA or a short prefix opens the matching
+      // repository without fetching every repository's commit history.
+      repo.commit,
+      repo.rootCommit,
     ].join(" ").toLowerCase();
     return haystack.includes(query);
+  }
+
+  // --- Header search as a live page filter (adhoc #37) -------------------
+  //
+  // Typing in the header search box opens its repository dropdown *and*
+  // narrows the list you are already looking at, with no Enter and no round
+  // trip. The two are independent: the dropdown always searches the whole
+  // catalog, while the page filter only ever hides rows the page had already
+  // rendered. Clearing the box (including the native type="search" ✕) restores
+  // everything.
+  //
+  // A page keeps its own filter box where it has one (#repoSearch, the issue
+  // search, ...); the global query is ANDed on top of it rather than replacing
+  // it, so neither control silently overrides the other.
+  function globalSearchPageQuery() {
+    return state.globalSearch.pageQuery || "";
+  }
+
+  // The lowercase terms a page list must match: its own filter box, then the
+  // header search box. Empty terms drop out, so an untouched box filters
+  // nothing.
+  function pageFilterQueries(ownQuery) {
+    return [String(ownQuery || "").trim().toLowerCase(), globalSearchPageQuery()]
+      .filter(Boolean);
+  }
+
+  function repositoryMatchesPageFilter(repo, ownQuery) {
+    return pageFilterQueries(ownQuery)
+      .every((query) => repositoryMatchesQuery(repo, query));
   }
 
   function repositoryTermsBadge(repo, compact = false) {
@@ -5708,6 +5757,75 @@
     state.globalSearch.open = false;
     state.globalSearch.selectedIndex = 0;
     renderGlobalSearchResults();
+    // Clearing the box must un-filter the page too, not just close the panel.
+    if (options.clear) applyGlobalSearchPageFilter();
+  }
+
+  // Pull the header box's current text into state.globalSearch.pageQuery and
+  // re-render this page's lists through it. Cheap enough to run per keystroke:
+  // every list it drives filters an already-loaded array in memory, so nothing
+  // here refetches.
+  function applyGlobalSearchPageFilter() {
+    const shell = $("[data-global-search-shell]");
+    const input = $("[data-global-search]");
+    // The box is lg-only chrome; when it is not on screen it must not be
+    // holding a stale filter over the page.
+    const visible = Boolean(input) && (!shell || shell.getClientRects().length > 0);
+    const next = visible ? (input.value || "").trim().toLowerCase() : "";
+    if (next === state.globalSearch.pageQuery) return;
+    state.globalSearch.pageQuery = next;
+    renderGlobalSearchPageFilter();
+  }
+
+  // Re-render whichever lists this page shows. Each branch reuses the page's
+  // normal render path, so the filtered view is the same markup (empty states,
+  // pagination, counts) the page would draw for a hand-typed filter.
+  function renderGlobalSearchPageFilter() {
+    const page = currentPage();
+    if (["home", "repos", "profile-overview", "profile-repositories"].includes(page)) {
+      // Filtering to a shorter list can strand you past the last page.
+      state.page = 1;
+      applyRepositoryFilter();
+    } else if (page === "network") {
+      renderNetworkRows(Array.isArray(state.networkNodeRows) ? state.networkNodeRows : []);
+      window.lucide?.createIcons();
+    } else if (page === "repo") {
+      renderRepoPageFilter();
+    }
+    renderGlobalSearchPageFilterNotice();
+  }
+
+  // How many rows the page filter is currently showing, or null when this page
+  // has nothing the header box filters (settings, chat).
+  function globalSearchPageFilterCount() {
+    const page = currentPage();
+    if (["home", "repos", "profile-overview", "profile-repositories"].includes(page)) {
+      return (state.filteredGroups || []).length;
+    }
+    if (page === "network") {
+      return networkRowsMatchingPageFilter(
+        Array.isArray(state.networkNodeRows) ? state.networkNodeRows : []).length;
+    }
+    if (page === "repo") return repoPageFilterCount();
+    return null;
+  }
+
+  // A one-line footer under the dropdown, so it is obvious the page behind the
+  // panel narrowed on purpose rather than losing its rows.
+  function renderGlobalSearchPageFilterNotice() {
+    const notice = $("[data-global-search-page-filter]");
+    if (!notice) return;
+    const query = globalSearchPageQuery();
+    const count = query ? globalSearchPageFilterCount() : null;
+    const show = Boolean(query) && count !== null;
+    notice.classList.toggle("hidden", !show);
+    notice.classList.toggle("flex", show);
+    if (!show) {
+      notice.innerHTML = "";
+      return;
+    }
+    notice.innerHTML = `<i data-lucide="list-filter" class="h-3 w-3 shrink-0"></i><span class="min-w-0 truncate">Filtering this page: ${formatCount(count)} match${count === 1 ? "" : "es"}</span>`;
+    window.lucide?.createIcons();
   }
 
   function renderGlobalSearchResults() {
@@ -5728,6 +5846,9 @@
 
     input.setAttribute("aria-expanded", state.globalSearch.open ? "true" : "false");
     panel.classList.toggle("hidden", !state.globalSearch.open);
+    // Keep the "filtering this page" footer honest when the list behind it is
+    // re-rendered (catalog arriving, page change) rather than only on keystroke.
+    renderGlobalSearchPageFilterNotice();
     if (!state.globalSearch.open) return;
 
     if (state.repositoriesLoading) {
@@ -6270,7 +6391,7 @@
         const repo = sourceOfTruth(group);
         return { repo, href: groupLinkUrl(group), organization: false };
       }),
-    ].filter((entry) => repositoryMatchesQuery(entry.repo, query))
+    ].filter((entry) => repositoryMatchesPageFilter(entry.repo, query))
       .filter((entry, index, values) =>
         values.findIndex((candidate) =>
           repoDisplayKey(candidate.repo).toLowerCase() ===
@@ -6543,7 +6664,7 @@
     if (!container) return;
     const query = ($("[data-profile-repo-search]")?.value || "").trim().toLowerCase();
     const groups = profileRepositoryGroups().filter((group) => {
-      return repositoryMatchesQuery(sourceOfTruth(group), query);
+      return repositoryMatchesPageFilter(sourceOfTruth(group), query);
     });
     container.innerHTML = groups.length
       ? groups.map((group) => profileRepositoryRow(group)).join("")
@@ -6562,7 +6683,7 @@
   function applyRepositoryFilter() {
     const query = ($("#repoSearch")?.value || "").trim().toLowerCase();
     state.filteredRepositories = state.repositories.filter((repo) =>
-      repositoryMatchesQuery(repo, query));
+      repositoryMatchesPageFilter(repo, query));
     state.filteredGroups = groupRepositories(state.filteredRepositories);
     updateRepositoryPagination();
     renderSidebarRepositories();
@@ -6979,6 +7100,14 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
+    if (tab === "code") {
+      if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
+      if (!state.loadedRepoTabs.code) {
+        state.loadedRepoTabs.code = true;
+        loadRepositoryTree(state.selectedRepo, "");
+      }
+      scheduleRepoAboutRail(state.selectedRepo);
+    }
     // Mirror health loads once with the repository summary, then refreshes
     // only when its own tab is actually opened (plus the bounded visible-tab
     // fallback and coalesced socket signal below).
@@ -7992,6 +8121,72 @@
     return `<div class="animate-pulse" role="status" aria-label="Loading tree…">${cells}<span class="sr-only">Loading tree…</span></div>`;
   }
 
+  // Rows for the cached code-tree listing, narrowed by the header search box
+  // (adhoc #37). Matches the entry name and its path within the repo, so a
+  // directory you can still walk into survives the filter. Nothing refetches.
+  function renderRepoTreeRows() {
+    const view = state.repoTreeView;
+    const treeBody = $("[data-repo-detail]")?.querySelector("[data-repo-tree]");
+    if (!treeBody || !view || !view.entries?.length) return;
+    const { repo, path } = view;
+    const queries = pageFilterQueries("");
+    const entries = queries.length
+      ? view.entries.filter((entry) => {
+          const haystack = [entry.name, repoChildPath(path, entry.name)]
+            .join(" ").toLowerCase();
+          return queries.every((query) => haystack.includes(query));
+        })
+      : view.entries;
+    treeBody.innerHTML = entries.length
+      ? entries.map((entry) => {
+        const childPath = repoChildPath(path, entry.name);
+        const isTree = entry.type === "tree";
+        const message = entry.message || entry.commitMessage || entry.subject || "mirrored repository object";
+        const date = formatTimeAgo(entry.date || entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
+        return `
+            <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
+              ${fileIconHtml(entry, "h-4 w-4 shrink-0")}
+              <span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(entry.name || "entry")}</span>
+              <span class="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">${escapeHtml(message)}</span>
+              <span class="shrink-0 text-xs text-muted-foreground font-mono">${escapeHtml(date)}</span>
+            </button>`;
+      }).join("")
+      : '<div class="px-4 py-3 text-sm text-muted-foreground">No files in this directory match this search.</div>';
+    window.lucide?.createIcons();
+  }
+
+  // The repo page's response to the header search box. Each list re-renders
+  // from what its tab already fetched, so a tab opened later picks the filter
+  // up on its own first render instead of needing to be told.
+  function renderRepoPageFilter() {
+    renderRepoTreeRows();
+    if (state.issuesView.items.length) renderRepoIssues();
+    renderRepoCollection("pulls");
+    renderRepoCollection("discussions");
+  }
+
+  // Rows the open tab is showing after the filter, for the header notice, or
+  // null on a tab the search box does not filter (insights, mirrors, ...) so
+  // the notice stays quiet rather than claiming "0 matches".
+  function repoPageFilterCount() {
+    const tab = state.activeRepoTab || "code";
+    if (tab === "code") {
+      const detail = $("[data-repo-detail]");
+      const panel = detail?.querySelector("[data-repo-tree-panel]");
+      // A file is open, so the listing this filters is off screen.
+      if (!panel || panel.classList.contains("hidden")) return null;
+      // Scoped to the file table: the Files sidebar renders the same path
+      // buttons and would double every count.
+      return detail.querySelectorAll(
+        "[data-repo-tree] [data-dashboard-tree-path], [data-repo-tree] [data-dashboard-blob-path]").length;
+    }
+    if (["issues", "pulls", "discussions"].includes(tab)) {
+      const container = $(`[data-repo-${tab}]`);
+      return container ? container.querySelectorAll("[data-repo-record-number]").length : null;
+    }
+    return null;
+  }
+
   async function loadRepositoryTree(repo, path = "", options = {}) {
     // background: warm the Code tab's tree/README underneath another visible
     // tab. A refresh on /owner/repo/issues restores the Issues tab first and
@@ -8039,25 +8234,16 @@
       });
       renderRepoExplorer(repo, path, entries);
       setRepoExplorerSelection(path, "tree");
+      // Held so the header search box can re-filter this listing in place
+      // (adhoc #37) instead of re-reading the tree from the mirror.
+      state.repoTreeView = { repo, path, entries };
       if (!entries.length) {
         treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">This directory is empty.</div>';
         if (!background) navigateHistory(repoPathUrl(repo, "tree", path));
         window.lucide?.createIcons();
         return;
       }
-      treeBody.innerHTML = entries.map((entry) => {
-        const childPath = repoChildPath(path, entry.name);
-        const isTree = entry.type === "tree";
-        const message = entry.message || entry.commitMessage || entry.subject || "mirrored repository object";
-        const date = formatTimeAgo(entry.date || entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
-        return `
-            <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
-              ${fileIconHtml(entry, "h-4 w-4 shrink-0")}
-              <span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(entry.name || "entry")}</span>
-              <span class="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">${escapeHtml(message)}</span>
-              <span class="shrink-0 text-xs text-muted-foreground font-mono">${escapeHtml(date)}</span>
-            </button>`;
-      }).join("");
+      renderRepoTreeRows();
       if (!background) navigateHistory(repoPathUrl(repo, "tree", path));
       window.lucide?.createIcons();
       if (!path) {
@@ -10459,6 +10645,7 @@
   async function loadRepoPendingCounts(repo) {
     try {
       const response = await fetch(`${repoApiBase(repo)}/pending`, {
+        cache: "no-store",
         headers: { accept: "application/json" },
       });
       const data = await response.json().catch(() => ({}));
@@ -10475,6 +10662,25 @@
       state.pendingIssueCounts[pendingIssuesRepoKey(repo)] =
         Number(pending.issues) || 0;
       applyRemotePendingIssueCount(repo);
+      const key = pendingIssuesRepoKey(repo);
+      state.pendingInboxRefreshes = state.pendingInboxRefreshes || {};
+      const total = ["issues", "pulls", "discussions", "commits"]
+        .reduce((sum, tab) => sum + Math.max(0, Number(pending[tab]) || 0), 0);
+      const prior = state.pendingInboxRefreshes[key];
+      if (total <= 0) {
+        if (prior?.timer) clearTimeout(prior.timer);
+        delete state.pendingInboxRefreshes[key];
+      } else if (!prior?.timer) {
+        const attempt = Math.min(5, Math.max(0, Number(prior?.attempt) || 0));
+        const refresh = {
+          attempt: attempt + 1,
+          timer: setTimeout(() => {
+            refresh.timer = 0;
+            void loadRepoPendingCounts(repo);
+          }, Math.min(30_000, 1500 * (2 ** attempt))),
+        };
+        state.pendingInboxRefreshes[key] = refresh;
+      }
     } catch (_) {
       /* offline relay — badges stay hidden */
     }
@@ -10605,7 +10811,8 @@
       // list showed fewer issues than the Mirror nodes count (adhoc #96).
       if (issuesView.filter === "open") return issue.status !== "closed";
       return issue.status === "closed";
-    }).filter((issue) => issueMatchesQuery(issue, issuesView.query));
+    }).filter((issue) => pageFilterQueries(issuesView.query)
+      .every((query) => issueMatchesQuery(issue, query)));
     const config = repoCollectionConfig.issues;
     const filterBar = `<div class="flex items-center gap-1 border-b border-border px-4 py-2">
       ${["open", "closed", "all"].map((stateName) => `<button type="button" data-dashboard-issue-filter="${stateName}" aria-pressed="${stateName === "open" ? "true" : "false"}" class="inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${stateName === issuesView.filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}">${stateName[0].toUpperCase() + stateName.slice(1)}</button>`).join("")}
@@ -10632,8 +10839,8 @@
     // flash empty before its rows arrive.
     const emptyLabel = issuesView.closedLoading
       ? loadingHtml("Loading closed issues from the live mirror...")
-      : issuesView.query
-        ? `No issues matching "${escapeHtml(issuesView.query)}".`
+      : (issuesView.query || globalSearchPageQuery())
+        ? `No issues matching "${escapeHtml(pageFilterQueries(issuesView.query).join(" "))}".`
         : `No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.`;
     container.innerHTML = filterBar + warnBar + (filtered.length
       ? renderRepoRecordList(filtered, config, "issues")
@@ -11110,16 +11317,48 @@
       </div>`;
   }
 
+  // Rows a record list shows once the header search box has been applied. The
+  // records carry exactly the fields renderRepoRecordList prints, so the same
+  // matcher the issue search uses gives "matches the search" == "matches what
+  // is displayed" here too (adhoc #37).
+  function repoRecordsMatchingPageFilter(items) {
+    const queries = pageFilterQueries("");
+    if (!queries.length) return items;
+    return items.filter((item) =>
+      queries.every((query) => issueMatchesQuery(item, query)));
+  }
+
+  // Re-render a cached pull/discussion list through the current page filter.
+  // No mirror read: loadRepoCollection stashed the records it fetched.
+  function renderRepoCollection(kind) {
+    const container = $(`[data-repo-${kind}]`);
+    const config = repoCollectionConfig[kind];
+    const items = state.repoCollectionItems[kind];
+    if (!container || !config || !Array.isArray(items)) return;
+    const visible = repoRecordsMatchingPageFilter(items);
+    const empty = items.length && !visible.length
+      ? `No ${escapeHtml(config.label.toLowerCase())} match this search.`
+      : escapeHtml(config.empty);
+    container.innerHTML = visible.length
+      ? renderRepoRecordList(visible, config, kind)
+      : `<div class="px-4 py-3 text-sm text-muted-foreground">${empty}</div>`;
+    window.lucide?.createIcons();
+  }
+
   async function loadRepoCollection(repo, kind, containerSelector) {
     const container = $(containerSelector);
     const config = repoCollectionConfig[kind];
     if (!container || !config) return;
+    // Drop the previous repo's cache up front so a failed load can never leave
+    // the page filter re-rendering rows that are no longer on screen.
+    state.repoCollectionItems[kind] = null;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml(`Loading ${escapeHtml(config.label.toLowerCase())} from the live mirror...`)}</div>`;
     try {
       const items = await loadRepoRecordsFromMirror(repo, config);
-      container.innerHTML = items.length
-        ? renderRepoRecordList(items, config, kind)
-        : `<div class="px-4 py-3 text-sm text-muted-foreground">${config.empty}</div>`;
+      // Counts below stay off the unfiltered set: the tab badge reports what
+      // the repo holds, not what the search box is currently showing.
+      state.repoCollectionItems[kind] = items;
+      renderRepoCollection(kind);
       if (kind === "pulls") {
         const openPulls = items.filter((item) => item.state === "open").length;
         setRepoTabCount("pulls", openPulls);
@@ -11630,10 +11869,21 @@
       }
       const logo = $("[data-repo-social-logo]");
       if (logo) {
-        const logoUrl = await loadNativeRepositoryLogo(
+        const loadedLogo = await loadNativeRepositoryLogo(
           nativeRepositoryLogoEndpoint(repo),
         );
+        const logoUrl = String(loadedLogo?.dataUrl || "");
+        const fallbackUrl = String(loadedLogo?.fallbackDataUrl || "");
         if (logoUrl) {
+          logo.decoding = "async";
+          logo.fetchPriority = "low";
+          logo.onerror = () => {
+            if (fallbackUrl && logo.src !== new URL(fallbackUrl, location.href).href) {
+              logo.src = fallbackUrl;
+            } else {
+              logo.classList.add("hidden");
+            }
+          };
           logo.src = logoUrl;
           logo.classList.remove("hidden");
         } else {
@@ -11653,7 +11903,6 @@
       // .forkmesh/info.json (loadRepoAboutInfo) overrides it when the live
       // mirror is reachable.
       if (body.website) applyRepoAboutWebsite(body.website);
-      loadRepoLogoSuggestions(repo);
     } catch (_) { /* fediverse card is an adornment, never an error */ }
   }
 
@@ -12219,6 +12468,27 @@
     loadRepoAboutInfo(repo);
     loadRepoAboutRelease(repo);
     loadRepoAboutInsights(repo);
+  }
+
+  function scheduleRepoAboutRail(repo) {
+    if (!repo || state.repoAboutLoaded) return;
+    state.repoAboutLoaded = true;
+    const load = () => {
+      if (
+        state.activeRepoTab !== "code"
+        || !state.selectedRepo
+        || !repoMatchesKey(state.selectedRepo, repoKey(repo))
+      ) {
+        state.repoAboutLoaded = false;
+        return;
+      }
+      loadRepoAboutRail(repo);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(load, { timeout: 1200 });
+    } else {
+      window.setTimeout(load, 0);
+    }
   }
 
   // --- Owner-only "Agents" tab (adhoc #182) -----------------------------
@@ -14110,7 +14380,7 @@
     // repo/branch switch if that tab is already active): fetching hidden live
     // data for every repo open fires Worker/host reads for tabs nobody opened.
     // The tab badges stay filled meanwhile from the root tree's bundled counts.
-    state.loadedRepoTabs = {};
+    state.loadedRepoTabs = state.loadedRepoTabs || {};
     const active = state.activeRepoTab || "code";
     if (active === "commits") {
       state.loadedRepoTabs.commits = true;
@@ -14442,6 +14712,7 @@
     // blob up front is what flooded the host with requests and tripped the rate
     // limit after a few refreshes; this map remembers which tabs have loaded.
     state.loadedRepoTabs = {};
+    state.repoAboutLoaded = false;
     // Show the clean, shareable /owner/name URL in the address bar instead of
     // the /dashboard/owner/name... path that 404.html bounces refreshed repo
     // links (including /owner/name/issues etc.) to. Carry over whatever tab or
@@ -14706,7 +14977,7 @@
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
             ${repo.isPrivate ? "" : `
             <div data-repo-social-badge class="-mx-4 -mt-4 mb-4 overflow-hidden rounded-t-lg border-b border-border">
-              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center" style="background-image:url('/assets/fediverse-banner.png')"></div>
+              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center"></div>
               <div class="flex items-end gap-3 px-4 pb-3">
                 <img data-repo-social-logo alt="Repository logo" class="-mt-7 hidden h-14 w-14 shrink-0 rounded-xl border-2 border-background bg-background object-cover shadow" />
                 <div class="min-w-0 pb-0.5">
@@ -14819,20 +15090,23 @@
     const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";
     setRepoTab(initialTab);
     window.lucide?.createIcons();
-    // When the URL restored a feature tab (or a record detail), the tree/README
-    // load is only a warm-up for a later click on Code — run it in background
-    // mode so it can't flip the visible tab or rewrite the restored URL.
-    loadRepositoryTree(repo, routeKind === "tree" ? routePath : "", { background: initialTab !== "code" });
+    // Only fetch code when Code is visible. Warming the tree/README behind an
+    // Issues or Pulls deep link multiplied cold-cache mirror traffic and made
+    // the requested panel compete with data the visitor could not see.
+    if (initialTab === "code") {
+      state.loadedRepoTabs.code = true;
+      if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
+      else loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
+      scheduleRepoAboutRail(repo);
+    }
     // A deep link into a subfolder (or a blob) loads a subpath/blob tree that
     // carries no served counts, so the tab badges would stay on the stale
     // catalog seed (e.g. Issues showing 7 while the open/ folder holds 11).
     // Refresh them from the mirror's root counts in that case; the root code
     // view and the feature-tab routes already fetch the root tree themselves.
     if ((routeKind === "tree" || routeKind === "blob") && routePath) refreshServedCounts(repo);
-    if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo, recordRoute);
     loadRepoPendingCounts(repo);
-    loadRepoAboutRail(repo);
     loadRepoStarState(repo, $("[data-repo-action-star]"));
     consumeWorkshopAgentDeepLink(repo, workshopDeepLink);
   }
@@ -15040,11 +15314,27 @@
     return state.networkOnlineOnly !== false;
   }
 
-  function renderNetworkRows(rows) {
+  // Header-search page filter for the Connected nodes list (adhoc #37): match
+  // the name plus the identifying fields the row's chips already show, so a
+  // hit is always something visible on the row.
+  function networkRowsMatchingPageFilter(rows) {
+    const queries = pageFilterQueries("");
+    if (!queries.length) return rows;
+    return rows.filter((row) => {
+      const haystack = [
+        row.name, row.platform, row.version, row.nodeId, row.commit,
+        row.online ? "online live" : "offline",
+      ].join(" ").toLowerCase();
+      return queries.every((query) => haystack.includes(query));
+    });
+  }
+
+  function renderNetworkRows(allRows) {
     const list = $("[data-network-node-list]");
     const count = $("[data-network-node-count]");
     const toggle = $("[data-network-online-only]");
     const onlineOnly = networkOnlineOnly();
+    const rows = networkRowsMatchingPageFilter(allRows);
     const onlineCount = rows.filter((row) => row.online).length;
     const offlineCount = rows.length - onlineCount;
     const visible = onlineOnly ? rows.filter((row) => row.online) : rows;
@@ -15077,7 +15367,7 @@
             <div class="mt-2 flex flex-wrap gap-1.5 pl-4">${nodeDetailChips(row)}</div>
           </div>
         `).join("")
-        : `<div class="px-4 py-3 text-sm text-muted-foreground">${onlineOnly ? "No nodes online right now." : "No nodes yet."}</div>`;
+        : `<div class="px-4 py-3 text-sm text-muted-foreground">${globalSearchPageQuery() && allRows.length ? "No nodes match this search." : (onlineOnly ? "No nodes online right now." : "No nodes yet.")}</div>`;
     }
   }
 
@@ -16929,6 +17219,10 @@
   $("[data-global-search]")?.addEventListener("input", () => {
     state.globalSearch.open = true;
     state.globalSearch.selectedIndex = 0;
+    // The dropdown searches the whole catalog; the page filter narrows what is
+    // already on screen. Both run per keystroke (adhoc #37) — the page filter
+    // only re-renders in-memory lists, so there is no fetch behind it.
+    applyGlobalSearchPageFilter();
     renderGlobalSearchResults();
   });
   $("[data-global-search]")?.addEventListener("keydown", (event) => {
@@ -17155,6 +17449,254 @@
     });
   }
   // ---------------------------------------------------------------------------
+  // Tasks page (/dashboard/tasks). The organization-private task catalog the
+  // desktop app and the World office board already show, on the web. The relay
+  // returns the whole catalog in one authorized read, so the filtering and the
+  // paging both happen here: TASKS_PAGE_SIZE rows a page, every page reachable.
+  const TASKS_PAGE_SIZE = 100;
+
+  function taskStatusLabel(task) {
+    if (task.completedAt > 0 || task.status === "done") return "Done";
+    if (task.status === "active") return "In progress";
+    if (task.assigneeKind === "agent" && task.agentSessionId) return "Queued";
+    return "Ready";
+  }
+
+  function taskAssigneeLabel(task) {
+    if (task.assigneeKind === "agent") return "Bot";
+    return task.assignee || "Unassigned";
+  }
+
+  function taskMatchesFilter(task, filter) {
+    const done = task.completedAt > 0 || task.status === "done";
+    if (filter === "open") return !done;
+    if (filter === "done") return done;
+    if (filter === "active") return task.status === "active";
+    if (filter === "mine") {
+      return (
+        !done &&
+        task.assigneeKind === "user" &&
+        task.assignee === state.tasksView.actor
+      );
+    }
+    return true;
+  }
+
+  // Open/closed over the whole catalog, counted with the same test the desktop
+  // app's badge uses (openOrganizationTaskCount in MainWindowTasks.cpp), so the
+  // two surfaces never disagree about how many tasks are open (adhoc #56).
+  function taskStateCounts() {
+    let open = 0;
+    for (const task of state.tasksView.items) {
+      if (!(task.completedAt > 0 || task.status === "done")) open += 1;
+    }
+    return { open, closed: state.tasksView.items.length - open };
+  }
+
+  function filteredTasks() {
+    const query = String(state.tasksView.query || "").trim().toLowerCase();
+    return state.tasksView.items.filter((task) => {
+      if (!taskMatchesFilter(task, state.tasksView.filter)) return false;
+      if (!query) return true;
+      return [
+        task.title,
+        task.details,
+        task.repository,
+        task.department,
+        task.team,
+        taskAssigneeLabel(task),
+        task.createdBy,
+        task.id,
+      ].some((value) => String(value || "").toLowerCase().includes(query));
+    });
+  }
+
+  function taskRowHtml(task) {
+    const status = taskStatusLabel(task);
+    const tone = {
+      "Done": "border-border bg-secondary text-muted-foreground",
+      "In progress": "border-primary/40 bg-primary/10 text-primary",
+      "Queued": "border-border bg-secondary text-foreground",
+      "Ready": "border-border bg-background text-foreground",
+    }[status];
+    const updated = relativeTimeLabel(task.updatedAt || task.createdAt);
+    const meta = [
+      task.department ? `#${task.department}` : "",
+      task.repository || "",
+      // "unknown" is the relay's default QA state, i.e. nothing to report.
+      task.qa?.status && task.qa.status !== "unknown"
+        ? `QA: ${task.qa.status}`
+        : "",
+      updated ? `updated ${updated}` : "",
+    ].filter(Boolean);
+    return `
+      <article class="px-4 sm:px-5 py-3 flex items-start gap-3">
+        <span class="mt-0.5 shrink-0 rounded-full border px-2 py-0.5 font-mono text-[10px] ${tone}">${escapeHtml(status)}</span>
+        <div class="min-w-0 flex-1">
+          <p class="truncate text-sm font-medium text-foreground">${escapeHtml(task.title)}</p>
+          <p class="mt-1 truncate text-xs text-muted-foreground">${escapeHtml(meta.join(" · "))}</p>
+        </div>
+        <span class="shrink-0 text-xs text-muted-foreground">${escapeHtml(taskAssigneeLabel(task))}</span>
+        <span class="shrink-0 rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground" title="Priority">${escapeHtml(String(task.priority ?? 50))}</span>
+      </article>`;
+  }
+
+  function renderTasksPage() {
+    const list = $("[data-tasks-list]");
+    const summary = $("[data-tasks-summary]");
+    const count = $("[data-tasks-count]");
+    const prev = $("[data-tasks-prev]");
+    const next = $("[data-tasks-next]");
+    const pageList = $("[data-tasks-pages]");
+    if (!list) return;
+
+    for (const button of $$("[data-tasks-filter]")) {
+      const active = button.dataset.tasksFilter === state.tasksView.filter;
+      button.setAttribute("aria-pressed", String(active));
+      button.classList.toggle("bg-secondary", active);
+      button.classList.toggle("text-foreground", active);
+    }
+
+    if (state.tasksView.loading || state.tasksView.error) {
+      list.innerHTML = state.tasksView.loading
+        ? `<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">${loadingHtml("Loading organization tasks...")}</div>`
+        : `<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">${escapeHtml(state.tasksView.error)}</div>`;
+      if (summary) summary.textContent = "";
+      if (count) {
+        count.textContent = state.tasksView.loading
+          ? "Loading"
+          : "0 open · 0 closed";
+      }
+      if (pageList) pageList.innerHTML = "";
+      for (const button of [prev, next]) {
+        if (!button) continue;
+        button.disabled = true;
+        button.classList.add("opacity-40");
+      }
+      return;
+    }
+
+    const matches = filteredTasks();
+    const pages = Math.max(1, Math.ceil(matches.length / TASKS_PAGE_SIZE));
+    state.tasksView.page = Math.min(Math.max(1, state.tasksView.page), pages);
+    const start = (state.tasksView.page - 1) * TASKS_PAGE_SIZE;
+    const end = Math.min(start + TASKS_PAGE_SIZE, matches.length);
+
+    list.innerHTML = matches.length
+      ? matches.slice(start, end).map(taskRowHtml).join("")
+      : '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">No tasks match this filter.</div>';
+    const counts = taskStateCounts();
+    if (count) {
+      count.textContent = `${formatCount(counts.open)} open · ${formatCount(counts.closed)} closed`;
+    }
+    if (summary) {
+      const totals = `${formatCount(counts.open)} open · ${formatCount(counts.closed)} closed`;
+      summary.textContent = matches.length
+        ? `${totals} · showing ${start + 1}-${end} of ${formatCount(matches.length)} · page ${state.tasksView.page} of ${pages}`
+        : `${totals} · no tasks match this filter`;
+    }
+    if (prev) {
+      prev.disabled = state.tasksView.page <= 1;
+      prev.classList.toggle("opacity-40", prev.disabled);
+    }
+    if (next) {
+      next.disabled = state.tasksView.page >= pages;
+      next.classList.toggle("opacity-40", next.disabled);
+    }
+    if (pageList) {
+      pageList.innerHTML = "";
+      for (let page = 1; page <= pages; page += 1) {
+        const button = document.createElement("button");
+        const active = page === state.tasksView.page;
+        button.type = "button";
+        button.textContent = String(page);
+        button.dataset.tasksPage = String(page);
+        button.className = [
+          "h-8 min-w-8 rounded-md border px-2 text-xs font-mono transition-colors",
+          active
+            ? "border-border bg-secondary text-foreground"
+            : "border-transparent text-muted-foreground hover:border-border hover:bg-secondary hover:text-foreground",
+        ].join(" ");
+        pageList.append(button);
+      }
+    }
+    window.lucide?.createIcons();
+  }
+
+  async function loadOrganizationTasks() {
+    // The catalog is organization-private: a signed-out visitor has no session
+    // token, so the read can only ever come back 401. Say so instead of
+    // flashing a spinner and then an error.
+    if (!state.session) {
+      state.tasksView.loading = false;
+      state.tasksView.error =
+        "Sign in with an organization member account to see the private task catalog.";
+      renderTasksPage();
+      return;
+    }
+    state.tasksView.loading = true;
+    state.tasksView.error = "";
+    renderTasksPage();
+    try {
+      const payload = await fetchJson("/api/tasks", { fresh: true });
+      state.tasksView.items = (Array.isArray(payload?.tasks) ? payload.tasks : [])
+        .filter((task) => task && typeof task === "object");
+      state.tasksView.actor = String(payload?.actor || "").toLowerCase();
+      state.tasksView.error = "";
+    } catch (error) {
+      state.tasksView.items = [];
+      state.tasksView.error =
+        error?.status === 401 || error?.status === 403
+          ? "This task catalog is private to organization members."
+          : `Tasks are unavailable: ${error?.message || "request failed"}`;
+    } finally {
+      state.tasksView.loading = false;
+      renderTasksPage();
+    }
+  }
+
+  function initTasksPage() {
+    const search = $("[data-tasks-search]");
+    if (search) {
+      search.addEventListener("input", () => {
+        state.tasksView.query = search.value;
+        state.tasksView.page = 1;
+        renderTasksPage();
+      });
+    }
+    const panel = $("[data-tasks-panel]");
+    panel?.addEventListener("click", (event) => {
+      const filter = event.target.closest("[data-tasks-filter]");
+      if (filter) {
+        state.tasksView.filter = filter.dataset.tasksFilter;
+        state.tasksView.page = 1;
+        renderTasksPage();
+        return;
+      }
+      const page = event.target.closest("[data-tasks-page]");
+      if (page) {
+        state.tasksView.page = Number(page.dataset.tasksPage) || 1;
+        renderTasksPage();
+        return;
+      }
+      if (event.target.closest("[data-tasks-prev]")) {
+        state.tasksView.page = Math.max(1, state.tasksView.page - 1);
+        renderTasksPage();
+        return;
+      }
+      if (event.target.closest("[data-tasks-next]")) {
+        state.tasksView.page += 1;
+        renderTasksPage();
+        return;
+      }
+      if (event.target.closest("[data-tasks-refresh]")) {
+        void loadOrganizationTasks();
+      }
+    });
+    void loadOrganizationTasks();
+  }
+
+  // ---------------------------------------------------------------------------
   // Boot. Every page document ships this same bundle; <body data-page="..."> is
   // baked at build time (dashboard_shell.PAGES) and picks which init runs. The
   // page's own markup is the only view in the document and is active at parse
@@ -17164,6 +17706,7 @@
     "repos": initReposPage,
     "network": initNetworkPage,
     "chat": initChatPage,
+    "tasks": initTasksPage,
     "settings": initSettingsPage,
     "profile": initProfileOverviewPage,
     "profile-repositories": initProfileOverviewPage,

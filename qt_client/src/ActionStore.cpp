@@ -6,8 +6,12 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QPair>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSet>
@@ -207,6 +211,13 @@ QString ActionStore::spoolDir() const { return m_root + QStringLiteral("/spool")
 QString ActionStore::artifactsDir() const
 {
     const QString path = m_root + QStringLiteral("/artifacts");
+    QDir().mkpath(path);
+    return path;
+}
+
+QString ActionStore::sandboxDir() const
+{
+    const QString path = m_root + QStringLiteral("/sandbox");
     QDir().mkpath(path);
     return path;
 }
@@ -522,6 +533,40 @@ bool ActionStore::repositoryStateDigest(const QString &repository,
         return false;
     }
 
+    // A commit's tree is immutable, so (repository, commit) -> (tree, digest) is
+    // a pure function and the expensive part below need only ever run once per
+    // pair. Bounded so a long-lived node can't accumulate one entry per commit
+    // it has ever seen.
+    struct DigestMemo {
+        QMutex mutex;
+        QHash<QString, QPair<QString, QString>> entries;
+        QStringList order; // insertion order, for eviction
+    };
+    static DigestMemo memo;
+    const QString memoKey = QDir(repository).absolutePath() +
+                            QLatin1Char('\0') + commit.trimmed().toLower();
+    {
+        QMutexLocker lock(&memo.mutex);
+        const auto hit = memo.entries.constFind(memoKey);
+        if (hit != memo.entries.constEnd()) {
+            if (repositoryTree)
+                *repositoryTree = hit->first;
+            if (executionDigest)
+                *executionDigest = hit->second;
+            return true;
+        }
+    }
+    auto remember = [&memoKey](const QString &tree, const QString &digest) {
+        constexpr int kMaxEntries = 64;
+        QMutexLocker lock(&memo.mutex);
+        if (memo.entries.contains(memoKey))
+            return;
+        memo.entries.insert(memoKey, {tree, digest});
+        memo.order.append(memoKey);
+        while (memo.order.size() > kMaxEntries)
+            memo.entries.remove(memo.order.takeFirst());
+    };
+
     auto fail = [&](const QString &message) {
         if (error)
             *error = message;
@@ -607,9 +652,11 @@ bool ActionStore::repositoryStateDigest(const QString &repository,
         return fail(QStringLiteral("could not archive the repository snapshot"));
     }
 
+    const QString execution = QString::fromLatin1(digest.result().toHex());
+    remember(tree, execution); // successes only; a failure must be retried
     if (repositoryTree)
         *repositoryTree = tree;
     if (executionDigest)
-        *executionDigest = QString::fromLatin1(digest.result().toHex());
+        *executionDigest = execution;
     return true;
 }

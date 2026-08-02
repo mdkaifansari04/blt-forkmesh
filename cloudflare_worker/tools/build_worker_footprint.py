@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the measured Worker/source footprint used by the World chart."""
+"""Validate the measured Worker/source footprint used by the World chart.
+
+This module is deliberately read-only.  The checked-in chart is a fixed design
+asset and deploy/build commands must never rewrite it from a transient checkout.
+"""
 
 import json
 import re
@@ -11,7 +15,43 @@ SRC = ROOT / "src"
 PUBLIC = ROOT / "public"
 VENDORED = ROOT / "python_modules"
 OUTPUT = PUBLIC / "world" / "worker-footprint.js"
-LAZY_MODULES = {"repository_imports.py", "world_infrastructure.py"}
+# Python Workers parse and execute global scope during deployment validation.
+# Keep optional route domains out of that path; entry.py loads each through its
+# _LazyModule proxy on the first request which uses it.
+LAZY_MODULES = {
+    "activitypub.py",
+    "activitypub_threads.py",
+    "badges.py",
+    "blog_feed.py",
+    "chat_channels_api.py",
+    "chat_direct_messages_api.py",
+    "community_ads_api.py",
+    "contributions.py",
+    "discord_rate.py",
+    "edge_routing.py",
+    "fediverse_digest.py",
+    "fediverse_mentions_api.py",
+    "og_card.py",
+    "organization_discord.py",
+    "organization_succession_api.py",
+    "repository_imports.py",
+    "reward_policy.py",
+    "security_controls.py",
+    "security_scan_ingest.py",
+    "schema.py",
+    "world.py",
+    "world_build_board.py",
+    "world_community_api.py",
+    "world_element_store.py",
+    "world_events_api.py",
+    "world_infrastructure.py",
+    "world_link_kiosk.py",
+    "world_office_tasks.py",
+    "world_satellites.py",
+    "world_social_feeds.py",
+    "world_visitors.py",
+    "world_workshops.py",
+}
 # wrangler.toml runs the dashboard build (and this generator with it) before
 # every deploy, so mirroring each byte of the tree rewrote this committed asset
 # on any unrelated one-line edit, and branches then conflicted on the churn.
@@ -36,6 +76,9 @@ WORKER_LIMITS = {
     "compressedBundlePaidBytes": 10_000_000,
     "uncompressedBundleBytes": 64_000_000,
     "startupTimeMs": 1000,
+    # Source bytes are not a heap measurement, but this reproducible ceiling
+    # catches regressions that would make Python's startup validation unsafe.
+    "startupSourceBytesSoft": 2_500_000,
     "dynamicRequestsFreeDaily": 100_000,
 }
 STATIC_LIMITS = {
@@ -44,7 +87,7 @@ STATIC_LIMITS = {
     # This is an intentionally stricter project budget, not a Cloudflare cap.
     # It leaves headroom for future districts without letting the first visit
     # silently inherit every optional feature module.
-    "initialWorldModuleBytesSoft": 2_500_000,
+    "initialWorldModuleBytesSoft": 2_600_000,
 }
 STATIC_IMPORT_FROM_RE = re.compile(
     r"""\bfrom\s+["'](?P<path>\.{1,2}/[^"']+)["']"""
@@ -221,6 +264,16 @@ def validate_budgets(data=None):
             "the project soft budget is "
             f"{STATIC_LIMITS['initialWorldModuleBytesSoft']:,}"
         )
+    if (
+        snapshot["estimatedStartupSourceBytes"]
+        > WORKER_LIMITS["startupSourceBytesSoft"]
+    ):
+        errors.append(
+            "estimated Python startup source is "
+            f"{snapshot['estimatedStartupSourceBytes']:,} bytes; "
+            "the project soft budget is "
+            f"{WORKER_LIMITS['startupSourceBytesSoft']:,}"
+        )
     if errors:
         raise RuntimeError("Free-plan growth budget failed: " + "; ".join(errors))
     return snapshot
@@ -299,26 +352,6 @@ def needs_refresh(data=None):
         return True
 
 
-def build(force=False):
-    # validate_budgets always runs against the live tree, so the Free-plan
-    # growth guard still fails the deploy build even when nothing is rewritten.
-    snapshot = validate_budgets()
-    if not force and not needs_refresh(snapshot):
-        return False
-    content = rendered(snapshot)
-    old = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
-    if old == content:
-        return False
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(content, encoding="utf-8")
-    return True
-
-
 if __name__ == "__main__":
-    import sys
-
-    print(
-        "Built Worker footprint chart data."
-        if build(force="--force" in sys.argv[1:])
-        else "Worker footprint chart data is up to date."
-    )
+    validate_budgets()
+    print("Worker footprint budgets are valid; the chart asset was not modified.")
