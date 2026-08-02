@@ -4639,13 +4639,11 @@ private:
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
-    void positionTopMessageBubble(); // size + anchor the bubble above the prompt
-    QRect topMessageBubbleRect(); // calculates the prompt-relative bubble geometry
+    void positionTopMessageBubble(); // size + anchor the bubble in the bottom-right stack
+    QRect topMessageBubbleRect(); // calculates the bottom-right stack geometry
     void setTopMessagePaused(bool paused); // hover pauses the countdown
     void slideTopMessageOut(); // countdown finished: ease the bubble off the right edge, then advance
     void showPromptBubble(const QString &prompt); // animate a submitted prompt into a bubble
-    // True when the footer composer is visible and can anchor notification bubbles.
-    bool topMessageDockVisible() const;
     MessageRow *addMessageRow(const ChatMessage &message);
     MessageRow *createMessageRow(const ChatMessage &message,
                                  bool threadContext = false);
@@ -5103,10 +5101,10 @@ private:
     // Little crown badge painted over the top-left of the same avatar, shown
     // only while this node is an admin (see updateAdminCrownBadge()).
     QLabel *m_adminCrownBadge = nullptr;
-    QLabel *m_topMessage = nullptr;       // prompt-anchored success/failure bubble text
+    QLabel *m_topMessage = nullptr;       // bottom-right success/failure bubble text
     QFrame *m_topMessageContainer = nullptr; // floating bubble wrapping text + actions
     // Queued notifications are visible beneath the active bubble. As new ones
-    // arrive, this stack grows from the composer upwards rather than hiding
+    // arrive, this stack grows from the bottom-right corner upwards rather than hiding
     // messages behind a "+N more" counter.
     QScrollArea *m_topMessageQueueScroll = nullptr;
     QWidget *m_topMessageQueueContent = nullptr;

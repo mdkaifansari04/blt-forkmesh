@@ -4455,13 +4455,6 @@ static constexpr int kToastEntryOffset = 18;
 // oldest queued message is dropped once the cap is hit.
 static constexpr int kToastQueueLimit = 20;
 
-// The footer composer remains visible in the Git workspace, so notification
-// bubbles always have a prompt to anchor to.
-bool MainWindow::topMessageDockVisible() const
-{
-    return m_promptWrapper && m_promptWrapper->isVisible();
-}
-
 // Park a message behind the toast that is currently counting down, dropping the
 // oldest once the queue is full. The queue is rendered beneath the active toast
 // so every pending message remains visible and can be read before its turn.
@@ -4618,7 +4611,7 @@ bool MainWindow::topMessageBusy() const
             m_topMessageSlidingOut || m_topMessageEntering);
 }
 
-// (Re)paint the prompt-anchored bubble from m_topMessageRaw. Every message is
+// (Re)paint the bottom-right bubble from m_topMessageRaw. Every message is
 // shown whole — it wraps across the bubble's full width and the bubble grows to
 // fit, so no notification is ever cut off behind an ellipsis.
 void MainWindow::renderTopMessage()
@@ -4649,26 +4642,21 @@ void MainWindow::renderTopMessage()
     m_topMessage->setText(m_topMessageBaseHtml);
 }
 
-// Calculate a readable floating-bubble rectangle just above the composer. The
-// fallback is the lower-right corner when the composer is intentionally hidden.
+// Calculate a readable floating-bubble rectangle in the bottom-right corner.
+// The queue is placed beneath the active bubble, so all notifications share one
+// stable screen edge regardless of which app section or footer is visible.
 QRect MainWindow::topMessageBubbleRect()
 {
     if (!m_topMessageContainer)
         return {};
     const int margin = 16;
-    const bool hasPrompt = topMessageDockVisible();
-    const QRect anchor = hasPrompt
-                             ? QRect(m_promptWrapper->mapTo(this, QPoint()),
-                                     m_promptWrapper->size())
-                             : QRect();
     const int available = qMax(120, width() - 2 * margin);
-    const int desired = hasPrompt ? qBound(260, anchor.width(), 560) : 460;
+    const int desired = 460;
     const int bubbleWidth = qMin(available, desired);
     m_topMessageContainer->setFixedWidth(bubbleWidth);
-    // The bubble may grow until it would run past the top of the window (or past
-    // the composer it is anchored above); only beyond that does the text scroll.
-    const int roomForBubble = hasPrompt ? anchor.top() - 10 - margin
-                                        : height() - 2 * margin;
+    // The bubble may grow until it would run past the top of the window; only
+    // beyond that does the text scroll.
+    const int roomForBubble = height() - 2 * margin;
     const int maxBubbleHeight = qBound(40, roomForBubble, qMax(40, height() - 2 * margin));
     auto *column = m_topMessageContainer->layout();
     int bubbleHeight = 0;
@@ -4692,10 +4680,7 @@ QRect MainWindow::topMessageBubbleRect()
     if (bubbleHeight <= 0)
         bubbleHeight = m_topMessageContainer->sizeHint().height();
     bubbleHeight = qBound(40, bubbleHeight, maxBubbleHeight);
-    const int x = hasPrompt
-                      ? qBound(margin, anchor.right() - bubbleWidth + 1,
-                               qMax(margin, width() - bubbleWidth - margin))
-                      : qMax(margin, width() - bubbleWidth - margin);
+    const int x = qMax(margin, width() - bubbleWidth - margin);
     int queueHeight = 0;
     if (m_topMessageQueueScroll && m_topMessageQueueContent &&
         !m_topMessageQueue.isEmpty()) {
@@ -4711,14 +4696,8 @@ QRect MainWindow::topMessageBubbleRect()
     } else if (m_topMessageQueueScroll) {
         m_topMessageQueueScroll->hide();
     }
-    const int above = hasPrompt ? anchor.top() - bubbleHeight - queueHeight -
-                                    (queueHeight > 0 ? 18 : 10)
-                                : height() - bubbleHeight - queueHeight -
-                                      (queueHeight > 0 ? margin + 8 : margin);
-    const int y = hasPrompt && above < margin
-                      ? qMin(qMax(margin, height() - bubbleHeight - margin),
-                             anchor.bottom() + 10)
-                      : qMax(margin, above);
+    const int y = qMax(margin, height() - bubbleHeight - queueHeight -
+                                   (queueHeight > 0 ? margin + 8 : margin));
     return QRect(x, y, bubbleWidth, bubbleHeight);
 }
 
@@ -4900,7 +4879,7 @@ void MainWindow::flashMessage(const QString &text, bool error,
     m_topMessageHovering = false;
     m_topMessageRaw = trimmed;
     // The whole message is shown: it wraps to the bubble's full width and the
-    // bubble grows downward to fit (topMessageBubbleRect), so a long git error is
+    // bubble grows within the bottom-right stack (topMessageBubbleRect), so a long git error is
     // readable in place instead of being cut off at an ellipsis.
     renderTopMessage();
     m_topMessage->show();
