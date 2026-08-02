@@ -1119,7 +1119,8 @@ QWidget *MainWindow::buildNetworkLogDock()
             recordQuickAddHistory(typed);
         m_issueQuickAdd->clear();
         clearQuickAddImages();
-        showPromptBubble(prompt);
+        const int agentSessionId = m_selectedAgentSessionId;
+        showPromptBubble(prompt, agentSessionId);
         sendPromptToSelectedAgent(prompt);
     });
 
@@ -5635,7 +5636,7 @@ QWidget *MainWindow::buildBreadcrumb()
             &MainWindow::showNotifications);
 
     // Compact success/failure bubble. It is parented to the window rather than a
-    // layout, allowing notifications to stay in the bottom-right stack without
+    // layout, allowing notifications to stay above the prompt without
     // shifting the prompt or the live-log footer.
     m_topMessage = new QLabel;
     m_topMessage->setObjectName("topMessageText");
@@ -5688,8 +5689,18 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageSendToPrompt->setFocusPolicy(Qt::NoFocus);
     setOcticon(m_topMessageSendToPrompt, "paper-airplane", 13);
     m_topMessageSendToPrompt->hide();
-    connect(m_topMessageSendToPrompt, &QPushButton::clicked, this,
-            [this] { appendTopMessageToPrompt(m_topMessageRaw); });
+    connect(m_topMessageSendToPrompt, &QPushButton::clicked, this, [this] {
+        if (m_topMessageAgentSessionId > 0) {
+            switchToAgentsTab(m_topMessageAgentSessionId);
+            return;
+        }
+        appendTopMessageToPrompt(m_topMessageRaw);
+    });
+
+    m_topMessageTypeBadge = new QLabel;
+    m_topMessageTypeBadge->setObjectName("topMessageTypeBadge");
+    m_topMessageTypeBadge->setFocusPolicy(Qt::NoFocus);
+    m_topMessageTypeBadge->hide();
 
     // Dim countdown / queue / paused text. It used to be appended to the message
     // itself; on its own row it can never push the message into an ellipsis.
@@ -5764,6 +5775,7 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *topMessageActionRow = new QHBoxLayout(m_topMessageActions);
     topMessageActionRow->setContentsMargins(0, 0, 0, 0);
     topMessageActionRow->setSpacing(4);
+    topMessageActionRow->addWidget(m_topMessageTypeBadge);
     topMessageActionRow->addWidget(m_topMessageMeta);
     topMessageActionRow->addStretch(1);
     topMessageActionRow->addWidget(m_topMessageCopy);
@@ -5779,15 +5791,16 @@ QWidget *MainWindow::buildBreadcrumb()
                             static_cast<QWidget *>(m_topMessageScroll),
                             static_cast<QWidget *>(m_topMessageScroll->viewport()),
                             static_cast<QWidget *>(m_topMessageActions),
+                            static_cast<QWidget *>(m_topMessageTypeBadge),
                             static_cast<QWidget *>(m_topMessageMeta),
                             static_cast<QWidget *>(m_topMessageCopy),
                             static_cast<QWidget *>(m_topMessageSendToPrompt),
                             static_cast<QWidget *>(m_topMessageClose)})
         widget->installEventFilter(this);
 
-    // One geometry animation drives both the composer-to-bubble arrival and the
-    // slide-off exit. The bubble never fades: it stays fully readable for the
-    // whole countdown and only then leaves, so nothing dims out mid-read.
+    // The geometry animation handles the slide-off and the short notification
+    // entry. Prompt submissions themselves are placed directly above the
+    // composer, so they never cover it.
     m_topMessageFlight = new QPropertyAnimation(m_topMessageContainer, "geometry", this);
     m_topMessageFlight->setDuration(260);
     m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
