@@ -13165,7 +13165,7 @@ class ForkMeshWorld extends HTMLElement {
           <h4 id="world-error-analytics-title">Previous 24 hours · ${chartTotal.toLocaleString()} occurrence${chartTotal === 1 ? "" : "s"}</h4>
           <div class="world-error-chart" role="img" aria-label="24-hour error frequency">
             ${chartHours
-              .map((count, index) => `<span tabindex="0" role="img" aria-label="${hourLabel(index)}: ${count} error${count === 1 ? "" : "s"}" data-empty="${count === 0}" style="height:${chartPeak ? Math.max(2, Math.round((132 * count) / chartPeak) : 2)}px" title="${hourLabel(index)} · ${count}"></span>`)
+              .map((count, index) => `<span tabindex="0" role="img" aria-label="${hourLabel(index)}: ${count} error${count === 1 ? "" : "s"}" data-empty="${count === 0}" style="height:${chartPeak ? Math.max(2, Math.round((132 * count) / chartPeak)) : 2}px" title="${hourLabel(index)} · ${count}"></span>`)
               .join("")}
           </div>
           <div class="world-error-hours"><span>24h ago</span><span>12h ago</span><span>now</span></div>

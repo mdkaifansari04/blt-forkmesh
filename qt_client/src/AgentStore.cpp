@@ -245,6 +245,65 @@ QString AgentStore::readPatch(const AgentSession &session) const
     return QString::fromUtf8(file.readAll());
 }
 
+namespace {
+
+// Read the tail of a transcript file, dropping the first (partial) line so the
+// scan never starts mid-line — or mid-UTF-8-character.
+QString readTranscriptTail(const QString &path, qint64 tailBytes)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return QString();
+    const qint64 size = file.size();
+    if (size > tailBytes) {
+        file.seek(size - tailBytes);
+        file.readLine();
+    }
+    return QString::fromUtf8(file.readAll());
+}
+
+// One line of context around a hit, whitespace-collapsed so a snippet lifted out
+// of a JSON event line still reads as a sentence in a tooltip.
+QString hitSnippet(const QString &text, int at, int length)
+{
+    constexpr int kContext = 60;
+    const qsizetype from = std::max<qsizetype>(0, at - kContext);
+    const qsizetype to =
+        std::min<qsizetype>(text.size(), at + length + kContext);
+    QString snippet = text.mid(from, to - from).simplified();
+    if (from > 0)
+        snippet.prepend(QString::fromUtf8("\xE2\x80\xA6"));
+    if (to < text.size())
+        snippet.append(QString::fromUtf8("\xE2\x80\xA6"));
+    return snippet;
+}
+
+} // namespace
+
+int AgentStore::searchTranscript(const AgentSession &session,
+                                 const QString &needle, QString *snippet) const
+{
+    const QString query = needle.trimmed();
+    if (query.isEmpty())
+        return 0;
+    const QString dir = sessionDir(session);
+    const QStringList files{QStringLiteral("/transcript.txt"),
+                            QStringLiteral("/events.jsonl")};
+    int hits = 0;
+    for (const QString &name : files) {
+        const QString text =
+            readTranscriptTail(dir + name, kTranscriptSearchTailBytes);
+        int at = text.indexOf(query, 0, Qt::CaseInsensitive);
+        while (at >= 0) {
+            if (snippet && snippet->isEmpty())
+                *snippet = hitSnippet(text, at, query.size());
+            ++hits;
+            at = text.indexOf(query, at + query.size(), Qt::CaseInsensitive);
+        }
+    }
+    return hits;
+}
+
 QList<AgentSession> AgentStore::loadAllSessions() const
 {
     QList<AgentSession> sessions;

@@ -164,3 +164,10 @@ def test_newly_logged_errors_are_announced_not_only_counted():
     assert "payload?.path" not in refresh
     assert "payload?.message" not in refresh
     assert "payload?.ray" not in refresh
+
+
+def test_world_admin_error_chart_height_expression_keeps_ternary_balanced():
+    assert (
+        'style="height:${chartPeak ? Math.max(2, '
+        'Math.round((132 * count) / chartPeak)) : 2}px"'
+    ) in WORLD
