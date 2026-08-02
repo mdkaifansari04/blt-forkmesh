@@ -35,6 +35,36 @@ const PRIVATE_SETTINGS = {
 };
 
 const FIXED_NOW = 1_785_000_000_000;
+const AQUARIUM_SCHOOL_USERS = [
+  {
+    name: "reef-us-firefox-one",
+    countryCode: "US",
+    browser: "Firefox",
+    os: "Linux",
+    activityBucket: "hour",
+  },
+  {
+    name: "reef-us-firefox-two",
+    countryCode: "US",
+    browser: "Firefox",
+    os: "Linux",
+    activityBucket: "5h",
+  },
+  {
+    name: "reef-ca-safari-one",
+    countryCode: "CA",
+    browser: "Safari",
+    os: "macOS",
+    activityBucket: "24h",
+  },
+  {
+    name: "reef-ca-safari-two",
+    countryCode: "CA",
+    browser: "Safari",
+    os: "macOS",
+    activityBucket: "3d",
+  },
+];
 
 function worldChatKey(passphrase) {
   const salt = createHash("sha256")
@@ -2925,6 +2955,116 @@ test("Office lobby marine aquarium is visible, ambient, and animated", async ({
   expect(second.surfaceHeight).not.toBe(first.surfaceHeight);
   expect(second.causticOpacity).not.toBe(first.causticOpacity);
   expect(second.lightIntensity).not.toBe(first.lightIntensity);
+});
+
+test("reef controls stay tank-mounted and report a live country school", async ({
+  page,
+}) => {
+  test.slow();
+  await prepareWorldPage(page, "office-aquarium-school-control", {
+    directoryUsers: AQUARIUM_SCHOOL_USERS,
+  });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await waitForWorld(page);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.enterOfficeLobby({ floorId: "lobby" });
+    shell.world.setCameraView({
+      mode: "first-person",
+      yaw: Math.PI / 2,
+      pitch: -0.08,
+      zoom: 0.75,
+    });
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-office-interior",
+    );
+    const position = interior.localToWorld(
+      shell.world.player.position.clone().set(-55, 0.38, -10.5),
+    );
+    shell.world.player.position.copy(position);
+    shell.world.setPaused(false);
+  });
+
+  const panel = page.locator("[data-world-aquarium-controls]");
+  const schoolStatus = page.locator(
+    "[data-world-aquarium-school-status]",
+  );
+  await expect(panel).toBeVisible();
+  await expect(schoolStatus).toHaveText("SCHOOL MODE · STANDBY");
+  await expect(schoolStatus).toHaveAttribute("data-active", "false");
+
+  await panel.hover();
+  await page.waitForTimeout(260);
+  await expect(panel).toBeVisible();
+  for (const action of await panel.locator("button").all()) {
+    await action.hover();
+    await page.waitForTimeout(100);
+    await expect(panel).toBeVisible();
+  }
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(true);
+  });
+  const anchor = await panel.evaluate((element) => {
+    const layerBounds = element.parentElement.getBoundingClientRect();
+    return {
+      x: layerBounds.left + Number.parseFloat(element.style.left),
+      y: layerBounds.top + Number.parseFloat(element.style.top),
+    };
+  });
+  const mountedBox = await panel.boundingBox();
+  expect(mountedBox).not.toBeNull();
+  expect(mountedBox.x + mountedBox.width).toBeCloseTo(anchor.x - 8, 0);
+  expect(mountedBox.y).toBeCloseTo(anchor.y + 8, 0);
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setPaused(false);
+  });
+
+  await expect
+    .poll(
+      () => schoolStatus.getAttribute("data-active"),
+      { timeout: 20_000 },
+    )
+    .toBe("true");
+  await expect(schoolStatus).toContainText("COUNTRY ACTIVE");
+  await page.waitForTimeout(1_900);
+  const school = await page.locator("forkmesh-world").evaluate(
+    (shell, fishCount) => {
+      const aquarium = shell.world.scene.getObjectByName(
+        "forkmesh-office-marine-aquarium",
+      );
+      return Array.from({ length: fishCount }, (_, index) =>
+        aquarium
+          .getObjectByName(`forkmesh-office-aquarium-user-fish-${index}`)
+          .position.toArray(),
+      );
+    },
+    AQUARIUM_SCHOOL_USERS.length,
+  );
+  const distance = (left, right) =>
+    Math.hypot(
+      left[0] - right[0],
+      left[1] - right[1],
+      left[2] - right[2],
+    );
+  const withinCountry =
+    (distance(school[0], school[1]) + distance(school[2], school[3])) /
+    2;
+  const acrossCountries =
+    (distance(school[0], school[2]) + distance(school[1], school[3])) /
+    2;
+  await page.locator("forkmesh-world").screenshot({
+    path: "/tmp/forkmesh-office-aquarium-school-control.png",
+    animations: "disabled",
+  });
+  expect(
+    { withinCountry, acrossCountries, school },
+    "matching-country fish should form tighter pods than different countries",
+  ).toEqual(
+    expect.objectContaining({
+      withinCountry: expect.any(Number),
+      acrossCountries: expect.any(Number),
+    }),
+  );
+  expect(acrossCountries).toBeGreaterThan(withinCountry + 2);
 });
 
 test("aquarium blocks lobby movement and double-click travel", async ({
