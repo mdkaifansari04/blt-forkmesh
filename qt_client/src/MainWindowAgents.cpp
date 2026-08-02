@@ -1612,7 +1612,7 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentBranchButton, &QPushButton::clicked, this,
             [this] { switchToAgentBranch(m_selectedAgentSessionId); });
     m_agentWorktreeButton = railActionButton(
-        QStringLiteral("file-directory"), QStringLiteral("Worktree"),
+        QStringLiteral("worktree"), QStringLiteral("Worktree"),
         "Open this session's worktree in the Worktrees tab");
     m_agentWorktreeButton->hide();
     connect(m_agentWorktreeButton, &QPushButton::clicked, this, [this] {
@@ -6061,6 +6061,10 @@ void MainWindow::showAgentSession(int sessionId)
             ctxStrength = session->strength.isEmpty() ? composerAgentStrength()
                                                       : session->strength;
         m_agentTranscript->setSessionContext(session->branchName, ctxMode, ctxStrength);
+        // Render a Codex run in Codex's own idiom ("Ran …", "Explored", exit=)
+        // rather than Claude Code's tool cards (adhoc #34). Set before the
+        // rebuild below so the rows are built in the right dialect.
+        m_agentTranscript->setCodexStyle(agentIsCodexProvider(session->provider));
     }
     if (external) {
         // Skip the full tail re-read/rebuild when this session is already on
