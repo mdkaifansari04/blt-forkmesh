@@ -4472,7 +4472,8 @@ void MainWindow::queueTopMessage(const QString &text, bool error,
     if (trimmed.isEmpty())
         return;
     const int durationSeconds = error ? kToastErrorSeconds : kToastSuccessSeconds;
-    m_topMessageQueue.append({trimmed, error, clickHref, durationSeconds});
+    m_topMessageQueue.append(
+        {m_nextTopMessageQueueId++, trimmed, error, clickHref, durationSeconds});
     while (m_topMessageQueue.size() > kToastQueueLimit)
         m_topMessageQueue.removeFirst();
     renderTopMessageQueue();
@@ -4498,9 +4499,9 @@ void MainWindow::renderTopMessageQueue()
         auto *card = new QFrame(m_topMessageQueueContent);
         card->setObjectName("topMessageQueueCard");
         card->setAttribute(Qt::WA_StyledBackground, true);
-        auto *row = new QVBoxLayout(card);
-        row->setContentsMargins(12, 8, 10, 8);
-        row->setSpacing(0);
+        auto *column = new QVBoxLayout(card);
+        column->setContentsMargins(12, 8, 10, 8);
+        column->setSpacing(6);
 
         auto *label = new QLabel(card);
         label->setObjectName("topMessageQueueText");
@@ -4513,18 +4514,99 @@ void MainWindow::renderTopMessageQueue()
                                           : QString::fromUtf8("\xE2\x9C\x93");
         label->setText(QStringLiteral("<span style='color:%1'>%2 %3</span>")
                            .arg(color, glyph, entry.text.toHtmlEscaped()));
-        row->addWidget(label);
+        column->addWidget(label);
+
+        auto *actions = new QWidget(card);
+        actions->setObjectName("topMessageQueueActions");
+        auto *actionRow = new QHBoxLayout(actions);
+        actionRow->setContentsMargins(0, 0, 0, 0);
+        actionRow->setSpacing(4);
         auto *timer = new QLabel(
             QStringLiteral("%1s timer when it reaches the top")
                 .arg(entry.durationSeconds), card);
         timer->setObjectName("topMessageQueueMeta");
         timer->setFocusPolicy(Qt::NoFocus);
-        row->addWidget(timer);
+        actionRow->addWidget(timer);
+        actionRow->addStretch(1);
+
+        auto *copy = new QPushButton(QStringLiteral("Copy"), actions);
+        copy->setObjectName("ghostButton");
+        copy->setCursor(Qt::PointingHandCursor);
+        copy->setToolTip(QStringLiteral("Copy this bubble's text"));
+        copy->setFocusPolicy(Qt::NoFocus);
+        setOcticon(copy, "copy", 14);
+        connect(copy, &QPushButton::clicked, this, [text = entry.text] {
+            QGuiApplication::clipboard()->setText(text);
+        });
+        actionRow->addWidget(copy);
+
+        auto *sendToPrompt = new QPushButton(QStringLiteral("Send to prompt"), actions);
+        sendToPrompt->setObjectName("topMessageAction");
+        sendToPrompt->setCursor(Qt::PointingHandCursor);
+        sendToPrompt->setToolTip(
+            QStringLiteral("Add this notification to the footer prompt"));
+        sendToPrompt->setFocusPolicy(Qt::NoFocus);
+        setOcticon(sendToPrompt, "paper-airplane", 13);
+        connect(sendToPrompt, &QPushButton::clicked, this,
+                [this, text = entry.text] { appendTopMessageToPrompt(text); });
+        actionRow->addWidget(sendToPrompt);
+
+        auto *close = new QPushButton(actions);
+        close->setObjectName("ghostButton");
+        setOcticon(close, "x", 14);
+        close->setCursor(Qt::PointingHandCursor);
+        close->setToolTip(QStringLiteral("Dismiss"));
+        close->setFocusPolicy(Qt::NoFocus);
+        connect(close, &QPushButton::clicked, this, [this, id = entry.id] {
+            dismissQueuedTopMessage(id);
+        });
+        actionRow->addWidget(close);
+
+        column->addWidget(actions);
         m_topMessageQueueLayout->addWidget(card);
     }
 
     m_topMessageQueueContent->adjustSize();
     m_topMessageQueueScroll->setVisible(!m_topMessageQueue.isEmpty());
+}
+
+// The active bubble and every queued card hand their exact text to the same
+// footer composer, keeping the prompt hand-off identical whichever alert is
+// currently in front.
+void MainWindow::appendTopMessageToPrompt(const QString &text)
+{
+    if (!m_issueQuickAdd || text.isEmpty())
+        return;
+    QString draft = m_issueQuickAdd->toPlainText();
+    if (!draft.trimmed().isEmpty()) {
+        if (!draft.endsWith(QStringLiteral("\n\n"))) {
+            if (draft.endsWith(QLatin1Char('\n')))
+                draft += QLatin1Char('\n');
+            else
+                draft += QStringLiteral("\n\n");
+        }
+    } else {
+        draft.clear();
+    }
+    draft += text;
+    m_issueQuickAdd->setPlainText(draft);
+    m_issueQuickAdd->moveCursor(QTextCursor::End);
+    m_issueQuickAdd->setFocus();
+}
+
+// Queued cards are independently dismissible. Use their stable id rather than
+// their current position because other cards may arrive while the stack is open.
+void MainWindow::dismissQueuedTopMessage(quint64 id)
+{
+    for (auto it = m_topMessageQueue.begin(); it != m_topMessageQueue.end(); ++it) {
+        if (it->id != id)
+            continue;
+        m_topMessageQueue.erase(it);
+        renderTopMessageQueue();
+        positionTopMessageBubble();
+        renderTopMessageCountdown();
+        return;
+    }
 }
 
 // True while a toast is on screen with its countdown still running: a new
