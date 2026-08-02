@@ -119,13 +119,13 @@ QString backgroundDefaultBranch(const QString &gitDir, QString configured,
 AgentDiffStat readAgentDiffStat(const AgentStore &store,
                                 const AgentSession &session,
                                 const QString &gitDir, const QString &base,
-                                const QString &worktree)
+                                const QString &worktree,
+                                bool probeConflict, bool autoSyncCompleted)
 {
     AgentDiffStat stat;
     const QString patch = store.readPatch(session);
     if (!patch.isEmpty())
         summarizeAgentPatch(patch, &stat);
-    bool dirtyWorktree = false;
     if (!worktree.isEmpty() && QDir(worktree).exists()) {
         stat.worktree = worktree;
         QByteArray dirtyOut;
@@ -136,7 +136,6 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
             const QString lines = QString::fromUtf8(dirtyOut).trimmed();
             stat.dirty =
                 lines.isEmpty() ? 0 : lines.count(QLatin1Char('\n')) + 1;
-            dirtyWorktree = !lines.isEmpty();
         }
     }
     if (!gitDir.isEmpty() && !base.isEmpty() && !session.branchName.isEmpty() &&
@@ -146,43 +145,19 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                        QStringLiteral("--quiet"),
                        QStringLiteral("refs/heads/%1").arg(session.branchName)},
                       nullptr, nullptr)) {
-        // The stored patch describes what the process captured when that run
-        // ended.  The Branch button, however, opens the live branch/worktree.
-        // A resumed/reused branch or edits made after capture can make those two
-        // diverge badly (for example a "3" chip opening 57 files).  Prefer the
-        // exact patch the review route will render and retain the stored patch
-        // only as an offline/deleted-branch fallback.
+        // The chip describes the branch's reviewable, committed change set.
+        // Uncommitted worktree files have their own dirty marker and are loaded
+        // only when that branch is opened. Building a complete binary worktree
+        // patch here made the agents list reconstruct every checkout serially;
+        // one polluted worktree could therefore stall all later badges and make
+        // a small branch claim dozens of unrelated files.
         QByteArray liveDiff;
         QString liveError;
-        bool haveLiveDiff = false;
-        if (!stat.worktree.isEmpty() && dirtyWorktree) {
-            QByteArray mergeBaseOut;
-            const bool foundMergeBase =
-                runGitCapture(gitDir,
-                              {QStringLiteral("merge-base"), base,
-                               session.branchName},
-                              &mergeBaseOut, nullptr);
-            const QString contentBase =
-                foundMergeBase && !mergeBaseOut.trimmed().isEmpty()
-                    ? QString::fromUtf8(mergeBaseOut).trimmed()
-                    : base;
-            haveLiveDiff = buildWorkingTreeDiff(worktree, contentBase,
-                                                &liveDiff, &liveError);
-            if (haveLiveDiff)
-                summarizeAgentPatch(QString::fromUtf8(liveDiff), &stat);
-        } else {
-            // A clean or removed worktree needs only the committed range. Use
-            // numstat rather than materializing the whole binary patch: on a
-            // large branch this turns a multi-megabyte badge probe into a few
-            // compact lines and lets incremental results reach the table fast.
-            haveLiveDiff = runGitCapture(
-                gitDir,
-                {QStringLiteral("diff"), QStringLiteral("--numstat"),
-                 base + QStringLiteral("...") + session.branchName},
-                &liveDiff, &liveError);
-            if (haveLiveDiff)
-                summarizeAgentNumstat(liveDiff, &stat);
-        }
+        if (runGitCapture(gitDir,
+                          {QStringLiteral("diff"), QStringLiteral("--numstat"),
+                           base + QStringLiteral("...") + session.branchName},
+                          &liveDiff, &liveError))
+            summarizeAgentNumstat(liveDiff, &stat);
         QByteArray counts;
         if (runGitCapture(gitDir,
                           {QStringLiteral("rev-list"), QStringLiteral("--left-right"),
@@ -197,7 +172,55 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                 stat.ahead = parts.at(1).toInt();
             }
         }
-        if (stat.behind > 0 && !session.merged &&
+        // A merge into main advances the base for every surviving agent branch.
+        // Keep completed, clean worktrees current as part of the same background
+        // refresh instead of painting every row as newly unhealthy until the
+        // user opens it one by one. Never touch an active or dirty worktree, and
+        // preflight the merge tree so a genuine conflict stays completely
+        // unchanged and visible for manual resolution.
+        if (autoSyncCompleted && stat.behind > 0 && stat.dirty == 0 &&
+            !stat.worktree.isEmpty()) {
+            const bool canMerge =
+                runGitCapture(gitDir,
+                              {QStringLiteral("merge-tree"),
+                               QStringLiteral("--write-tree"),
+                               session.branchName, base},
+                              nullptr, nullptr);
+            if (canMerge) {
+                const QStringList mergeArgs =
+                    stat.ahead == 0
+                        ? QStringList{QStringLiteral("merge"),
+                                      QStringLiteral("--ff-only"), base}
+                        : QStringList{QStringLiteral("merge"),
+                                      QStringLiteral("--no-edit"), base};
+                if (runGitCapture(stat.worktree, mergeArgs, nullptr, nullptr)) {
+                    QByteArray refreshedCounts;
+                    if (runGitCapture(
+                            gitDir,
+                            {QStringLiteral("rev-list"),
+                             QStringLiteral("--left-right"),
+                             QStringLiteral("--count"),
+                             base + QStringLiteral("...") + session.branchName},
+                            &refreshedCounts, nullptr)) {
+                        const QStringList refreshed =
+                            QString::fromUtf8(refreshedCounts)
+                                .trimmed()
+                                .split(QRegularExpression(QStringLiteral("\\s+")));
+                        if (refreshed.size() >= 2) {
+                            stat.behind = refreshed.at(0).toInt();
+                            stat.ahead = refreshed.at(1).toInt();
+                        }
+                    }
+                }
+            } else {
+                stat.conflicted = true;
+            }
+        }
+        // merge-tree is materially slower than the ref/status reads above. The
+        // selected row gets an exact verdict; all other rows publish their
+        // counts immediately and the branch detail performs its own cached
+        // conflict probe when opened.
+        if (probeConflict && stat.behind > 0 && !session.merged &&
             !runGitCapture(gitDir,
                            {QStringLiteral("merge-tree"),
                             QStringLiteral("--write-tree"), session.branchName,
@@ -4993,10 +5016,12 @@ void MainWindow::refreshAgentTable()
             const QSet<int> cachedIds =
                 QSet<int>(m_agentDiffStats.keyBegin(),
                           m_agentDiffStats.keyEnd());
+            const int selectedSessionId = m_selectedAgentSessionId;
             const AgentStore store = *m_agentStore;
             runOffThread<AgentDiffBatch>(
                 [this, store, sessions, owner, name, agentGitDir, configuredBase,
-                 checkedOut, oldSignatures, cachedIds, generation, repoIndex] {
+                 checkedOut, oldSignatures, cachedIds, selectedSessionId,
+                 generation, repoIndex] {
                     const forkmesh::BackgroundScope activity(
                         QStringLiteral("agents"),
                         QStringLiteral("refresh diff and worktree status"),
@@ -5031,12 +5056,13 @@ void MainWindow::refreshAgentTable()
                                 .arg(session.prNumber)
                                 .arg(branchTips.value(session.branchName));
                         batch.signatures.insert(session.id, signature);
-                        if (active ||
+                        if (active || session.id == selectedSessionId ||
                             oldSignatures.value(session.id) != signature ||
                             !cachedIds.contains(session.id)) {
                             const AgentDiffStat stat = readAgentDiffStat(
                                 store, session, agentGitDir, sessionBase,
-                                worktrees.value(session.branchName));
+                                worktrees.value(session.branchName),
+                                session.id == selectedSessionId, !active);
                             batch.stats.insert(session.id, stat);
                             // Do not hold every badge behind the slowest branch.
                             // Each completed probe is queued back to the GUI

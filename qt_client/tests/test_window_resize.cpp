@@ -2217,6 +2217,66 @@ int main(int argc, char *argv[])
                   .arg(manualPullCounts)
                   .arg(QFileInfo::exists(
                            wtPath + QStringLiteral("/manual-pull.txt"))));
+
+        // If main edits the exact same hunk as an agent's uncommitted change,
+        // Git can finish the merge and only then fail while reapplying its
+        // autostash. Pull main is transactional: it must roll the branch back
+        // and restore the original edit instead of leaving a broad conflicted /
+        // staged worktree that later inflates every agent badge.
+        const QString beforeConflictHead =
+            gitOutput(wtPath, {"rev-parse", "HEAD"}).trimmed();
+        {
+            QFile mainShared(wtRepo.path() +
+                             QStringLiteral("/auto-stash-overlap.txt"));
+            mainShared.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            for (int i = 1; i <= 12; ++i)
+                mainShared.write((i == 1 ? QByteArray("main changed line 1\n")
+                                          : i == 12
+                                                ? QByteArray("main changed line 12\n")
+                                                : QStringLiteral("line %1\n")
+                                                      .arg(i)
+                                                      .toUtf8()));
+            mainShared.close();
+        }
+        runGitChecked(wtRepo.path(), {"add", "auto-stash-overlap.txt"});
+        runGitChecked(wtRepo.path(),
+                      {"commit", "-m", "main overlaps protected agent edit"});
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        window.testSuppressAutoPullForBranch(
+            QStringLiteral("feature/keep-selected"));
+        QElapsedTimer conflictPullTimer;
+        conflictPullTimer.start();
+        while (conflictPullTimer.elapsed() < 5000 &&
+               !window.testBranchPullEnabled())
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        const bool conflictPullClicked = window.testClickBranchPull();
+        QApplication::processEvents();
+        QFile rolledBackShared(wtPath +
+                               QStringLiteral("/auto-stash-overlap.txt"));
+        rolledBackShared.open(QIODevice::ReadOnly);
+        const QByteArray rolledBackText = rolledBackShared.readAll();
+        const QString afterConflictHead =
+            gitOutput(wtPath, {"rev-parse", "HEAD"}).trimmed();
+        const QString conflictPullCounts = gitOutput(
+            wtRepo.path(),
+            {"rev-list", "--left-right", "--count",
+             "main...feature/keep-selected"});
+        const QString unmergedAfterRollback =
+            gitOutput(wtPath, {"diff", "--name-only", "--diff-filter=U"});
+        check(conflictPullClicked && afterConflictHead == beforeConflictHead &&
+                  conflictPullCounts.startsWith(QLatin1Char('1')) &&
+                  rolledBackText.contains("agent changed line 1\n") &&
+                  !rolledBackText.contains("main changed line 1\n") &&
+                  unmergedAfterRollback.trimmed().isEmpty() &&
+                  gitOutput(wtPath, {"stash", "list"}).isEmpty(),
+              QString("Pull main rolls back an autostash overlap without "
+                      "polluting the agent worktree (clicked=%1 head=%2/%3 "
+                      "counts=%4 unmerged=%5 stash=%6)")
+                  .arg(conflictPullClicked)
+                  .arg(afterConflictHead, beforeConflictHead, conflictPullCounts,
+                       unmergedAfterRollback,
+                       gitOutput(wtPath, {"stash", "list"})));
         // Now that automatic synchronization has completed, introduce the
         // staged deletion and re-open the same branch. This isolates the diff
         // regression without making the earlier pull test reject a dirty tree.
@@ -2494,8 +2554,10 @@ int main(int argc, char *argv[])
         QElapsedTimer agentDiffTimer;
         agentDiffTimer.start();
         while (agentDiffTimer.elapsed() < 5000 &&
-               !window.testSourceControlPaths().contains(
-                   QStringLiteral("agent-live.txt")))
+               (!window.testSourceControlPaths().contains(
+                    QStringLiteral("agent-live.txt")) ||
+                window.testCachedAgentDiffFiles(issueSession.id) !=
+                    window.testSourceControlPaths().size()))
             QApplication::processEvents(QEventLoop::AllEvents, 20);
         check(window.testSourceControlPaths().contains(
                   QStringLiteral("agent-live.txt")),
