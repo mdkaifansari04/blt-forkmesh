@@ -420,11 +420,19 @@ public:
         rail->setStyleSheet(QStringLiteral("background:transparent;"));
         h->addWidget(rail);
         auto *holder = new QWidget(this);
+        // A transcript is often shown beside the session list or on a narrow
+        // laptop screen. Do not let a long command/path become this row's
+        // minimum width: the content labels can reflow, so give the layout
+        // permission to make them narrower and ask them for a taller height.
+        holder->setMinimumWidth(0);
+        holder->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         holder->setStyleSheet(QStringLiteral("background:transparent;"));
         auto *hv = new QVBoxLayout(holder);
         hv->setContentsMargins(0, kGap, 0, 0); // the inter-item gap
         hv->setSpacing(0);
         content->setParent(holder);
+        content->setMinimumWidth(0);
+        content->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         hv->addWidget(content);
         h->addWidget(holder, 1);
     }
@@ -596,8 +604,16 @@ ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent
 {
     setWidgetResizable(true);
     setFrameShape(QFrame::NoFrame);
+    // The transcript is a terminal-like view, including the status and
+    // interactive rows that inherit this font. Individual rich-text labels
+    // still set this explicitly where Qt otherwise resets their document font.
+    setFont(monoFont());
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     m_container = new QWidget;
+    m_container->setMinimumWidth(0);
+    m_container->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_container->setFont(monoFont());
     m_col = new QVBoxLayout(m_container);
     m_col->setContentsMargins(8, 14, 14, 14);
     m_col->setSpacing(0); // RailItems supply their own inter-item gap
@@ -2420,6 +2436,8 @@ QWidget *ClaudeTranscriptView::dotHeader(const QString &name,
 QWidget *ClaudeTranscriptView::connectorRow(QWidget *content, const QString &glyph)
 {
     auto *row = new QWidget;
+    row->setMinimumWidth(0);
+    row->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     row->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *h = new QHBoxLayout(row);
     h->setContentsMargins(2, 0, 0, 0);
@@ -2434,6 +2452,12 @@ QWidget *ClaudeTranscriptView::connectorRow(QWidget *content, const QString &gly
         "color:%1;background:transparent;border:none;").arg(m_p.muted));
     h->addWidget(lab, 0, Qt::AlignTop);
     content->setParent(row);
+    // Tool output and prompts may contain unbroken paths, URLs, or command
+    // arguments. Their labels are word-wrapped; this removes the layout's
+    // default minimum-width floor so that wrapping actually takes effect in a
+    // narrow transcript pane.
+    content->setMinimumWidth(0);
+    content->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     h->addWidget(content, 1);
     return row;
 }
