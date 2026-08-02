@@ -355,7 +355,11 @@ def test_render_repo_issues_applies_the_search_filter_after_the_status_filter():
     assert 'if (issuesView.filter === "open") return issue.status !== "closed";' in render
     assert 'return issue.status === "closed";' in render
     # ...with the search predicate layered on afterward, not replacing them.
-    assert '}).filter((issue) => issueMatchesQuery(issue, issuesView.query));' in render
+    # The predicate now runs over pageFilterQueries so the header search box is
+    # ANDed onto this tab's own search box (adhoc #37) instead of either one
+    # silently winning; issuesView.query alone still has to match.
+    assert '}).filter((issue) => pageFilterQueries(issuesView.query)' in render
+    assert '.every((query) => issueMatchesQuery(issue, query)));' in render
 
 
 def test_issue_search_box_is_wired_to_a_delegated_input_listener():
