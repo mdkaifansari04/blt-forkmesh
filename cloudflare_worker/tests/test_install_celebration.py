@@ -48,7 +48,15 @@ def test_world_installs_endpoint_serves_only_fresh_anonymous_installs():
 def test_world_runs_the_firework_show_for_a_fresh_desktop_install():
     assert "/api/world/installs?refresh=" in APP
     celebration = APP.split("celebrateRecentInstall(installs = [])", 1)[1][:4000]
-    # Same ten-minute firework treatment and shared styles as an instance join.
+    # Keep a long enough discovery window for polling, but end the install
+    # fireworks after ten seconds and do not replay them on the next poll.
+    assert "const installFreshnessMs = 10 * 60 * 1000;" in celebration
+    assert "const fireworksDurationMs = 10 * 1000;" in celebration
+    assert "this.lastCelebratedInstallId === newest.id" in celebration
+    assert "this.lastCelebratedInstallId = newest.id;" in celebration
+    assert "}, fireworksDurationMs);" in celebration
+    assert "Fireworks run for ten seconds." in celebration
+    # Install and federation celebrations continue to share the same styles.
     assert "world-instance-fireworks" in celebration
     assert "world-instance-celebration" in celebration
     assert "data-world-install-celebration" in celebration
@@ -59,4 +67,5 @@ def test_world_runs_the_firework_show_for_a_fresh_desktop_install():
     assert "data-world-instance-celebration" in celebration
     # Timer hygiene: reset in the constructor, cleared on teardown.
     assert "this.installCelebrationTimer = 0;" in APP
+    assert 'this.lastCelebratedInstallId = "";' in APP
     assert "window.clearTimeout(this.installCelebrationTimer);" in APP
