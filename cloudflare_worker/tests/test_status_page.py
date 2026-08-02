@@ -12,6 +12,7 @@ import ast
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote
 
 
@@ -43,6 +44,7 @@ def _load(*names, extra_globals=None):
         "STATUS_HOUR_MS", "STATUS_DAY_MS",
         "STATUS_MINUTES_SHOWN", "STATUS_MINUTE_RETAIN_MS",
         "STATUS_MIRROR_PREFIX", "STATUS_MIRROR_MAX",
+        "STATUS_RETIRED_MIRRORS",
         "STATUS_DEPLOY_GRACE_MS", "STATUS_DEPLOY_MAX_MS",
         "EMAIL_STATUS_LOOKBACK_MS", "EMAIL_DELIVERY_GRACE_MS",
         "EMAIL_DELIVERY_FAILURE_STATES",
@@ -54,6 +56,7 @@ def _load(*names, extra_globals=None):
         "_status_deploy_semaphore_active",
         "_record_status_deploy_sample",
         "_claim_status_sample_minute",
+        "_email_delivery_status",
     }
     selected = []
     for node in list(urls_tree.body) + list(tree.body):
@@ -89,7 +92,7 @@ class _Clock:
 
 def _sample_env(
         now, error_paths, host_online=True, db_ok=True, error_rows=None,
-        mirror_rows=None, do_abort_rows=None):
+        mirror_rows=None, latest_email=None, do_abort_rows=None):
     """Stub error rows plus the signed direct-HTTPS mirror health count."""
     inserted = []
     hourly = []
@@ -155,10 +158,12 @@ def _sample_env(
 
 def _run_sample(
         error_paths=(), host_online=True, db_ok=True, error_rows=None,
-        mirror_rows=None, do_abort_rows=None):
+        mirror_rows=None, latest_email=None, email_configured=True,
+        do_abort_rows=None):
     extra, inserted, hourly, minutely = _sample_env(
         _Clock.value, error_paths, host_online, db_ok,
         error_rows=error_rows, mirror_rows=mirror_rows,
+        latest_email=latest_email,
         do_abort_rows=do_abort_rows,
     )
     g = _load("record_status_sample", extra_globals=extra)
@@ -328,7 +333,7 @@ def test_signed_mirror_endpoints_get_independent_status_samples():
     assert all("jett" not in system for system in results)
 
 
-def test_every_registered_mirror_name_gets_a_row_even_without_a_valid_proof():
+def test_registered_active_mirrors_get_rows_but_retired_nodes_do_not():
     rows = [
         {"node_name": "mirror2", "checked_at": 0, "healthy": 0,
          "integrity": None, "forkmesh_active": 0,
@@ -339,11 +344,14 @@ def test_every_registered_mirror_name_gets_a_row_even_without_a_valid_proof():
         {"node_name": "mirror7", "checked_at": 0, "healthy": 0,
          "integrity": None, "forkmesh_active": 0,
          "forkmesh_verified_at": 0},
+        {"node_name": "mirror8", "checked_at": 0, "healthy": 0,
+         "integrity": None, "forkmesh_active": 0,
+         "forkmesh_verified_at": 0},
     ]
     results, reasons, _minutes = _run_sample(mirror_rows=rows)
-    assert {"mirror:mirror2", "mirror:mirror6", "mirror:mirror7"} <= set(results)
-    assert all(results[f"mirror:mirror{n}"] == 1 for n in (2, 6, 7))
-    assert "fresh signed" in reasons["mirror:mirror6"]
+    assert results["mirror:mirror2"] == 1
+    assert "fresh signed" in reasons["mirror:mirror2"]
+    assert all(f"mirror:mirror{n}" not in results for n in (6, 7, 8))
 
 
 def test_stale_signed_mirror_stays_visible_as_down():
@@ -1112,6 +1120,16 @@ def test_recorded_signed_mirror_appears_as_a_full_status_system():
     assert len(system["minutes"]) == 60
     assert "account-bound direct HTTPS endpoint" in system["checkDescription"]
     assert all(s["id"] != "mirror:jett" for s in out["systems"])
+
+
+def test_retired_mirror_history_does_not_resurrect_status_rows():
+    cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
+    minute_rows = [
+        {"minute_ts": cur_minute, "system": "mirror:mirror6",
+         "ok": 0, "reason": "old retired-node failure"},
+    ]
+    out = _run_history([], minute_rows=minute_rows)
+    assert all(s["id"] != "mirror:mirror6" for s in out["systems"])
 
 
 def test_latest_passing_minute_clears_failure_from_hourly_rollup():
