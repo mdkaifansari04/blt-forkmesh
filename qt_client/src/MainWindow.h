@@ -1177,12 +1177,7 @@ private:
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
     // fresh sample exists and only probes when the socket is down.
     void onRelayLatencySampled(int ms);
-    void initRelayReachabilityWatch(); // OS reachability → instant radar flips
-    // Keep the radar's node blips live from the roster alone (no git reads, no
-    // repo detail required), so the dish is always reporting node status even
-    // before the Mirror nodes page has ever been built (adhoc #44).
-    void refreshRelayRadarBlips();
-    void openMirrorNodesPage();    // radar click: land on the Mirror nodes page
+    void initRelayReachabilityWatch(); // OS reachability → instant speed-dot flips
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
     void showNodesWindow();        // full window listing nodes, status, public wallet
@@ -6134,6 +6129,11 @@ private:
     QWidget *m_scmSyncRow = nullptr;
     ElidingStatusLabel *m_scmSyncStatus = nullptr; // "Writing objects: 62%" …
     int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
+    // Inputs to updateScmCommitControlVisibility(). Commits waiting to sync used
+    // to swap the commit row out for Sync Changes unconditionally, which stranded
+    // a staged change with a typed message and no button to land it.
+    bool m_scmOutgoingBlocking = false; // commits ahead, or a sync in flight
+    int m_scmPendingChangeCount = 0;    // working-tree rows the panel would list
     // Latest one-line progress note per syncing/pushing repository row, keyed
     // the same way m_syncingRepos/m_pushingRepos are. Only the open repo's note
     // is painted; the rest are kept so switching back mid-sync still shows one.
