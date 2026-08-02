@@ -9719,6 +9719,33 @@ test("portrait coarse-pointer thumbstick and visual viewport remain usable", asy
   await prepareWorldPage(page, "portrait-touch");
   await waitForWorld(page);
 
+  const compactRaster = await page
+    .locator("forkmesh-world")
+    .evaluate((shell) => {
+      const diagnostics = shell.world.getDiagnostics();
+      let quarterScaleTextures = 0;
+      shell.world.scene.traverse((object) => {
+        const materials = Array.isArray(object.material)
+          ? object.material
+          : [object.material];
+        materials.filter(Boolean).forEach((material) => {
+          if (material.map?.image?.dataset?.textureScale === "0.25") {
+            quarterScaleTextures += 1;
+          }
+        });
+      });
+      return {
+        compact: diagnostics.output.compactRenderer,
+        canvasTextureScale: diagnostics.output.canvasTextureScale,
+        quarterScaleTextures,
+      };
+    });
+  expect(compactRaster).toMatchObject({
+    compact: true,
+    canvasTextureScale: 0.25,
+  });
+  expect(compactRaster.quarterScaleTextures).toBeGreaterThan(0);
+
   await expect(page.locator("[data-world-thumbstick]")).toBeVisible();
   await page.locator("[data-world-settings-open]").first().click();
   await expect(page.locator("[data-world-settings]")).toHaveAttribute(
