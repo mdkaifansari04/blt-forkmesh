@@ -1347,15 +1347,19 @@ QPlainTextEdit#actionLog {
     selection-background-color: #2563eb;
     selection-color: #ffffff;
 }
-#agentStatusPill {
-    background-color: #f3f4f6;
+QToolButton#agentStatusPill {
+    background-color: transparent;
     border: 1px solid #d1d5db;
-    border-radius: 11px;
-    padding: 2px 10px;
-    font-size: 12px;
+    border-radius: 12px;
+    padding: 2px 7px 2px 4px;
+    font-size: 11px;
     font-weight: 600;
     color: #1f2937;
 }
+QToolButton#agentStatusPill:hover { background-color: #f3f4f6; }
+QToolButton#agentStatusPill[outcomeTone="success"] { border-color: #3fb950; }
+QToolButton#agentStatusPill[outcomeTone="failure"] { border-color: #f85149; }
+QToolButton#agentStatusPill[outcomeTone="pending"] { border-color: #e3742f; }
 #agentNetPanel {
     background-color: #f9fafb;
     border: 1px solid #d1d5db;
@@ -2648,14 +2652,18 @@ QPlainTextEdit#actionLog {
     selection-background-color: #0969da;
     selection-color: #ffffff;
 }
-#agentStatusPill {
-    background-color: #f6f8fa;
+QToolButton#agentStatusPill {
+    background-color: transparent;
     border: 1px solid #d0d7de;
-    border-radius: 11px;
-    padding: 2px 10px;
-    font-size: 12px;
+    border-radius: 12px;
+    padding: 2px 7px 2px 4px;
+    font-size: 11px;
     font-weight: 600;
 }
+QToolButton#agentStatusPill:hover { background-color: #f6f8fa; }
+QToolButton#agentStatusPill[outcomeTone="success"] { border-color: #3fb950; }
+QToolButton#agentStatusPill[outcomeTone="failure"] { border-color: #f85149; }
+QToolButton#agentStatusPill[outcomeTone="pending"] { border-color: #e3742f; }
 #agentNetPanel {
     background-color: #f6f8fa;
     border: 1px solid #d0d7de;
