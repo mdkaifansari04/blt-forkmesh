@@ -9025,16 +9025,20 @@ WORLD_QA_CARDS = (
      "layers and hanging roots are visible."),
     ("world-aquarium-control-panel", "Aquarium control panel",
      "Walk to the Office lobby aquarium and confirm one compact panel is "
-     "mounted at its bottom-right corner. Feed the fish, switch the backdrop "
+     "attached below its bottom-right base rail, moves with the tank, and stays "
+     "open while each control is hovered. Feed the fish, switch the backdrop "
      "between opaque and clear, and switch the aquarium light off and on. "
      "Confirm every button updates immediately, remains keyboard accessible, "
-     "and the two toggle preferences survive a reload."),
+     "the school-mode row reads standby or the active grouping, and the two "
+     "toggle preferences survive a reload."),
     ("world-aquarium-user-school", "Users represented by aquarium fish",
      "Compare the public account directory with the Office aquarium. Confirm "
      "there is one small, unlabeled fish per public user, each user's color "
      "and size remain stable after reload, active/recent users swim in upper "
      "lanes, inactive users stay near the bottom, and the full school fits "
-     "inside the tank without oversized fish."),
+     "inside the tank without oversized fish. Wait for school mode and confirm "
+     "matching public country, browser, then coarse browser/OS agent groups "
+     "briefly form smooth pods before returning to their individual routes."),
     ("world-admin-direct-layout", "Admin direct World layout editing",
      "Sign in as a platform administrator. Drag the visible base of several "
      "Town Square objects and confirm each follows without a tiny edit handle. "

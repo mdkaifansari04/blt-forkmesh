@@ -171,7 +171,25 @@ def test_aquarium_bottom_right_control_panel_combines_all_four_actions():
     assert "aquariumDistance / 9" in SCENE
     assert ".world-aquarium-control-panel" in CSS
     assert "grid-template-columns: repeat(2" in CSS
+    # The panel grows below the projected base-rail anchor. A negative Y
+    # translation lifts it over the glass and makes it look detached.
+    assert "transform: translate(calc(-100% - 8px), 8px)" in CSS
+    assert ".world-aquarium-control-panel::before" in CSS
     assert ".world-aquarium-feed-action" not in CSS
+
+
+def test_aquarium_control_panel_reports_live_school_mode():
+    assert (
+        'aquariumSchoolStatus.dataset.worldAquariumSchoolStatus = ""'
+        in SCENE
+    )
+    assert 'aquariumSchoolStatus.setAttribute("role", "status")' in SCENE
+    assert '"SCHOOL MODE · STANDBY"' in SCENE
+    assert "`SCHOOL MODE · ${schooling.label} ACTIVE`" in SCENE
+    assert "controls.schooling" in SCENE
+    assert '.world-aquarium-school-status[data-active="true"]' in CSS
+    assert "@keyframes world-aquarium-school-pulse" in CSS
+    assert "@media (prefers-reduced-motion: reduce)" in CSS
 
 
 def test_aquarium_fish_approach_a_visitor_gently_without_a_second_loop():
@@ -229,3 +247,35 @@ def test_each_public_user_gets_one_small_name_seeded_fish_in_an_activity_lane():
     # Names seed appearance but are not drawn or attached as visible labels.
     assert "makeLabelSprite" not in aquarium
     assert "fillText(user.name" not in aquarium
+
+
+def test_fish_occasionally_school_by_public_country_browser_and_agent():
+    aquarium = _aquarium_block()
+    for contract in (
+        "AQUARIUM_SCHOOL_INITIAL_DELAY_MS = 14_000",
+        "AQUARIUM_SCHOOL_MIN_IDLE_MS = 24_000",
+        "AQUARIUM_SCHOOL_MAX_IDLE_MS = 38_000",
+        "AQUARIUM_SCHOOL_DURATION_MS = 11_000",
+        "AQUARIUM_SCHOOL_TRANSITION_MS = 1_600",
+        'id: "country", label: "COUNTRY"',
+        'id: "browser", label: "BROWSER"',
+        'id: "agent", label: "AGENT"',
+    ):
+        assert contract in aquarium
+    assert "countryCode: /^[A-Z]{2}$/.test(" in aquarium
+    assert "const browser = aquariumSchoolValue(" in aquarium
+    assert "const os = aquariumSchoolValue(" in aquarium
+    assert "agent: browser && os ? `${browser} / ${os}` : \"\"" in aquarium
+    assert "userAgent" not in aquarium
+    assert "function aquariumSchoolGroupsForMode(mode)" in aquarium
+    assert ".filter(([, states]) => states.length >= 2)" in aquarium
+    assert "function beginAquariumSchool(time)" in aquarium
+    assert "function updateAquariumSchool(time, animate = true)" in aquarium
+    assert "function aquariumSchoolTarget(state, time)" in aquarium
+    assert "state.point.lerp(state.schoolPoint, schoolBlend)" in aquarium
+    assert "state.tangent" in aquarium
+    assert "getSchoolingState," in aquarium
+    # Schooling reuses the aquarium's animation callback rather than creating
+    # a competing clock.
+    assert "setTimeout(" not in aquarium
+    assert "setInterval(" not in aquarium

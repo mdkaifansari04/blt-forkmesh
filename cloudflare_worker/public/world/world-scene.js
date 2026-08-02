@@ -11705,6 +11705,19 @@ function createOfficeMarineAquarium(THREE, animated) {
   const AQUARIUM_FEEDING_APPROACH_MS = 4_200;
   const AQUARIUM_FEEDING_RETURN_MS = 6_500;
   const AQUARIUM_GLASS_TAP_REACTION_MS = 2_600;
+  const AQUARIUM_SCHOOL_INITIAL_DELAY_MS = 14_000;
+  const AQUARIUM_SCHOOL_MIN_IDLE_MS = 24_000;
+  const AQUARIUM_SCHOOL_MAX_IDLE_MS = 38_000;
+  const AQUARIUM_SCHOOL_DURATION_MS = 11_000;
+  const AQUARIUM_SCHOOL_TRANSITION_MS = 1_600;
+  const AQUARIUM_SCHOOL_MODES = Object.freeze([
+    Object.freeze({ id: "country", label: "COUNTRY" }),
+    Object.freeze({ id: "browser", label: "BROWSER" }),
+    // Raw user-agent strings never enter the public member directory. This
+    // privacy-safe signature combines its already-public coarse browser and
+    // operating-system families instead.
+    Object.freeze({ id: "agent", label: "AGENT" }),
+  ]);
   const feedingCenter = new THREE.Vector3(0.68, 6.9, -1.8);
   let feedingStartedAt = -Infinity;
   let feedingActive = false;
@@ -12850,6 +12863,13 @@ function createOfficeMarineAquarium(THREE, animated) {
   let visitorTargetY = 3;
   let visitorTargetZ = 0;
   let lastAquariumFishTime = 0;
+  let aquariumSchoolModeCursor = -1;
+  let aquariumSchoolSequence = 0;
+  let aquariumSchoolMode = null;
+  let aquariumSchoolGroups = [];
+  let aquariumSchoolStartedAt = -Infinity;
+  let aquariumSchoolEndsAt = -Infinity;
+  let nextAquariumSchoolAt = AQUARIUM_SCHOOL_INITIAL_DELAY_MS;
 
   function aquariumUserPalette(name) {
     const rng = outfitRandom(
@@ -12875,17 +12895,239 @@ function createOfficeMarineAquarium(THREE, animated) {
     }
   }
 
+  function aquariumSchoolValue(value, placeholders = []) {
+    const text = String(value || "").trim().slice(0, 48);
+    if (!text) return "";
+    const lower = text.toLowerCase();
+    if (
+      ["hidden", "unknown", "other", "device", ...placeholders].includes(
+        lower,
+      )
+    ) {
+      return "";
+    }
+    return text.toUpperCase();
+  }
+
+  function clearAquariumSchoolAssignments() {
+    aquariumSchoolGroups = [];
+    for (const state of fishStates) {
+      state.schoolGroupIndex = -1;
+      state.schoolSlot = -1;
+      state.schoolGroupSize = 0;
+    }
+  }
+
+  function aquariumSchoolGroupsForMode(mode) {
+    const grouped = new Map();
+    for (const state of fishStates) {
+      const key = state.schoolKeys?.[mode] || "";
+      if (!key) continue;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(state);
+    }
+    return [...grouped.entries()]
+      .filter(([, states]) => states.length >= 2)
+      .sort(
+        ([left], [right]) =>
+          left.localeCompare(right),
+      );
+  }
+
+  function aquariumSchoolIdleDelay() {
+    const spread =
+      AQUARIUM_SCHOOL_MAX_IDLE_MS - AQUARIUM_SCHOOL_MIN_IDLE_MS;
+    return (
+      AQUARIUM_SCHOOL_MIN_IDLE_MS +
+      aquariumSeedFraction(
+        fishStates.length + 181,
+        aquariumSchoolSequence + 1,
+      ) *
+        spread
+    );
+  }
+
+  function scheduleNextAquariumSchool(time, initial = false) {
+    const now = Number.isFinite(Number(time)) ? Number(time) : 0;
+    nextAquariumSchoolAt =
+      now +
+      (initial
+        ? AQUARIUM_SCHOOL_INITIAL_DELAY_MS
+        : aquariumSchoolIdleDelay());
+  }
+
+  function finishAquariumSchool(time, schedule = true) {
+    aquariumSchoolMode = null;
+    aquariumSchoolStartedAt = -Infinity;
+    aquariumSchoolEndsAt = -Infinity;
+    clearAquariumSchoolAssignments();
+    if (schedule) scheduleNextAquariumSchool(time);
+  }
+
+  function beginAquariumSchool(time) {
+    for (
+      let offset = 1;
+      offset <= AQUARIUM_SCHOOL_MODES.length;
+      offset += 1
+    ) {
+      const modeIndex =
+        (aquariumSchoolModeCursor + offset) %
+        AQUARIUM_SCHOOL_MODES.length;
+      const mode = AQUARIUM_SCHOOL_MODES[modeIndex];
+      const grouped = aquariumSchoolGroupsForMode(mode.id);
+      if (!grouped.length) continue;
+      aquariumSchoolModeCursor = modeIndex;
+      aquariumSchoolMode = mode;
+      aquariumSchoolSequence += 1;
+      aquariumSchoolStartedAt = time;
+      aquariumSchoolEndsAt = time + AQUARIUM_SCHOOL_DURATION_MS;
+      const usableLength = tankLength - 4.2;
+      const laneLength = usableLength / grouped.length;
+      aquariumSchoolGroups = grouped.map(([key, states], index) => {
+        const phase =
+          aquariumSeedFraction(
+            key.length + aquariumSchoolSequence * 17,
+            index + 211,
+          ) *
+          Math.PI *
+          2;
+        const groupState = {
+          key,
+          size: states.length,
+          phase,
+          centerY: 3.1 + (index % 3) * 2.05,
+          centerZ: -usableLength / 2 + laneLength * (index + 0.5),
+          travel: clamp(laneLength * 0.28, 0.7, 2.2),
+        };
+        states.forEach((state, slot) => {
+          state.schoolGroupIndex = index;
+          state.schoolSlot = slot;
+          state.schoolGroupSize = states.length;
+        });
+        return groupState;
+      });
+      return true;
+    }
+    scheduleNextAquariumSchool(time);
+    return false;
+  }
+
+  function updateAquariumSchool(time, animate = true) {
+    if (!animate || fishStates.length < 2) return 0;
+    const now = Number.isFinite(Number(time)) ? Number(time) : 0;
+    if (aquariumSchoolMode && now >= aquariumSchoolEndsAt) {
+      finishAquariumSchool(now);
+    }
+    if (
+      !aquariumSchoolMode &&
+      !feedingActive &&
+      now >= nextAquariumSchoolAt
+    ) {
+      beginAquariumSchool(now);
+    }
+    if (!aquariumSchoolMode || feedingActive) return 0;
+    const elapsed = now - aquariumSchoolStartedAt;
+    const remaining = aquariumSchoolEndsAt - now;
+    return (
+      aquariumSmoothstep(elapsed / AQUARIUM_SCHOOL_TRANSITION_MS) *
+      aquariumSmoothstep(remaining / AQUARIUM_SCHOOL_TRANSITION_MS)
+    );
+  }
+
+  function aquariumSchoolTarget(state, time) {
+    const groupState =
+      aquariumSchoolGroups[state.schoolGroupIndex];
+    if (!groupState || state.schoolSlot < 0) return false;
+    const columns = Math.max(
+      2,
+      Math.ceil(Math.sqrt(state.schoolGroupSize)),
+    );
+    const rows = Math.ceil(state.schoolGroupSize / columns);
+    const column = state.schoolSlot % columns;
+    const row = Math.floor(state.schoolSlot / columns);
+    const elapsed = Math.max(0, time - aquariumSchoolStartedAt);
+    const travelPhase = elapsed * 0.00034 + groupState.phase;
+    const heading = Math.cos(travelPhase) >= 0 ? 1 : -1;
+    const columnSpacing = Math.min(
+      0.72,
+      (groupState.travel * 1.35) / columns,
+    );
+    state.schoolPoint.set(
+      Math.sin(elapsed * 0.00062 + groupState.phase) * 0.34 +
+        (row % 2 ? 0.11 : -0.11),
+      clamp(
+        groupState.centerY +
+          (row - (rows - 1) / 2) * 0.52 +
+          Math.sin(travelPhase * 1.4) * 0.18,
+        1.5,
+        tankHeight - 1.35,
+      ),
+      clamp(
+        groupState.centerZ +
+          Math.sin(travelPhase) * groupState.travel +
+          (column - (columns - 1) / 2) * columnSpacing,
+        -tankLength / 2 + 0.8,
+        tankLength / 2 - 0.8,
+      ),
+    );
+    state.schoolTangent
+      .set(
+        Math.cos(elapsed * 0.00062 + groupState.phase) * 0.18,
+        Math.cos(travelPhase * 1.4) * 0.035,
+        heading,
+      )
+      .normalize();
+    return true;
+  }
+
+  function getSchoolingState(time = performance.now()) {
+    const now = Number.isFinite(Number(time))
+      ? Number(time)
+      : performance.now();
+    const active =
+      Boolean(aquariumSchoolMode) &&
+      !feedingActive &&
+      now >= aquariumSchoolStartedAt &&
+      now < aquariumSchoolEndsAt;
+    return {
+      active,
+      mode: active ? aquariumSchoolMode.id : null,
+      label: active ? aquariumSchoolMode.label : "STANDBY",
+      groupCount: active ? aquariumSchoolGroups.length : 0,
+      startedAt: active ? aquariumSchoolStartedAt : null,
+      endsAt: active ? aquariumSchoolEndsAt : null,
+      nextAt: active ? null : nextAquariumSchoolAt,
+    };
+  }
+
   function setUsers(users = []) {
     const normalized = (Array.isArray(users) ? users : [])
-      .map((user) => ({
-        name: String(user?.name || "").trim().slice(0, 32),
-        active: user?.away === true,
-        activityBucket: String(user?.activityBucket || ""),
-      }))
+      .map((user) => {
+        const browser = aquariumSchoolValue(
+          user?.browser,
+          ["browser"],
+        );
+        const os = aquariumSchoolValue(user?.os, ["os"]);
+        return {
+          name: String(user?.name || "").trim().slice(0, 32),
+          active: user?.away === true,
+          activityBucket: String(user?.activityBucket || ""),
+          countryCode: /^[A-Z]{2}$/.test(
+            String(user?.countryCode || "").toUpperCase(),
+          )
+            ? String(user.countryCode).toUpperCase()
+            : "",
+          browser,
+          os,
+          agent: browser && os ? `${browser} / ${os}` : "",
+        };
+      })
       .filter((user) => user.name);
     const nextKey = JSON.stringify(normalized);
     if (nextKey === fishPopulationKey) return;
     fishPopulationKey = nextKey;
+    finishAquariumSchool(lastAquariumFishTime, false);
+    scheduleNextAquariumSchool(lastAquariumFishTime, true);
     disposeAquariumFish();
     const population = Math.max(1, normalized.length);
     const schoolScale = clamp(
@@ -12964,6 +13206,16 @@ function createOfficeMarineAquarium(THREE, animated) {
         feedingDelay: (index % 20) * 180,
         visitorPoint: new THREE.Vector3(),
         visitorTangent: new THREE.Vector3(),
+        schoolKeys: {
+          country: user.countryCode,
+          browser: user.browser,
+          agent: user.agent,
+        },
+        schoolGroupIndex: -1,
+        schoolSlot: -1,
+        schoolGroupSize: 0,
+        schoolPoint: new THREE.Vector3(),
+        schoolTangent: new THREE.Vector3(),
       });
       group.add(fish);
     });
@@ -13136,10 +13388,11 @@ function createOfficeMarineAquarium(THREE, animated) {
     return aquariumLightEnabled;
   }
 
-  function getControlState() {
+  function getControlState(time = performance.now()) {
     return {
       backdropOpaque,
       lightEnabled: aquariumLightEnabled,
+      schooling: getSchoolingState(time),
     };
   }
   function aquariumSmoothstep(value) {
@@ -13226,6 +13479,7 @@ function createOfficeMarineAquarium(THREE, animated) {
             1 - tapElapsed / AQUARIUM_GLASS_TAP_REACTION_MS,
           )
         : 0;
+    const schoolBlend = updateAquariumSchool(motionTime, animate);
     for (let index = 0; index < fishStates.length; index += 1) {
       const state = fishStates[index];
       const approachesVisitor =
@@ -13239,6 +13493,15 @@ function createOfficeMarineAquarium(THREE, animated) {
       state.curve.getTangentAt(progress, state.tangent)
         .multiplyScalar(state.direction)
         .normalize();
+      if (
+        schoolBlend > 0 &&
+        aquariumSchoolTarget(state, motionTime)
+      ) {
+        state.point.lerp(state.schoolPoint, schoolBlend);
+        state.tangent
+          .lerp(state.schoolTangent, schoolBlend)
+          .normalize();
+      }
       let feedingBlend = 0;
       if (feedingActive) {
         const elapsed = Math.max(0, time - feedingStartedAt);
@@ -13499,6 +13762,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     const now = Number.isFinite(Number(time)) ? Number(time) : performance.now();
     updateFeeding(now, true);
     if (feedingActive) return false;
+    if (aquariumSchoolMode) finishAquariumSchool(now);
     feedingStartedAt = now;
     feedingActive = true;
     reducedFeedingPoseApplied = false;
@@ -13564,6 +13828,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     tapGlass,
     updateFeeding,
     getFeedingState,
+    getSchoolingState,
     setUsers,
     setBackdropOpaque,
     setLightEnabled,
@@ -16751,6 +17016,13 @@ export function createWorldScene({
   const aquariumControlTitle = document.createElement("span");
   aquariumControlTitle.className = "world-aquarium-control-title";
   aquariumControlTitle.textContent = "REEF CONTROL";
+  const aquariumSchoolStatus = document.createElement("span");
+  aquariumSchoolStatus.className = "world-aquarium-school-status";
+  aquariumSchoolStatus.dataset.worldAquariumSchoolStatus = "";
+  aquariumSchoolStatus.dataset.active = "false";
+  aquariumSchoolStatus.setAttribute("role", "status");
+  aquariumSchoolStatus.setAttribute("aria-live", "polite");
+  aquariumSchoolStatus.textContent = "SCHOOL MODE · STANDBY";
   const aquariumFeedAction = document.createElement("button");
   aquariumFeedAction.type = "button";
   aquariumFeedAction.className = "world-aquarium-control-button";
@@ -16777,6 +17049,7 @@ export function createWorldScene({
   aquariumLightAction.dataset.worldAquariumLight = "";
   aquariumControlPanel.append(
     aquariumControlTitle,
+    aquariumSchoolStatus,
     aquariumFeedAction,
     aquariumTapAction,
     aquariumBackdropAction,
@@ -16808,7 +17081,18 @@ export function createWorldScene({
 
   function syncAquariumControlButtons(time = performance.now()) {
     const feeding = officeAquarium.getFeedingState(time).active;
-    const controls = officeAquarium.getControlState();
+    const controls = officeAquarium.getControlState(time);
+    const schooling = controls.schooling;
+    aquariumSchoolStatus.dataset.active = String(schooling.active);
+    aquariumSchoolStatus.textContent = schooling.active
+      ? `SCHOOL MODE · ${schooling.label} ACTIVE`
+      : "SCHOOL MODE · STANDBY";
+    aquariumSchoolStatus.setAttribute(
+      "aria-label",
+      schooling.active
+        ? `Fish school mode active, grouped by ${schooling.label.toLowerCase()}`
+        : "Fish school mode is standing by",
+    );
     aquariumFeedAction.disabled = feeding;
     aquariumFeedAction.dataset.feeding = String(feeding);
     aquariumFeedAction.textContent = feeding ? "FEEDING…" : "FEED";
@@ -16943,8 +17227,9 @@ export function createWorldScene({
     }
     syncAquariumControlButtons(time);
     aquariumControlPanel.hidden = false;
-    // Anchor the always-available lobby controls to the lower-right corner of
-    // the tank instead of floating at the bottom of the viewport.
+    // The anchor is the tank's lower-right base rail. CSS grows the panel
+    // below that point, so its mounting tab stays visibly attached instead of
+    // letting the controls float over the glass.
     updateScreenLabel(
       THREE,
       officeAquarium.controlAnchor,
