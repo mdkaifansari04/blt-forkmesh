@@ -2786,17 +2786,6 @@ private:
     void writeMirrorActionsSummary();
     void enqueuePushEvent(const QString &owner, const QString &name,
                           const QString &commit, const QString &ref);
-    // Push trigger for a sealed (age-encrypted) mirror. Such a mirror has no
-    // durable path: every seal — and every app start — re-materializes it under
-    // a fresh temporary directory that the app itself clones from the working
-    // copy, so nothing ever *pushes* into it and its post-receive hook only
-    // fires for a manual `git push`. Agent branches land on main by merge in the
-    // working copy, which is exactly the case that hook cannot see. Compare the
-    // freshly sealed head against the last one Actions dispatched for (persisted
-    // per repo, so a new temporary path is not mistaken for a new commit) and
-    // queue the push-triggered workflows when it actually advanced.
-    void dispatchSealedMirrorHead(int index, const QString &headBranch,
-                                  const QString &headCommit);
     // The labels this node answers to when a workflow declares `runs-on:` — its
     // machine node name, its mirror-executor node name, the platform, and any
     // extra labels the operator typed in Settings. A workflow dedicated to

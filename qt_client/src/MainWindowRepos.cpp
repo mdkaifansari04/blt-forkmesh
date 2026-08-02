@@ -126,11 +126,6 @@ struct PublicSyncWorkerResult {
     QString error;
     QString notice;
     QString upstreamSummary;
-    // The served head of the freshly sealed mirror, read on the worker thread
-    // (two git subprocesses) so the Actions push trigger below costs the GUI
-    // thread nothing.
-    QString headBranch;
-    QString headCommit;
     bool created = false;
     bool legacyRemoved = true;
 };
@@ -6493,16 +6488,6 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                     }
                 }
             }
-            // Read the served head while we are still off the GUI thread; the
-            // completion handler turns an advanced head into a push event for
-            // Actions (dispatchSealedMirrorHead).
-            if (result->materialization && result->materialization->isValid()) {
-                const QString sealedPath =
-                    result->materialization->repositoryPath();
-                result->headBranch = mirrorHeadBranch(sealedPath);
-                result->headCommit =
-                    mirrorBranchCommit(sealedPath, result->headBranch);
-            }
             mutableVaultSecret.fill('\0');
             mutableVaultSecret.clear();
         });
@@ -6639,14 +6624,6 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
             // Propagate the freshly sealed state to the SSH-fed headless
             // mirrors too — they don't hear the relay's mirror-update frames.
             pushToSshMirrorRemotes(index);
-            // This is the only place a sealed mirror's served head can move, so
-            // it is also the only place `on: push` workflows can be triggered
-            // from: the mirror is re-cloned here rather than pushed to, so its
-            // post-receive hook never sees the merge that just landed on main.
-            // Takes `index` (not the `current` reference above) because it pumps
-            // the event loop, which can reallocate m_repositories.
-            dispatchSealedMirrorHead(index, result->headBranch,
-                                     result->headCommit);
             // A fresh install mirrors the flagship as a normal public repo, so
             // this is the path its very first clone finishes on. Last, because
             // it reads the mirror and pumps the event loop while `current` is

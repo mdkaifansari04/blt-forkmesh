@@ -53,21 +53,6 @@ QString externalActionHeadKey(const RepositoryRecord &repo)
                    .toHex());
 }
 
-// Same idea as externalActionHeadKey, for the served head of a sealed mirror:
-// the last commit push-triggered workflows were dispatched for. It has to be
-// persisted because the mirror itself is a throwaway temporary materialization —
-// there is no stable on-disk marker to compare against across a seal or a
-// restart.
-QString sealedActionHeadKey(const RepositoryRecord &repo)
-{
-    return QStringLiteral("actions/sealedHeads/") +
-           QString::fromLatin1(
-               QCryptographicHash::hash(
-                   (repo.owner + QLatin1Char('/') + repo.name).toUtf8(),
-                   QCryptographicHash::Sha256)
-                   .toHex());
-}
-
 QString gitCommitAt(const QString &repository, const QString &ref)
 {
     QProcess process;
@@ -774,49 +759,6 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
         return; // push detection only; no workflow execution for this repo
 
     queueWorkflowsForCommit(repoIndex, owner, name, commit, ref);
-}
-
-void MainWindow::dispatchSealedMirrorHead(int index, const QString &headBranch,
-                                          const QString &headCommit)
-{
-    if (index < 0 || index >= m_repositories.size() || !m_actionStore)
-        return;
-    const QString branch = headBranch.trimmed();
-    const QString commit = headCommit.trimmed().toLower();
-    // "HEAD" is mirrorHeadBranch's last-resort answer for a mirror holding no
-    // branch at all; there is no ref for a run to check out.
-    if (branch.isEmpty() || branch == QLatin1String("HEAD") ||
-        !kExternalActionCommit.match(commit).hasMatch())
-        return;
-    const RepositoryRecord repo = m_repositories.at(index);
-    // Previews don't run anything, and an externally-managed mirror executor
-    // watches its own source ref through scanExternalActionsSources instead.
-    if (repo.previewOnly || repo.externallyManagedActions)
-        return;
-
-    QSettings settings;
-    const QString key = sealedActionHeadKey(repo);
-    const QString previous = settings.value(key).toString().trimmed().toLower();
-    if (previous == commit)
-        return; // The seal re-materialized the same content at a new path.
-    settings.setValue(key, commit);
-    settings.sync();
-    // First seal we have a record of (fresh install, or the first run after an
-    // upgrade): adopt the current head as the baseline. Starting from "now"
-    // never replays the repository's whole history as one push, matching how
-    // enabling an external Actions source behaves.
-    if (previous.isEmpty())
-        return;
-    // A manual `git push` straight into the temporary mirror already queued this
-    // commit through the post-receive hook, and the seal that follows must not
-    // queue it a second time.
-    for (const ActionRun &run : std::as_const(m_actionRuns)) {
-        if (run.owner == repo.owner && run.name == repo.name &&
-            run.commit.compare(commit, Qt::CaseInsensitive) == 0)
-            return;
-    }
-    enqueuePushEvent(repo.owner, repo.name, commit,
-                     QStringLiteral("refs/heads/") + branch);
 }
 
 // Enqueue every .forkmesh/ workflow present at `commit` for owner/name whose
