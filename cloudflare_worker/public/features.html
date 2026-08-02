@@ -764,6 +764,16 @@
           public pool, pending allocations, and completed on-chain transfers
           are separate states.
         </p>
+        <p class="feature-section-lede">
+          One deliberate exception: if the operator enables temporary deposit
+          addresses for world-element purchases, ForkMesh generates that
+          address and holds its key from the moment it is created until it
+          sweeps the payment — half to the treasury, half to online mirror
+          nodes. During that window those specific funds are custodial and an
+          operator compromise could move them. The store labels that option
+          with its own custody, and paying the published pool address from
+          your own wallet remains available and puts no key on ForkMesh.
+        </p>
         <div class="feature-grid">
           <article class="feature-item">
             <h3>Guest-first access</h3>

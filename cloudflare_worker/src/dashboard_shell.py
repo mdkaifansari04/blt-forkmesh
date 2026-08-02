@@ -88,6 +88,15 @@ PAGES = {
         "title": "Chat - ForkMesh",
         "description": "ForkMesh #general chat uses a relay-derived authenticated shared key; the relay can decrypt messages.",
     },
+    "tasks": {
+        "view": "tasks",
+        "section": "tasks",
+        "nav": "tasks",
+        "route": "/dashboard/tasks",
+        "asset": "dashboard/tasks/index.html",
+        "title": "Tasks - ForkMesh",
+        "description": "The organization-private ForkMesh task catalog: status, routing, and assignment for every task the desktop app and the World office board share.",
+    },
     "settings": {
         "view": "settings",
         "section": "profile",

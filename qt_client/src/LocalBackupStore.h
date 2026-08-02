@@ -38,14 +38,11 @@ constexpr int kBackupKeepDefault = 24;
 constexpr int kBackupKeepMin = 1;
 constexpr int kBackupKeepMax = 240;
 
-// The default for backup/hourlyEnabled when the user has never chosen: on only
-// for control nodes — the installs holding a Cloudflare API token, and with it
-// the deploy credentials and worker state that nothing else in the mesh can
-// hand back. Everywhere else backups start off and are opted into from
-// Settings -> Data: a rolling day of hourly ~1GB tarballs filled several small
-// VPS disks outright, and that cost isn't worth paying on every desktop and
-// mirror by default. `cloudflareApiToken` is this node's stored token (see
-// control::cloudflareApiTokenFromVariables); blank/whitespace means no token.
+// The default for backup/hourlyEnabled when the user has never chosen is off
+// everywhere. A rolling day of multi-gigabyte control-node snapshots can fill
+// a disk in hours, so even credentials-bearing control nodes must explicitly
+// opt in from Settings -> Data. The parameter is retained for source/API
+// compatibility with older callers.
 bool autoBackupDefault(const QString &cloudflareApiToken);
 
 // Where snapshots live: <app data>/backups. Kept inside the app-data dir so it

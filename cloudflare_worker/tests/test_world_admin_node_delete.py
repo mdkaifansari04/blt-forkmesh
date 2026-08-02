@@ -269,6 +269,9 @@ def test_qt_nodes_page_deletes_the_node_everywhere():
     assert "destroyVultrServerForNode(target" in chat
     assert "removeVultrMirrorDns(target" in chat
     assert "sendMeshNodeDeleteRequest(target, nodeId)" in chat
+    assert '"1/3 ' in chat
+    assert '"2/3 ' in chat
+    assert '"3/3 ' in chat
     assert '"/v2/instances/") + instanceId' in chat
     assert '"/zones/%1/dns_records/%2"' in chat
     assert '"/api/world/admin/nodes/delete"' in chat
@@ -283,6 +286,11 @@ def test_world_ui_only_renders_delete_action_for_admins():
     world = WORLD.read_text(encoding="utf-8")
     assert "this.identity?.isAdmin === true" in world
     assert "data-world-admin-delete-node" in world
+    assert 'data-world-delete-step="1"' in world
+    assert 'data-world-delete-step="2"' in world
+    assert 'data-world-delete-step="3"' in world
+    assert 'setStep(2, "active")' in world
+    assert 'setStep(3, "complete")' in world
     assert "node?.name || node?.machineName" in world
     assert "DELETE ${nodeName}" in world
     assert 'this.postJSON("/api/world/admin/nodes/delete"' in world
