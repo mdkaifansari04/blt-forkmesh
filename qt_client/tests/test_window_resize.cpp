@@ -3045,16 +3045,49 @@ int main(int argc, char *argv[])
                     !iconContainsChromaKey(quickAgentModel->itemIcon(i));
             }
         }
+        // adhoc #1204: rows are the bare model name — no "· Claude Code" /
+        // "· Codex" suffix repeated down the whole menu; the per-row tooltip
+        // still says which agent runs the model.
         check(quickAgentModel && quickAgentModel->isVisible() &&
                   quickAgentModel->maxVisibleItems() >= quickAgentModel->count() &&
-                  agentModelLabels.contains(QStringLiteral("Auto · Claude Code")) &&
-                  agentModelLabels.contains(QStringLiteral("GPT-5.5 · Codex")) &&
+                  agentModelLabels.contains(QStringLiteral("Auto")) &&
+                  agentModelLabels.contains(QStringLiteral("GPT-5.5")) &&
                   agentModelLabels.contains(QStringLiteral("OpenAI API")) &&
                   agentModelLabels.contains(QStringLiteral("Claude API")) &&
+                  std::none_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
+                               [](const QString &label) {
+                                   return label.contains(
+                                              QStringLiteral("Claude Code")) ||
+                                          label.endsWith(QStringLiteral("Codex"));
+                               }) &&
+                  quickAgentModel->itemData(
+                      quickAgentModel->findText(QStringLiteral("GPT-5.5")),
+                      Qt::ToolTipRole).toString() ==
+                      QStringLiteral("GPT-5.5 · Codex") &&
                   allAgentModelsHaveIcons && agentModelIconsAreClean && quickProvider &&
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
               QString("one icon-rich composer dropdown combines agents and models (%1)")
                   .arg(agentModelLabels.join(QStringLiteral(", "))));
+        // The menu is ordered strongest-model-first, and the superseded /
+        // small-sibling models are left out entirely (adhoc #1204). Offline this
+        // is the static fallback line-up, so the order is exact: the Auto router
+        // above every concrete model, then Claude strongest-first, then Codex —
+        // with Haiku 4.5 and GPT-5.4-Mini dropped.
+        QStringList rankedLabels;
+        for (int i = 0; i < quickAgentModel->count(); ++i) {
+            // Manual and the two API agents carry no model of their own.
+            if (quickAgentModel->itemData(i, Qt::UserRole + 1).toString().isEmpty())
+                continue;
+            rankedLabels << quickAgentModel->itemText(i);
+        }
+        check(rankedLabels == QStringList({QStringLiteral("Auto"),
+                                           QStringLiteral("Fable 5"),
+                                           QStringLiteral("Opus 4.8"),
+                                           QStringLiteral("Sonnet 4.6"),
+                                           QStringLiteral("GPT-5.5"),
+                                           QStringLiteral("GPT-5.4")}),
+              QString("composer models sort most powerful first, weak ones hidden (%1)")
+                  .arg(rankedLabels.join(QStringLiteral(", "))));
         QComboBox *canonicalModel =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));
         int concreteClaudeChoice = -1;
@@ -3113,6 +3146,16 @@ int main(int argc, char *argv[])
                   .arg(speedLabels.join(QStringLiteral(", "))));
         QComboBox *quickMode =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModeSelector"));
+        // adhoc #1204: each row also carries the permission it grants, spelled out
+        // beside the label once the popup is open (Qt::UserRole + 7), so the open
+        // menu is not four bare words.
+        bool modesExplainPermissions = quickMode;
+        if (quickMode) {
+            for (int i = 0; i < quickMode->count(); ++i) {
+                modesExplainPermissions &=
+                    !quickMode->itemData(i, Qt::UserRole + 7).toString().isEmpty();
+            }
+        }
         check(quickMode && quickMode->width() <= 32 &&
                   quickMode->accessibleName().startsWith(
                       QStringLiteral("Permission mode:")) &&
@@ -3120,6 +3163,7 @@ int main(int argc, char *argv[])
                   quickMode->itemText(1) == QStringLiteral("Ask") &&
                   quickMode->itemText(2) == QStringLiteral("Plan") &&
                   quickMode->itemText(3) == QStringLiteral("Edit") &&
+                  modesExplainPermissions &&
                   !quickMode->itemIcon(0).isNull() &&
                   !quickMode->itemIcon(3).isNull() &&
                   !iconContainsChromaKey(quickMode->itemIcon(0)) &&
@@ -3187,7 +3231,11 @@ int main(int argc, char *argv[])
         const QStringList codexModels = seeded.testQuickAddModelLabels();
         check(!seeded.testQuickAddModelVisible() &&
                   quickAgentModel && quickAgentModel->isVisible() &&
-                  quickAgentModel->currentText().endsWith(QStringLiteral("· Codex")) &&
+                  quickAgentModel->currentText().startsWith(QStringLiteral("GPT-")) &&
+                  quickAgentModel
+                      ->itemData(quickAgentModel->currentIndex(), Qt::ToolTipRole)
+                      .toString()
+                      .endsWith(QStringLiteral("· Codex")) &&
                   !seeded.testQuickAddModelEditable() && codexModels ==
                       QStringList({QStringLiteral("GPT-5.5"),
                                    QStringLiteral("GPT-5.4"),
