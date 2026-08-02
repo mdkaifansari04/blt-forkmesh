@@ -1177,12 +1177,7 @@ private:
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
     // fresh sample exists and only probes when the socket is down.
     void onRelayLatencySampled(int ms);
-    void initRelayReachabilityWatch(); // OS reachability → instant radar flips
-    // Keep the radar's node blips live from the roster alone (no git reads, no
-    // repo detail required), so the dish is always reporting node status even
-    // before the Mirror nodes page has ever been built (adhoc #44).
-    void refreshRelayRadarBlips();
-    void openMirrorNodesPage();    // radar click: land on the Mirror nodes page
+    void initRelayReachabilityWatch(); // OS reachability → instant speed-dot flips
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
     void showNodesWindow();        // full window listing nodes, status, public wallet

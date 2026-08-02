@@ -623,11 +623,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // readout).
     connect(m_relayLatencyTimer, &QTimer::timeout, this,
             &MainWindow::updateNodeOnlineControls);
-    // …and keep the dish's node blips on the same tick, so the radar reports
-    // node status continuously instead of only while the Mirror nodes page is
-    // built and open (adhoc #44). Roster-derived, so this costs no git/network.
+    // …and keep the chrome-line node dots on the same tick, so node status is
+    // reported continuously instead of only while the Mirror nodes page is built
+    // and open (adhoc #44). Roster-derived, so this costs no git/network.
     connect(m_relayLatencyTimer, &QTimer::timeout, this,
-            &MainWindow::refreshRelayRadarBlips);
+            &MainWindow::refreshNodeDotMatrix);
     m_relayLatencyTimer->start(60 * 1000);
     logStartup(QStringLiteral("  timer armed: relay latency and uptime every 60000ms"));
     QTimer::singleShot(2500, this, [this] {
