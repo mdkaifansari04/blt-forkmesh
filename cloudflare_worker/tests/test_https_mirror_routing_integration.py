@@ -175,6 +175,9 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
 
     proxy = _function_source("_https_mirror_proxy")
     assert (
+        "request_bypasses_repository_metadata_cache(request)" in proxy
+    )
+    assert (
         proxy.index("repository_metadata_cache_get(env, metadata_cache_key)")
         < proxy.index("_https_mirror_candidates(")
     )
@@ -222,6 +225,24 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
             503,
         )
     ) is None
+
+
+def test_live_repository_reads_bypass_cache_for_round_robin_accounting():
+    namespace = {}
+    exec(
+        _function_source("request_bypasses_repository_metadata_cache"),
+        namespace,
+    )
+    bypasses = namespace["request_bypasses_repository_metadata_cache"]
+
+    def request(**headers):
+        return SimpleNamespace(headers=headers)
+
+    assert bypasses(request(**{"cache-control": "no-cache"}))
+    assert bypasses(request(**{"cache-control": "public, no-store"}))
+    assert bypasses(request(pragma="no-cache"))
+    assert not bypasses(request(**{"cache-control": "max-age=3600"}))
+    assert not bypasses(request())
 
 
 def test_repository_metadata_cache_round_trips_through_global_kv():

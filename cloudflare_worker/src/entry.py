@@ -1397,6 +1397,36 @@ async def repository_metadata_cache_put(env, cache_key, response, status):
         pass
 
 
+def request_bypasses_repository_metadata_cache(request):
+    """Honor explicit live-read semantics before mirror selection.
+
+    Dashboard repository reads use ``fetch(..., cache="no-store")`` and also
+    send ``Cache-Control: no-cache``.  Those requests must reach a healthy
+    mirror so the round-robin cursor advances and the Mirrors view records the
+    node that actually served the request.  Immutable state-addressed cache
+    entries remain available to ordinary clients that do not request a live
+    read.
+    """
+    try:
+        cache_control = str(
+            request.headers.get("cache-control") or ""
+        ).lower()
+        pragma = str(request.headers.get("pragma") or "").lower()
+    except Exception:
+        return False
+    directives = {
+        part.split("=", 1)[0].strip()
+        for part in cache_control.split(",")
+        if part.strip()
+    }
+    return bool(
+        directives.intersection({"no-cache", "no-store"})
+        or "no-cache" in {
+            part.strip() for part in pragma.split(",") if part.strip()
+        }
+    )
+
+
 async def purge_catalog_related_caches():
     # One concurrent sweep instead of four sequential awaits — this runs on
     # every catalog write, inside the request's critical path.
@@ -42982,6 +43012,9 @@ async def _https_mirror_proxy(
         return json_response({"error": "method_not_allowed"}, status=405)
     query = _https_mirror_request_query(
         urlparse(request.url), operation, release_sha=release_sha)
+    bypass_cache = bool(
+        bypass_cache or request_bypasses_repository_metadata_cache(request)
+    )
     metadata_cache_key = (
         repository_metadata_cache_key(context, operation, query)
         if method == "GET" else ""
