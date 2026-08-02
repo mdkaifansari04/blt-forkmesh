@@ -718,6 +718,10 @@ public:
         const AgentSession *session = agentSessionForPull(prNumber, headBranch);
         return session ? session->id : 0;
     }
+    QString testResolvablePullHead(PullRequest pr) const
+    {
+        return resolvablePullHead(std::move(pr));
+    }
     bool testBindAgentSessionsToPull(int prNumber, const QString &headBranch)
     {
         return bindAgentSessionsToPull(prNumber, headBranch);
@@ -2265,6 +2269,10 @@ private:
     void showPullCheckLog(int runId);               // load a run's log into the panel
     QStringList pullCommitShas(const PullRequest &pr) const; // base..head SHAs
     QList<int> runIdsForPull(PullRequest pr) const; // matching action runs
+    // Resolve the signed historical head when it still exists, otherwise use
+    // the durable canonical pr/<n> branch materialized for this PR. Takes a
+    // value because the git probes pump the GUI event loop.
+    QString resolvablePullHead(PullRequest pr) const;
     // Everything a PR's base..head range walk yields, cached against the two
     // resolved SHAs. showPull() re-runs for the same PR on every pull reload —
     // and it is reached several times over per pass (the commit list, the checks

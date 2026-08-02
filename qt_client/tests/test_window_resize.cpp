@@ -1418,6 +1418,16 @@ int main(int argc, char *argv[])
     window.testOpenRepository(repoIdx);
     QApplication::processEvents();
 
+    // Historical signed PR heads can be pruned after repair/cleanup. The PR's
+    // durable canonical branch remains the review source, so every PR surface
+    // must resolve that instead of feeding a missing name to `git diff`.
+    runGitChecked(repoDir.path(), {"branch", "pr/404", "HEAD"});
+    PullRequest repairedPull;
+    repairedPull.number = 404;
+    repairedPull.head = QStringLiteral("api-pr/removed/historical-head");
+    check(window.testResolvablePullHead(repairedPull) == QStringLiteral("pr/404"),
+          QStringLiteral("a missing signed PR head falls back to pr/<number>"));
+
     // adhoc #55: the status strip names the commit the open branch is on —
     // short SHA, date, subject and author. The read is detached (it must not
     // block the GUI thread), so pump the loop until it lands.
