@@ -8,6 +8,7 @@
 #include "IssueStore.h"
 #include "ProjectStore.h"
 #include "PullStore.h"
+#include "PullReviewModel.h"
 #include "CoveStore.h"
 #include "ActionStore.h"
 #include "ActionFile.h"
@@ -4174,6 +4175,7 @@ private:
     // Show the transparent public community reward pool. The pool key is not
     // available to the Worker and user wallets always remain self-custodial.
     void showTreasuryDonateDialog();
+    void showTreasuryDonateDialogForPool(const QJsonObject &pool);
     void copyIssueToClipboard();
     void copyIssueThreadToClipboard();
     void askAiForCurrentIssue();
@@ -5568,6 +5570,9 @@ private:
     QLineEdit *m_previewCacheRootEdit = nullptr;
     // Settings -> Data tab: storage breakdown table and backup/cleanup status.
     QTableWidget *m_dataDirTable = nullptr;
+    // Bumped for each Settings > Data refresh so a slow recursive directory
+    // scan cannot overwrite a newer table after its worker finishes.
+    quint64 m_dataDirScanGeneration = 0;
     QLabel *m_dataStatus = nullptr;
     // Settings -> Data tab: the hourly backup panel.
     QTableWidget *m_backupTable = nullptr;
@@ -6371,6 +6376,7 @@ private:
     QWidget *m_scmSyncRow = nullptr;
     ElidingStatusLabel *m_scmSyncStatus = nullptr; // "Writing objects: 62%" …
     int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
+    quint64 m_scmStatusGeneration = 0; // rejects late `git status` callbacks
     // Inputs to updateScmCommitControlVisibility(). Commits waiting to sync used
     // to swap the commit row out for Sync Changes unconditionally, which stranded
     // a staged change with a typed message and no button to land it.
@@ -6744,6 +6750,14 @@ private:
         QStringList conflictFiles;
     };
     QHash<int, PullConflictEntry> m_pullConflictCache;
+    // Agent attribution per PR, read from the ForkMesh-Agent trailer in the
+    // signed commit series. Computed once per load on a worker rather than
+    // inside refreshPullList(), which called pullAgentProvenance() for every
+    // visible row: a PR with no trailer scans its whole (multi-megabyte) mbox to
+    // the end before answering "no", and the stall log caught that table build
+    // at 1.15s. Missing entry simply means "no badge yet".
+    QHash<int, PullAgentProvenance> m_pullProvenance;
+    quint64 m_pullProvenanceGen = 0;
     // Generation counter: each reloadPulls() bumps it so any in-flight async
     // conflict pass aborts once the repo/list it was started for has changed.
     quint64 m_pullConflictGen = 0;

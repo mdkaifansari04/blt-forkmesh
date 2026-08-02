@@ -399,6 +399,12 @@ void MainWindow::refreshDataDirTable()
     nested.insert(QDir(repositoryPreviewRoot()).absolutePath());
     nested.insert(QDir(backupRoot()).absolutePath());
 
+    // Directory walking is unbounded disk I/O: a single large mirror or backup
+    // tree made opening Settings stall for seconds in the watchdog trace. Paint
+    // the stable rows immediately and let a value-only worker fill the counts.
+    // The generation makes an older scan harmless when roots change or the user
+    // presses Refresh again before it completes.
+    const quint64 generation = ++m_dataDirScanGeneration;
     m_dataDirTable->setRowCount(dirs.size());
     for (int r = 0; r < dirs.size(); ++r) {
         const DataDir &d = dirs.at(r);
@@ -412,22 +418,16 @@ void MainWindow::refreshDataDirTable()
         pathItem->setToolTip(d.path);
         m_dataDirTable->setItem(r, 1, pathItem);
 
+        auto pending = [] {
+            auto *it = new QTableWidgetItem(QStringLiteral("Calculating…"));
+            it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            it->setForeground(QColor(0x8b, 0x94, 0x9e));
+            return it;
+        };
         if (exists) {
-            QSet<QString> prune = nested;
-            prune.remove(d.path); // always count the row's own subtree in full
-            DirStat st;
-            scanInto(d.path, prune, st);
-            auto num = [](int n) {
-                auto *it = new QTableWidgetItem(QLocale().toString(n));
-                it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-                return it;
-            };
-            m_dataDirTable->setItem(r, 2, num(st.folders));
-            m_dataDirTable->setItem(r, 3, num(st.files));
-            auto *sizeItem =
-                new QTableWidgetItem(QLocale().formattedDataSize(st.bytes));
-            sizeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-            m_dataDirTable->setItem(r, 4, sizeItem);
+            m_dataDirTable->setItem(r, 2, pending());
+            m_dataDirTable->setItem(r, 3, pending());
+            m_dataDirTable->setItem(r, 4, pending());
         } else {
             auto dash = [] {
                 auto *it = new QTableWidgetItem(QStringLiteral("\xE2\x80\x94"));
@@ -437,8 +437,7 @@ void MainWindow::refreshDataDirTable()
             };
             m_dataDirTable->setItem(r, 2, dash());
             m_dataDirTable->setItem(r, 3, dash());
-            auto *sizeItem =
-                new QTableWidgetItem(QStringLiteral("not created yet"));
+            auto *sizeItem = new QTableWidgetItem(QStringLiteral("not created yet"));
             sizeItem->setForeground(QColor(0x8b, 0x94, 0x9e));
             m_dataDirTable->setItem(r, 4, sizeItem);
         }
@@ -472,6 +471,44 @@ void MainWindow::refreshDataDirTable()
         actionRow->addStretch();
         m_dataDirTable->setCellWidget(r, 5, actions);
     }
+
+    runOffThread<QVector<DirStat>>(
+        [dirs, nested] {
+            QVector<DirStat> stats(dirs.size());
+            for (int i = 0; i < dirs.size(); ++i) {
+                const DataDir &dir = dirs.at(i);
+                if (!QFileInfo::exists(dir.path))
+                    continue;
+                QSet<QString> prune = nested;
+                prune.remove(dir.path); // count this row's tree in full
+                scanInto(dir.path, prune, stats[i]);
+            }
+            return stats;
+        },
+        [this, generation](QVector<DirStat> stats) {
+            if (generation != m_dataDirScanGeneration || !m_dataDirTable ||
+                m_dataDirTable->rowCount() != stats.size())
+                return;
+            auto numberItem = [](qint64 number) {
+                auto *it = new QTableWidgetItem(QLocale().toString(number));
+                it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                return it;
+            };
+            for (int row = 0; row < stats.size(); ++row) {
+                // A deleted directory is represented by the static placeholder
+                // installed above; do not turn it into a misleading 0-byte row.
+                const QTableWidgetItem *path = m_dataDirTable->item(row, 1);
+                if (!path || !QFileInfo::exists(path->text()))
+                    continue;
+                const DirStat &stat = stats.at(row);
+                m_dataDirTable->setItem(row, 2, numberItem(stat.folders));
+                m_dataDirTable->setItem(row, 3, numberItem(stat.files));
+                auto *size = new QTableWidgetItem(
+                    QLocale().formattedDataSize(stat.bytes));
+                size->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                m_dataDirTable->setItem(row, 4, size);
+            }
+        });
 }
 
 void MainWindow::setDataStatus(const QString &text, bool error)

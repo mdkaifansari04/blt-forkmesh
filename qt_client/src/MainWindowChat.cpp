@@ -4679,40 +4679,44 @@ void MainWindow::showTreasuryDonateDialog()
                          QNetworkRequest::SameOriginRedirectPolicy);
     request.setTransferTimeout(15000);
     QNetworkReply *reply = m_networkAccess->get(request);
-    QEventLoop loop;
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        constexpr qsizetype kMaximumPoolResponse = 1024 * 1024;
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QNetworkReply::NetworkError networkError = reply->error();
+        const QByteArray body = reply->read(kMaximumPoolResponse + 1);
+        reply->deleteLater();
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
+        const QJsonObject pool =
+            parseError.error == QJsonParseError::NoError && document.isObject()
+                ? document.object()
+                : QJsonObject();
+        const QString address = pool.value("address").toString().trimmed();
+        const bool validAddress =
+            forkmesh::rewards::decodeBase58(address, 32).size() == 32;
+        const bool externalSigner =
+            pool.value("custody").toString() ==
+                QLatin1String("external-local-signer") &&
+            pool.value("privateKeyStoredByWorker").isBool() &&
+            !pool.value("privateKeyStoredByWorker").toBool(true);
+        if (networkError != QNetworkReply::NoError || httpStatus != 200 ||
+            body.size() > kMaximumPoolResponse || !validAddress ||
+            !externalSigner) {
+            QMessageBox::information(
+                this, QStringLiteral("Community reward pool"),
+                QStringLiteral(
+                    "ForkMesh could not verify a non-custodial community-pool "
+                    "address from this server. No transfer has been requested."));
+            return;
+        }
+        showTreasuryDonateDialogForPool(pool);
+    });
+}
 
-    constexpr qsizetype kMaximumPoolResponse = 1024 * 1024;
-    const int httpStatus =
-        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    const QNetworkReply::NetworkError networkError = reply->error();
-    QByteArray body = reply->read(kMaximumPoolResponse + 1);
-    reply->deleteLater();
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
-    const QJsonObject resp =
-        parseError.error == QJsonParseError::NoError && document.isObject()
-            ? document.object()
-            : QJsonObject();
+void MainWindow::showTreasuryDonateDialogForPool(const QJsonObject &resp)
+{
     const QString address = resp.value("address").toString().trimmed();
-    const bool validAddress =
-        forkmesh::rewards::decodeBase58(address, 32).size() == 32;
-    const bool externalSigner =
-        resp.value("custody").toString() ==
-            QLatin1String("external-local-signer") &&
-        resp.value("privateKeyStoredByWorker").isBool() &&
-        !resp.value("privateKeyStoredByWorker").toBool(true);
-    if (networkError != QNetworkReply::NoError || httpStatus != 200 ||
-        body.size() > kMaximumPoolResponse || !validAddress ||
-        !externalSigner) {
-        QMessageBox::information(
-            this, QStringLiteral("Community reward pool"),
-            QStringLiteral(
-                "ForkMesh could not verify a non-custodial community-pool "
-                "address from this server. No transfer has been requested."));
-        return;
-    }
 
     // Only accept a Solana URI that visibly targets the verified public pool.
     // A bare URI is safer than following an unverified server-supplied target.
