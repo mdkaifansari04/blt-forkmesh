@@ -4004,6 +4004,7 @@ private:
     void openCommitsForContributor(const QString &author);
     void setRepoBranch(const QString &branch);
     QString repoHeadBranch() const;          // the checked-out branch (HEAD)
+    void updateCommitsBranchButtonLabel();   // branch + current worktree identity
     void refreshCommitsBranchButton();       // commits-page branch indicator/menu
     void createAndCheckoutBranch();          // "Create new branch…"
     QString currentRef() const;
@@ -5870,6 +5871,8 @@ private:
     // In the bottom status bar: the git identity (name <email>) configured for
     // the repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
+    // The linked/main checkout whose working tree the Git workspace is showing.
+    QLabel *m_footerWorktreeInfo = nullptr;
     // Next to it: the commit the browsed branch currently points at (date,
     // subject and author), so the strip says where the branch sits, not just
     // which branch is open.
@@ -6414,7 +6417,6 @@ private:
     QTextBrowser *m_scmDiff = nullptr;
     QLabel *m_scmCountLabel = nullptr;
     QLabel *m_scmViewedLabel = nullptr;  // "3 of 26 files viewed"
-    QPushButton *m_scmAutoViewedButton = nullptr; // auto-mark-viewed-on-scroll
     QPushButton *m_scmGenerateButton = nullptr;
     QComboBox *m_scmGenModel = nullptr;       // AI model for inline generation
     QComboBox *m_scmGenKind = nullptr;        // "Commit message" vs "X post"
@@ -6495,6 +6497,9 @@ private:
     QPushButton *m_scmStickyViewed = nullptr;
     QString m_scmStickySection;      // section key shown in the sticky header
     QTimer *m_scmAutoViewedDebounce = nullptr;
+    int m_scmLastAutoViewedScrollValue = 0;
+    int m_scmAutoViewedScrollDirection = 1; // +1 down, -1 back up
+    bool m_scmApplyingAutoViewed = false; // ignore render/anchor scroll signals
     // Set while the tree selection is following the diff scroll, so
     // currentItemChanged doesn't bounce the diff back to the file header.
     bool m_scmSuppressFileScroll = false;

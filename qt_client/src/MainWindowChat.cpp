@@ -560,6 +560,12 @@ QWidget *MainWindow::buildStatusBar()
     m_branchButton->setToolTip("Switch branch");
     setOcticon(m_branchButton, "git-branch", 12);
 
+    m_footerWorktreeInfo = new QLabel;
+    m_footerWorktreeInfo->setObjectName("footerWorktreeInfo");
+    m_footerWorktreeInfo->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_footerWorktreeInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_footerWorktreeInfo->hide();
+
     m_footerGitIdentity = new QLabel;
     m_footerGitIdentity->setObjectName("footerGitIdentity");
     m_footerGitIdentity->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -592,6 +598,7 @@ QWidget *MainWindow::buildStatusBar()
     row->setContentsMargins(10, 0, 10, 0);
     row->setSpacing(10);
     row->addWidget(m_branchButton);
+    row->addWidget(m_footerWorktreeInfo);
     row->addWidget(m_footerGitIdentity);
     row->addWidget(m_footerCommitInfo);
     row->addStretch(1);
@@ -3340,6 +3347,21 @@ void MainWindow::updateFooterCommitInfo()
     if (!m_footerCommitInfo)
         return;
     const QString dir = repoGitDir();
+    if (m_footerWorktreeInfo) {
+        if (dir.isEmpty() || !repoHasWorkingTree()) {
+            m_footerWorktreeInfo->clear();
+            m_footerWorktreeInfo->hide();
+        } else {
+            QString name = QFileInfo(QDir(dir).absolutePath()).fileName();
+            if (name.isEmpty())
+                name = QDir::toNativeSeparators(dir);
+            m_footerWorktreeInfo->setText(QStringLiteral("WT %1").arg(name));
+            m_footerWorktreeInfo->setToolTip(
+                QStringLiteral("Current worktree: %1")
+                    .arg(QDir::toNativeSeparators(dir)));
+            m_footerWorktreeInfo->show();
+        }
+    }
     if (dir.isEmpty()) {
         m_footerCommitInfo->clear();
         return;
