@@ -88,28 +88,19 @@ def test_counts_are_large_open_only_headers_and_paging_is_at_panel_bottom():
     assert "groundY + boardHeight + 2.04" not in SCENE
 
 
-def test_repo_exhibit_has_angled_named_pedestal_and_live_agent_terminals():
+def test_repo_exhibit_has_an_angled_named_pedestal_without_an_agent_control_dock():
     assert "repository-commit-activity-pedestal" in SCENE
     assert "backing.rotation.x = -Math.PI / 4;" in SCENE
     assert "repositoryCommitActivityTexture(" in SCENE
     assert "`${owner}/${name}`" in SCENE
-    assert "repository-agent-control-dock:" in SCENE
-    assert "function createRepositoryAgentTerminal(" in SCENE
-    assert "repository-agent-robot-body:" in SCENE
-    assert "repository-agent-robot-wheel:" in SCENE
-    assert "repository-agent-robot-arm:" in SCENE
-    assert "screen.rotation.x = -Math.PI / 2;" in SCENE
-    assert "side: THREE.DoubleSide" in SCENE
+    assert "repository-agent-control-dock:" not in SCENE
+    assert "function createRepositoryAgentTerminal(" not in SCENE
+    assert "repository-agent-robot-body:" not in SCENE
+    assert "repository-agent-robot-wheel:" not in SCENE
+    assert "repository-agent-robot-arm:" not in SCENE
+    assert "repository-agent-terminal-screen:" not in SCENE
     assert "repositoryAgentTasksByRepository" in SCENE
     assert "task.status === \"running\"" in SCENE
-    assert "task.targetNode" in SCENE
-    assert "latestTerminalLine" in SCENE
-    assert "CLICK · TRANSCRIPT + PROMPT" in SCENE
-    assert "repositoryAgentSession || null" in SCENE
-    assert "sessionId: String(session?.id || \"\")" in APP
-    assert "focusSessionId: String(sessionId || \"\")" in APP
-    assert "focusSessionId === String(session?.id || \"\")" in APP
-    assert "world-agent-prompt-form" in APP
 
 
 def test_agent_and_fediverse_counts_share_the_repository_placard():
@@ -131,27 +122,6 @@ def test_agent_and_fediverse_counts_share_the_repository_placard():
     # Counts no longer float as separate labels beside the robot dock or ring.
     assert "repository-agent-control-label:" not in SCENE
     assert "repository-fediverse-follower-caption:" not in SCENE
-
-
-def test_agent_robots_offer_a_terminal_first_person_button():
-    terminal = SCENE[
-        SCENE.index("function createRepositoryAgentTerminal("):
-        SCENE.index("function repositoryIssueAgentProviderTexture(")
-    ]
-    assert "repository-agent-terminal-first-person:" in terminal
-    assert 'context.fillText("1P"' in terminal
-    assert "repositoryAgentViewingPad" in terminal
-    assert "standingPoint: viewingPoint" in terminal
-    assert "interactive.push(terminal.userData.viewButton)" in SCENE
-    focus = SCENE[
-        SCENE.index("function focusRepositoryAgentTerminal("):
-        SCENE.index("function lockOfficeElevatorCamera(")
-    ]
-    assert 'setCameraMode("first-person", "repository-agent-terminal")' in focus
-    assert "firstPersonZoom = 1.35" in focus
-    assert "standingTarget.getWorldPosition" in focus
-    assert "target.getWorldPosition" in focus
-    assert "focusRepositoryAgentTerminal(hit.object)" in SCENE
 
 
 def test_cabinet_faces_are_swapped_and_agent_sides_are_provider_specific():
