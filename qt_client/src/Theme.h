@@ -485,6 +485,13 @@ QPushButton#agentsMagicButton:checked {
 }
 #topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
 #topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+/* The message text scrolls only when it is taller than the window allows; the
+   area must stay see-through either way so the bubble keeps its rounded fill. */
+#topMessageScroll, #topMessageViewport, #topMessageActions {
+    background: transparent; border: none;
+}
+/* Countdown / queue depth, dimmed, on the action row under the message. */
+#topMessageMeta { background: transparent; border: none; color: #6e7681; font-size: 11px; }
 #topMessageOverlay { background-color: #161b22; border: 1px solid #30363d;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #c9d1d9; }
@@ -1792,6 +1799,11 @@ QPushButton#agentsMagicButton:checked {
 }
 #topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
 #topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+/* See the dark rules: transparent so the bubble's own rounded fill shows. */
+#topMessageScroll, #topMessageViewport, #topMessageActions {
+    background: transparent; border: none;
+}
+#topMessageMeta { background: transparent; border: none; color: #6e7781; font-size: 11px; }
 #topMessageOverlay { background-color: #ffffff; border: 1px solid #d0d7de;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #1f2328; }

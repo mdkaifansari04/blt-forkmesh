@@ -4890,8 +4890,10 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     // the bubble text onto one of its action buttons.
     const bool topMessageWidget =
         obj == m_topMessageContainer || obj == m_topMessage ||
-        obj == m_topMessageExpand || obj == m_topMessageCopy ||
-        obj == m_topMessageSendToPrompt || obj == m_topMessageClose;
+        obj == m_topMessageScroll || obj == m_topMessageActions ||
+        obj == m_topMessageMeta || obj == m_topMessageCopy ||
+        obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
+        (m_topMessageScroll && obj == m_topMessageScroll->viewport());
     if (topMessageWidget && event->type() == QEvent::Enter) {
         setTopMessagePaused(true);
     } else if (topMessageWidget && event->type() == QEvent::Leave) {
