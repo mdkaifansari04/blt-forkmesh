@@ -2629,9 +2629,11 @@ int main(int argc, char *argv[])
                              "(adhoc #227)"));
 
         // Back to the first branch: its patch is still held, so the pane repaints
-        // from memory instead of emptying for a second read of the same diff.
+        // from memory on the very next turn of the event loop instead of waiting
+        // out a second read of the same diff.
         window.testSwitchToBranchImmediateSelection(
             QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
         check(window.testBranchDiffPaintedFromCache() &&
                   window.testBranchDiffText().contains(
                       QStringLiteral("branch-change.txt")),
