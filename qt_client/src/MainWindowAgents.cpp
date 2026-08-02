@@ -53,6 +53,74 @@ struct AgentImageBatch {
     QHash<int, QString> stamps;
 };
 
+QString agentMergeBase(const AgentSession &s);
+
+int agentStatusModelIconIndex(const AgentSession &session)
+{
+    const QString model = session.model.toLower();
+    if (session.provider.startsWith(QLatin1String("claude"))) {
+        if (model.contains(QLatin1String("opus")))
+            return 1;
+        if (model.contains(QLatin1String("haiku")))
+            return 3;
+        if (model.contains(QLatin1String("sonnet")) ||
+            model.contains(QLatin1String("fable")))
+            return 2;
+        return 0; // Auto / the provider default.
+    }
+    if (model.contains(QLatin1String("mini")) ||
+        model.contains(QLatin1String("nano")))
+        return 6;
+    if (model.contains(QLatin1String("codex")))
+        return 5;
+    return 4;
+}
+
+QString agentStatusBadgeText(const AgentSession &session)
+{
+    if (session.merged)
+        return QStringLiteral("Merged");
+    if (session.status == AgentStatus::Success)
+        return QStringLiteral("Done");
+    if (session.status == AgentStatus::Failed)
+        return QStringLiteral("Failed");
+    if (session.status == AgentStatus::Stopped)
+        return QStringLiteral("Stopped");
+    if (session.status == AgentStatus::Running)
+        return QStringLiteral("Working");
+    if (session.status == AgentStatus::Waiting)
+        return QStringLiteral("Waiting");
+    if (session.status == AgentStatus::Queued)
+        return QStringLiteral("Queued");
+    return QStringLiteral("Idle");
+}
+
+QString agentStatusBadgeTone(const AgentSession &session)
+{
+    if (session.merged || session.status == AgentStatus::Success)
+        return QStringLiteral("success");
+    if (session.status == AgentStatus::Failed ||
+        session.status == AgentStatus::Stopped)
+        return QStringLiteral("failure");
+    if (session.status == AgentStatus::Running ||
+        session.status == AgentStatus::Waiting ||
+        session.status == AgentStatus::Queued)
+        return QStringLiteral("pending");
+    return QStringLiteral("neutral");
+}
+
+QString agentStatusBadgeToolTip(const AgentSession &session)
+{
+    QStringList details;
+    details << agentStatusBadgeText(session);
+    if (session.merged)
+        details << QStringLiteral("Merged into %1").arg(agentMergeBase(session));
+    if (session.status == AgentStatus::Failed && !session.lastError.trimmed().isEmpty())
+        details << session.lastError.trimmed();
+    details << QStringLiteral("Click to show session details.");
+    return details.join(QLatin1Char('\n'));
+}
+
 void summarizeAgentPatch(const QString &patch, AgentDiffStat *stat)
 {
     if (!stat)
@@ -1828,11 +1896,18 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentCreateIssueButton, &QPushButton::clicked, this,
             &MainWindow::createLinkedIssueForSelectedSession);
 
-    // Connected/working status pill next to the title.
-    m_agentStatusPill = new QLabel;
+    // The model icon doubles as the compact outcome control. Its outline is
+    // outcome-coloured and the one-word label keeps the header scannable; hover
+    // or click reveals the fuller session detail without restoring a long pill.
+    m_agentStatusPill = new QToolButton;
     m_agentStatusPill->setObjectName("agentStatusPill");
-    m_agentStatusPill->setTextFormat(Qt::RichText);
-    m_agentStatusPill->setAlignment(Qt::AlignCenter);
+    m_agentStatusPill->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_agentStatusPill->setIconSize(QSize(18, 18));
+    m_agentStatusPill->setCursor(Qt::PointingHandCursor);
+    connect(m_agentStatusPill, &QToolButton::clicked, this, [this] {
+        if (m_agentInfoButton)
+            m_agentInfoButton->click();
+    });
 
     // Branch / Worktree in the output toolbar (adhoc #51): a click opens that
     // branch in the Git view (adhoc #131 — switchToAgentBranch points the view at
@@ -6723,8 +6798,11 @@ void MainWindow::showAgentSession(int sessionId)
     AgentSession *liveSession = findAgentSession(sessionId);
     if (!liveSession) {
         setAgentTitleText(m_agentTitle, QStringLiteral("Select a session"));
-        if (m_agentStatusPill)
-            m_agentStatusPill->clear();
+        if (m_agentStatusPill) {
+            m_agentStatusPill->setText(QString());
+            m_agentStatusPill->setIcon(QIcon());
+            m_agentStatusPill->hide();
+        }
         if (m_agentMeta)
             m_agentMeta->clear();
         if (m_agentMetaPopup)
@@ -10661,10 +10739,10 @@ void MainWindow::applyAgentDiffStatResult(int generation, int repoIndex,
     }
 }
 
-// Rebuild the "Connected · working on the task…" pill in the session detail
-// header from the session's current status. Split out of showAgentSession so
-// a targeted status flip (updateAgentStatusCell) can refresh just this pill
-// without paying for a full header/meta rebuild.
+// Rebuild the compact model/outcome control in the session detail header from
+// the current status. Split out of showAgentSession so a targeted status flip
+// (updateAgentStatusCell) refreshes just this control without rebuilding the
+// header or detail popup.
 void MainWindow::refreshAgentStatusPill(int sessionId)
 {
     if (!m_agentStatusPill || sessionId != m_selectedAgentSessionId)
@@ -10672,45 +10750,13 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     AgentSession *session = findAgentSession(sessionId);
     if (!session)
         return;
-    const QString s = session->status;
-    QString dotColor = agentStatusColor(s).name();
-    QString label;
-    if (s == AgentStatus::Running)
-        label = "Connected \xC2\xB7 working on the task\xE2\x80\xA6";
-    else if (s == AgentStatus::Queued)
-        label = "Queued";
-    else if (s == AgentStatus::Waiting)
-        label = "Waiting";
-    else if (s == AgentStatus::Success)
-        label = "Done";
-    else if (s == AgentStatus::Failed) {
-        // Never a bare "Failed": say why on the pill itself, one line, with the
-        // full text (a traceback, a rate-limit message) on hover. The transcript
-        // row carries the same reason in full.
-        label = "Failed";
-        QString why = session->lastError.trimmed();
-        if (!why.isEmpty()) {
-            QString oneLine = why.section(QLatin1Char('\n'), 0, 0).trimmed();
-            if (oneLine.size() > 120)
-                oneLine = oneLine.left(119) + QString::fromUtf8("\xE2\x80\xA6");
-            label += QString::fromUtf8(" \xC2\xB7 ") + oneLine;
-        }
-    } else
-        label = agentStatusText(s);
-    QString pill =
-        QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> "
-                          "<span style='color:#8b949e'>%2</span>")
-            .arg(dotColor, label.toHtmlEscaped());
-    m_agentStatusPill->setToolTip(s == AgentStatus::Failed
-                                      ? session->lastError.trimmed()
-                                      : QString());
-    // Issue #291: once the worktree/PR has landed in the base branch, flag
-    // it right on the status pill in the merged-purple used elsewhere.
-    if (session->merged)
-        pill += QString::fromUtf8(
-                    " <span style='color:#a371f7'>\xE2\x97\x8F merged into %1</span>")
-                    .arg(agentMergeBase(*session).toHtmlEscaped());
-    m_agentStatusPill->setText(pill);
+    m_agentStatusPill->setProperty("outcomeTone", agentStatusBadgeTone(*session));
+    m_agentStatusPill->setIcon(agentControlIcon(agentStatusModelIconIndex(*session)));
+    m_agentStatusPill->setText(agentStatusBadgeText(*session));
+    m_agentStatusPill->setToolTip(agentStatusBadgeToolTip(*session));
+    m_agentStatusPill->style()->unpolish(m_agentStatusPill);
+    m_agentStatusPill->style()->polish(m_agentStatusPill);
+    m_agentStatusPill->show();
 }
 
 // Spin the blue "sync" glyph on every running row's "#" cell so the agents
