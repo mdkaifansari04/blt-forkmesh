@@ -1,0 +1,241 @@
+#pragma once
+
+#include <QColor>
+#include <QElapsedTimer>
+#include <QPixmap>
+#include <QPointer>
+#include <QString>
+#include <QStringList>
+#include <QVector>
+#include <QWidget>
+
+class QTimer;
+
+namespace forkmesh::ui {
+
+// Launch splash (adhoc #39). Everything ForkMesh does before its window can
+// paint — restoring servers, building the two big repository surfaces, loading
+// the repo list, arming timers — happens inside MainWindow's constructor, with
+// no event loop running. Until now that was a second or two of nothing at all
+// on screen (or, on a slow disk, considerably more), and the only account of
+// what was going on went to the terminal via logStartup().
+//
+// This is that account, on screen: a centred card with a live mesh animation
+// and the running list of startup steps, each one ticking its own elapsed time
+// and settling into a tick when it finishes.
+//
+// Two constraints shape the implementation:
+//
+//  * No event loop. The splash cannot rely on timers to animate or on posted
+//    paint events to update while the constructor blocks the GUI thread, so
+//    every animated value is a pure function of the wall clock (see
+//    animationClock()) and pump() forces a synchronous repaint(). The same
+//    paint code then animates smoothly off a 16ms timer once the loop starts.
+//    We deliberately never call processEvents() from inside the constructor:
+//    that would deliver the ctor's own zero-delay singleShots (startDiagnostics,
+//    maybeAutoStartDirectMirrorServices) and in-flight favicon replies into a
+//    half-built MainWindow.
+//
+//  * No child widgets. The whole card is painted in one paintEvent, so a
+//    repaint() is one pass with no layout, and the global stylesheet (which
+//    matches plain QWidget) cannot paint over the translucent background.
+//
+// The splash has two lives. Before MainWindow exists there is no window to be
+// part of, so it is a frameless always-on-top window centred on screen. The
+// moment the window object exists, attachTo() reparents it into that window: it
+// becomes an ordinary child widget filling the window, dimming the app behind a
+// scrim and hovering the card in the middle of it. Always-on-top is a request a
+// compositor may ignore — several put the main window over the splash the
+// instant it maps — whereas a child widget is simply part of the window and can
+// never be shuffled behind it.
+//
+// It stays up until startup is actually over. The first frame of the main
+// window used to end it, but that frame is only halfway: MainWindow's
+// constructor is followed by runDeferredStartup(), which signs in, opens the
+// last repository, resumes agent sessions and starts the mesh session — seconds
+// of work the splash was no longer narrating, so the card announced "Ready" and
+// faded onto an app that was still visibly loading. noteHostPainted() records
+// the first frame as just another step, and finish() now comes from the end of
+// deferred startup. Two backstops keep a wedged launch from trapping the card:
+// an idle timeout (nothing announced for kIdleTimeoutMs) and the absolute
+// deadline, plus click-anywhere-to-skip, which the footer advertises.
+class StartupSplash : public QWidget
+{
+public:
+    StartupSplash(bool dark, const QString &version, const QString &commit);
+
+    // Move the splash inside `host` as a full-window overlay: scrim over the
+    // app, card centred, tracking the window as it is resized or moved. Safe to
+    // call at any point in the splash's life, once.
+    void attachTo(QWidget *host);
+
+    // Announce work that is about to happen. Closes whichever step is running
+    // and starts a new one, which then shows a live elapsed counter.
+    void beginStep(const QString &label);
+    // A sub-line under the running step, for the things a step does inside
+    // itself ("Code tab built in 214ms"). Never closes the step.
+    void addDetail(const QString &text);
+    // Close the running step, if any, without starting another.
+    void completeCurrentStep();
+    // Close the running step as failed and leave the reason on screen.
+    void failCurrentStep(const QString &reason);
+    // The host window painted its first frame. A completed step like any other
+    // — startup continues behind it — except that it must never repaint
+    // synchronously: the call comes from inside the host's own paintEvent, and
+    // painting a child from there re-enters the window's paint on the same
+    // backing store. It also unlocks synchronous pumps for everything after it
+    // (see pump()).
+    void noteHostPainted(const QString &label);
+    // Last step, then hold on the completed list for a beat and fade out.
+    void finish(const QString &label);
+    // Fade skipped: leave the screen immediately (a bail-out path — a second
+    // instance, the root refusal — is about to show a dialog or exit).
+    void dismiss();
+
+    bool isFinishing() const { return m_finishAtMs >= 0; }
+    int stepCount() const { return m_completedSteps; }
+    // Flat text of every row, in order. Diagnostics/tests.
+    QStringList transcript() const;
+
+    // Force a synchronous repaint. Safe with no event loop running.
+    void pump();
+    // Additionally drain posted events. Only safe where the caller knows no
+    // half-built state is reachable — main() uses it around its own steps, the
+    // MainWindow constructor must not.
+    void pumpEvents();
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+    // Click anywhere to dismiss, so a wedged startup can never trap the splash
+    // on top of the user's screen.
+    void mousePressEvent(QMouseEvent *event) override;
+    // Attached only: keep the overlay the size of the host window and above its
+    // siblings.
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
+private:
+    enum class RowState { Running, Done, Failed, Detail };
+
+    struct Row {
+        QString text;
+        RowState state = RowState::Running;
+        qint64 startedMs = 0;
+        qint64 endedMs = -1; // still running while negative
+    };
+
+    struct Palette {
+        QColor shadow, card, headerTop, headerBottom, border, separator;
+        QColor text, muted, faint, track, accent, ok, warn, bad;
+    };
+
+    // Rasterise the app mark at size x devicePixelRatio and tag the pixmap with
+    // that ratio, or HiDPI upscales a 34px raster into mush.
+    // The splash is created before main() picks the app's UI family, so the
+    // fonts are rebuilt whenever QApplication's family changes under us.
+    void syncFonts();
+    void ensureLogo();
+    // The drop shadow is a stack of translucent rounded rects and never
+    // changes, so it is rasterised once and blitted. Startup repaints the card
+    // on every step, and re-running that stack each time was the only part of
+    // the paint with a cost worth caring about.
+    void ensureShadow();
+    // The card, centred in whatever the widget currently is: exactly the card
+    // plus its shadow margin when free-standing, the whole main window when
+    // attached.
+    QRectF cardRect() const;
+    // Card plus shadow margin, as an integer rect — the only part of an
+    // attached overlay that changes between animation frames, and so the only
+    // part worth repainting (a full-overlay update() would drag the whole main
+    // window through a repaint 60 times a second).
+    QRect damageRect() const;
+    // Match the host window's size. Attached only.
+    void followHost();
+    void paintShadow(QPainter &p, const QRectF &card) const;
+    void paintHeader(QPainter &p, const QRectF &card, qint64 now) const;
+    void paintMeshOrbit(QPainter &p, const QPointF &centre, qint64 now) const;
+    void paintProgress(QPainter &p, const QRectF &card, qint64 now);
+    void paintRows(QPainter &p, const QRectF &list, qint64 now) const;
+    void paintRowGlyph(QPainter &p, const QRectF &box, const Row &row,
+                       qint64 now) const;
+    void paintFooter(QPainter &p, const QRectF &card) const;
+
+    // finish(), plus the choice of whether this launch is worth calibrating the
+    // next one's progress bar against. The idle backstop fades out on a launch
+    // that never reported finishing, whose elapsed time means nothing.
+    void finishInternal(const QString &label, bool calibrate);
+    // Something was announced: reset the idle backstop.
+    void noteActivity();
+
+    qreal rowHeight(const Row &row) const;
+    qreal contentHeight() const;
+    // 0..1, eased toward the live estimate so it never jumps or stalls.
+    qreal progressTarget(qint64 now) const;
+    QString elapsedText(qint64 ms) const;
+
+    Palette m_palette;
+    bool m_dark = true;
+    // The window we are an overlay inside, or null while free-standing.
+    QPointer<QWidget> m_host;
+    QString m_version;
+    QString m_commit;
+    QPixmap m_logo;
+    qreal m_logoDpr = 0.0;
+    QPixmap m_shadow;
+    qreal m_shadowDpr = 0.0;
+    QVector<Row> m_rows;
+    int m_runningRow = -1;
+    int m_completedSteps = 0;
+    // Set only for the duration of the noteHostPainted() call, which arrives
+    // from inside the host's paintEvent and so must not repaint synchronously.
+    bool m_hostPainting = false;
+    // True once the host has painted. Before it, an attached splash can only
+    // post repaints; after it, work on the GUI thread can block for seconds at
+    // a time and a posted update would not be delivered until it ended.
+    bool m_hostPainted = false;
+    // Clock reading of the last announced step/detail, for the idle backstop.
+    qint64 m_lastActivityMs = 0;
+    // Adaptive progress: the previous launch's totals, so a second run's bar
+    // tracks reality instead of a guess. Seeded for a whole launch — window
+    // plus deferred startup — rather than the constructor alone.
+    int m_expectedSteps = 45;
+    qint64 m_expectedMs = 9000;
+    // Wall clock shared by every animated value, started at construction.
+    QElapsedTimer m_clock;
+    qint64 m_finishAtMs = -1;   // when finish() was called, else -1
+    qint64 m_lastPaintMs = 0;   // for time-based progress easing
+    // Fade-out, applied by the painter rather than setWindowOpacity(): once
+    // attached there is no window of our own to make transparent.
+    qreal m_opacity = 1.0;
+    qreal m_shownProgress = 0.0;
+    QTimer *m_animation = nullptr;
+    QTimer *m_deadline = nullptr;
+    QString m_fontFamily;
+    QFont m_titleFont, m_subtitleFont, m_rowFont, m_detailFont, m_metaFont;
+};
+
+// --- Process-wide splash, owned by main(). Every hook below is a no-op when
+// no splash exists (headless, tests, after it has faded), so call sites never
+// need to know whether one is on screen.
+
+// Creates and shows the splash centred on the screen under the cursor. Returns
+// null (and does nothing) when headless, when FORKMESH_NO_SPLASH is set, or
+// when the user turned it off in settings.
+StartupSplash *showStartupSplash(bool headless, const QString &version,
+                                 const QString &commit);
+StartupSplash *activeStartupSplash();
+
+// Move the live splash inside the main window (see StartupSplash::attachTo).
+// No-op when no splash is up.
+void attachStartupSplashTo(QWidget *host);
+
+void startupStep(const QString &label);
+void startupDetail(const QString &text);
+void startupStepFailed(const QString &reason);
+// See StartupSplash::noteHostPainted. Call from the host's first paintEvent.
+void startupWindowPainted(const QString &label);
+// Final step, then fade out. Idempotent.
+void finishStartupSplash(const QString &label = QString());
+// Immediate teardown for the paths that exit or show a dialog instead.
+void dismissStartupSplash();
+
+} // namespace forkmesh::ui

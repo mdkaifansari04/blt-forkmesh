@@ -67,12 +67,16 @@ def test_attachment_frame_ceiling_stays_below_d1_row_limit():
         and node.targets[0].id in {
             "CHAT_HISTORY_MAX_BODY",
             "CHAT_HISTORY_MAX_BYTES_PER_ROOM",
+            "CHAT_HISTORY_REPLAY_MAX_MESSAGES",
+            "CHAT_HISTORY_REPLAY_MAX_BYTES",
             "CHAT_HISTORY_INGRESS_MAX_BYTES",
             "CHAT_HISTORY_INGRESS_WINDOW_MS",
         }
     }
     assert 1_850_000 <= values["CHAT_HISTORY_MAX_BODY"] <= 1_900_000
     assert values["CHAT_HISTORY_MAX_BYTES_PER_ROOM"] == 16 * 1024 * 1024
+    assert 1 <= values["CHAT_HISTORY_REPLAY_MAX_MESSAGES"] <= 100
+    assert values["CHAT_HISTORY_REPLAY_MAX_BYTES"] <= 2 * 1024 * 1024
     assert values["CHAT_HISTORY_INGRESS_MAX_BYTES"] <= 8 * 1024 * 1024
     assert values["CHAT_HISTORY_INGRESS_WINDOW_MS"] >= 10 * 1000
 
@@ -205,6 +209,21 @@ def test_replayed_cipher_is_transport_marked_and_terminated():
     source = ast.unparse(fetch)
     assert "chat_history_replay_body(body)" in source
     assert "'kind': 'forkmesh-history-end'" in source
+    # Retention is bounded on every store and expiry is swept by cron. Doing
+    # two DELETE queries on every join delayed the 101 handshake and amplified
+    # a busy room's reconnect storm.
+    assert "chat_history_prune" not in source
+
+    recent = next(
+        item for item in tree.body
+        if isinstance(item, ast.AsyncFunctionDef)
+        and item.name == "chat_history_recent"
+    )
+    recent_source = ast.unparse(recent)
+    assert "CHAT_HISTORY_REPLAY_MAX_MESSAGES" in recent_source
+    assert "CHAT_HISTORY_REPLAY_MAX_BYTES" in recent_source
+    assert "ROW_NUMBER() OVER" in recent_source
+    assert "SUM(length(body)) OVER" in recent_source
 
     socket_message = next(
         item for item in room.body

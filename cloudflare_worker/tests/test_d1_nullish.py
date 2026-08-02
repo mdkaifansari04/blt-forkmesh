@@ -13,9 +13,10 @@ ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 # d1_all/d1_first issue their query through _d1_read, which replays a transient
 # D1 platform fault (see test_d1_transient_errors.py), so its helper chain has
 # to come along for these conversion tests to execute the real code path.
-_WANT_FUNCS = ("js_nullish", "d1_row_to_dict", "d1_all", "d1_first",
+_WANT_FUNCS = ("js_nullish", "d1_bind_args", "d1_row_to_dict", "d1_all", "d1_first", "d1_run",
                "_d1_read", "_is_transient_d1_error", "_safe_error_text")
 _WANT_CONSTS = ("_D1_TRANSIENT_MARKERS", "_D1_SUSTAINED_MARKERS")
+_JS_NULL = object()
 
 
 def _load():
@@ -31,7 +32,7 @@ def _load():
             body.append(node)
     mod = ast.Module(body=body, type_ignores=[])
     ast.fix_missing_locations(mod)
-    ns = {}
+    ns = {"jsnull": _JS_NULL}
     exec(compile(mod, str(ENTRY), "exec"), ns)
     return ns
 
@@ -59,6 +60,9 @@ class _Stmt:
 
     async def all(self):
         return type("D1Result", (), {"results": self.results})()
+
+    async def run(self):
+        return None
 
 
 class _DB:
@@ -116,6 +120,24 @@ def test_d1_all_skips_js_nullish_rows_and_keeps_real_rows():
     assert rows == [{"data": "ok"}]
 
 
+def test_d1_reads_bind_javascript_undefined_as_sql_null():
+    ns = _load()
+    env = _Env(row=None)
+
+    asyncio.run(ns["d1_first"](env, "SELECT ?", JsUndefined()))
+
+    assert env.DB.stmt.bound == (_JS_NULL,)
+
+
+def test_d1_writes_bind_python_none_as_sql_null():
+    ns = _load()
+    env = _Env()
+
+    asyncio.run(ns["d1_run"](env, "INSERT INTO t(v) VALUES (?)", None))
+
+    assert env.DB.stmt.bound == (_JS_NULL,)
+
+
 if __name__ == "__main__":
     for test in (
         test_js_nullish_detects_workers_js_nullish_sentinels,
@@ -123,6 +145,8 @@ if __name__ == "__main__":
         test_d1_first_keeps_real_rows,
         test_d1_all_treats_js_nullish_results_as_empty,
         test_d1_all_skips_js_nullish_rows_and_keeps_real_rows,
+        test_d1_reads_bind_javascript_undefined_as_sql_null,
+        test_d1_writes_bind_python_none_as_sql_null,
     ):
         test()
         print("PASS", test.__name__)

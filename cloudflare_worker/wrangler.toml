@@ -8,7 +8,7 @@ compatibility_date = "2026-07-23"
 
 # Runs automatically before every deploy: applies the D1 schema (idempotent).
 [build]
-command = "python3 tools/build_dashboard_assets.py && ./migrate.sh"
+command = "python3 tools/build_dashboard_assets.py && python3 tools/build_worker_footprint.py && ./migrate.sh"
 
 
 [triggers]
@@ -38,6 +38,7 @@ run_worker_first = [
   "!/dashboard/repos",
   "!/dashboard/network",
   "!/dashboard/chat",
+  "!/dashboard/tasks",
   "!/dashboard/settings",
   "!/dashboard/profile",
   "!/dashboard/profile/repositories",
@@ -64,6 +65,7 @@ run_worker_first = [
   "/desktop.html",
   "/about.html",
   "/features.html",
+  "/homev2.html",
   "/pricing.html",
   "/press.html",
   "/careers.html",
@@ -162,13 +164,19 @@ FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 
 # Durable Objects are used only for transient state: encrypted chat/world
 # presence plus the per-owner node event channel (payload-free "something
-# changed" frames). Repository content and control traffic use normal HTTPS.
+# changed" frames). Repository source bytes and control traffic use normal
+# HTTPS; bounded public repository-page JSON snapshots use the state-addressed
+# KV binding below.
 #
 # ForkBot uses Cloudflare Workers AI when available to turn a chat mention into
 # a crisp issue title/body. The Worker falls back to deterministic parsing when
 # the binding is absent in local/dev contexts.
 [ai]
 binding = "AI"
+
+[[kv_namespaces]]
+binding = "REPOSITORY_METADATA"
+id = "ee8854d698c14e93a9950ec0f3e6538f"
 
 [[durable_objects.bindings]]
 name = "FORKMESH_MAINNODE_ROOM"

@@ -130,19 +130,28 @@ def test_elements_tab_is_available_to_everyone_device_local_and_wired_to_the_sce
     assert "elementsTab.hidden = false;" in restore
 
 
-def test_elements_can_sort_by_drawn_triangles_or_clicks():
+def test_elements_are_one_flat_table_sortable_by_any_column():
+    # One-line rows in a single table: the group is a column, and clicking any
+    # column header sorts by it (clicking again reverses the direction).
     for contract in (
-        'data-world-element-sort',
-        '<option value="drawables">Drawn</option>',
-        '<option value="triangles">Triangles</option>',
-        '<option value="interactives">Clicks</option>',
+        'data-world-element-sort="${column.key}"',
+        '{ key: "label", heading: "Element" },',
+        '{ key: "category", heading: "Group" },',
+        '{ key: "drawables", heading: "Drawn" },',
+        '{ key: "triangles", heading: "Tri" },',
+        '{ key: "interactives", heading: "Click" },',
         'this.worldElementSort = "drawables";',
+        "this.worldElementSortAscending = this.worldElementSortAscending !== true;",
     ):
         assert contract in APP
     render = APP.split("  renderWorldElementsPane(statusMessage = \"\") {", 1)[1].split(
         "\n  renderWorldSessions", 1
     )[0]
     assert 'Number(right[sort]) - Number(left[sort])' in render
+    # The whole registry renders as one flat list — no per-category sections.
+    assert "world-element-category" not in render
+    # The Members Circle campfire sits in the table with everything else.
+    assert '"Members Circle campfire"' in SCENE
 
 
 def test_debug_tab_shows_live_readings_with_suggestions_and_stays_open():
@@ -192,14 +201,131 @@ def test_debug_tab_shows_live_readings_with_suggestions_and_stays_open():
     assert "data-world-debug-panel" in debug_pane
 
 
+def test_debug_tab_lists_every_individual_triangle_drawing_object_sortably():
+    # The scene exposes one row per mesh that actually draws triangles, tagged
+    # with the world element that owns it.
+    for contract in (
+        "function listSceneObjects()",
+        "function sceneObjectLabel(object)",
+        "const SCENE_OBJECT_WALK_LIMIT =",
+        "setWorldElementEnabled,\n    listSceneObjects,",
+    ):
+        assert contract in SCENE
+    walk = SCENE.split("function listSceneObjects() {", 1)[1].split(
+        "\n  // Whole-scene systems", 1
+    )[0]
+    assert (
+        "if (!child.isMesh || objects.length >= SCENE_OBJECT_WALK_LIMIT) return;"
+        in walk
+    )
+    assert "if (child.userData?.raycastProxy === true) return;" in walk
+    assert "if (perInstance <= 0) return;" in walk
+    # Instanced meshes report the whole batch — and one parked at count 0
+    # draws nothing, so it is not listed.
+    assert "const triangles = perInstance * instances;" in walk
+    assert "if (triangles <= 0) return;" in walk
+    assert 'element: owner ? owner.label : "Unregistered",' in walk
+    # The table lives in the Debug tab, is walked on demand, and every column
+    # sorts (clicking the active column reverses it).
+    debug_pane = APP.split('data-world-settings-pane="debug"', 1)[1].split(
+        'data-world-settings-pane="elements"', 1
+    )[0]
+    for contract in (
+        "data-world-object-list",
+        "data-world-object-refresh",
+        "data-world-object-status",
+    ):
+        assert contract in debug_pane
+    for contract in (
+        'data-world-object-sort="${column.key}"',
+        '{ key: "label", heading: "Object" },',
+        '{ key: "element", heading: "Element" },',
+        '{ key: "type", heading: "Type" },',
+        '{ key: "triangles", heading: "Tri" },',
+        '{ key: "instances", heading: "Inst" },',
+        'this.worldObjectSort = "triangles";',
+        "this.worldObjectSortAscending = this.worldObjectSortAscending !== true;",
+        "this.renderWorldObjectPane({ walk: true });",
+        'const WORLD_OBJECT_NUMERIC_KEYS = new Set(["triangles", "instances"]);',
+    ):
+        assert contract in APP
+    # Re-sorting reuses the last walk; only the refresh button re-traverses.
+    render = APP.split("  renderWorldObjectPane({ walk = false } = {}) {", 1)[1].split(
+        "\n  renderWorldSessions", 1
+    )[0]
+    assert "this.worldObjects = this.world?.listSceneObjects?.() || [];" in render
+    assert "WORLD_OBJECT_ROW_LIMIT" in render
+
+
+def test_every_element_expands_into_its_own_pieces_each_sorted_on_its_own():
+    # The scene can walk one level at a time into an element's subtree, so a
+    # row like "Mirror node cabinets" opens into one row per cabinet, and each
+    # cabinet opens again down to a single mesh.
+    for contract in (
+        "function listWorldElementParts(elementId, path = [])",
+        "function elementPartRoots(element)",
+        "function elementPartNodes(element, path)",
+        "function describeElementPart(node, index, path, interactiveSet)",
+        "const ELEMENT_PART_LIMIT =",
+        "listSceneObjects,\n    listWorldElementParts,",
+        # Element rows advertise whether there is anything inside to open.
+        "parts: elementPartRoots(element).length,",
+    ):
+        assert contract in SCENE
+    # A lone wrapper Group is scaffolding, so the first level opens into its
+    # children; multi-root elements list their roots.
+    roots = SCENE.split("function elementPartRoots(element) {", 1)[1].split(
+        "\n  }", 1
+    )[0]
+    assert "roots.length === 1 && roots[0]?.children?.length" in roots
+    # Clicking the name expands; the checkbox still switches the element off.
+    for contract in (
+        "data-world-element-expand=",
+        "data-world-element-part-sort=",
+        "data-world-element-part-scope=",
+        "this.expandedWorldElements = new Set();",
+        "this.worldElementPartSorts = new Map();",
+        "toggleWorldElementExpanded(scope) {",
+        "sortWorldElementParts(scope, key) {",
+        "renderWorldElementParts(elementId, path, depth) {",
+        'this.world?.listWorldElementParts?.(elementId, path)',
+        '{ key: "label", heading: "Piece" },',
+        '{ key: "type", heading: "Kind" },',
+        "const WORLD_ELEMENT_PART_DEPTH_LIMIT =",
+    ):
+        assert contract in APP
+    parts = APP.split("  renderWorldElementParts(elementId, path, depth) {", 1)[
+        1
+    ].split("\n  renderWorldObjectPane", 1)[0]
+    # Each opened level keeps its own sort key, and expanding recurses.
+    assert "this.worldElementPartSortFor(scope)" in parts
+    assert "this.renderWorldElementParts(elementId, part.path, depth + 1)" in parts
+    # Nothing is dropped silently: a truncated level says how many it left out.
+    assert "Showing ${parts.length.toLocaleString()} of " in parts
+    sorter = APP.split("  sortWorldElementParts(scope, key) {", 1)[1].split(
+        "\n  toggleWorldElementExpanded", 1
+    )[0]
+    assert "this.worldElementPartSorts.set(" in sorter
+    assert "ascending: current.ascending !== true" in sorter
+
+
 def test_element_and_debug_panels_have_styles():
     for selector in (
+        ".world-element-subhead",
+        ".world-element-part",
+        '.world-element-part[data-visible="false"]',
+        ".world-element-twisty",
+        "button.world-element-name",
         ".world-debug-live",
         ".world-debug-suggestions",
         '.world-debug-suggestions li[data-level="high"]',
         ".world-element-master",
-        ".world-element-category",
+        ".world-element-head",
         ".world-element-row",
         '.world-element-row[data-enabled="false"]',
+        ".world-object-table",
+        ".world-object-head",
+        ".world-object-row",
+        '.world-object-row[data-visible="false"]',
     ):
         assert selector in CSS

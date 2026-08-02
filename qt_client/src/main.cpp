@@ -9,6 +9,14 @@
 #include "PublicMirrorRuntime.h"
 #include "ServerNode.h"
 #include "SingleInstance.h"
+#include "StartupSplash.h"
+// The startup timings below are the only thing this file needs from the trace
+// helpers, and they were reaching them by luck through MainWindowInternal.h;
+// main.cpp does not include that private header, so the app target stopped
+// compiling. Include the header that actually declares them. (CI builds
+// forkmesh-tests, not forkmesh, which is why the break got through.)
+#include "StartupTrace.h"
+#include "SystemStats.h"
 #include "Theme.h"
 
 #if __has_include("ForkMeshVersion.h")
@@ -46,6 +54,7 @@
 #include <QStringList>
 #include <QStyleFactory>
 #include <QStyleHints>
+#include <QTimer>
 
 #include <cstdio>
 #include <cstdlib>
@@ -179,14 +188,14 @@ int runSizeMapScan(const QString &requestPath)
         return 2;
     }
     // Progress goes to stderr, one line per update, so the GUI can name the
-    // folder root is inside right now while stdout stays reserved for the tree
-    // (adhoc #112).
-    const auto progress = [](const QString &current, qint64 bytes, int files) {
-        const QByteArray line =
-            forkmesh::encodeScanProgress(current, bytes, files);
-        std::fwrite(line.constData(), 1, std::size_t(line.size()), stderr);
-        std::fflush(stderr);
-    };
+    // folders root is inside right now — one per scanning thread — while stdout
+    // stays reserved for the tree (adhoc #112/#95).
+    const auto progress =
+        [](const forkmesh::DirectorySizeScanProgressUpdate &update) {
+            const QByteArray line = forkmesh::encodeScanProgress(update);
+            std::fwrite(line.constData(), 1, std::size_t(line.size()), stderr);
+            std::fflush(stderr);
+        };
     const QByteArray result = forkmesh::encodeScanResult(
         forkmesh::scanDirectorySizes(path, options, progress));
     std::fwrite(result.constData(), 1, std::size_t(result.size()), stdout);
@@ -551,6 +560,7 @@ int runMirrorManifestSigner(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+    forkmesh::beginStartupTrace();
     // The elevated size-map helper runs as root under pkexec/sudo, so it is
     // dispatched before anything else in main() can write to the desktop
     // user's crash log, settings or single-instance lock (adhoc #76).
@@ -558,6 +568,16 @@ int main(int argc, char *argv[])
         if (qstrcmp(argv[i], "--size-map-scan") == 0)
             return runSizeMapScan(QString::fromLocal8Bit(argv[i + 1]));
     }
+
+    // Descriptors before anything can open one: most distributions still ship a
+    // 1024 soft cap against a hard cap in the hundreds of thousands, and a node
+    // that holds relay sockets, git child pipes, watches and a wakeup pipe per
+    // thread can reach it. Hitting it is not a graceful failure — glib's
+    // g_wakeup_new() calls g_error() when the pipe fails, so the next thread
+    // start aborts the whole app with SIGTRAP inside
+    // g_main_context_new_with_flags (the v0.7.9 crash report). Raising the soft
+    // cap to the hard one removes that cliff.
+    SystemStats::raiseOpenFileLimit();
 
     // First thing, before anything can fault: install the crash handlers so an
     // unexpected exit/crash leaves a record in the network log. A compact signal
@@ -567,6 +587,8 @@ int main(int argc, char *argv[])
     forkmesh::installCrashHandler(
         QString(),
         earlyMainLogPath());
+    forkmesh::logStartupTrace(
+        QStringLiteral("crash handler installed; parsing launch arguments"));
 
     // Collect args before QApplication so headless/root flags are visible while we
     // still control the Qt platform plugin selection.
@@ -624,6 +646,12 @@ int main(int argc, char *argv[])
     // CLI node.
     if (headless && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
         qputenv("QT_QPA_PLATFORM", "offscreen");
+    forkmesh::logStartupTrace(
+        QStringLiteral("launch mode resolved: %1; Qt platform=%2")
+            .arg(headless ? QStringLiteral("headless")
+                          : QStringLiteral("desktop"),
+                 qEnvironmentVariable("QT_QPA_PLATFORM",
+                                      QStringLiteral("automatic"))));
 
     // Drop Qt's two known-noise warnings before anything can emit them: the
     // offscreen/minimal propagateSizeHints() line (headless spams it into the
@@ -633,6 +661,7 @@ int main(int argc, char *argv[])
     // Everything else, including every warning the app itself logs, is forwarded
     // untouched to Qt's default handler.
     forkmesh::installPlatformLogFilter();
+    forkmesh::logStartupTrace(QStringLiteral("Qt platform log filter installed"));
 
     // The embedded terminal (TerminalWidget) renders itself from a forkpty PTY —
     // no xterm, no X11 reparenting — so it works the same on X11 and Wayland and
@@ -640,18 +669,38 @@ int main(int argc, char *argv[])
     // XWayland, which maps a black frame before the first paint (a jarring black
     // screen on launch). Letting Qt pick the native platform shows the themed
     // window immediately.
+    forkmesh::logStartupTrace(QStringLiteral("BEGIN construct QApplication"));
+    QElapsedTimer applicationConstruction;
+    applicationConstruction.start();
     ForkMeshApplication app(argc, argv);
-    app.setApplicationName("ForkMesh");
-    app.setOrganizationName("ForkMesh");
-    // App icon: the cube cropped out of the ForkMesh logo.
-    app.setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
+    forkmesh::logStartupTrace(
+        QStringLiteral("DONE  construct QApplication (%1ms)")
+            .arg(applicationConstruction.elapsed()));
+    {
+        forkmesh::StartupTraceStep applicationSetup(
+            QStringLiteral("configure QApplication metadata, icon and style"));
+        app.setApplicationName("ForkMesh");
+        app.setOrganizationName("ForkMesh");
+        // App icon: the cube cropped out of the ForkMesh logo.
+        app.setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
     // On Wayland (the GNOME default) the dock/taskbar icon is NOT taken from
     // setWindowIcon — the compositor matches the window's app-id to an installed
     // .desktop file. This name must equal the basename of the desktop entry that
     // install.sh writes (forkmesh.desktop) for GNOME to show our logo and let it
     // be pinned. Harmless on X11/macOS/Windows.
-    QGuiApplication::setDesktopFileName(QStringLiteral("forkmesh"));
-    app.setStyle(QStyleFactory::create("Fusion"));
+        QGuiApplication::setDesktopFileName(QStringLiteral("forkmesh"));
+        app.setStyle(QStyleFactory::create("Fusion"));
+    }
+
+    // From here to the main window's first frame the GUI thread is busy and
+    // nothing is on screen, so put up the launch splash: a centred card that
+    // narrates every startup step as it happens (adhoc #39). It is a no-op
+    // headless, under FORKMESH_NO_SPLASH, and when ui/startupSplash is off.
+    // MainWindow::paintEvent hands over to the real window and fades it out.
+    forkmesh::ui::showStartupSplash(headless, QStringLiteral(FORKMESH_VERSION),
+                                    QStringLiteral(FORKMESH_BUILD_COMMIT));
+    forkmesh::ui::startupStep(
+        QStringLiteral("Checking for an already-running ForkMesh"));
 
     // Refuse to run a second instance for this user. This is the actual fix for
     // "a new ForkMesh window opens seemingly at random": every trigger for that
@@ -662,9 +711,35 @@ int main(int argc, char *argv[])
     // ~/.forkmesh data out from under the first one. Now a duplicate launch
     // just raises the existing window and exits.
     if (!forkmesh::acquireSingleInstance(localSetupLink)) {
+        // The other instance is being raised instead; this process is about to
+        // exit, so take the splash off the screen rather than flashing it.
+        forkmesh::ui::dismissStartupSplash();
         qInfo().noquote()
             << "ForkMesh is already running; focusing the existing window.";
         return 0;
+    }
+    forkmesh::ui::startupStep(
+        QStringLiteral("Recovering interrupted mirror configuration"));
+
+    // Headless nodes intentionally place TMPDIR on persistent disk because a
+    // repository materialization can be larger than their RAM-backed /tmp.
+    // An abrupt reboot cannot run the Qt/Python temporary-directory destructors,
+    // so sweep exact ForkMesh mirror artifacts only after proving this is the
+    // sole application instance. This keeps crash debris from growing without
+    // bound across gateway and encrypted-mirror restarts.
+    {
+        QString cleanupError;
+        const int removed =
+            PublicMirrorRuntime::cleanupStaleTemporaryDirectories(
+                QDir::tempPath(), &cleanupError);
+        if (removed < 0) {
+            qWarning().noquote()
+                << "Mirror temporary cleanup skipped:" << cleanupError;
+        } else if (removed > 0) {
+            qInfo().noquote()
+                << "Mirror temporary cleanup removed" << removed
+                << "stale director" << (removed == 1 ? "y." : "ies.");
+        }
     }
 
     // A mirror Actions helper can be killed after the catalog toggle is
@@ -673,6 +748,8 @@ int main(int argc, char *argv[])
     // secrets. Failure is deliberately startup-fatal: running against a partial
     // configuration would make the recovery record meaningless.
     {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("recover interrupted mirror Actions configuration"));
         QSettings recoverySettings;
         QString recoveryError;
         if (!forkmesh::mirror_actions::recoverPendingConfiguration(
@@ -685,6 +762,10 @@ int main(int argc, char *argv[])
                              ? QStringLiteral("unknown recovery error")
                              : recoveryError);
             qCritical().noquote() << message;
+            forkmesh::ui::startupStepFailed(
+                QStringLiteral("Mirror Actions recovery failed — %1")
+                    .arg(recoveryError));
+            forkmesh::ui::dismissStartupSplash();
             if (!headless)
                 QMessageBox::critical(nullptr, QStringLiteral("ForkMesh"),
                                       message);
@@ -698,8 +779,11 @@ int main(int argc, char *argv[])
     // the application font's fallback family list makes Qt render colour glyphs
     // for any emoji codepoint the primary UI family is missing, rather than the
     // flat black-and-white boxes seen without it.
+    forkmesh::ui::startupStep(QStringLiteral("Loading the colour-emoji font"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/NotoColorEmoji.ttf"));
     {
+        forkmesh::ui::startupStep(
+            QStringLiteral("Choosing the interface font"));
         QFont base = app.font();
 
         // Prefer a modern, consistent UI family over the raw platform default
@@ -735,6 +819,8 @@ int main(int argc, char *argv[])
         }
         base.setFamilies(families);
         app.setFont(base);
+        forkmesh::ui::startupDetail(
+            QStringLiteral("UI family: %1").arg(base.family()));
     }
 
     // Host-stats reporting (CPU/RAM/disk in the Mirror nodes view) is off by
@@ -743,6 +829,8 @@ int main(int argc, char *argv[])
     // toggles on the first headless launch; once set, the value persists and a
     // later operator edit is never overwritten (adhoc #23).
     if (headless) {
+        forkmesh::StartupTraceStep step(
+            QStringLiteral("seed first-run headless telemetry settings"));
         QSettings settings;
         for (const QString &key : {TelemetrySettings::kReportCpu,
                                    TelemetrySettings::kReportMemory,
@@ -782,6 +870,7 @@ int main(int argc, char *argv[])
                 << "ForkMesh: running as root (--allow-root). git and workflow "
                    "steps will run with root privileges.";
         } else {
+            forkmesh::ui::dismissStartupSplash();
             QMessageBox::critical(
                 nullptr, "ForkMesh",
                 "ForkMesh must not be run as root. It runs git and workflow "
@@ -794,6 +883,7 @@ int main(int argc, char *argv[])
 
     // Apply the saved theme (system/dark/light); when set to "system", follow
     // the OS color scheme and switch live as it changes.
+    forkmesh::ui::startupStep(QStringLiteral("Applying the theme"));
     MainWindow::applyTheme();
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     QObject::connect(app.styleHints(), &QStyleHints::colorSchemeChanged, &app,
@@ -805,6 +895,9 @@ int main(int argc, char *argv[])
     startup.start();
     qInfo().noquote() << QStringLiteral("[startup +%1ms] constructing MainWindow")
                              .arg(startup.elapsed(), 5);
+    // Everything from here until show() runs with no event loop; the splash
+    // repaints synchronously off the startupStep() calls inside the ctor.
+    forkmesh::ui::startupStep(QStringLiteral("Starting the application window"));
     auto *window = new MainWindow;
     const auto openLocalSetup = [window](const QString &target) {
         if (isCloudflareSetupLink(target))
@@ -815,6 +908,14 @@ int main(int argc, char *argv[])
     // register a fresh mirror's account non-interactively (the desktop pops a
     // "Join ForkMesh" dialog for that, which a headless VM cannot click).
     window->setHeadlessMode(headless);
+    // The splash has been a free-standing always-on-top window because until
+    // this line there was no window for it to be part of. Now there is: hand it
+    // into the main window, where it becomes a child widget hovering over the
+    // app's own content. Always-on-top is only ever a request, and several
+    // compositors granted the newly-mapped main window the top spot instead —
+    // which put the splash behind the app it was narrating. A child widget is
+    // simply part of the window and cannot be stacked behind it.
+    forkmesh::ui::attachStartupSplashTo(window);
     qInfo().noquote() << QStringLiteral("[startup +%1ms] MainWindow constructed")
                              .arg(startup.elapsed(), 5);
     // A later launch attempt bounces off acquireSingleInstance() above and
@@ -839,10 +940,43 @@ int main(int argc, char *argv[])
     // surface) and drives the same deferred-startup path — including the
     // headless/offscreen safety net in MainWindow::showEvent — so auto-restore and
     // auto-connect behave identically headless and on the desktop.
+    forkmesh::ui::startupStep(QStringLiteral("Showing the main window"));
     window->show();
     openLocalSetup(localSetupLink);
     qInfo().noquote() << QStringLiteral("[startup +%1ms] window shown; entering event loop")
                              .arg(startup.elapsed(), 5);
+    // From here on there is a Log view to put messages in, so everything the app
+    // and Qt log — catalog publishes, mirror syncs, rebuild/restart phases, Qt's
+    // own "QProcess: Destroyed while process ("git") is still running." warnings
+    // — goes there instead of scrolling past in the terminal the desktop was
+    // launched from. The startup lines above deliberately stay on the console:
+    // they time the window that has to exist before any of this can be read.
+    // Headless keeps the console copy (see setAppLogSink): its operator reads
+    // the service journal, and headlessUpdateRestart() in particular relies on
+    // logRestart()'s terminal echo to narrate a rebuild nobody can watch on
+    // screen.
+    forkmesh::setAppLogSink(
+        [window](QtMsgType type, const QString &message) {
+            // Emitted from worker threads too (public-mirror sync, git helpers),
+            // so hop to the GUI thread. A queued call whose receiver is deleted
+            // first is discarded by ~QObject, and clearAppLogSink() below runs
+            // before that delete.
+            QMetaObject::invokeMethod(
+                window, [window, type, message] {
+                    window->logCapturedMessage(type, message);
+                },
+                Qt::QueuedConnection);
+        },
+        headless);
+    // The splash hands over at the end of MainWindow::runDeferredStartup() —
+    // the point where the app is actually loaded, rather than merely painted.
+    // There is deliberately no timer backstop here any more: the four-second
+    // one that used to live here was itself the bug, ending the splash on
+    // "Window ready" while sign-in, the repository restore and the agent resume
+    // were all still to come. runDeferredStartup() is armed from showEvent()
+    // regardless of platform, so the handover does not depend on a paint
+    // arriving; a launch that never gets that far falls to the splash's own
+    // idle timeout, its absolute deadline, or a click.
 
     // In headless mode, the node runs the full backend but there's no GUI to
     // interact with, so attach a stdin REPL to observe and drive it.
@@ -851,7 +985,16 @@ int main(int argc, char *argv[])
         console = new HeadlessConsole(window, &app, &app);
     Q_UNUSED(console);
 
+    forkmesh::logStartupTrace(
+        QStringLiteral("entering Qt event loop; deferred startup remains visible "
+                       "in subsequent startup entries"));
+
     const int exitCode = app.exec();
+    // Past this point a queued call into the window would never be delivered
+    // (no event loop left to deliver it) and the window is about to go away, so
+    // shutdown logs to the console again. Blocks until any in-flight sink call
+    // has returned, which is what makes the delete below safe.
+    forkmesh::clearAppLogSink();
     if (headless) {
         // Offscreen Qt has crashed in widget teardown on SIGTERM while deleting
         // the hidden text-edit-heavy UI tree. The process is exiting anyway, so

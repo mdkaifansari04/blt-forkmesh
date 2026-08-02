@@ -11,15 +11,22 @@
 #include <QJsonDocument>
 #include <QMessageBox>
 #include <QNetworkReply>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QRegularExpression>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStyledItemDelegate>
 #include <QTextBrowser>
 
 using namespace forkmesh::ui;
 
 namespace {
+
+// Rows painted per page. The relay returns the whole organization catalog
+// (MAX_TASKS in world_office_tasks.py), so the table pages through it instead
+// of stopping at the first hundred rows.
+constexpr int kOrganizationTaskPageSize = 100;
 
 QString taskText(const QJsonObject &task, const QString &field)
 {
@@ -97,6 +104,297 @@ QString taskAssigneeLabel(const QJsonObject &task)
     const QString assignee = taskText(task, QStringLiteral("assignee"));
     return assignee.isEmpty() ? QStringLiteral("Unassigned") : assignee;
 }
+
+// ---------------------------------------------------------------------------
+// The task list paints one row as an icon strip plus a title — no header, no
+// grid, no columns (adhoc #56). Everything the old Priority/Status/Department/
+// Repository/Assignee/QA columns spelled out rides on the single cell as data
+// roles, and the delegate below turns each one into a glyph. Qt::UserRole stays
+// the task's absolute catalog index, which is what selectedOrganizationTask()
+// resolves against.
+constexpr int kTaskStatusRole = Qt::UserRole + 1;
+constexpr int kTaskDepartmentRole = Qt::UserRole + 2;
+constexpr int kTaskRepositoryRole = Qt::UserRole + 3;
+constexpr int kTaskAssigneeKindRole = Qt::UserRole + 4;
+constexpr int kTaskAssigneeRole = Qt::UserRole + 5;
+constexpr int kTaskQaRole = Qt::UserRole + 6;
+constexpr int kTaskQaRequestedRole = Qt::UserRole + 7;
+constexpr int kTaskPriorityRole = Qt::UserRole + 8;
+
+// Icon strip geometry, in logical pixels. The slots are fixed so the titles all
+// start at the same x even when a task has no repository or no QA verdict.
+constexpr int kTaskRowHeight = 34;
+constexpr int kTaskGlyphSize = 16;
+constexpr int kTaskAvatarSize = 18;
+constexpr int kTaskSlotWidth = 24;
+constexpr int kTaskStripLeft = 10;
+constexpr int kTaskPriorityWidth = 26;
+constexpr int kTaskTitleGap = 10;
+
+// "done" / "active" / "queued" / "ready" — the same four states the old Status
+// column spelled out, and the same test the badge counts with.
+QString taskStatusKey(const QJsonObject &task)
+{
+    if (task.value(QStringLiteral("completedAt")).toDouble() > 0 ||
+        taskText(task, QStringLiteral("status")) == QLatin1String("done"))
+        return QStringLiteral("done");
+    if (taskText(task, QStringLiteral("status")) == QLatin1String("active"))
+        return QStringLiteral("active");
+    if (taskText(task, QStringLiteral("assigneeKind")) ==
+            QLatin1String("agent") &&
+        !taskText(task, QStringLiteral("agentSessionId")).isEmpty())
+        return QStringLiteral("queued");
+    return QStringLiteral("ready");
+}
+
+QString taskStatusLabel(const QString &key)
+{
+    if (key == QLatin1String("done"))
+        return QStringLiteral("Done");
+    if (key == QLatin1String("active"))
+        return QStringLiteral("In progress");
+    if (key == QLatin1String("queued"))
+        return QStringLiteral("Queued");
+    return QStringLiteral("Ready");
+}
+
+QString taskStatusIcon(const QString &key)
+{
+    if (key == QLatin1String("done"))
+        return QStringLiteral("check-circle");
+    if (key == QLatin1String("active"))
+        return QStringLiteral("sync");
+    if (key == QLatin1String("queued"))
+        return QStringLiteral("list-unordered");
+    return QStringLiteral("issue-opened");
+}
+
+QColor taskStatusColor(const QString &key, bool dark)
+{
+    if (key == QLatin1String("done"))
+        return QColor(dark ? "#3fb950" : "#1a7f37");
+    if (key == QLatin1String("active"))
+        return QColor(Theme::kRunning);
+    if (key == QLatin1String("queued"))
+        return QColor(dark ? "#e3b341" : "#9a6700");
+    return QColor(dark ? "#8b949e" : "#656d76");
+}
+
+// A stable accent for a free-text name (department, repository) so the same
+// department always reads in the same colour without a hand-maintained table.
+QColor taskAccentColor(const QString &seed)
+{
+    if (seed.isEmpty())
+        return QColor(Theme::kTextTertiary);
+    uint hash = 2166136261u;
+    for (const QChar &ch : seed)
+        hash = (hash ^ uint(ch.unicode())) * 16777619u;
+    return QColor(
+        Theme::kSenderPalette[hash % uint(Theme::kSenderPaletteSize)]);
+}
+
+// Departments are organization-defined, so the known ones get a glyph that
+// actually says something and anything new falls back to the generic tag.
+QString taskDepartmentIcon(const QString &department)
+{
+    static const QHash<QString, QString> known{
+        {QStringLiteral("engineering"), QStringLiteral("code")},
+        {QStringLiteral("product-design"), QStringLiteral("pencil")},
+        {QStringLiteral("design"), QStringLiteral("pencil")},
+        {QStringLiteral("product"), QStringLiteral("package")},
+        {QStringLiteral("marketing"), QStringLiteral("broadcast")},
+        {QStringLiteral("community"), QStringLiteral("people")},
+        {QStringLiteral("support"), QStringLiteral("comment")},
+        {QStringLiteral("security"), QStringLiteral("lock")},
+        {QStringLiteral("infrastructure"), QStringLiteral("server")},
+        {QStringLiteral("operations"), QStringLiteral("workflow")},
+        {QStringLiteral("quality-assurance"), QStringLiteral("shield-check")},
+        {QStringLiteral("research"), QStringLiteral("graph")},
+        {QStringLiteral("finance"), QStringLiteral("credit-card")},
+        {QStringLiteral("general"), QStringLiteral("tag")},
+    };
+    return known.value(department.toLower(), QStringLiteral("tag"));
+}
+
+// The QA slot only paints when there is something to report: "unknown" with no
+// review requested is the relay's default, i.e. nothing happened yet.
+bool taskQaGlyph(const QString &status, bool requested, QString *icon,
+                 QColor *color, bool dark)
+{
+    if (status == QLatin1String("passed")) {
+        *icon = QStringLiteral("shield-check");
+        *color = QColor(dark ? "#3fb950" : "#1a7f37");
+        return true;
+    }
+    if (status == QLatin1String("failed")) {
+        *icon = QStringLiteral("circle-slash");
+        *color = QColor(dark ? "#f85149" : "#cf222e");
+        return true;
+    }
+    if (requested) {
+        *icon = QStringLiteral("eye");
+        *color = QColor(dark ? "#e3b341" : "#9a6700");
+        return true;
+    }
+    return false;
+}
+
+// Repository and member marks are identicons derived from the name, so a repo
+// or a teammate keeps the same logo everywhere in the app. Generating one means
+// rasterising a PNG, and paint() runs on every repaint of every visible row —
+// hence the cache, keyed on the device pixel ratio like every other icon raster
+// in this app.
+QPixmap taskIdenticon(const QString &seed, int side, qreal radiusRatio)
+{
+    static QHash<QString, QPixmap> cache;
+    const QString key = seed + QLatin1Char('|') + QString::number(side) +
+                        QLatin1Char('|') + QString::number(radiusRatio) +
+                        QLatin1Char('|') +
+                        QString::number(iconDevicePixelRatio());
+    const auto cached = cache.constFind(key);
+    if (cached != cache.constEnd())
+        return cached.value();
+    const QPixmap pixmap =
+        roundedAvatar(forkMeshAvatarPng(seed.toLower()), side, radiusRatio);
+    cache.insert(key, pixmap);
+    return pixmap;
+}
+
+// One row: [priority] [status] [department] [repo logo] [assignee] [QA] Title.
+// Painted rather than built from cell widgets because the list pages a hundred
+// rows at a time and six widgets a row would be six hundred of them.
+class OrganizationTaskRowDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override
+    {
+        QSize size = QStyledItemDelegate::sizeHint(option, index);
+        size.setHeight(qMax(size.height(), kTaskRowHeight));
+        return size;
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        const bool dark = currentThemeIsDark();
+        const bool selected = option.state.testFlag(QStyle::State_Selected);
+        const bool hovered = option.state.testFlag(QStyle::State_MouseOver);
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setRenderHint(QPainter::SmoothPixmapTransform);
+
+        // No grid, no alternating bands: the only fill a row ever gets is its
+        // own selected/hovered pill.
+        if (selected || hovered) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(
+                selected ? QColor(dark ? "#1f6feb" : "#0969da")
+                         : QColor(dark ? "#161b22" : "#f6f8fa"));
+            painter->drawRoundedRect(option.rect.adjusted(2, 2, -2, -2), 6, 6);
+        }
+
+        const QString statusKey = index.data(kTaskStatusRole).toString();
+        const QString department = index.data(kTaskDepartmentRole).toString();
+        const QString repository = index.data(kTaskRepositoryRole).toString();
+        const QString assigneeKind =
+            index.data(kTaskAssigneeKindRole).toString();
+        const QString assignee = index.data(kTaskAssigneeRole).toString();
+        const QString qa = index.data(kTaskQaRole).toString();
+        const bool done = statusKey == QLatin1String("done");
+
+        const QColor muted(selected ? QColor("#c8e1ff")
+                                    : QColor(dark ? "#8b949e" : "#656d76"));
+        int x = option.rect.left() + kTaskStripLeft;
+
+        // Priority: the list is ordered by it, so the rank stays readable even
+        // though the spin-box column is gone (edit it from Edit / double-click).
+        painter->setPen(muted);
+        QFont rankFont = option.font;
+        rankFont.setPointSizeF(qMax(7.0, option.font.pointSizeF() - 2.0));
+        painter->setFont(rankFont);
+        painter->drawText(QRect(x, option.rect.top(), kTaskPriorityWidth,
+                                option.rect.height()),
+                          Qt::AlignVCenter | Qt::AlignRight,
+                          index.data(kTaskPriorityRole).toString());
+        painter->setFont(option.font);
+        x += kTaskPriorityWidth + 8;
+
+        auto centreY = [&option](int side) {
+            return option.rect.top() + (option.rect.height() - side) / 2;
+        };
+        auto drawGlyph = [&](const QString &name, const QColor &colour) {
+            if (name.isEmpty())
+                return;
+            painter->drawPixmap(x, centreY(kTaskGlyphSize),
+                                tintedOcticonPixmap(name,
+                                                    selected ? QColor("#ffffff")
+                                                             : colour,
+                                                    kTaskGlyphSize));
+        };
+
+        drawGlyph(taskStatusIcon(statusKey), taskStatusColor(statusKey, dark));
+        x += kTaskSlotWidth;
+
+        if (!department.isEmpty())
+            drawGlyph(taskDepartmentIcon(department),
+                      taskAccentColor(department));
+        x += kTaskSlotWidth;
+
+        // Repository logo: the identicon the rest of the app already shows for
+        // that name, falling back to the plain repo glyph if it cannot render.
+        if (!repository.isEmpty()) {
+            const QPixmap logo = taskIdenticon(repository, kTaskAvatarSize,
+                                               0.28);
+            if (logo.isNull())
+                drawGlyph(QStringLiteral("repo"), taskAccentColor(repository));
+            else
+                painter->drawPixmap(x, centreY(kTaskAvatarSize), logo);
+        }
+        x += kTaskSlotWidth;
+
+        if (assigneeKind == QLatin1String("agent")) {
+            drawGlyph(QStringLiteral("sparkle"), QColor(Theme::kGenie));
+        } else if (!assignee.isEmpty()) {
+            const QPixmap face = taskIdenticon(assignee, kTaskAvatarSize, 0.5);
+            if (face.isNull())
+                drawGlyph(QStringLiteral("person"), taskAccentColor(assignee));
+            else
+                painter->drawPixmap(x, centreY(kTaskAvatarSize), face);
+        } else {
+            drawGlyph(QStringLiteral("person"), muted);
+        }
+        x += kTaskSlotWidth;
+
+        QString qaIcon;
+        QColor qaColour;
+        if (taskQaGlyph(qa, index.data(kTaskQaRequestedRole).toBool(), &qaIcon,
+                        &qaColour, dark))
+            drawGlyph(qaIcon, qaColour);
+        x += kTaskSlotWidth + kTaskTitleGap;
+
+        const QRect titleRect(x, option.rect.top(),
+                              option.rect.right() - x - 8,
+                              option.rect.height());
+        painter->setPen(selected ? QColor("#ffffff")
+                                 : done ? muted
+                                        : QColor(dark ? "#e6edf3" : "#1f2328"));
+        if (done) {
+            QFont struck = option.font;
+            struck.setStrikeOut(true);
+            painter->setFont(struck);
+        }
+        painter->drawText(
+            titleRect, Qt::AlignVCenter | Qt::AlignLeft,
+            painter->fontMetrics().elidedText(index.data(Qt::DisplayRole)
+                                                  .toString(),
+                                              Qt::ElideRight,
+                                              qMax(0, titleRect.width())));
+        painter->restore();
+    }
+};
 
 QJsonObject selectedOrganizationTask(
     QTableWidget *table, const QJsonArray &tasks)
@@ -233,66 +531,88 @@ QWidget *MainWindow::buildOrganizationTasksSection()
 
     auto *splitter = new QSplitter(Qt::Horizontal);
     splitter->setChildrenCollapsible(false);
-    m_organizationTasksTable = new QTableWidget(0, 7);
+    // One column, no headers, no grid, no alternating bands (adhoc #56): the
+    // delegate paints an icon strip on the left and the title on the right, so
+    // the list reads as a list rather than as a spreadsheet. Everything the old
+    // columns showed is still there — as a glyph, with the full text on the
+    // row's tooltip and in the detail pane.
+    m_organizationTasksTable = new QTableWidget(0, 1);
     m_organizationTasksTable->setObjectName(
         QStringLiteral("organizationTasksTable"));
-    m_organizationTasksTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Priority"), QStringLiteral("Title"),
-         QStringLiteral("Status"), QStringLiteral("Department"),
-         QStringLiteral("Repository"), QStringLiteral("Assignee"),
-         QStringLiteral("QA")});
+    m_organizationTasksTable->horizontalHeader()->hide();
     m_organizationTasksTable->verticalHeader()->hide();
+    m_organizationTasksTable->setShowGrid(false);
+    m_organizationTasksTable->setFrameShape(QFrame::NoFrame);
     m_organizationTasksTable->setSelectionBehavior(
         QAbstractItemView::SelectRows);
     m_organizationTasksTable->setSelectionMode(
         QAbstractItemView::SingleSelection);
     m_organizationTasksTable->setEditTriggers(
         QAbstractItemView::NoEditTriggers);
-    m_organizationTasksTable->setAlternatingRowColors(true);
+    m_organizationTasksTable->setAlternatingRowColors(false);
     m_organizationTasksTable->setSortingEnabled(false);
-    auto *header = m_organizationTasksTable->horizontalHeader();
-    header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    header->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int column = 2; column < 7; ++column)
-        header->setSectionResizeMode(column, QHeaderView::ResizeToContents);
+    m_organizationTasksTable->setWordWrap(false);
+    m_organizationTasksTable->setMouseTracking(true);
+    m_organizationTasksTable->setItemDelegate(
+        new OrganizationTaskRowDelegate(m_organizationTasksTable));
+    m_organizationTasksTable->verticalHeader()->setDefaultSectionSize(
+        kTaskRowHeight);
+    m_organizationTasksTable->horizontalHeader()->setSectionResizeMode(
+        0, QHeaderView::Stretch);
     connect(m_organizationTasksTable, &QTableWidget::itemSelectionChanged,
             this, [this] {
                 renderOrganizationTaskDetail();
                 updateOrganizationTaskActions();
             });
+    // Priority and assignee lost their in-row editors with the columns; the
+    // edit dialog carries both, so a double-click opens it.
+    connect(m_organizationTasksTable, &QTableWidget::itemDoubleClicked, this,
+            [this](QTableWidgetItem *) { editOrganizationTask(); });
+    // The search runs over the whole catalog, not just the painted page, so a
+    // match on page 12 still surfaces — it re-pages the filtered set from the
+    // first page.
     connect(m_organizationTasksSearch, &QLineEdit::textChanged, this,
-            [this](const QString &text) {
-                const QString query = text.trimmed();
-                for (int row = 0; row < m_organizationTasksTable->rowCount();
-                     ++row) {
-                    const QTableWidgetItem *indexItem =
-                        m_organizationTasksTable->item(row, 0);
-                    const int index =
-                        indexItem ? indexItem->data(Qt::UserRole).toInt() : -1;
-                    const QJsonObject task =
-                        index >= 0 && index < m_organizationTasks.size()
-                            ? m_organizationTasks.at(index).toObject()
-                            : QJsonObject();
-                    const QJsonObject qa =
-                        task.value(QStringLiteral("qa")).toObject();
-                    const QString haystack =
-                        QStringList{
-                            taskText(task, QStringLiteral("title")),
-                            taskText(task, QStringLiteral("details")),
-                            taskAssigneeLabel(task),
-                            taskText(task, QStringLiteral("repository")),
-                            taskText(task, QStringLiteral("department")),
-                            taskText(task, QStringLiteral("status")),
-                            taskText(qa, QStringLiteral("howToTest")),
-                            taskText(task, QStringLiteral("id")),
-                        }.join(QLatin1Char('\n'));
-                    m_organizationTasksTable->setRowHidden(
-                        row, !query.isEmpty() &&
-                                 !haystack.contains(query,
-                                                    Qt::CaseInsensitive));
-                }
+            [this](const QString &) {
+                m_organizationTasksPage = 0;
+                renderOrganizationTaskRows();
             });
-    splitter->addWidget(m_organizationTasksTable);
+
+    auto *tableHost = new QWidget;
+    auto *tableLayout = new QVBoxLayout(tableHost);
+    tableLayout->setContentsMargins(0, 0, 0, 0);
+    tableLayout->setSpacing(6);
+    tableLayout->addWidget(m_organizationTasksTable, 1);
+
+    auto *pager = new QHBoxLayout;
+    pager->setContentsMargins(0, 0, 0, 0);
+    pager->setSpacing(8);
+    m_organizationTaskPrevPageButton =
+        new QPushButton(QString::fromUtf8("\xE2\x80\xB9 Previous"));
+    m_organizationTaskPrevPageButton->setObjectName(
+        QStringLiteral("ghostButton"));
+    m_organizationTaskNextPageButton =
+        new QPushButton(QString::fromUtf8("Next \xE2\x80\xBA"));
+    m_organizationTaskNextPageButton->setObjectName(
+        QStringLiteral("ghostButton"));
+    m_organizationTaskPageLabel = new QLabel;
+    m_organizationTaskPageLabel->setObjectName(QStringLiteral("mutedLabel"));
+    connect(m_organizationTaskPrevPageButton, &QPushButton::clicked, this,
+            [this] {
+                m_organizationTasksPage =
+                    qMax(0, m_organizationTasksPage - 1);
+                renderOrganizationTaskRows();
+            });
+    connect(m_organizationTaskNextPageButton, &QPushButton::clicked, this,
+            [this] {
+                ++m_organizationTasksPage;
+                renderOrganizationTaskRows();
+            });
+    pager->addWidget(m_organizationTaskPrevPageButton);
+    pager->addWidget(m_organizationTaskPageLabel);
+    pager->addStretch();
+    pager->addWidget(m_organizationTaskNextPageButton);
+    tableLayout->addLayout(pager);
+    splitter->addWidget(tableHost);
 
     auto *detailHost = new QWidget;
     auto *detailLayout = new QVBoxLayout(detailHost);
@@ -621,139 +941,153 @@ void MainWindow::applyOrganizationTasks(const QJsonObject &payload)
             m_organizationTaskDepartments.append(department);
     }
 
-    m_organizationTasksTable->setRowCount(m_organizationTasks.size());
-    int selectedRow = -1;
-    int openCount = 0;
-    for (int row = 0; row < m_organizationTasks.size(); ++row) {
-        const QJsonObject task = m_organizationTasks.at(row).toObject();
-        const QJsonObject qa = task.value(QStringLiteral("qa")).toObject();
-        const bool done =
-            task.value(QStringLiteral("completedAt")).toDouble() > 0 ||
-            taskText(task, QStringLiteral("status")) == QLatin1String("done");
-        if (!done)
-            ++openCount;
-        const QStringList values = {
-            QString::number(task.value(QStringLiteral("priority")).toInt()),
-            taskText(task, QStringLiteral("title")),
-            taskText(task, QStringLiteral("status")) == QLatin1String("done")
-                ? QStringLiteral("\u2713 Done")
-                : taskText(task, QStringLiteral("status")) ==
-                          QLatin1String("active")
-                    ? QStringLiteral("\u25CC In progress")
-                    : taskText(task, QStringLiteral("assigneeKind")) ==
-                                  QLatin1String("agent") &&
-                              !taskText(task, QStringLiteral("agentSessionId"))
-                                   .isEmpty()
-                        ? QStringLiteral("\u2261 Queued")
-                        : QStringLiteral("\u25C6 Ready"),
-            taskText(task, QStringLiteral("department")),
-            taskText(task, QStringLiteral("repository")),
-            taskAssigneeLabel(task),
-            taskText(qa, QStringLiteral("status")),
-        };
-        for (int column = 0; column < values.size(); ++column) {
-            auto *item = new QTableWidgetItem(values.at(column));
-            item->setToolTip(values.at(column));
-            if (column == 0) {
-                item->setData(Qt::UserRole, row);
-                item->setTextAlignment(Qt::AlignCenter);
-            }
-            m_organizationTasksTable->setItem(row, column, item);
-        }
-        if (m_organizationTasksCanManage && !done &&
-            taskText(task, QStringLiteral("status")) !=
-                QLatin1String("active")) {
-            auto *priority = new QSpinBox;
-            priority->setRange(1, 99);
-            priority->setValue(
-                task.value(QStringLiteral("priority")).toInt(50));
-            priority->setFrame(false);
-            const QString id = taskText(task, QStringLiteral("id"));
-            connect(priority, &QSpinBox::editingFinished, this,
-                    [this, priority, id] {
-                        requestOrganizationTasks(
-                            QByteArrayLiteral("PATCH"),
-                            QStringLiteral("/api/tasks/") + id,
-                            {{QStringLiteral("priority"), priority->value()}},
-                            [this](bool ok, const QJsonObject &,
-                                   const QString &error) {
-                                m_organizationTasksStatus->setText(
-                                    ok ? QStringLiteral("Priority updated.")
-                                       : QStringLiteral(
-                                             "Priority update failed: %1")
-                                             .arg(error));
-                                if (ok)
-                                    refreshOrganizationTasks();
-                            });
-                    });
-            m_organizationTasksTable->setCellWidget(row, 0, priority);
-
-            auto *assignee = new QComboBox;
-            assignee->addItem(QStringLiteral("Bot"), QStringLiteral("agent"));
-            assignee->addItem(QStringLiteral("Unassigned"),
-                              QStringLiteral("unassigned"));
-            for (const QString &member :
-                 std::as_const(m_organizationTaskMembers))
-                assignee->addItem(QStringLiteral("@") + member,
-                                  QStringLiteral("user:") + member);
-            QString selected =
-                taskText(task, QStringLiteral("assigneeKind"));
-            if (selected == QLatin1String("user"))
-                selected = QStringLiteral("user:") +
-                           taskText(task, QStringLiteral("assignee"));
-            assignee->setCurrentIndex(
-                qMax(0, assignee->findData(selected)));
-            connect(
-                assignee, &QComboBox::activated, this,
-                [this, assignee, id](int) {
-                    const QString value = assignee->currentData().toString();
-                    QJsonObject body{
-                        {QStringLiteral("assigneeKind"),
-                         value.startsWith(QLatin1String("user:"))
-                             ? QStringLiteral("user")
-                             : value},
-                    };
-                    if (value.startsWith(QLatin1String("user:")))
-                        body.insert(QStringLiteral("assignee"), value.mid(5));
-                    requestOrganizationTasks(
-                        QByteArrayLiteral("PATCH"),
-                        QStringLiteral("/api/tasks/") + id, body,
-                        [this](bool ok, const QJsonObject &,
-                               const QString &error) {
-                            m_organizationTasksStatus->setText(
-                                ok ? QStringLiteral("Assignee updated.")
-                                   : QStringLiteral(
-                                         "Assignee update failed: %1")
-                                         .arg(error));
-                            if (ok)
-                                refreshOrganizationTasks();
-                        });
-                });
-            m_organizationTasksTable->setCellWidget(row, 5, assignee);
-        }
-        if (taskText(task, QStringLiteral("id")) == selectedId)
-            selectedRow = row;
-    }
+    renderOrganizationTaskRows(selectedId);
+    const int openCount = openOrganizationTaskCount(m_organizationTasks);
     if (m_organizationTasksSummary) {
+        // Same wording the dashboard's Tasks page shows, counted the same way,
+        // so "84 open" means 84 open on both surfaces (adhoc #56).
         m_organizationTasksSummary->setText(
-            QStringLiteral("%1 open \xC2\xB7 %2 total%3")
+            QStringLiteral("%1 open \xC2\xB7 %2 closed%3")
                 .arg(openCount)
-                .arg(m_organizationTasks.size())
+                .arg(m_organizationTasks.size() - openCount)
                 .arg(m_organizationTasksCanManage
                          ? QStringLiteral(" \xC2\xB7 manager")
                          : QString()));
     }
     setOrganizationTaskBadge(openCount);
+    refreshOrganizationTaskQueue();
+}
+
+// Paint one page of the catalog. `m_organizationTasks` always holds every task
+// the relay returned; the search narrows that whole list and the page then cuts
+// a window out of the match set, so nothing past row 100 is unreachable.
+// Column 0 keeps the task's absolute index in Qt::UserRole, which is what
+// selectedOrganizationTask() resolves against.
+void MainWindow::renderOrganizationTaskRows(const QString &selectTaskId)
+{
+    if (!m_organizationTasksTable)
+        return;
+    const QString selectedId =
+        selectTaskId.isEmpty()
+            ? taskText(selectedOrganizationTask(m_organizationTasksTable,
+                                                m_organizationTasks),
+                       QStringLiteral("id"))
+            : selectTaskId;
+    const QString query = m_organizationTasksSearch
+                              ? m_organizationTasksSearch->text().trimmed()
+                              : QString();
+    QList<int> matches;
+    matches.reserve(m_organizationTasks.size());
+    for (int index = 0; index < m_organizationTasks.size(); ++index) {
+        const QJsonObject task = m_organizationTasks.at(index).toObject();
+        if (query.isEmpty()) {
+            matches.append(index);
+            continue;
+        }
+        const QJsonObject qa = task.value(QStringLiteral("qa")).toObject();
+        const QString haystack =
+            QStringList{
+                taskText(task, QStringLiteral("title")),
+                taskText(task, QStringLiteral("details")),
+                taskAssigneeLabel(task),
+                taskText(task, QStringLiteral("repository")),
+                taskText(task, QStringLiteral("department")),
+                taskText(task, QStringLiteral("status")),
+                taskText(qa, QStringLiteral("howToTest")),
+                taskText(task, QStringLiteral("id")),
+            }.join(QLatin1Char('\n'));
+        if (haystack.contains(query, Qt::CaseInsensitive))
+            matches.append(index);
+    }
+
+    const int pageCount =
+        qMax(1, (matches.size() + kOrganizationTaskPageSize - 1) /
+                    kOrganizationTaskPageSize);
+    m_organizationTasksPage =
+        qBound(0, m_organizationTasksPage, pageCount - 1);
+    const int first = m_organizationTasksPage * kOrganizationTaskPageSize;
+    const int last =
+        qMin(matches.size(), first + kOrganizationTaskPageSize);
+
+    m_organizationTasksTable->setRowCount(0);
+    m_organizationTasksTable->setRowCount(qMax(0, last - first));
+    int selectedRow = -1;
+    for (int row = 0; row + first < last; ++row) {
+        const int index = matches.at(first + row);
+        const QJsonObject task = m_organizationTasks.at(index).toObject();
+        const QJsonObject qa = task.value(QStringLiteral("qa")).toObject();
+        const QString statusKey = taskStatusKey(task);
+        const QString department = taskText(task, QStringLiteral("department"));
+        const QString repository = taskText(task, QStringLiteral("repository"));
+        const QString qaStatus = taskText(qa, QStringLiteral("status"));
+        const bool qaRequested =
+            qa.value(QStringLiteral("requestedAt")).toDouble() > 0;
+
+        auto *item =
+            new QTableWidgetItem(taskText(task, QStringLiteral("title")));
+        item->setData(Qt::UserRole, index);
+        item->setData(kTaskStatusRole, statusKey);
+        item->setData(kTaskDepartmentRole, department);
+        item->setData(kTaskRepositoryRole, repository);
+        item->setData(kTaskAssigneeKindRole,
+                      taskText(task, QStringLiteral("assigneeKind")));
+        item->setData(kTaskAssigneeRole,
+                      taskText(task, QStringLiteral("assignee")));
+        item->setData(kTaskQaRole, qaStatus);
+        item->setData(kTaskQaRequestedRole, qaRequested);
+        item->setData(
+            kTaskPriorityRole,
+            QString::number(task.value(QStringLiteral("priority")).toInt()));
+        // The glyphs carry no labels, so the tooltip spells the whole strip
+        // out \u2014 this is where "which department is that icon?" gets answered.
+        item->setToolTip(
+            QStringList{
+                taskText(task, QStringLiteral("title")),
+                QStringLiteral("Status: %1").arg(taskStatusLabel(statusKey)),
+                QStringLiteral("Priority: %1")
+                    .arg(task.value(QStringLiteral("priority")).toInt()),
+                QStringLiteral("Department: %1")
+                    .arg(department.isEmpty()
+                             ? QString::fromUtf8("\xE2\x80\x94")
+                             : department),
+                QStringLiteral("Repository: %1")
+                    .arg(repository.isEmpty()
+                             ? QString::fromUtf8("\xE2\x80\x94")
+                             : repository),
+                QStringLiteral("Assignee: %1").arg(taskAssigneeLabel(task)),
+                QStringLiteral("QA: %1")
+                    .arg(qaStatus.isEmpty() ? QStringLiteral("unknown")
+                                            : qaStatus),
+            }.join(QLatin1Char('\n')));
+        m_organizationTasksTable->setItem(row, 0, item);
+        if (taskText(task, QStringLiteral("id")) == selectedId)
+            selectedRow = row;
+    }
+    if (m_organizationTaskPageLabel) {
+        m_organizationTaskPageLabel->setText(
+            matches.isEmpty()
+                ? (m_organizationTasks.isEmpty()
+                       ? QStringLiteral("No tasks")
+                       : QStringLiteral("No tasks match this search"))
+                : QStringLiteral("%1\xE2\x80\x93%2 of %3 \xC2\xB7 page %4 of %5")
+                      .arg(first + 1)
+                      .arg(last)
+                      .arg(matches.size())
+                      .arg(m_organizationTasksPage + 1)
+                      .arg(pageCount));
+    }
+    if (m_organizationTaskPrevPageButton)
+        m_organizationTaskPrevPageButton->setEnabled(
+            m_organizationTasksPage > 0);
+    if (m_organizationTaskNextPageButton)
+        m_organizationTaskNextPageButton->setEnabled(
+            m_organizationTasksPage + 1 < pageCount);
     if (selectedRow >= 0)
         m_organizationTasksTable->selectRow(selectedRow);
-    else if (!m_organizationTasks.isEmpty())
+    else if (m_organizationTasksTable->rowCount() > 0)
         m_organizationTasksTable->selectRow(0);
-    if (m_organizationTasksSearch)
-        emit m_organizationTasksSearch->textChanged(
-            m_organizationTasksSearch->text());
     renderOrganizationTaskDetail();
     updateOrganizationTaskActions();
-    refreshOrganizationTaskQueue();
 }
 
 void MainWindow::refreshOrganizationTaskQueue()
@@ -1019,6 +1353,56 @@ void MainWindow::createOrganizationTask()
                 queueOrganizationTaskAgent(task);
             else
                 refreshOrganizationTasks();
+        });
+}
+
+// File the prompt-bar text as an ordinary shared task. It is deliberately
+// unassigned and routed to General: pressing "task" must not launch a genie (or
+// any other agent) as a side effect. An operator can assign/start it from the
+// Tasks page when it is ready.
+void MainWindow::createQuickAddOrganizationTask()
+{
+    if (!m_issueQuickAdd)
+        return;
+    const QString prompt = m_issueQuickAdd->toPlainText().trimmed();
+    if (prompt.isEmpty()) {
+        flashMessage(QStringLiteral("Type a task first."), true);
+        m_issueQuickAdd->setFocus();
+        return;
+    }
+
+    QString title = prompt.section(QLatin1Char('\n'), 0, 0).simplified();
+    if (title.size() > 160)
+        title = title.left(159).trimmed() + QString::fromUtf8("\xE2\x80\xA6");
+    QString repository;
+    const int repoIndex = issuesRepoIndex();
+    if (repoIndex >= 0 && repoIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(repoIndex);
+        repository = repo.owner + QLatin1Char('/') + repo.name;
+    }
+    const QJsonObject body{
+        {QStringLiteral("title"), title},
+        {QStringLiteral("details"), prompt},
+        {QStringLiteral("department"), QStringLiteral("general")},
+        {QStringLiteral("destination"), QStringLiteral("department")},
+        {QStringLiteral("assigneeKind"), QStringLiteral("unassigned")},
+        {QStringLiteral("repository"), repository},
+        {QStringLiteral("priority"), 50},
+    };
+    requestOrganizationTasks(
+        QByteArrayLiteral("POST"), QStringLiteral("/api/tasks"), body,
+        [this, prompt](bool ok, const QJsonObject &, const QString &error) {
+            if (!ok) {
+                flashMessage(QStringLiteral("Task creation failed: %1").arg(error),
+                             true);
+                return;
+            }
+            recordQuickAddHistory(prompt);
+            m_issueQuickAdd->clear();
+            clearQuickAddImages();
+            showSection(kOrganizationTasksSectionIndex);
+            refreshOrganizationTasks();
+            flashMessage(QStringLiteral("Task added to General."));
         });
 }
 

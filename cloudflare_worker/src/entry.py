@@ -32,11 +32,43 @@ from js import WebSocketPair
 from js import caches as js_caches
 from js import crypto as js_crypto
 from js import fetch as js_fetch
+from pyodide.ffi import jsnull
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
 
-import organization_discord
-from discord_rate import DiscordRateCoordinator
+
+class _LazyModule:
+    """Import a route-specific module only when one of its helpers is used.
+
+    Python Workers execute this module's global scope while validating a new
+    version.  Importing every optional HTTP domain there makes Pyodide parse
+    and initialize the whole application before it can serve its first
+    request, which exceeds the Worker startup memory allowance.  A proxy keeps
+    the normal ``module.helper(...)`` call sites while deferring that work to
+    the route which actually needs it.
+    """
+
+    __slots__ = ("_name", "_module")
+
+    def __init__(self, name):
+        self._name = name
+        self._module = None
+
+    def _load(self):
+        module = self._module
+        if module is None:
+            module = __import__(self._name)
+            self._module = module
+        return module
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+
+# These modules back optional route families.  Do not turn these assignments
+# back into top-level imports: Cloudflare validates Python Worker global scope
+# within a fixed memory budget.
+organization_discord = _LazyModule("organization_discord")
 
 # Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
 # lives in its own module. Wallet signing is intentionally not imported into the
@@ -45,6 +77,7 @@ from solana import (
     _base58_encode,
     _b64url_encode,
     _solana_rpc,
+    _solana_rpc_write,
 )
 
 MAX_ROOM_NAME = 80
@@ -110,6 +143,13 @@ CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
 # without limit.
 CHAT_HISTORY_MAX_BODY = 1_900_000
 CHAT_HISTORY_MAX_BYTES_PER_ROOM = 16 * 1024 * 1024
+# A new WebSocket must complete its 101 handshake promptly. Replaying the
+# room's full 16 MiB retention budget before returning the upgrade can outlive
+# Cloudflare's Durable Object request-duration allowance. Send a bounded recent
+# tail instead; the encrypted archive remains retained and HTTP polling can
+# retrieve later messages incrementally.
+CHAT_HISTORY_REPLAY_MAX_MESSAGES = 64
+CHAT_HISTORY_REPLAY_MAX_BYTES = 2 * 1024 * 1024
 CHAT_HISTORY_INGRESS_WINDOW_MS = 10 * 1000
 CHAT_HISTORY_INGRESS_MAX_BYTES = 8 * 1024 * 1024
 CHAT_CHANNEL_TICKET_TTL_MS = 60 * 1000
@@ -278,6 +318,7 @@ NOTIFICATION_KINDS = frozenset({
     "organization_task_started",
     "organization_task_activity",
     "account_email_sent",
+    "operational_alert",
     # First sighting of an operational error group (adhoc #77). Admin-only.
     "error_group",
 })
@@ -366,6 +407,7 @@ from urls import (  # noqa: E402
     REPO_SHARES_RE,
     REPO_SECURITY_SCANS_RE,
     REPO_MIRRORS_RE,
+    REPO_MIRROR_REACHABILITY_RE,
     REPO_ABOUT_RE,
     REPO_LOGO_RE,
     REPO_LOGO_SUGGESTIONS_RE,
@@ -400,6 +442,7 @@ from urls import (  # noqa: E402
     ORG_BOT_TOKENS_RE,
     ORG_DISCORD_RE,
     DISCORD_OAUTH_CALLBACK_RE,
+    MAILTRAP_WEBHOOK_RE,
     BOT_SESSION_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
@@ -507,10 +550,11 @@ from catalog import (  # noqa: E402
     safe_contribution_transport,
     safe_segment,
 )
-import contributions  # noqa: E402
+contributions = _LazyModule("contributions")
 
-# The D1 table/index DDL list ensure_schema() runs lives in schema.py.
-from schema import SCHEMA_STATEMENTS  # noqa: E402
+# The D1 table/index DDL list is only needed when a request or cron first
+# ensures storage.  It is large enough to keep out of Python global scope.
+schema = _LazyModule("schema")
 
 # Signed-event crypto + canonicalization -- the Ed25519/SHA-256 verify
 # primitives and the per-event canonical-content builders (which must
@@ -538,60 +582,61 @@ from events import (  # noqa: E402
 # extraction + HTML sanitization) lives in activitypub.py — a pure, js-free
 # sibling module the test suite imports directly. Only the WebCrypto RSA glue,
 # the D1-backed actor/follower/delivery state and the HTTP handlers live below.
-import activitypub as ap  # noqa: E402
-import activitypub_threads as ap_threads  # noqa: E402
-import edge_routing as https_routing  # noqa: E402
-import fediverse_digest as fedi_digest  # noqa: E402
-import reward_policy  # noqa: E402
+ap = _LazyModule("activitypub")
+ap_threads = _LazyModule("activitypub_threads")
+https_routing = _LazyModule("edge_routing")
+fedi_digest = _LazyModule("fediverse_digest")
+reward_policy = _LazyModule("reward_policy")
 # Objective evidence, one-account-one-vote governance, and contextual-only
 # community placement policy live outside the route spine.
-import community_ads_api  # noqa: E402
+community_ads_api = _LazyModule("community_ads_api")
 # Verified public fediverse feedback remains review-only until an authorized
 # owner explicitly queues it and the owner node confirms materialization.
-import fediverse_mentions_api  # noqa: E402
+fediverse_mentions_api = _LazyModule("fediverse_mentions_api")
 # Non-custodial organization succession is isolated from account, repository,
 # device, agent, and financial handlers. The API receives no platform-admin
 # authorization primitive and can mutate only organization membership roles.
-import organization_succession_api  # noqa: E402
+organization_succession_api = _LazyModule("organization_succession_api")
 # Least-privilege roles, owner-sealed envelope validation, and metadata-only
 # audit sanitization live in a pure sibling module. Keeping these allowlists
 # out of the route handlers makes them independently testable.
-import security_controls as security_control  # noqa: E402
+security_control = _LazyModule("security_controls")
 # Strict public-artifact validation and bounded encrypted D1 history for daily
 # repository security scans lives in a pure sibling module.
-import security_scan_ingest  # noqa: E402
+security_scan_ingest = _LazyModule("security_scan_ingest")
 # Transient multiplayer protocol sanitization. This pure module owns the
 # allowlist for every public world-presence field; the Durable Object below
 # never relays arbitrary client JSON.
-import world as world_protocol  # noqa: E402
+world_protocol = _LazyModule("world")
 # Fixed-footprint HyperLogLog helpers for the public Arrival Grid's approximate
 # unique counts. Raw edge request attributes never cross into this pure module.
-import world_visitors as world_visitor_metrics  # noqa: E402
+world_visitor_metrics = _LazyModule("world_visitors")
 # Public-only Fediverse directory and authenticated media-space orchestration
 # live behind a small adapter so they reuse this Worker's established sessions,
 # blind indexes, D1 helpers, and metadata-only audit trail.
-import world_community_api  # noqa: E402
+world_community_api = _LazyModule("world_community_api")
 # Community announcements are UTC D1 records with public cached reads and
 # platform-admin-only audited mutations; no production event is hardcoded in
 # the Three.js client.
-import world_events_api  # noqa: E402
+world_events_api = _LazyModule("world_events_api")
 # Persisted Code Workshop reports and participant events use the same narrow
 # authenticated/encrypted D1 adapter as the other World collaboration APIs.
-import world_social_feeds  # noqa: E402
-import world_satellites  # noqa: E402
-import world_workshops  # noqa: E402
+world_social_feeds = _LazyModule("world_social_feeds")
+world_satellites = _LazyModule("world_satellites")
+world_workshops = _LazyModule("world_workshops")
 # Organization-scoped Office marketing tasks use a separate HTTP/D1 subsystem.
 # It never receives platform-admin authorization or an Office Durable Object,
 # and its human-readable task/check-in data is encrypted at rest.
-import world_office_tasks  # noqa: E402
-import world_build_board  # noqa: E402
-import world_link_kiosk  # noqa: E402
+world_office_tasks = _LazyModule("world_office_tasks")
+world_build_board = _LazyModule("world_build_board")
+world_element_store = _LazyModule("world_element_store")
+world_link_kiosk = _LazyModule("world_link_kiosk")
 # Private administrator-created channel policy is kept in a pure module and
 # receives only this Worker's narrow session, crypto, D1, and audit adapter.
-import chat_channels_api  # noqa: E402
+chat_channels_api = _LazyModule("chat_channels_api")
 # Direct messages have a stricter participant-only authorization policy and
 # therefore use a separate pure API module instead of channel admin semantics.
-import chat_direct_messages_api  # noqa: E402
+chat_direct_messages_api = _LazyModule("chat_direct_messages_api")
 # Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
 # "fingerprint" attached to federated PR-opened notes. The federated copy is a
 # square PNG — fediverse clients won't preview an SVG attachment.
@@ -599,16 +644,16 @@ from pull_badge import patch_file_stats, pull_badge_png  # noqa: E402
 
 # Social-preview (OpenGraph) info-card renderer — pure-stdlib PNG drawing,
 # another js-free sibling module the test suite imports directly.
-import og_card  # noqa: E402
+og_card = _LazyModule("og_card")
 
 # The blog's RSS 2.0 feed, derived from the shipped static blog index. Serves
 # /blog/rss.xml and, through world_social_feeds, the world's blog banner.
-import blog_feed  # noqa: E402
+blog_feed = _LazyModule("blog_feed")
 
 # The fixed achievement-badge catalog (slug -> name/description/icon) and slug
 # validation are pure data/logic, so they live in their own js-free sibling
 # module; the D1-backed award/list/grant handlers stay below (adhoc #370).
-import badges as badge_catalog  # noqa: E402
+badge_catalog = _LazyModule("badges")
 
 
 def _repository_import_module():
@@ -1116,14 +1161,14 @@ async def edge_cache_delete(cache_key):
 # this TTL is only a backstop that lets a colo re-fetch if a state-hash update is
 # ever missed. See git_advert_cache_key and Default._clone_advert_cache_key.
 GIT_ADVERT_CACHE_TTL = 300
-# Repository pages are an operational view, so do not let a healthy node's
-# prior branch head mask a just-synchronized commit for five minutes. The
-# attested-state cache key remains the primary invalidation mechanism; this
-# short backstop bounds freshness even if a catalog pin update is delayed.
-REPOSITORY_METADATA_CACHE_TTL = 30
+# Repository-page JSON is persisted in Workers KV and cached at the edge under
+# an owner-attested refs digest. The digest changes whenever any published ref
+# changes, so these immutable values never need a time-based expiry: a new
+# commit produces a new key and the prior generation becomes unreachable.
+REPOSITORY_METADATA_CACHE_TTL = 365 * 24 * 60 * 60
 REPOSITORY_METADATA_CACHE_MAX_BYTES = 8 * 1024 * 1024
 REPOSITORY_METADATA_CACHE_PREFIX = (
-    "https://forkmesh.internal/repository-metadata/v2/"
+    "https://forkmesh.internal/repository-metadata/v3/"
 )
 
 
@@ -1177,53 +1222,97 @@ async def git_advert_cache_put(cache_key, response, ttl=GIT_ADVERT_CACHE_TTL):
 
 
 def repository_metadata_cache_key(context, operation, query):
-    """Key a small public metadata read by its attested repository state.
+    """Key public repo-page JSON by the current owner-attested refs state.
 
-    Only the fixed World/bootstrap surface is admitted. Source blobs, raw
-    files, private routes, moving un-attested refs, and arbitrary path queries
-    never enter the edge cache. The refs digest in ``context["pins"]`` changes
-    the key whenever any published head changes, including forkmesh/pulls.
+    This deliberately admits only the repository overview and collaboration
+    records rendered by the web UI. Arbitrary source files, raw downloads,
+    private routes, and write operations never enter KV. Named branches are
+    safe here because ``currentPins`` authenticates the complete refs set and
+    therefore changes the key before a moved branch can reuse old content.
     """
     if not isinstance(context, dict) or not isinstance(query, dict):
         return ""
     pins = sorted({
         str(pin).lower()
-        for pin in context.get("pins", set())
+        for pin in context.get("currentPins", set())
         if re.fullmatch(r"[0-9a-f]{64}", str(pin).lower())
     })
     repo_bi = str(context.get("repoBi") or "")
     if not pins or not repo_bi:
         return ""
-    ref = str(query.get("ref") or "").lower()
-    exact_ref = bool(re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", ref))
+    # Git refs are case-sensitive; preserve their spelling in the key.
+    ref = str(query.get("ref") or "").strip()
+    if (
+        ref
+        and (
+            len(ref) > 200
+            or ref.startswith("-")
+            or ".." in ref
+            or "@{" in ref
+            or ref.endswith(".")
+            or not re.fullmatch(r"[A-Za-z0-9._/-]+", ref)
+        )
+    ):
+        return ""
+
+    def cacheable_tree_path(path):
+        return path in {
+            "", "pulls", ".forkmesh/issues",
+            ".forkmesh/issues/open", ".forkmesh/issues/closed",
+            ".forkmesh/discussions", ".forkmesh/releases",
+        } or bool(re.fullmatch(
+            r"(?:pulls|\.forkmesh/discussions)/[1-9][0-9]{0,8}",
+            path,
+        ))
+
+    def cacheable_blob_path(path):
+        return bool(
+            re.fullmatch(r"(?i:readme(?:\.(?:md|txt|rst))?)", path)
+            or path == ".forkmesh/info.json"
+            or re.fullmatch(
+                r"\.forkmesh/issues/(?:open/|closed/)?"
+                r"[1-9][0-9]{0,8}/issue-[1-9][0-9]{0,8}\.json",
+                path,
+            )
+            or re.fullmatch(
+                r"\.forkmesh/discussions/[1-9][0-9]{0,8}/"
+                r"(?:discussion\.md|[0-9]{1,12}-comment\.md)",
+                path,
+            )
+            or re.fullmatch(
+                r"pulls/[1-9][0-9]{0,8}/"
+                r"(?:pull\.md|changes\.patch|[0-9]{1,12}-[^/]{1,180})",
+                path,
+            )
+            or re.fullmatch(
+                r"\.forkmesh/releases/[A-Za-z0-9._-]{1,100}/release\.json",
+                path,
+            )
+        )
+
     canonical_query = {}
     if operation == "branches" and not query:
         pass
     elif operation == "tree":
         path = str(query.get("path") or "")
-        if path not in {
-            "", "pulls", ".forkmesh/issues",
-            ".forkmesh/issues/open", ".forkmesh/issues/closed",
-        }:
-            return ""
-        if ref and not exact_ref:
+        if not cacheable_tree_path(path):
             return ""
         canonical_query = {"path": path, "ref": ref}
-    elif operation in {"sizes", "stats"} and exact_ref:
+    elif operation in {"sizes", "stats", "history"} and ref:
         canonical_query = {"ref": ref}
-    elif operation == "blobs" and exact_ref:
+    elif operation == "blob" and ref:
+        path = str(query.get("path") or "")
+        if not cacheable_blob_path(path):
+            return ""
+        canonical_query = {"path": path, "ref": ref}
+    elif operation == "blobs" and ref:
         paths = query.get("path")
         if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_BLOB_BATCH:
             return ""
         normalized_paths = sorted(set(str(path) for path in paths))
         if (
             len(normalized_paths) != len(paths)
-            or any(
-                not re.fullmatch(
-                    r"pulls/[1-9][0-9]{0,8}/pull\.md", path
-                )
-                for path in normalized_paths
-            )
+            or any(not cacheable_blob_path(path) for path in normalized_paths)
         ):
             return ""
         canonical_query = {"path": normalized_paths, "ref": ref}
@@ -1242,59 +1331,135 @@ def repository_metadata_cache_key(context, operation, query):
     return REPOSITORY_METADATA_CACHE_PREFIX + digest
 
 
-async def repository_metadata_cache_get(cache_key):
-    """Return an edge-held public metadata body with browser no-store policy."""
+async def repository_metadata_cache_get(env, cache_key):
+    """Return immutable public metadata from the edge, then global KV."""
     if not cache_key:
         return None
     try:
         hit = await js_caches.default.match(cache_key)
     except Exception:
         hit = None
-    if hit is None:
-        return None
-    try:
-        content_type = hit.headers.get("content-type")
-    except Exception:
-        content_type = None
-    return JsResponse.new(hit.body, to_js({
-        "status": 200,
-        "headers": {
-            "content-type": (
-                content_type or "application/json; charset=utf-8"
-            ),
-            "cache-control": "no-store, max-age=0, must-revalidate",
-        },
-    }))
-
-
-async def repository_metadata_cache_put(cache_key, response, status):
-    """Best-effort edge copy of one bounded public metadata response."""
-    if not cache_key or int(status or 0) != 200:
-        return
-    try:
-        js_resp = getattr(response, "js_object", None) or response
-        clone = js_resp.clone()
-        content_type = clone.headers.get("content-type")
-        content_length = int(clone.headers.get("content-length") or 0)
-        if not str(content_type or "").lower().startswith("application/json"):
-            return
-        if (
-            content_length <= 0
-            or content_length > REPOSITORY_METADATA_CACHE_MAX_BYTES
-        ):
-            return
-        cacheable = JsResponse.new(clone.body, to_js({
+    if hit is not None:
+        try:
+            content_type = hit.headers.get("content-type")
+        except Exception:
+            content_type = None
+        return JsResponse.new(hit.body, to_js({
             "status": 200,
             "headers": {
-                "content-type": content_type,
+                "content-type": (
+                    content_type or "application/json; charset=utf-8"
+                ),
+                "cache-control": "no-store, max-age=0, must-revalidate",
+            },
+        }))
+    namespace = getattr(env, "REPOSITORY_METADATA", None)
+    if namespace is None:
+        return None
+    try:
+        raw = await namespace.get(cache_key)
+    except Exception:
+        raw = None
+    if raw is None:
+        return None
+    raw = str(raw)
+    try:
+        json.loads(raw)
+    except Exception:
+        return None
+    # Refill this colo's fastest cache from the persistent global copy. Both
+    # layers use the same state-addressed key and may therefore live forever.
+    try:
+        cacheable = JsResponse.new(raw, to_js({
+            "status": 200,
+            "headers": {
+                "content-type": "application/json; charset=utf-8",
                 "cache-control": (
-                    "public, max-age=%d" % REPOSITORY_METADATA_CACHE_TTL
+                    "public, max-age=%d, immutable"
+                    % REPOSITORY_METADATA_CACHE_TTL
                 ),
             },
         }))
         await js_caches.default.put(cache_key, cacheable)
     except Exception:
         pass
+    return Response(
+        raw,
+        status=200,
+        headers={
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store, max-age=0, must-revalidate",
+        },
+    )
+
+
+async def repository_metadata_cache_put(env, cache_key, response, status):
+    """Persist one bounded state-addressed JSON response in KV and the edge."""
+    if not cache_key or int(status or 0) != 200:
+        return
+    try:
+        js_resp = getattr(response, "js_object", None) or response
+        clone = js_resp.clone()
+        content_type = clone.headers.get("content-type")
+        if not str(content_type or "").lower().startswith("application/json"):
+            return
+        raw = str(await clone.text())
+        content_length = len(raw.encode("utf-8"))
+        if (
+            content_length <= 0
+            or content_length > REPOSITORY_METADATA_CACHE_MAX_BYTES
+        ):
+            return
+        # Validate before a mirror response can become a durable shared value.
+        json.loads(raw)
+        cacheable = JsResponse.new(raw, to_js({
+            "status": 200,
+            "headers": {
+                "content-type": content_type,
+                "cache-control": (
+                    "public, max-age=%d, immutable"
+                    % REPOSITORY_METADATA_CACHE_TTL
+                ),
+            },
+        }))
+        namespace = getattr(env, "REPOSITORY_METADATA", None)
+        writes = [js_caches.default.put(cache_key, cacheable)]
+        if namespace is not None:
+            # No expiration: commit/ref changes address a brand-new key.
+            writes.append(namespace.put(cache_key, raw))
+        await asyncio.gather(*writes, return_exceptions=True)
+    except Exception:
+        pass
+
+
+def request_bypasses_repository_metadata_cache(request):
+    """Honor explicit live-read semantics before mirror selection.
+
+    Dashboard repository reads use ``fetch(..., cache="no-store")`` and also
+    send ``Cache-Control: no-cache``.  Those requests must reach a healthy
+    mirror so the round-robin cursor advances and the Mirrors view records the
+    node that actually served the request.  Immutable state-addressed cache
+    entries remain available to ordinary clients that do not request a live
+    read.
+    """
+    try:
+        cache_control = str(
+            request.headers.get("cache-control") or ""
+        ).lower()
+        pragma = str(request.headers.get("pragma") or "").lower()
+    except Exception:
+        return False
+    directives = {
+        part.split("=", 1)[0].strip()
+        for part in cache_control.split(",")
+        if part.strip()
+    }
+    return bool(
+        directives.intersection({"no-cache", "no-store"})
+        or "no-cache" in {
+            part.strip() for part in pragma.split(",") if part.strip()
+        }
+    )
 
 
 async def purge_catalog_related_caches():
@@ -1400,13 +1565,42 @@ async def notify_repo_mirrors(env, owner, repo, topic):
     if not context:
         return
     source_owner = str(owner or "").strip().lower()
-    for node in sorted({
+    mirror_nodes = {
         str(value or "").strip().lower()
         for value in context.get("nodes", set())
-    }):
-        if not valid_node_name(node) or node == source_owner:
+        if valid_node_name(str(value or "").strip().lower())
+    }
+    # A headless mirror opens its event socket under the node account, while a
+    # desktop node linked to a person opens the same socket under that owner's
+    # account. The HTTPS catalog is keyed by machine name, so notifying only
+    # `mirror2` silently missed a live socket authenticated as (for example)
+    # `jett`. Fan the payload-free hint to both identities. The node ownership
+    # relation is server-written and the query is bounded by the already
+    # bounded integrity-approved mirror set.
+    targets = set(mirror_nodes)
+    if mirror_nodes:
+        try:
+            placeholders = ",".join("?" for _node in mirror_nodes)
+            rows = await d1_all(
+                env,
+                "SELECT lower(n.name) AS node_name,lower(u.username) AS owner "
+                "FROM nodes n LEFT JOIN users u ON u.user_bi=n.user_bi "
+                "WHERE lower(n.name) IN (" + placeholders + ")",
+                *sorted(mirror_nodes),
+            )
+            for row in rows or []:
+                node = str(row.get("node_name") or "").strip().lower()
+                linked_owner = str(row.get("owner") or "").strip().lower()
+                if node in mirror_nodes and valid_node_name(linked_owner):
+                    targets.add(linked_owner)
+        except Exception:
+            # The machine-name notification remains the fallback for headless
+            # nodes and for a transient ownership lookup failure.
+            pass
+    for target in sorted(targets):
+        if not valid_node_name(target) or target == source_owner:
             continue
-        await notify_repo_host(env, node, repo, topic)
+        await notify_repo_host(env, target, repo, topic)
 
 
 async def node_events_handler(env, request):
@@ -2009,20 +2203,20 @@ async def network_overview(env):
 #   - website / api / realtime: unhandled/5xx errors logged this minute
 #     (log_error, see Default.fetch) bucketed by the path they hit, so an
 #     incident in one area doesn't paint the whole site down.
-#   - durable_objects: room requests killed by Cloudflare's free-tier DO
-#     duration cap (log_durable_object_abort), tracked separately from the
-#     rest of "realtime" so plan-limit aborts have their own visible history
-#     instead of being buried in general realtime noise.
+#   - durable_objects: room requests aborted by the Durable Objects platform
+#     (log_durable_object_abort), tracked separately from the rest of
+#     "realtime" without adding one actionable Worker-error row per reconnect.
 STATUS_SYSTEMS = [
     ("website", "Website"),
     ("api", "API"),
     ("errors", "Worker errors"),
     ("database", "Database"),
+    ("email", "Email delivery"),
     ("flagship_repository", "forkmesh/forkmesh repository page"),
     ("installer", "Installer delivery"),
     ("git_hosting", "Git hosting network"),
     ("realtime", "Realtime sync (chat & tunnels)"),
-    ("durable_objects", "Durable Objects (free-tier duration limit)"),
+    ("durable_objects", "Durable Objects (platform aborts)"),
 ]
 # What each per-minute health sample actually verifies, shown when a /status
 # visitor expands a system row. These must describe the real check
@@ -2049,11 +2243,19 @@ STATUS_SYSTEM_CHECKS = {
         "Runs a real SELECT round trip against the D1 database once a "
         "minute. Passes when the query returns a row; fails on any query "
         "error."),
+    "email": (
+        "Checks that the Mailtrap sending API and signed delivery webhook are "
+        "configured, then inspects the most recent account email lifecycle. "
+        "Passes when no send has failed and the latest accepted email receives "
+        "a delivery lifecycle event within 30 minutes. Recipient addresses, "
+        "subjects, and message bodies are never stored in this health signal."),
     "flagship_repository": (
         "Loads https://forkmesh.com/forkmesh/forkmesh once a minute, then "
-        "loads the root repository tree and README.md blob through the same "
-        "public API used by the page. Passes only when the page shell renders, "
-        "the root tree contains README.md, and the README body is readable."),
+        "loads the root repository tree, README.md, one issue, one discussion, "
+        "and one pull request through the same public API used by the page. "
+        "Pull requests are read from the immutable forkmesh/pulls branch. "
+        "Passes only when every routed response identifies the eligible mirror "
+        "that served it and each record body is readable."),
     "installer": (
         "Every 10 minutes, loads install.sh, asks the live install-source "
         "selector for a reachable mirror, and validates either the signed "
@@ -2071,11 +2273,11 @@ STATUS_SYSTEM_CHECKS = {
         "Repository bytes use direct HTTPS, not Durable Object sockets. Passes "
         "when no realtime failures were logged."),
     "durable_objects": (
-        "Counts requests killed by Cloudflare's free-tier Durable Object "
-        "duration cap (\"Exceeded allowed duration\") in the last minute. "
-        "Passes when none were killed. Tracked as its own system so "
-        "plan-limit aborts stay visible instead of hiding inside the "
-        "realtime row."),
+        "Counts room requests aborted by the Durable Objects platform in the "
+        "last minute, including the free-tier duration cap (\"Exceeded "
+        "allowed duration\"). Passes when none were aborted. Events are "
+        "aggregated by minute so reconnect storms stay visible here without "
+        "flooding the Worker error queue."),
 }
 STATUS_HISTORY_DAYS = 30
 STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
@@ -2088,6 +2290,10 @@ STATUS_MINUTES_SHOWN = 60  # width of the per-minute strip on /status
 STATUS_MINUTE_RETAIN_MS = 90 * 60 * 1000
 STATUS_MIRROR_PREFIX = "mirror:"
 STATUS_MIRROR_MAX = 50
+# These nodes have been intentionally retired and are being removed from the
+# fleet. Keep historical D1 rows from resurrecting them on the public status
+# page while their registrations age out.
+STATUS_RETIRED_MIRRORS = frozenset(("mirror6", "mirror7", "mirror8"))
 FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
 FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
 INSTALLER_MONITOR_ID = "installer-delivery"
@@ -2099,6 +2305,15 @@ STATUS_DEPLOY_GRACE_MS = 5 * 60 * 1000
 # deploy.sh refreshes started_at for every rollout, so anything older than this
 # is a stale semaphore and monitoring fails open.
 STATUS_DEPLOY_MAX_MS = 30 * 60 * 1000
+
+EMAIL_STATUS_LOOKBACK_MS = 24 * 60 * 60 * 1000
+EMAIL_DELIVERY_GRACE_MS = 30 * 60 * 1000
+EMAIL_DELIVERY_FAILURE_STATES = {
+    "failed", "soft bounce", "bounce", "suspension", "reject",
+}
+EMAIL_DELIVERY_CONFIRMED_STATES = {
+    "delivery", "open", "click", "unsubscribe", "spam",
+}
 
 STATUS_MONITOR_GUIDANCE = {
     "website": (
@@ -2118,11 +2333,18 @@ STATUS_MONITOR_GUIDANCE = {
         "Cloudflare D1 health, bindings, migrations, and query errors",
         "Confirm the production D1 binding and quota, then repair the failed "
         "migration or query before retrying the health check."),
+    "email": (
+        "Mailtrap API responses, webhook signatures, and recent delivery "
+        "lifecycle records",
+        "Restore the Mailtrap API token and webhook secret, confirm the "
+        "delivery webhook reaches ForkMesh, then send a test email and verify "
+        "that its delivery event is recorded."),
     "flagship_repository": (
         "the forkmesh/forkmesh mirror endpoints, repository integrity pins, "
-        "and root-tree/README responses",
+        "and root-tree, README, issue, discussion, and pull responses",
         "Verify two signed mirror proofs agree with the source revision, "
-        "publish that integrity transition, and confirm README.md loads."),
+        "publish that integrity transition, and confirm the repository tabs "
+        "load records from an eligible mirror."),
     "installer": (
         "/api/install-source and the latest signed release manifest, "
         "signature, checksums, and content-addressed release blob",
@@ -2192,7 +2414,7 @@ async def _routed_repository_read(
 
 
 async def _flagship_repository_probe(env):
-    """Exercise the same shell and routed node reads the public URL renders."""
+    """Exercise the same shell and eligible-mirror reads the public URL renders."""
 
     async def bounded_response(response, maximum):
         status = int(getattr(response, "status", 0) or 0)
@@ -2201,13 +2423,94 @@ async def _flagship_repository_probe(env):
         except Exception:
             announced = 0
         if announced > maximum:
-            return status, ""
+            return status, "", ""
         body = str(await response.text())
+        try:
+            served_by = clean_string(
+                response.headers.get("X-ForkMesh-Served-By") or "",
+                MAX_NODE_NAME,
+            ).strip().lower()
+        except Exception:
+            served_by = ""
         return (
-            (status, body)
+            (status, body, served_by)
             if len(body.encode("utf-8")) <= maximum
-            else (status, "")
+            else (status, "", served_by)
         )
+
+    async def routed_json(label, url, operation, maximum=2 * 1024 * 1024):
+        response = await _routed_repository_read(
+            env, url, operation, bypass_cache=True)
+        status, text, served_by = await bounded_response(response, maximum)
+        if status != 200:
+            return None, "%s failed (HTTP %d)" % (label, status)
+        if not served_by:
+            return None, "%s was not served by an eligible mirror" % label
+        try:
+            data = json.loads(text)
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        return data, "" if data else "%s returned an invalid response" % label
+
+    def numbered_tree(entries):
+        return next((
+            item for item in (entries if isinstance(entries, list) else [])
+            if isinstance(item, dict)
+            and str(item.get("type") or "").lower() == "tree"
+            and re.fullmatch(r"[1-9][0-9]*", str(item.get("name") or ""))
+        ), None)
+
+    async def readable_blob(label, path, ref="", json_record=False):
+        suffix = "?path=" + quote(path)
+        if ref:
+            suffix += "&ref=" + quote(ref)
+        data, error = await routed_json(
+            label,
+            "https://forkmesh.internal/api/repo/forkmesh/forkmesh/blob" + suffix,
+            "blob",
+            1024 * 1024,
+        )
+        content = str((data or {}).get("content") or "")
+        if error:
+            return error
+        if (data or {}).get("ok") is not True or not content.strip():
+            return "%s body did not load" % label
+        if json_record:
+            try:
+                record = json.loads(content)
+            except Exception:
+                record = None
+            if not isinstance(record, dict) or not record:
+                return "%s body was not valid JSON" % label
+        return ""
+
+    async def readable_record(label, path, ref="", json_record=False):
+        suffix = "?path=" + quote(path)
+        if ref:
+            suffix += "&ref=" + quote(ref)
+        data, error = await routed_json(
+            label,
+            "https://forkmesh.internal/api/repo/forkmesh/forkmesh/blobs" + suffix,
+            "blobs",
+            1024 * 1024,
+        )
+        if error:
+            return error
+        blobs = (data or {}).get("blobs")
+        blob = blobs.get(path) if isinstance(blobs, dict) else None
+        content = str(blob.get("content") or "") if isinstance(blob, dict) else ""
+        if not content.strip():
+            return "%s body did not load" % label
+        if json_record:
+            try:
+                record = json.loads(content)
+            except Exception:
+                record = None
+            if not isinstance(record, dict) or not record:
+                return "%s body was not valid JSON" % label
+        return ""
 
     # Scheduled Workers cannot hairpin through their own public hostname
     # reliably (Cloudflare returns a synthetic 404/52x before the request
@@ -2217,21 +2520,18 @@ async def _flagship_repository_probe(env):
     # nodes; none are substituted from D1 or a Worker-side copy.
     shell_response = await env.ASSETS.fetch(JsRequest.new(
         "https://forkmesh.internal/dashboard/repo.html"))
-    shell_status, shell_text = await bounded_response(
+    shell_status, shell_text, _shell_served_by = await bounded_response(
         shell_response, 512 * 1024)
     if shell_status != 200 or 'data-page="repo"' not in shell_text:
         return False, "Repository page shell did not load (HTTP %d)" % shell_status
 
-    tree_response = await _routed_repository_read(
-        env,
+    tree_data, tree_error = await routed_json(
+        "Root repository tree",
         "https://forkmesh.internal/api/repo/forkmesh/forkmesh/tree?path=",
-        "tree", bypass_cache=True)
-    tree_status, tree_text = await bounded_response(
-        tree_response, 2 * 1024 * 1024)
-    try:
-        tree_data = json.loads(tree_text)
-    except Exception:
-        tree_data = {}
+        "tree",
+    )
+    if tree_error:
+        return False, tree_error
     entries = tree_data.get("entries") if isinstance(tree_data, dict) else []
     has_readme = any(
         isinstance(item, dict)
@@ -2239,8 +2539,6 @@ async def _flagship_repository_probe(env):
         and str(item.get("type") or "").lower() == "blob"
         for item in (entries if isinstance(entries, list) else [])
     )
-    if tree_status != 200:
-        return False, "Root repository tree failed (HTTP %d)" % tree_status
     if tree_data.get("ok") is not True:
         return False, "Root repository tree returned an invalid response"
     if not has_readme:
@@ -2251,24 +2549,114 @@ async def _flagship_repository_probe(env):
             "Root repository tree did not contain README.md"
             + (": " + names if names else ""))
 
-    blob_response = await _routed_repository_read(
-        env,
+    error = await readable_blob("README.md", "README.md")
+    if error:
+        return False, error
+
+    # Issues use a split open/closed layout, with a legacy numbered-root
+    # fallback. Exercise the same tree and JSON blob reads as the Issues tab.
+    issues, error = await routed_json(
+        "Issues collection",
         "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
-        "blob?path=README.md",
-        "blob", bypass_cache=True)
-    blob_status, blob_text = await bounded_response(
-        blob_response, 512 * 1024)
-    try:
-        blob_data = json.loads(blob_text)
-    except Exception:
-        blob_data = {}
-    if (
-        blob_status != 200
-        or not isinstance(blob_data, dict)
-        or blob_data.get("ok") is not True
-        or not str(blob_data.get("content") or "").strip()
-    ):
-        return False, "README.md body did not load"
+        "tree?path=.forkmesh/issues",
+        "tree",
+    )
+    if error:
+        return False, error
+    issue = numbered_tree(issues.get("entries"))
+    issue_base = ".forkmesh/issues"
+    if issue is None:
+        status_dirs = [
+            item for item in (issues.get("entries") or [])
+            if isinstance(item, dict)
+            and str(item.get("type") or "").lower() == "tree"
+            and str(item.get("name") or "").lower() in ("open", "closed")
+        ]
+        status_dirs.sort(
+            key=lambda item: 0 if str(item.get("name")).lower() == "open" else 1)
+        for status_dir in status_dirs:
+            issue_base = str(status_dir.get("path") or "")
+            issue_tree, error = await routed_json(
+                "Issues %s collection" % str(status_dir.get("name") or ""),
+                "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+                "tree?path=" + quote(issue_base),
+                "tree",
+            )
+            if error:
+                return False, error
+            issue = numbered_tree(issue_tree.get("entries"))
+            if issue is not None:
+                break
+    if issue is None:
+        return False, "Issues collection did not contain a readable issue"
+    issue_number = str(issue.get("name") or "")
+    error = await readable_record(
+        "Issue #%s" % issue_number,
+        "%s/%s/issue-%s.json" % (issue_base, issue_number, issue_number),
+        json_record=True,
+    )
+    if error:
+        return False, error
+
+    discussions, error = await routed_json(
+        "Discussions collection",
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+        "tree?path=.forkmesh/discussions",
+        "tree",
+    )
+    if error:
+        return False, error
+    discussion = numbered_tree(discussions.get("entries"))
+    if discussion is None:
+        return False, "Discussions collection did not contain a readable discussion"
+    discussion_number = str(discussion.get("name") or "")
+    error = await readable_record(
+        "Discussion #%s" % discussion_number,
+        ".forkmesh/discussions/%s/discussion.md" % discussion_number,
+    )
+    if error:
+        return False, error
+
+    # The Pull requests tab resolves the metadata branch, pins its immutable
+    # OID, then reads both the collection and record from that exact revision.
+    branches, error = await routed_json(
+        "Pull request branch list",
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/branches",
+        "branches",
+    )
+    if error:
+        return False, error
+    pulls_ref = next((
+        str(branch.get("commit") or "").lower()
+        for branch in (branches.get("branches") or [])
+        if isinstance(branch, dict)
+        and branch.get("name") == "forkmesh/pulls"
+        and re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+            str(branch.get("commit") or "").lower(),
+        )
+    ), "")
+    if not pulls_ref:
+        return False, "forkmesh/pulls branch did not resolve"
+    pulls, error = await routed_json(
+        "Pull requests collection",
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+        "tree?path=pulls&ref=" + quote(pulls_ref),
+        "tree",
+    )
+    if error:
+        return False, error
+    pull = numbered_tree(pulls.get("entries"))
+    if pull is None:
+        return False, "Pull requests collection did not contain a readable pull request"
+    pull_number = str(pull.get("name") or "")
+    error = await readable_record(
+        "Pull request #%s" % pull_number,
+        "pulls/%s/pull.md" % pull_number,
+        ref=pulls_ref,
+    )
+    if error:
+        return False, error
     return True, ""
 
 
@@ -2437,12 +2825,14 @@ async def _installer_delivery_status(env, now):
 
 # Platform operational-alert state. It uses the flagship repository identity
 # as a stable storage key, but only the is_admin console may mutate it.
-# Everything defaults to OFF so nobody silently inherits the alert pager.
+# Inbox pings are on by default so a fresh deployment has visible operational
+# feedback without requiring mail credentials. Email remains an explicit opt-in.
 REPO_ALERT_SETTING_DEFAULTS = {
     # "[ForkMesh outage]" / "[ForkMesh recovered]" mail for the systems on
     # /status and the independent cron watchdog. One switch covers both
     # directions: a recovery notice only makes sense to whoever got the outage.
     "statusEmails": False,
+    "statusPings": True,
 }
 
 
@@ -2490,6 +2880,120 @@ async def _status_alert_emails_enabled(env):
     owner, _, repo = FLAGSHIP_MONITOR_ID.partition("/")
     settings = await _repo_alert_settings_get(env, owner, repo)
     return bool(settings["statusEmails"])
+
+
+async def _status_alert_pings_enabled(env):
+    """Should outage and recovery transitions enter administrators' Pings?"""
+    owner, _, repo = FLAGSHIP_MONITOR_ID.partition("/")
+    settings = await _repo_alert_settings_get(env, owner, repo)
+    return bool(settings["statusPings"])
+
+
+def _status_recovery_ping_body(alert, now):
+    """Recovery copy that still names the outage it closes.
+
+    A bare "green again" line reads the same whether the system blinked for a
+    minute or was down for an hour, and it is the only ping an administrator
+    sees when the outage ping could not be delivered.
+    """
+    # Only the sample that actually flipped green knows an outage window. A
+    # re-send of an undelivered recovery ping must not describe the time since
+    # the recovery as downtime.
+    started = int(alert.get("recovered_outage_started_at") or 0)
+    minutes = int((int(now) - started) // 60000) if started else 0
+    if started and minutes >= 0:
+        duration = (
+            "under a minute" if minutes < 1 else
+            "1 minute" if minutes == 1 else
+            "%d minutes" % minutes)
+        reason = clean_string(alert.get("prior_reason", ""), 200)
+        return (
+            "Down for %s. The current /status probe is green again.%s" % (
+                duration, (" Last failure: " + reason) if reason else ""))
+    return "The current /status probe is green again."
+
+
+async def _enqueue_operational_alert_pings(env, alerts, now):
+    """Best-effort, deduplicated operational alerts for every platform admin."""
+    if not alerts or not await _status_alert_pings_enabled(env):
+        return False
+    rows = await d1_all(
+        env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+    delivered = False
+    for row in rows or []:
+        try:
+            record = await decrypt_row(env, row.get("data", "")) or {}
+        except Exception:
+            continue
+        admin = clean_string(
+            record.get("name", ""), MAX_NODE_NAME).strip().lower()
+        if not valid_node_name(admin):
+            continue
+        for alert in alerts:
+            recovered = bool(alert.get("is_up"))
+            system_id = clean_string(alert.get("system", ""), 120)
+            label = clean_string(alert.get("label", ""), 160)
+            # One ping per transition, not per sample: the stamp must identify
+            # the transition itself. outage_started_at is 0 once a system is
+            # green, so a recovery keys off the change stamp instead.
+            stamp = int(
+                alert.get("changed_at")
+                or alert.get("outage_started_at")
+                or now)
+            # An outage the administrators were never pinged about, closed by a
+            # recovery that reaches them: the enqueue rides the same platform
+            # the probe just found broken, so the failure ping is exactly the
+            # one most likely to have been lost. Backfill it, stamped at the
+            # start of the outage, so the pair is never a recovery on its own.
+            missed = int(alert.get("missed_outage_started_at") or 0)
+            if recovered and missed:
+                await enqueue_notification(
+                    env, admin, "operational_alert",
+                    label + " needs attention",
+                    body=(clean_string(alert.get("prior_reason", ""), 240)
+                          or "The /status health check for this system "
+                             "failed."),
+                    href="/status", source="operational-status",
+                    dedupe="operational-status:%s:down:%s" % (
+                        system_id, missed),
+                    ts=missed,
+                    meta={"system": system_id, "state": "down"},
+                )
+            title = (
+                label + " recovered" if recovered else
+                label + " needs attention")
+            body = (
+                _status_recovery_ping_body(alert, now) if recovered else
+                clean_string(alert.get("reason", ""), 240)
+                or "The current /status health check failed.")
+            await enqueue_notification(
+                env, admin, "operational_alert", title, body=body,
+                href="/status", source="operational-status",
+                dedupe="operational-status:%s:%s:%s" % (
+                    system_id, "up" if recovered else "down", stamp),
+                ts=now,
+                meta={"system": system_id,
+                      "state": "up" if recovered else "down"},
+            )
+            delivered = True
+    return delivered
+
+
+async def _record_operational_alert_pings_sent(env, alerts):
+    """Mark delivered ping transitions so the next sample stays quiet."""
+    for alert in alerts:
+        system_id = clean_string(alert.get("system", ""), 120)
+        if not system_id:
+            continue
+        # is_up guards the write against a sample that flipped underneath this
+        # send, exactly like the mail path's notified_state update.
+        await d1_run(
+            env,
+            "UPDATE repository_monitor_state SET pinged_state=? "
+            "WHERE monitor_id=? AND is_up=?",
+            "up" if alert.get("is_up") else "down", "status:" + system_id,
+            1 if alert.get("is_up") else 0,
+        )
 
 
 async def _repository_monitor_admin_emails(env):
@@ -2764,6 +3268,20 @@ async def _send_cron_watchdog_email(
     # Suppressed reports delivered: the caller must record the transition and
     # stop re-arming its retry alarm, otherwise turning the setting off would
     # leave the watchdog retrying a send it will never make.
+    alert = {
+        "system": "scheduled-jobs",
+        "label": "Scheduled jobs",
+        "is_up": bool(recovered),
+        "reason": (
+            "Scheduled jobs are completing again." if recovered else
+            "No successful cron completion heartbeat arrived within the "
+            "three-minute watchdog window."),
+        "outage_started_at": int(outage_started_at or now),
+    }
+    try:
+        await _enqueue_operational_alert_pings(env, [alert], now)
+    except BaseException:
+        pass
     try:
         if not await _status_alert_emails_enabled(env):
             return True
@@ -2817,11 +3335,13 @@ async def _record_status_monitor_transitions(
     status_systems = status_systems or STATUS_SYSTEMS
     rows = await d1_all(
         env,
-        "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state "
-        "FROM repository_monitor_state WHERE monitor_id LIKE 'status:%'",
+        "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state,"
+        "pinged_state,reason FROM repository_monitor_state "
+        "WHERE monitor_id LIKE 'status:%'",
     )
     prior = {str(row.get("monitor_id") or ""): row for row in (rows or [])}
     pending = []
+    ping_pending = []
     values = []
     for system_id, label in status_systems:
         monitor_id = "status:" + system_id
@@ -2835,6 +3355,8 @@ async def _record_status_monitor_transitions(
             int(row.get("outage_started_at") or 0) if row else 0)
         prior_notified = (
             str(row.get("notified_state") or "") if row else "")
+        prior_pinged = (
+            str(row.get("pinged_state") or "") if row else "")
         changed = not row or previous_up != is_up
         changed_at = int(now) if changed else previous_changed_at
         outage_started_at = (
@@ -2844,7 +3366,12 @@ async def _record_status_monitor_transitions(
             ("up" if is_up else "") if not row else
             "" if previous_up != is_up else
             prior_notified)
+        pinged = (
+            ("up" if is_up else "") if not row else
+            "" if previous_up != is_up else
+            prior_pinged)
         should_notify = notified != state
+        should_ping = pinged != state
         if system_id == "flagship_repository":
             if (
                 not is_up
@@ -2855,43 +3382,88 @@ async def _record_status_monitor_transitions(
                 # from the retiring Worker version, which cannot see the new
                 # deployment timestamp yet.
                 should_notify = False
-            elif (
-                is_up
-                and row
-                and not previous_up
-                and prior_notified != "down"
-            ):
+                should_ping = False
+            elif is_up and row and not previous_up:
                 # A probe that recovered inside the grace window never paged,
-                # so it must not send a confusing recovery-only email.
-                notified = "up"
-                should_notify = False
-        if should_notify:
-            pending.append({
+                # so it must not send a confusing recovery-only alert. Each
+                # channel answers that for itself: mail being off is not a
+                # reason to swallow the recovery ping for an outage that was
+                # pinged, and vice versa.
+                if prior_notified != "down":
+                    notified = "up"
+                    should_notify = False
+                if prior_pinged != "down":
+                    pinged = "up"
+                    should_ping = False
+        if should_notify or should_ping:
+            alert = {
                 "system": system_id, "label": label, "state": state,
                 "is_up": is_up, "reason": clean_string(
                     reason.get(system_id, "") or "", 240),
                 "outage_started_at": outage_started_at,
                 "previous_changed_at": previous_changed_at,
-            })
+                "changed_at": changed_at,
+                # The last failure this system recorded. On a recovery the
+                # current sample has no reason of its own, so this is the only
+                # description of what actually went wrong.
+                "prior_reason": clean_string(
+                    (str(row.get("reason") or "") if row else ""), 240),
+                # The outage this sample closed, on the flip itself and never
+                # on a later re-send of an undelivered recovery.
+                "recovered_outage_started_at": (
+                    (prior_outage or previous_changed_at)
+                    if is_up and row and not previous_up else 0),
+                # Set only when a sampled outage closes without its own ping
+                # having been delivered (a failed enqueue during the incident,
+                # or Pings switched on mid-outage).
+                "missed_outage_started_at": (
+                    prior_outage
+                    if is_up and prior_pinged != "down" and prior_outage
+                    else 0),
+            }
+            if should_notify:
+                pending.append(alert)
+            if should_ping:
+                ping_pending.append(alert)
         values.extend([
             monitor_id, 1 if is_up else 0, changed_at, outage_started_at,
             int(now), clean_string(reason.get(system_id, "") or "", 240),
-            notified,
+            notified, pinged,
         ])
 
-    n = len(status_systems)
-    await d1_run(
-        env,
-        "INSERT INTO repository_monitor_state "
-        "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
-        "notified_state) VALUES " + ", ".join(["(?,?,?,?,?,?,?)"] * n) + " "
-        "ON CONFLICT(monitor_id) DO UPDATE SET "
-        "is_up=excluded.is_up,changed_at=excluded.changed_at,"
-        "outage_started_at=excluded.outage_started_at,"
-        "checked_at=excluded.checked_at,reason=excluded.reason,"
-        "notified_state=excluded.notified_state",
-        *values,
-    )
+    # Eight parameters per system crosses D1's ~100-bound-parameter ceiling as
+    # soon as the public fleet grows beyond twelve rows. The status samples are
+    # intentionally persisted before this follow-up, so that failure looked
+    # like a healthy sampler with mysteriously absent outage pings. Keep each
+    # transition upsert to ten systems / eighty parameters.
+    for offset in range(0, len(values), 80):
+        batch = values[offset:offset + 80]
+        count = len(batch) // 8
+        await d1_run(
+            env,
+            "INSERT INTO repository_monitor_state "
+            "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
+            "notified_state,pinged_state) VALUES "
+            + ", ".join(["(?,?,?,?,?,?,?,?)"] * count) + " "
+            "ON CONFLICT(monitor_id) DO UPDATE SET "
+            "is_up=excluded.is_up,changed_at=excluded.changed_at,"
+            "outage_started_at=excluded.outage_started_at,"
+            "checked_at=excluded.checked_at,reason=excluded.reason,"
+            "notified_state=excluded.notified_state,"
+            "pinged_state=excluded.pinged_state",
+            *batch,
+        )
+    if ping_pending:
+        try:
+            if await _enqueue_operational_alert_pings(env, ping_pending, now):
+                # Same rule as the mail path: only a delivered transition is
+                # recorded, so a deployment with Pings switched off still gets
+                # one alert for whatever is red when it switches them on.
+                await _record_operational_alert_pings_sent(env, ping_pending)
+        except BaseException:
+            # Pings are a secondary delivery channel and must never block status
+            # sampling or the independently configured email path.
+            pass
     if not pending:
         return
     # notified_state is deliberately left untouched while alert mail is off:
@@ -3218,6 +3790,40 @@ async def _claim_status_sample_minute(env, now):
     return (not winner) or winner == claim
 
 
+async def _email_delivery_status(env, now):
+    """Return the bounded Mailtrap sending and delivery health signal."""
+    token = str(getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
+    webhook_secret = str(
+        getattr(env, "MAILTRAP_WEBHOOK_SECRET", "") or "").strip()
+    if not token or token == "CHANGE-ME":
+        return False, "Mailtrap sending API is not configured"
+    if not webhook_secret or webhook_secret == "CHANGE-ME":
+        return False, "Mailtrap delivery webhook is not configured"
+    row = await d1_first(
+        env,
+        "SELECT accepted,status,sent_at,status_at "
+        "FROM mailtrap_email_sends WHERE sent_at>=? "
+        "ORDER BY sent_at DESC LIMIT 1",
+        int(now) - EMAIL_STATUS_LOOKBACK_MS,
+    )
+    if not row:
+        return True, ""
+    accepted = int(row.get("accepted") or 0) == 1
+    status = clean_string(row.get("status") or "", 40).strip().lower()
+    sent_at = max(0, int(row.get("sent_at") or 0))
+    if not accepted:
+        return False, "Mailtrap sending API rejected the most recent email"
+    if status in EMAIL_DELIVERY_FAILURE_STATES:
+        return False, "Mailtrap reported the most recent email as " + status
+    if status in EMAIL_DELIVERY_CONFIRMED_STATES:
+        return True, ""
+    if sent_at and int(now) - sent_at >= EMAIL_DELIVERY_GRACE_MS:
+        return False, (
+            "The most recent accepted email has no delivery event after "
+            "30 minutes")
+    return True, ""
+
+
 async def record_status_sample(env):
     # Called once a minute by the platform Cron Trigger (scheduled()) and by
     # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
@@ -3242,6 +3848,16 @@ async def record_status_sample(env):
     except Exception as exc:
         ok["database"] = False
         reason["database"] = "Database query failed: " + str(exc)[:160]
+
+    try:
+        email_ok, email_reason = await _email_delivery_status(env, now)
+        ok["email"] = email_ok
+        if not email_ok:
+            reason["email"] = email_reason
+    except Exception as exc:
+        ok["email"] = False
+        reason["email"] = (
+            "Email delivery health query failed: " + str(exc)[:160])
 
     try:
         repository_ok, repository_reason = await _flagship_repository_probe(env)
@@ -3314,10 +3930,9 @@ async def record_status_sample(env):
             # counts toward "realtime" below — but it also gets its own
             # bucket so free-tier plan-limit aborts have a dedicated, visible
             # history instead of being buried among other realtime incidents.
-            # Matches both the tagged 503s log_durable_object_abort records
-            # and the raw AbortError tracebacks capture_worker_exception logs
-            # for DO calls that aren't wrapped in a retry (same substring the
-            # doDurationAborts24h snapshot below keys on).
+            # Matches legacy tagged 503 rows and raw AbortError tracebacks from
+            # before expected aborts moved to their minute aggregate (same
+            # substring the doDurationAborts24h snapshot below keys on).
             if "Exceeded allowed duration" in message:
                 failed["durable_objects"] = True
                 hit_count["durable_objects"] += 1
@@ -3351,6 +3966,39 @@ async def record_status_sample(env):
             hit_count[bucket] += 1
             if first_hit[bucket] is None:
                 first_hit[bucket] = (row.get("status"), path, message.strip())
+
+        # Expected platform aborts are intentionally kept out of error_log:
+        # every reconnecting room client can see the same DO failure, and one
+        # actionable error row per client obscures real Worker bugs. Preserve
+        # the operational signal with one content-free aggregate row per
+        # minute. Sample the completed preceding minute so an abort that lands
+        # just before this cron tick is neither missed nor counted again by the
+        # next tick.
+        abort_rows = await d1_all(
+            env,
+            "SELECT aborts,duration_aborts "
+            "FROM durable_object_abort_minute WHERE minute_ts=?",
+            minute_ts - STATUS_SAMPLE_WINDOW_MS,
+        )
+        abort_count = sum(
+            max(0, int(row.get("aborts") or 0)) for row in abort_rows)
+        duration_abort_count = sum(
+            max(0, int(row.get("duration_aborts") or 0))
+            for row in abort_rows)
+        if abort_count:
+            summary = "%d Durable Object request%s aborted" % (
+                abort_count, "" if abort_count == 1 else "s")
+            if duration_abort_count:
+                summary += " (%d exceeded allowed duration)" % (
+                    duration_abort_count)
+            for bucket in ("durable_objects", "realtime"):
+                failed[bucket] = True
+                # The summary already carries the aggregate event count; this
+                # is one status signal, not N separate error rows.
+                hit_count[bucket] += 1
+                if first_hit[bucket] is None:
+                    first_hit[bucket] = (
+                        503, "/durable-object-rooms", summary)
         ok["website"] = not failed["website"]
         ok["api"] = not failed["api"]
         ok["errors"] = not failed["errors"]
@@ -3371,23 +4019,31 @@ async def record_status_sample(env):
         ok["website"] = ok["api"] = ok["errors"] = True
         ok["realtime"] = ok["durable_objects"] = True
 
-    # Each registered mirror that has supplied a valid ForkMesh repository
-    # proof gets its own /status row. This registry contains cryptographically
-    # bound node identities; unlike account_presence or host_presence it cannot
-    # turn a user/chat name or an ad-hoc repository request into a fake node.
-    # Keep recently disconnected mirrors in the sample set for the 30-day
-    # history window so an outage becomes red instead of making the row vanish.
+    # Every registered mirror* node gets its own /status row, including nodes
+    # that have never managed to publish a valid endpoint proof. The roster is
+    # the union of account-bound node registrations and signed direct-HTTPS
+    # endpoint registrations; chat/user presence can never invent a row.
+    # Missing, stale, unhealthy, and unverified endpoints stay visible as red.
     status_systems = list(STATUS_SYSTEMS)
     try:
         mirror_rows = await d1_all(
             env,
-            """SELECT node_name,checked_at,healthy,integrity,
-                      forkmesh_active,forkmesh_verified_at
-                 FROM mirror_https_endpoints
-                WHERE abuse_blocked=0 AND forkmesh_verified_at>0
-                  AND (forkmesh_active=1 OR forkmesh_verified_at>=?)
-                ORDER BY lower(node_name) LIMIT ?""",
-            now - STATUS_HISTORY_RETAIN_MS,
+            """WITH mirror_names AS (
+                   SELECT lower(name) AS node_name
+                     FROM nodes
+                    WHERE name IS NOT NULL AND lower(name) LIKE 'mirror%'
+                   UNION
+                   SELECT lower(node_name) AS node_name
+                     FROM mirror_https_endpoints
+                    WHERE lower(node_name) LIKE 'mirror%'
+               )
+               SELECT names.node_name,endpoint.checked_at,endpoint.healthy,
+                      endpoint.integrity,endpoint.abuse_blocked,
+                      endpoint.forkmesh_active,endpoint.forkmesh_verified_at
+                 FROM mirror_names names
+                 LEFT JOIN mirror_https_endpoints endpoint
+                   ON lower(endpoint.node_name)=names.node_name
+                ORDER BY names.node_name LIMIT ?""",
             STATUS_MIRROR_MAX,
         )
         seen_mirrors = set()
@@ -3395,6 +4051,8 @@ async def record_status_sample(env):
             mirror_name = str(row.get("node_name") or "").strip().lower()
             if (
                 mirror_name in seen_mirrors
+                or mirror_name in STATUS_RETIRED_MIRRORS
+                or not mirror_name.startswith("mirror")
                 or not re.fullmatch(
                     r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
             ):
@@ -3411,8 +4069,10 @@ async def record_status_sample(env):
             is_healthy = int(row.get("healthy") or 0) == 1
             integrity_ok = str(row.get("integrity") or "") == "ok"
             is_active = int(row.get("forkmesh_active") or 0) == 1
+            is_allowed = int(row.get("abuse_blocked") or 0) == 0
             mirror_ok = (
-                is_fresh and is_healthy and integrity_ok and is_active)
+                is_fresh and is_healthy and integrity_ok and is_active
+                and is_allowed)
             ok[system_id] = mirror_ok
             if not mirror_ok:
                 if not is_fresh:
@@ -3426,6 +4086,9 @@ async def record_status_sample(env):
                     reason[system_id] = (
                         mirror_name + " reported repository integrity " +
                         (str(row.get("integrity") or "unknown")))
+                elif not is_allowed:
+                    reason[system_id] = (
+                        mirror_name + " is blocked from serving traffic")
                 else:
                     reason[system_id] = (
                         mirror_name + " is reachable but is not serving an "
@@ -3528,6 +4191,11 @@ async def record_status_sample(env):
             "DELETE FROM system_status_sample_claim WHERE minute_ts < ?",
             minute_ts - STATUS_MINUTE_RETAIN_MS,
         )
+        await d1_run(
+            env,
+            "DELETE FROM durable_object_abort_minute WHERE minute_ts < ?",
+            minute_ts - STATUS_HISTORY_RETAIN_MS,
+        )
 
 
 async def status_history(env, view="full"):
@@ -3568,16 +4236,40 @@ async def status_history(env, view="full"):
         by_system_minute.setdefault(system_id, {})[int(row["minute_ts"])] = row
         last_sample_ts = max(last_sample_ts, int(row["minute_ts"]))
 
-    # Dynamic mirror systems are written by record_status_sample only after a
-    # node supplies a valid signed repository proof. Build the public roster
-    # from those recorded IDs, never from user/account presence.
+    # Start with recorded mirror history, then union current registered
+    # mirror* names so a newly registered but broken node appears immediately
+    # as down instead of disappearing until its first successful proof.
     recorded_system_ids = set(by_system_hour) | set(by_system_minute)
+    try:
+        registered_mirrors = await d1_all(
+            env,
+            """SELECT lower(name) AS node_name
+                 FROM nodes
+                WHERE name IS NOT NULL AND lower(name) LIKE 'mirror%'
+               UNION
+               SELECT lower(node_name) AS node_name
+                 FROM mirror_https_endpoints
+                WHERE lower(node_name) LIKE 'mirror%'
+               ORDER BY node_name LIMIT ?""",
+            STATUS_MIRROR_MAX,
+        )
+        for row in registered_mirrors or []:
+            mirror_name = str(row.get("node_name") or "").strip().lower()
+            if (
+                mirror_name.startswith("mirror")
+                and mirror_name not in STATUS_RETIRED_MIRRORS
+                and re.fullmatch(
+                    r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
+            ):
+                recorded_system_ids.add(STATUS_MIRROR_PREFIX + mirror_name)
+    except Exception:
+        pass
     mirror_systems = []
     for system_id in recorded_system_ids:
         if not system_id.startswith(STATUS_MIRROR_PREFIX):
             continue
         mirror_name = system_id[len(STATUS_MIRROR_PREFIX):]
-        if not re.fullmatch(
+        if mirror_name in STATUS_RETIRED_MIRRORS or not re.fullmatch(
                 r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name):
             continue
         mirror_systems.append(
@@ -3773,16 +4465,18 @@ async def status_history(env, view="full"):
     try:
         # Dedicated counter for the platform killing a Durable Object request
         # mid-flight ("Exceeded allowed duration in Durable Objects free
-        # tier."). Matches both the tagged 503s the routers record via
-        # log_durable_object_abort and the raw tracebacks
-        # capture_worker_exception logged before the routers were guarded, so
-        # the operator can tell plan-limit churn apart from real bugs inside
-        # the generic errors24h count.
+        # tier."). Add the new minute aggregates to legacy/raw error rows so
+        # deployments retain a continuous 24-hour total while routine aborts
+        # stop inflating the generic errors24h count.
         do_row = await d1_first(
             env,
-            "SELECT COUNT(*) AS n FROM error_log "
-            "WHERE ts >= ? AND message LIKE ?",
+            "SELECT "
+            "(SELECT COUNT(*) FROM error_log "
+            " WHERE ts>=? AND message LIKE ?) + "
+            "(SELECT COALESCE(SUM(duration_aborts),0) "
+            " FROM durable_object_abort_minute WHERE minute_ts>=?) AS n",
             now - 24 * 60 * 60 * 1000, "%Exceeded allowed duration%",
+            now - 24 * 60 * 60 * 1000,
         )
         current["doDurationAborts24h"] = int((do_row or {}).get("n", 0) or 0)
     except Exception:
@@ -4596,6 +5290,121 @@ async def site_referrer_leaderboard(env):
     return resp
 
 
+# --- Member SOL wallets -------------------------------------------------------
+# Members who publish an optional self-custodial payout address, ranked by the
+# public balance of that address. Both halves are already public: the address is
+# public profile data (_account_public_payload exposes it), and the amount is a
+# plain getBalance any block explorer answers identically for that address.
+# Private profiles are excluded, no key or transaction is involved, and a
+# position here is neither a payout nor a promise of one.
+WALLET_LEADERBOARD_CACHE_KEY = (
+    "https://forkmesh.internal/api/leaderboards/wallets"
+)
+WALLET_LEADERBOARD_TTL = 300  # seconds per colo; balances move slower than this
+WALLET_LEADERBOARD_LIMIT = 10
+# Each balance costs one public-RPC subrequest, so a rebuild refreshes only the
+# least-recently-checked slice and ranks everyone else from their stored read.
+# Rotation means every published wallet is reached within a few rebuilds instead
+# of a fixed head of the directory being the only one ever priced.
+WALLET_BALANCE_REFRESH_PER_REBUILD = 6
+WALLET_BALANCE_RETAIN_ROWS = 500
+
+
+async def wallet_leaderboard(env):
+    cached = await edge_cache_match(WALLET_LEADERBOARD_CACHE_KEY)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    now = int(Date.now())
+    rows = await d1_all(
+        env,
+        "SELECT data FROM users ORDER BY username COLLATE NOCASE LIMIT ?",
+        1000)
+    members = []
+    seen = set()
+    for row in rows or []:
+        rec = await decrypt_row(env, row.get("data", ""))
+        if (not rec or _account_kind(rec) != "user"
+                or rec.get("status") != "active"
+                or rec.get("profile_private")):
+            continue
+        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        wallet = (rec.get("solana") or "").strip()
+        if not name or name in seen or not SOLANA_RE.match(wallet):
+            continue
+        seen.add(name)
+        members.append({"name": name, "wallet": wallet})
+
+    stored = {}
+    for row in await d1_all(
+            env, "SELECT wallet, lamports, checked_at FROM wallet_balances"):
+        wallet = str(row.get("wallet") or "")
+        if wallet:
+            stored[wallet] = (int(row.get("lamports") or 0),
+                              int(row.get("checked_at") or 0))
+
+    # Oldest reading first, so the rotation always spends its subrequests on the
+    # least fresh members (an unseen wallet sorts at 0 and goes first).
+    members.sort(key=lambda m: (stored.get(m["wallet"], (0, 0))[1], m["name"]))
+    refresh = members[:WALLET_BALANCE_REFRESH_PER_REBUILD]
+    balances = await asyncio.gather(*[
+        _solana_balance_lamports(env, member["wallet"]) for member in refresh])
+    for member, lamports in zip(refresh, balances):
+        # None means the RPC could not answer; keep the last stored reading
+        # rather than publishing an unchecked address as zero.
+        if lamports is None:
+            continue
+        stored[member["wallet"]] = (int(lamports), now)
+        await d1_run(
+            env,
+            "INSERT INTO wallet_balances "
+            "(wallet, name, lamports, checked_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(wallet) DO UPDATE SET name=excluded.name,"
+            "lamports=excluded.lamports,checked_at=excluded.checked_at",
+            member["wallet"], member["name"], int(lamports), now)
+    # An address a member has since removed or replaced leaves a row nothing
+    # reads, so bound the table the way the referrer board does — only once it
+    # actually needs bounding, since every rebuild would otherwise pay a write.
+    if len(stored) > WALLET_BALANCE_RETAIN_ROWS:
+        await d1_run(
+            env,
+            "DELETE FROM wallet_balances WHERE wallet NOT IN ("
+            "SELECT wallet FROM wallet_balances "
+            "ORDER BY checked_at DESC LIMIT ?)",
+            WALLET_BALANCE_RETAIN_ROWS)
+
+    board = []
+    for member in members:
+        lamports, checked_at = stored.get(member["wallet"], (0, 0))
+        if not checked_at:
+            continue
+        board.append({
+            "name": member["name"],
+            "wallet": member["wallet"],
+            "lamports": lamports,
+            "sol": lamports / LAMPORTS_PER_SOL,
+            "checkedAt": checked_at,
+        })
+    board.sort(key=lambda entry: (-entry["lamports"], entry["name"]))
+    resp = json_response(
+        {"ok": True,
+         "board": board[:WALLET_LEADERBOARD_LIMIT],
+         # Members publishing an address, and how many of them this rebuild
+         # re-priced, so a rotation behind the full set is visible rather than
+         # looking like complete coverage.
+         "members": len(members),
+         "refreshed": len(refresh),
+         "custody": "external-self-custodial-public-address",
+         "notice": (
+             "Public payout addresses and their public on-chain balances. "
+             "ForkMesh holds no member funds or keys, and a place on this "
+             "board is not a reward, payout, or promise of one."
+         )},
+        cache_seconds=WALLET_LEADERBOARD_TTL)
+    await edge_cache_put(WALLET_LEADERBOARD_CACHE_KEY, resp)
+    return resp
+
+
 async def leaderboards_overview(env):
     """One public leaderboard model shared by the website and World.
 
@@ -4603,23 +5412,43 @@ async def leaderboards_overview(env):
     only normalizes their already-public rows so clients cannot drift on which
     boards exist, how they are titled, or which value each board ranks.
     """
-    # These four public sources are independent. Resolve them concurrently so
+    # These five public sources are independent. Resolve them concurrently so
     # the combined endpoint costs the slowest cache/database read, not the sum
-    # of all four, which keeps both the page and World island quick at startup.
-    network_response, referral_response, site_response, users_response = (
-        await asyncio.gather(
-            network_leaderboards(env),
-            referral_leaderboard(env),
-            site_referrer_leaderboard(env),
-            _account_users_directory(env, None),
-        )
+    # of all five, which keeps both the page and World island quick at startup.
+    sources = (
+        ("network", network_leaderboards(env)),
+        ("referrals", referral_leaderboard(env)),
+        ("sites", site_referrer_leaderboard(env)),
+        ("users", _account_users_directory(env, None)),
+        ("wallets", wallet_leaderboard(env)),
     )
-    network, referrals, sites, users = await asyncio.gather(
-        _response_json(network_response),
-        _response_json(referral_response),
-        _response_json(site_response),
-        _response_json(users_response),
-    )
+    # return_exceptions on purpose: a bare gather re-raises the first failure,
+    # so one broken source used to 500 the whole hub — the website grid and the
+    # World island both went dark over a board neither of them needed. adhoc
+    # #225 did exactly that from a call-arity mismatch deep inside the users
+    # directory, and the same 500 was logged again here under /api/leaderboards.
+    # A source that fails now costs its own boards and nothing else.
+    settled = await asyncio.gather(
+        *(source for _name, source in sources), return_exceptions=True)
+    payloads = []
+    degraded = []
+    for (name, _source), result in zip(sources, settled):
+        if isinstance(result, BaseException):
+            degraded.append(name)
+            payloads.append({})
+            # Workers Logs stays off, so a degraded board would otherwise be
+            # invisible: report it best-effort, and never let telemetry sink
+            # the response the surviving boards are still being served in.
+            try:
+                await capture_sentry_error(
+                    env, 500, "GET", "/api/leaderboards",
+                    "leaderboards source failed: " + name + ": "
+                    + _safe_error_text(result), error=result)
+            except BaseException:
+                pass
+            continue
+        payloads.append(await _response_json(result))
+    network, referrals, sites, users, wallets = payloads
     activity_rows = []
     for user in users.get("users", []):
         if not isinstance(user, dict):
@@ -4639,7 +5468,8 @@ async def leaderboards_overview(env):
         key=lambda row: (-row["totalActiveMs"], row["name"].lower()))
     activity_rows = activity_rows[:LEADERBOARD_LIMIT]
 
-    def board(board_id, title, subtitle, value_kind, rows, category):
+    def board(board_id, title, subtitle, value_kind, rows, category,
+              source="network"):
         return {
             "id": board_id,
             "title": title,
@@ -4647,6 +5477,10 @@ async def leaderboards_overview(env):
             "valueKind": value_kind,
             "category": category,
             "rows": rows if isinstance(rows, list) else [],
+            # An empty board that failed to load reads exactly like one nobody
+            # has entered yet. Name the source per board so a client can say
+            # which of the two it is showing.
+            "degraded": source in degraded,
         }
 
     window_hours = int(network.get("windowHours") or 48)
@@ -4654,7 +5488,7 @@ async def leaderboards_overview(env):
         board(
             "activity", "World activity",
             "Registered members by total public active time",
-            "duration", activity_rows, "community"),
+            "duration", activity_rows, "community", "users"),
         board(
             "uptime", "Mainnode uptime",
             "Most minutes online · last %dh" % window_hours,
@@ -4688,11 +5522,15 @@ async def leaderboards_overview(env):
         board(
             "referrals", "Member referrals",
             "Signups first; clicks break ties",
-            "referrals", referrals.get("board"), "community"),
+            "referrals", referrals.get("board"), "community", "referrals"),
         board(
             "referring-sites", "Referring websites",
             "External sites sending visits to ForkMesh",
-            "visits", sites.get("board"), "community"),
+            "visits", sites.get("board"), "community", "sites"),
+        board(
+            "wallets", "Member SOL wallets",
+            "Published payout addresses by public on-chain balance",
+            "sol", wallets.get("board"), "community", "wallets"),
         board(
             "funds-mainnodes", "Legacy funds · mainnodes",
             "Historical reporting aggregate; not a balance",
@@ -4710,11 +5548,16 @@ async def leaderboards_overview(env):
         {
             "ok": True,
             "observedAt": int(Date.now()),
+            # Which sources could not be read for this rebuild. Their boards
+            # are present but empty, so without this an outage behind one of
+            # them reads as "nobody has ranked yet" rather than a gap.
+            "degraded": degraded,
             "boards": boards,
             "network": network,
             "activity": {"board": activity_rows},
             "referrals": referrals,
             "sites": sites,
+            "wallets": wallets,
             "fundsNotice": network.get("fundsNotice", ""),
             "fundsState": network.get("fundsState", ""),
             "fundsCustody": network.get("fundsCustody", ""),
@@ -7113,13 +7956,7 @@ OFFICE_ATTENDANCE_FLOOR_LABELS = {
     "lobby": "Lobby",
     "marketing": "Marketing",
     "engineering": "Engineering",
-    "product-design": "Product & Design",
-    "security": "Security",
     "infrastructure": "Infrastructure",
-    "community": "Community",
-    "partnerships": "Partnerships",
-    "operations": "Operations",
-    "executive": "Executive",
     "rooftop": "Rooftop",
 }
 
@@ -7685,27 +8522,8 @@ OFFICE_FLOOR_TEAM_ALIASES = {
         "engineering", "engineers", "development", "developers",
         "platform", "frontend", "backend",
     },
-    "product-design": {
-        "product-design", "product", "design", "ux", "ui-ux",
-    },
-    "security": {
-        "security", "security-team", "trust-safety", "trust-and-safety",
-    },
     "infrastructure": {
         "infrastructure", "infra", "devops", "site-reliability", "sre",
-    },
-    "community": {
-        "community", "community-team", "developer-relations", "devrel",
-    },
-    "partnerships": {
-        "partnerships", "partnership", "business-development", "bizdev",
-    },
-    "operations": {
-        "operations", "ops", "people-operations", "finance-operations",
-    },
-    "executive": {
-        "executive", "executives", "leadership", "organization-leadership",
-        "org-leadership",
     },
 }
 
@@ -8395,6 +9213,22 @@ class _OfficeMarketingTasksRuntime:
             cache_control=cache_control,
             extra_headers=extra_headers,
         )
+
+    def binary_response(self, data, mime, name):
+        safe_name = re.sub(
+            r"[^A-Za-z0-9._ -]+", "_", str(name or "task-image"))[:120]
+        return JsResponse.new(Uint8Array.new(_to_js(bytes(data))), to_js({
+            "status": 200,
+            "headers": {
+                "content-type": str(mime),
+                "content-disposition": (
+                    'inline; filename="' + safe_name.replace('"', "_") + '"'
+                ),
+                "cache-control": "private, no-store, max-age=0",
+                "content-security-policy": "default-src 'none'; sandbox",
+                "x-content-type-options": "nosniff",
+            },
+        }))
 
     async def ensure_schema(self):
         await ensure_schema(self.env)
@@ -9317,7 +10151,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-29-full-catalog-28"
+WORLD_QA_DECK_REVISION = "2026-08-01-open-account-access-30"
 # The physical desk paints only five cards per page, but its catalog must
 # include every bounded source: built-ins, dynamically routed QA items, and
 # the organization's encrypted QA-ready tasks. Organization tasks are capped
@@ -9504,11 +10338,6 @@ WORLD_QA_CARDS = (
      "done, or error plus a bounded redacted log tail. Click the Actions face "
      "and confirm the full authorized run list opens. Repeat without write "
      "access and confirm no private run or log data appears."),
-    ("executive-office-floor", "Executive Office floor",
-     "Sign in as an Executive-team member and ride the elevator to Executive. "
-     "Confirm the strategy table, ten chairs, organization map and floor label "
-     "render without intersecting adjacent stories. Confirm a non-Executive "
-     "member cannot select the floor and attendance reports Executive."),
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
      "appears immediately, animates while work is active, and ends with a "
@@ -9708,30 +10537,6 @@ WORLD_QA_CARDS = (
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
 
-async def _organization_qa_access(env, org_bi, account_bi, actor):
-    """QA access without broadening organization or Office permissions."""
-    role = await _org_role(env, org_bi, actor)
-    if role in ("owner", "admin"):
-        return True, role, False
-    internal = await d1_first(
-        env,
-        "SELECT 1 AS one FROM org_team_members "
-        "WHERE org_bi=? AND member_bi=? "
-        "AND team IN ('quality-assurance','qa') LIMIT 1",
-        org_bi, str(account_bi or ""),
-    )
-    if internal:
-        return True, role, False
-    external = await d1_first(
-        env,
-        "SELECT 1 AS one FROM org_team_collaborators "
-        "WHERE org_bi=? AND account_bi=? "
-        "AND team IN ('quality-assurance','qa') LIMIT 1",
-        org_bi, str(account_bi or ""),
-    )
-    return bool(external), role, bool(external)
-
-
 async def world_qa_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
@@ -9819,7 +10624,8 @@ async def world_qa_handler(env, request):
             "ok": True,
             "authenticated": False,
             "authorized": False,
-            "requiredTeam": "quality-assurance",
+            "requiredTeam": "",
+            "requiresAuthentication": True,
             "revision": WORLD_QA_DECK_REVISION,
             "cards": [],
             "reviews": {},
@@ -9835,8 +10641,6 @@ async def world_qa_handler(env, request):
     actor = clean_string(
         (record or {}).get("name"), MAX_NODE_NAME).strip().lower()
     can_route = False
-    can_private_qa = False
-    external_qa = False
     private_tasks = {}
     qa_org_bi = ""
     if actor:
@@ -9848,33 +10652,8 @@ async def world_qa_handler(env, request):
                 role in ("owner", "admin")
                 or permission in ("maintain", "admin")
             )
-            can_private_qa, _role, external_qa = (
-                await _organization_qa_access(
-                    env, org_bi, account_bi, actor)
-            )
             qa_org_bi = org_bi
-    if not can_private_qa:
-        return json_response({
-            "ok": True,
-            "authenticated": True,
-            "authorized": False,
-            "requiredTeam": "quality-assurance",
-            "revision": WORLD_QA_DECK_REVISION,
-            "cards": [],
-            "reviews": {},
-            "stats": {
-                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
-                "total": 0,
-            },
-            "globalReviews": {},
-            "globalStats": {
-                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
-                "testers": 0, "total": 0,
-            },
-            "canRoute": False,
-            "canViewPrivateTasks": False,
-        }, cache_control="no-store")
-    if can_private_qa and qa_org_bi:
+    if qa_org_bi:
         task_rows = await d1_all(
             env,
             "SELECT task_id,department,team,qa_status,qa_reviewed_at,data "
@@ -9915,6 +10694,29 @@ async def world_qa_handler(env, request):
                 deck_keys.add(key)
     deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
     deck_keys = {item[0] for item in deck_cards}
+
+    def include_private_task_reviews(global_reviews, global_stats):
+        """Fold each task's authoritative first QA result into the snapshot."""
+        for key, task in private_tasks.items():
+            reviewed_at = max(
+                0, int(task["row"].get("qa_reviewed_at") or 0))
+            if not reviewed_at:
+                continue
+            verdict = {
+                "passed": "pass",
+                "failed": "fail",
+                "unknown": "unsure",
+            }.get(str(task["row"].get("qa_status") or ""))
+            if not verdict:
+                continue
+            counts = {"pass": 0, "fail": 0, "unsure": 0, "total": 1}
+            counts[verdict] = 1
+            global_reviews[key] = counts
+            global_stats[verdict] += 1
+            global_stats["reviewed"] += 1
+        global_stats["total"] = len(deck_cards)
+
+    include_private_task_reviews(global_reviews, global_stats)
     if method == "POST":
         item_key = clean_string(data.get("key"), 80)
         if item_key not in deck_keys:
@@ -10001,9 +10803,9 @@ async def world_qa_handler(env, request):
                 return json_response(
                     {"ok": False, "error": "invalid_verdict"}, status=400)
             if item_key in private_tasks:
-                if not can_private_qa or not qa_org_bi:
+                if not qa_org_bi:
                     return json_response(
-                        {"ok": False, "error": "qa_team_required"},
+                        {"ok": False, "error": "qa_task_unavailable"},
                         status=403,
                     )
                 task_id = item_key[5:]
@@ -10080,7 +10882,6 @@ async def world_qa_handler(env, request):
                     "organization_task", task_id, "success",
                     {
                         "verdict": task_verdict,
-                        "external": external_qa,
                         "hasFailureReason": bool(failure_reason),
                         "hasScreenshot": bool(failure_screenshot),
                     },
@@ -10095,6 +10896,7 @@ async def world_qa_handler(env, request):
                     account_bi, item_key, verdict, int(Date.now()),
                 )
         global_reviews, global_stats = await global_qa_snapshot()
+        include_private_task_reviews(global_reviews, global_stats)
     rows = await d1_all(
         env,
         "SELECT item_key,verdict,reviewed_at FROM world_qa_reviews "
@@ -10157,7 +10959,8 @@ async def world_qa_handler(env, request):
         "ok": True,
         "authenticated": True,
         "authorized": True,
-        "requiredTeam": "quality-assurance",
+        "requiredTeam": "",
+        "requiresAuthentication": True,
         "revision": WORLD_QA_DECK_REVISION,
         "cards": [
             {
@@ -10166,6 +10969,9 @@ async def world_qa_handler(env, request):
                 "howToTest": how_to_test,
                 "global": global_reviews.get(
                     key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0}),
+                "reviewedByAnyone": (
+                    int(global_reviews.get(key, {}).get("total") or 0) > 0
+                ),
                 **reviews.get(key, {}),
                 **({
                     "organizationTask": True,
@@ -10201,8 +11007,7 @@ async def world_qa_handler(env, request):
         "globalReviews": global_reviews,
         "globalStats": global_stats,
         "canRoute": can_route,
-        "canViewPrivateTasks": can_private_qa,
-        "externalQaCollaborator": external_qa,
+        "canViewPrivateTasks": bool(qa_org_bi),
         **({"routeResult": route_result}
            if method == "POST" and "route_result" in locals() else {}),
     }, cache_control="no-store")
@@ -10772,6 +11577,19 @@ async def purge_stale_registered_nodes(env, force=False):
 PBKDF2_ITERS = 100000
 SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+BASE58_INDEX = {ch: i for i, ch in enumerate(BASE58_ALPHABET)}
+SOLANA_SYSTEM_PROGRAM = "11111111111111111111111111111111"
+# Custodial deposit sweep: half of a confirmed deposit goes to the treasury,
+# half is shared between online functioning mirror nodes.
+DEPOSIT_TREASURY_SPLIT_NUMERATOR = 1
+DEPOSIT_TREASURY_SPLIT_DENOMINATOR = 2
+# One legacy Solana transaction must fit the packet limit. With one signer,
+# the treasury, the system program and the transfer instructions, 20 mirror
+# payees still leaves headroom.
+MAX_SWEEP_PAYEES = 20
+SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
+
 # Legacy deposit-record constants remain only for read-only historical status
 # and the offline migration tool. Signup is free; no deployed Worker creates
 # deposit wallets, holds a wallet signing key, or sweeps funds.
@@ -10868,7 +11686,7 @@ _hmac_key_cache = {"secret": None, "key": None}
 _room_key_cache = {"secret": None, "value": None}
 
 
-# Compatibility columns required by indexes in SCHEMA_STATEMENTS. These run
+# Compatibility columns required by indexes in schema.SCHEMA_STATEMENTS. These run
 # before the CREATE statements so an existing table can be upgraded before an
 # index references its new columns. A fresh database has no table yet, so the
 # failed ALTER is ignored and the current CREATE TABLE supplies the columns.
@@ -10970,17 +11788,36 @@ SCHEMA_ALTER_STATEMENTS = [
     # 0108). Empty for anonymous traffic; the admin error view names it per row
     # and per group so a recurring failure can be traced to the affected user.
     "ALTER TABLE error_log ADD COLUMN actor TEXT NOT NULL DEFAULT ''",
+    # Per-channel delivered-transition marker for operational alerts. Pings are
+    # on by default and email is not, so the Pings channel needs its own state:
+    # sharing notified_state left every ping-only deployment re-sending the same
+    # transition every minute, which buried the outage pings under duplicated
+    # recovery pings once the notification cap trimmed the inbox.
+    """ALTER TABLE repository_monitor_state
+       ADD COLUMN pinged_state TEXT NOT NULL DEFAULT ''""",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
-# full apply so later cold isolates can skip the replay with one SELECT.
-_SCHEMA_FINGERPRINT = hashlib.sha256(
-    "\n".join(
-        SCHEMA_PRE_CREATE_ALTER_STATEMENTS
-        + SCHEMA_STATEMENTS
-        + SCHEMA_ALTER_STATEMENTS
-    ).encode("utf-8")
-).hexdigest()
+# full apply so later cold isolates can skip the replay with one SELECT.  Keep
+# its construction lazy too: accessing schema.SCHEMA_STATEMENTS here would
+# defeat the startup-memory saving above.
+_SCHEMA_FINGERPRINT = None
+
+
+def _schema_fingerprint():
+    global _SCHEMA_FINGERPRINT
+    if _SCHEMA_FINGERPRINT is None:
+        statements = globals().get("SCHEMA_STATEMENTS")
+        if statements is None:
+            statements = schema.SCHEMA_STATEMENTS
+        _SCHEMA_FINGERPRINT = hashlib.sha256(
+            "\n".join(
+                SCHEMA_PRE_CREATE_ALTER_STATEMENTS
+                + statements
+                + SCHEMA_ALTER_STATEMENTS
+            ).encode("utf-8")
+        ).hexdigest()
+    return _SCHEMA_FINGERPRINT
 
 
 async def ensure_schema(env):
@@ -11008,6 +11845,9 @@ async def _assert_legacy_wallet_custody_ready(env):
     marker. The explicit offline scrub writes the same marker after its guarded
     updates, so a quiesced migrated database starts without another full scan.
     """
+    fingerprint = _SCHEMA_FINGERPRINT
+    if fingerprint is None:
+        fingerprint = _schema_fingerprint()
     marker = await d1_first(
         env, "SELECT v FROM schema_meta WHERE k=?", LEGACY_WALLET_CUSTODY_MARKER)
     if marker and str(marker.get("v") or "").startswith("clean-v2:"):
@@ -11030,7 +11870,7 @@ async def _assert_legacy_wallet_custody_ready(env):
         "INSERT INTO schema_meta (k,v) VALUES (?,?) "
         "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
         LEGACY_WALLET_CUSTODY_MARKER,
-        "clean-v2:" + _SCHEMA_FINGERPRINT,
+        "clean-v2:" + fingerprint,
     )
 
 
@@ -11042,10 +11882,13 @@ async def _apply_schema(env):
     # the dominant startup cost for both requests and the per-minute cron (the
     # cron routinely blew its resource limits and the /status page recorded the
     # missing samples as downtime).
+    fingerprint = _SCHEMA_FINGERPRINT
+    if fingerprint is None:
+        fingerprint = _schema_fingerprint()
     try:
         row = await d1_first(
             env, "SELECT v FROM schema_meta WHERE k='fingerprint'")
-        if row and row.get("v") == _SCHEMA_FINGERPRINT:
+        if row and row.get("v") == fingerprint:
             await _assert_legacy_wallet_custody_ready(env)
             prune_actors = globals().get("_ap_prune_actor_inventory")
             if callable(prune_actors):
@@ -11065,7 +11908,10 @@ async def _apply_schema(env):
             await env.DB.prepare(sql).run()
         except Exception:
             pass
-    for sql in SCHEMA_STATEMENTS:
+    statements = globals().get("SCHEMA_STATEMENTS")
+    if statements is None:
+        statements = schema.SCHEMA_STATEMENTS
+    for sql in statements:
         await env.DB.prepare(sql).run()
     for sql in SCHEMA_ALTER_STATEMENTS:
         try:
@@ -11076,7 +11922,7 @@ async def _apply_schema(env):
         env,
         "INSERT INTO schema_meta (k, v) VALUES ('fingerprint', ?) "
         "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-        _SCHEMA_FINGERPRINT,
+        fingerprint,
     )
     await _assert_legacy_wallet_custody_ready(env)
     prune_actors = globals().get("_ap_prune_actor_inventory")
@@ -11087,6 +11933,10 @@ async def _apply_schema(env):
 
 def js_nullish(value):
     return value is None or type(value).__name__ in ("JsNull", "JsUndefined")
+
+
+def d1_bind_args(args):
+    return tuple(jsnull if js_nullish(value) else value for value in args)
 
 
 def d1_row_to_dict(row):
@@ -11133,7 +11983,7 @@ async def _d1_read(env, sql, args, first):
     for attempt in range(2):
         stmt = env.DB.prepare(sql)
         if args:
-            stmt = stmt.bind(*args)
+            stmt = stmt.bind(*d1_bind_args(args))
         try:
             return await (stmt.first() if first else stmt.all())
         except Exception as error:
@@ -11163,7 +12013,7 @@ async def d1_first(env, sql, *args):
 async def d1_run(env, sql, *args):
     stmt = env.DB.prepare(sql)
     if args:
-        stmt = stmt.bind(*args)
+        stmt = stmt.bind(*d1_bind_args(args))
     await stmt.run()
 
 
@@ -12901,6 +13751,14 @@ async def _catalog_logical_owners(env, repository_rows):
         record["logicalOwners"] = logical[:20]
 
 
+def _repo_publication_authority(authority_node_id, prior_node_id,
+                                incoming_node_id):
+    """Return (canonical node, is secondary) without implicit transfers."""
+    canonical = str(authority_node_id or prior_node_id or incoming_node_id or "")
+    incoming = str(incoming_node_id or "")
+    return canonical, bool(incoming and canonical and incoming != canonical)
+
+
 async def catalog_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
@@ -12995,6 +13853,13 @@ async def catalog_handler(env, request):
         }
         repos = []
         repository_owner_rows = []
+        authority_rows = await d1_all(
+            env, "SELECT repo_bi,node_id FROM repo_source_authorities")
+        authority_by_repo = {
+            str(value.get("repo_bi") or ""):
+                clean_string(value.get("node_id", ""), 64)
+            for value in authority_rows or []
+        }
         ssh_gateway = _ssh_gateway_settings(env)
         for r in rows:
             rec = await decrypt_row(env, r["data"])
@@ -13034,6 +13899,13 @@ async def catalog_handler(env, request):
                 rec["liveHost"] = (
                     str(owner_bi or "") in live_endpoint_nodes
                 )
+                authority_node_id = authority_by_repo.get(
+                    str(r.get("key_bi") or ""), "")
+                if authority_node_id:
+                    rec["canonicalNodeId"] = authority_node_id
+                    rec["sourceAuthority"] = (
+                        clean_string(rec.get("nodeId", ""), 64)
+                        == authority_node_id)
                 # Plaintext flag so clients can badge private repos without
                 # re-deriving it from the visibility string.
                 rec["isPrivate"] = rec.get("visibility") == "private"
@@ -13071,6 +13943,34 @@ async def catalog_handler(env, request):
                             "/api/private-replicas/" + access_id)
                 repos.append(rec)
                 repository_owner_rows.append((rec, owner_bi))
+        # Same-account secondary devices have their own signed telemetry and
+        # serving endpoint, but never replace the canonical catalog row. Return
+        # them as explicit mirrors so node lists and failover tooling retain
+        # their capacity. Private device mirrors stay owner-only; anonymous
+        # responses include public records only.
+        mirror_rows = await d1_all(
+            env,
+            "SELECT repo_bi,node_id,data FROM repo_device_mirrors "
+            "ORDER BY updated_at DESC LIMIT ?",
+            MAX_CATALOG_REPOS,
+        )
+        for mirror_row in mirror_rows or []:
+            mirror = await decrypt_row(env, mirror_row.get("data"))
+            if not mirror:
+                continue
+            if mirror.get("visibility") != "public":
+                if not authed_viewer or mirror.get("owner") != authed_viewer:
+                    continue
+            mirror["reportedSource"] = mirror.get(
+                "reportedSource", mirror.get("source"))
+            mirror["source"] = "remote-clone"
+            mirror["sourceAuthority"] = False
+            mirror["canonicalNodeId"] = authority_by_repo.get(
+                str(mirror_row.get("repo_bi") or ""), "")
+            mirror["isPrivate"] = mirror.get("visibility") == "private"
+            mirror["liveHost"] = False
+            repos.append(mirror)
+            repository_owner_rows.append((mirror, ""))
         await _catalog_logical_owners(env, repository_owner_rows)
         # Second pass: mark each repo cloneable when its own host is offline but a
         # peer mirroring the same logical repo is online — the relay serves that
@@ -13240,6 +14140,7 @@ async def catalog_handler(env, request):
         exists = prior_row is not None
         prior_commit = ""
         prior_state_hash = ""
+        prior = {}
         # Reject rollbacks: a replayed older record must not be able to repin an
         # earlier (validly-signed) repo state and downgrade the served refs.
         if exists:
@@ -13257,6 +14158,78 @@ async def catalog_handler(env, request):
                     return json_response({"error": "stale_update"}, status=409)
             except (TypeError, ValueError):
                 pass
+        # Device-scoped source authority. Account keys intentionally authorize
+        # every device belonging to that account, but that must not mean a clone
+        # on a second computer can silently replace the original working-copy
+        # holder. Existing repositories acquire their authority lazily from the
+        # stored record's nodeId; truly legacy rows without one let the first
+        # modern, signed publisher claim it. There is deliberately no implicit
+        # transfer path: losing a device cannot turn a random checkout into the
+        # source of truth.
+        incoming_node_id = clean_string(record.get("nodeId", ""), 64)
+        incoming_machine = clean_string(
+            record.get("machineName", ""), MAX_NODE_NAME)
+        authority = await d1_first(
+            env,
+            "SELECT node_id,machine_name FROM repo_source_authorities "
+            "WHERE repo_bi=?",
+            key_bi,
+        )
+        stored_authority_node_id = clean_string(
+            (authority or {}).get("node_id", ""), 64)
+        prior_node_id = (
+            clean_string(prior.get("nodeId", ""), 64) if exists else "")
+        authority_node_id, secondary_device = _repo_publication_authority(
+            stored_authority_node_id, prior_node_id, incoming_node_id)
+        if authority_node_id:
+            now_ms = int(Date.now())
+            await d1_run(
+                env,
+                "INSERT INTO repo_source_authorities "
+                "(repo_bi,node_id,machine_name,created_at,updated_at) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET "
+                "updated_at=excluded.updated_at",
+                key_bi, authority_node_id,
+                (clean_string(prior.get("machineName", ""), MAX_NODE_NAME)
+                 if exists and authority_node_id != incoming_node_id
+                 else incoming_machine),
+                now_ms, now_ms,
+            )
+        if (
+                exists
+                and incoming_node_id
+                and authority_node_id
+                and secondary_device):
+            mirror_record = dict(record)
+            # `reportedSource` preserves what the signed client asserted. The
+            # effective source is relay-derived from the durable authority row;
+            # consumers must never grant this device source pin privileges.
+            mirror_record["reportedSource"] = mirror_record.get("source")
+            mirror_record["source"] = "remote-clone"
+            mirror_record["sourceAuthority"] = False
+            mirror_record["canonicalNodeId"] = authority_node_id
+            mirror_enc = await encrypt_row(env, mirror_record)
+            await d1_run(
+                env,
+                "INSERT INTO repo_device_mirrors "
+                "(repo_bi,node_id,data,updated_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(repo_bi,node_id) DO UPDATE SET "
+                "data=excluded.data,updated_at=excluded.updated_at",
+                key_bi, incoming_node_id, mirror_enc, int(Date.now()),
+            )
+            # Endpoint health is maintained by the device's signed heartbeat;
+            # unlike the canonical write below there is no authority state to
+            # activate here. Evict the shared list so this mirror appears now.
+            await edge_cache_delete(CATALOG_CACHE_KEY)
+            canonical = dict(prior)
+            canonical["sourceAuthority"] = True
+            canonical["canonicalNodeId"] = authority_node_id
+            return json_response({
+                "ok": True,
+                "mirror": True,
+                "canonicalNodeId": authority_node_id,
+                "repository": canonical,
+            }, status=202)
         if not exists:
             cnt = await d1_first(
                 env, "SELECT COUNT(*) AS c FROM repositories WHERE owner_bi=?", owner_bi)
@@ -15281,6 +16254,10 @@ async def _clear_repo_delete_tombstone(env, repo_bi):
 
 async def _delete_repo_scoped_state(env, repo_bi):
     await d1_run(
+        env, "DELETE FROM repo_device_mirrors WHERE repo_bi=?", repo_bi)
+    await d1_run(
+        env, "DELETE FROM repo_source_authorities WHERE repo_bi=?", repo_bi)
+    await d1_run(
         env, "DELETE FROM profile_contribution_days WHERE source_repo_bi=?",
         repo_bi)
     await d1_run(
@@ -15764,6 +16741,36 @@ def _account_world_client_fields(rec):
     )
 
 
+WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS = 60 * 60 * 1000
+
+
+def _account_public_last_email(rec):
+    """The last account email's coarse age and delivery outcome.
+
+    World paints "LAST EMAIL 2D AGO · DELIVERED" on every member badge, so the
+    stamp rides the public directory rather than only the owner's own
+    authenticated read. The send time is rounded down to the hour, and the
+    address, the email kind and the running send count stay behind
+    /api/accounts/sessions.
+    """
+    try:
+        ts = int((rec or {}).get("last_email_ts") or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    if ts <= 0:
+        return {"lastEmailAt": 0, "lastEmailStatus": ""}
+    return {
+        "lastEmailAt": (
+            (ts // WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS)
+            * WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS
+        ),
+        "lastEmailStatus": (
+            ACCOUNT_EMAIL_STATUS_DELIVERED if (rec or {}).get("last_email_ok")
+            else ACCOUNT_EMAIL_STATUS_FAILED
+        ),
+    }
+
+
 def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     return {
@@ -15785,6 +16792,7 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         # bucket the caller already derived from the raw touch timestamp, so
         # this function never sees (or could leak) that timestamp itself.
         "activityBucket": activity_bucket,
+        **_account_public_last_email(rec),
         **_account_world_client_fields(rec),
     }
 
@@ -16463,6 +17471,40 @@ async def world_moderation_handler(env, request):
     )
 
 
+# The desktop's Nodes page deletes a node from the app, and the ordinary launch
+# path is authenticateSilently() — keys, no session token at all (adhoc #63
+# family). Without this the button would answer not_admin to the very operator
+# who owns the mesh. The proof names the exact node it removes, so a captured
+# signature can only ever re-delete that same node inside the skew window, and
+# _is_admin still gates the caller exactly as it does a session-token one.
+WORLD_NODE_DELETE_PROOF = "forkmesh-world-node-delete-v1"
+
+
+async def _world_node_delete_signed_actor(env, request, data):
+    """Resolve the admin account behind a key-signed node deletion, or ""."""
+    if method_name(request) != "POST":
+        return ""
+    params = parse_qs(urlparse(request.url).query)
+    actor = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    target = clean_string(
+        (data or {}).get("nodeName", ""), MAX_NODE_NAME).lower()
+    if not actor or not sig or not target or not _ts_ok(ts):
+        return ""
+    canonical = (
+        WORLD_NODE_DELETE_PROOF + "\n" + actor + "\n" + target + "\n" + str(ts)
+    ).encode()
+    # Every key the account may sign as, not just its primary pubkey — same
+    # durable desktop identity as _org_task_signed_session.
+    if not await _verify_owner_signature(env, actor, sig, canonical):
+        return ""
+    _, record = await _account_row(env, actor)
+    if not record or record.get("status") != "active":
+        return ""
+    return actor
+
+
 async def world_admin_delete_node_handler(env, request):
     """Permanently remove one named node after an exact admin confirmation."""
     if method_name(request) != "POST":
@@ -16477,6 +17519,8 @@ async def world_admin_delete_node_handler(env, request):
             {"error": "invalid_json"}, status=400,
             cache_control="no-store, max-age=0, must-revalidate")
     actor = await _authed_account_name(env, request, data)
+    if not actor:
+        actor = await _world_node_delete_signed_actor(env, request, data)
     if not actor or not await _is_admin(env, actor):
         return json_response(
             {"error": "not_admin"}, status=403,
@@ -16603,6 +17647,21 @@ async def world_admin_delete_node_handler(env, request):
             env, "DELETE FROM mirror_https_endpoints "
             "WHERE lower(node_name)=?",
             identifier)
+        # The public /status page builds its mirror roster from recorded
+        # samples (status_history), not from the live endpoint table, so a
+        # deleted node kept a "Mirror node — <name>" row with 30 days of
+        # history — and a permanent "down" verdict — long after every other
+        # trace of it was gone. Drop its samples too so deletion leaves none.
+        status_system = STATUS_MIRROR_PREFIX + identifier
+        await d1_run(
+            env, "DELETE FROM system_status_daily WHERE system=?",
+            status_system)
+        await d1_run(
+            env, "DELETE FROM system_status_hourly WHERE system=?",
+            status_system)
+        await d1_run(
+            env, "DELETE FROM system_status_minute WHERE system=?",
+            status_system)
     for identity_bi in identity_bis:
         cleanup_name = (
             target if identity_bi == target_bi else requested_target
@@ -16865,6 +17924,144 @@ async def _account_reserve(env, request):
 
 def _amount_sol(lamports):
     return "%.9f" % (int(lamports) / LAMPORTS_PER_SOL)
+
+
+# --- Custodial deposit signing ----------------------------------------------
+# These rebuild the write path used by temporary per-purchase deposit
+# addresses. They are reachable only from the deposit sweep, which is gated on
+# _custodial_deposits_enabled(); the direct wallet-to-pool path never touches
+# them and never puts a key on the Worker.
+def _base58_decode(value):
+    n = 0
+    for ch in str(value or ""):
+        if ch not in BASE58_INDEX:
+            return b""
+        n = n * 58 + BASE58_INDEX[ch]
+    raw = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+    pad = 0
+    for ch in str(value or ""):
+        if ch == "1":
+            pad += 1
+        else:
+            break
+    return b"\x00" * pad + raw
+
+
+def _shortvec(n):
+    out = bytearray()
+    while True:
+        elem = n & 0x7F
+        n >>= 7
+        if n:
+            elem |= 0x80
+        out.append(elem)
+        if not n:
+            return bytes(out)
+
+
+def _solana_transfer_message(from_addr, transfers, blockhash):
+    account_addrs = [from_addr]
+    for to_addr, _lamports in transfers:
+        if to_addr not in account_addrs:
+            account_addrs.append(to_addr)
+    if SOLANA_SYSTEM_PROGRAM not in account_addrs:
+        account_addrs.append(SOLANA_SYSTEM_PROGRAM)
+    program_idx = account_addrs.index(SOLANA_SYSTEM_PROGRAM)
+    out = bytearray()
+    out += bytes([1, 0, 1])
+    out += _shortvec(len(account_addrs))
+    for addr in account_addrs:
+        raw = _base58_decode(addr)
+        if len(raw) != 32:
+            return b""
+        out += raw
+    blockhash_raw = _base58_decode(blockhash)
+    if len(blockhash_raw) != 32:
+        return b""
+    out += blockhash_raw
+    out += _shortvec(len(transfers))
+    for to_addr, lamports in transfers:
+        data = struct.pack("<IQ", 2, int(lamports))
+        out += bytes([program_idx])
+        out += _shortvec(2) + bytes([0, account_addrs.index(to_addr)])
+        out += _shortvec(len(data)) + data
+    return bytes(out)
+
+
+async def _solana_sign_message(from_addr, seed_b64url, message):
+    pub = _base58_decode(from_addr)
+    if len(pub) != 32 or not seed_b64url or not message:
+        return b""
+    try:
+        jwk = {
+            "kty": "OKP", "crv": "Ed25519", "x": _b64url_encode(pub),
+            "d": seed_b64url, "ext": True, "key_ops": ["sign"],
+        }
+        key = await js_crypto.subtle.importKey(
+            "jwk", to_js(jwk), to_js({"name": "Ed25519"}), False,
+            _to_js(["sign"]),
+        )
+        sig = await js_crypto.subtle.sign(
+            to_js({"name": "Ed25519"}), key, _to_js(message))
+        return bytes(Uint8Array.new(sig).to_py())
+    except Exception:
+        return b""
+
+
+async def _solana_latest_blockhash(env):
+    resp = await _solana_rpc(env, "getLatestBlockhash", [])
+    if not isinstance(resp, dict):
+        return ""
+    try:
+        return str(resp["result"]["value"]["blockhash"] or "")
+    except Exception:
+        return ""
+
+
+async def _solana_send_transaction(env, tx_bytes):
+    encoded = base64.b64encode(tx_bytes).decode()
+    resp = await _solana_rpc_write(
+        env, "sendTransaction",
+        [encoded, {"encoding": "base64", "skipPreflight": False}],
+    )
+    if not isinstance(resp, dict):
+        return ""
+    result = resp.get("result")
+    return str(result or "") if result else ""
+
+
+async def _solana_send_transfers(env, from_addr, seed_b64url, transfers):
+    transfers = [(to, int(lamports)) for to, lamports in transfers
+                 if SOLANA_RE.match(to or "") and int(lamports) > 0]
+    if not transfers:
+        return ""
+    blockhash = await _solana_latest_blockhash(env)
+    if not blockhash:
+        return ""
+    message = _solana_transfer_message(from_addr, transfers, blockhash)
+    sig = await _solana_sign_message(from_addr, seed_b64url, message)
+    if len(sig) != 64:
+        return ""
+    tx = _shortvec(1) + sig + message
+    return await _solana_send_transaction(env, tx)
+
+
+async def _new_solana_keypair():
+    """Generate a fresh per-purchase deposit keypair.
+
+    A Solana address is an Ed25519 public key. The 32-byte seed (the JWK "d"
+    field) is what the sweep later signs with, so it is stored encrypted and
+    deleted as soon as the sweep succeeds.
+    """
+    pair = await js_crypto.subtle.generateKey(
+        to_js({"name": "Ed25519"}), True, _to_js(["sign", "verify"]))
+    pub_raw = await js_crypto.subtle.exportKey("raw", pair.publicKey)
+    pub = bytes(Uint8Array.new(pub_raw).to_py())
+    jwk = await js_crypto.subtle.exportKey("jwk", pair.privateKey)
+    seed_b64url = str(getattr(jwk, "d", "") or "")
+    if len(pub) != 32 or not seed_b64url:
+        return None, None
+    return _base58_encode(pub), seed_b64url
 
 
 def _solana_pay_uri(address, amount_lamports, reference="", message="Join ForkMesh"):
@@ -20258,6 +21455,661 @@ async def reward_contributions_handler(env, request):
     }, cache_control="no-store")
 
 
+WORLD_ELEMENT_STORE_BODY_MAX_BYTES = 8 * 1024
+WORLD_ELEMENT_PURCHASE_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _world_element_library(rec, now=0):
+    return world_element_store.clean_owned(
+        (rec or {}).get("world_elements"), now)
+
+
+async def _create_element_store_split_intent(env, purchase):
+    """Write the unsigned intent paying one purchase's mirror-node half.
+
+    The treasury half needs no transfer: it is already in the pool address the
+    buyer's wallet paid. Only the mirror half moves, and only after the
+    instance owner's local signer reviews and signs this plan.
+    """
+    purchase = purchase or {}
+    if purchase.get("distribution_intent_id"):
+        return [str(purchase.get("distribution_intent_id"))]
+    rec = await _central_fund_record(env)
+    if not rec or not rec.get("signer_account"):
+        return []
+    now = int(Date.now())
+    snapshot = await _eligible_reward_snapshot(env, now)
+    eligible = list(snapshot.get("eligible") or [])
+    if not eligible:
+        return []
+    mirror_total = int(purchase.get("mirror_lamports") or 0)
+    chunk_count = (
+        len(eligible) + REWARD_TRANSFERS_PER_INTENT - 1
+    ) // REWARD_TRANSFERS_PER_INTENT
+    fee_reserve = REWARD_POOL_FEE_RESERVE_LAMPORTS * chunk_count
+    per_node = (mirror_total - fee_reserve) // len(eligible)
+    if per_node <= 0:
+        return []
+    balance = await _reward_balance_lamports(env, rec.get("address"))
+    if balance is None or int(balance) < per_node * len(eligible) + fee_reserve:
+        return []
+    transfers = [{
+        "address": item["walletAddress"],
+        "lamports": per_node,
+        "nodeId": item["nodeId"],
+    } for item in eligible]
+    purchase_id = str(purchase.get("purchase_id") or "")
+    statements = []
+    intent_ids = []
+    for chunk_index in range(chunk_count):
+        intent_id = _random_bytes(16).hex()
+        intent_ids.append(intent_id)
+        start = chunk_index * REWARD_TRANSFERS_PER_INTENT
+        plan = {
+            "v": 2,
+            "network": rec.get("network", "mainnet-beta"),
+            "sourceAddress": rec.get("address", ""),
+            "custody": {
+                "forkMeshHoldsUserKeys": False,
+                "fundsRemainInSourceWalletUntilSigned": True,
+            },
+            "signing": {
+                "required": True,
+                "performed": False,
+                "method": "external-local-qt",
+            },
+            "transfers": transfers[start:start + REWARD_TRANSFERS_PER_INTENT],
+            "eligibility": {
+                "snapshotHash": snapshot.get("snapshotHash", ""),
+                "eligibleCount": len(eligible),
+                "rejected": snapshot.get("rejected", []),
+                "policy": snapshot.get("policy", {}),
+                "limitations": snapshot.get("limitations", []),
+                "source": snapshot.get("source", ""),
+            },
+            "policy": "element-store-half-to-eligible-mirrors-v1",
+            "purchaseId": purchase_id,
+            "elementId": str(purchase.get("element_id") or ""),
+            "purchaseLamports": int(purchase.get("amount_lamports") or 0),
+            "treasuryRetainedLamports": int(
+                purchase.get("treasury_lamports") or 0),
+            "mirrorShareLamports": mirror_total,
+            "distributedLamports": per_node * len(eligible),
+            "retainedForNetworkFeesAndRemainder": (
+                mirror_total - per_node * len(eligible)
+            ),
+            "split": world_element_store.split_policy_public(),
+            "batch": {
+                "chunkIndex": chunk_index,
+                "chunkCount": chunk_count,
+                "maximumTransfersPerTransaction": REWARD_TRANSFERS_PER_INTENT,
+            },
+            "generatedAt": now,
+            "notice": (
+                "Half of a voluntary world-element purchase, shared between "
+                "online eligible mirror nodes. Not an investment and no "
+                "financial return is promised."
+            ),
+        }
+        statements.append((
+            "INSERT INTO chain_intents "
+            "(intent_id,kind,source_address,signer_account,status,data,"
+            "created_at,expires_at) "
+            "VALUES (?,?,?,?,'pending_signature',?,?,?)",
+            (
+                intent_id,
+                "world_element_store_mirror_split",
+                rec.get("address", ""),
+                rec.get("signer_account", ""),
+                json.dumps(plan, sort_keys=True, separators=(",", ":")),
+                now,
+                now + 4 * 60 * 60 * 1000,
+            ),
+        ))
+    statements.append((
+        "UPDATE world_element_purchases "
+        "SET status='awaiting_distribution', distribution_intent_id=? "
+        "WHERE purchase_id=? AND distribution_intent_id=''",
+        (intent_ids[0], purchase_id),
+    ))
+    await _contribution_run_batch(env, statements)
+    await _audit_sensitive_action(
+        env, "", "world.element_store_split_intent",
+        "world_element_purchase", purchase_id, "requested", {
+            "elementId": str(purchase.get("element_id") or ""),
+            "eligibleCount": len(eligible),
+            "snapshotHash": snapshot.get("snapshotHash", ""),
+            "mirrorShareLamports": mirror_total,
+            "distributedLamports": per_node * len(eligible),
+            "intentCount": chunk_count,
+        })
+    return intent_ids
+
+
+async def _grant_purchased_element(env, account_bi, rec, row, signature,
+                                   details):
+    """Record the finalized purchase and add the element to the account."""
+    now = int(Date.now())
+    element_id = str(row.get("element_id") or "")
+    item = world_element_store.element(element_id)
+    await d1_run(
+        env,
+        "UPDATE world_element_purchases SET status='confirmed', "
+        "tx_signature=?, source_address=?, confirmed_at=? "
+        "WHERE purchase_id=? AND status IN ('prepared','awaiting_finality')",
+        signature, details.get("sourceAddress", ""), now,
+        row.get("purchase_id"),
+    )
+    owned = _world_element_library(rec, now)
+    previous = owned.get(element_id) or {}
+    owned[element_id] = {
+        "params": world_element_store.clean_params(
+            item, previous.get("params")),
+        "placement": world_element_store.clean_placement(
+            previous.get("placement")),
+        "enabled": True,
+        "purchaseId": str(row.get("purchase_id") or ""),
+        "transactionSignature": signature,
+        "purchasedAt": now,
+        "updatedAt": now,
+    }
+    rec["world_elements"] = owned
+    await _save_account(env, account_bi, rec)
+    row = dict(row)
+    row.update({
+        "status": "confirmed",
+        "tx_signature": signature,
+        "source_address": details.get("sourceAddress", ""),
+        "confirmed_at": now,
+    })
+    # Only the direct path owes an unsigned mirror-distribution intent. A
+    # custodial deposit pays the mirror half in its own sweep transaction, so
+    # creating an intent here would pay that half a second time.
+    if str(row.get("method") or "direct") != "deposit":
+        intent_ids = await _create_element_store_split_intent(env, row)
+        if intent_ids:
+            row["status"] = "awaiting_distribution"
+            row["distribution_intent_id"] = intent_ids[0]
+    await _audit_sensitive_action(
+        env, "", "world.element_purchase_confirm", "world_element_purchase",
+        str(row.get("purchase_id") or ""), "success", {
+            "elementId": element_id,
+            "lamports": int(row.get("amount_lamports") or 0),
+            "treasuryLamports": int(row.get("treasury_lamports") or 0),
+            "mirrorLamports": int(row.get("mirror_lamports") or 0),
+            "transactionSignature": signature,
+        })
+    return row, owned
+
+
+def _deposit_treasury_address(env):
+    """Public treasury address that receives the custodial deposit's half."""
+    address = clean_string(
+        getattr(env, "TREASURY_SOLANA_ADDRESS", "")
+        or getattr(env, "COMMUNITY_REWARD_POOL_ADDRESS", ""),
+        64,
+    ).strip()
+    return address if SOLANA_RE.match(address) else ""
+
+
+def _custodial_deposits_enabled(env):
+    """Whether the Worker may mint and sweep temporary deposit addresses.
+
+    Off unless a treasury is configured to sweep into, and killable outright
+    with CUSTODIAL_DEPOSITS=0. When this is off the store still sells elements
+    through the direct wallet-to-pool path, which puts no key on the Worker.
+    """
+    flag = str(getattr(env, "CUSTODIAL_DEPOSITS", "") or "").strip().lower()
+    if flag in ("0", "false", "off", "no"):
+        return False
+    return bool(_deposit_treasury_address(env))
+
+
+async def _online_mirror_payout_addresses(env, exclude=""):
+    """Payout addresses of online, functioning, eligible mirror nodes."""
+    snapshot = await _eligible_reward_snapshot(env, int(Date.now()))
+    seen = set()
+    addresses = []
+    for item in snapshot.get("eligible") or []:
+        address = str(item.get("walletAddress") or "").strip()
+        if (not SOLANA_RE.match(address) or address in seen
+                or address == exclude):
+            continue
+        seen.add(address)
+        addresses.append(address)
+        if len(addresses) >= MAX_SWEEP_PAYEES:
+            break
+    return addresses
+
+
+def _deposit_sweep_plan(transferable, treasury, payees):
+    """Split a swept deposit 50/50 between treasury and online mirrors.
+
+    Integer division keeps the remainder with the treasury, so the transfers
+    can never total more than what was actually received.
+    """
+    treasury_lamports = int(transferable)
+    transfers = []
+    if payees:
+        half = (int(transferable) * DEPOSIT_TREASURY_SPLIT_NUMERATOR
+                // DEPOSIT_TREASURY_SPLIT_DENOMINATOR)
+        per_node = (int(transferable) - half) // len(payees)
+        if per_node > 0:
+            transfers = [(payee, per_node) for payee in payees]
+            treasury_lamports = int(transferable) - per_node * len(payees)
+    transfers.insert(0, (treasury, treasury_lamports))
+    merged = []
+    by_addr = {}
+    for addr, lamports in transfers:
+        if addr in by_addr:
+            by_addr[addr] += int(lamports)
+        else:
+            by_addr[addr] = int(lamports)
+            merged.append(addr)
+    return [(addr, by_addr[addr]) for addr in merged if by_addr[addr] > 0]
+
+
+async def _sweep_element_deposit(env, row, balance=None):
+    """Send a confirmed deposit on to the treasury and online mirror nodes.
+
+    Idempotent: once a signature is stored the deposit is never sent again.
+    The signing seed is destroyed as soon as the sweep confirms, so a swept
+    purchase leaves no key on the Worker.
+    """
+    purchase_id = str(row.get("purchase_id") or "")
+    if row.get("sweep_signature"):
+        return str(row.get("sweep_signature"))
+    # Two concurrent pollers can both reach here, because D1 gives no atomic
+    # compare-and-swap to claim the sweep with. The chain settles it instead:
+    # same signer, transfers and blockhash produce a byte-identical
+    # transaction, which the cluster deduplicates by signature; if the
+    # blockhash has rolled, the second attempt spends an already-emptied
+    # account and is rejected for insufficient funds. Either way the deposit
+    # cannot be sent twice.
+    from_addr = str(row.get("deposit_address") or "")
+    stored = str(row.get("deposit_secret") or "")
+    if not SOLANA_RE.match(from_addr) or not stored:
+        return ""
+    treasury = _deposit_treasury_address(env)
+    if not treasury:
+        await _record_sweep_error(env, purchase_id, "treasury_not_configured")
+        return ""
+    secret = await decrypt_row(env, stored)
+    seed = (secret or {}).get("seed") if isinstance(secret, dict) else ""
+    if not seed:
+        await _record_sweep_error(env, purchase_id, "deposit_key_unreadable")
+        return ""
+    if balance is None:
+        balance = await _solana_balance_lamports(env, from_addr)
+    if balance is None:
+        await _record_sweep_error(env, purchase_id, "balance_unavailable")
+        return ""
+    transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
+    if transferable <= 0:
+        await _record_sweep_error(env, purchase_id, "balance_too_low_for_fee")
+        return ""
+    payees = await _online_mirror_payout_addresses(env, exclude=from_addr)
+    transfers = _deposit_sweep_plan(transferable, treasury, payees)
+    signature = await _solana_send_transfers(env, from_addr, seed, transfers)
+    if not signature:
+        await _record_sweep_error(env, purchase_id, "send_transaction_failed")
+        return ""
+    now = int(Date.now())
+    # Clearing deposit_secret is the point of the whole flow: the Worker holds
+    # a key only for the window between minting the address and sweeping it.
+    await d1_run(
+        env,
+        "UPDATE world_element_purchases SET sweep_signature=?, sweep_at=?, "
+        "sweep_error='', deposit_secret='' WHERE purchase_id=? "
+        "AND sweep_signature=''",
+        signature, now, purchase_id,
+    )
+    await _audit_sensitive_action(
+        env, "", "world.element_deposit_sweep", "world_element_purchase",
+        purchase_id, "success", {
+            "treasuryLamports": next(
+                (l for a, l in transfers if a == treasury), 0),
+            "mirrorPayees": len(payees),
+            "transactionSignature": signature,
+        })
+    return signature
+
+
+async def _record_sweep_error(env, purchase_id, message):
+    await d1_run(
+        env,
+        "UPDATE world_element_purchases SET sweep_error=? WHERE purchase_id=?",
+        message, purchase_id,
+    )
+
+
+async def sweep_pending_element_deposits(env):
+    """Cron: retry sweeps whose first attempt could not complete."""
+    if not _custodial_deposits_enabled(env):
+        return 0
+    rows = await d1_all(
+        env,
+        "SELECT * FROM world_element_purchases WHERE method='deposit' "
+        "AND deposit_secret<>'' AND sweep_signature='' "
+        "AND status IN ('confirmed','awaiting_distribution') "
+        "ORDER BY confirmed_at ASC LIMIT 10",
+    )
+    swept = 0
+    for row in rows or []:
+        if await _sweep_element_deposit(env, row):
+            swept += 1
+    return swept
+
+
+async def _element_deposit_status(env, request, data, account_bi, rec, now):
+    """Poll a temporary deposit address; grant and sweep once it is funded."""
+    purchase_id = clean_string(data.get("purchaseId", ""), 32).lower()
+    if not WORLD_ELEMENT_PURCHASE_RE.fullmatch(purchase_id):
+        return json_response({"error": "invalid_purchase"}, status=400)
+    row = await d1_first(
+        env,
+        "SELECT * FROM world_element_purchases WHERE purchase_id=?",
+        purchase_id,
+    )
+    if (not row or str(row.get("account_bi") or "") != account_bi
+            or str(row.get("method") or "") != "deposit"):
+        return json_response({"error": "not_found"}, status=404)
+    element_id = str(row.get("element_id") or "")
+    required = int(row.get("amount_lamports") or 0)
+    address = str(row.get("deposit_address") or "")
+    status = str(row.get("status") or "")
+    if status in ("confirmed", "awaiting_distribution"):
+        return json_response({
+            "ok": True,
+            "status": status,
+            "elementId": element_id,
+            "depositAddress": address,
+            "sweepSignature": str(row.get("sweep_signature") or ""),
+            "owned": _world_element_library(rec, now),
+        }, cache_control="no-store")
+    if int(row.get("expires_at") or 0) <= now and status == "prepared":
+        # An unfunded deposit expires, but the address is left readable so a
+        # late payment can still be reconciled by the operator.
+        await d1_run(
+            env,
+            "UPDATE world_element_purchases SET status='expired' "
+            "WHERE purchase_id=? AND status='prepared'",
+            purchase_id,
+        )
+        return json_response({"error": "purchase_expired"}, status=410)
+    balance = await _solana_balance_lamports(env, address)
+    if balance is None:
+        return json_response({
+            "ok": True, "status": "balance_unavailable",
+            "depositAddress": address, "requiredLamports": required,
+        }, status=202, cache_control="no-store")
+    if int(balance) < required:
+        return json_response({
+            "ok": True,
+            "status": "awaiting_payment",
+            "depositAddress": address,
+            "requiredLamports": required,
+            "receivedLamports": int(balance),
+            "receivedSol": _amount_sol(int(balance)),
+        }, status=202, cache_control="no-store")
+    row, owned = await _grant_purchased_element(
+        env, account_bi, rec, row, "", {"sourceAddress": ""})
+    signature = await _sweep_element_deposit(env, row, balance=balance)
+    return json_response({
+        "ok": True,
+        "status": row.get("status"),
+        "elementId": element_id,
+        "depositAddress": address,
+        "receivedLamports": int(balance),
+        "sweepSignature": signature,
+        "sweepPending": not signature,
+        "owned": owned,
+        "notice": world_element_store.custody_notice("deposit"),
+    }, cache_control="no-store")
+
+
+async def world_element_store_handler(env, request, path):
+    """Browse, buy and configure modular World elements."""
+    await ensure_schema(env)
+    method = method_name(request)
+    route = path.rstrip("/")
+    now = int(Date.now())
+    fund = await _central_fund_record(env)
+
+    if route.endswith("/catalog"):
+        if method != "GET":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        deposits = _custodial_deposits_enabled(env)
+        return json_response({
+            "ok": True,
+            "elements": world_element_store.catalog_public(),
+            "split": world_element_store.split_policy_public(),
+            "poolAddress": (fund or {}).get("address", ""),
+            "network": (fund or {}).get("network", ""),
+            "purchasesEnabled": bool(fund) or deposits,
+            "paymentMethods": world_element_store.payment_methods_public(
+                direct=bool(fund), deposit=deposits),
+            "treasuryAddress": _deposit_treasury_address(env),
+        }, cache_control="no-store")
+
+    if route.endswith("/library"):
+        if method != "GET":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        account_bi, rec = await _account_session_record(env, request)
+        if not account_bi or not rec:
+            return json_response({"error": "invalid_session"}, status=401)
+        return json_response({
+            "ok": True,
+            "owned": _world_element_library(rec, now),
+            "storage": "account-encrypted",
+        }, cache_control="no-store")
+
+    if method != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not _request_same_origin(request):
+        return json_response({"error": "origin_not_allowed"}, status=403)
+    try:
+        data = await bounded_json_request(
+            request, WORLD_ELEMENT_STORE_BODY_MAX_BYTES)
+    except RequestBodyTooLarge:
+        return json_response({"error": "payload_too_large"}, status=413)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, rec = await _account_session_record(env, request, data)
+    if not account_bi or not rec:
+        return json_response({"error": "invalid_session"}, status=401)
+    action = clean_string(data.get("action", ""), 20).lower()
+
+    if action == "configure":
+        element_id = clean_string(data.get("elementId", ""), 64).lower()
+        item = world_element_store.element(element_id)
+        owned = _world_element_library(rec, now)
+        if not item or element_id not in owned:
+            return json_response({"error": "element_not_owned"}, status=403)
+        entry = dict(owned[element_id])
+        entry["params"] = world_element_store.clean_params(
+            item, data.get("params"))
+        if isinstance(data.get("placement"), dict):
+            entry["placement"] = world_element_store.clean_placement(
+                data.get("placement"))
+        if isinstance(data.get("enabled"), bool):
+            entry["enabled"] = data.get("enabled")
+        entry["updatedAt"] = now
+        owned[element_id] = entry
+        rec["world_elements"] = owned
+        await _save_account(env, account_bi, rec)
+        return json_response({
+            "ok": True, "elementId": element_id, "element": entry,
+        }, cache_control="no-store")
+
+    deposits_enabled = _custodial_deposits_enabled(env)
+    if not fund and not deposits_enabled:
+        return json_response(
+            {"error": "community_pool_not_configured"}, status=503)
+
+    if action == "deposit-status":
+        return await _element_deposit_status(env, request, data, account_bi,
+                                             rec, now)
+
+    if action == "prepare":
+        element_id = clean_string(data.get("elementId", ""), 64).lower()
+        item = world_element_store.element(element_id)
+        if not item:
+            return json_response({"error": "unknown_element"}, status=404)
+        method = clean_string(data.get("method", "direct"), 16).lower()
+        if method not in ("direct", "deposit"):
+            return json_response({"error": "invalid_method"}, status=400)
+        if method == "deposit" and not deposits_enabled:
+            return json_response(
+                {"error": "custodial_deposits_disabled"}, status=503)
+        if method == "direct" and not fund:
+            return json_response(
+                {"error": "community_pool_not_configured"}, status=503)
+        if element_id in _world_element_library(rec, now):
+            return json_response(
+                {"error": "element_already_owned"}, status=409)
+        pending = await d1_first(
+            env,
+            "SELECT COUNT(*) AS c FROM world_element_purchases "
+            "WHERE account_bi=? AND status='prepared' AND expires_at>?",
+            account_bi, now,
+        )
+        if int((pending or {}).get("c") or 0) >= 5:
+            return json_response(
+                {"error": "too_many_pending_purchases"}, status=429)
+        amount = int(item["priceLamports"])
+        split = world_element_store.split_lamports(amount)
+        purchase_id = _random_bytes(16).hex()
+        reference = _base58_encode(_random_bytes(32))
+        expires_at = now + world_element_store.PURCHASE_EXPIRES_MS
+        deposit_address = ""
+        deposit_secret = ""
+        if method == "deposit":
+            # A fresh Ed25519 keypair per purchase. The seed is stored
+            # encrypted and destroyed by the sweep; nothing else may read it.
+            deposit_address, seed = await _new_solana_keypair()
+            if not deposit_address or not seed:
+                return json_response(
+                    {"error": "deposit_address_unavailable"}, status=503)
+            deposit_secret = await encrypt_row(env, {"seed": seed})
+        pay_to = deposit_address if method == "deposit" else fund.get(
+            "address", "")
+        await d1_run(
+            env,
+            "INSERT INTO world_element_purchases "
+            "(purchase_id,account_bi,element_id,amount_lamports,"
+            "treasury_lamports,mirror_lamports,reference_address,status,"
+            "created_at,expires_at,method,deposit_address,deposit_secret) "
+            "VALUES (?,?,?,?,?,?,?,'prepared',?,?,?,?,?)",
+            purchase_id, account_bi, element_id, amount,
+            split["treasuryLamports"], split["mirrorLamports"], reference,
+            now, expires_at, method, deposit_address, deposit_secret,
+        )
+        return json_response({
+            "ok": True,
+            "purchaseId": purchase_id,
+            "elementId": element_id,
+            "method": method,
+            "amountLamports": amount,
+            "amountSol": _amount_sol(amount),
+            "payToAddress": pay_to,
+            "poolAddress": fund.get("address", "") if fund else "",
+            "depositAddress": deposit_address,
+            "network": (fund or {}).get("network", _reward_network(env)),
+            "referenceAddress": reference,
+            "expiresAt": expires_at,
+            "uri": _solana_pay_uri(
+                pay_to, amount,
+                reference="" if method == "deposit" else reference,
+                message=f"ForkMesh world element: {item['label']}",
+            ),
+            "custody": world_element_store.custody_notice(method),
+            "split": {
+                **world_element_store.split_policy_public(),
+                "treasuryLamports": split["treasuryLamports"],
+                "mirrorNodeLamports": split["mirrorLamports"],
+            },
+        }, status=201, cache_control="no-store")
+
+    if action != "confirm":
+        return json_response({"error": "invalid_action"}, status=400)
+    purchase_id = clean_string(data.get("purchaseId", ""), 32).lower()
+    signature = clean_string(data.get("transactionSignature", ""), 120).strip()
+    if (not WORLD_ELEMENT_PURCHASE_RE.fullmatch(purchase_id)
+            or not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{64,120}", signature)):
+        return json_response({"error": "invalid_confirmation"}, status=400)
+    row = await d1_first(
+        env,
+        "SELECT * FROM world_element_purchases WHERE purchase_id=?",
+        purchase_id,
+    )
+    if not row or str(row.get("account_bi") or "") != account_bi:
+        return json_response({"error": "not_found"}, status=404)
+    if row.get("status") in ("confirmed", "awaiting_distribution"):
+        if row.get("tx_signature") != signature:
+            return json_response(
+                {"error": "purchase_already_confirmed"}, status=409)
+        return json_response({
+            "ok": True,
+            "status": row.get("status"),
+            "elementId": str(row.get("element_id") or ""),
+            "owned": _world_element_library(rec, now),
+        }, cache_control="no-store")
+    if int(row.get("expires_at") or 0) <= now:
+        await d1_run(
+            env,
+            "UPDATE world_element_purchases SET status='expired' "
+            "WHERE purchase_id=? AND status='prepared'",
+            purchase_id,
+        )
+        return json_response({"error": "purchase_expired"}, status=410)
+    replay = await d1_first(
+        env,
+        "SELECT purchase_id FROM world_element_purchases "
+        "WHERE tx_signature=? AND purchase_id<>?",
+        signature, purchase_id,
+    )
+    if replay:
+        return json_response({"error": "transaction_replay"}, status=409)
+    details = await _solana_contribution_details(
+        env, signature,
+        pool_address=fund.get("address", ""),
+        reference_address=row.get("reference_address", ""),
+        amount_lamports=int(row.get("amount_lamports") or 0),
+    )
+    if details is False:
+        return json_response(
+            {"error": "purchase_transaction_mismatch"}, status=409)
+    if details is None:
+        await d1_run(
+            env,
+            "UPDATE world_element_purchases "
+            "SET status='awaiting_finality', tx_signature=? "
+            "WHERE purchase_id=? AND status='prepared'",
+            signature, purchase_id,
+        )
+        return json_response({
+            "ok": True,
+            "status": "awaiting_finality",
+            "notice": (
+                "Non-custodial: ForkMesh retained no wallet key. The element "
+                "unlocks once the direct public transfer is finalized."
+            ),
+        }, status=202, cache_control="no-store")
+    row, owned = await _grant_purchased_element(
+        env, account_bi, rec, row, signature, details)
+    return json_response({
+        "ok": True,
+        "status": row.get("status"),
+        "elementId": str(row.get("element_id") or ""),
+        "transactionSignature": signature,
+        "explorerUrl": _reward_explorer_url(
+            fund.get("network", "mainnet-beta"), signature=signature),
+        "distributionIntentId": str(row.get("distribution_intent_id") or ""),
+        "owned": owned,
+    }, cache_control="no-store")
+
+
 def _chain_intent_public(row, include_plan=False):
     row = row or {}
     result = {
@@ -21763,8 +23615,17 @@ _DISCORD_OAUTH_GUILDS_PATH = "/users/@me/guilds"
 # this Worker isolate. It is intentionally not a durable cross-colo global
 # limiter and carries only short-lived rate metadata plus minimized public
 # channel/@everyone-role projections—never credentials, OAuth values, raw
-# private catalogs, or message history.
-_discord_rate_coordinator = DiscordRateCoordinator()
+# private catalogs, or message history.  Construct it with the first Discord
+# request instead of while Cloudflare is validating Python global scope.
+_discord_rate_coordinator_instance = None
+
+
+def _discord_rate_coordinator():
+    global _discord_rate_coordinator_instance
+    if _discord_rate_coordinator_instance is None:
+        _discord_rate_coordinator_instance = (
+            _LazyModule("discord_rate").DiscordRateCoordinator())
+    return _discord_rate_coordinator_instance
 
 
 def _discord_bot_token(env):
@@ -21897,7 +23758,7 @@ async def _discord_provider_request(env, method, path, body=None):
     if not token:
         return {"status": 0, "data": None, "retryAfterMs": 0}
     now = int(Date.now())
-    reserved_for = _discord_rate_coordinator.reserve(path, now)
+    reserved_for = _discord_rate_coordinator().reserve(path, now)
     if reserved_for:
         return {"status": 429, "data": None, "retryAfterMs": reserved_for}
     headers = {
@@ -21949,7 +23810,7 @@ async def _discord_provider_request(env, method, path, body=None):
             except Exception:
                 rate_headers[name] = ""
         observed_now = int(Date.now())
-        coordinated_retry = _discord_rate_coordinator.observe(
+        coordinated_retry = _discord_rate_coordinator().observe(
             path, status, rate_headers, data, observed_now)
         retry_after = 0
         try:
@@ -22281,7 +24142,7 @@ class _OrganizationDiscordRuntime:
         guild_id = _discord_snowflake(guild_id)
         if not guild_id:
             return None
-        return _discord_rate_coordinator.catalog_get(
+        return _discord_rate_coordinator().catalog_get(
             "public-channels:" + guild_id, int(Date.now()))
 
     def cache_discord_public_channels(self, guild_id, channels):
@@ -22290,7 +24151,7 @@ class _OrganizationDiscordRuntime:
             return
         # The policy module has already removed private/NSFW/thread metadata;
         # cache only its small id/name/type public projection.
-        _discord_rate_coordinator.catalog_put(
+        _discord_rate_coordinator().catalog_put(
             "public-channels:" + guild_id, channels, int(Date.now()))
 
     async def discord_guild_roles(self, guild_id):
@@ -23940,8 +25801,47 @@ MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
 FORKMESH_SITE_URL = "https://forkmesh.com/"
 
 
+async def _mailtrap_account_for_email(env, email):
+    try:
+        email_bi = await blind_index(
+            env, clean_string(email or "", 254).strip().lower())
+        if not email_bi:
+            return ""
+        row = await d1_first(
+            env, "SELECT user_bi FROM users WHERE email_bi=? LIMIT 1",
+            email_bi)
+        return str((row or {}).get("user_bi") or "")
+    except Exception:
+        return ""
+
+
+async def _record_mailtrap_send(
+        env, send_id, account_bi, kind, accepted, status=""):
+    if not send_id or not account_bi:
+        return
+    now = int(Date.now())
+    try:
+        await d1_run(
+            env,
+            "INSERT INTO mailtrap_email_sends "
+            "(send_id,account_bi,kind,sent_at,accepted,status,status_at,"
+            "message_id) VALUES(?,?,?,?,?,?,?,?)",
+            send_id,
+            account_bi,
+            clean_string(kind or "account", 40),
+            now,
+            1 if accepted else 0,
+            clean_string(status or (
+                "accepted" if accepted else "failed"), 40),
+            now,
+            "",
+        )
+    except Exception:
+        pass
+
+
 async def _send_email(env, to_email, subject, text, html=None,
-                      from_email=None, from_name=None):
+                      from_email=None, from_name=None, email_kind="account"):
     token = (getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
     if not token or not to_email:
         return False
@@ -23975,6 +25875,14 @@ async def _send_email(env, to_email, subject, text, html=None,
         "subject": subject,
         "text": text,
     }
+    account_bi = await _mailtrap_account_for_email(env, to_email)
+    send_id = _ap_uuid() if account_bi else ""
+    if send_id:
+        payload["custom_variables"] = {
+            "forkmesh_send_id": send_id,
+            "forkmesh_account_bi": account_bi,
+            "forkmesh_kind": clean_string(email_kind or "account", 40),
+        }
     if html:
         payload["html"] = html
     try:
@@ -23990,9 +25898,136 @@ async def _send_email(env, to_email, subject, text, html=None,
             },
             CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
         )
-        return 200 <= int(getattr(resp, "status", 0)) < 300
+        accepted = 200 <= int(getattr(resp, "status", 0)) < 300
+        await _record_mailtrap_send(
+            env, send_id, account_bi, email_kind, accepted)
+        return accepted
     except Exception:
+        await _record_mailtrap_send(
+            env, send_id, account_bi, email_kind, False)
         return False
+
+
+MAILTRAP_WEBHOOK_EVENTS = {
+    "delivery",
+    "open",
+    "click",
+    "unsubscribe",
+    "spam",
+    "soft bounce",
+    "bounce",
+    "suspension",
+    "reject",
+}
+
+
+def _mailtrap_webhook_payload(raw):
+    raw = str(raw or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            parsed = parsed.get("events", [parsed])
+        return parsed if isinstance(parsed, list) else None
+    except Exception:
+        events = []
+        for line in raw.splitlines():
+            try:
+                event = json.loads(line)
+            except Exception:
+                return None
+            if not isinstance(event, dict):
+                return None
+            events.append(event)
+        return events
+
+
+async def mailtrap_webhook_handler(env, request):
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "POST"})
+    secret = str(
+        getattr(env, "MAILTRAP_WEBHOOK_SECRET", "") or "").strip()
+    if not secret:
+        return json_response(
+            {"error": "mailtrap_webhook_not_configured"}, status=503)
+    try:
+        raw = await request.text()
+    except Exception:
+        return json_response({"error": "invalid_payload"}, status=400)
+    if len(raw.encode("utf-8")) > 1024 * 1024:
+        return json_response({"error": "payload_too_large"}, status=413)
+    presented = str(
+        request.headers.get("mailtrap-signature") or "").strip().lower()
+    expected = hmac.new(
+        secret.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not presented or not hmac.compare_digest(presented, expected):
+        return json_response({"error": "invalid_signature"}, status=401)
+    events = _mailtrap_webhook_payload(raw)
+    if events is None or len(events) > 500:
+        return json_response({"error": "invalid_payload"}, status=400)
+    await ensure_schema(env)
+    accepted = 0
+    now = int(Date.now())
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_id = clean_string(
+            event.get("event_id") or event.get("id") or "", 160)
+        status = clean_string(
+            event.get("event") or event.get("type") or "", 40).lower()
+        variables = event.get("custom_variables")
+        if not isinstance(variables, dict):
+            variables = event.get("customVariables")
+        variables = variables if isinstance(variables, dict) else {}
+        send_id = clean_string(
+            variables.get("forkmesh_send_id") or "", 64).lower()
+        account_bi = clean_string(
+            variables.get("forkmesh_account_bi") or "", 128)
+        if not event_id or status not in MAILTRAP_WEBHOOK_EVENTS:
+            continue
+        prior = await d1_first(
+            env,
+            "SELECT event_id FROM mailtrap_webhook_events WHERE event_id=?",
+            event_id)
+        if prior:
+            accepted += 1
+            continue
+        try:
+            await d1_run(
+                env,
+                "INSERT INTO mailtrap_webhook_events(event_id,received_at) "
+                "VALUES(?,?)",
+                event_id, now)
+        except Exception:
+            continue
+        if send_id and account_bi:
+            await d1_run(
+                env,
+                "UPDATE mailtrap_email_sends SET status=?,status_at=?,"
+                "message_id=? WHERE send_id=? AND account_bi=?",
+                status,
+                now,
+                clean_string(event.get("message_id") or "", 160),
+                send_id,
+                account_bi,
+            )
+        accepted += 1
+    cutoff = now - 90 * 24 * 60 * 60 * 1000
+    await d1_run(
+        env, "DELETE FROM mailtrap_webhook_events WHERE received_at<?", cutoff)
+    await d1_run(
+        env, "DELETE FROM mailtrap_email_sends WHERE sent_at<?", cutoff)
+    try:
+        await js_caches.default.delete(USERS_DIRECTORY_CACHE_KEY)
+    except Exception:
+        pass
+    return json_response(
+        {"ok": True, "accepted": accepted},
+        cache_control="no-store, max-age=0")
 
 
 # --- Account email activity ---------------------------------------------------
@@ -30045,6 +32080,26 @@ async def _authorize_owner_account(env, owner, data, request=None,
     return True, None
 
 
+async def _authorize_issue_manager(env, owner, data, request=None):
+    """Authorize personal-repo owners plus organization owners/admins."""
+    ok, err = await _authorize_owner_account(env, owner, data, request)
+    if ok:
+        return True, None
+    _, rec = await _account_session_record(env, request, data)
+    actor = clean_string(
+        rec.get("name", "") if rec else "", MAX_NODE_NAME
+    ).strip().lower()
+    if not actor:
+        return False, err
+    org_bi, org = await _org_row(
+        env, clean_string(owner, MAX_NODE_NAME).lower()
+    )
+    role = await _org_role(env, org_bi, actor) if org else ""
+    if role in ("owner", "admin"):
+        return True, None
+    return False, err
+
+
 async def _inbox_author_over_quota(env, table, repo_bi, submitter_bi):
     # True when this submitter already holds MAX_PENDING_PER_AUTHOR un-merged rows
     # in this repo's inbox (table is a fixed literal, safe to interpolate).
@@ -30618,6 +32673,7 @@ async def subscribe_handler(env, request, owner, repo):
         data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
+    action = clean_string(data.get("action", "set"), 20)
     node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
     source = clean_string(data.get("source", ""), 20)
     if source not in ("issue", "pull"):
@@ -30631,17 +32687,25 @@ async def subscribe_handler(env, request, owner, repo):
     subscribed = bool(data.get("subscribed", True))
     ts = clean_string(data.get("ts", ""), 20)
     signature = clean_string(data.get("sig", ""), 200)
-    if not valid_node_name(node) or not _ts_ok(ts):
+    if not valid_node_name(node):
         return json_response({"error": "unauthorized"}, status=401)
     _, rec = await _account_row(env, node)
     pubkey = rec.get("pubkey", "") if rec else ""
-    if not pubkey:
-        return json_response({"error": "unauthorized"}, status=401)
-    canonical = ("forkmesh-subscribe-v1\n" + owner + "/" + repo + "\n" + source +
-                 "\n" + str(number) + "\n" + ("1" if subscribed else "0") +
-                 "\n" + ts).encode()
-    if not await ed25519_verify(pubkey, signature, canonical):
-        return json_response({"error": "bad_signature"}, status=401)
+    _, session_rec = await _account_session_record(env, request, data)
+    session_actor = clean_string(
+        session_rec.get("name", "") if session_rec else "", MAX_NODE_NAME
+    ).lower()
+    session_authorized = bool(session_actor and session_actor == node)
+    if not session_authorized:
+        if action == "status":
+            return json_response({"error": "unauthorized"}, status=401)
+        if not pubkey or not _ts_ok(ts):
+            return json_response({"error": "unauthorized"}, status=401)
+        canonical = ("forkmesh-subscribe-v1\n" + owner + "/" + repo + "\n" + source +
+                     "\n" + str(number) + "\n" + ("1" if subscribed else "0") +
+                     "\n" + ts).encode()
+        if not await ed25519_verify(pubkey, signature, canonical):
+            return json_response({"error": "bad_signature"}, status=401)
     privacy_reader = globals().get("_repo_is_private")
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         viewers = {
@@ -30670,6 +32734,24 @@ async def subscribe_handler(env, request, owner, repo):
                     break
         if not allowed:
             return json_response({"error": "not_found"}, status=404)
+    if action == "status":
+        thread_bi = await blind_index(
+            env, _thread_key(owner, repo, source, number)
+        )
+        subscriber_bi = await blind_index(env, node)
+        row = await d1_first(
+            env,
+            "SELECT data FROM thread_subscriptions "
+            "WHERE thread_bi=? AND subscriber_bi=?",
+            thread_bi, subscriber_bi,
+        )
+        subscription = await decrypt_row(env, row.get("data", "")) if row else None
+        return json_response({
+            "ok": True,
+            "subscribed": bool(subscription and not subscription.get("muted")),
+        })
+    if action != "set":
+        return json_response({"error": "bad_action"}, status=400)
     await subscribe_thread(env, owner, repo, source, number, node,
                            muted=not subscribed)
     return json_response({"ok": True, "subscribed": subscribed})
@@ -32694,6 +34776,7 @@ async def issues_handler(env, request, owner, repo):
         event = data.get("event")
         if not isinstance(event, dict):
             return json_response({"error": "event_required"}, status=400)
+        event_type = clean_string(event.get("type", ""), 32)
         try:
             number = int(data.get("number", 0))
         except (TypeError, ValueError):
@@ -32702,6 +34785,19 @@ async def issues_handler(env, request, owner, repo):
             return json_response({"error": "issue_too_large"}, status=413)
         if not await verify_issue_event(number, event):
             return json_response({"error": "bad_signature"}, status=401)
+        # Match the Qt client's write boundary: visitors can open, comment and
+        # vote, while edits to repository-owned issue state require the source
+        # node owner (or a network admin). A browser signature proves event
+        # integrity, not repository authority, so structural actions also carry
+        # and validate the logged-in account session.
+        owner_event_types = {
+            "edit", "title", "status", "labels", "milestone", "dates",
+            "priority", "progress", "bounty", "assignees", "agent", "delete",
+        }
+        if event_type in owner_event_types:
+            ok, err = await _authorize_issue_manager(env, owner, data, request)
+            if not ok:
+                return err
         # Screenshots the submitter had no working tree to copy in ride along as
         # base64 bytes, named to match the signed event's attachments list.
         attachment_data, attach_err = _clean_issue_attachment_data(
@@ -33282,7 +35378,7 @@ async def repo_pending_counts_handler(env, request, owner, repo):
             "pulls": counts.get("pulls", 0),
             "discussions": counts.get("discussions", 0),
         },
-    }, cache_seconds=30)
+    }, cache_control="no-store, max-age=0, must-revalidate")
 
 
 async def sync_handler(env, request):
@@ -36275,16 +38371,29 @@ async def world_admin_errors_handler(env, request):
             data = await bounded_json_request(request)
             row_id = int(data.get("id") or 0)
         except (AttributeError, TypeError, ValueError):
+            data = {}
             row_id = 0
-        if row_id <= 0:
+        group = data.get("group") if isinstance(data, dict) else None
+        if row_id <= 0 and not isinstance(group, dict):
             return json_response(
                 {"error": "invalid_error_id"},
                 status=400,
                 cache_control="no-store",
             )
         if method == "POST":
+            if isinstance(group, dict):
+                form = {
+                    "group_status": [str(group.get("status") or "")[:12]],
+                    "group_method": [str(group.get("method") or "")[:12]],
+                    "group_path": [str(group.get("path") or "")[:2000]],
+                    "group_message": [str(group.get("message") or "")[:1000]],
+                    "group_users": [clean_string(
+                        group.get("users") or "", 300)],
+                }
+            else:
+                form = {"error_id": [str(row_id)]}
             message, details = await _admin_error_create_bot_task(
-                env, {"error_id": [str(row_id)]}, actor)
+                env, form, actor)
             if details.get("taskId"):
                 return json_response(
                     {"ok": True, "message": message, **details},
@@ -36297,7 +38406,25 @@ async def world_admin_errors_handler(env, request):
                 cache_control="no-store",
             )
         await ensure_schema(env)
-        await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
+        if isinstance(group, dict):
+            status = str(group.get("status") or "")[:12]
+            request_method = str(group.get("method") or "")[:12].upper()
+            path = str(group.get("path") or "")[:2000]
+            message = str(group.get("message") or "")[:1000]
+            if not status or not request_method:
+                return json_response(
+                    {"error": "invalid_error_group"},
+                    status=400,
+                    cache_control="no-store",
+                )
+            await d1_run(
+                env,
+                "DELETE FROM error_log WHERE CAST(status AS TEXT)=? "
+                "AND UPPER(method)=? AND path=? AND message=?",
+                status, request_method, path, message,
+            )
+        else:
+            await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
         return json_response({"ok": True}, cache_control="no-store")
     try:
         query = parse_qs(urlparse(request.url).query)
@@ -36307,14 +38434,26 @@ async def world_admin_errors_handler(env, request):
         after = 0
     await ensure_schema(env)
     latest = await d1_first(
-        env, "SELECT id,ts FROM error_log ORDER BY id DESC LIMIT 1")
+        env,
+        "SELECT id,ts,status,method,path FROM error_log ORDER BY id DESC "
+        "LIMIT 1")
     count = await d1_first(
         env, "SELECT COUNT(*) AS n FROM error_log WHERE id>?", after)
+    try:
+        latest_status = max(0, int((latest or {}).get("status") or 0))
+    except (TypeError, ValueError):
+        latest_status = 0
     payload = {
         "ok": True,
         "latestId": max(0, int((latest or {}).get("id") or 0)),
         "latestAt": max(0, int((latest or {}).get("ts") or 0)),
         "newCount": min(9999, max(0, int((count or {}).get("n") or 0))),
+        # Enough for the World HUD to say what just broke without putting a
+        # route, a message, or an actor into the notice: the same coarse
+        # (status, source) pair the new-error-group Ping carries.
+        "latestStatus": latest_status,
+        "latestSource": _admin_error_source(
+            (latest or {}).get("method"), (latest or {}).get("path")),
     }
     if query.get("include", ["0"])[0] == "1":
         rows = await d1_all(
@@ -36329,6 +38468,8 @@ async def world_admin_errors_handler(env, request):
             "FROM error_log WHERE ts>=? ORDER BY id DESC LIMIT 1000",
             int(Date.now()) - 24 * 60 * 60 * 1000,
         )
+        now = int(Date.now())
+        hourly = [0] * 24
         groups = {}
         for row in grouped_rows or []:
             signature = (
@@ -36339,12 +38480,20 @@ async def world_admin_errors_handler(env, request):
             )
             group = groups.setdefault(signature, {
                 "count": 0,
-                "firstSeen": int(row.get("ts") or 0),
+                "firstSeen": 0,
                 "lastSeen": 0,
+                "hours": [0] * 24,
                 "actors": {},
                 "anonymous": 0,
             })
             timestamp = max(0, int(row.get("ts") or 0))
+            if 0 < timestamp < 10 ** 11:
+                timestamp *= 1000
+            age_hours = max(0, (now - timestamp) // (60 * 60 * 1000))
+            if age_hours < 24:
+                bucket = 23 - int(age_hours)
+                hourly[bucket] += 1
+                group["hours"][bucket] += 1
             group["count"] += 1
             group["firstSeen"] = min(group["firstSeen"] or timestamp, timestamp)
             group["lastSeen"] = max(group["lastSeen"], timestamp)
@@ -36355,6 +38504,7 @@ async def world_admin_errors_handler(env, request):
                     group["actors"].get(related_actor, 0) + 1)
             else:
                 group["anonymous"] += 1
+        payload["hourly"] = hourly
         payload["groups"] = [
             {
                 "status": signature[0],
@@ -36364,6 +38514,7 @@ async def world_admin_errors_handler(env, request):
                 "count": group["count"],
                 "firstSeen": group["firstSeen"],
                 "lastSeen": group["lastSeen"],
+                "hours": group["hours"],
                 "actors": [
                     {"name": name, "count": count}
                     for name, count in sorted(
@@ -36641,12 +38792,11 @@ def _is_tunnel_content_path(path):
 
 # Marks a 5xx/501 the worker produced ON PURPOSE for an expected, already-
 # degraded condition: a Durable Object abort that log_durable_object_abort has
-# already recorded with its real reason, a fail-closed not-implemented answer,
+# already added to its minute aggregate, a fail-closed not-implemented answer,
 # or an upstream dependency being unavailable. The outer fetch's generic 5xx
-# logger skips marked responses — without this every DO abort double-logged
-# (the detailed D1 row AND a vague "response status 503" Sentry event, exactly
-# the noise the abort logger exists to avoid), and deliberate degraded answers
-# buried real bugs.
+# logger skips marked responses — without this every DO abort would also add a
+# vague "response status 503" error row/Sentry event, and deliberate degraded
+# answers would bury real bugs.
 EXPECTED_DEGRADED_HEADER = "x-forkmesh-expected-degraded"
 EXPECTED_DEGRADED_HEADERS = {EXPECTED_DEGRADED_HEADER: "1"}
 
@@ -36675,34 +38825,39 @@ async def log_error(env, status, method, path, message, ray="", request=None,
 
 
 async def log_durable_object_abort(env, request, path, error):
-    """Record a Durable Object fetch the platform killed mid-request.
+    """Aggregate a Durable Object fetch the platform killed mid-request.
 
     On the free tier Cloudflare aborts long-running Durable Object requests
     with AbortError("Exceeded allowed duration in Durable Objects free
     tier."); a co-located DO blowing the isolate's limits surfaces instead as
     a generic AbortError("internal error; reference = …"). Both are transient
-    and already handled by the caller (503 + fail over to a live mirror), so
-    only the D1 error_log row is kept — its raw error text lets the /status
-    page count plan-limit aborts separately from real bugs (see the
-    doDurationAborts24h snapshot in status_history). We deliberately do NOT
-    raise a Sentry event here: a stack-traced ERROR for every expected,
-    already-degraded platform abort just buried real bugs in noise.
-    Best-effort: _write_error_log never raises.
+    and already handled by the caller (retry, then a marked 503). Fold them
+    into one content-free row per minute so /status retains the realtime and
+    plan-limit signals without filling error_log with one row per reconnecting
+    user. We deliberately do not send Sentry events or retain paths, actors,
+    exception text, or CF-Ray ids for this expected platform condition.
     """
-    privacy_filter = globals().get("_privacy_safe_log_path")
-    safe_path = (
-        await privacy_filter(env, path)
-        if callable(privacy_filter) else path
-    )
+    del request, path
     try:
-        actor = await _error_log_actor(env, request)
+        now = int(Date.now())
+        minute_ts = (now // STATUS_SAMPLE_WINDOW_MS) * STATUS_SAMPLE_WINDOW_MS
+        duration_abort = (
+            1 if "Exceeded allowed duration" in _safe_error_text(error) else 0)
+        await ensure_schema(env)
+        await d1_run(
+            env,
+            "INSERT INTO durable_object_abort_minute "
+            "(minute_ts,aborts,duration_aborts,updated_at) VALUES (?,1,?,?) "
+            "ON CONFLICT(minute_ts) DO UPDATE SET "
+            "aborts=durable_object_abort_minute.aborts+1, "
+            "duration_aborts=durable_object_abort_minute.duration_aborts+"
+            "excluded.duration_aborts, updated_at=excluded.updated_at",
+            minute_ts, duration_abort, now,
+        )
     except BaseException:
-        actor = ""
-    await _write_error_log(
-        env, 503, method_name(request), safe_path,
-        "durable object aborted: " + _safe_error_text(error)[:400],
-        request.headers.get("cf-ray") or "",
-        actor)
+        # Optional operational telemetry must never replace the already-safe
+        # retryable response with a Worker exception.
+        pass
 
 
 def _is_d1_platform_error(error):
@@ -36721,14 +38876,13 @@ def _is_d1_platform_error(error):
 
 
 async def log_d1_unavailable(env, request, path, error):
-    """Record a request D1 failed to serve, the same way a DO abort is logged.
+    """Record a request D1 failed to serve without raising a Sentry event.
 
     _d1_read has already replayed the query once, so reaching here means the
-    database — not the worker — is down or overloaded. Same doctrine as
-    log_durable_object_abort: keep the D1 error_log row (its raw text is what
-    lets /status separate platform outages from real bugs) but raise no Sentry
-    event, and answer 503 so clients back off instead of retrying into it.
-    Best-effort: _write_error_log never raises.
+    database — not the worker — is down or overloaded. Keep the D1 error_log
+    row (its raw text lets /status separate database outages from code bugs),
+    but raise no Sentry event and answer 503 so clients back off instead of
+    retrying into it. Best-effort: _write_error_log never raises.
     """
     privacy_filter = globals().get("_privacy_safe_log_path")
     try:
@@ -36911,6 +39065,89 @@ def _install_diag_fields(payload):
     )
 
 
+# A successful installer run ("done" step, ok) is celebrated: the World runs
+# its firework show for this long (same window as a federated instance joining)
+# and every platform admin gets one Ping per run.
+WORLD_INSTALL_CELEBRATION_MS = 10 * 60 * 1000
+MAX_WORLD_INSTALL_CELEBRATIONS = 8
+
+
+async def _enqueue_install_celebration_pings(env, fields, now):
+    """Best-effort admin Pings for one completed installer run."""
+    run, _step, _ok, os_name, arch = fields[:5]
+    platform = " · ".join(p for p in (os_name, arch) if p) or "unknown platform"
+    rows = await d1_all(
+        env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+    for row in rows or []:
+        try:
+            record = await decrypt_row(env, row.get("data", "")) or {}
+        except Exception:
+            continue
+        admin = clean_string(
+            record.get("name", ""), MAX_NODE_NAME).strip().lower()
+        if not valid_node_name(admin):
+            continue
+        await enqueue_notification(
+            env, admin, "operational_alert",
+            "New ForkMesh desktop installed \U0001F386",
+            body=("Someone just installed the ForkMesh desktop with the "
+                  "one-line installer (" + platform + "). The World is "
+                  "running its firework show."),
+            href="/world/", source="installer",
+            dedupe="install-celebration:" + run,
+            ts=now,
+            meta={"platform": platform},
+        )
+
+
+async def world_recent_installs_handler(env, request):
+    """Fresh successful installer runs, for the World's firework display.
+
+    Anonymous coarse platform tokens only — the install_diag table stores no
+    account, IP, or hostname (see SCHEMA note) — and the installer's random
+    run id is hashed so the raw telemetry key never leaves the Worker.
+    """
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store", extra_headers={"allow": "GET"})
+    await ensure_schema(env)
+    now = int(Date.now())
+    cutoff = now - WORLD_INSTALL_CELEBRATION_MS
+    rows = await d1_all(
+        env,
+        "SELECT run, MAX(ts) AS ts, MAX(os) AS os, MAX(arch) AS arch "
+        "FROM install_diag WHERE step='done' AND ok=1 AND ts>=? "
+        "GROUP BY run ORDER BY ts DESC LIMIT ?",
+        cutoff, MAX_WORLD_INSTALL_CELEBRATIONS,
+    )
+    installs = []
+    for row in rows or []:
+        run = str(row.get("run") or "")
+        if not run:
+            continue
+        installs.append({
+            "id": hashlib.sha256(
+                ("forkmesh-world-install-v1\0" + run).encode()
+            ).hexdigest()[:24],
+            "installedAt": max(0, int(row.get("ts") or 0)),
+            "os": clean_string(row.get("os"), 32),
+            "arch": clean_string(row.get("arch"), 32),
+        })
+    return json_response({
+        "ok": True,
+        "installs": installs,
+        "count": len(installs),
+        "observedAt": now,
+        "privacy": (
+            "Anonymous installer telemetry only: coarse platform tokens and "
+            "a hashed per-run id. No accounts, IP addresses, or hostnames "
+            "are stored or exposed."
+        ),
+    }, cache_control="public, max-age=30",
+       extra_headers={"x-content-type-options": "nosniff"})
+
+
 async def install_diag_handler(env, request):
     # Anonymous, unauthenticated install telemetry from install.sh. Best-effort:
     # never errors out the caller (the installer fires these fire-and-forget). We
@@ -36942,6 +39179,11 @@ async def install_diag_handler(env, request):
                (SELECT id FROM install_diag ORDER BY id DESC LIMIT ?)""",
             MAX_INSTALL_DIAG,
         )
+        if fields[1] == "done" and fields[2] == 1:
+            # Whole install finished: Ping the admins; the World picks the run
+            # up from /api/world/installs and starts its firework show.
+            await _enqueue_install_celebration_pings(
+                env, fields, int(Date.now()))
     except Exception:
         pass
     return json_response({"ok": True}, cache_control="no-store")
@@ -39220,22 +41462,26 @@ def _render_admin_stats(stats):
 
 
 def _render_admin_operational_alerts(
-        enabled, csrf_field="", admin_query=""):
-    checked = " checked" if enabled else ""
+        settings, csrf_field="", admin_query=""):
+    settings = settings if isinstance(settings, dict) else {}
+    email_checked = " checked" if settings.get("statusEmails") else ""
+    ping_checked = " checked" if settings.get("statusPings", True) else ""
     return (
         '<section id="operational-alerts" class="admin-setting" '
         'tabindex="-1"><div><h2>Operational alerts</h2>'
-        '<p>Email platform administrators when a ForkMesh system check '
-        'fails, and again when it recovers. Attention emails include a '
+        '<p>Ping platform administrators when a ForkMesh system check fails, '
+        'and again when it recovers. Optional attention emails include a '
         'redacted two-minute Cloudflare log excerpt when credentials are '
         'configured.</p></div>'
         '<form method="post" action="%s">' %
         _admin_href(admin_query, action="set_operational_alerts") +
         csrf_field +
-        '<label><input type="checkbox" name="enabled" value="1"%s> '
+        '<label><input type="checkbox" name="pings_enabled" value="1"%s> '
+        'Send outage and recovery alerts to Pings</label>'
+        '<label><input type="checkbox" name="email_enabled" value="1"%s> '
         'Send outage and recovery email</label>'
         '<button type="submit">Save alert setting</button></form></section>'
-        % checked
+        % (ping_checked, email_checked)
     )
 
 
@@ -39291,7 +41537,7 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
 
 def render_admin_html(env_stats, tables, active_table, table_html, banner="",
                       counts=None, csrf_field="", admin_query="",
-                      sort_records=False, operational_alerts_enabled=False):
+                      sort_records=False, operational_alert_settings=None):
     banner_html = ('<div class="banner">%s</div>' % _html_escape(banner)) if banner else ""
     return (
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -39333,7 +41579,7 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "Solana payment-reference status.</div></header>"
         + _render_admin_stats(env_stats)
         + _render_admin_operational_alerts(
-            operational_alerts_enabled, csrf_field, admin_query)
+            operational_alert_settings, csrf_field, admin_query)
         + _render_admin_repo_terms_flags(csrf_field, admin_query)
         + '<div class="tools"><form method="post" action="%s" '
           'onsubmit="return confirm(\'Show legacy custody migration status?\')">'
@@ -39647,7 +41893,10 @@ HTTPS_MIRROR_RETRY_STATUSES = frozenset({
 # missing-route responses are definitive for this public control endpoint and
 # therefore still fail closed immediately.
 HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES = frozenset({
-    408, 425, 429, 500, 502, 503, 504,
+    # Cloudflare returns 530 with error 1033 while a named-tunnel connector is
+    # briefly reconnecting. That is a transport outage, not evidence that the
+    # node's signed repository identity or integrity proof became invalid.
+    408, 425, 429, 500, 502, 503, 504, 530,
 })
 HTTPS_MIRROR_REPO_PROOF_TTL_MS = 60 * 1000
 HTTPS_MIRROR_REPO_PROOF_MEMO_MAX = 500
@@ -40638,9 +42887,8 @@ async def https_mirror_health_cron(env):
     rows = await d1_all(
         env,
         """SELECT node_bi,node_name,base_url,public_key
-             FROM mirror_https_endpoints
+            FROM mirror_https_endpoints
             ORDER BY
-              CASE WHEN checked_at = 0 THEN 0 ELSE 1 END ASC,
               CASE WHEN updated_at > checked_at
                    THEN updated_at ELSE checked_at END ASC,
               node_name ASC
@@ -40950,6 +43198,25 @@ async def _https_mirror_public_context(env, owner, repo):
                         break
             if not target_row:
                 return None
+        # Secondary devices are not catalog authorities, but their signed refs
+        # may still serve once they match the authority's pin. Fold them into
+        # this routing decision as effective remote clones without allowing
+        # their self-attestations to create a trusted pin.
+        device_rows = await d1_all(
+            env,
+            "SELECT node_id,data FROM repo_device_mirrors WHERE repo_bi=?",
+            target_row.get("key_bi"),
+        )
+        for device_row in device_rows or []:
+            device_record = await decrypt_row(env, device_row.get("data"))
+            if not isinstance(device_record, dict):
+                continue
+            device_record["reportedSource"] = device_record.get("source")
+            device_record["source"] = "remote-clone"
+            rows.append({
+                "key_bi": target_row.get("key_bi"),
+                "data": device_record,
+            })
         target = target_row["data"]
         members = [
             row for row in rows
@@ -41030,7 +43297,8 @@ async def _https_mirror_public_context(env, owner, repo):
         for row in members:
             record = row.get("data") or {}
             node = clean_string(
-                record.get("owner", ""), MAX_NODE_NAME).lower()
+                record.get("machineName") or record.get("owner", ""),
+                MAX_NODE_NAME).lower()
             state = clean_string(record.get("stateHash", ""), 64).lower()
             if not valid_node_name(node):
                 continue
@@ -41066,6 +43334,10 @@ async def _https_mirror_public_context(env, owner, repo):
             # their nodes converge.
             "currentNodes": current_nodes,
             "pins": set(pins),
+            # KV entries are addressed only by the current source-attested
+            # refs state. Historical pins may serve as temporary failover but
+            # can never populate a current-generation immutable cache entry.
+            "currentPins": set(current_pins),
             "repoBi": await blind_index(
                 env, canonical_owner + "/" + canonical_repo.lower()),
         }
@@ -41086,6 +43358,7 @@ def _https_mirror_endpoint_projection(row):
         "healthy": bool(row.get("healthy")),
         "integrity": row.get("integrity"),
         "abuseBlocked": bool(row.get("abuse_blocked")),
+        "refsSha256": row.get("forkmesh_refs_sha256"),
     }
 
 
@@ -41093,7 +43366,8 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
     rows = await d1_all(
         env,
         """SELECT node_name,base_url,public_key,registration_sig,issued_at,
-                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked
+                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked,
+                  forkmesh_refs_sha256
              FROM mirror_https_endpoints""",
     )
     records = [
@@ -41104,27 +43378,55 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
     cursor_row = await d1_first(
         env, "SELECT cursor FROM edge_route_cursor WHERE repo_bi=?",
         context["repoBi"])
-    selected = https_routing.select_endpoints(
-        records,
-        int(Date.now()),
-        preferred_region=preferred_region,
-        cursor=int((cursor_row or {}).get("cursor") or 0),
-    )
+    cursor = int((cursor_row or {}).get("cursor") or 0)
     current_nodes = {
         str(node or "").lower()
         for node in context.get("currentNodes", set())
     }
-    if current_nodes:
-        selected.sort(
-            key=lambda item: (
-                0 if str(item.get("node") or "").lower()
-                in current_nodes else 1
-            )
-        )
+    # Catalog identities can nominate one preferred current host even when
+    # several healthy endpoints carry the exact same signed refs digest. Treat
+    # those byte-identical copies as equally current so this preference sort
+    # does not undo the cursor rotation and pin every request to one node.
+    current_nodes = https_routing.equivalent_current_endpoint_nodes(
+        records, current_nodes, context.get("currentPins", set())
+    )
+    # Select current-generation mirrors before applying the bounded failover
+    # limit. Selecting from the whole historical set first could truncate all
+    # current mirrors and leave only stale archive generations.
+    current_records = [
+        record for record in records
+        if str(record.get("node") or "").lower() in current_nodes
+    ]
+    historical_records = [
+        record for record in records
+        if str(record.get("node") or "").lower() not in current_nodes
+    ]
+    now = int(Date.now())
+    selected = https_routing.select_endpoints(
+        current_records, now,
+        preferred_region=preferred_region, cursor=cursor)
+    selected.extend(https_routing.select_endpoints(
+        historical_records, now,
+        preferred_region=preferred_region, cursor=cursor))
+    selected = selected[:https_routing.MAX_FAILOVER_ATTEMPTS]
     sticky = str(sticky or "").lower()
     if sticky:
         selected.sort(key=lambda item: 0 if item["node"] == sticky else 1)
     return selected
+
+
+async def _https_mirror_mark_transient_failure(env, node):
+    """Remove a transport-failing endpoint until the health cron rechecks it."""
+    try:
+        await d1_run(
+            env,
+            """UPDATE mirror_https_endpoints
+                  SET healthy=0,checked_at=0,updated_at=?
+                WHERE node_name=?""",
+            int(Date.now()), node,
+        )
+    except Exception:
+        pass
 
 
 async def _https_mirror_clone_pin(env, context):
@@ -41233,6 +43535,7 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
         endpoint["node"], route_owner, context["repo"], pins_key)
     memo = _HTTPS_MIRROR_REPO_PROOF_MEMO.get(memo_key)
     if memo and now - memo["checkedAt"] <= HTTPS_MIRROR_REPO_PROOF_TTL_MS:
+        endpoint["refsSha256"] = memo.get("refsSha256", "")
         return operation in memo["operations"]
     nonce = _b64url_encode(_random_bytes(18))
     target = (
@@ -41307,8 +43610,144 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     _HTTPS_MIRROR_REPO_PROOF_MEMO[memo_key] = {
         "checkedAt": now,
         "operations": frozenset(operations),
+        "refsSha256": refs_digest,
     }
+    endpoint["refsSha256"] = refs_digest
     return operation in set(operations)
+
+
+async def repo_mirror_reachability_handler(
+        env, request, owner, repo, requested_node):
+    """Fetch README.md from one exact eligible mirror without failover.
+
+    Ordinary public repository reads intentionally rotate and fail over, which
+    makes them unsuitable for an operator table: a successful response might
+    have come from a different node. This bounded probe selects only the named
+    endpoint, verifies its fresh repository proof, performs the same
+    router-signed blob request as a real read, and returns metadata only. README
+    contents and the endpoint origin never leave the probe.
+    """
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    node = clean_string(
+        requested_node, MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(node):
+        return json_response({"error": "not_found"}, status=404)
+    context = await _https_mirror_public_context(env, owner, repo)
+    if context is None or node not in context.get("nodes", set()):
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+
+    # Organization aliases are rewritten before route matching, but the
+    # gateway stores the public organization name as a serving alias. Recover
+    # that original name from the untouched Request URL and bind it only when
+    # D1 confirms it maps to the rewritten backing node. Without this, the
+    # proof can accidentally address whichever peer record was selected as the
+    # canonical catalog source (for example mirror9), causing every other
+    # otherwise-valid mirror to fail its exact reachability check.
+    try:
+        original_url = urlparse(str(getattr(request, "url", "") or ""))
+        original_match = REPO_MIRROR_REACHABILITY_RE.match(original_url.path)
+        route_owner = (
+            safe_segment(original_match.group(1)) if original_match else "")
+        route_repo = (
+            safe_segment(original_match.group(2)) if original_match else "")
+        if (
+            route_owner
+            and route_repo.lower() == repo.lower()
+            and route_owner != owner
+            and await _org_repo_node(env, route_owner, route_repo) == owner
+        ):
+            context = dict(context)
+            context["routeOwner"] = route_owner
+    except Exception:
+        pass
+
+    row = await d1_first(
+        env,
+        """SELECT node_name,base_url,public_key,registration_sig,issued_at,
+                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked
+             FROM mirror_https_endpoints WHERE node_name=?""",
+        node,
+    )
+    endpoint = _https_mirror_endpoint_projection(row or {})
+    now = int(Date.now())
+
+    def result(reachable, reason, status=0, latency=0):
+        return json_response({
+            "ok": True,
+            "node": node,
+            "reachable": bool(reachable),
+            "readmeLoaded": bool(reachable),
+            "path": "README.md",
+            "status": int(status or 0),
+            "latencyMs": max(0, min(int(latency or 0), 60_000)),
+            "checkedAt": now,
+            "reason": clean_string(reason, 80),
+        }, cache_control="no-store, max-age=0, must-revalidate")
+
+    if not row or not https_routing.endpoint_eligible(endpoint, now):
+        return result(False, "endpoint_unavailable")
+    if not await _https_mirror_repository_proof(
+            env, endpoint, context, "blob"):
+        return result(False, "repository_proof_failed")
+    router_public_key = _https_mirror_router_public_key(env)
+    router_seed = _https_mirror_router_seed(env)
+    target = https_routing.masked_target_url(
+        endpoint["baseUrl"], context.get("routeOwner") or context["owner"],
+        context["repo"], "blob", {"path": "README.md"})
+    parsed_target = urlparse(target) if target else None
+    signed_path = (
+        parsed_target.path
+        + (("?" + parsed_target.query) if parsed_target.query else "")
+        if parsed_target else ""
+    )
+    request_id = _b64url_encode(_random_bytes(18))
+    issued_at = int(Date.now())
+    body_digest = https_routing.empty_body_sha256()
+    message = https_routing.request_message(
+        node, "GET", signed_path, body_digest, request_id, issued_at)
+    signature = (
+        await ed25519_sign(
+            router_public_key, router_seed, message.encode("utf-8"))
+        if router_public_key and router_seed and message else "")
+    if not target or not signature:
+        return result(False, "router_unavailable")
+    headers = {
+        "X-ForkMesh-Node": node,
+        "X-ForkMesh-Request-Id": request_id,
+        "X-ForkMesh-Issued-At": str(issued_at),
+        "X-ForkMesh-Body-Sha256": body_digest,
+        "X-ForkMesh-Signature": signature,
+    }
+    started = int(Date.now())
+    try:
+        upstream = await js_fetch_with_timeout(
+            target,
+            {"method": "GET", "headers": headers, "redirect": "manual"},
+            HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        )
+        status = int(getattr(upstream, "status", 0) or 0)
+        latency = int(Date.now()) - started
+        announced = int(upstream.headers.get("content-length") or 0)
+        if announced > HTTPS_MIRROR_MANIFEST_MAX_BYTES:
+            return result(False, "readme_response_too_large", status, latency)
+        raw = str(await upstream.text())
+        if len(raw.encode("utf-8")) > HTTPS_MIRROR_MANIFEST_MAX_BYTES:
+            return result(False, "readme_response_too_large", status, latency)
+        value = json.loads(raw) if raw else {}
+        loaded = bool(
+            status == 200
+            and isinstance(value, dict)
+            and value.get("ok") is True
+            and isinstance(value.get("content"), str)
+        )
+        return result(
+            loaded, "readme_loaded" if loaded else "readme_unavailable",
+            status, latency)
+    except Exception:
+        return result(
+            False, "request_failed", 0, int(Date.now()) - started)
 
 
 def _https_mirror_merge_body(raw, pull_number):
@@ -42059,10 +44498,10 @@ async def _https_mirror_proxy(
             safe_segment(original_match.group(2)) if original_match else "")
         if (
             route_owner
-            and route_repo == context["repo"]
-            and route_owner != context["owner"]
+            and route_repo.lower() == repo.lower()
+            and route_owner != owner
             and await _org_repo_node(
-                env, route_owner, route_repo) == context["owner"]
+                env, route_owner, route_repo) == owner
         ):
             context = dict(context)
             context["routeOwner"] = route_owner
@@ -42077,12 +44516,15 @@ async def _https_mirror_proxy(
         return json_response({"error": "method_not_allowed"}, status=405)
     query = _https_mirror_request_query(
         urlparse(request.url), operation, release_sha=release_sha)
+    bypass_cache = bool(
+        bypass_cache or request_bypasses_repository_metadata_cache(request)
+    )
     metadata_cache_key = (
         repository_metadata_cache_key(context, operation, query)
         if method == "GET" else ""
     )
     cached_metadata = (
-        await repository_metadata_cache_get(metadata_cache_key)
+        await repository_metadata_cache_get(env, metadata_cache_key)
         if not bypass_cache else None)
     if cached_metadata is not None:
         return cached_metadata
@@ -42220,9 +44662,13 @@ async def _https_mirror_proxy(
         response_headers["X-ForkMesh-Served-By"] = endpoint["node"]
         await _https_mirror_route_advance(
             env, context, endpoint["node"], operation)
-        if not bypass_cache:
+        if (
+            not bypass_cache
+            and str(endpoint.get("refsSha256") or "").lower()
+            in context.get("currentPins", set())
+        ):
             await repository_metadata_cache_put(
-                metadata_cache_key, upstream, status)
+                env, metadata_cache_key, upstream, status)
         # The private endpoint origin remains masked. The public node identity
         # above is bounded routing provenance; repository bytes still stream
         # without being materialized by the Worker.
@@ -42374,6 +44820,9 @@ class Default(WorkerEntrypoint):
             try:
                 await verify_submitted_chain_intents(self.env)
                 await verify_submitted_reward_contributions(self.env)
+                # Retry deposit sweeps whose first attempt could not send, so
+                # a Worker-held key is never left sitting on a funded address.
+                await sweep_pending_element_deposits(self.env)
             except BaseException as error:
                 await log_cron_error(
                     self.env, "/cron/verify-reward-intents",
@@ -42742,11 +45191,15 @@ class Default(WorkerEntrypoint):
                     banner = "Ownership request failed: " + repr(error)
             elif action == "set_operational_alerts":
                 try:
-                    enabled = form.get("enabled", [""])[0] == "1"
+                    email_enabled = (
+                        form.get("email_enabled", [""])[0] == "1")
+                    pings_enabled = (
+                        form.get("pings_enabled", [""])[0] == "1")
                     current_alerts = await _repo_alert_settings_get(
                         self.env, *FLAGSHIP_MONITOR_ID.split("/", 1))
                     updated_alerts = dict(current_alerts)
-                    updated_alerts["statusEmails"] = enabled
+                    updated_alerts["statusEmails"] = email_enabled
+                    updated_alerts["statusPings"] = pings_enabled
                     await d1_run(
                         self.env,
                         "INSERT INTO repo_alert_settings "
@@ -42758,9 +45211,11 @@ class Default(WorkerEntrypoint):
                             *FLAGSHIP_MONITOR_ID.split("/", 1)),
                         json.dumps(updated_alerts), int(Date.now()))
                     banner = (
-                        "Operational alert email is now " +
-                        ("enabled." if enabled else "disabled."))
-                    audit_details = {"enabled": enabled}
+                        "Operational alert delivery settings saved.")
+                    audit_details = {
+                        "emailEnabled": email_enabled,
+                        "pingsEnabled": pings_enabled,
+                    }
                 except Exception as error:
                     banner = (
                         "Operational alert update failed: " + repr(error))
@@ -43069,8 +45524,8 @@ class Default(WorkerEntrypoint):
             except Exception:
                 counts[t] = 0
         stats = await admin_stats(self.env)
-        operational_alerts_enabled = await _status_alert_emails_enabled(
-            self.env)
+        operational_alert_settings = await _repo_alert_settings_get(
+            self.env, *FLAGSHIP_MONITOR_ID.split("/", 1))
         # Default the table browser to most-records-first; ?sort=name opts back
         # into the A–Z ordering.
         sort_records = params.get("sort", [""])[0] != "name"
@@ -43078,8 +45533,8 @@ class Default(WorkerEntrypoint):
             render_admin_html(stats, tables, active, table_html, banner, counts,
                               csrf_field=csrf_field, admin_query=admin_query,
                               sort_records=sort_records,
-                              operational_alerts_enabled=(
-                                  operational_alerts_enabled)),
+                              operational_alert_settings=(
+                                  operational_alert_settings)),
             status=200,
             headers={"content-type": "text/html; charset=utf-8"},
         )
@@ -43236,6 +45691,10 @@ class Default(WorkerEntrypoint):
                 "/api/world/instances",
                 "/api/world/instances/"):
             return await world_relay_instances_handler(self.env, request)
+        if url.path in (
+                "/api/world/installs",
+                "/api/world/installs/"):
+            return await world_recent_installs_handler(self.env, request)
 
         if (url.path == "/api/world/fediverse"
                 or url.path == "/api/world/fediverse/"
@@ -43325,6 +45784,14 @@ class Default(WorkerEntrypoint):
         if url.path in (
                 "/api/world/preferences", "/api/world/preferences/"):
             return await world_preferences_handler(self.env, request)
+
+        if (
+            url.path == "/api/world/store"
+            or url.path == "/api/world/store/"
+            or url.path.startswith("/api/world/store/")
+        ):
+            return await world_element_store_handler(
+                self.env, request, url.path)
 
         if url.path in (
                 "/api/world/office/attendance",
@@ -43484,6 +45951,10 @@ class Default(WorkerEntrypoint):
         # Public ranking boards (node uptime + repos per owner) for /network/.
         if url.path in ("/api/network/leaderboards", "/api/network/leaderboards/"):
             return await network_leaderboards(self.env)
+        # Members who published a public payout address, by on-chain balance.
+        if url.path in ("/api/leaderboards/wallets",
+                        "/api/leaderboards/wallets/"):
+            return await wallet_leaderboard(self.env)
         if url.path in ("/api/leaderboards", "/api/leaderboards/"):
             return await leaderboards_overview(self.env)
 
@@ -43676,6 +46147,8 @@ class Default(WorkerEntrypoint):
             return await accounts_handler(self.env, request)
 
         # --- Organizations + teams (issue #388) --------------------------
+        if MAILTRAP_WEBHOOK_RE.match(url.path):
+            return await mailtrap_webhook_handler(self.env, request)
         if BOT_SESSION_RE.match(url.path):
             return await bot_session_handler(self.env, request)
         if ORGS_RE.match(url.path):
@@ -44025,6 +46498,17 @@ class Default(WorkerEntrypoint):
                 repo,
                 security_scans_match.group(3),
             )
+
+        mirror_reachability_match = REPO_MIRROR_REACHABILITY_RE.match(
+            url.path)
+        if mirror_reachability_match:
+            owner = safe_segment(mirror_reachability_match.group(1))
+            repo = safe_segment(mirror_reachability_match.group(2))
+            node = safe_segment(mirror_reachability_match.group(3))
+            if not owner or not repo or not node:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_mirror_reachability_handler(
+                self.env, request, owner, repo, node)
 
         mirrors_match = REPO_MIRRORS_RE.match(url.path)
         if mirrors_match:
@@ -44687,15 +47171,24 @@ class Default(WorkerEntrypoint):
 
 
 async def chat_history_recent(env, room_key):
-    # The last few days of retained (encrypted) messages for a room, oldest
-    # first, so a joining client can replay them in order.
+    # A bounded tail of retained (encrypted) messages for a joining room,
+    # oldest first. Do not read/replay the full 16 MiB retention allowance
+    # before returning a WebSocket 101: that made busy-room handshakes exceed
+    # the Durable Object request-duration limit and drove reconnect storms.
     await ensure_schema(env)
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     rows = await d1_all(
         env,
-        "SELECT body FROM chat_history WHERE room_key=? AND ts>=? "
-        "ORDER BY ts ASC, msg_id ASC LIMIT ?",
-        room_key, cutoff, CHAT_HISTORY_MAX_PER_ROOM,
+        "SELECT body FROM ("
+        "SELECT body,ts,msg_id,"
+        "ROW_NUMBER() OVER (ORDER BY ts DESC,msg_id DESC) AS replay_position,"
+        "SUM(length(body)) OVER (ORDER BY ts DESC,msg_id DESC) AS replay_bytes "
+        "FROM chat_history WHERE room_key=? AND ts>=?"
+        ") WHERE replay_position<=? AND replay_bytes<=? "
+        "ORDER BY ts ASC,msg_id ASC",
+        room_key, cutoff,
+        CHAT_HISTORY_REPLAY_MAX_MESSAGES,
+        CHAT_HISTORY_REPLAY_MAX_BYTES,
     )
     return [str(r["body"]) for r in rows]
 
@@ -46473,7 +48966,6 @@ class ForkMeshRoom(DurableObject):
         # users see some recent backlog even when no peer is online to send it.
         if room_key:
             try:
-                await chat_history_prune(self.env, room_key)
                 for body in await chat_history_recent(self.env, room_key):
                     replay_body = chat_history_replay_body(body)
                     try:

@@ -131,6 +131,7 @@ void MainWindow::saveChatHistory()
         for (int i = first; i < msgs.size(); ++i) {
             const ChatMessage &m = msgs.at(i);
             QJsonObject obj{{"id", m.id},
+                            {"threadRootId", m.threadRootId},
                             {"senderId", m.senderId},
                             {"senderName", m.senderName},
                             {"text", m.text},
@@ -199,6 +200,7 @@ void MainWindow::loadChatHistory()
             ChatMessage m;
             m.id = obj.value("id").toString();
             m.conversation = conversation;
+            m.threadRootId = obj.value("threadRootId").toString().left(96);
             m.senderId = obj.value("senderId").toString();
             m.senderName = obj.value("senderName").toString();
             m.text = obj.value("text").toString();
@@ -790,6 +792,68 @@ QString MainWindow::testWorktreeBranchLabel() const
     return m_worktreeBranchLabel ? m_worktreeBranchLabel->text() : QString();
 }
 
+int MainWindow::testOverviewBodyPage() const
+{
+    return m_overviewBodyStack ? m_overviewBodyStack->currentIndex() : -1;
+}
+
+QStringList MainWindow::testSourceControlPaths() const
+{
+    QStringList paths;
+    if (!m_scmTree)
+        return paths;
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
+        for (int i = 0; group && i < group->childCount(); ++i) {
+            const QString path =
+                group->child(i)->data(0, Qt::UserRole).toString();
+            if (!path.isEmpty())
+                paths.append(path);
+        }
+    }
+    return paths;
+}
+
+QString MainWindow::testScmCommitControlsState() const
+{
+    QStringList parts;
+    const auto describe = [&parts](const QString &name, QPushButton *button) {
+        parts << QStringLiteral("%1=%2").arg(
+            name,
+            !button ? QStringLiteral("missing")
+                    : !button->isVisibleTo(button->window())
+                          ? QStringLiteral("hidden")
+                          : button->isEnabled() ? QStringLiteral("enabled")
+                                                : QStringLiteral("disabled"));
+    };
+    describe(QStringLiteral("commit"), m_scmCommitButton);
+    describe(QStringLiteral("commitPush"), m_scmCommitPushButton);
+    describe(QStringLiteral("stagePush"), m_scmStageCommitPushButton);
+    describe(QStringLiteral("sync"), m_scmSyncButton);
+    return parts.join(QLatin1Char(' '));
+}
+
+bool MainWindow::testClickSourceControlPath(const QString &path)
+{
+    if (!m_scmTree)
+        return false;
+    m_lastSourceControlDiffPath.clear();
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
+        for (int i = 0; group && i < group->childCount(); ++i) {
+            QTreeWidgetItem *item = group->child(i);
+            if (item->data(0, Qt::UserRole).toString() != path)
+                continue;
+            // Clear first so currentItemChanged fires even when the requested
+            // row was already selected by scroll-following logic.
+            m_scmTree->setCurrentItem(nullptr);
+            m_scmTree->setCurrentItem(item);
+            return m_lastSourceControlDiffPath == path;
+        }
+    }
+    return false;
+}
+
 QString MainWindow::testArrowOnWorktrees(bool down)
 {
     if (!m_worktreesTable)
@@ -809,11 +873,10 @@ QString MainWindow::testArrowOnWorktrees(bool down)
 void MainWindow::testClickRepoDetailTab(int id)
 {
     if (id == 1) {
-        // Commits has no top-bar tab anymore: drive the commit strip's
-        // "N Commits" toggle instead, the same path a real click takes
-        // (no-op when the panel is already showing — click would hide it).
-        if (m_historyButton && !m_historyButton->isChecked())
-            m_historyButton->click();
+        // Commit history has one entry point: drive the Git activity-rail
+        // destination exactly as a real click does.
+        if (m_railGitButton)
+            m_railGitButton->click();
         return;
     }
     if (id == m_worktreesTabIndex) {
@@ -821,6 +884,14 @@ void MainWindow::testClickRepoDetailTab(int id)
         // toolbar's "N worktrees" toggle path a real click now takes.
         showOverviewWorktrees();
         loadWorktreesPanel();
+        focusRepoDetailTable(id);
+        return;
+    }
+    if (id == m_branchesTabIndex) {
+        // Branches also lives inside Code overview rather than in the top tab
+        // row; drive its toolbar destination directly.
+        showOverviewBranches();
+        loadBranchesPanel();
         focusRepoDetailTable(id);
         return;
     }
@@ -865,24 +936,12 @@ QString MainWindow::testBranchWorktreePath(const QString &branch) const
     if (!m_branchesTable)
         return QString();
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        QTableWidgetItem *name =
+            m_branchesTable->item(row, kBranchesNameColumn);
         if (name && name->text() == branch) {
-            if (QTableWidgetItem *wt = m_branchesTable->item(row, 3))
+            if (QTableWidgetItem *wt =
+                    m_branchesTable->item(row, kBranchesWorktreeColumn))
                 return wt->text();
-        }
-    }
-    return QString();
-}
-
-QString MainWindow::testBranchAttachmentText(const QString &branch) const
-{
-    if (!m_branchesTable)
-        return QString();
-    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
-        if (name && name->text() == branch) {
-            if (QTableWidgetItem *attach = m_branchesTable->item(row, 4))
-                return attach->text();
         }
     }
     return QString();
@@ -893,29 +952,12 @@ bool MainWindow::testBranchAttachmentHasIcon(const QString &branch) const
     if (!m_branchesTable)
         return false;
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
-        if (name && name->text() == branch) {
-            if (QTableWidgetItem *attach = m_branchesTable->item(row, 4))
-                return !attach->icon().isNull();
-        }
+        QTableWidgetItem *name =
+            m_branchesTable->item(row, kBranchesNameColumn);
+        if (name && name->text() == branch)
+            return !name->icon().isNull();
     }
     return false;
-}
-
-int MainWindow::testClickBranchAgentCell(const QString &branch)
-{
-    if (!m_branchesTable)
-        return -1;
-    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
-        if (name && name->text() == branch) {
-            // Fire the same signal a real click on the Issue / Agent cell would,
-            // so the production cellClicked handler runs (adhoc #258).
-            emit m_branchesTable->cellClicked(row, 4);
-            break;
-        }
-    }
-    return m_selectedAgentSessionId;
 }
 
 QStringList MainWindow::testBranchRowOrder() const
@@ -924,7 +966,8 @@ QStringList MainWindow::testBranchRowOrder() const
     if (!m_branchesTable)
         return names;
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        if (QTableWidgetItem *name = m_branchesTable->item(row, 0))
+        if (QTableWidgetItem *name =
+                m_branchesTable->item(row, kBranchesNameColumn))
             names << name->text();
     }
     return names;
@@ -983,12 +1026,27 @@ QString MainWindow::testRepoDefaultBranch() const
 
 QString MainWindow::testRepoActionsTabText() const
 {
-    return m_repoActionsTab ? m_repoActionsTab->text() : QString();
+    // The count rides the icon as a corner badge now (adhoc #6); recompose the
+    // old "Actions (N)" text so callers keep asserting caption and count as one.
+    if (!m_repoActionsTab)
+        return QString();
+    const auto *badged = dynamic_cast<VerticalIconButton *>(m_repoActionsTab);
+    return QStringLiteral("%1 (%2)")
+        .arg(m_repoActionsTab->text(),
+             formatCount(badged ? badged->badgeCount() : 0));
 }
 
 QString MainWindow::testRepoBranchesButtonText() const
 {
-    return m_branchesButton ? m_branchesButton->text() : QString();
+    // Same recomposition as testRepoActionsTabText: the visible "N" is a
+    // corner badge on a fixed "Branches" caption since adhoc #6.
+    if (!m_branchesButton)
+        return QString();
+    const auto *badged = dynamic_cast<VerticalIconButton *>(m_branchesButton);
+    const qint64 count = badged ? badged->badgeCount() : 0;
+    return QStringLiteral("%1 %2")
+        .arg(formatCount(count),
+             count == 1 ? QStringLiteral("branch") : QStringLiteral("branches"));
 }
 
 bool MainWindow::testShowRepoIssuesTab()
@@ -1014,19 +1072,37 @@ int MainWindow::testRepoTabContentTop()
 
 int MainWindow::testRepoTabGapAroundIssues() const
 {
-    if (!m_repoCodeTab || !m_repoIssuesTab || !m_repoPullsTab)
+    // Issues now heads the row: Code is rail-only since adhoc #421, so the two
+    // gaps to probe are Issues→Projects and Projects→Pulls.
+    if (!m_repoProjectsTab || !m_repoIssuesTab || !m_repoPullsTab)
         return -1;
-    const QRect codeRect(m_repoCodeTab->mapTo(const_cast<MainWindow *>(this),
-                                              QPoint(0, 0)),
-                         m_repoCodeTab->size());
+    const QRect projectsRect(
+        m_repoProjectsTab->mapTo(const_cast<MainWindow *>(this), QPoint(0, 0)),
+        m_repoProjectsTab->size());
     const QRect issuesRect(m_repoIssuesTab->mapTo(const_cast<MainWindow *>(this),
                                                   QPoint(0, 0)),
                            m_repoIssuesTab->size());
     const QRect pullsRect(m_repoPullsTab->mapTo(const_cast<MainWindow *>(this),
                                                 QPoint(0, 0)),
                           m_repoPullsTab->size());
-    return qMin(issuesRect.left() - codeRect.right() - 1,
-                pullsRect.left() - issuesRect.right() - 1);
+    return qMin(projectsRect.left() - issuesRect.right() - 1,
+                pullsRect.left() - projectsRect.right() - 1);
+}
+
+// Adhoc #421: the rail's top destination and the repo tab row have to draw
+// their icons on one line — the rail sitting a few pixels low is the first
+// thing the eye catches on that corner. Both ActivityRailButton and
+// VerticalIconButton inset their glyph 6px from the widget's own top, so the
+// skew between the two widget tops *is* the skew between the two icon lines.
+int MainWindow::testRailTabIconLineSkew() const
+{
+    if (!m_railCodeButton || !m_repoIssuesTab)
+        return -100000;
+    auto *self = const_cast<MainWindow *>(this);
+    if (!m_railCodeButton->isVisibleTo(self) || !m_repoIssuesTab->isVisibleTo(self))
+        return -100000;
+    return m_railCodeButton->mapTo(self, QPoint(0, 0)).y() -
+           m_repoIssuesTab->mapTo(self, QPoint(0, 0)).y();
 }
 
 // Adhoc #354: the looper toggle moved inline into the Issues heading row,

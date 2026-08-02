@@ -1,5 +1,7 @@
 #pragma once
 
+#include "NodeDiagnostics.h"
+
 #include <QByteArray>
 #include <QJsonObject>
 #include <QList>
@@ -87,6 +89,14 @@ struct MemberInfo {
     qint64 diskUsedBytes = 0;
     qint64 diskTotalBytes = 0;
     double cpuPercent = -1.0; // whole-host CPU utilization, 0..100
+    // Self-diagnostics the node ran on itself and pushed with its heartbeat
+    // (adhoc #27) — disk trends, inode/descriptor pressure, log errors, link
+    // flapping, clock drift: the failures the three gauges above cannot show.
+    // diagnosticsMs is when this client last received a set; 0 means the node
+    // never reported any (older build, or reporting turned off), which node
+    // lists render as unknown rather than as healthy.
+    QList<NodeDiagnostics::Finding> diagnostics;
+    qint64 diagnosticsMs = 0;
 };
 
 // How long a chat message is kept before it's treated as expired: pruned from
@@ -101,6 +111,10 @@ constexpr qint64 kChatMessageRetentionMs = qint64(7) * 24 * 60 * 60 * 1000;
 struct ChatMessage {
     QString id;
     QString conversation;
+    // Empty for a top-level message. A non-empty value identifies the
+    // top-level message this record replies to. The wire field is `rootId`,
+    // shared with web chat and World's embedded chat.
+    QString threadRootId;
     QString senderId;
     QString senderName;
     QString text;
@@ -124,6 +138,16 @@ public:
     using QObject::QObject;
 
     virtual void sendChat(const QString &channel, const QString &text) = 0;
+    // Reply inside an existing channel thread. Backends that predate threads
+    // can safely ignore this; ServerNode implements the shared thread-reply
+    // envelope used by every first-party client.
+    virtual void sendThreadReply(const QString &channel,
+                                 const QString &rootMessageId,
+                                 const QString &text) {
+        Q_UNUSED(channel);
+        Q_UNUSED(rootMessageId);
+        Q_UNUSED(text);
+    }
     // Direct (one-to-one) message to the member with the given id.
     virtual void sendDirect(const QString &targetId, const QString &text) = 0;
     // Share a file in a conversation ("#channel" or "@peerId").

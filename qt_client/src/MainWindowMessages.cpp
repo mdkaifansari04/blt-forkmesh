@@ -12,7 +12,13 @@
 #include "ChatVisitorPresence.h"
 
 #include <QDesktopServices>
+#include <QDialog>
+#include <QLabel>
+#include <QPlainTextEdit>
+#include <QPushButton>
+#include <QScrollArea>
 #include <QUrl>
+#include <QVBoxLayout>
 
 using namespace forkmesh::ui;
 
@@ -59,7 +65,19 @@ QString MainWindow::senderColor(const QString &sender) const
     return Theme::kSenderPalette[hash % Theme::kSenderPaletteSize];
 }
 
-MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
+int MainWindow::chatThreadReplyCount(const QString &conversation,
+                                     const QString &rootMessageId) const
+{
+    int count = 0;
+    for (const ChatMessage &candidate : m_history.value(conversation)) {
+        if (candidate.threadRootId == rootMessageId && !candidate.deleted)
+            ++count;
+    }
+    return count;
+}
+
+MessageRow *MainWindow::createMessageRow(const ChatMessage &message,
+                                         bool threadContext)
 {
     // A deleted message leaves no trace in the transcript: drop the whole row
     // (avatar, sender header, and body) rather than rendering a tombstone. The
@@ -78,8 +96,13 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
         addMentionProfile(mentionProfiles, member);
 
     const bool canModerate = m_isAdmin;
+    const int replyCount = threadContext
+                               ? 0
+                               : chatThreadReplyCount(message.conversation,
+                                                      message.id);
     auto *row = new MessageRow(message, senderColor(message.senderName),
-                               mentionProfiles, canModerate);
+                               mentionProfiles, canModerate, nullptr,
+                               replyCount, threadContext);
     if (m_avatars.contains(message.senderId))
         row->setAvatar(m_avatars.value(message.senderId));
     if (m_reactions.contains(message.id))
@@ -89,6 +112,8 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
                 if (m_backend && !isOfficeConversation(m_currentConversation))
                     m_backend->sendReaction(m_currentConversation, messageId, emoji);
             });
+    connect(row, &MessageRow::threadRequested, this,
+            &MainWindow::openChatThread);
     connect(row, &MessageRow::editRequested, this, &MainWindow::promptEditMessage);
     connect(row, &MessageRow::createIssueRequested, this,
             &MainWindow::promptIssueFromChatMessage);
@@ -126,10 +151,135 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
                 showSection(0);
                 showNodeProfile(id, name);
             });
+    return row;
+}
+
+MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
+{
+    if (!message.threadRootId.isEmpty())
+        return nullptr;
+    MessageRow *row = createMessageRow(message);
+    if (!row)
+        return nullptr;
     // Insert before the trailing stretch.
     m_messageLayout->insertWidget(m_messageLayout->count() - 1, row);
     m_visibleRows.insert(message.id, row);
     return row;
+}
+
+void MainWindow::openChatThread(const QString &rootMessageId)
+{
+    if (rootMessageId.trimmed().isEmpty() ||
+        isDirectConversation(m_currentConversation) ||
+        isOfficeConversation(m_currentConversation))
+        return;
+    const auto &history = m_history.value(m_currentConversation);
+    const bool rootExists = std::any_of(
+        history.cbegin(), history.cend(), [&](const ChatMessage &message) {
+            return message.id == rootMessageId &&
+                   message.threadRootId.isEmpty();
+        });
+    if (!rootExists)
+        return;
+
+    m_activeChatThreadRootId = rootMessageId.left(96);
+    if (!m_chatThreadDialog) {
+        auto *dialog = new QDialog(this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        // Keep the thread bound to the channel it was opened from. A modal
+        // child prevents switching rooms underneath its composer and sending
+        // the reply to a different conversation with the old root id.
+        dialog->setModal(true);
+        dialog->setWindowTitle("Chat thread");
+        dialog->resize(560, 620);
+        auto *outer = new QVBoxLayout(dialog);
+        m_chatThreadCountLabel = new QLabel;
+        m_chatThreadCountLabel->setObjectName("threadCountLabel");
+        outer->addWidget(m_chatThreadCountLabel);
+
+        auto *scroll = new QScrollArea;
+        scroll->setWidgetResizable(true);
+        auto *rows = new QWidget;
+        m_chatThreadRowsLayout = new QVBoxLayout(rows);
+        m_chatThreadRowsLayout->setContentsMargins(0, 0, 0, 0);
+        m_chatThreadRowsLayout->setSpacing(2);
+        scroll->setWidget(rows);
+        outer->addWidget(scroll, 1);
+
+        m_chatThreadInput = new QPlainTextEdit;
+        m_chatThreadInput->setPlaceholderText("Reply in thread…");
+        m_chatThreadInput->setMaximumBlockCount(20);
+        m_chatThreadInput->setFixedHeight(88);
+        outer->addWidget(m_chatThreadInput);
+        auto *send = new QPushButton("Reply");
+        send->setObjectName("primaryButton");
+        connect(send, &QPushButton::clicked, this,
+                &MainWindow::sendChatThreadReply);
+        outer->addWidget(send, 0, Qt::AlignRight);
+        connect(dialog, &QDialog::finished, this, [this] {
+            m_activeChatThreadRootId.clear();
+            m_chatThreadDialog = nullptr;
+            m_chatThreadRowsLayout = nullptr;
+            m_chatThreadInput = nullptr;
+            m_chatThreadCountLabel = nullptr;
+        });
+        m_chatThreadDialog = dialog;
+    }
+    rebuildChatThreadDialog();
+    m_chatThreadDialog->show();
+    m_chatThreadDialog->raise();
+    m_chatThreadDialog->activateWindow();
+    m_chatThreadInput->setFocus();
+}
+
+void MainWindow::rebuildChatThreadDialog()
+{
+    if (!m_chatThreadDialog || !m_chatThreadRowsLayout ||
+        m_activeChatThreadRootId.isEmpty())
+        return;
+    while (QLayoutItem *item = m_chatThreadRowsLayout->takeAt(0)) {
+        if (item->widget())
+            item->widget()->deleteLater();
+        delete item;
+    }
+    const QList<ChatMessage> history = m_history.value(m_currentConversation);
+    const auto root = std::find_if(
+        history.cbegin(), history.cend(), [&](const ChatMessage &message) {
+            return message.id == m_activeChatThreadRootId &&
+                   message.threadRootId.isEmpty();
+        });
+    if (root != history.cend()) {
+        if (MessageRow *row = createMessageRow(*root, true))
+            m_chatThreadRowsLayout->addWidget(row);
+    }
+    int replies = 0;
+    for (const ChatMessage &message : history) {
+        if (message.threadRootId != m_activeChatThreadRootId)
+            continue;
+        if (MessageRow *row = createMessageRow(message, true)) {
+            m_chatThreadRowsLayout->addWidget(row);
+            ++replies;
+        }
+    }
+    m_chatThreadRowsLayout->addStretch();
+    if (m_chatThreadCountLabel) {
+        m_chatThreadCountLabel->setText(
+            QString::number(replies) +
+            (replies == 1 ? " reply" : " replies"));
+    }
+}
+
+void MainWindow::sendChatThreadReply()
+{
+    if (!m_backend || !m_chatThreadInput ||
+        m_activeChatThreadRootId.isEmpty())
+        return;
+    const QString text = m_chatThreadInput->toPlainText().trimmed().left(16000);
+    if (text.isEmpty())
+        return;
+    m_chatThreadInput->clear();
+    m_backend->sendThreadReply(m_currentConversation,
+                               m_activeChatThreadRootId, text);
 }
 
 void MainWindow::renderConversationRows()
@@ -142,8 +292,10 @@ void MainWindow::renderConversationRows()
             item->widget()->deleteLater();
         delete item;
     }
-    for (const ChatMessage &message : m_history.value(m_currentConversation))
-        addMessageRow(message);
+    for (const ChatMessage &message : m_history.value(m_currentConversation)) {
+        if (message.threadRootId.isEmpty())
+            addMessageRow(message);
+    }
 }
 
 void MainWindow::rebuildConversationView()
@@ -218,7 +370,9 @@ void MainWindow::onMessage(const ChatMessage &message)
     // rows without a rebuild).
     if (conversation == m_currentConversation) {
         const bool wasAtBottom = m_stickToBottom;
-        if (appendedAtEnd)
+        if (!message.threadRootId.isEmpty())
+            renderConversationRows();
+        else if (appendedAtEnd)
             addMessageRow(message);
         else
             renderConversationRows(); // landed earlier in the transcript
@@ -226,6 +380,8 @@ void MainWindow::onMessage(const ChatMessage &message)
         // rangeChanged handler does the actual scrolling once the row lays out.
         if (wasAtBottom)
             scrollToBottom();
+        if (message.threadRootId == m_activeChatThreadRootId)
+            rebuildChatThreadDialog();
     }
     // `self` only recognizes this node's own id, so a message this user typed
     // on the website, in the World, or on a second device came back looking
@@ -341,6 +497,8 @@ void MainWindow::onMessageEdited(const QString &conversation, const QString &mes
     }
     if (conversation == m_currentConversation)
         rebuildConversationView();
+    if (conversation == m_currentConversation && m_chatThreadDialog)
+        rebuildChatThreadDialog();
     scheduleChatSave();
 }
 
@@ -360,6 +518,8 @@ void MainWindow::onMessageDeleted(const QString &conversation, const QString &me
     m_reactions.remove(messageId);
     if (conversation == m_currentConversation)
         rebuildConversationView();
+    if (conversation == m_currentConversation && m_chatThreadDialog)
+        rebuildChatThreadDialog();
     scheduleChatSave();
 }
 
@@ -595,6 +755,16 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         }
     }
 
+    // The accounts directory is the authority for user identities.  A stale
+    // peer/relay frame can arrive without its accountKind stamp; normalize it
+    // here so all downstream surfaces classify that identity as a user rather
+    // than independently rediscovering it as a node.
+    for (MemberInfo &member : newRoster) {
+        const QString identity = nodeListIdentityKey(member).toLower();
+        if (!identity.isEmpty() && m_chatDirectoryUsers.contains(identity))
+            member.accountKind = QStringLiteral("user");
+    }
+
     // Keep the sighting map bounded to peers the roster still carries: every
     // visitor id we ever saw would otherwise stay in it for the whole run.
     QHash<QString, qint64> keptSightings;
@@ -646,7 +816,9 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             // "Node connected" is misleading (adhoc #37 hit this same mix-up in
             // the node switcher); missing accountKind (older peers) still
             // counts as a node for backward compatibility.
-            if (m.accountKind == QLatin1String("user"))
+            if (m.accountKind == QLatin1String("user") ||
+                m_chatDirectoryUsers.contains(
+                    nodeListIdentityKey(m).trimmed().toLower()))
                 continue;
             // Anonymous chat guests are people passing through, not nodes
             // (adhoc #308). A first-run desktop guest still advertises its
@@ -690,6 +862,10 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     refreshRepositoryList();
     updateHomeStats();
     updateConnectionStatus();
+    // Chrome-line node dots: refresh them from this roster. Cheap (no git), and
+    // unlike the Mirror nodes panel below they don't need a repo open or a built
+    // page, so the dots keep reporting node status everywhere (adhoc #44).
+    refreshNodeDotMatrix();
     // Keep the open repo's Mirror nodes view (and its tab count) live as peers
     // come and go or re-advertise fresher mirrors. Coalesced: the rebuild runs
     // ~10 synchronous git reads plus per-row lookups, and roster updates arrive
@@ -880,6 +1056,7 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
         member.id = QStringLiteral("user:") + key;
         member.name = name;
         member.ownerUser = name;
+        member.accountKind = QStringLiteral("user");
         member.self = !ownName.isEmpty() &&
                       ownName.compare(name, Qt::CaseInsensitive) == 0;
         member.online = false;
@@ -920,11 +1097,20 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
     }
     m_chatDirectoryLoaded = true;
     m_chatDirectoryUsers = next;
-    // The public user directory is also the database-backed source of each
-    // account's linked node fleet. Keep the Nodes page in step so offline nodes
-    // do not disappear merely because they are absent from this chat roster.
-    if (m_nodesTable)
-        refreshNodesTable();
+    // The roster may have arrived before this directory fetch. Normalize those
+    // cached entries too, so a user identity remains a user everywhere until
+    // the next live roster update rather than only being filtered at render
+    // time.
+    for (MemberInfo &member : m_homeRoster) {
+        const QString identity = nodeListIdentityKey(member).trimmed().toLower();
+        if (!identity.isEmpty() && m_chatDirectoryUsers.contains(identity))
+            member.accountKind = QStringLiteral("user");
+    }
+    // The public user directory is the authority for the user/node boundary
+    // and for each account's linked fleet. Rebuild the shared node source so
+    // the switcher, counts, and Nodes page all discard user accounts and retain
+    // offline linked machines together.
+    refreshRepositoryList();
     if (m_networkReposTable && !m_networkReposLastPayload.isEmpty())
         renderNetworkRepos(m_networkReposLastPayload);
     refreshMentionCandidates();
@@ -1008,6 +1194,12 @@ void MainWindow::refreshChatMembers()
         member.name = display;
         const QString key = groupKeyFor(member);
         const bool isDirectory = member.id.startsWith(QStringLiteral("user:"));
+        const bool isUserAccount =
+            isDirectory ||
+            member.accountKind.compare(QLatin1String("user"),
+                                       Qt::CaseInsensitive) == 0 ||
+            m_chatDirectoryUsers.contains(
+                nodeListIdentityKey(member).trimmed().toLower());
 
         int idx;
         const auto it = groupIndex.constFind(key);
@@ -1044,7 +1236,7 @@ void MainWindow::refreshChatMembers()
 
         // A directory entry's nodeName is a joined list, not a single node; its
         // nodes are expanded from ownedNodes below. Live peers are real nodes.
-        if (!isDirectory) {
+        if (!isUserAccount) {
             ChatUserGroup &g = groups[idx];
             if (g.anchorId.isEmpty() && !member.id.isEmpty())
                 g.anchorId = member.id;
@@ -1693,6 +1885,9 @@ void MainWindow::switchConversation(const QString &conversation)
     rebuildConversationView();
     refreshTypingLabel();
     refreshChatMembers();
+    // The open room/DM is the Chat destination, so Back returns to the previous
+    // conversation instead of leaving Chat entirely (adhoc #50).
+    scheduleNavRecord();
 
     // Selection lives in exactly one sidebar list at a time.
     if (isDirectConversation(conversation)) {

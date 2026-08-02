@@ -147,10 +147,11 @@ def test_signed_out_visitors_keep_their_country_locally():
     assert "/^[A-Z]{2}$/.test(clean)" in remember
 
 
-def test_detailed_away_member_bench_figure_wears_the_saved_profile():
+def test_every_seated_member_bench_figure_wears_the_saved_profile():
     lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
         "campfire.userData.seatByName", 1)[0]
-    assert ".slice(0, CAMPFIRE_DETAILED_MEMBER_LIMIT)" in lounge
+    assert "const seatedMemberIds = new Set(" in lounge
+    assert "CAMPFIRE_DETAILED_MEMBER_LIMIT" not in lounge
     assert "flagEmoji(memberCountry)" in lounge
     assert "countryCode: memberCountry," in lounge
     assert 'browser: String(member.browser || "Hidden"),' in lounge

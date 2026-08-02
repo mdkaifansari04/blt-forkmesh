@@ -69,6 +69,11 @@
     homeOrganizationRepositories: [],
     repoCommitDetail: null,
     repoRecordDetail: null,
+    // Last rendered pull/discussion list per kind, and the last rendered code
+    // tree listing. Both are held so the header search box can re-filter what
+    // is already on screen (adhoc #37) without a second mirror read.
+    repoCollectionItems: {},
+    repoTreeView: null,
     profileContributions: {
       range: null,
       data: null,
@@ -81,10 +86,26 @@
     settingsView: {
       section: "public-profile",
     },
+    // /dashboard/tasks (adhoc #24): the organization-private task catalog, read
+    // whole and then filtered and paged in the browser. `actor` is the relay's
+    // name for the signed-in member, used by the "Assigned to me" filter.
+    tasksView: {
+      items: [],
+      filter: "open",
+      query: "",
+      page: 1,
+      loading: true,
+      error: "",
+      actor: "",
+    },
     globalSearch: {
       open: false,
       selectedIndex: 0,
       results: [],
+      // The header search box also filters the page you are on, live, on top of
+      // whatever that page's own filter box holds (adhoc #37). Kept here rather
+      // than read off the input so a re-render after navigation still sees it.
+      pageQuery: "",
     },
   };
 
@@ -1087,6 +1108,17 @@
     return { privateKey, pub };
   }
 
+  function webIssuePublicKey() {
+    try {
+      const stored = JSON.parse(
+        localStorage.getItem(WEB_ISSUE_KEY_STORAGE) || "null",
+      );
+      return String(stored?.pub || "");
+    } catch (_) {
+      return "";
+    }
+  }
+
   function pendingIssuesRepoKey(repo) {
     return `${String(repo?.owner || "").toLowerCase()}/${String(repo?.name || "").toLowerCase()}`;
   }
@@ -1149,7 +1181,7 @@
     if (!response.ok || data.ok === false) {
       throw new Error(data.error || `HTTP ${response.status}`);
     }
-    return data;
+    return { ...data, event };
   }
 
   // The compact World chat composer is a second presentation of the canonical
@@ -1195,7 +1227,160 @@
     if (!response.ok || data.ok === false) {
       throw new Error(data.error || `HTTP ${response.status}`);
     }
+    return { ...data, event };
+  }
+
+  function webIssueEventContent(type, fields = {}) {
+    const NUL = String.fromCharCode(0);
+    if (type === "edit") {
+      return String(fields.body || "") + NUL
+        + (Array.isArray(fields.attachments) ? fields.attachments.join(",") : "");
+    }
+    if (type === "title") return String(fields.title || "");
+    if (type === "status") return String(fields.status || "");
+    if (type === "labels") {
+      return (Array.isArray(fields.labels) ? fields.labels : []).join(",");
+    }
+    if (type === "milestone") return String(fields.milestone || "");
+    if (type === "dates") {
+      return `${Number(fields.startDate) || 0}${NUL}${Number(fields.endDate) || 0}`;
+    }
+    if (type === "priority") return String(Number(fields.priority) || 0);
+    if (type === "progress") return String(Number(fields.progress) || 0);
+    if (type === "assignees") {
+      return (Array.isArray(fields.assignees) ? fields.assignees : []).join(",");
+    }
+    if (type === "delete") return String(fields.target || "");
+    if (type === "vote") return "";
+    throw new Error("unsupported_issue_action");
+  }
+
+  function webIssueEventId(type, ts) {
+    const suffix = new Uint32Array(1);
+    crypto.getRandomValues(suffix);
+    return `${type}-web-${ts}-${suffix[0].toString(36)}`;
+  }
+
+  // Owner-side issue actions use the same append-only event model as Qt. The
+  // event is signed by this browser key, while the account session separately
+  // proves repository authority to the Worker before it enters the mirror
+  // inbox. Votes remain available to any signed-in contributor.
+  async function submitWebIssueEvent(repo, number, type, fields = {}) {
+    const issueNumber = Number(number);
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+      throw new Error("invalid_issue_number");
+    }
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const event = {
+      type,
+      id: webIssueEventId(type, ts),
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+    };
+    const fieldNames = {
+      edit: ["target", "body", "attachments"],
+      title: ["title"],
+      status: ["status"],
+      labels: ["labels"],
+      milestone: ["milestone"],
+      dates: ["startDate", "endDate"],
+      priority: ["priority"],
+      progress: ["progress"],
+      assignees: ["assignees"],
+      delete: ["target"],
+      vote: [],
+    }[type];
+    if (!fieldNames) throw new Error("unsupported_issue_action");
+    fieldNames.forEach((name) => {
+      event[name] = fields[name];
+    });
+    if (type === "edit") {
+      event.body = String(event.body || "").replace(/[\r\n]+$/, "");
+      event.attachments = Array.isArray(event.attachments)
+        ? event.attachments.map((value) => String(value))
+        : [];
+    }
+    if (type === "labels" || type === "assignees") {
+      event[type] = (Array.isArray(event[type]) ? event[type] : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean)
+        .slice(0, 20);
+    }
+    const contentHash = await sha256HexLower(
+      webIssueEventContent(type, event),
+    );
+    const canonical = `forkmesh-issue-event-v1\n${type}\n${issueNumber}\n${pub}\n${ts}\n${contentHash}`;
+    event.sig = bytesToB64url(await crypto.subtle.sign(
+      { name: "Ed25519" },
+      privateKey,
+      ISSUE_TEXT_ENCODER.encode(canonical),
+    ));
+    const payload = {
+      owner: repo.owner,
+      repo: repo.name,
+      number: issueNumber,
+      event,
+      ownerAccount: state.session?.nodeName || "",
+      sessionToken: state.session?.sessionToken || "",
+    };
+    const response = await fetch(`${repoApiBase(repo)}/issues`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return { ...data, event };
+  }
+
+  async function setWebIssueSubscription(repo, number, subscribed) {
+    const response = await fetch(`${repoApiBase(repo)}/subscribe`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        node: state.session?.nodeName || "",
+        sessionToken: state.session?.sessionToken || "",
+        source: "issue",
+        number: Number(number),
+        subscribed: subscribed === true,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
     return data;
+  }
+
+  async function loadWebIssueSubscription(repo, number) {
+    if (!state.session?.nodeName || !state.session?.sessionToken) return false;
+    const response = await fetch(`${repoApiBase(repo)}/subscribe`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        action: "status",
+        node: state.session.nodeName,
+        sessionToken: state.session.sessionToken,
+        source: "issue",
+        number: Number(number),
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) return false;
+    return data.subscribed === true;
   }
 
   // Mirrors DiscussionStore::contentForSigning's "comment" case (just the
@@ -1363,6 +1548,9 @@
     const number = Number(form.dataset.repoIssueCommentNumber || 0);
     const bodyInput = form.querySelector("[data-repo-issue-comment-body]");
     const submit = form.querySelector("[data-repo-issue-comment-submit]");
+    const actionButtons = form.querySelectorAll(
+      "[data-repo-issue-comment-action]",
+    );
     const hint = form.querySelector("[data-repo-issue-comment-hint]");
     const setHint = (text, tone) => {
       if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
@@ -1378,10 +1566,10 @@
       bodyInput?.focus();
       return;
     }
-    if (submit) submit.disabled = true;
+    actionButtons.forEach((button) => { button.disabled = true; });
     setHint("Signing and sending…");
     try {
-      await submitWebIssueComment(repo, number, body);
+      const result = await submitWebIssueComment(repo, number, body);
       // Show the comment straight away: it only reaches the mirror once the
       // maintainer's node drains the inbox, so the timeline can't reload it yet.
       const timeline = form.parentElement?.querySelector("[data-repo-issue-timeline]");
@@ -1397,10 +1585,28 @@
         }));
       }
       if (bodyInput) bodyInput.value = "";
-      if (submit) submit.disabled = false;
-      setHint("Comment accepted for direct delivery to an eligible mirror.", "good");
+      optimisticWebIssueEvent(result.event);
+      const action = String(form._issueSubmitAction || "comment");
+      form._issueSubmitAction = "comment";
+      if (action === "close") {
+        const statusResult = await submitWebIssueEvent(
+          repo,
+          number,
+          "status",
+          { status: "closed" },
+        );
+        optimisticWebIssueEvent(statusResult.event);
+      }
+      actionButtons.forEach((button) => { button.disabled = false; });
+      setHint(
+        action === "close"
+          ? "Comment sent and issue closure accepted."
+          : "Comment accepted for direct delivery to an eligible mirror.",
+        "good",
+      );
+      renderCurrentWebIssueDetail();
     } catch (error) {
-      if (submit) submit.disabled = false;
+      actionButtons.forEach((button) => { button.disabled = false; });
       const code = String(error?.message || "");
       setHint(
         code === "inbox_full" ? "Comment delivery is temporarily full. Try again later."
@@ -1409,6 +1615,232 @@
           : code === "bad_signature" ? "Could not verify the comment's signature."
           : "Could not send the comment. Please try again.",
         "bad");
+    }
+  }
+
+  function optimisticWebIssueEvent(event) {
+    const detail = state.repoRecordDetail;
+    if (!event || detail?.kind !== "issues") return;
+    const parsed = detail.parsed || {};
+    const values = parsed.values || (parsed.values = {});
+    const events = Array.isArray(parsed.issueEvents)
+      ? parsed.issueEvents
+      : (parsed.issueEvents = []);
+    if (!events.some((existing) => existing?.id === event.id)) events.push(event);
+    if (event.type === "title") values.title = event.title;
+    if (event.type === "status") values.status = event.status;
+    if (event.type === "labels") values.labels = `[${event.labels.join(", ")}]`;
+    if (event.type === "milestone") values.milestone = event.milestone;
+    if (event.type === "priority") values.priority = Number(event.priority) || 0;
+    if (event.type === "progress") values.progress = Number(event.progress) || 0;
+    if (event.type === "assignees") {
+      values.assignees = `[${event.assignees.join(", ")}]`;
+    }
+    if (event.type === "dates") {
+      values.startDate = Number(event.startDate) || 0;
+      values.endDate = Number(event.endDate) || 0;
+    }
+    if (event.type === "vote") values.votes = (Number(values.votes) || 0) + 1;
+    if (event.type === "edit" && event.target === parsed.issueOpenEventId) {
+      parsed.body = event.body;
+    }
+    if (event.type === "delete" && event.target === "self") {
+      parsed.issueDeleted = true;
+    }
+  }
+
+  function renderCurrentWebIssueDetail() {
+    const detail = state.repoRecordDetail;
+    if (detail?.kind !== "issues" || !detail.repo) return;
+    const container = $("[data-repo-issues]");
+    if (!container) return;
+    container.innerHTML = renderRepoRecordDetail(
+      detail.repo,
+      "issues",
+      detail.number,
+      detail.parsed,
+    );
+    window.lucide?.createIcons();
+  }
+
+  function webIssueActionError(error) {
+    const code = String(error?.message || "");
+    return ({
+      not_authorized: "Only the repository owner or an organization admin can do that.",
+      bad_signature: "The signed issue action could not be verified.",
+      inbox_full: "Issue delivery is temporarily full. Try again later.",
+      author_quota: "Too many issue changes are waiting to sync. Try again after the owner node drains them.",
+      issue_too_large: "That issue update is too large.",
+    })[code] || "The issue could not be updated. Please try again.";
+  }
+
+  function splitWebIssueList(value) {
+    return [...new Set(String(value || "").split(",")
+      .map((item) => item.trim())
+      .filter(Boolean))].slice(0, 20);
+  }
+
+  async function handleWebIssueAction(action, target = "") {
+    const detail = state.repoRecordDetail;
+    const repo = detail?.repo;
+    const number = Number(detail?.number || 0);
+    if (!repo || detail?.kind !== "issues" || !number) return;
+    if (!state.session?.nodeName) {
+      location.href = "/login?next="
+        + encodeURIComponent(`${location.pathname}${location.search}`);
+      return;
+    }
+    let type = "";
+    let fields = {};
+    if (action === "subscribe" || action === "unsubscribe") {
+      try {
+        await setWebIssueSubscription(repo, number, action === "subscribe");
+        detail.parsed.issueSubscribed = action === "subscribe";
+        renderCurrentWebIssueDetail();
+      } catch (error) {
+        window.alert(webIssueActionError(error));
+      }
+      return;
+    }
+    if (action === "vote") type = "vote";
+    if (action === "close" || action === "open") {
+      type = "status";
+      fields = { status: action };
+    }
+    if (action === "delete-issue") {
+      const title = String(detail.parsed?.values?.title || `issue #${number}`);
+      if (!window.confirm(
+        `Delete issue #${number} “${title}”?\n\nThis hides the issue everywhere after the signed deletion syncs. Its Git history remains recoverable.`,
+      )) return;
+      type = "delete";
+      fields = { target: "self" };
+    }
+    if (action === "delete-comment") {
+      if (!window.confirm("Delete this comment? Its Git history remains recoverable.")) return;
+      type = "delete";
+      fields = { target };
+    }
+    if (action === "edit-comment") {
+      const events = detail.parsed?.issueEvents || [];
+      const original = events.find((event) => event?.id === target);
+      if (!original) return;
+      const latest = events.filter(
+        (event) => event?.type === "edit" && event.target === target,
+      ).at(-1);
+      const nextBody = window.prompt("Edit comment", latest?.body ?? original.body ?? "");
+      if (nextBody === null) return;
+      type = "edit";
+      fields = { target, body: nextBody, attachments: latest?.attachments || original.attachments || [] };
+    }
+    if (!type) return;
+    try {
+      const result = await submitWebIssueEvent(repo, number, type, fields);
+      optimisticWebIssueEvent(result.event);
+      if (action === "delete-issue") {
+        state.issuesView.items = (state.issuesView.items || []).filter(
+          (issue) => Number(issue.number) !== number,
+        );
+        state.repoRecordDetail = null;
+        navigateHistory(`${repoPathUrl(repo)}/issues`);
+        renderRepoIssues();
+        return;
+      }
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      window.alert(webIssueActionError(error));
+    }
+  }
+
+  async function handleWebIssueTitleSubmit(form) {
+    const detail = state.repoRecordDetail;
+    const title = String(
+      form.querySelector("[data-repo-issue-title-input]")?.value || "",
+    ).trim();
+    if (!title) return;
+    try {
+      const result = await submitWebIssueEvent(
+        detail.repo,
+        detail.number,
+        "title",
+        { title },
+      );
+      optimisticWebIssueEvent(result.event);
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      window.alert(webIssueActionError(error));
+    }
+  }
+
+  async function handleWebIssueDescriptionSubmit(form) {
+    const detail = state.repoRecordDetail;
+    const body = String(
+      form.querySelector("[data-repo-issue-description-input]")?.value || "",
+    );
+    try {
+      const result = await submitWebIssueEvent(
+        detail.repo,
+        detail.number,
+        "edit",
+        {
+          target: detail.parsed.issueOpenEventId,
+          body,
+          attachments: detail.parsed.issueOpenAttachments || [],
+        },
+      );
+      optimisticWebIssueEvent(result.event);
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      window.alert(webIssueActionError(error));
+    }
+  }
+
+  async function handleWebIssueMetadataSubmit(form) {
+    const detail = state.repoRecordDetail;
+    const values = detail?.parsed?.values || {};
+    const hint = form.querySelector("[data-repo-issue-metadata-hint]");
+    const submit = form.querySelector("[data-repo-issue-metadata-save]");
+    const labels = splitWebIssueList(form.querySelector("[data-repo-issue-labels]")?.value);
+    const assignees = splitWebIssueList(form.querySelector("[data-repo-issue-assignees]")?.value);
+    const milestone = String(form.querySelector("[data-repo-issue-milestone-edit]")?.value || "").trim();
+    const priority = Math.min(99, Math.max(0, Number(form.querySelector("[data-repo-issue-priority]")?.value) || 0));
+    const progress = Math.min(100, Math.max(0, Number(form.querySelector("[data-repo-issue-progress]")?.value) || 0));
+    const dateValue = (selector) => {
+      const value = String(form.querySelector(selector)?.value || "");
+      return value ? Date.parse(`${value}T00:00:00Z`) || 0 : 0;
+    };
+    const startDate = dateValue("[data-repo-issue-start-date]");
+    const endDate = dateValue("[data-repo-issue-end-date]");
+    const actions = [];
+    if (labels.join(",") !== parseFrontMatterList(values.labels).join(",")) actions.push(["labels", { labels }]);
+    if (assignees.join(",") !== parseFrontMatterList(values.assignees).join(",")) actions.push(["assignees", { assignees }]);
+    if (milestone !== String(values.milestone || "")) actions.push(["milestone", { milestone }]);
+    if (priority !== (Number(values.priority) || 0)) actions.push(["priority", { priority }]);
+    if (progress !== (Number(values.progress) || 0)) actions.push(["progress", { progress }]);
+    if (startDate !== (Number(values.startDate) || 0) || endDate !== (Number(values.endDate) || 0)) actions.push(["dates", { startDate, endDate }]);
+    if (!actions.length) {
+      if (hint) hint.textContent = "No changes";
+      return;
+    }
+    if (submit) submit.disabled = true;
+    if (hint) hint.textContent = "Signing…";
+    try {
+      for (const [type, fields] of actions) {
+        const result = await submitWebIssueEvent(
+          detail.repo,
+          detail.number,
+          type,
+          fields,
+        );
+        optimisticWebIssueEvent(result.event);
+      }
+      if (hint) hint.textContent = "Saved";
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      if (hint) {
+        hint.className = "text-[10px] text-destructive";
+        hint.textContent = webIssueActionError(error);
+      }
     }
   }
 
@@ -1953,13 +2385,7 @@
   const ORG_OFFICE_FLOOR_GROUPS = Object.freeze([
     { id: "marketing", label: "Marketing", aliases: ["marketing", "marketing-team", "growth", "brand", "comms", "communications"] },
     { id: "engineering", label: "Engineering", aliases: ["engineering", "engineers", "development", "developers", "platform", "frontend", "backend"] },
-    { id: "product-design", label: "Product & Design", aliases: ["product-design", "product", "design", "ux", "ui-ux"] },
-    { id: "security", label: "Security", aliases: ["security", "security-team", "trust-safety", "trust-and-safety"] },
     { id: "infrastructure", label: "Infrastructure", aliases: ["infrastructure", "infra", "devops", "site-reliability", "sre"] },
-    { id: "community", label: "Community", aliases: ["community", "community-team", "developer-relations", "devrel"] },
-    { id: "partnerships", label: "Partnerships", aliases: ["partnerships", "partnership", "business-development", "bizdev"] },
-    { id: "operations", label: "Operations", aliases: ["operations", "ops", "people-operations", "finance-operations"] },
-    { id: "executive", label: "Executive", aliases: ["executive", "executives", "leadership", "organization-leadership", "org-leadership"] },
   ]);
 
   // Worker org-endpoint error codes -> human text. Unknown codes fall through
@@ -5258,8 +5684,42 @@
       repo.description,
       repo.channel,
       repo.source,
+      // Catalog records advertise the current head and stable root commits.
+      // Include both so a pasted full SHA or a short prefix opens the matching
+      // repository without fetching every repository's commit history.
+      repo.commit,
+      repo.rootCommit,
     ].join(" ").toLowerCase();
     return haystack.includes(query);
+  }
+
+  // --- Header search as a live page filter (adhoc #37) -------------------
+  //
+  // Typing in the header search box opens its repository dropdown *and*
+  // narrows the list you are already looking at, with no Enter and no round
+  // trip. The two are independent: the dropdown always searches the whole
+  // catalog, while the page filter only ever hides rows the page had already
+  // rendered. Clearing the box (including the native type="search" ✕) restores
+  // everything.
+  //
+  // A page keeps its own filter box where it has one (#repoSearch, the issue
+  // search, ...); the global query is ANDed on top of it rather than replacing
+  // it, so neither control silently overrides the other.
+  function globalSearchPageQuery() {
+    return state.globalSearch.pageQuery || "";
+  }
+
+  // The lowercase terms a page list must match: its own filter box, then the
+  // header search box. Empty terms drop out, so an untouched box filters
+  // nothing.
+  function pageFilterQueries(ownQuery) {
+    return [String(ownQuery || "").trim().toLowerCase(), globalSearchPageQuery()]
+      .filter(Boolean);
+  }
+
+  function repositoryMatchesPageFilter(repo, ownQuery) {
+    return pageFilterQueries(ownQuery)
+      .every((query) => repositoryMatchesQuery(repo, query));
   }
 
   function repositoryTermsBadge(repo, compact = false) {
@@ -5297,6 +5757,75 @@
     state.globalSearch.open = false;
     state.globalSearch.selectedIndex = 0;
     renderGlobalSearchResults();
+    // Clearing the box must un-filter the page too, not just close the panel.
+    if (options.clear) applyGlobalSearchPageFilter();
+  }
+
+  // Pull the header box's current text into state.globalSearch.pageQuery and
+  // re-render this page's lists through it. Cheap enough to run per keystroke:
+  // every list it drives filters an already-loaded array in memory, so nothing
+  // here refetches.
+  function applyGlobalSearchPageFilter() {
+    const shell = $("[data-global-search-shell]");
+    const input = $("[data-global-search]");
+    // The box is lg-only chrome; when it is not on screen it must not be
+    // holding a stale filter over the page.
+    const visible = Boolean(input) && (!shell || shell.getClientRects().length > 0);
+    const next = visible ? (input.value || "").trim().toLowerCase() : "";
+    if (next === state.globalSearch.pageQuery) return;
+    state.globalSearch.pageQuery = next;
+    renderGlobalSearchPageFilter();
+  }
+
+  // Re-render whichever lists this page shows. Each branch reuses the page's
+  // normal render path, so the filtered view is the same markup (empty states,
+  // pagination, counts) the page would draw for a hand-typed filter.
+  function renderGlobalSearchPageFilter() {
+    const page = currentPage();
+    if (["home", "repos", "profile-overview", "profile-repositories"].includes(page)) {
+      // Filtering to a shorter list can strand you past the last page.
+      state.page = 1;
+      applyRepositoryFilter();
+    } else if (page === "network") {
+      renderNetworkRows(Array.isArray(state.networkNodeRows) ? state.networkNodeRows : []);
+      window.lucide?.createIcons();
+    } else if (page === "repo") {
+      renderRepoPageFilter();
+    }
+    renderGlobalSearchPageFilterNotice();
+  }
+
+  // How many rows the page filter is currently showing, or null when this page
+  // has nothing the header box filters (settings, chat).
+  function globalSearchPageFilterCount() {
+    const page = currentPage();
+    if (["home", "repos", "profile-overview", "profile-repositories"].includes(page)) {
+      return (state.filteredGroups || []).length;
+    }
+    if (page === "network") {
+      return networkRowsMatchingPageFilter(
+        Array.isArray(state.networkNodeRows) ? state.networkNodeRows : []).length;
+    }
+    if (page === "repo") return repoPageFilterCount();
+    return null;
+  }
+
+  // A one-line footer under the dropdown, so it is obvious the page behind the
+  // panel narrowed on purpose rather than losing its rows.
+  function renderGlobalSearchPageFilterNotice() {
+    const notice = $("[data-global-search-page-filter]");
+    if (!notice) return;
+    const query = globalSearchPageQuery();
+    const count = query ? globalSearchPageFilterCount() : null;
+    const show = Boolean(query) && count !== null;
+    notice.classList.toggle("hidden", !show);
+    notice.classList.toggle("flex", show);
+    if (!show) {
+      notice.innerHTML = "";
+      return;
+    }
+    notice.innerHTML = `<i data-lucide="list-filter" class="h-3 w-3 shrink-0"></i><span class="min-w-0 truncate">Filtering this page: ${formatCount(count)} match${count === 1 ? "" : "es"}</span>`;
+    window.lucide?.createIcons();
   }
 
   function renderGlobalSearchResults() {
@@ -5317,6 +5846,9 @@
 
     input.setAttribute("aria-expanded", state.globalSearch.open ? "true" : "false");
     panel.classList.toggle("hidden", !state.globalSearch.open);
+    // Keep the "filtering this page" footer honest when the list behind it is
+    // re-rendered (catalog arriving, page change) rather than only on keystroke.
+    renderGlobalSearchPageFilterNotice();
     if (!state.globalSearch.open) return;
 
     if (state.repositoriesLoading) {
@@ -5859,7 +6391,7 @@
         const repo = sourceOfTruth(group);
         return { repo, href: groupLinkUrl(group), organization: false };
       }),
-    ].filter((entry) => repositoryMatchesQuery(entry.repo, query))
+    ].filter((entry) => repositoryMatchesPageFilter(entry.repo, query))
       .filter((entry, index, values) =>
         values.findIndex((candidate) =>
           repoDisplayKey(candidate.repo).toLowerCase() ===
@@ -6132,7 +6664,7 @@
     if (!container) return;
     const query = ($("[data-profile-repo-search]")?.value || "").trim().toLowerCase();
     const groups = profileRepositoryGroups().filter((group) => {
-      return repositoryMatchesQuery(sourceOfTruth(group), query);
+      return repositoryMatchesPageFilter(sourceOfTruth(group), query);
     });
     container.innerHTML = groups.length
       ? groups.map((group) => profileRepositoryRow(group)).join("")
@@ -6151,7 +6683,7 @@
   function applyRepositoryFilter() {
     const query = ($("#repoSearch")?.value || "").trim().toLowerCase();
     state.filteredRepositories = state.repositories.filter((repo) =>
-      repositoryMatchesQuery(repo, query));
+      repositoryMatchesPageFilter(repo, query));
     state.filteredGroups = groupRepositories(state.filteredRepositories);
     updateRepositoryPagination();
     renderSidebarRepositories();
@@ -6568,6 +7100,14 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
+    if (tab === "code") {
+      if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
+      if (!state.loadedRepoTabs.code) {
+        state.loadedRepoTabs.code = true;
+        loadRepositoryTree(state.selectedRepo, "");
+      }
+      scheduleRepoAboutRail(state.selectedRepo);
+    }
     // Mirror health loads once with the repository summary, then refreshes
     // only when its own tab is actually opened (plus the bounded visible-tab
     // fallback and coalesced socket signal below).
@@ -7581,6 +8121,72 @@
     return `<div class="animate-pulse" role="status" aria-label="Loading tree…">${cells}<span class="sr-only">Loading tree…</span></div>`;
   }
 
+  // Rows for the cached code-tree listing, narrowed by the header search box
+  // (adhoc #37). Matches the entry name and its path within the repo, so a
+  // directory you can still walk into survives the filter. Nothing refetches.
+  function renderRepoTreeRows() {
+    const view = state.repoTreeView;
+    const treeBody = $("[data-repo-detail]")?.querySelector("[data-repo-tree]");
+    if (!treeBody || !view || !view.entries?.length) return;
+    const { repo, path } = view;
+    const queries = pageFilterQueries("");
+    const entries = queries.length
+      ? view.entries.filter((entry) => {
+          const haystack = [entry.name, repoChildPath(path, entry.name)]
+            .join(" ").toLowerCase();
+          return queries.every((query) => haystack.includes(query));
+        })
+      : view.entries;
+    treeBody.innerHTML = entries.length
+      ? entries.map((entry) => {
+        const childPath = repoChildPath(path, entry.name);
+        const isTree = entry.type === "tree";
+        const message = entry.message || entry.commitMessage || entry.subject || "mirrored repository object";
+        const date = formatTimeAgo(entry.date || entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
+        return `
+            <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
+              ${fileIconHtml(entry, "h-4 w-4 shrink-0")}
+              <span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(entry.name || "entry")}</span>
+              <span class="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">${escapeHtml(message)}</span>
+              <span class="shrink-0 text-xs text-muted-foreground font-mono">${escapeHtml(date)}</span>
+            </button>`;
+      }).join("")
+      : '<div class="px-4 py-3 text-sm text-muted-foreground">No files in this directory match this search.</div>';
+    window.lucide?.createIcons();
+  }
+
+  // The repo page's response to the header search box. Each list re-renders
+  // from what its tab already fetched, so a tab opened later picks the filter
+  // up on its own first render instead of needing to be told.
+  function renderRepoPageFilter() {
+    renderRepoTreeRows();
+    if (state.issuesView.items.length) renderRepoIssues();
+    renderRepoCollection("pulls");
+    renderRepoCollection("discussions");
+  }
+
+  // Rows the open tab is showing after the filter, for the header notice, or
+  // null on a tab the search box does not filter (insights, mirrors, ...) so
+  // the notice stays quiet rather than claiming "0 matches".
+  function repoPageFilterCount() {
+    const tab = state.activeRepoTab || "code";
+    if (tab === "code") {
+      const detail = $("[data-repo-detail]");
+      const panel = detail?.querySelector("[data-repo-tree-panel]");
+      // A file is open, so the listing this filters is off screen.
+      if (!panel || panel.classList.contains("hidden")) return null;
+      // Scoped to the file table: the Files sidebar renders the same path
+      // buttons and would double every count.
+      return detail.querySelectorAll(
+        "[data-repo-tree] [data-dashboard-tree-path], [data-repo-tree] [data-dashboard-blob-path]").length;
+    }
+    if (["issues", "pulls", "discussions"].includes(tab)) {
+      const container = $(`[data-repo-${tab}]`);
+      return container ? container.querySelectorAll("[data-repo-record-number]").length : null;
+    }
+    return null;
+  }
+
   async function loadRepositoryTree(repo, path = "", options = {}) {
     // background: warm the Code tab's tree/README underneath another visible
     // tab. A refresh on /owner/repo/issues restores the Issues tab first and
@@ -7628,25 +8234,16 @@
       });
       renderRepoExplorer(repo, path, entries);
       setRepoExplorerSelection(path, "tree");
+      // Held so the header search box can re-filter this listing in place
+      // (adhoc #37) instead of re-reading the tree from the mirror.
+      state.repoTreeView = { repo, path, entries };
       if (!entries.length) {
         treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">This directory is empty.</div>';
         if (!background) navigateHistory(repoPathUrl(repo, "tree", path));
         window.lucide?.createIcons();
         return;
       }
-      treeBody.innerHTML = entries.map((entry) => {
-        const childPath = repoChildPath(path, entry.name);
-        const isTree = entry.type === "tree";
-        const message = entry.message || entry.commitMessage || entry.subject || "mirrored repository object";
-        const date = formatTimeAgo(entry.date || entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
-        return `
-            <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
-              ${fileIconHtml(entry, "h-4 w-4 shrink-0")}
-              <span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(entry.name || "entry")}</span>
-              <span class="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">${escapeHtml(message)}</span>
-              <span class="shrink-0 text-xs text-muted-foreground font-mono">${escapeHtml(date)}</span>
-            </button>`;
-      }).join("");
+      renderRepoTreeRows();
       if (!background) navigateHistory(repoPathUrl(repo, "tree", path));
       window.lucide?.createIcons();
       if (!path) {
@@ -7810,6 +8407,13 @@
     const number = Number(issue.number || fallbackNumber);
     const events = Array.isArray(issue.events) ? issue.events : [];
     const open = events.find((event) => event && event.type === "open") || {};
+    const latestEdits = new Map();
+    events.forEach((event) => {
+      if (event?.type === "edit" && event.target) {
+        latestEdits.set(String(event.target), event);
+      }
+    });
+    const effectiveOpen = latestEdits.get(String(open.id || "")) || open;
     // Deletion is shown, not hidden (adhoc #16), and classified by who signed it,
     // mirroring the desktop (Issue::isDeleted / hasUnauthorizedDeleteAttempt).
     // A delete/self signed by the issue's own creator deletes it; one signed by
@@ -7828,7 +8432,7 @@
     const status = issue.status || issue.state || "open";
     const labelsList = (Array.isArray(issue.labels)
       ? issue.labels
-      : parseFrontMatterList(issue.labels)).slice(0, 3);
+      : parseFrontMatterList(issue.labels)).map((value) => String(value));
     const labels = labelsList.join(", ");
     return {
       number,
@@ -7842,12 +8446,22 @@
       date: formatRecordDate(updatedAt || issue.createdAt || open.ts),
       labels: labelsList,
       meta: [status, labels, issue.milestone].filter(Boolean).join(" · "),
-      body: open.body || issue.body || "",
+      body: effectiveOpen.body || issue.body || "",
       wantsAgent: Boolean(issue.wantsAgent),
       milestone: String(issue.milestone || ""),
+      priority: Number(issue.priority || 0) || 0,
       progress: Number(issue.progress || 0) || 0,
+      assignees: Array.isArray(issue.assignees)
+        ? issue.assignees.map((value) => String(value))
+        : [],
       startDate: Number(issue.startDate || 0) || 0,
       endDate: Number(issue.endDate || 0) || 0,
+      votes: Number(issue.votes || events.filter((event) => event?.type === "vote").length) || 0,
+      openEventId: String(open.id || ""),
+      openAttachments: Array.isArray(effectiveOpen.attachments)
+        ? effectiveOpen.attachments.map((value) => String(value))
+        : [],
+      creatorKey: String(creator || ""),
       createdAtMs: Number(issue.createdAt || open.ts || 0) || 0,
     };
   }
@@ -7886,17 +8500,38 @@
         title: issue.title,
         status: issue.status,
         authorName: issue.author,
+        author: issue.creatorKey,
         milestone: issue.milestone,
         labels: `[${(issue.labels || []).join(", ")}]`,
+        priority: issue.priority,
+        progress: issue.progress,
+        assignees: `[${issue.assignees.join(", ")}]`,
+        startDate: issue.startDate,
+        endDate: issue.endDate,
+        votes: issue.votes,
         createdAt: issue.createdAtMs,
       },
       body: issue.body,
+      issueCreator: issue.creatorKey,
+      issueOpenEventId: issue.openEventId,
+      issueOpenAttachments: issue.openAttachments,
+      issueDeleted: issue.deleted,
       // Every signed event on the issue (comment, status, labels, milestone,
       // assignees, agent, title, dates, progress, bounty, edit, delete, vote)
       // so the detail view can render the full activity timeline, not just the
       // opening comment.
       issueEvents: issue.events,
     };
+  }
+
+  function issueDateInputValue(value) {
+    let milliseconds = Number(value) || 0;
+    if (!milliseconds) return "";
+    if (milliseconds < 10_000_000_000) milliseconds *= 1000;
+    const date = new Date(milliseconds);
+    return Number.isNaN(date.getTime())
+      ? ""
+      : date.toISOString().slice(0, 10);
   }
 
   // Icon + human-readable description for a non-comment issue event, mirroring
@@ -7972,7 +8607,11 @@
       <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
         <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span class="font-medium text-foreground">${escapeHtml(who)}</span>
-          <span>commented</span><span>&middot;</span><span>${escapeHtml(when)}</span>
+          <span>commented</span>${ev._edited ? " <span>(edited)</span>" : ""}<span>&middot;</span><span>${escapeHtml(when)}</span>
+          ${ev._canManage && ev.id ? `<span class="ml-auto inline-flex items-center gap-1">
+            <button type="button" data-repo-issue-comment-edit="${escapeHtml(ev.id)}" class="rounded px-1.5 py-1 text-muted-foreground hover:bg-secondary hover:text-foreground" aria-label="Edit comment"><i data-lucide="pencil" class="h-3 w-3"></i></button>
+            <button type="button" data-repo-issue-comment-delete="${escapeHtml(ev.id)}" class="rounded px-1.5 py-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" aria-label="Delete comment"><i data-lucide="trash-2" class="h-3 w-3"></i></button>
+          </span>` : ""}
         </div>
         ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
       </div>`;
@@ -7983,6 +8622,7 @@
   // detail view shows every action stored in the issue JSON (adhoc #45). The
   // opening event is omitted here since it's already shown as the issue body.
   function renderIssueTimeline(events) {
+    const options = arguments[1] || {};
     const rows = (Array.isArray(events) ? events : [])
       .filter(Boolean)
       .slice()
@@ -7990,13 +8630,24 @@
     const deletedComments = new Set(
       rows.filter((ev) => ev.type === "delete" && ev.target && ev.target !== "self")
         .map((ev) => ev.target));
+    const edits = new Map();
+    rows.filter((ev) => ev.type === "edit" && ev.target)
+      .forEach((ev) => edits.set(String(ev.target), ev));
     const items = [];
-    for (const ev of rows) {
+    for (const rawEvent of rows) {
+      let ev = rawEvent;
       if (ev.type === "open") continue;
       const who = ev.authorName || ev.author || "unknown";
       const when = formatRecordDate(ev.ts);
       if (ev.type === "comment") {
         if (deletedComments.has(ev.id)) continue;
+        const edit = edits.get(String(ev.id || ""));
+        ev = {
+          ...ev,
+          ...(edit ? { body: edit.body } : {}),
+          _canManage: Boolean(options.canManage),
+          _edited: Boolean(edit),
+        };
         items.push(renderIssueTimelineComment(ev));
         continue;
       }
@@ -8886,6 +9537,9 @@
     if (!state.session?.nodeName) {
       return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment on this issue.</div>`;
     }
+    const detail = state.repoRecordDetail;
+    const canManage = Boolean(detail?.parsed?.issueMutationAuthorized);
+    const issueOpen = String(detail?.parsed?.values?.status || "open") !== "closed";
     return `
       <form data-repo-issue-comment-form data-repo-issue-comment-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
         ${composeIdentityHtml(state.session, "Commenting")}
@@ -8894,7 +9548,10 @@
         </label>
         <div class="flex flex-wrap items-center justify-between gap-3">
           <span data-repo-issue-comment-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
-          <button type="submit" data-repo-issue-comment-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Comment</button>
+          <span class="inline-flex flex-wrap items-center justify-end gap-2">
+            ${canManage && issueOpen ? `<button type="submit" data-repo-issue-comment-action="close" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-check" class="h-4 w-4"></i>Close with comment</button>` : ""}
+            <button type="submit" data-repo-issue-comment-submit data-repo-issue-comment-action="comment" class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Comment</button>
+          </span>
         </div>
       </form>`;
   }
@@ -9023,6 +9680,20 @@
         `/api/orgs/${encodeURIComponent(repo.owner || "")}`,
       );
       return profile?.viewerRole === "owner";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function loadRepoIssueMutationAuthorization(repo) {
+    if (!repo || !state.session?.sessionToken) return false;
+    if (isRepoOwner(repo) || state.session?.isAdmin) return true;
+    try {
+      const profile = await orgApiRequest(
+        "GET",
+        `/api/orgs/${encodeURIComponent(repo.owner || "")}`,
+      );
+      return ["owner", "admin"].includes(String(profile?.viewerRole || ""));
     } catch (_) {
       return false;
     }
@@ -9560,7 +10231,7 @@
     const config = repoCollectionConfig[kind] || repoCollectionConfig.issues;
     const values = parsed.values || {};
     const title = values.title || `${config.itemLabel} #${number}`;
-    const state = values.status || values.state || values.category || "open";
+    const recordState = values.status || values.state || values.category || "open";
     const author = values.authorName || values.author || "unknown";
     const date = formatRecordDate(values.updatedAt || values.createdAt || values.ts);
     const body = parsed.body || "No description was committed for this record.";
@@ -9586,7 +10257,13 @@
       isIssues && !options.pending
         ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end, MCP server configuration and a generated connector token included (shift-click to paste a token this node already published)" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
         : "";
-    const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
+    const issueCanManage = isIssues && Boolean(parsed.issueMutationAuthorized);
+    const issueCanDelete = issueCanManage
+      && Boolean(parsed.issueCreator)
+      && parsed.issueCreator === webIssuePublicKey();
+    const issueTimeline = isIssues
+      ? renderIssueTimeline(parsed.issueEvents, { canManage: issueCanManage })
+      : "";
     // Always mount the timeline container for issues so a comment posted from
     // the form below has somewhere to land, but keep it borderless while empty.
     const issueTimelineSection = isIssues
@@ -9641,11 +10318,59 @@
     const labelValue = labels.length
       ? labels.map((label) => `<span class="mr-1 mt-1 inline-flex rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">${escapeHtml(label)}</span>`).join("")
       : "No labels";
+    const issueAssignees = parseFrontMatterList(values.assignees);
+    const assigneeValue = issueAssignees.length
+      ? issueAssignees.map((assignee) => `<span class="mr-1 mt-1 inline-flex rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] text-foreground">${escapeHtml(assignee)}</span>`).join("")
+      : "No one assigned";
+    const issueFieldsValue = isIssues
+      ? `Priority ${Number(values.priority) || "none"} · Progress ${Number(values.progress) || 0}%${values.endDate ? ` · Due ${escapeHtml(issueDateInputValue(values.endDate))}` : ""}`
+      : "No fields configured";
+    const issueActions = isIssues && !options.pending ? `
+      <div class="flex flex-wrap items-center gap-2">
+        <button type="button" data-repo-issue-vote class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="thumbs-up" class="h-3.5 w-3.5"></i>Vote <span data-repo-issue-vote-count class="font-mono">${formatCount(Number(values.votes) || 0)}</span></button>
+        ${issueCanManage ? `<button type="button" data-repo-issue-title-edit class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="pencil" class="h-3.5 w-3.5"></i>Edit title</button>
+        <button type="button" data-repo-issue-status="${recordState === "closed" ? "open" : "closed"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="${recordState === "closed" ? "rotate-ccw" : "circle-check"}" class="h-3.5 w-3.5"></i>${recordState === "closed" ? "Reopen issue" : "Close issue"}</button>` : ""}
+        ${issueCanDelete ? `<button type="button" data-repo-issue-delete class="inline-flex h-8 items-center gap-2 rounded-md border border-destructive/50 px-3 text-xs font-semibold text-destructive hover:bg-destructive/10"><i data-lucide="trash-2" class="h-3.5 w-3.5"></i>Delete issue</button>` : ""}
+      </div>` : "";
+    const issueMetadataEditor = issueCanManage ? `
+      <form data-repo-issue-metadata-form class="grid gap-3 rounded-lg border border-border bg-secondary/20 p-3">
+        <div class="flex items-center justify-between gap-2">
+          <strong class="text-xs text-foreground">Manage issue</strong>
+          <span data-repo-issue-metadata-hint class="text-[10px] text-muted-foreground"></span>
+        </div>
+        <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Assignees
+          <input data-repo-issue-assignees value="${escapeHtml(parseFrontMatterList(values.assignees).join(", "))}" placeholder="alice, bob" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+        </label>
+        <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Labels
+          <input data-repo-issue-labels value="${escapeHtml(labels.join(", "))}" placeholder="bug, help wanted" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+        </label>
+        <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Milestone
+          <input data-repo-issue-milestone-edit value="${escapeHtml(values.milestone || "")}" placeholder="No milestone" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+        </label>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Priority
+            <input data-repo-issue-priority type="number" min="0" max="99" value="${Number(values.priority) || 0}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal text-foreground outline-none focus:border-primary" />
+          </label>
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Progress %
+            <input data-repo-issue-progress type="number" min="0" max="100" value="${Number(values.progress) || 0}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal text-foreground outline-none focus:border-primary" />
+          </label>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Start
+            <input data-repo-issue-start-date type="date" value="${issueDateInputValue(values.startDate)}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+          </label>
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Due
+            <input data-repo-issue-end-date type="date" value="${issueDateInputValue(values.endDate)}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+          </label>
+        </div>
+        <button type="submit" data-repo-issue-metadata-save class="inline-flex h-8 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"><i data-lucide="save" class="h-3.5 w-3.5"></i>Save fields</button>
+      </form>` : "";
     return `
       <article data-repo-record-detail="${escapeHtml(kind)}" class="grid gap-5 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <button type="button" data-repo-record-back="${escapeHtml(kind)}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to ${escapeHtml(config.label)}</button>
           <div class="flex flex-wrap items-center justify-end gap-2">
+            ${issueActions}
             ${mcpPromptAction}
             ${marketingInitiativeAction}
             <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · ${recordLabel}</span>
@@ -9653,9 +10378,14 @@
         </div>
         ${pendingNotice}
         <header data-repo-record-hero class="grid gap-3">
-          <h2 class="text-2xl font-semibold leading-tight text-foreground">${escapeHtml(title)} <span class="font-normal text-muted-foreground">${recordLabel}</span></h2>
+          <h2 data-repo-issue-title-heading class="text-2xl font-semibold leading-tight text-foreground">${escapeHtml(title)} <span class="font-normal text-muted-foreground">${recordLabel}</span></h2>
+          ${issueCanManage ? `<form data-repo-issue-title-form class="hidden max-w-3xl items-center gap-2">
+            <input data-repo-issue-title-input value="${escapeHtml(title)}" maxlength="240" class="h-10 min-w-0 flex-1 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+            <button type="submit" class="h-10 rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground">Save</button>
+            <button type="button" data-repo-issue-title-cancel class="h-10 rounded-md border border-border px-3 text-xs font-semibold text-foreground">Cancel</button>
+          </form>` : ""}
           <p class="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            <span data-repo-record-state class="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground"><i data-lucide="${config.icon}" class="h-3.5 w-3.5"></i>${escapeHtml(state)}</span>
+            <span data-repo-record-state class="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground"><i data-lucide="${config.icon}" class="h-3.5 w-3.5"></i>${escapeHtml(recordState)}</span>
             <span><span class="font-semibold text-foreground">${escapeHtml(author)}</span> ${isPulls ? `wants to merge 1 commit into <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(baseBranch)}</span> from <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(headBranch)}</span>` : `opened this ${escapeHtml(config.itemLabel)} ${escapeHtml(date)}`}</span>
           </p>
           ${recordTabs}
@@ -9670,6 +10400,11 @@
                     <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Contributor</span>
                   </div>
                   <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
+                  ${issueCanManage ? `<div class="border-t border-border px-4 py-2 text-right"><button type="button" data-repo-issue-description-edit class="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"><i data-lucide="pencil" class="h-3 w-3"></i>Edit description</button></div>
+                  <form data-repo-issue-description-form class="hidden grid gap-2 border-t border-border p-4">
+                    <textarea data-repo-issue-description-input rows="8" class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary">${escapeHtml(body)}</textarea>
+                    <div class="flex justify-end gap-2"><button type="button" data-repo-issue-description-cancel class="h-8 rounded-md border border-border px-3 text-xs font-semibold text-foreground">Cancel</button><button type="submit" class="h-8 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground">Save description</button></div>
+                  </form>` : ""}
                   ${issueTimelineSection}
                   ${issueCommentSection}
                   ${pullConversationSection}
@@ -9702,16 +10437,17 @@
               </div>` : ""}
           </div>
           <aside data-repo-record-sidebar class="min-w-0 text-xs">
+            ${issueMetadataEditor}
             ${isPulls ? sidebarSection("Reviewers", `<span data-repo-pull-reviewers class="grid gap-0.5">${renderPullReviewers(pullConversation, values.author || "")}</span>`) : ""}
-            ${sidebarSection("Assignees", "No one assigned")}
+            ${sidebarSection("Assignees", isIssues ? assigneeValue : "No one assigned")}
             ${sidebarSection("Labels", labelValue)}
             ${sidebarSection("Type", isPulls ? "Pull request" : isDiscussions ? "Discussion" : "Issue")}
-            ${sidebarSection("Fields", "No fields configured")}
+            ${sidebarSection("Fields", issueFieldsValue)}
             ${sidebarSection("Projects", "No projects")}
             ${sidebarSection("Milestone", metadata.find(([label]) => label === "Milestone")?.[1] || "No milestone")}
             ${sidebarSection("Relationships", "None yet")}
             ${sidebarSection("Development", isPulls ? "Successfully merging this pull request may close these issues." : "No branches or pull requests")}
-            ${sidebarSection("Notifications", '<button type="button" class="inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 font-semibold text-foreground"><i data-lucide="bell" class="h-3.5 w-3.5"></i>Subscribe</button>')}
+            ${sidebarSection("Notifications", `<button type="button" data-repo-issue-subscription="${parsed.issueSubscribed ? "unsubscribe" : "subscribe"}" class="inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="${parsed.issueSubscribed ? "bell-off" : "bell"}" class="h-3.5 w-3.5"></i>${parsed.issueSubscribed ? "Unsubscribe" : "Subscribe"}</button>`)}
             ${sidebarSection("Participants", `1 participant - ${escapeHtml(author)}`)}
           </aside>
         </div>
@@ -9783,6 +10519,11 @@
           pullMetadataCommit,
         );
         parsed.pullMergeAuthorized = await loadRepoPullMergeAuthorization(repo);
+      }
+      if (kind === "issues") {
+        parsed.issueMutationAuthorized =
+          await loadRepoIssueMutationAuthorization(repo);
+        parsed.issueSubscribed = await loadWebIssueSubscription(repo, number);
       }
       if (kind === "discussions") parsed.discussionConversation = await loadRepoDiscussionConversation(repo, number);
       state.repoRecordDetail = { repo, kind, number, parsed };
@@ -9904,6 +10645,7 @@
   async function loadRepoPendingCounts(repo) {
     try {
       const response = await fetch(`${repoApiBase(repo)}/pending`, {
+        cache: "no-store",
         headers: { accept: "application/json" },
       });
       const data = await response.json().catch(() => ({}));
@@ -9920,6 +10662,25 @@
       state.pendingIssueCounts[pendingIssuesRepoKey(repo)] =
         Number(pending.issues) || 0;
       applyRemotePendingIssueCount(repo);
+      const key = pendingIssuesRepoKey(repo);
+      state.pendingInboxRefreshes = state.pendingInboxRefreshes || {};
+      const total = ["issues", "pulls", "discussions", "commits"]
+        .reduce((sum, tab) => sum + Math.max(0, Number(pending[tab]) || 0), 0);
+      const prior = state.pendingInboxRefreshes[key];
+      if (total <= 0) {
+        if (prior?.timer) clearTimeout(prior.timer);
+        delete state.pendingInboxRefreshes[key];
+      } else if (!prior?.timer) {
+        const attempt = Math.min(5, Math.max(0, Number(prior?.attempt) || 0));
+        const refresh = {
+          attempt: attempt + 1,
+          timer: setTimeout(() => {
+            refresh.timer = 0;
+            void loadRepoPendingCounts(repo);
+          }, Math.min(30_000, 1500 * (2 ** attempt))),
+        };
+        state.pendingInboxRefreshes[key] = refresh;
+      }
     } catch (_) {
       /* offline relay — badges stay hidden */
     }
@@ -10050,7 +10811,8 @@
       // list showed fewer issues than the Mirror nodes count (adhoc #96).
       if (issuesView.filter === "open") return issue.status !== "closed";
       return issue.status === "closed";
-    }).filter((issue) => issueMatchesQuery(issue, issuesView.query));
+    }).filter((issue) => pageFilterQueries(issuesView.query)
+      .every((query) => issueMatchesQuery(issue, query)));
     const config = repoCollectionConfig.issues;
     const filterBar = `<div class="flex items-center gap-1 border-b border-border px-4 py-2">
       ${["open", "closed", "all"].map((stateName) => `<button type="button" data-dashboard-issue-filter="${stateName}" aria-pressed="${stateName === "open" ? "true" : "false"}" class="inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${stateName === issuesView.filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}">${stateName[0].toUpperCase() + stateName.slice(1)}</button>`).join("")}
@@ -10077,8 +10839,8 @@
     // flash empty before its rows arrive.
     const emptyLabel = issuesView.closedLoading
       ? loadingHtml("Loading closed issues from the live mirror...")
-      : issuesView.query
-        ? `No issues matching "${escapeHtml(issuesView.query)}".`
+      : (issuesView.query || globalSearchPageQuery())
+        ? `No issues matching "${escapeHtml(pageFilterQueries(issuesView.query).join(" "))}".`
         : `No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.`;
     container.innerHTML = filterBar + warnBar + (filtered.length
       ? renderRepoRecordList(filtered, config, "issues")
@@ -10555,16 +11317,48 @@
       </div>`;
   }
 
+  // Rows a record list shows once the header search box has been applied. The
+  // records carry exactly the fields renderRepoRecordList prints, so the same
+  // matcher the issue search uses gives "matches the search" == "matches what
+  // is displayed" here too (adhoc #37).
+  function repoRecordsMatchingPageFilter(items) {
+    const queries = pageFilterQueries("");
+    if (!queries.length) return items;
+    return items.filter((item) =>
+      queries.every((query) => issueMatchesQuery(item, query)));
+  }
+
+  // Re-render a cached pull/discussion list through the current page filter.
+  // No mirror read: loadRepoCollection stashed the records it fetched.
+  function renderRepoCollection(kind) {
+    const container = $(`[data-repo-${kind}]`);
+    const config = repoCollectionConfig[kind];
+    const items = state.repoCollectionItems[kind];
+    if (!container || !config || !Array.isArray(items)) return;
+    const visible = repoRecordsMatchingPageFilter(items);
+    const empty = items.length && !visible.length
+      ? `No ${escapeHtml(config.label.toLowerCase())} match this search.`
+      : escapeHtml(config.empty);
+    container.innerHTML = visible.length
+      ? renderRepoRecordList(visible, config, kind)
+      : `<div class="px-4 py-3 text-sm text-muted-foreground">${empty}</div>`;
+    window.lucide?.createIcons();
+  }
+
   async function loadRepoCollection(repo, kind, containerSelector) {
     const container = $(containerSelector);
     const config = repoCollectionConfig[kind];
     if (!container || !config) return;
+    // Drop the previous repo's cache up front so a failed load can never leave
+    // the page filter re-rendering rows that are no longer on screen.
+    state.repoCollectionItems[kind] = null;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml(`Loading ${escapeHtml(config.label.toLowerCase())} from the live mirror...`)}</div>`;
     try {
       const items = await loadRepoRecordsFromMirror(repo, config);
-      container.innerHTML = items.length
-        ? renderRepoRecordList(items, config, kind)
-        : `<div class="px-4 py-3 text-sm text-muted-foreground">${config.empty}</div>`;
+      // Counts below stay off the unfiltered set: the tab badge reports what
+      // the repo holds, not what the search box is currently showing.
+      state.repoCollectionItems[kind] = items;
+      renderRepoCollection(kind);
       if (kind === "pulls") {
         const openPulls = items.filter((item) => item.state === "open").length;
         setRepoTabCount("pulls", openPulls);
@@ -11075,10 +11869,21 @@
       }
       const logo = $("[data-repo-social-logo]");
       if (logo) {
-        const logoUrl = await loadNativeRepositoryLogo(
+        const loadedLogo = await loadNativeRepositoryLogo(
           nativeRepositoryLogoEndpoint(repo),
         );
+        const logoUrl = String(loadedLogo?.dataUrl || "");
+        const fallbackUrl = String(loadedLogo?.fallbackDataUrl || "");
         if (logoUrl) {
+          logo.decoding = "async";
+          logo.fetchPriority = "low";
+          logo.onerror = () => {
+            if (fallbackUrl && logo.src !== new URL(fallbackUrl, location.href).href) {
+              logo.src = fallbackUrl;
+            } else {
+              logo.classList.add("hidden");
+            }
+          };
           logo.src = logoUrl;
           logo.classList.remove("hidden");
         } else {
@@ -11098,7 +11903,6 @@
       // .forkmesh/info.json (loadRepoAboutInfo) overrides it when the live
       // mirror is reachable.
       if (body.website) applyRepoAboutWebsite(body.website);
-      loadRepoLogoSuggestions(repo);
     } catch (_) { /* fediverse card is an adornment, never an error */ }
   }
 
@@ -11664,6 +12468,27 @@
     loadRepoAboutInfo(repo);
     loadRepoAboutRelease(repo);
     loadRepoAboutInsights(repo);
+  }
+
+  function scheduleRepoAboutRail(repo) {
+    if (!repo || state.repoAboutLoaded) return;
+    state.repoAboutLoaded = true;
+    const load = () => {
+      if (
+        state.activeRepoTab !== "code"
+        || !state.selectedRepo
+        || !repoMatchesKey(state.selectedRepo, repoKey(repo))
+      ) {
+        state.repoAboutLoaded = false;
+        return;
+      }
+      loadRepoAboutRail(repo);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(load, { timeout: 1200 });
+    } else {
+      window.setTimeout(load, 0);
+    }
   }
 
   // --- Owner-only "Agents" tab (adhoc #182) -----------------------------
@@ -13030,6 +13855,23 @@
         </span>`;
   }
 
+  // Potentially long lists stay out of the row layout. The chip carries only
+  // the item count; hovering it reveals the complete, one-item-per-line list.
+  // Keeping it focusable gives keyboard users the same native tooltip and an
+  // explicit accessible label without adding a second visual row.
+  function mirrorListChip(label, values) {
+    const list = (Array.isArray(values) ? values : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    if (!list.length) return mirrorChip(label, "", false, "");
+    const tooltip = `${label}:\n${list.map((value) => `\u2022 ${value}`).join("\n")}`;
+    return `
+        <span class="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-mono" tabindex="0" aria-label="${escapeHtml(`${label}: ${list.join(", ")}`)}" title="${escapeHtml(tooltip)}">
+          <span class="text-muted-foreground">${escapeHtml(label)}</span>
+          <span class="text-foreground">${formatCount(list.length)}</span>
+        </span>`;
+  }
+
   // The metadata columns the desktop Mirror nodes panel shows, rendered as chips
   // under each mirror row: commit + sync freshness, on-disk size, and the mirrored
   // issue/commit/branch/pull/discussion/worktree/clone/website/artifact tallies.
@@ -13063,7 +13905,7 @@
       mirrorChip("Latency", Number.isFinite(Number(mirror.latencyMs)) ? `${Math.max(0, Number(mirror.latencyMs))} ms` : "", false, ""),
       mirrorChip("Region", mirror.region || "", false, ""),
       mirrorChip("Endpoint integrity", mirror.endpointIntegrity || "", mirror.endpointIntegrity && mirror.endpointIntegrity !== "ok", ""),
-      mirrorChip("Capabilities", operations.join(", "), false, ""),
+      mirrorListChip("Capabilities", operations),
       mirrorChip("Size", mirror.sizeBytes ? formatSize(mirror.sizeBytes) : "", false, ""),
       mirrorChip("Issues", mirrorCountText(mirror.issueCount), mirrorCountMismatch(mirror.issueCount, refMirror?.issueCount), `Source: ${mirrorCountText(refMirror?.issueCount)}`),
       mirrorChip("Commits", mirrorCountText(mirror.commitCount), mirrorCountMismatch(mirror.commitCount, refMirror?.commitCount), `Source: ${mirrorCountText(refMirror?.commitCount)}`),
@@ -13085,9 +13927,10 @@
     return Number.isFinite(number) && number >= 0 ? formatCount(number) : "";
   }
 
-  // The full Mirrors-tab row: a header line (dot, name, source-of-truth / out-of-
-  // sync / integrity badges, version, serve speed, status) over a wrapped strip of
-  // the same metadata columns the desktop Mirror nodes panel shows.
+  // The full Mirrors-tab row stays on one line: identity, state, metadata, and
+  // reachability all share one non-wrapping strip. The surrounding list scrolls
+  // horizontally on narrow screens; unbounded list data is condensed by
+  // mirrorListChip and remains available on hover/focus.
   function renderMirrorTabRow(mirror, servedBy, refMirror) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
@@ -13123,26 +13966,22 @@
         ? "text-amber-500"
         : "text-primary";
     const rowClass = isServing
-      ? "border-t border-border px-4 py-3 text-sm ring-1 ring-inset ring-primary bg-primary/5"
-      : "border-t border-border px-4 py-3 text-sm hover:bg-secondary/40 transition-colors";
+      ? "flex min-w-max flex-nowrap items-center gap-1.5 whitespace-nowrap border-t border-border px-4 py-2 text-sm ring-1 ring-inset ring-primary bg-primary/5"
+      : "flex min-w-max flex-nowrap items-center gap-1.5 whitespace-nowrap border-t border-border px-4 py-2 text-sm hover:bg-secondary/40 transition-colors";
     return `
         <div class="${rowClass}">
-          <div class="flex items-center gap-3">
-            <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 shrink-0 ${dotColor}"></i>
-            <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-              <span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
-              ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
-              ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
-              ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
-              ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
-              ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
-            </div>
-            <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
-              ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
-              ${escapeHtml(mirror.status || "unknown")}
-            </span>
-          </div>
-          <div class="mt-2 flex flex-wrap gap-1.5 pl-7">${mirrorDetailChips(mirror, refMirror)}</div>
+          <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 shrink-0 ${dotColor}"></i>
+          <span class="shrink-0 font-mono text-foreground">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
+          ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
+          ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
+          ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+          ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
+          ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
+          ${mirrorDetailChips(mirror, refMirror)}
+          <span class="ml-auto flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
+            ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
+            ${escapeHtml(mirror.status || "unknown")}
+          </span>
         </div>`;
   }
 
@@ -13205,9 +14044,9 @@
           (Number(b.lastSync) || 0) - (Number(a.lastSync) || 0) ||
           String(a.node || a.owner || a.name || "").localeCompare(String(b.node || b.owner || b.name || "")),
       );
-      tabContainer.innerHTML = ordered
+      tabContainer.innerHTML = `<div class="overflow-x-auto">${ordered
         .map((mirror) => renderMirrorTabRow(mirror, servedBy, refMirror))
-        .join("");
+        .join("")}</div>`;
     }
     renderRepoLiveMirrorList(mirrors, servedBy);
     window.lucide?.createIcons();
@@ -13541,7 +14380,7 @@
     // repo/branch switch if that tab is already active): fetching hidden live
     // data for every repo open fires Worker/host reads for tabs nobody opened.
     // The tab badges stay filled meanwhile from the root tree's bundled counts.
-    state.loadedRepoTabs = {};
+    state.loadedRepoTabs = state.loadedRepoTabs || {};
     const active = state.activeRepoTab || "code";
     if (active === "commits") {
       state.loadedRepoTabs.commits = true;
@@ -13873,6 +14712,7 @@
     // blob up front is what flooded the host with requests and tripped the rate
     // limit after a few refreshes; this map remembers which tabs have loaded.
     state.loadedRepoTabs = {};
+    state.repoAboutLoaded = false;
     // Show the clean, shareable /owner/name URL in the address bar instead of
     // the /dashboard/owner/name... path that 404.html bounces refreshed repo
     // links (including /owner/name/issues etc.) to. Carry over whatever tab or
@@ -14137,7 +14977,7 @@
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
             ${repo.isPrivate ? "" : `
             <div data-repo-social-badge class="-mx-4 -mt-4 mb-4 overflow-hidden rounded-t-lg border-b border-border">
-              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center" style="background-image:url('/assets/fediverse-banner.png')"></div>
+              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center"></div>
               <div class="flex items-end gap-3 px-4 pb-3">
                 <img data-repo-social-logo alt="Repository logo" class="-mt-7 hidden h-14 w-14 shrink-0 rounded-xl border-2 border-background bg-background object-cover shadow" />
                 <div class="min-w-0 pb-0.5">
@@ -14250,20 +15090,23 @@
     const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";
     setRepoTab(initialTab);
     window.lucide?.createIcons();
-    // When the URL restored a feature tab (or a record detail), the tree/README
-    // load is only a warm-up for a later click on Code — run it in background
-    // mode so it can't flip the visible tab or rewrite the restored URL.
-    loadRepositoryTree(repo, routeKind === "tree" ? routePath : "", { background: initialTab !== "code" });
+    // Only fetch code when Code is visible. Warming the tree/README behind an
+    // Issues or Pulls deep link multiplied cold-cache mirror traffic and made
+    // the requested panel compete with data the visitor could not see.
+    if (initialTab === "code") {
+      state.loadedRepoTabs.code = true;
+      if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
+      else loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
+      scheduleRepoAboutRail(repo);
+    }
     // A deep link into a subfolder (or a blob) loads a subpath/blob tree that
     // carries no served counts, so the tab badges would stay on the stale
     // catalog seed (e.g. Issues showing 7 while the open/ folder holds 11).
     // Refresh them from the mirror's root counts in that case; the root code
     // view and the feature-tab routes already fetch the root tree themselves.
     if ((routeKind === "tree" || routeKind === "blob") && routePath) refreshServedCounts(repo);
-    if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo, recordRoute);
     loadRepoPendingCounts(repo);
-    loadRepoAboutRail(repo);
     loadRepoStarState(repo, $("[data-repo-action-star]"));
     consumeWorkshopAgentDeepLink(repo, workshopDeepLink);
   }
@@ -14471,11 +15314,27 @@
     return state.networkOnlineOnly !== false;
   }
 
-  function renderNetworkRows(rows) {
+  // Header-search page filter for the Connected nodes list (adhoc #37): match
+  // the name plus the identifying fields the row's chips already show, so a
+  // hit is always something visible on the row.
+  function networkRowsMatchingPageFilter(rows) {
+    const queries = pageFilterQueries("");
+    if (!queries.length) return rows;
+    return rows.filter((row) => {
+      const haystack = [
+        row.name, row.platform, row.version, row.nodeId, row.commit,
+        row.online ? "online live" : "offline",
+      ].join(" ").toLowerCase();
+      return queries.every((query) => haystack.includes(query));
+    });
+  }
+
+  function renderNetworkRows(allRows) {
     const list = $("[data-network-node-list]");
     const count = $("[data-network-node-count]");
     const toggle = $("[data-network-online-only]");
     const onlineOnly = networkOnlineOnly();
+    const rows = networkRowsMatchingPageFilter(allRows);
     const onlineCount = rows.filter((row) => row.online).length;
     const offlineCount = rows.length - onlineCount;
     const visible = onlineOnly ? rows.filter((row) => row.online) : rows;
@@ -14508,7 +15367,7 @@
             <div class="mt-2 flex flex-wrap gap-1.5 pl-4">${nodeDetailChips(row)}</div>
           </div>
         `).join("")
-        : `<div class="px-4 py-3 text-sm text-muted-foreground">${onlineOnly ? "No nodes online right now." : "No nodes yet."}</div>`;
+        : `<div class="px-4 py-3 text-sm text-muted-foreground">${globalSearchPageQuery() && allRows.length ? "No nodes match this search." : (onlineOnly ? "No nodes online right now." : "No nodes yet.")}</div>`;
     }
   }
 
@@ -15960,6 +16819,92 @@
         return;
       }
 
+      const issueTitleEditButton = event.target.closest(
+        "[data-repo-issue-title-edit]",
+      );
+      if (issueTitleEditButton) {
+        const article = issueTitleEditButton.closest("[data-repo-record-detail]");
+        article?.querySelector("[data-repo-issue-title-heading]")?.classList.add("hidden");
+        const form = article?.querySelector("[data-repo-issue-title-form]");
+        form?.classList.remove("hidden");
+        form?.classList.add("flex");
+        form?.querySelector("[data-repo-issue-title-input]")?.focus();
+        return;
+      }
+
+      const issueTitleCancelButton = event.target.closest(
+        "[data-repo-issue-title-cancel]",
+      );
+      if (issueTitleCancelButton) {
+        renderCurrentWebIssueDetail();
+        return;
+      }
+
+      const issueDescriptionEditButton = event.target.closest(
+        "[data-repo-issue-description-edit]",
+      );
+      if (issueDescriptionEditButton) {
+        const section = issueDescriptionEditButton.closest("[data-repo-record-conversation]");
+        section?.querySelector("[data-repo-record-body]")?.classList.add("hidden");
+        issueDescriptionEditButton.parentElement?.classList.add("hidden");
+        section?.querySelector("[data-repo-issue-description-form]")?.classList.remove("hidden");
+        section?.querySelector("[data-repo-issue-description-input]")?.focus();
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-description-cancel]")) {
+        renderCurrentWebIssueDetail();
+        return;
+      }
+
+      const issueStatusButton = event.target.closest("[data-repo-issue-status]");
+      if (issueStatusButton) {
+        void handleWebIssueAction(issueStatusButton.dataset.repoIssueStatus || "");
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-vote]")) {
+        void handleWebIssueAction("vote");
+        return;
+      }
+
+      const issueSubscriptionButton = event.target.closest(
+        "[data-repo-issue-subscription]",
+      );
+      if (issueSubscriptionButton) {
+        void handleWebIssueAction(
+          issueSubscriptionButton.dataset.repoIssueSubscription || "subscribe",
+        );
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-delete]")) {
+        void handleWebIssueAction("delete-issue");
+        return;
+      }
+
+      const issueCommentEditButton = event.target.closest(
+        "[data-repo-issue-comment-edit]",
+      );
+      if (issueCommentEditButton) {
+        void handleWebIssueAction(
+          "edit-comment",
+          issueCommentEditButton.dataset.repoIssueCommentEdit || "",
+        );
+        return;
+      }
+
+      const issueCommentDeleteButton = event.target.closest(
+        "[data-repo-issue-comment-delete]",
+      );
+      if (issueCommentDeleteButton) {
+        void handleWebIssueAction(
+          "delete-comment",
+          issueCommentDeleteButton.dataset.repoIssueCommentDelete || "",
+        );
+        return;
+      }
+
       const pullViewedButton = event.target.closest("[data-repo-pull-viewed]");
       if (pullViewedButton && state.selectedRepo) {
         toggleRepoPullViewed(
@@ -16203,7 +17148,31 @@
     const issueCommentForm = event.target.closest("[data-repo-issue-comment-form]");
     if (issueCommentForm && state.selectedRepo) {
       event.preventDefault();
+      issueCommentForm._issueSubmitAction =
+        event.submitter?.dataset.repoIssueCommentAction || "comment";
       handleIssueCommentSubmit(state.selectedRepo, issueCommentForm);
+      return;
+    }
+    const issueTitleForm = event.target.closest("[data-repo-issue-title-form]");
+    if (issueTitleForm) {
+      event.preventDefault();
+      void handleWebIssueTitleSubmit(issueTitleForm);
+      return;
+    }
+    const issueDescriptionForm = event.target.closest(
+      "[data-repo-issue-description-form]",
+    );
+    if (issueDescriptionForm) {
+      event.preventDefault();
+      void handleWebIssueDescriptionSubmit(issueDescriptionForm);
+      return;
+    }
+    const issueMetadataForm = event.target.closest(
+      "[data-repo-issue-metadata-form]",
+    );
+    if (issueMetadataForm) {
+      event.preventDefault();
+      void handleWebIssueMetadataSubmit(issueMetadataForm);
       return;
     }
     const discussionReplyForm = event.target.closest("[data-repo-discussion-reply-form]");
@@ -16250,6 +17219,10 @@
   $("[data-global-search]")?.addEventListener("input", () => {
     state.globalSearch.open = true;
     state.globalSearch.selectedIndex = 0;
+    // The dropdown searches the whole catalog; the page filter narrows what is
+    // already on screen. Both run per keystroke (adhoc #37) — the page filter
+    // only re-renders in-memory lists, so there is no fetch behind it.
+    applyGlobalSearchPageFilter();
     renderGlobalSearchResults();
   });
   $("[data-global-search]")?.addEventListener("keydown", (event) => {
@@ -16476,6 +17449,254 @@
     });
   }
   // ---------------------------------------------------------------------------
+  // Tasks page (/dashboard/tasks). The organization-private task catalog the
+  // desktop app and the World office board already show, on the web. The relay
+  // returns the whole catalog in one authorized read, so the filtering and the
+  // paging both happen here: TASKS_PAGE_SIZE rows a page, every page reachable.
+  const TASKS_PAGE_SIZE = 100;
+
+  function taskStatusLabel(task) {
+    if (task.completedAt > 0 || task.status === "done") return "Done";
+    if (task.status === "active") return "In progress";
+    if (task.assigneeKind === "agent" && task.agentSessionId) return "Queued";
+    return "Ready";
+  }
+
+  function taskAssigneeLabel(task) {
+    if (task.assigneeKind === "agent") return "Bot";
+    return task.assignee || "Unassigned";
+  }
+
+  function taskMatchesFilter(task, filter) {
+    const done = task.completedAt > 0 || task.status === "done";
+    if (filter === "open") return !done;
+    if (filter === "done") return done;
+    if (filter === "active") return task.status === "active";
+    if (filter === "mine") {
+      return (
+        !done &&
+        task.assigneeKind === "user" &&
+        task.assignee === state.tasksView.actor
+      );
+    }
+    return true;
+  }
+
+  // Open/closed over the whole catalog, counted with the same test the desktop
+  // app's badge uses (openOrganizationTaskCount in MainWindowTasks.cpp), so the
+  // two surfaces never disagree about how many tasks are open (adhoc #56).
+  function taskStateCounts() {
+    let open = 0;
+    for (const task of state.tasksView.items) {
+      if (!(task.completedAt > 0 || task.status === "done")) open += 1;
+    }
+    return { open, closed: state.tasksView.items.length - open };
+  }
+
+  function filteredTasks() {
+    const query = String(state.tasksView.query || "").trim().toLowerCase();
+    return state.tasksView.items.filter((task) => {
+      if (!taskMatchesFilter(task, state.tasksView.filter)) return false;
+      if (!query) return true;
+      return [
+        task.title,
+        task.details,
+        task.repository,
+        task.department,
+        task.team,
+        taskAssigneeLabel(task),
+        task.createdBy,
+        task.id,
+      ].some((value) => String(value || "").toLowerCase().includes(query));
+    });
+  }
+
+  function taskRowHtml(task) {
+    const status = taskStatusLabel(task);
+    const tone = {
+      "Done": "border-border bg-secondary text-muted-foreground",
+      "In progress": "border-primary/40 bg-primary/10 text-primary",
+      "Queued": "border-border bg-secondary text-foreground",
+      "Ready": "border-border bg-background text-foreground",
+    }[status];
+    const updated = relativeTimeLabel(task.updatedAt || task.createdAt);
+    const meta = [
+      task.department ? `#${task.department}` : "",
+      task.repository || "",
+      // "unknown" is the relay's default QA state, i.e. nothing to report.
+      task.qa?.status && task.qa.status !== "unknown"
+        ? `QA: ${task.qa.status}`
+        : "",
+      updated ? `updated ${updated}` : "",
+    ].filter(Boolean);
+    return `
+      <article class="px-4 sm:px-5 py-3 flex items-start gap-3">
+        <span class="mt-0.5 shrink-0 rounded-full border px-2 py-0.5 font-mono text-[10px] ${tone}">${escapeHtml(status)}</span>
+        <div class="min-w-0 flex-1">
+          <p class="truncate text-sm font-medium text-foreground">${escapeHtml(task.title)}</p>
+          <p class="mt-1 truncate text-xs text-muted-foreground">${escapeHtml(meta.join(" · "))}</p>
+        </div>
+        <span class="shrink-0 text-xs text-muted-foreground">${escapeHtml(taskAssigneeLabel(task))}</span>
+        <span class="shrink-0 rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground" title="Priority">${escapeHtml(String(task.priority ?? 50))}</span>
+      </article>`;
+  }
+
+  function renderTasksPage() {
+    const list = $("[data-tasks-list]");
+    const summary = $("[data-tasks-summary]");
+    const count = $("[data-tasks-count]");
+    const prev = $("[data-tasks-prev]");
+    const next = $("[data-tasks-next]");
+    const pageList = $("[data-tasks-pages]");
+    if (!list) return;
+
+    for (const button of $$("[data-tasks-filter]")) {
+      const active = button.dataset.tasksFilter === state.tasksView.filter;
+      button.setAttribute("aria-pressed", String(active));
+      button.classList.toggle("bg-secondary", active);
+      button.classList.toggle("text-foreground", active);
+    }
+
+    if (state.tasksView.loading || state.tasksView.error) {
+      list.innerHTML = state.tasksView.loading
+        ? `<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">${loadingHtml("Loading organization tasks...")}</div>`
+        : `<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">${escapeHtml(state.tasksView.error)}</div>`;
+      if (summary) summary.textContent = "";
+      if (count) {
+        count.textContent = state.tasksView.loading
+          ? "Loading"
+          : "0 open · 0 closed";
+      }
+      if (pageList) pageList.innerHTML = "";
+      for (const button of [prev, next]) {
+        if (!button) continue;
+        button.disabled = true;
+        button.classList.add("opacity-40");
+      }
+      return;
+    }
+
+    const matches = filteredTasks();
+    const pages = Math.max(1, Math.ceil(matches.length / TASKS_PAGE_SIZE));
+    state.tasksView.page = Math.min(Math.max(1, state.tasksView.page), pages);
+    const start = (state.tasksView.page - 1) * TASKS_PAGE_SIZE;
+    const end = Math.min(start + TASKS_PAGE_SIZE, matches.length);
+
+    list.innerHTML = matches.length
+      ? matches.slice(start, end).map(taskRowHtml).join("")
+      : '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">No tasks match this filter.</div>';
+    const counts = taskStateCounts();
+    if (count) {
+      count.textContent = `${formatCount(counts.open)} open · ${formatCount(counts.closed)} closed`;
+    }
+    if (summary) {
+      const totals = `${formatCount(counts.open)} open · ${formatCount(counts.closed)} closed`;
+      summary.textContent = matches.length
+        ? `${totals} · showing ${start + 1}-${end} of ${formatCount(matches.length)} · page ${state.tasksView.page} of ${pages}`
+        : `${totals} · no tasks match this filter`;
+    }
+    if (prev) {
+      prev.disabled = state.tasksView.page <= 1;
+      prev.classList.toggle("opacity-40", prev.disabled);
+    }
+    if (next) {
+      next.disabled = state.tasksView.page >= pages;
+      next.classList.toggle("opacity-40", next.disabled);
+    }
+    if (pageList) {
+      pageList.innerHTML = "";
+      for (let page = 1; page <= pages; page += 1) {
+        const button = document.createElement("button");
+        const active = page === state.tasksView.page;
+        button.type = "button";
+        button.textContent = String(page);
+        button.dataset.tasksPage = String(page);
+        button.className = [
+          "h-8 min-w-8 rounded-md border px-2 text-xs font-mono transition-colors",
+          active
+            ? "border-border bg-secondary text-foreground"
+            : "border-transparent text-muted-foreground hover:border-border hover:bg-secondary hover:text-foreground",
+        ].join(" ");
+        pageList.append(button);
+      }
+    }
+    window.lucide?.createIcons();
+  }
+
+  async function loadOrganizationTasks() {
+    // The catalog is organization-private: a signed-out visitor has no session
+    // token, so the read can only ever come back 401. Say so instead of
+    // flashing a spinner and then an error.
+    if (!state.session) {
+      state.tasksView.loading = false;
+      state.tasksView.error =
+        "Sign in with an organization member account to see the private task catalog.";
+      renderTasksPage();
+      return;
+    }
+    state.tasksView.loading = true;
+    state.tasksView.error = "";
+    renderTasksPage();
+    try {
+      const payload = await fetchJson("/api/tasks", { fresh: true });
+      state.tasksView.items = (Array.isArray(payload?.tasks) ? payload.tasks : [])
+        .filter((task) => task && typeof task === "object");
+      state.tasksView.actor = String(payload?.actor || "").toLowerCase();
+      state.tasksView.error = "";
+    } catch (error) {
+      state.tasksView.items = [];
+      state.tasksView.error =
+        error?.status === 401 || error?.status === 403
+          ? "This task catalog is private to organization members."
+          : `Tasks are unavailable: ${error?.message || "request failed"}`;
+    } finally {
+      state.tasksView.loading = false;
+      renderTasksPage();
+    }
+  }
+
+  function initTasksPage() {
+    const search = $("[data-tasks-search]");
+    if (search) {
+      search.addEventListener("input", () => {
+        state.tasksView.query = search.value;
+        state.tasksView.page = 1;
+        renderTasksPage();
+      });
+    }
+    const panel = $("[data-tasks-panel]");
+    panel?.addEventListener("click", (event) => {
+      const filter = event.target.closest("[data-tasks-filter]");
+      if (filter) {
+        state.tasksView.filter = filter.dataset.tasksFilter;
+        state.tasksView.page = 1;
+        renderTasksPage();
+        return;
+      }
+      const page = event.target.closest("[data-tasks-page]");
+      if (page) {
+        state.tasksView.page = Number(page.dataset.tasksPage) || 1;
+        renderTasksPage();
+        return;
+      }
+      if (event.target.closest("[data-tasks-prev]")) {
+        state.tasksView.page = Math.max(1, state.tasksView.page - 1);
+        renderTasksPage();
+        return;
+      }
+      if (event.target.closest("[data-tasks-next]")) {
+        state.tasksView.page += 1;
+        renderTasksPage();
+        return;
+      }
+      if (event.target.closest("[data-tasks-refresh]")) {
+        void loadOrganizationTasks();
+      }
+    });
+    void loadOrganizationTasks();
+  }
+
+  // ---------------------------------------------------------------------------
   // Boot. Every page document ships this same bundle; <body data-page="..."> is
   // baked at build time (dashboard_shell.PAGES) and picks which init runs. The
   // page's own markup is the only view in the document and is active at parse
@@ -16485,6 +17706,7 @@
     "repos": initReposPage,
     "network": initNetworkPage,
     "chat": initChatPage,
+    "tasks": initTasksPage,
     "settings": initSettingsPage,
     "profile": initProfileOverviewPage,
     "profile-repositories": initProfileOverviewPage,

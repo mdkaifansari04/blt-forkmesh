@@ -68,6 +68,18 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS repositories (
         key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi)",
+    # The first concrete publishing device becomes the repository authority.
+    # Additional devices owned by the same account remain useful mirrors but
+    # cannot replace its signed state merely because they cloned the checkout.
+    """CREATE TABLE IF NOT EXISTS repo_source_authorities (
+        repo_bi TEXT PRIMARY KEY, node_id TEXT NOT NULL,
+        machine_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS repo_device_mirrors (
+        repo_bi TEXT NOT NULL, node_id TEXT NOT NULL, data TEXT NOT NULL,
+        updated_at INTEGER NOT NULL, PRIMARY KEY (repo_bi, node_id))""",
+    "CREATE INDEX IF NOT EXISTS idx_repo_device_mirrors_repo "
+    "ON repo_device_mirrors(repo_bi, updated_at DESC)",
     # Per-repo collaborator ACL (issue #9): which grantee accounts an owner has
     # shared a private repo with. repo_bi = blind_index("<owner>/<repo>") (the
     # same key as repositories.key_bi); grantee_bi = blind_index(grantee account
@@ -487,6 +499,16 @@ SCHEMA_STATEMENTS = [
         scope TEXT NOT NULL, key TEXT NOT NULL, name TEXT,
         lamports INTEGER NOT NULL DEFAULT 0, last_ts INTEGER,
         PRIMARY KEY (scope, key))""",
+    # Last public on-chain balance read for a member's published payout address,
+    # for the "member SOL wallets" board. Both columns are public data (the
+    # address is public profile data, the balance is a public getBalance), and
+    # the row exists only so the board can rank every published address while
+    # re-reading a rotating slice per rebuild instead of all of them at once.
+    """CREATE TABLE IF NOT EXISTS wallet_balances (
+        wallet TEXT PRIMARY KEY, name TEXT,
+        lamports INTEGER NOT NULL DEFAULT 0,
+        checked_at INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS idx_wallet_balances_checked ON wallet_balances(checked_at)",
     """CREATE TABLE IF NOT EXISTS notifications (
         dedupe_bi TEXT PRIMARY KEY,
         recipient_bi TEXT NOT NULL,
@@ -643,7 +665,10 @@ SCHEMA_STATEMENTS = [
         claimed_at INTEGER NOT NULL)""",
     # Edge repository-render monitor state. One row is enough to deduplicate
     # outage/recovery mail while the normal status tables retain the public
-    # minute/hour/day history.
+    # minute/hour/day history. Pings and email are independently switchable, so
+    # each channel keeps its own delivered-transition marker: pinged_state must
+    # not be inferred from notified_state or a deployment with mail off would
+    # re-announce the same recovery on every cron tick.
     """CREATE TABLE IF NOT EXISTS repository_monitor_state (
         monitor_id TEXT PRIMARY KEY,
         is_up INTEGER NOT NULL DEFAULT 1,
@@ -651,7 +676,8 @@ SCHEMA_STATEMENTS = [
         outage_started_at INTEGER NOT NULL DEFAULT 0,
         checked_at INTEGER NOT NULL,
         reason TEXT,
-        notified_state TEXT NOT NULL DEFAULT '')""",
+        notified_state TEXT NOT NULL DEFAULT '',
+        pinged_state TEXT NOT NULL DEFAULT '')""",
     # Founders-outreach team: accounts an admin has authorized to send email
     # from the shared founders address via /outreach. `name` is the public
     # account name in plaintext (like users.username) so the roster is listable
@@ -1058,6 +1084,17 @@ SCHEMA_STATEMENTS = [
         bytes_out INTEGER NOT NULL DEFAULT 0 CHECK (bytes_out >= 0),
         messages INTEGER NOT NULL DEFAULT 0 CHECK (messages >= 0),
         updated_at INTEGER NOT NULL DEFAULT 0 CHECK (updated_at >= 0))""",
+    # Minute aggregates for platform-aborted Durable Object requests
+    # (migration 0116). A reconnect storm increments one content-free row
+    # instead of writing one error_log row per affected user. /status consumes
+    # these counters, preserving incident visibility without flooding the
+    # operator's actionable Worker-error queue.
+    """CREATE TABLE IF NOT EXISTS durable_object_abort_minute (
+        minute_ts INTEGER PRIMARY KEY CHECK (minute_ts >= 0),
+        aborts INTEGER NOT NULL DEFAULT 0 CHECK (aborts >= 0),
+        duration_aborts INTEGER NOT NULL DEFAULT 0
+            CHECK (duration_aborts >= 0),
+        updated_at INTEGER NOT NULL DEFAULT 0 CHECK (updated_at >= 0))""",
     # Aggregate-only Town Square arrival odometer for the Arrival Grid plaque
     # (migration 0074). Each accepted world join adds one to a coarse
     # 10-minute UTC bucket; rows never carry a visitor id, country, IP, or
@@ -1370,6 +1407,39 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (contribution_id, intent_id))""",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_reward_contribution_intent_id "
     "ON reward_contribution_intents(intent_id)",
+    # World store element purchases. Public data only: a per-purchase Solana
+    # Pay reference address, the buyer's own finalized transfer signature, and
+    # the half owed to online mirror nodes. The purchased element itself is
+    # granted on the account record; no deposit wallet or key is ever created.
+    """CREATE TABLE IF NOT EXISTS world_element_purchases (
+        purchase_id TEXT PRIMARY KEY,
+        account_bi TEXT NOT NULL,
+        element_id TEXT NOT NULL,
+        amount_lamports INTEGER NOT NULL,
+        treasury_lamports INTEGER NOT NULL DEFAULT 0,
+        mirror_lamports INTEGER NOT NULL DEFAULT 0,
+        reference_address TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'prepared',
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        tx_signature TEXT NOT NULL DEFAULT '',
+        source_address TEXT NOT NULL DEFAULT '',
+        confirmed_at INTEGER NOT NULL DEFAULT 0,
+        distribution_intent_id TEXT NOT NULL DEFAULT '',
+        method TEXT NOT NULL DEFAULT 'direct',
+        deposit_address TEXT NOT NULL DEFAULT '',
+        deposit_secret TEXT NOT NULL DEFAULT '',
+        sweep_signature TEXT NOT NULL DEFAULT '',
+        sweep_at INTEGER NOT NULL DEFAULT 0,
+        sweep_error TEXT NOT NULL DEFAULT '')""",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_deposit "
+    "ON world_element_purchases(status, method, expires_at)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_world_element_purchase_signature "
+    "ON world_element_purchases(tx_signature) WHERE tx_signature<>''",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_account "
+    "ON world_element_purchases(account_bi, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_world_element_purchases_status "
+    "ON world_element_purchases(status, created_at)",
     # External provider entries are intentionally separate from `repositories`:
     # an imported metadata record or stub can never be routed as a live mirror.
     # The encrypted data blob carries public/private provider metadata; the
@@ -1803,6 +1873,42 @@ SCHEMA_STATEMENTS = [
         BEGIN
             SELECT RAISE(ABORT, 'organization_task_catalog_full');
         END""",
+    """CREATE TABLE IF NOT EXISTS organization_task_attachments (
+        attachment_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        org_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_by_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_task_attachments_task "
+    "ON organization_task_attachments(org_bi, task_id, created_at)",
+    """CREATE TRIGGER IF NOT EXISTS trg_organization_task_attachment_limit
+        BEFORE INSERT ON organization_task_attachments
+        WHEN (
+            SELECT COUNT(*) FROM organization_task_attachments
+            WHERE org_bi=NEW.org_bi AND task_id=NEW.task_id
+        ) >= 4
+        BEGIN
+            SELECT RAISE(
+                ABORT, 'organization_task_attachment_catalog_full');
+        END""",
+    """CREATE TABLE IF NOT EXISTS mailtrap_email_sends (
+        send_id TEXT PRIMARY KEY,
+        account_bi TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT '',
+        sent_at INTEGER NOT NULL,
+        accepted INTEGER NOT NULL DEFAULT 0
+            CHECK (accepted IN (0, 1)),
+        status TEXT NOT NULL DEFAULT '',
+        status_at INTEGER NOT NULL DEFAULT 0,
+        message_id TEXT NOT NULL DEFAULT '')""",
+    "CREATE INDEX IF NOT EXISTS idx_mailtrap_email_sends_account "
+    "ON mailtrap_email_sends(account_bi, sent_at DESC)",
+    """CREATE TABLE IF NOT EXISTS mailtrap_webhook_events (
+        event_id TEXT PRIMARY KEY,
+        received_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_mailtrap_webhook_events_received "
+    "ON mailtrap_webhook_events(received_at)",
     """CREATE TABLE IF NOT EXISTS organization_task_checkins (
         checkin_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,

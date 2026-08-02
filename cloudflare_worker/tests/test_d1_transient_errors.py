@@ -21,7 +21,7 @@ ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 
 READ_FUNCS = {
     "_is_transient_d1_error", "_d1_read", "d1_all", "d1_first",
-    "d1_row_to_dict", "js_nullish", "_safe_error_text",
+    "d1_bind_args", "d1_row_to_dict", "js_nullish", "_safe_error_text",
 }
 ROUTER_FUNCS = {
     "_is_transient_d1_error", "_is_d1_platform_error", "_safe_error_text",
@@ -201,8 +201,8 @@ def test_router_answers_503_degraded_instead_of_re_raising():
 
 
 def test_d1_outage_is_logged_to_d1_only_never_to_sentry():
-    """Same doctrine as log_durable_object_abort: no stack-traced Sentry ERROR
-    for an expected dependency outage, or real bugs drown in the noise."""
+    """No stack-traced Sentry ERROR for an expected dependency outage, or
+    real bugs drown in the noise."""
     source = ENTRY.read_text(encoding="utf-8")
     body = source.split("async def log_d1_unavailable(", 1)[1]
     body = body.split("\nasync def ", 1)[0]
