@@ -9,6 +9,7 @@
 #include "PublicMirrorRuntime.h"
 #include "ServerNode.h"
 #include "SingleInstance.h"
+#include "SystemStats.h"
 #include "Theme.h"
 
 #if __has_include("ForkMeshVersion.h")
@@ -559,6 +560,16 @@ int main(int argc, char *argv[])
             return runSizeMapScan(QString::fromLocal8Bit(argv[i + 1]));
     }
 
+    // Descriptors before anything can open one: most distributions still ship a
+    // 1024 soft cap against a hard cap in the hundreds of thousands, and a node
+    // that holds relay sockets, git child pipes, watches and a wakeup pipe per
+    // thread can reach it. Hitting it is not a graceful failure — glib's
+    // g_wakeup_new() calls g_error() when the pipe fails, so the next thread
+    // start aborts the whole app with SIGTRAP inside
+    // g_main_context_new_with_flags (the v0.7.9 crash report). Raising the soft
+    // cap to the hard one removes that cliff.
+    SystemStats::raiseOpenFileLimit();
+
     // First thing, before anything can fault: install the crash handlers so an
     // unexpected exit/crash leaves a record in the network log. A compact signal
     // breadcrumb and the full backtrace go to network_log.txt directly so the
@@ -665,6 +676,27 @@ int main(int argc, char *argv[])
         qInfo().noquote()
             << "ForkMesh is already running; focusing the existing window.";
         return 0;
+    }
+
+    // Headless nodes intentionally place TMPDIR on persistent disk because a
+    // repository materialization can be larger than their RAM-backed /tmp.
+    // An abrupt reboot cannot run the Qt/Python temporary-directory destructors,
+    // so sweep exact ForkMesh mirror artifacts only after proving this is the
+    // sole application instance. This keeps crash debris from growing without
+    // bound across gateway and encrypted-mirror restarts.
+    {
+        QString cleanupError;
+        const int removed =
+            PublicMirrorRuntime::cleanupStaleTemporaryDirectories(
+                QDir::tempPath(), &cleanupError);
+        if (removed < 0) {
+            qWarning().noquote()
+                << "Mirror temporary cleanup skipped:" << cleanupError;
+        } else if (removed > 0) {
+            qInfo().noquote()
+                << "Mirror temporary cleanup removed" << removed
+                << "stale director" << (removed == 1 ? "y." : "ies.");
+        }
     }
 
     // A mirror Actions helper can be killed after the catalog toggle is

@@ -1397,6 +1397,36 @@ async def repository_metadata_cache_put(env, cache_key, response, status):
         pass
 
 
+def request_bypasses_repository_metadata_cache(request):
+    """Honor explicit live-read semantics before mirror selection.
+
+    Dashboard repository reads use ``fetch(..., cache="no-store")`` and also
+    send ``Cache-Control: no-cache``.  Those requests must reach a healthy
+    mirror so the round-robin cursor advances and the Mirrors view records the
+    node that actually served the request.  Immutable state-addressed cache
+    entries remain available to ordinary clients that do not request a live
+    read.
+    """
+    try:
+        cache_control = str(
+            request.headers.get("cache-control") or ""
+        ).lower()
+        pragma = str(request.headers.get("pragma") or "").lower()
+    except Exception:
+        return False
+    directives = {
+        part.split("=", 1)[0].strip()
+        for part in cache_control.split(",")
+        if part.strip()
+    }
+    return bool(
+        directives.intersection({"no-cache", "no-store"})
+        or "no-cache" in {
+            part.strip() for part in pragma.split(",") if part.strip()
+        }
+    )
+
+
 async def purge_catalog_related_caches():
     # One concurrent sweep instead of four sequential awaits — this runs on
     # every catalog write, inside the request's critical path.
@@ -36842,16 +36872,29 @@ async def world_admin_errors_handler(env, request):
             data = await bounded_json_request(request)
             row_id = int(data.get("id") or 0)
         except (AttributeError, TypeError, ValueError):
+            data = {}
             row_id = 0
-        if row_id <= 0:
+        group = data.get("group") if isinstance(data, dict) else None
+        if row_id <= 0 and not isinstance(group, dict):
             return json_response(
                 {"error": "invalid_error_id"},
                 status=400,
                 cache_control="no-store",
             )
         if method == "POST":
+            if isinstance(group, dict):
+                form = {
+                    "group_status": [str(group.get("status") or "")[:12]],
+                    "group_method": [str(group.get("method") or "")[:12]],
+                    "group_path": [str(group.get("path") or "")[:2000]],
+                    "group_message": [str(group.get("message") or "")[:1000]],
+                    "group_users": [clean_string(
+                        group.get("users") or "", 300)],
+                }
+            else:
+                form = {"error_id": [str(row_id)]}
             message, details = await _admin_error_create_bot_task(
-                env, {"error_id": [str(row_id)]}, actor)
+                env, form, actor)
             if details.get("taskId"):
                 return json_response(
                     {"ok": True, "message": message, **details},
@@ -36864,7 +36907,25 @@ async def world_admin_errors_handler(env, request):
                 cache_control="no-store",
             )
         await ensure_schema(env)
-        await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
+        if isinstance(group, dict):
+            status = str(group.get("status") or "")[:12]
+            request_method = str(group.get("method") or "")[:12].upper()
+            path = str(group.get("path") or "")[:2000]
+            message = str(group.get("message") or "")[:1000]
+            if not status or not request_method:
+                return json_response(
+                    {"error": "invalid_error_group"},
+                    status=400,
+                    cache_control="no-store",
+                )
+            await d1_run(
+                env,
+                "DELETE FROM error_log WHERE CAST(status AS TEXT)=? "
+                "AND UPPER(method)=? AND path=? AND message=?",
+                status, request_method, path, message,
+            )
+        else:
+            await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
         return json_response({"ok": True}, cache_control="no-store")
     try:
         query = parse_qs(urlparse(request.url).query)
@@ -36896,6 +36957,8 @@ async def world_admin_errors_handler(env, request):
             "FROM error_log WHERE ts>=? ORDER BY id DESC LIMIT 1000",
             int(Date.now()) - 24 * 60 * 60 * 1000,
         )
+        now = int(Date.now())
+        hourly = [0] * 24
         groups = {}
         for row in grouped_rows or []:
             signature = (
@@ -36906,12 +36969,20 @@ async def world_admin_errors_handler(env, request):
             )
             group = groups.setdefault(signature, {
                 "count": 0,
-                "firstSeen": int(row.get("ts") or 0),
+                "firstSeen": 0,
                 "lastSeen": 0,
+                "hours": [0] * 24,
                 "actors": {},
                 "anonymous": 0,
             })
             timestamp = max(0, int(row.get("ts") or 0))
+            if 0 < timestamp < 10 ** 11:
+                timestamp *= 1000
+            age_hours = max(0, (now - timestamp) // (60 * 60 * 1000))
+            if age_hours < 24:
+                bucket = 23 - int(age_hours)
+                hourly[bucket] += 1
+                group["hours"][bucket] += 1
             group["count"] += 1
             group["firstSeen"] = min(group["firstSeen"] or timestamp, timestamp)
             group["lastSeen"] = max(group["lastSeen"], timestamp)
@@ -36922,6 +36993,7 @@ async def world_admin_errors_handler(env, request):
                     group["actors"].get(related_actor, 0) + 1)
             else:
                 group["anonymous"] += 1
+        payload["hourly"] = hourly
         payload["groups"] = [
             {
                 "status": signature[0],
@@ -36931,6 +37003,7 @@ async def world_admin_errors_handler(env, request):
                 "count": group["count"],
                 "firstSeen": group["firstSeen"],
                 "lastSeen": group["lastSeen"],
+                "hours": group["hours"],
                 "actors": [
                     {"name": name, "count": count}
                     for name, count in sorted(
@@ -41771,6 +41844,7 @@ def _https_mirror_endpoint_projection(row):
         "healthy": bool(row.get("healthy")),
         "integrity": row.get("integrity"),
         "abuseBlocked": bool(row.get("abuse_blocked")),
+        "refsSha256": row.get("forkmesh_refs_sha256"),
     }
 
 
@@ -41778,7 +41852,8 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
     rows = await d1_all(
         env,
         """SELECT node_name,base_url,public_key,registration_sig,issued_at,
-                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked
+                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked,
+                  forkmesh_refs_sha256
              FROM mirror_https_endpoints""",
     )
     records = [
@@ -41799,6 +41874,13 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
         str(node or "").lower()
         for node in context.get("currentNodes", set())
     }
+    # Catalog identities can nominate one preferred current host even when
+    # several healthy endpoints carry the exact same signed refs digest. Treat
+    # those byte-identical copies as equally current so this preference sort
+    # does not undo the cursor rotation and pin every request to one node.
+    current_nodes = https_routing.equivalent_current_endpoint_nodes(
+        selected, current_nodes, context.get("currentPins", set())
+    )
     if current_nodes:
         selected.sort(
             key=lambda item: (
@@ -42899,6 +42981,9 @@ async def _https_mirror_proxy(
         return json_response({"error": "method_not_allowed"}, status=405)
     query = _https_mirror_request_query(
         urlparse(request.url), operation, release_sha=release_sha)
+    bypass_cache = bool(
+        bypass_cache or request_bypasses_repository_metadata_cache(request)
+    )
     metadata_cache_key = (
         repository_metadata_cache_key(context, operation, query)
         if method == "GET" else ""

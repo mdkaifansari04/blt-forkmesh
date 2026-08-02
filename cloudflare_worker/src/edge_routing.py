@@ -407,6 +407,9 @@ def normalize_endpoint_record(value):
         latency_ms = max(0, min(60_000, int(value.get("latencyMs") or 0)))
     except (TypeError, ValueError):
         return None
+    refs_sha256 = str(value.get("refsSha256") or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", refs_sha256):
+        refs_sha256 = ""
     return {
         "node": node,
         "baseUrl": base_url,
@@ -419,6 +422,7 @@ def normalize_endpoint_record(value):
         "integrity": str(value.get("integrity") or "unknown").lower(),
         "region": str(value.get("region") or "").strip().upper()[:8],
         "abuseBlocked": bool(value.get("abuseBlocked")),
+        "refsSha256": refs_sha256,
     }
 
 
@@ -459,6 +463,32 @@ def select_endpoints(records, now, preferred_region="", cursor=0):
     cursor = int(cursor or 0) % len(eligible)
     rotated = eligible[cursor:] + eligible[:cursor]
     return rotated[:MAX_FAILOVER_ATTEMPTS]
+
+
+def equivalent_current_endpoint_nodes(records, current_nodes, current_pins):
+    """Expand current preference to endpoints with identical signed refs."""
+    current_nodes = {
+        str(node or "").strip().lower() for node in (current_nodes or set())
+    }
+    current_pins = {
+        str(pin or "").strip().lower() for pin in (current_pins or set())
+    }
+    current_refs = {
+        record.get("refsSha256", "")
+        for record in (records or [])
+        if record.get("refsSha256")
+        and (
+            record.get("node") in current_nodes
+            or record.get("refsSha256") in current_pins
+        )
+    }
+    if not current_refs:
+        return current_nodes
+    return current_nodes.union({
+        record.get("node")
+        for record in (records or [])
+        if record.get("node") and record.get("refsSha256") in current_refs
+    })
 
 
 def masked_target_url(base_url, owner, repo, operation, query=None):

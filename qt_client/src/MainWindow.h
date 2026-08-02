@@ -33,9 +33,9 @@ struct AgentScannerState {
 };
 
 // Per-session "what did this agent change" summary shown in the agents list
-// (issue #170): files its patch touched, and how far its branch sits ahead of /
-// behind the base branch. -1 means "unknown / not applicable" — e.g. a running
-// session with no patch yet, or a branch that has since been removed.
+// (issue #170): files its live branch review touches (falling back to its stored
+// patch after cleanup), and how far the branch sits ahead of / behind its base.
+// -1 means "unknown / not applicable" — e.g. a running session with no patch yet.
 struct AgentDiffStat {
     int files = -1;
     int ahead = -1;
@@ -741,6 +741,7 @@ public:
     // prove browsing a branch shows what it is being compared against, and that
     // the base is switchable (adhoc #16).
     QString testCompareIndicatorText() const;
+    QString testComparedBranchText() const;
     // Point the compare indicator's base dropdown at another branch, so a test
     // can prove the range re-diffs against it (adhoc #16).
     void testSetCompareBase(const QString &base);
@@ -759,6 +760,12 @@ public:
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
     bool testClickBranchReviewMerge(bool deleteAll);
+    void testSuppressAutoPullForBranch(const QString &branch)
+    {
+        m_branchAutoPullAttempted = branch;
+    }
+    bool testBranchPullEnabled() const;
+    bool testClickBranchPull();
     // issue #291: when an agent task's worktree/PR lands in the base branch the
     // session is flagged "merged" on its Status column and detail page. Drive the
     // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
@@ -776,6 +783,16 @@ public:
     // as "files|dirty|worktree|behind|ahead", so a test can prove the chip's
     // file and visible branch-health markers are fed from the session's diff stat.
     QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
+    void testSetCachedAgentDiffFiles(int sessionId, int files)
+    {
+        AgentDiffStat stat = m_agentDiffStats.value(sessionId);
+        stat.files = files;
+        m_agentDiffStats.insert(sessionId, stat);
+    }
+    int testCachedAgentDiffFiles(int sessionId) const
+    {
+        return m_agentDiffStats.value(sessionId).files;
+    }
     bool testAgentSessionMerged(int sessionId) const;
 #endif
 
@@ -1236,6 +1253,9 @@ private:
     // the path to the user check for that.
     static QString stallLogPath();
     void updateFooterDiagnostics();
+    // Log a warning while descriptor use is still recoverable: exhausting the
+    // cap aborts the process from inside glib rather than failing an operation.
+    void checkFileDescriptorPressure();
     void refreshRepositoryStats();
     void toggleRepositoryRatchet(bool enabled);
     void onUiStall(qint64 peakMs, const QString &blockingCall, const QString &backtrace);
@@ -1807,6 +1827,14 @@ private:
     // mirror nodes serve through the relay without joining this client's chat
     // room, so room presence alone painted them offline (adhoc #27).
     void fetchRelayOnlineNodes(bool force = false);
+    // Fetch the catalog's per-node mirror records (/api/repo/<o>/<n>/mirrors) for
+    // every repo this client lists, into m_nodesCatalogInfo. Headless mirrors
+    // renew those records on every registration lease, so the Nodes page can show
+    // version/platform/telemetry/mirror counts for nodes that never join this
+    // client's chat room (whose roster entry is otherwise blank).
+    void fetchNodesCatalogInfo(bool force = false);
+    // Backfill blank MemberInfo fields for `node` from m_nodesCatalogInfo.
+    void applyCatalogNodeInfo(MemberInfo &info, const QString &node) const;
     // Firewall: whitelist-only outbound request gate for traffic created by
     // ForkMesh's shared network manager.
     QWidget *buildFirewallSection();
@@ -2123,6 +2151,10 @@ private:
     // commit the fix to the PR's own branch (no new PR). The work is surfaced as a
     // live agent session so the user can watch it. provider is "claude" | "openai".
     void fixCurrentPullConflictsWithAi(const QString &provider);
+    // The PR header's "Fix" button (adhoc #7): writes a ready-made
+    // conflict-resolution task into the footer prompt box instead of launching a
+    // provider straight away, so the user can edit it before sending.
+    void fillPromptWithPullConflictFix();
     // Continue the agent session that originally authored this PR's branch,
     // asking it to merge the base branch in and resolve conflicts itself — the
     // same flow as the agent detail view's "Fix conflicts with agent" button.
@@ -2229,6 +2261,9 @@ private:
     void updateAgentCostCell(int sessionId);   // in-place Cost-column update
     void updateAgentRunSummaryCells(int sessionId); // in-place Turns/Time update
     void updateAgentStatusCell(int sessionId); // in-place Status-column update
+    void applyAgentDiffStatResult(int generation, int repoIndex, int sessionId,
+                                  const AgentDiffStat &stat,
+                                  const QString &signature);
     void refreshAgentStatusPill(int sessionId); // in-place detail-header pill update
     void animateRunningAgentIcons();           // spins running rows' Status glyph
     // Pulse a session's night-rider light so the agents-list activity column
@@ -3017,7 +3052,7 @@ private:
     // opens its range diff against that base at the same time — one combined
     // view, "<branch> -> <base>", rather than a separate review page (adhoc
     // #16).
-    void switchToBranch(const QString &branch);
+    void switchToBranch(const QString &branch, int agentSessionId = -1);
     // Base branch of the Git view's comparison. Empty means "the repo's default
     // branch", which is where every comparison starts; the compare indicator's
     // base dropdown sets it, and leaving the compare view clears it (adhoc #16).
@@ -3100,7 +3135,7 @@ private:
     // a `git branch -D` (and its noisy "branch not found" error) when the branch was
     // already gone — the desired end state either way.
     bool localBranchExists(const QString &repoPath, const QString &branch) const;
-    void showBranchDiff(const QString &branch);
+    void showBranchDiff(const QString &branch, int agentSessionId = -1);
     // Paint the branch detail bar from already-gathered counts, and let auto-pull
     // decide once the bar reflects them (the counts arrive off-thread now).
     void applyBranchDetailActions(const QString &branch, const QString &base,
@@ -5035,6 +5070,13 @@ private:
     // reply we fall back to the encrypted roster's presence flag; after it, the
     // relay is trusted over a possibly-stale roster entry (adhoc #43).
     bool m_relayOnlineNodesFetched = false;
+    // Latest catalog mirror record per node (lowercased node name -> the
+    // /api/repo/<o>/<n>/mirrors entry with the newest lastSync, plus a
+    // "mirrorSources" array of the repo groups that node mirrors). Fills the
+    // Nodes page's version/platform/telemetry/mirror columns for headless
+    // mirrors that serve via the relay without ever joining the chat room.
+    QHash<QString, QJsonObject> m_nodesCatalogInfo;
+    qint64 m_nodesCatalogFetchedMs = 0; // throttle between catalog sweeps
     // Request firewall section: whitelist controls plus recent allow/deny
     // decisions. This is separate from m_firewallBanner, which is the older
     // inbound-peer troubleshooting banner inside Chat.
@@ -5414,6 +5456,10 @@ private:
     QHash<qint64, QVector<double>> m_highMemoryRssHistory;
     qulonglong m_diagLastCpuTicks = 0;
     qint64 m_diagLastCpuMs = 0;
+    // File-descriptor pressure sampling: every 15 s off the 1 s diagnostics
+    // tick, warning once per upward crossing (see checkFileDescriptorPressure).
+    qint64 m_fdPressureLastCheckMs = 0;
+    bool m_fdPressureAlertArmed = true;
 
     // Repo detail view
     int m_repoDetailIndex = -1;
@@ -5523,6 +5569,10 @@ private:
     // has since switched branch (issue #353 — showBranchDiff/
     // renderBranchScopeDiff shelled git on the GUI thread).
     int m_branchScopeDiffGen = 0;
+    // Agent session that opened the current live branch review. The completed
+    // diff uses this identity to reconcile its exact file count back into the
+    // Agents-list badge when the branch moved between refresh and click.
+    int m_branchDiffAgentSessionId = -1;
     // Branch merge-conflict probes. `git merge-tree` costs ~0.5-1s per branch on a
     // busy repo, so running one per row inline froze the branches panel for
     // seconds on every rebuild — and one lands after every delete/merge/pull
@@ -6034,14 +6084,11 @@ private:
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
     QPushButton *m_pullResolveButton = nullptr; // opens the conflict merge editor
-    // "Fix with agent" split button: a dropdown that rolls the Claude API,
-    // OpenAI API and Claude Code conflict resolvers into one control (issue #150).
+    // "Fix": on a conflicted PR, drops a ready-made conflict-resolution task
+    // into the footer prompt box (adhoc #7 — the provider dropdown it used to
+    // carry is gone; the prompt bar picks the agent).
     QPushButton *m_pullFixButton = nullptr;
-    QMenu *m_pullFixMenu = nullptr;
-    QAction *m_pullFixClaudeAction = nullptr;   // resolve via the Claude API
-    QAction *m_pullFixOpenAiAction = nullptr;   // resolve via the OpenAI API
-    QAction *m_pullFixClaudeCodeAction = nullptr; // resolve via the Claude Code CLI
-    // Shown alongside "Fix with agent" only when an agent session authored this
+    // Shown alongside "Fix" only when an agent session authored this
     // PR's branch: continues that same session rather than spinning up a fresh,
     // isolated conflict-only run.
     QPushButton *m_pullFixConflictsButton = nullptr;

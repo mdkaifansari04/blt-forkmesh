@@ -584,7 +584,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_worktreesButton->setCursor(Qt::PointingHandCursor);
     m_worktreesButton->setToolTip(
         "Open the Worktrees panel to view agent checkouts and their changes");
-    setOcticon(m_worktreesButton, "file-directory", 16);
+    setOcticon(m_worktreesButton, "worktree", 16);
     connect(m_worktreesButton, &QPushButton::clicked, this, [this] {
         // Worktrees, like Branches, has no top-level tab anymore (adhoc #170):
         // its panel lives inside the Code overview beside Branches, toggled by
@@ -3311,6 +3311,10 @@ void MainWindow::showOverviewBranches()
         m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(2);
+    // The panel owns the page's upper chrome (the latest-commit bar comes off
+    // while the branch list is up). Apply it explicitly: a route that arrives
+    // with the body stack already on 2 emits no currentChanged.
+    updateRepoActivityRail();
 }
 
 // Show the worktrees panel in the Code overview, beside the branches panel —
@@ -3917,8 +3921,24 @@ void MainWindow::loadCommits()
     if (!runGitCapture(dir, logArgs, &out, nullptr))
         return;
     // Local commits the network mirror doesn't have yet, so the list can flag
-    // (and the banner can count) what hasn't synced.
-    const QSet<QString> unpushed = unpushedCommitHashes();
+    // and link the pending-sync marker to the actual tip in the graph.
+    QSet<QString> unpushed = unpushedCommitHashes();
+    // A locally opened upstream checkout does not necessarily have a ForkMesh
+    // mirror record. In that case the graph must still reflect exactly the same
+    // pending commits as the Sync Changes action, which compares upstream..HEAD.
+    if (unpushed.isEmpty()) {
+        QByteArray pendingOut;
+        if (runGitCapture(dir,
+                          {QStringLiteral("rev-list"),
+                           QStringLiteral("@{upstream}..") + currentRef()},
+                          &pendingOut, nullptr)) {
+            for (const QByteArray &line : pendingOut.split('\n')) {
+                const QString hash = QString::fromUtf8(line).trimmed();
+                if (!hash.isEmpty())
+                    unpushed.insert(hash);
+            }
+        }
+    }
     m_commitsUnsyncedHashes.clear();
     // The newest commit (git log's first record, before the table is sorted) is
     // the branch tip; remember it so a later tab click can skip an identical rebuild.
@@ -3927,6 +3947,37 @@ void MainWindow::loadCommits()
     // is the hash the lane is currently waiting to reach; an empty entry is a free
     // slot a new branch can reuse.
     QList<QString> activeLanes;
+    // Put outgoing work in the graph itself.  The synthetic dotted node's
+    // bottom lane is the first real commit's top lane, so the connector reads
+    // as one continuous graph rather than a detached warning card.
+    if (!unpushed.isEmpty()) {
+        const int row = m_commitsTable->rowCount();
+        m_commitsTable->insertRow(row);
+        auto *graphItem = new QTableWidgetItem;
+        graphItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        graphItem->setData(kGraphNodeLaneRole, 0);
+        graphItem->setData(kGraphBottomLanesRole, QVariantList{0});
+        graphItem->setData(kGraphIsMergeRole, false);
+        m_commitsTable->setItem(row, kCommitGraphCol, graphItem);
+
+        auto *summary = new SortTableWidgetItem(QStringLiteral("Outgoing Changes"));
+        summary->setData(kCommitRowKindRole, 2); // decorative graph-state row
+        summary->setData(kCommitOutgoingRole, true);
+        summary->setData(kCommitAuthorRole,
+                         QStringLiteral("%1 pending sync")
+                             .arg(unpushed.size()));
+        summary->setData(kCommitRefsRole,
+                         QStringList{QStringLiteral("%1 %2↑")
+                                         .arg(currentRef())
+                                         .arg(unpushed.size())});
+        summary->setData(kCommitRefKindsRole, QStringList{QStringLiteral("local")});
+        summary->setToolTip(
+            QStringLiteral("%1 local commit%2 waiting to sync. Use Sync Changes "
+                           "above to publish them.")
+                .arg(unpushed.size())
+                .arg(unpushed.size() == 1 ? QString() : QStringLiteral("s")));
+        m_commitsTable->setItem(row, kCommitSummaryCol, summary);
+    }
     // Repaints stay suspended by the TableRepaintGuard above while up to 300 rows
     // (each with a cell-widget button) are built: otherwise the table repaints on
     // every insertRow/setItem, which is what made a refresh feel sluggish.
@@ -4029,9 +4080,9 @@ void MainWindow::loadCommits()
         const QString msgBody = f.value(8).trimmed();
         if (!msgBody.isEmpty())
             summary->setData(kCommitBodyRole, msgBody);
-        // Branch / tag pills (git log %D), drawn ahead of the summary text like
-        // the VS Code graph. Capped: a tip carrying many refs would otherwise
-        // crowd out the message.
+        // Branch / tag pills (git log %D), anchored at the right of the summary
+        // like the source graph. Capped: a tip carrying many refs would
+        // otherwise crowd out the message.
         {
             QStringList refs;
             QStringList refKinds;
@@ -4532,72 +4583,13 @@ void MainWindow::updateCommitRowHover(int row)
 
 void MainWindow::updateCommitsUnsyncedFilesPanel()
 {
-    const int pending = m_commitsUnsyncedHashes.size();
-    if (m_commitsUnsyncedBanner) {
-        if (pending > 0)
-            showCommitsBanner(
-                QString::fromUtf8(
-                    "<span style='color:#d29922'>\xE2\x96\xB2 %1 commit%2 pending "
-                    "sync to the network mirror.</span> "
-                    "<a href='files' style='color:#d29922'>%3</a>")
-                    .arg(pending)
-                    .arg(pending == 1 ? QString() : QStringLiteral("s"))
-                    .arg(m_commitsUnsyncedExpanded
-                             ? QString::fromUtf8("Hide files \xE2\x96\xB4")
-                             : QString::fromUtf8("Show files \xE2\x96\xBE")));
-        else
-            hideCommitsBanner(); // also hides the file view
-    }
-    if (!m_commitsUnsyncedFiles)
-        return;
-    if (pending == 0 || !m_commitsUnsyncedExpanded) {
+    // This status is a linked, dotted top row in the graph now. Keeping a
+    // second banner or expandable list above it makes the graph look detached
+    // and pushes the newest state away from the rest of its history.
+    if (m_commitsUnsyncedBanner)
+        m_commitsUnsyncedBanner->hide();
+    if (m_commitsUnsyncedFiles)
         m_commitsUnsyncedFiles->hide();
-        return;
-    }
-    const QString dir = repoGitDir();
-    if (dir.isEmpty())
-        return;
-    m_commitsUnsyncedFiles->clear();
-    // Bounded: the pending set is normally a handful; anything deeper is still
-    // reachable per commit from the list below.
-    const int cap = qMin(pending, 20);
-    for (int i = 0; i < cap; ++i) {
-        const QString hash = m_commitsUnsyncedHashes.at(i);
-        QByteArray meta;
-        runGitCapture(dir,
-                      {QStringLiteral("show"), QStringLiteral("--no-patch"),
-                       QStringLiteral("--format=%h%x1f%s"), hash},
-                      &meta, nullptr);
-        const QStringList mf =
-            QString::fromUtf8(meta).trimmed().split(QLatin1Char('\x1f'));
-        auto *top = new QTreeWidgetItem(
-            m_commitsUnsyncedFiles,
-            {QStringLiteral("%1  %2").arg(mf.value(0), mf.value(1))});
-        top->setIcon(0, themedOcticon("upload", QColor("#d29922"), 14));
-        top->setData(0, Qt::UserRole, hash);
-        top->setToolTip(0, QStringLiteral(
-                               "Waiting to sync \xE2\x80\x94 click to view the "
-                               "commit"));
-        const QList<CommitFileStat> files = commitFileStats(dir, hash);
-        for (const CommitFileStat &f : files) {
-            auto *child = new QTreeWidgetItem(
-                top, {QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
-                          .arg(f.path)
-                          .arg(f.adds)
-                          .arg(f.dels)});
-            child->setData(0, Qt::UserRole, hash);
-            child->setData(0, Qt::UserRole + 1, f.path);
-            child->setToolTip(0, f.path);
-        }
-        top->setExpanded(true);
-    }
-    if (pending > cap)
-        new QTreeWidgetItem(
-            m_commitsUnsyncedFiles,
-            {QString::fromUtf8("\xE2\x80\xA6 and %1 more commit%2")
-                 .arg(pending - cap)
-                 .arg(pending - cap == 1 ? QString() : QStringLiteral("s"))});
-    m_commitsUnsyncedFiles->show();
 }
 
 void MainWindow::fetchCurrentRepo()
@@ -8063,7 +8055,12 @@ void MainWindow::loadBranchesAndTags()
     // seconds in the stall log while agent sessions kept the disk busy; those
     // now run in readBranchesTagsGit() on a worker thread, and the worker's
     // full chooseDefaultBranch() pick corrects the fast pin if they disagree.
-    m_repoBranch = repoDefaultBranchFast();
+    // Only an initial repository load needs a default.  Subsequent refreshes
+    // also arrive from background mirror/branch work while the user may be
+    // browsing an agent branch; repinning here would silently change the graph
+    // back to main (and could race Back/Forward restoration).
+    if (m_repoBranch.isEmpty())
+        m_repoBranch = repoDefaultBranchFast();
     if (m_branchButton) {
         m_branchButton->setText(
             m_repoBranch.isEmpty() ? QStringLiteral("HEAD") : m_repoBranch);
@@ -8533,7 +8530,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Quality", "check-circle"},
                                 {"Insights", "graph"},
                                 {"Branches", "repo-forked"},
-                                {"Worktrees", "file-directory"},
+                                {"Worktrees", "worktree"},
                                 {"Releases", "tag"},
                                 {"Mirror nodes", "server"},
                                 {"Artifacts", "package"},
@@ -8953,6 +8950,12 @@ void MainWindow::updateRepoActivityRail()
     const bool onChanges =
         onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+    // The Branches panel is a full-height list of its own: the latest-commit bar
+    // above it belongs to the files/README overview and says nothing about the
+    // branch being looked for, so it only pushed the list down the page.
+    const bool onBranches =
+        onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
+        m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 2;
     const bool onAgents =
         onHome && m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
     // Git is its own activity-rail destination. Hide every Code/repository
@@ -8967,7 +8970,7 @@ void MainWindow::updateRepoActivityRail()
     if (m_repoFilesModeBar)
         m_repoFilesModeBar->setVisible(!onChanges);
     if (m_repoOverviewChrome)
-        m_repoOverviewChrome->setVisible(!onChanges);
+        m_repoOverviewChrome->setVisible(!onChanges && !onBranches);
     if (m_footerDock)
         m_footerDock->setVisible(!onChanges);
     m_railCodeButton->setChecked(onCode && !onChanges);
@@ -9063,7 +9066,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
                     showCommit(item->data(Qt::UserRole).toString());
                     return;
                 }
-                toggleCommitFilesRows(row);
+                if (item->data(kCommitRowKindRole).toInt() == 0)
+                    toggleCommitFilesRows(row);
             });
     // Double click (or Enter) on a commit opens its full detail page — diff,
     // conversation, and the Delete / Restore commit actions.
@@ -9137,7 +9141,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsFetchButton = new QPushButton("Fetch");
     m_commitsFetchButton->setObjectName("ghostButton");
     m_commitsFetchButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_commitsFetchButton, "cloud", 16);
+    setOcticon(m_commitsFetchButton, "cloud", 14);
     m_commitsFetchButton->setToolTip(
         "Fetch the latest history from the network without changing your "
         "working tree, then reload this list");
@@ -9147,7 +9151,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsPullButton = new QPushButton("Pull");
     m_commitsPullButton->setObjectName("ghostButton");
     m_commitsPullButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_commitsPullButton, "download", 16);
+    setOcticon(m_commitsPullButton, "download", 14);
     m_commitsPullButton->setToolTip(
         "Fast-forward the working tree to the latest fetched history "
         "(git pull --ff-only)");
@@ -9165,7 +9169,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsBranchButton->setCursor(Qt::PointingHandCursor);
     m_commitsBranchButton->setToolTip(
         "Branch shown below — click to browse another branch's history or create one");
-    setOcticon(m_commitsBranchButton, "git-branch", 16);
+    setOcticon(m_commitsBranchButton, "git-branch", 14);
 
     // "<branch> -> <base>": while a branch/PR comparison is open on the right
     // pane, an arrow and the base branch follow the branch button, so the row
@@ -9183,7 +9187,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsCompareBaseButton = compareBaseButton;
     m_commitsCompareBaseButton->setObjectName("ghostButton");
     m_commitsCompareBaseButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_commitsCompareBaseButton, "git-merge", 16);
+    setOcticon(m_commitsCompareBaseButton, "git-merge", 14);
     m_commitsCompareBaseButton->hide();
 
     auto *searchRow = new QHBoxLayout;
@@ -9467,6 +9471,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // two slots (adhoc #110); it no longer does (adhoc #12), so each hosts its
     // single working-tree page.)
     auto *scmPanel = buildSourceControlPanel();
+    // Keep the rescan control with the graph navigation rather than the
+    // blocking changes controls. It shares the small 14px icon language of the
+    // source-control header and sits beside Fetch/Pull where it refreshes.
+    searchRow->addWidget(m_scmRefreshButton);
     m_gitFilesSlot = new QStackedWidget;
     m_gitFilesSlot->addWidget(scmPanel); // 0: working-tree CHANGES
     m_gitHistorySlot = new QStackedWidget;
