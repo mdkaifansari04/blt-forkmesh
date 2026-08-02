@@ -1698,7 +1698,8 @@ QWidget *MainWindow::buildAgentsTab()
             switchToWorktree(s->branchName);
     });
 
-    // Session actions: "+ issue", View PR, Stop, Delete, Branch and Worktree.
+    // Session actions: "+ issue", View PR, Start, Stop, Delete, Branch and
+    // Worktree.
     // Each already manages its own visibility (they appear per session), so they
     // are only laid out here. adhoc #35 moved them off the header onto the output
     // toolbar so a long ad-hoc title could have its row to itself; adhoc #84
@@ -1711,6 +1712,7 @@ QWidget *MainWindow::buildAgentsTab()
     actionRow->addWidget(m_agentCreateIssueButton);
     actionRow->addWidget(m_agentCreatePrButton);
     actionRow->addWidget(m_agentViewPrButton);
+    actionRow->addWidget(m_agentStartButton);
     actionRow->addWidget(m_agentStopButton);
     actionRow->addWidget(m_agentDeleteAllButton);
     actionRow->addWidget(m_agentBranchButton);
@@ -11397,6 +11399,17 @@ void MainWindow::updateAgentActionState()
         externalIsLive(m_externalSurfaced.value(m_selectedAgentSessionId).uuid);
     if (m_agentStopButton)
         m_agentStopButton->setEnabled(running || externalRunning);
+    // "Start" (adhoc #20) is Stop's counterpart on the detail page: live for one
+    // of our own sessions that isn't already in flight. External (watch-only)
+    // rows belong to another process, and a queued session is already on its
+    // way — continueAgentSession() would drop both on the floor.
+    if (m_agentStartButton) {
+        const AgentSession *startable =
+            selected ? findAgentSession(m_selectedAgentSessionId) : nullptr;
+        m_agentStartButton->setEnabled(
+            startable && !running && !externalSelected &&
+            startable->status != AgentStatus::Queued);
+    }
     // "Stop all" doesn't depend on the selection — it's live whenever any
     // ForkMesh session is running, waiting or queued anywhere (adhoc #433).
     if (m_agentStopAllButton)
