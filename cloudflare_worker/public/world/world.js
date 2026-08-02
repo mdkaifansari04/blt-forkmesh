@@ -636,6 +636,113 @@ function escapeHTML(value) {
     .replace(/'/g, "&#039;");
 }
 
+// Clicking the HUD logo opens this switcher rather than silently reloading:
+// the 3D city is a peer of the console, not a detour away from it, so every
+// dashboard page stays one hop from wherever the camera is standing.
+const WORLD_BRAND_NAV_PAGES = Object.freeze([
+  {
+    href: "/dashboard",
+    label: "Overview",
+    copy: "Activity, nodes, and pings",
+    icon: `<path d="M4 11.2 12 4l8 7.2V20a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"></path>`,
+  },
+  {
+    href: "/dashboard/profile",
+    label: "Profile",
+    copy: "Your public page and stats",
+    icon: `<circle cx="12" cy="8" r="3.6"></circle><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6"></path>`,
+  },
+  {
+    href: "/dashboard/repos",
+    label: "Repositories",
+    copy: "Code, issues, and pulls",
+    icon: `<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v14H6.5A1.5 1.5 0 0 0 5 18.5zM5 18.5A1.5 1.5 0 0 0 6.5 20H19"></path>`,
+  },
+  {
+    href: "/dashboard/tasks",
+    label: "Tasks",
+    copy: "Assigned and open work",
+    icon: `<path d="M4 7.5 5.8 9.3 9 6M4 16.5l1.8 1.8L9 15M12.5 8H20M12.5 17H20"></path>`,
+  },
+  {
+    href: "/dashboard/network",
+    label: "Network",
+    copy: "Mirrors, relays, and health",
+    icon: `<path d="M3 12h3.5l3 7 4-14 3 7H20"></path>`,
+  },
+  {
+    href: "/dashboard/chat",
+    label: "Chat",
+    copy: "Rooms, direct messages, #general",
+    icon: `<path d="M20 15a2 2 0 0 1-2 2H8.6L4 20.5V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"></path>`,
+  },
+  {
+    href: "/dashboard/settings",
+    label: "Settings",
+    copy: "Account, keys, and preferences",
+    icon: `<path d="M4 8h9M17.5 8H20M4 16h3M11.5 16H20"></path><circle cx="15" cy="8" r="2.2"></circle><circle cx="9" cy="16" r="2.2"></circle>`,
+  },
+]);
+
+// Second row of the switcher: the public pages a visitor is most likely to
+// want next. They are chips, not rows, so the dashboard list stays the
+// obvious answer to "where do I go from here".
+const WORLD_BRAND_NAV_SHORTCUTS = Object.freeze([
+  { href: "/", label: "Home" },
+  { href: "/docs", label: "Docs" },
+  { href: "/network", label: "Live mesh" },
+  { href: "/status", label: "Status" },
+]);
+
+// Every destination targets _top because the World is framed as well as
+// visited directly (homepage footer band, signup page). A console page must
+// never load inside that little embedded strip.
+function worldBrandNavMarkup() {
+  const pages = WORLD_BRAND_NAV_PAGES.map(
+    (page) => `
+              <a
+                class="world-brand-nav-link"
+                href="${escapeHTML(page.href)}"
+                target="_top"
+                data-world-brand-nav-link
+              >
+                <span class="world-hud-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">${page.icon}</svg>
+                </span>
+                <span class="world-brand-nav-label">${escapeHTML(page.label)}</span>
+                <span class="world-brand-nav-copy">${escapeHTML(page.copy)}</span>
+              </a>`,
+  ).join("");
+  const shortcuts = WORLD_BRAND_NAV_SHORTCUTS.map(
+    (shortcut) => `
+                <a
+                  class="world-brand-nav-chip"
+                  href="${escapeHTML(shortcut.href)}"
+                  target="_top"
+                  data-world-brand-nav-link
+                >${escapeHTML(shortcut.label)}</a>`,
+  ).join("");
+  return `
+          <nav
+            class="world-brand-nav"
+            id="world-brand-nav"
+            data-world-brand-nav
+            aria-label="ForkMesh dashboard pages"
+          >
+            <p class="world-brand-nav-heading">Dashboard</p>
+            <div class="world-brand-nav-pages">${pages}</div>
+            <p class="world-brand-nav-heading">Elsewhere on ForkMesh</p>
+            <div class="world-brand-nav-chips">${shortcuts}</div>
+            <button
+              class="world-brand-nav-reload"
+              type="button"
+              data-world-logo-refresh
+            >
+              <span aria-hidden="true">↻</span><span>Reload World</span>
+            </button>
+          </nav>`;
+}
+
 const INFRASTRUCTURE_CONSOLE_METHODS = Object.freeze([
   "debug",
   "info",
@@ -4219,12 +4326,24 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
 
       <div class="world-hud" data-world-hud data-hud-expanded="false">
         <header class="world-topbar">
-          <a class="world-brand brand" href="/world/" data-world-logo-refresh aria-label="Refresh ForkMesh World">
-            <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
-            <span class="world-connection-ring" data-world-presence-state="connecting">
-              <span class="world-visually-hidden" data-world-presence-copy>Joining world</span>
-            </span>
-          </a>
+          <div class="world-brand-menu" data-world-brand-menu data-open="false">
+            <button
+              class="world-brand brand"
+              type="button"
+              data-world-logo-menu
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="world-brand-nav"
+              aria-label="ForkMesh menu — go to a dashboard page"
+              title="Go to a dashboard page"
+            >
+              <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
+              <span class="world-connection-ring" data-world-presence-state="connecting">
+                <span class="world-visually-hidden" data-world-presence-copy>Joining world</span>
+              </span>
+            </button>
+            ${worldBrandNavMarkup()}
+          </div>
 
           <nav class="world-top-actions" data-world-top-actions aria-label="World tools">
             <a
@@ -5991,6 +6110,23 @@ class ForkMeshWorld extends HTMLElement {
         location.reload();
       },
     );
+    this.$("[data-world-logo-menu]")?.addEventListener("click", (event) => {
+      const opening =
+        this.$("[data-world-brand-menu]")?.dataset.open !== "true";
+      this.setBrandNavOpen(opening);
+      // A keyboard activation reports no pointer detail. Only then does the
+      // menu take focus, so a mouse user is never pulled out of the canvas.
+      if (opening && event.detail === 0) {
+        this.$("[data-world-brand-nav-link]")?.focus();
+      }
+    });
+    // Following a destination unpins the menu, so coming back through the
+    // browser's history cache does not land on a stale open panel.
+    this.$("[data-world-brand-nav]")?.addEventListener("click", (event) => {
+      if (event.target.closest("[data-world-brand-nav-link]")) {
+        this.setBrandNavOpen(false);
+      }
+    });
     this.startClock();
     this.armCrashGuard();
     this.startDiagnostics();
@@ -10661,6 +10797,13 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         diagnostics.removeAttribute("open");
       }
+      const brandMenu = this.$("[data-world-brand-menu]");
+      if (
+        brandMenu?.dataset.open === "true" &&
+        !event.target.closest("[data-world-brand-menu]")
+      ) {
+        this.setBrandNavOpen(false);
+      }
       const onlineMenu = this.$("[data-world-online-menu]");
       if (
         onlineMenu?.dataset.open === "true" &&
@@ -11787,7 +11930,10 @@ class ForkMeshWorld extends HTMLElement {
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
       if (this.$("[data-world-chat-terminal]")?.open) return;
-      if (this.$("[data-world-online-menu]")?.dataset.open === "true") {
+      if (this.$("[data-world-brand-menu]")?.dataset.open === "true") {
+        this.setBrandNavOpen(false);
+        this.$("[data-world-logo-menu]")?.focus();
+      } else if (this.$("[data-world-online-menu]")?.dataset.open === "true") {
         this.setOnlineRosterOpen(false);
         this.$("[data-world-online-toggle]")?.focus();
       } else if (
@@ -28656,6 +28802,16 @@ class ForkMeshWorld extends HTMLElement {
           ? `<p class="world-online-more">Realtime presence is offline, so only you are counted until it reconnects.</p>`
           : ""
       }`;
+  }
+
+  setBrandNavOpen(open) {
+    const menu = this.$("[data-world-brand-menu]");
+    if (!menu) return;
+    menu.dataset.open = open ? "true" : "false";
+    this.$("[data-world-logo-menu]")?.setAttribute(
+      "aria-expanded",
+      open ? "true" : "false",
+    );
   }
 
   setOnlineRosterOpen(open) {
