@@ -9350,3 +9350,86 @@ test("ForkMesh Office remains a continuous World at 320 CSS pixels", async ({
   await expect(page.locator("canvas.world-canvas")).toBeVisible();
   await context.close();
 });
+
+test("the HUD online pill counts everyone here and drops the roster down on hover", async ({
+  page,
+}) => {
+  let relay = null;
+  await prepareWorldPage(page, "roster-host", {
+    worldSocketHandler(socket, socketId) {
+      relay = socket;
+      socket.send(
+        JSON.stringify({
+          type: "welcome",
+          id: socketId,
+          peers: [
+            {
+              id: "peer-zoe",
+              name: "Zoe",
+              status: "away",
+              countryCode: "SE",
+              x: 3,
+              y: 0.38,
+              z: 4,
+              yaw: 0,
+              space: "town-square",
+            },
+            {
+              id: "peer-ada",
+              name: "Ada",
+              status: "online",
+              countryCode: "GB",
+              x: -2,
+              y: 0.38,
+              z: 1,
+              yaw: 0,
+              space: "town-square",
+            },
+          ],
+        }),
+      );
+    },
+  });
+  await waitForWorld(page);
+
+  const pill = page.locator("[data-world-online-toggle]");
+  const roster = page.locator("[data-world-online-list]");
+  await expect(page.locator("[data-world-online-count]")).toHaveText("3");
+  await expect(pill).toHaveAttribute(
+    "aria-label",
+    "3 people online right now — show who is here",
+  );
+
+  // The roster stays out of the way until the pointer asks for it.
+  const rosterOpacity = () =>
+    roster.evaluate((node) => getComputedStyle(node).opacity);
+  expect(await rosterOpacity()).toBe("0");
+  await pill.hover();
+  await expect.poll(rosterOpacity).toBe("1");
+
+  // You are listed first; every other visitor follows in name order.
+  await expect(roster.locator(".world-online-name")).toHaveText([
+    /\(you\)$/,
+    "Ada",
+    "Zoe",
+  ]);
+  await expect(roster.locator(".world-online-activity").nth(2)).toHaveText(
+    "Away",
+  );
+
+  // A roster row is the same door the avatar is: it opens the public profile.
+  await roster.getByRole("button", { name: /^Ada/ }).click();
+  await expect(page.locator("[data-world-detail]")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
+  await expect(page.locator("#world-detail-title")).toContainText("Ada");
+
+  // A departure is reflected without a reload.
+  relay.send(JSON.stringify({ type: "leave", id: "peer-zoe" }));
+  await expect(page.locator("[data-world-online-count]")).toHaveText("2");
+  await expect(roster.locator(".world-online-name")).toHaveText([
+    /\(you\)$/,
+    "Ada",
+  ]);
+});
