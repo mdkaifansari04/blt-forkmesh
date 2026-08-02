@@ -6764,6 +6764,14 @@ void MainWindow::openCommitHashReference(const QString &hash)
     if (ref.isEmpty())
         return;
     showOverviewCommits();
+    // A transcript SHA is a history-search target as well as a navigation
+    // target. Keep it in the Git search field so the matching graph row is
+    // discoverable behind the expanded commit detail (and when the user steps
+    // back to the list), rather than jumping to a context-free diff.
+    if (m_globalSearch)
+        m_globalSearch->setText(ref);
+    if (m_commitSearch)
+        m_commitSearch->setText(ref);
     showCommit(ref);
 }
 
