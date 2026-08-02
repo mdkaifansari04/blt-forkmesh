@@ -274,10 +274,6 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
     background-color: #0d1117; border: none; border-radius: 0;
     color: #e6edf3; font-family: monospace; font-size: 12px;
 }
-#pullReviewSummary {
-    background-color: #161b22; border: 1px solid #30363d; border-radius: 6px;
-    color: #e6edf3;
-}
 #commitBar { background: transparent; border: none; }
 #commitBar QLabel { background: transparent; }
 #commitBarText { color: #e6edf3; }
@@ -1368,12 +1364,6 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     font-family: monospace;
     font-size: 12px;
 }
-#pullReviewSummary {
-    background-color: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    color: #e6edf3;
-}
 #readmeView {
     background: transparent;
     border: none;
@@ -1627,10 +1617,6 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #diffView {
     background-color: #ffffff; border: none; border-radius: 0;
     color: #1f2328; font-family: monospace; font-size: 12px;
-}
-#pullReviewSummary {
-    background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
-    color: #1f2328;
 }
 #commitBar { background: transparent; border: none; }
 #commitBar QLabel { background: transparent; }
@@ -2713,12 +2699,6 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     color: #1f2328;
     font-family: monospace;
     font-size: 12px;
-}
-#pullReviewSummary {
-    background-color: #f6f8fa;
-    border: 1px solid #d0d7de;
-    border-radius: 6px;
-    color: #1f2328;
 }
 #readmeView {
     background: transparent;
