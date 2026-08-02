@@ -27,6 +27,7 @@ import {
   loadIssueRepositories,
 } from "./chat-issue-filing.js";
 import { createChatRoomTransport } from "./chat-room-transport.js";
+import { moderateChatPlain, moderateChatText } from "./chat-moderation.js";
 import { createThreadStore } from "./chat-thread-model.js";
 import {
   dateDividerLabel,
@@ -2367,10 +2368,12 @@ function openThread(record, trigger = null) {
   threadInput?.focus();
 }
 
-function sendThreadReply() {
+async function sendThreadReply() {
   if (!activeThreadRootId || !threadInput || !canJoinChannel()) return;
   const rootId = activeThreadRootId;
-  const source = threadInput.value.trim().slice(0, MAX_TEXT);
+  const originalSource = threadInput.value.trim().slice(0, MAX_TEXT);
+  const moderation = await moderateChatText(originalSource);
+  const source = moderation.text;
   const text = plainTextFromRichSource(source).slice(0, MAX_TEXT);
   if (!text && !attachmentDraft(rootId).length) return;
   if (text) {
@@ -2394,6 +2397,7 @@ function sendThreadReply() {
     threadRepliesEl?.lastElementChild?.scrollIntoView({ block: "nearest" });
     renderThreadSummary(rootId);
     runWhenConnected(() => send(plain));
+    if (moderation.changed) appendSystem("Some words were filtered.");
   }
   void sendAttachmentDraft({ rootId });
 }
@@ -2407,9 +2411,11 @@ function cancelMessageEdit(record, { restoreFocus = true } = {}) {
   if (restoreFocus) record.editTrigger?.focus();
 }
 
-function saveMessageEdit(record, source) {
+async function saveMessageEdit(record, source) {
   if (!record?.self || record.senderId !== selfId) return;
-  const richSource = String(source || "").trim().slice(0, MAX_TEXT);
+  const originalSource = String(source || "").trim().slice(0, MAX_TEXT);
+  const moderation = await moderateChatText(originalSource);
+  const richSource = moderation.text;
   const text = plainTextFromRichSource(richSource).slice(0, MAX_TEXT);
   if (!text) return;
   const editedAt = Date.now();
@@ -2435,6 +2441,7 @@ function saveMessageEdit(record, source) {
   }
   seen.add(plain.id);
   runWhenConnected(() => send(plain));
+  if (moderation.changed) appendSystem("Some words were filtered.");
 }
 
 function beginMessageEdit(record, trigger) {
@@ -3178,7 +3185,7 @@ async function onFrame(event, key = null, scope = roomScopeForChannel()) {
   }
   const plain = await decryptObject(envelope, key);
   if (!plain) return;
-  handlePlain(plain, scope);
+  handlePlain(await moderateChatPlain(plain), scope);
 }
 
 const DURABLE_TYPES = new Set([
@@ -3224,8 +3231,9 @@ function makeForkbotPlain(text) {
   });
 }
 
-function broadcastForkbotMessage(text) {
-  const plain = makeForkbotPlain(text);
+async function broadcastForkbotMessage(text) {
+  const moderated = await moderateChatText(text);
+  const plain = makeForkbotPlain(moderated.text);
   send(plain);
   seen.add(plain.id);
   appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts, activeChannel);
@@ -3750,12 +3758,14 @@ function applyComposerFormat(type) {
   updateMentionSuggest();
 }
 
-function sendCurrentMessage() {
+async function sendCurrentMessage() {
   if (!canJoinChannel()) {
     lockChatForNonUser();
     return;
   }
-  const source = input.value.trim().slice(0, MAX_TEXT);
+  const originalSource = input.value.trim().slice(0, MAX_TEXT);
+  const moderation = await moderateChatText(originalSource);
+  const source = moderation.text;
   const text = plainTextFromRichSource(source).slice(0, MAX_TEXT);
   if (!text && !attachmentDraft().length) return;
   if (text) {
@@ -3782,6 +3792,7 @@ function sendCurrentMessage() {
         plain.richText,
       );
       maybeAskForkbot(text);
+      if (moderation.changed) appendSystem("Some words were filtered.");
     });
   }
   void sendAttachmentDraft();

@@ -11,6 +11,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSettings>
 #include <QSslSocket>
@@ -66,6 +67,104 @@ constexpr int kMaxMimeChars = 100;
 constexpr qsizetype kMaxFileBytes = 64ll * 1024 * 1024;
 constexpr qsizetype kMaxBase64FileChars = 90ll * 1024 * 1024;
 constexpr qsizetype kMaxAvatarBytes = 256 * 1024;
+
+const QSet<QByteArray> &blockedChatTermHashes()
+{
+    static const QSet<QByteArray> hashes = {
+        QByteArrayLiteral("08a841e996781e9e77d30a4e4420a8f501a280b00624e6d1224bf54aaff73eba"),
+        QByteArrayLiteral("0f28c4960d96647e77e7ab6d13b85bd16c7ca56f45df802cdc763a5e5c0c7863"),
+        QByteArrayLiteral("120f6e5b4ea32f65bda68452fcfaaef06b0136e1d0e4a6f60bc3771fa0936dd6"),
+        QByteArrayLiteral("158869a97379229b7681efae9d7f9c9214134e836d649ba53477c0c111414d59"),
+        QByteArrayLiteral("16ea09fc78ca83ca502cbcf2377acdf280bf18f61e259153f0868405eedab5ef"),
+        QByteArrayLiteral("2189c0ed714f0c54ea91fc1d8355e3b1d68723a4fb580e99b088651c80a50f26"),
+        QByteArrayLiteral("2f5f6ce5ae30b54aa5d7ced1ba566982bab34ba2814a51ce1865d2c2d8815cd4"),
+        QByteArrayLiteral("566f532d486c947709d3d0e6b7575af8380248db66dada211d58eb00ad585297"),
+        QByteArrayLiteral("6ac3c336e4094835293a3fed8a4b5fedde1b5e2626d9838fed50693bba00af0e"),
+        QByteArrayLiteral("796e43a5a8cdb73b92b5f59eb50610cea3efa8ce229cd7f0557983091b2b4552"),
+        QByteArrayLiteral("7bc671151cbfaee7f32cd56e86a87b0be30fde8dc72c7f236d3ab2ce42cddbd5"),
+        QByteArrayLiteral("85fc17f7069acd39a5c636cd0a6530651096128da447959f5e250824857dc559"),
+        QByteArrayLiteral("886d51e97ad7931d0d2af8439ca6d9e4887e3c2b469ed247cbd68ceb3649ccde"),
+        QByteArrayLiteral("8f5083e3e5c7dc8932f2bf58212f963f3a44752618c96297f82623f736c52738"),
+        QByteArrayLiteral("98b52c4b6b7d1f48e7477a5ccc10955dd195d0ac5a38c8281bfeb08762634909"),
+        QByteArrayLiteral("9ae315a94e428a7ee3b5e48adae6541965d93b86acf10ffa1c45b93b6fe577b4"),
+        QByteArrayLiteral("ad505b0be8a49b89273e307106fa42133cbd804456724c5e7635bd953215d92a"),
+        QByteArrayLiteral("c2c3b68b48832afd9a4dbdd474c1b6c81c8baecdb71446f9947dac72dd0fe93d"),
+        QByteArrayLiteral("c3de533e9b7fe63b79f648687a30d2861edd92fe7c3cd1f2c485e0a605367624"),
+        QByteArrayLiteral("d75a838dc758ba17f28bd8dbac605cb70c35465263d5733164521de2f7ef7926"),
+        QByteArrayLiteral("dd92623b0a4b255f87cc4aaee7990ee182d91db49189df6229ce65b5e9d960da"),
+        QByteArrayLiteral("e512a05583448f44790783f986b1f36925c8cfc42338ca0e1caa637755bd15ae"),
+        QByteArrayLiteral("e7b98c6aa5b944e0b315d350d423f895ac9e44fb84f1534b18c2572370a67b9e"),
+        QByteArrayLiteral("eef3bd091670c3447022d619c06ad15de96da72b5a66f28bb8b75d1b1c12a05f"),
+        QByteArrayLiteral("f50c51ed2315dcf3fa88181cf033f8029cac64f7dea4048327ca032ec102ea74"),
+        QByteArrayLiteral("f9d0d9b18ae9033a5ea36df19bf279b059e887a9ae785db81117bceaecc95933"),
+    };
+    return hashes;
+}
+
+bool isBlockedChatRun(const QString &value)
+{
+    static const QSet<qsizetype> blockedLengths = {4, 5, 6, 7, 12};
+    QString normalized = value.normalized(QString::NormalizationForm_D).toLower();
+    normalized.remove(QRegularExpression(QStringLiteral("\\p{M}+")));
+    normalized.replace(QLatin1Char('0'), QLatin1Char('o'));
+    normalized.replace(QLatin1Char('1'), QLatin1Char('i'));
+    normalized.replace(QLatin1Char('3'), QLatin1Char('e'));
+    normalized.replace(QLatin1Char('4'), QLatin1Char('a'));
+    normalized.replace(QLatin1Char('5'), QLatin1Char('s'));
+    normalized.replace(QLatin1Char('7'), QLatin1Char('t'));
+    normalized.replace(QLatin1Char('8'), QLatin1Char('b'));
+    normalized.replace(QLatin1Char('9'), QLatin1Char('g'));
+    normalized.remove(QRegularExpression(QStringLiteral("[^a-z]+")));
+    QSet<QString> forms{normalized};
+    forms.insert(QString(normalized).replace(
+        QRegularExpression(QStringLiteral("(.)\\1+")), QStringLiteral("\\1")));
+    for (const QString &form : std::as_const(forms)) {
+        if (!blockedLengths.contains(form.size()))
+            continue;
+        const QByteArray digest = QCryptographicHash::hash(
+            form.toUtf8(), QCryptographicHash::Sha256).toHex();
+        if (blockedChatTermHashes().contains(digest))
+            return true;
+    }
+    return false;
+}
+
+QString filteredChatText(const QString &source)
+{
+    static const QRegularExpression wordRun(
+        QStringLiteral(R"([\p{L}\p{N}](?:[\p{L}\p{N}]|[._-](?=[\p{L}\p{N}]))*)"),
+        QRegularExpression::UseUnicodePropertiesOption);
+    QString output;
+    qsizetype cursor = 0;
+    auto matches = wordRun.globalMatch(source);
+    while (matches.hasNext()) {
+        const QRegularExpressionMatch match = matches.next();
+        output += source.mid(cursor, match.capturedStart() - cursor);
+        output += isBlockedChatRun(match.captured())
+            ? QStringLiteral("***") : match.captured();
+        cursor = match.capturedEnd();
+    }
+    output += source.mid(cursor);
+    return output;
+}
+
+QJsonObject moderatedChatObject(const QJsonObject &source)
+{
+    QJsonObject result = source;
+    const QString type = result.value(QStringLiteral("type")).toString();
+    if ((type == QLatin1String("chat") || type == QLatin1String("thread-reply") ||
+         type == QLatin1String("edit") || type == QLatin1String("dm")) &&
+        result.value(QStringLiteral("text")).isString()) {
+        result.insert(QStringLiteral("text"),
+                      filteredChatText(result.value(QStringLiteral("text")).toString()));
+    } else if (type == QLatin1String("history")) {
+        QJsonArray entries;
+        for (const QJsonValue &entry : result.value(QStringLiteral("entries")).toArray())
+            entries.append(moderatedChatObject(entry.toObject()));
+        result.insert(QStringLiteral("entries"), entries);
+    }
+    return result;
+}
 
 // This node's operating system, advertised to peers.
 QString currentPlatform()
@@ -981,7 +1080,8 @@ QJsonObject ServerNode::makeMessage(const QString &type) const
 
 void ServerNode::sendEncrypted(const QJsonObject &plain, bool showActivity)
 {
-    QJsonObject envelope = m_crypto.encryptObject(plain);
+    const QJsonObject moderated = moderatedChatObject(plain);
+    QJsonObject envelope = m_crypto.encryptObject(moderated);
     if (envelope.isEmpty()) {
         emit systemMessage("Mainnode encryption failed; message was not sent.");
         return;
@@ -990,12 +1090,12 @@ void ServerNode::sendEncrypted(const QJsonObject &plain, bool showActivity)
     // encrypted) and replay them to nodes that join later — giving new users
     // some recent history even when no other node is online. Ephemeral frames
     // (typing/presence/hello/history/avatar) and private DMs are never retained.
-    const QString type = plain.value("type").toString();
+    const QString type = moderated.value("type").toString();
     const bool durable = isDurableMainnodeType(type);
     if (durable)
         envelope.insert("persist", true);
     sendTextFrame(QJsonDocument(envelope).toJson(QJsonDocument::Compact),
-                  type, mainnodeScopeFor(plain, durable));
+                  type, mainnodeScopeFor(moderated, durable));
     if (showActivity)
         emit systemMessage("Network: sent encrypted " + type +
                            " through mainnode room " + m_roomName + ".");
@@ -1276,11 +1376,12 @@ void ServerNode::notifyCoveInvited(const QString &inviteeAccount, const QString 
 
 void ServerNode::sendChat(const QString &channel, const QString &text)
 {
-    if (text.trimmed().isEmpty())
+    const QString moderated = filteredChatText(text).left(kMaxTextChars);
+    if (moderated.trimmed().isEmpty())
         return;
     QJsonObject message = makeMessage("chat");
     message.insert("channel", channel);
-    message.insert("text", text.left(kMaxTextChars));
+    message.insert("text", moderated);
     if (m_privateChannels.contains(channel))
         message.insert("private", true);
     markSeen(message.value("id").toString());
@@ -1294,13 +1395,14 @@ void ServerNode::sendThreadReply(const QString &channel,
                                  const QString &text)
 {
     const QString rootId = rootMessageId.trimmed().left(96);
+    const QString moderated = filteredChatText(text).left(kMaxTextChars);
     if (channel.trimmed().isEmpty() || rootId.isEmpty() ||
-        text.trimmed().isEmpty())
+        moderated.trimmed().isEmpty())
         return;
     QJsonObject message = makeMessage("thread-reply");
     message.insert("channel", channel);
     message.insert("rootId", rootId);
-    message.insert("text", text.left(kMaxTextChars));
+    message.insert("text", moderated);
     if (m_privateChannels.contains(channel))
         message.insert("private", true);
     markSeen(message.value("id").toString());
@@ -1337,7 +1439,7 @@ void ServerNode::sendBotChat(const QString &channel, const QString &text)
     // channels use application-level invite scoping, and sending their context
     // to the bot endpoint would widen that audience. They do not cryptographically
     // exclude the relay because the default room passphrase is relay-derived.
-    const QString trimmed = text.trimmed();
+    const QString trimmed = filteredChatText(text).trimmed();
     if (trimmed.isEmpty() || m_privateChannels.contains(channel))
         return;
     QJsonObject message{{"type", QStringLiteral("chat")},
@@ -1356,11 +1458,12 @@ void ServerNode::sendBotChat(const QString &channel, const QString &text)
 
 void ServerNode::sendDirect(const QString &targetId, const QString &text)
 {
-    if (text.trimmed().isEmpty() || targetId == m_nodeId)
+    const QString moderated = filteredChatText(text).left(kMaxTextChars);
+    if (moderated.trimmed().isEmpty() || targetId == m_nodeId)
         return;
     QJsonObject message = makeMessage("dm");
     message.insert("to", targetId);
-    message.insert("text", text.left(kMaxTextChars));
+    message.insert("text", moderated);
     markSeen(message.value("id").toString());
     sendEncrypted(message, true);
     emitDm(message, targetId);
@@ -1754,21 +1857,22 @@ void ServerNode::handlePlain(const QJsonObject &message)
             }
         }
     } else if (type == "chat" || type == "thread-reply") {
-        const QString channel = message.value("channel").toString();
+        const QJsonObject moderated = moderatedChatObject(message);
+        const QString channel = moderated.value("channel").toString();
         if (type == "thread-reply" &&
-            message.value("rootId").toString().trimmed().isEmpty())
+            moderated.value("rootId").toString().trimmed().isEmpty())
             return;
         // A private-room message from a room we weren't invited to is ignored,
         // the same honour-model as a direct message addressed to someone else.
-        if (message.value("private").toBool() && !m_channels.contains(channel))
+        if (moderated.value("private").toBool() && !m_channels.contains(channel))
             return;
         // A message in a room the user deleted stays out — don't resurrect it.
         if (m_hiddenChannels.contains(channel))
             return;
         if (!m_channels.contains(channel))
             m_channels.append(channel);
-        storeHistory(message);
-        emitChat(message);
+        storeHistory(moderated);
+        emitChat(moderated);
     } else if (type == "invite") {
         // Someone added us to a private room. Join it locally (invite-only, so
         // we keep it out of our own hello/channel broadcasts too) and surface it.
@@ -1792,7 +1896,7 @@ void ServerNode::handlePlain(const QJsonObject &message)
     } else if (type == "dm") {
         const QString to = message.value("to").toString();
         if (to == m_nodeId)
-            emitDm(message, senderId);
+            emitDm(moderatedChatObject(message), senderId);
     } else if (type == "channel") {
         const QString name = message.value("name").toString();
         if (!m_channels.contains(name) && !m_hiddenChannels.contains(name)) {
@@ -1895,7 +1999,7 @@ void ServerNode::handlePlain(const QJsonObject &message)
             message.value("to").toString() != m_nodeId)
             return;
         for (const auto &value : message.value("entries").toArray()) {
-            const QJsonObject entry = value.toObject();
+            const QJsonObject entry = moderatedChatObject(value.toObject());
             if (!messageHasSafePayload(entry))
                 continue;
             // Never surface replayed private-room history for a room we aren't a
@@ -1960,7 +2064,7 @@ void ServerNode::emitChat(const QJsonObject &message)
     out.threadRootId = message.value("rootId").toString().left(96);
     out.senderId = message.value("senderId").toString();
     out.senderName = boundedText(message, "sender", kMaxDisplayNameChars);
-    out.text = boundedText(message, "text", kMaxTextChars);
+    out.text = filteredChatText(boundedText(message, "text", kMaxTextChars));
     out.timestampMs = qint64(message.value("ts").toDouble());
     out.fileName = safeFileName(message.value("fileName").toString());
     if (out.fileName == "file" && !message.contains("fileName"))
@@ -1982,7 +2086,7 @@ void ServerNode::emitDm(const QJsonObject &message, const QString &conversationP
     out.conversation = "@" + conversationPeer;
     out.senderId = message.value("senderId").toString();
     out.senderName = boundedText(message, "sender", kMaxDisplayNameChars);
-    out.text = boundedText(message, "text", kMaxTextChars);
+    out.text = filteredChatText(boundedText(message, "text", kMaxTextChars));
     out.timestampMs = qint64(message.value("ts").toDouble());
     out.fileName = safeFileName(message.value("fileName").toString());
     if (out.fileName == "file" && !message.contains("fileName"))
@@ -2216,12 +2320,13 @@ void ServerNode::updateStoredMessage(const QString &messageId, const QString &te
 void ServerNode::applyEdit(const QString &conversation, const QString &target,
                            const QString &senderId, const QString &text)
 {
-    if (!messageIsAuthoredBy(target, senderId) || text.trimmed().isEmpty())
+    const QString moderated = filteredChatText(text).left(kMaxTextChars);
+    if (!messageIsAuthoredBy(target, senderId) || moderated.trimmed().isEmpty())
         return;
     const QString conv =
         conversation.isEmpty() ? m_messageConversation.value(target) : conversation;
-    updateStoredMessage(target, text, false);
-    emit messageEdited(conv, target, text.left(kMaxTextChars));
+    updateStoredMessage(target, moderated, false);
+    emit messageEdited(conv, target, moderated);
 }
 
 void ServerNode::applyDelete(const QString &conversation, const QString &target,
