@@ -1570,6 +1570,45 @@ int main(int argc, char *argv[])
     // prompt box — no provider dropdown to pick a resolver from. adhoc #59: the
     // whole header row is icon-over-caption rail tiles ("repoActionStack"), the
     // same form as the activity rail, instead of a mix of pill shapes.
+    window.testClickRepoDetailTab(4); // Pull requests
+    QApplication::processEvents();
+    // The pull-list actions float over the lower-right corner instead of
+    // consuming a footer row.  Keep the geometry contract explicit: all five
+    // repository actions form one horizontal cluster, anchored inside the
+    // list pane and overlapping the table's layout area.
+    {
+        QWidget *bar = window.findChild<QWidget *>(
+            QStringLiteral("pullListFloatingBar"));
+        QWidget *pane = bar ? bar->parentWidget() : nullptr;
+        QTableWidget *table =
+            pane ? pane->findChild<QTableWidget *>(QStringLiteral("issueTable"))
+                 : nullptr;
+        check(bar && pane && table,
+              QStringLiteral("pull actions are hosted by a floating list bar"));
+        if (bar && pane && table) {
+            check(pane->width() - bar->geometry().right() <= 12 &&
+                      pane->height() - bar->geometry().bottom() <= 12 &&
+                      bar->geometry().intersects(table->geometry()),
+                  QStringLiteral("pull action bar floats at the list's lower-right "
+                                 "corner"));
+            const QList<QPushButton *> buttons =
+                bar->findChildren<QPushButton *>(QString(),
+                                                 Qt::FindDirectChildrenOnly);
+            const QStringList expected = {QStringLiteral("New"),
+                                          QStringLiteral("Directory"),
+                                          QStringLiteral("Import"),
+                                          QStringLiteral("Inbox"),
+                                          QStringLiteral("Merged")};
+            QStringList captions;
+            for (QPushButton *button : buttons) {
+                if (!button->text().isEmpty())
+                    captions.append(button->text());
+            }
+            check(captions == expected,
+                  QStringLiteral("all pull-list actions stay aligned in one "
+                                 "floating row"));
+        }
+    }
     bool prFixButtonFound = false;
     bool prHeaderStyleUniform = true;
     for (QPushButton *b : window.findChildren<QPushButton *>()) {
