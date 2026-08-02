@@ -9656,6 +9656,11 @@ void MainWindow::setGitPromptOverlay(bool enabled)
     m_promptWrapper->setMaximumWidth(QWIDGETSIZE_MAX);
     m_gitPromptOverlayVisible = false;
     m_footerDock->show();
+    // Moving the floating prompt back into the footer leaves it hidden: both
+    // hide() above and QWidget::setParent() suppress its visibility. Restore it
+    // explicitly so the Code -> Git -> Code path always brings the composer
+    // back with the footer.
+    m_promptWrapper->show();
 }
 
 void MainWindow::positionGitPromptOverlay()
