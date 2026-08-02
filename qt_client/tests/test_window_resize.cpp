@@ -2168,6 +2168,40 @@ int main(int argc, char *argv[])
                       "on main (status = %1, stash = %2)")
                   .arg(restoredStatus,
                        gitOutput(wtPath, {"stash", "list"})));
+        // Advance main again and suppress the automatic path for this one view,
+        // so the actual toolbar button has to perform the update. This catches
+        // the manual route passing m_branchDiffBranch by reference across
+        // event-pumping Git calls.
+        QFile manualPullFile(wtRepo.path() + QStringLiteral("/manual-pull.txt"));
+        if (manualPullFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            manualPullFile.write("arrived through Pull main\n");
+            manualPullFile.close();
+        }
+        runGitChecked(wtRepo.path(), {"add", "manual-pull.txt"});
+        runGitChecked(wtRepo.path(), {"commit", "-m", "advance main for manual pull"});
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        window.testSuppressAutoPullForBranch(
+            QStringLiteral("feature/keep-selected"));
+        QElapsedTimer pullButtonTimer;
+        pullButtonTimer.start();
+        while (pullButtonTimer.elapsed() < 5000 &&
+               !window.testBranchPullEnabled())
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        const bool pullButtonClicked = window.testClickBranchPull();
+        QApplication::processEvents();
+        const QString manualPullCounts = gitOutput(
+            wtRepo.path(),
+            {"rev-list", "--left-right", "--count",
+             "main...feature/keep-selected"});
+        check(pullButtonClicked && manualPullCounts.startsWith(QLatin1Char('0')) &&
+                  QFileInfo::exists(wtPath + QStringLiteral("/manual-pull.txt")),
+              QString("Pull main button updates the linked branch it was clicked "
+                      "for (clicked = %1, main...branch = %2, file = %3)")
+                  .arg(pullButtonClicked)
+                  .arg(manualPullCounts)
+                  .arg(QFileInfo::exists(
+                           wtPath + QStringLiteral("/manual-pull.txt"))));
         // Now that automatic synchronization has completed, introduce the
         // staged deletion and re-open the same branch. This isolates the diff
         // regression without making the earlier pull test reject a dirty tree.

@@ -1247,6 +1247,19 @@ bool MainWindow::testClickBranchReviewMerge(bool deleteAll)
     button->click();
     return true;
 }
+
+bool MainWindow::testBranchPullEnabled() const
+{
+    return m_branchPullButton && m_branchPullButton->isEnabled();
+}
+
+bool MainWindow::testClickBranchPull()
+{
+    if (!testBranchPullEnabled())
+        return false;
+    m_branchPullButton->click();
+    return true;
+}
 #endif
 
 bool MainWindow::selectWorktreeRow(const QString &branch)
@@ -2740,8 +2753,12 @@ QWidget *MainWindow::buildBranchRangePane()
     setOcticon(m_branchPullButton, "download", 14);
     m_branchPullButton->setEnabled(false);
     connect(m_branchPullButton, &QPushButton::clicked, this, [this] {
-        if (!m_branchDiffBranch.isEmpty())
-            updateBranchFromBase(m_branchDiffBranch);
+        // Copy before Git starts: runGitCapture pumps the event loop, and a
+        // navigation callback can replace m_branchDiffBranch while this click is
+        // still updating. The button must finish the branch it was clicked for.
+        const QString branch = m_branchDiffBranch;
+        if (!branch.isEmpty())
+            updateBranchFromBase(branch);
     });
 
     // Fix with agent: only relevant when the selected branch conflicts with base,
@@ -4801,8 +4818,10 @@ void MainWindow::createPullFromBranch(const QString &branch)
 void MainWindow::updateBranchFromBase(const QString &branch)
 {
     const QString dir = repoGitDir();
-    const QStringList branches = repoBranches();
-    const QString base = repoDefaultBranch(branches);
+    // The detail bar already resolved the repository's default branch. Reuse
+    // the same non-blocking answer instead of listing every ref again inside a
+    // button click (that Git read pumps events before the target is validated).
+    const QString base = repoDefaultBranchFast();
     if (branch.isEmpty() || branch == base || dir.isEmpty())
         return;
     if (!repoHasWorkingTree()) {
@@ -5470,14 +5489,14 @@ void MainWindow::startBranchConflictProbes(
                 // repo we probed. Rows are matched by branch name rather than by
                 // the index they had when the sweep started, so a rebuild in
                 // between can't flag the wrong one.
-                if (!m_branchesTable || repoGitDir() != dir)
+                if (repoGitDir() != dir)
                     return;
                 bool refreshDetail = false;
                 for (int i = 0; i < answered; ++i) {
                     const QString branch = pending.at(i).first;
                     if (branch == m_branchDiffBranch)
                         refreshDetail = true;
-                    if (!verdicts->at(i))
+                    if (!verdicts->at(i) || !m_branchesTable)
                         continue;
                     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
                         QTableWidgetItem *name = m_branchesTable->item(
