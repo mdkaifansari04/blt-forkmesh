@@ -41816,7 +41816,10 @@ HTTPS_MIRROR_RETRY_STATUSES = frozenset({
 # missing-route responses are definitive for this public control endpoint and
 # therefore still fail closed immediately.
 HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES = frozenset({
-    408, 425, 429, 500, 502, 503, 504,
+    # Cloudflare returns 530 with error 1033 while a named-tunnel connector is
+    # briefly reconnecting. That is a transport outage, not evidence that the
+    # node's signed repository identity or integrity proof became invalid.
+    408, 425, 429, 500, 502, 503, 504, 530,
 })
 HTTPS_MIRROR_REPO_PROOF_TTL_MS = 60 * 1000
 HTTPS_MIRROR_REPO_PROOF_MEMO_MAX = 500

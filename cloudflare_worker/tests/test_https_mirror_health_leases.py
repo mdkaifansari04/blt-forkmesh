@@ -141,6 +141,7 @@ def test_cloudflare_dns_check_distinguishes_unavailable_from_rejected():
         (None, (200, "{}"), "transient"),
         (True, (0, ""), "transient"),
         (True, (503, ""), "transient"),
+        (True, (530, "error code: 1033"), "transient"),
         (True, (401, ""), "failed"),
         (True, (403, ""), "failed"),
         (True, (404, ""), "failed"),
@@ -188,7 +189,7 @@ def test_health_probe_distinguishes_transient_from_definitive_failures(
         "HTTPS_MIRROR_MANIFEST_MAX_BYTES": 16_384,
         "HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS": 5,
         "HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES": {
-            408, 425, 429, 500, 502, 503, 504,
+            408, 425, 429, 500, 502, 503, 504, 530,
         },
     }
     exec(_function_source("_https_mirror_health_one"), namespace)
