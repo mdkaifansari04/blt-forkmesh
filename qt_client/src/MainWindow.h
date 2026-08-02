@@ -19,6 +19,7 @@
 #include "RepoSecurity.h"
 #include "RepoContributionSnapshot.h"
 #include "MirrorCrypto.h"
+#include "GuiPump.h"
 
 // Per-session live-output state behind the top bar's blinking fleet lights.
 // lastActivityMs is bumped on every raw-output chunk so the light keeps blinking
@@ -89,6 +90,7 @@ struct MirrorSelfSnapshot {
 #include <QTextBlockUserData>
 #include <QTextCursor>
 #include <QThread>
+#include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -549,10 +551,11 @@ public:
                                                const QString &description,
                                                const QString &firstPrompt,
                                                bool addReadme,
-                                               bool isPrivate = false)
+                                               bool isPrivate = false,
+                                               bool localOnly = false)
     {
         return provisionNewRepository(dest, name, description, firstPrompt,
-                                      addReadme, isPrivate, nullptr);
+                                      addReadme, isPrivate, localOnly, nullptr);
     }
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
@@ -1370,6 +1373,9 @@ private:
     QWidget *buildOrganizationTasksSection();
     void refreshOrganizationTasks();
     void applyOrganizationTasks(const QJsonObject &payload);
+    // The table paints one page of the catalog at a time (adhoc #24): search
+    // and the summary still run over every task, only the rows are bounded.
+    void renderOrganizationTaskRows(const QString &selectTaskId = QString());
     // Tasks rail badge (adhoc #79). The open count is persisted, painted back
     // onto the rail at launch, and refreshed in the background so it no longer
     // takes a visit to the Tasks page to show a number.
@@ -1757,6 +1763,13 @@ private:
         std::function<void(QString keyId, QString error)> onDone);
     void pollVultrInstance(const QString &apiKey, const QString &instanceId,
                            const QString &node, const QString &identityFile);
+    // Knock on the new instance's SSH port once a minute until it answers, then
+    // start the install (adhoc #48). Vultr calls an instance "active" long
+    // before sshd is listening, and the install uploads this app's entire
+    // binary — so probing first replaces a ladder of failed multi-megabyte
+    // upload attempts with one cheap command that costs nothing to repeat.
+    void waitForVultrSshReady(const QString &node, const QString &ip,
+                              const QString &identityFile);
     void startVultrHostInstall(const QString &node, const QString &ip,
                                const QString &identityFile);
     // Do not report a provisioned mirror as complete merely because SSH and
@@ -2133,6 +2146,25 @@ private:
     void showPullCheckLog(int runId);               // load a run's log into the panel
     QStringList pullCommitShas(const PullRequest &pr) const; // base..head SHAs
     QList<int> runIdsForPull(PullRequest pr) const; // matching action runs
+    // Everything a PR's base..head range walk yields, cached against the two
+    // resolved SHAs. showPull() re-runs for the same PR on every pull reload —
+    // and it is reached several times over per pass (the commit list, the checks
+    // table, the review summary all want the range) — so the same two `git log`
+    // walks were being re-run over and over on the GUI thread for a range that
+    // had not moved. Resolving base and head is a single cheap `rev-parse`; the
+    // walks behind it only re-run when one of those SHAs actually changes.
+    struct PullRangeSnapshot {
+        QString baseSha;
+        QString headSha;
+        QByteArray detailedLog; // renderPullCommits' rich per-commit format
+        QStringList shas;       // %H list for pullCommitShas/runIdsForPull
+    };
+    bool pullRangeSnapshot(const QString &base, const QString &head,
+                           PullRangeSnapshot *out) const;
+    // Keyed "<repo dir>\x1f<base>\x1f<head>"; mutable because the two consumers
+    // above are const. Cleared wholesale once it outgrows a session's worth of
+    // open PRs.
+    mutable QHash<QString, PullRangeSnapshot> m_pullRangeCache;
     void runChecksForCurrentPull();                 // enqueue workflows at PR head
     // Check out the PR's head into a throwaway worktree, build the ForkMesh app
     // from it, and launch the freshly built binary as an isolated preview node so
@@ -3062,13 +3094,38 @@ private:
                 T result = work();
                 QMetaObject::invokeMethod(
                     this,
-                    [apply = std::move(apply), result = std::move(result)]() mutable {
-                        apply(std::move(result));
+                    [this, apply = std::move(apply),
+                     result = std::move(result)]() mutable {
+                        deliverOffThreadResult(std::move(apply),
+                                               std::move(result));
                     },
                     Qt::QueuedConnection);
             });
         connect(worker, &QThread::finished, worker, &QObject::deleteLater);
         worker->start();
+    }
+    // Hand a worker's result to its apply handler, but never *inside* a
+    // keep-alive pump: a queued delivery that arrives while the GUI thread is
+    // parked in a blocking git read (waitForGit pumps the event loop) runs its
+    // handler nested inside whatever render was already in flight, so two heavy
+    // passes share one stack and their durations add up into a single freeze —
+    // the shape of the 14.6s "spool sweep → commit reload → source-control diff
+    // → pull-list rebuild" stall. Re-posting costs one event-loop hop and gives
+    // the handler a clean top-level stack. (Deferring re-checks each turn, so a
+    // pump that is still running when the timer fires just defers again.)
+    template <typename T>
+    void deliverOffThreadResult(std::function<void(T)> apply, T result)
+    {
+        if (forkmesh::ui::inKeepAlivePump()) {
+            QTimer::singleShot(
+                0, this,
+                [this, apply = std::move(apply),
+                 result = std::move(result)]() mutable {
+                    deliverOffThreadResult(std::move(apply), std::move(result));
+                });
+            return;
+        }
+        apply(std::move(result));
     }
     // Bumped on every loadWorktreesPanel() rebuild so the async per-row `git
     // status` callbacks can drop their result if the table was rebuilt meanwhile.
@@ -4384,10 +4441,12 @@ private:
     // and (when firstPrompt is non-empty) has its first issue filed. Returns the
     // new repository index, or -1 with a message in *error on failure.
     // isPrivate keeps the repo out of the public catalog from the start.
+    // localOnly stops there: the repo is initialized and registered on this
+    // machine but never mirrored, published or announced on a relay channel.
     int provisionNewRepository(const QString &dest, const QString &name,
                                const QString &description,
                                const QString &firstPrompt, bool addReadme,
-                               bool isPrivate, QString *error);
+                               bool isPrivate, bool localOnly, QString *error);
     // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.
@@ -4677,6 +4736,10 @@ private:
     QPushButton *m_organizationTaskQaButton = nullptr;
     QPushButton *m_organizationTaskReturnButton = nullptr;
     QPushButton *m_organizationTaskDeleteButton = nullptr;
+    QPushButton *m_organizationTaskPrevPageButton = nullptr;
+    QPushButton *m_organizationTaskNextPageButton = nullptr;
+    QLabel *m_organizationTaskPageLabel = nullptr;
+    int m_organizationTasksPage = 0;
     QJsonArray m_organizationTasks;
     QStringList m_organizationTaskMembers;
     QStringList m_organizationTaskDepartments;
@@ -5045,6 +5108,10 @@ private:
     bool m_vultrProvisionActive = false;
     int m_vultrPollCount = 0;        // instance boot polls used this run
     int m_vultrInstallAttempts = 0;  // SSH install attempts used this run
+    int m_vultrSshWaitCount = 0;     // SSH reachability probes used this run
+    // Live probe of waitForVultrSshReady, kept so a cancelled/finished
+    // provision can stop knocking instead of leaving an ssh child behind.
+    QProcess *m_vultrSshProbeProcess = nullptr;
     // Flipped once an attempt fails because no online node is mirroring the
     // repo yet (the freshly-created instance has nothing to clone/download
     // from) — every later attempt this run then uploads this app's own
@@ -5814,6 +5881,12 @@ private:
     // fillCommitStats) from a superseded load drops itself instead of writing
     // mismatched Files/+/− counts into the new rows.
     int m_commitsLoadGen = 0;
+    // repo dir + ref + tip + issue-store signature that applyCommitIssueClosures()
+    // last scanned. Reading 500 full commit messages and then every issue's signed
+    // event log is expensive enough to show up in the stall log, and its result is
+    // a pure function of those four things, so an unchanged key means there is
+    // nothing to re-derive.
+    QString m_commitClosureScanKey;
     // Short-lived cache for repoBranches() — avoids re-running `git branch` on
     // every loadCommits() call (e.g. on each search keystroke). Keyed by dir;
     // expires after 5 s so the button menu stays fresh after branch operations.
@@ -5983,6 +6056,12 @@ private:
     QList<int> m_scmFileTops;        // cached absolute y of each section header
     QHash<QString, QString> m_scmStickyLabelHtml; // section key -> sticky label
     QString m_scmDiffRenderKey;      // skip the re-layout when nothing changed
+    // …and the inputs behind it (patch, viewed set, stylesheet, split toggle), so
+    // an unchanged working tree skips rebuilding the diff HTML too and not just
+    // re-laying it out. refreshSourceControl() is on the path of every commit
+    // reload and repo-update sweep, so this ran far more often than the working
+    // tree actually changed.
+    QString m_scmDiffSourceKey;
     QFrame *m_scmStickyHeader = nullptr;
     QLabel *m_scmStickyPath = nullptr;
     PacmanProgress *m_scmStickyPacman = nullptr;
@@ -6196,6 +6275,15 @@ private:
     // refresh/poll re-renders the same file with unchanged content. Cleared
     // whenever the widget is set to something other than a rendered diff.
     QString m_pullDiffRenderKey;
+    // …and the *inputs* that produced it (PR number, patch, review notes, viewed
+    // set, stylesheet, split toggle). Skipping only the re-layout still left
+    // renderDiffHtml() rebuilding the whole HTML document on every pull-list
+    // refresh — string-building a large PR's split diff is the single most
+    // frequent entry in the stall log (renderSplitDiffHtml under
+    // refreshPullList → showPull), so match on the inputs and skip the build
+    // itself. Cleared alongside m_pullDiffRenderKey. The rendered file
+    // anchors/order/sticky labels stay valid exactly when this matches.
+    QString m_pullDiffSourceKey;
     // current PR: file path -> the "file-N" HTML anchor in the all-files diff,
     // so selecting a file in the list (or Prev/Next) can scroll straight to it.
     QHash<QString, QString> m_pullFileAnchors;

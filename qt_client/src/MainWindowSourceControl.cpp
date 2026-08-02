@@ -909,6 +909,7 @@ void MainWindow::refreshSourceControl(bool force)
         m_scmStatusCache.clear();
         m_scmPatchValid = false;
         m_scmDiffRenderKey.clear();
+        m_scmDiffSourceKey.clear();
         m_scmSectionKeys.clear();
         m_scmSectionAnchors.clear();
         m_scmSectionPaths.clear();
@@ -947,13 +948,11 @@ void MainWindow::refreshSourceControl(bool force)
         return;
 
     // Skip the full rebuild when the working tree is unchanged since the last
-    // scan. This matters now that we rescan on tab focus / window activation:
-    // without it, every rescan would clear the tree (losing the open diff and the
-    // selection) and flicker even when nothing moved. Manual refresh skips this
-    // short-circuit via force=true.
-    // Keyed by repo as well as status output: two repos can produce byte-identical
-    // `git status`, and the short-circuit would then leave the previous repo's
-    // tree — and now its whole rendered diff — on screen.
+    // scan: we rescan on tab focus / window activation, and without this every
+    // rescan would clear the tree (losing the open diff and the selection) and
+    // flicker. Manual refresh forces past it. Keyed by repo as well as status
+    // output, since two repos can produce byte-identical `git status` and the
+    // short-circuit would leave the previous repo's tree and diff on screen.
     const QByteArray scanKey = dir.toUtf8() + '\0' + out;
     if (!force && scanKey == m_scmStatusCache && m_scmTree->topLevelItemCount() > 0)
         return;
@@ -1257,19 +1256,26 @@ void MainWindow::refreshSourceControlOutgoing()
         return;
     }
 
-    QByteArray branchOut;
-    if (!runGitCapture(repo.localPath,
-                       {QStringLiteral("symbolic-ref"), QStringLiteral("--short"),
-                        QStringLiteral("HEAD")},
-                       &branchOut, nullptr)) {
-        ++m_scmOutgoingGeneration;
-        m_scmOutgoingPanel->hide(); // detached HEAD has no branch to publish
-        showCommitControls(true);
-        if (m_railGitButton)
-            m_railGitButton->setPendingSyncCount(0);
-        return;
+    // This runs on every push/publish transition, every repo refresh and every
+    // sync-indicator tick, and the branch name is one line of the HEAD file — so
+    // read it directly and keep the subprocess only for the layouts the fast path
+    // does not recognise (see headBranchFromFile).
+    QString branch = headBranchFromFile(repo.localPath);
+    if (branch.isEmpty()) {
+        QByteArray branchOut;
+        if (!runGitCapture(repo.localPath,
+                           {QStringLiteral("symbolic-ref"), QStringLiteral("--short"),
+                            QStringLiteral("HEAD")},
+                           &branchOut, nullptr)) {
+            ++m_scmOutgoingGeneration;
+            m_scmOutgoingPanel->hide(); // detached HEAD has no branch to publish
+            showCommitControls(true);
+            if (m_railGitButton)
+                m_railGitButton->setPendingSyncCount(0);
+            return;
+        }
+        branch = QString::fromUtf8(branchOut).trimmed();
     }
-    const QString branch = QString::fromUtf8(branchOut).trimmed();
     if (repoIndex != m_repoDetailIndex || repoIndex >= m_repositories.size() ||
         m_repositories.at(repoIndex).localPath != repo.localPath)
         return;
@@ -1603,6 +1609,25 @@ void MainWindow::renderScmCombinedDiff()
     QList<DiffFileEntry> files;
     const QString ctx = scmViewedContext();
     const QSet<QString> viewed = loadDiffViewed(ctx);
+
+    // Everything the rendered document derives from. Building the HTML for a
+    // large working-tree diff is a GUI-thread string concatenation measured in
+    // hundreds of milliseconds, and this is re-entered on every commit-list
+    // reload and repo-update sweep — usually with the working tree exactly where
+    // it was. Nothing downstream (the section/anchor/sticky maps, the Viewed
+    // tally) can differ when the inputs don't, so skip the whole pass.
+    QStringList viewedKeys(viewed.cbegin(), viewed.cend());
+    viewedKeys.sort();
+    const QString sourceKey =
+        QString(diffSplitPref() ? QLatin1Char('s') : QLatin1Char('u')) +
+        QLatin1Char('\x1f') + diffStyleSheet(m_diffFontPt) + QLatin1Char('\x1f') +
+        ctx + QLatin1Char('\x1f') + viewedKeys.join(QLatin1Char('\x1e')) +
+        QLatin1Char('\x1f') + m_scmCombinedPatch;
+    if (!m_scmDiffSourceKey.isEmpty() && sourceKey == m_scmDiffSourceKey &&
+        !m_scmDiffRenderKey.isEmpty())
+        return;
+    m_scmDiffSourceKey = sourceKey;
+
     const QString html =
         renderDiffHtml(m_scmCombinedPatch, files, dir, QString(), QString(),
                        QString(), QHash<QString, QString>(), viewed);
@@ -2243,17 +2268,14 @@ QStringList MainWindow::scmDiffScopeArgs() const
     return {};
 }
 
-// A local, model-free commit-message drafter. It parses the diff to find the
-// symbols that changed — types/functions added or removed (keyword-led definitions
-// in any language, plus C++ header declarations) and the functions whose bodies
+// A local, model-free commit-message drafter. It parses the diff for the symbols
+// that changed — types/functions added or removed, plus the functions whose bodies
 // changed (from git's hunk-header context) — drops generic/internal names, then
-// builds the subject from the single most significant symbol, humanizing its
-// camelCase into words ("scmHeuristicCommitMessage" -> "scm heuristic commit
-// message"). The conventional type comes from the file kinds, the branch name, the
-// change shape and a bug-fix keyword scan. Not as good as the AI models, but
-// instant, private and free — and far more specific than "update N files"; the
-// result lands in the editable message field. `variant` > 0 rotates the symbol
-// choice and verb wording so re-clicking Generate offers alternative drafts.
+// builds the subject from the most significant one, humanizing its camelCase
+// ("scmHeuristicCommitMessage" -> "scm heuristic commit message"). The
+// conventional type comes from the file kinds, branch name, change shape and a
+// bug-fix keyword scan. Instant, private and far more specific than "update N
+// files"; `variant` > 0 rotates the symbol and verb so Generate offers drafts.
 QString MainWindow::scmHeuristicCommitMessage(int variant) const
 {
     const QString dir = sourceControlGitDir();
