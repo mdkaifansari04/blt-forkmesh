@@ -69,6 +69,11 @@
     homeOrganizationRepositories: [],
     repoCommitDetail: null,
     repoRecordDetail: null,
+    // Last rendered pull/discussion list per kind, and the last rendered code
+    // tree listing. Both are held so the header search box can re-filter what
+    // is already on screen (adhoc #37) without a second mirror read.
+    repoCollectionItems: {},
+    repoTreeView: null,
     profileContributions: {
       range: null,
       data: null,
@@ -81,10 +86,26 @@
     settingsView: {
       section: "public-profile",
     },
+    // /dashboard/tasks (adhoc #24): the organization-private task catalog, read
+    // whole and then filtered and paged in the browser. `actor` is the relay's
+    // name for the signed-in member, used by the "Assigned to me" filter.
+    tasksView: {
+      items: [],
+      filter: "open",
+      query: "",
+      page: 1,
+      loading: true,
+      error: "",
+      actor: "",
+    },
     globalSearch: {
       open: false,
       selectedIndex: 0,
       results: [],
+      // The header search box also filters the page you are on, live, on top of
+      // whatever that page's own filter box holds (adhoc #37). Kept here rather
+      // than read off the input so a re-render after navigation still sees it.
+      pageQuery: "",
     },
   };
 

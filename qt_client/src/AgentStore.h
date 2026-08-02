@@ -131,6 +131,18 @@ public:
     void writePatch(const AgentSession &session, const QString &patch) const;
     QString readPatch(const AgentSession &session) const;
 
+    // Live transcript search: count case-insensitive occurrences of `needle`
+    // across this session's persisted transcript — both the raw log and the
+    // stream-json events, since a Claude Code run only writes the latter. Only
+    // the last kTranscriptSearchTailBytes of each file are read, so scanning
+    // every session of a repo on each keystroke stays cheap even next to a run
+    // that has been talking for hours. `snippet`, when given, receives the text
+    // around the first hit (for the matching row's tooltip). Event lines are
+    // searched as stored, so a query is matched against JSON-escaped text.
+    static constexpr qint64 kTranscriptSearchTailBytes = 512 * 1024;
+    int searchTranscript(const AgentSession &session, const QString &needle,
+                         QString *snippet = nullptr) const;
+
 private:
     QString sessionsDir() const;
     QString sessionDir(const AgentSession &session) const;

@@ -1027,11 +1027,19 @@ bool decryptInto(const QString &ciphertext, const IdentityEntry &entry,
     return true;
 }
 
+// Report one stage of the seal, when the caller asked to be told.
+void note(const PublicMirrorRuntime::Progress &progress, const QString &line)
+{
+    if (progress)
+        progress(line);
+}
+
 PublicMirrorRuntime::SyncResult sealTemporaryRepository(
     std::unique_ptr<QTemporaryDir> directory, const QString &repositoryPath,
     const QString &archiveRoot, const QString &vaultPath,
     const QByteArray &vaultSecret, const QString &existingArchiveId,
-    const PublicMirrorRuntime::Tools &tools, QString *error)
+    const PublicMirrorRuntime::Tools &tools, QString *error,
+    const PublicMirrorRuntime::Progress &progress = {})
 {
     PublicMirrorRuntime::SyncResult result;
     if (!isBareRepository(repositoryPath, tools, error) ||
@@ -1049,6 +1057,7 @@ PublicMirrorRuntime::SyncResult sealTemporaryRepository(
         return {};
     }
 
+    note(progress, QStringLiteral("Unlocking the mirror's age key…"));
     Vault vault;
     if (!readVault(vaultPath, vaultSecret, &vault, true, error))
         return {};
@@ -1068,6 +1077,7 @@ PublicMirrorRuntime::SyncResult sealTemporaryRepository(
         }
     }
 
+    note(progress, QStringLiteral("Reading the mirror's refs…"));
     const QString refs = refsSha256(repositoryPath, tools, error);
     if (refs.isEmpty()) {
         clearBytes(&entry.secretIdentity);
@@ -1081,6 +1091,8 @@ PublicMirrorRuntime::SyncResult sealTemporaryRepository(
     if (previous.isValid() &&
         previous.expectedRefsSha256 == refs) {
         clearBytes(&entry.secretIdentity);
+        note(progress,
+             QStringLiteral("Already sealed — reopening the archive…"));
         std::unique_ptr<PublicMirrorMaterialization> authenticated =
             PublicMirrorRuntime::materialize(
                 archiveRoot, vaultPath, vaultSecret,
@@ -1110,11 +1122,13 @@ PublicMirrorRuntime::SyncResult sealTemporaryRepository(
     }
     const QString stagedCiphertext =
         QDir(cipherDirectory.path()).filePath(QStringLiteral("archive.age"));
+    note(progress, QStringLiteral("Encrypting the mirror with age…"));
     if (!encryptRepository(repositoryPath, stagedCiphertext, entry, tools,
                            error)) {
         clearBytes(&entry.secretIdentity);
         return {};
     }
+    note(progress, QStringLiteral("Writing the sealed archive…"));
     const QString finalCiphertext =
         PublicMirrorRuntime::ciphertextPath(
             archiveRoot, result.metadata.archiveId);
@@ -1130,6 +1144,7 @@ PublicMirrorRuntime::SyncResult sealTemporaryRepository(
 
     // Authenticate a fresh decrypt before exposing the result or allowing a
     // caller to remove any legacy durable plaintext.
+    note(progress, QStringLiteral("Verifying the sealed archive…"));
     std::unique_ptr<PublicMirrorMaterialization> authenticated =
         PublicMirrorRuntime::materialize(
             archiveRoot, vaultPath, vaultSecret,
@@ -1244,6 +1259,64 @@ QString PublicMirrorRuntime::keyReference(const QString &archiveId)
                : QString();
 }
 
+int PublicMirrorRuntime::cleanupStaleTemporaryDirectories(
+    const QString &temporaryRoot, QString *error)
+{
+    const QFileInfo rootInfo(temporaryRoot);
+    const QString root = rootInfo.canonicalFilePath();
+    if (temporaryRoot.trimmed().isEmpty() || !rootInfo.isAbsolute() ||
+        !rootInfo.isDir() || rootInfo.isSymLink() || root.isEmpty()) {
+        setError(error, QStringLiteral(
+                            "The mirror temporary cleanup root is unsafe."));
+        return -1;
+    }
+
+    static const QRegularExpression ownedName(
+        QStringLiteral(
+            "^(?:forkmesh-mirror-runtime-[A-Za-z0-9_]+|"
+            "forkmesh-public-mirror-[A-Za-z0-9]{6}|"
+            "forkmesh-private-(?:sync|open)-[A-Za-z0-9]{6})$"));
+    // PublicMirrorRuntime used Qt's generic template before the dedicated
+    // prefix above was introduced. Only treat one of those old names as ours
+    // when it also contains the exact repository.git layout this class made.
+    static const QRegularExpression legacyName(
+        QStringLiteral("^ForkMesh-[A-Za-z0-9]{6}$"));
+
+    int removed = 0;
+    const QFileInfoList candidates =
+        QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot,
+                                 QDir::Name);
+    for (const QFileInfo &candidate : candidates) {
+        const QString name = candidate.fileName();
+        const bool legacy = legacyName.match(name).hasMatch();
+        if (!ownedName.match(name).hasMatch() && !legacy)
+            continue;
+        if (legacy &&
+            !QFileInfo(QDir(candidate.absoluteFilePath())
+                           .filePath(QStringLiteral("repository.git")))
+                 .isDir()) {
+            continue;
+        }
+        if (candidate.isSymLink() || !candidate.isDir() ||
+            candidate.canonicalPath() != root) {
+            setError(error, QStringLiteral(
+                                "A mirror temporary directory is unsafe."));
+            return -1;
+        }
+        QDir directory(candidate.absoluteFilePath());
+        if (!directory.removeRecursively()) {
+            setError(error, QStringLiteral(
+                                "A stale mirror temporary directory could not "
+                                "be removed."));
+            return -1;
+        }
+        ++removed;
+    }
+    if (error)
+        error->clear();
+    return removed;
+}
+
 bool PublicMirrorRuntime::toolingAvailable(const Tools &tools, QString *error)
 {
     if (resolveProgram(tools.age).isEmpty()) {
@@ -1272,21 +1345,25 @@ bool PublicMirrorRuntime::toolingAvailable(const Tools &tools, QString *error)
 PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncRepository(
     const QString &repositoryPath, const QString &archiveRoot,
     const QString &vaultPath, const QByteArray &vaultSecret,
-    const QString &existingArchiveId, const Tools &tools, QString *error)
+    const QString &existingArchiveId, const Tools &tools, QString *error,
+    const Progress &progress)
 {
     return syncSource(repositoryPath, {}, archiveRoot, vaultPath,
-                      vaultSecret, existingArchiveId, tools, error);
+                      vaultSecret, existingArchiveId, tools, error, progress);
 }
 
 PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncManagedCheckout(
     const QString &repositoryPath, const QString &archiveRoot,
     const QString &vaultPath, const QByteArray &vaultSecret,
-    const QString &existingArchiveId, const Tools &tools, QString *error)
+    const QString &existingArchiveId, const Tools &tools, QString *error,
+    const Progress &progress)
 {
     if (!toolingAvailable(tools, error))
         return {};
     std::unique_ptr<QTemporaryDir> directory =
-        std::make_unique<QTemporaryDir>();
+        std::make_unique<QTemporaryDir>(
+            QDir::tempPath() +
+            QStringLiteral("/forkmesh-public-mirror-XXXXXX"));
     if (!directory->isValid() ||
         !prepareOwnerDirectory(directory->path(), error)) {
         setError(error, QStringLiteral(
@@ -1295,23 +1372,26 @@ PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncManagedCheckout(
     }
     const QString repository =
         QDir(directory->path()).filePath(QStringLiteral("repository.git"));
+    note(progress, QStringLiteral("Copying the managed checkout…"));
     if (!cloneSource(repositoryPath, {}, repository, tools, error, true))
         return {};
     return sealTemporaryRepository(
         std::move(directory), repository, archiveRoot, vaultPath,
-        vaultSecret, existingArchiveId, tools, error);
+        vaultSecret, existingArchiveId, tools, error, progress);
 }
 
 PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncSource(
     const QString &source, const QStringList &gitPrefixArgs,
     const QString &archiveRoot, const QString &vaultPath,
     const QByteArray &vaultSecret, const QString &existingArchiveId,
-    const Tools &tools, QString *error)
+    const Tools &tools, QString *error, const Progress &progress)
 {
     if (!toolingAvailable(tools, error))
         return {};
     std::unique_ptr<QTemporaryDir> directory =
-        std::make_unique<QTemporaryDir>();
+        std::make_unique<QTemporaryDir>(
+            QDir::tempPath() +
+            QStringLiteral("/forkmesh-public-mirror-XXXXXX"));
     if (!directory->isValid() ||
         !prepareOwnerDirectory(directory->path(), error)) {
         setError(error, QStringLiteral("Could not create the temporary public-mirror directory."));
@@ -1319,11 +1399,12 @@ PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncSource(
     }
     const QString repository =
         QDir(directory->path()).filePath(QStringLiteral("repository.git"));
+    note(progress, QStringLiteral("Copying the repository to seal…"));
     if (!cloneSource(source, gitPrefixArgs, repository, tools, error))
         return {};
     return sealTemporaryRepository(
         std::move(directory), repository, archiveRoot, vaultPath,
-        vaultSecret, existingArchiveId, tools, error);
+        vaultSecret, existingArchiveId, tools, error, progress);
 }
 
 PublicMirrorRuntime::Metadata PublicMirrorRuntime::readMetadata(
@@ -1418,7 +1499,9 @@ PublicMirrorRuntime::materialize(
         return {};
     }
     std::unique_ptr<QTemporaryDir> directory =
-        std::make_unique<QTemporaryDir>();
+        std::make_unique<QTemporaryDir>(
+            QDir::tempPath() +
+            QStringLiteral("/forkmesh-public-mirror-XXXXXX"));
     if (!directory->isValid() ||
         !prepareOwnerDirectory(directory->path(), error) ||
         !decryptInto(ciphertextPath(archiveRoot, archiveId), entry,

@@ -1239,6 +1239,18 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     border: none;
     border-bottom: 1px solid #30363d;
 }
+/* The task list is a list, not a table (adhoc #56): no frame, no grid, no
+   banding, and no stylesheet selection fill — the row delegate paints its own
+   pill so the icon strip and the title sit on one clean surface. */
+#organizationTasksTable {
+    background-color: #0d1117;
+    alternate-background-color: #0d1117;
+    border: none;
+    gridline-color: transparent;
+    selection-background-color: transparent;
+    selection-color: #ffffff;
+    outline: 0;
+}
 #actionWorkflowList {
     background-color: #0d1117;
     alternate-background-color: #161b22;
@@ -2502,6 +2514,16 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     background-color: #ffffff;
     border: none;
     border-bottom: 1px solid #d0d7de;
+}
+/* Light-theme twin of the headerless task list (adhoc #56). */
+#organizationTasksTable {
+    background-color: #ffffff;
+    alternate-background-color: #ffffff;
+    border: none;
+    gridline-color: transparent;
+    selection-background-color: transparent;
+    selection-color: #ffffff;
+    outline: 0;
 }
 #actionWorkflowList {
     background-color: #ffffff;

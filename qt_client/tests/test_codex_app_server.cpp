@@ -1,4 +1,5 @@
 #include "../src/CodexAppServerSession.h"
+#include "../src/CodexTranscriptStyle.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -1447,6 +1448,67 @@ void runFatalErrorTest(const QString &executable)
           "non-retrying error emits one terminal result");
 }
 
+// How the transcript retells what a turn did (adhoc #34): Codex explores by
+// running shell commands, so the difference between a line under "Explored" and
+// a spelled-out "Ran <command>" is a reading of the command line itself.
+void runTranscriptStyleTest()
+{
+    using namespace CodexTranscriptStyle;
+    QString verb, target;
+
+    check(exploreLine(QStringLiteral("sed -n '400,520p' src/MainWindow.cpp"), verb,
+                      target)
+              && verb == QStringLiteral("Read")
+              && target == QStringLiteral("MainWindow.cpp"),
+          "sed range reads as Read <file>");
+    check(exploreLine(QStringLiteral("tail -n 40 /var/log/agent.log"), verb, target)
+              && verb == QStringLiteral("Read")
+              && target == QStringLiteral("agent.log"),
+          "tail -n reads the file, not the line count");
+    // The pipeline test has to survive a regex argument: 'a|b' is one word.
+    check(exploreLine(QStringLiteral("rg -n 'fixBranch|resolveBranch' src/Main.cpp"),
+                      verb, target)
+              && verb == QStringLiteral("Search")
+              && target == QStringLiteral("fixBranch|resolveBranch in Main.cpp"),
+          "quoted alternation stays a search, not a pipeline");
+    check(exploreLine(QStringLiteral("ls src/agents"), verb, target)
+              && verb == QStringLiteral("List")
+              && target == QStringLiteral("src/agents"),
+          "ls reads as List <dir>");
+
+    check(!exploreLine(QStringLiteral("git status --short"), verb, target),
+          "a real command is not exploration");
+    check(!exploreLine(QStringLiteral("rg -n TODO src | head -20"), verb, target),
+          "an actual pipeline is not exploration");
+    check(!exploreLine(QStringLiteral("cat src/a.cpp > /tmp/copy"), verb, target),
+          "a redirect makes a read a write");
+    check(!exploreLine(QStringLiteral("cat a.txt && rm b.txt"), verb, target),
+          "a chained command is not exploration");
+    check(!exploreLine(QStringLiteral("set -e\nsed -n '1,5p' a.cpp"), verb, target),
+          "a multi-line script is not exploration");
+
+    // The command line itself, however Codex reported it.
+    check(commandText(QJsonObject{{QStringLiteral("command"),
+                                   QStringLiteral("git status")}})
+              == QStringLiteral("git status"),
+          "a string command passes through");
+    check(commandText(QJsonObject{{QStringLiteral("command"),
+                                   QJsonArray{QStringLiteral("bash"),
+                                              QStringLiteral("-lc"),
+                                              QStringLiteral("ninja -C build")}}})
+              == QStringLiteral("ninja -C build"),
+          "argv drops the bash -lc wrapper");
+    check(commandText(QJsonObject{{QStringLiteral("command"),
+                                   QJsonArray{QStringLiteral("git"),
+                                              QStringLiteral("status")}}})
+              == QStringLiteral("git status"),
+          "a plain argv joins back into its command line");
+
+    check(toolVerb(QStringLiteral("FileChange")) == QStringLiteral("Edited")
+              && toolVerb(QStringLiteral("Bash")).isEmpty(),
+          "a write is titled by what it did");
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -1472,6 +1534,7 @@ int main(int argc, char *argv[])
     runInterruptTest(executable);
     runTurnOptionsTest(executable);
     runFatalErrorTest(executable);
+    runTranscriptStyleTest();
 
     if (failures == 0)
         qInfo("All Codex app-server protocol tests passed.");

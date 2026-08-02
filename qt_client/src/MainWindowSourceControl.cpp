@@ -108,10 +108,20 @@ private:
                 nextX = x + hint.width() + m_hSpace;
                 lineHeight = 0;
             }
+            // Items are laid out at their size hint, which leaves a trailing
+            // status label nothing to elide into. A row that opts in with the
+            // "flowFill" property takes the rest of its line instead, and the
+            // next item wraps below it.
+            QSize size = hint;
+            QWidget *widget = item->widget();
+            if (widget && widget->property("flowFill").toBool()) {
+                size.setWidth(qMax(hint.width(), eff.right() + 1 - x));
+                nextX = x + size.width() + m_hSpace;
+            }
             if (!testOnly)
-                item->setGeometry(QRect(QPoint(x, y), hint));
+                item->setGeometry(QRect(QPoint(x, y), size));
             x = nextX;
-            lineHeight = qMax(lineHeight, hint.height());
+            lineHeight = qMax(lineHeight, size.height());
         }
         return y + lineHeight - rect.y() + m.bottom();
     }
@@ -435,7 +445,9 @@ QWidget *MainWindow::buildSourceControlPanel()
 
     // Three small buttons on a single line. The FlowLayout stays so a column
     // dragged really narrow wraps instead of clipping, but at any normal width
-    // the row reads as one line of commit actions.
+    // the row reads as one line of commit actions. When local commits are
+    // waiting to sync, this row instead presents the blocking Sync Changes
+    // action; publishing must be resolved before another commit can be made.
     m_scmControlsPanel = new QWidget;
     auto *controlsRow = new FlowLayout(m_scmControlsPanel, 0, 6, 6);
     controlsRow->addWidget(m_scmCommitButton);
@@ -475,18 +487,38 @@ QWidget *MainWindow::buildSourceControlPanel()
                                       m_scmOutgoingPanel);
     m_scmSyncButton->setObjectName(QStringLiteral("scmSyncButton"));
     m_scmSyncButton->setCursor(Qt::PointingHandCursor);
-    m_scmSyncButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Preferred, not Expanding: inside the sync row the leftover width belongs
+    // to the status line beside it, not to a stretched button.
+    m_scmSyncButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     m_scmSyncButton->setToolTip(
         QStringLiteral("Publish outgoing commits to the network mirror or push "
                        "them to the configured upstream branch"));
     setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
     connect(m_scmSyncButton, &QPushButton::clicked, this,
             &MainWindow::pushCurrentRepoUpstream);
-    outgoingLayout->addWidget(m_scmSyncButton);
+    // Publishing is several minutes of invisible work on a large repo (secret
+    // scan, clone, seal, encrypt, push). The button says what state it is in and
+    // the label beside it says what that state is *doing* right now, fed live by
+    // git's own progress output and by each stage of the mirror seal.
+    m_scmSyncStatus = new ElidingStatusLabel(m_scmOutgoingPanel);
+    m_scmSyncStatus->setObjectName(QStringLiteral("statusLine"));
+    m_scmSyncStatus->hide();
+    m_scmSyncRow = new QWidget(m_scmOutgoingPanel);
+    m_scmSyncRow->setProperty("flowFill", true); // see FlowLayout::doLayout
+    auto *syncRow = new QHBoxLayout(m_scmSyncRow);
+    syncRow->setContentsMargins(0, 0, 0, 0);
+    syncRow->setSpacing(8);
+    syncRow->addWidget(m_scmSyncButton, 0);
+    syncRow->addWidget(m_scmSyncStatus, 1);
+    // The old outgoing card is deliberately not placed in the source-control
+    // layout. Its state now has a dotted, linked row at the very top of the
+    // commit graph; the action belongs beside the compose controls instead.
+    controlsRow->addWidget(m_scmSyncRow);
+    m_scmSyncRow->hide();
     m_scmOutgoingPanel->hide();
 
     auto *header = new QHBoxLayout;
-    auto *title = new QLabel("CHANGES");
+    auto *title = new QLabel(QString::fromUtf8("\xE2\x96\xBE CHANGES"));
     title->setObjectName("sectionLabel");
     m_scmCountLabel = new QLabel;
     m_scmCountLabel->setObjectName("statusLine");
@@ -557,9 +589,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     header->addWidget(m_scmAutoViewedButton);
     header->addWidget(m_scmPrevButton);
     header->addWidget(m_scmNextButton);
-    header->addWidget(m_scmRefreshButton);
     root->addLayout(header);
-    root->addWidget(m_scmOutgoingPanel);
 
     m_scmTree = new QTreeWidget;
     m_scmTree->setObjectName("fileTree");
@@ -879,6 +909,7 @@ void MainWindow::refreshSourceControl(bool force)
         m_scmStatusCache.clear();
         m_scmPatchValid = false;
         m_scmDiffRenderKey.clear();
+        m_scmDiffSourceKey.clear();
         m_scmSectionKeys.clear();
         m_scmSectionAnchors.clear();
         m_scmSectionPaths.clear();
@@ -917,13 +948,11 @@ void MainWindow::refreshSourceControl(bool force)
         return;
 
     // Skip the full rebuild when the working tree is unchanged since the last
-    // scan. This matters now that we rescan on tab focus / window activation:
-    // without it, every rescan would clear the tree (losing the open diff and the
-    // selection) and flicker even when nothing moved. Manual refresh skips this
-    // short-circuit via force=true.
-    // Keyed by repo as well as status output: two repos can produce byte-identical
-    // `git status`, and the short-circuit would then leave the previous repo's
-    // tree — and now its whole rendered diff — on screen.
+    // scan: we rescan on tab focus / window activation, and without this every
+    // rescan would clear the tree (losing the open diff and the selection) and
+    // flicker. Manual refresh forces past it. Keyed by repo as well as status
+    // output, since two repos can produce byte-identical `git status` and the
+    // short-circuit would leave the previous repo's tree and diff on screen.
     const QByteArray scanKey = dir.toUtf8() + '\0' + out;
     if (!force && scanKey == m_scmStatusCache && m_scmTree->topLevelItemCount() > 0)
         return;
@@ -1175,13 +1204,36 @@ void MainWindow::refreshSourceControlOutgoing()
 {
     if (!m_scmOutgoingPanel || !m_scmOutgoingLabel || !m_scmSyncButton)
         return;
+    auto showCommitControls = [this](bool show) {
+        for (QPushButton *button : {m_scmCommitButton, m_scmCommitPushButton,
+                                    m_scmStageCommitPushButton}) {
+            if (button)
+                button->setVisible(show);
+        }
+        if (m_scmSyncRow)
+            m_scmSyncRow->setVisible(!show);
+        else if (m_scmSyncButton)
+            m_scmSyncButton->setVisible(!show);
+    };
+    // The live note only belongs to the repo whose sync is actually running.
+    const auto applySyncActivity = [this](int index, bool busy) {
+        if (!m_scmSyncStatus)
+            return;
+        const QString line =
+            busy ? m_repoSyncActivity.value(index).trimmed() : QString();
+        m_scmSyncStatus->setFullText(line);
+        m_scmSyncStatus->setVisible(!line.isEmpty());
+    };
     const bool showOutgoingPanel =
         !sourceControlShowsRange() && m_scmPanel && m_scmPanel->isVisible();
-    if (!showOutgoingPanel)
+    if (!showOutgoingPanel) {
         m_scmOutgoingPanel->hide();
+        showCommitControls(true);
+    }
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         ++m_scmOutgoingGeneration;
         m_scmOutgoingPanel->hide();
+        showCommitControls(true);
         if (m_railGitButton) {
             m_railGitButton->setPendingSyncCount(0);
             m_railGitButton->setToolTip(
@@ -1198,23 +1250,32 @@ void MainWindow::refreshSourceControlOutgoing()
         !QDir(repo.localPath).exists(QStringLiteral(".git"))) {
         ++m_scmOutgoingGeneration;
         m_scmOutgoingPanel->hide();
+        showCommitControls(true);
         if (m_railGitButton)
             m_railGitButton->setPendingSyncCount(0);
         return;
     }
 
-    QByteArray branchOut;
-    if (!runGitCapture(repo.localPath,
-                       {QStringLiteral("symbolic-ref"), QStringLiteral("--short"),
-                        QStringLiteral("HEAD")},
-                       &branchOut, nullptr)) {
-        ++m_scmOutgoingGeneration;
-        m_scmOutgoingPanel->hide(); // detached HEAD has no branch to publish
-        if (m_railGitButton)
-            m_railGitButton->setPendingSyncCount(0);
-        return;
+    // This runs on every push/publish transition, every repo refresh and every
+    // sync-indicator tick, and the branch name is one line of the HEAD file — so
+    // read it directly and keep the subprocess only for the layouts the fast path
+    // does not recognise (see headBranchFromFile).
+    QString branch = headBranchFromFile(repo.localPath);
+    if (branch.isEmpty()) {
+        QByteArray branchOut;
+        if (!runGitCapture(repo.localPath,
+                           {QStringLiteral("symbolic-ref"), QStringLiteral("--short"),
+                            QStringLiteral("HEAD")},
+                           &branchOut, nullptr)) {
+            ++m_scmOutgoingGeneration;
+            m_scmOutgoingPanel->hide(); // detached HEAD has no branch to publish
+            showCommitControls(true);
+            if (m_railGitButton)
+                m_railGitButton->setPendingSyncCount(0);
+            return;
+        }
+        branch = QString::fromUtf8(branchOut).trimmed();
     }
-    const QString branch = QString::fromUtf8(branchOut).trimmed();
     if (repoIndex != m_repoDetailIndex || repoIndex >= m_repositories.size() ||
         m_repositories.at(repoIndex).localPath != repo.localPath)
         return;
@@ -1247,8 +1308,10 @@ void MainWindow::refreshSourceControlOutgoing()
         m_scmOutgoingPanel->hide();
     if (showOutgoingPanel && busy && m_scmOutgoingPanel->isVisible()) {
         m_scmSyncButton->setEnabled(false);
-        m_scmSyncButton->setText(QStringLiteral("Syncing Changes…"));
+        m_scmSyncButton->setText(QStringLiteral("Syncing"));
         setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
+        applySyncActivity(m_repoDetailIndex, true);
+        showCommitControls(false);
     }
 
     // Counting a long branch walk synchronously can stall the UI on a large
@@ -1257,7 +1320,8 @@ void MainWindow::refreshSourceControlOutgoing()
     const int generation = ++m_scmOutgoingGeneration;
     runGitDetached(
         repo.localPath, countArgs,
-        [this, generation, repoIndex, branch](bool ok, const QByteArray &out) {
+        [this, generation, repoIndex, branch, showCommitControls,
+         applySyncActivity](bool ok, const QByteArray &out) {
             if (generation != m_scmOutgoingGeneration ||
                 repoIndex != m_repoDetailIndex)
                 return;
@@ -1278,12 +1342,14 @@ void MainWindow::refreshSourceControlOutgoing()
             if (sourceControlShowsRange() || !m_scmPanel ||
                 !m_scmPanel->isVisible()) {
                 m_scmOutgoingPanel->hide();
+                showCommitControls(true);
                 return;
             }
             const bool stillBusy = m_pushingRepos.contains(repoIndex) ||
                                    m_syncingRepos.contains(repoIndex);
             if (pending <= 0 && !stillBusy) {
                 m_scmOutgoingPanel->hide();
+                showCommitControls(true);
                 return;
             }
 
@@ -1297,11 +1363,101 @@ void MainWindow::refreshSourceControlOutgoing()
             m_scmOutgoingPanel->setProperty("branch", branch);
             m_scmSyncButton->setEnabled(!stillBusy && pending > 0);
             m_scmSyncButton->setText(
-                stillBusy ? QStringLiteral("Syncing Changes…")
+                stillBusy ? QStringLiteral("Syncing")
                           : QStringLiteral("Sync Changes %1↑").arg(pending));
             setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
-            m_scmOutgoingPanel->show();
+            applySyncActivity(repoIndex, stillBusy);
+            // Outgoing state is rendered as the graph's linked dotted top row,
+            // not as a second, disconnected card above CHANGES.
+            m_scmOutgoingPanel->hide();
+            showCommitControls(false);
         });
+}
+
+// Publish the one-line "what is the sync doing right now" note for a repository
+// row. Publishing is a chain of long, silent steps (secret scan, clone, seal,
+// encrypt, publish, mirror push) and each of them announces itself here, so the
+// button beside it never sits on a bare "Syncing" for minutes. Notes for rows
+// other than the open one are remembered, not painted.
+void MainWindow::setRepoSyncActivity(int index, const QString &line)
+{
+    const QString note = line.simplified();
+    if (note.isEmpty()) {
+        clearRepoSyncActivity(index);
+        return;
+    }
+    if (index < 0)
+        return;
+    if (m_repoSyncActivity.value(index) == note)
+        return;
+    m_repoSyncActivity.insert(index, note);
+    if (index != m_repoDetailIndex || !m_scmSyncStatus)
+        return;
+    m_scmSyncStatus->setFullText(note);
+    // Only reveal the note under a button that is actually in its busy state;
+    // refreshSourceControlOutgoing owns the rest of the row's visibility.
+    if (m_scmSyncRow && m_scmSyncRow->isVisible())
+        m_scmSyncStatus->show();
+}
+
+void MainWindow::clearRepoSyncActivity(int index)
+{
+    if (index < 0 || !m_repoSyncActivity.remove(index))
+        return;
+    if (index == m_repoDetailIndex && m_scmSyncStatus) {
+        m_scmSyncStatus->setFullText(QString());
+        m_scmSyncStatus->hide();
+    }
+}
+
+// git reports its own progress on stderr — "Enumerating objects: 812",
+// "Writing objects:  62% (504/812)" — rewriting a single line with \r. Take the
+// newest frame as the note and keep the whole stream so a failure still has its
+// full message to report (the finished handler can no longer readAll it).
+std::shared_ptr<QString> MainWindow::streamGitProgressActivity(
+    QProcess *process, int index, const QString &prefix)
+{
+    auto buffer = std::make_shared<QString>();
+    if (!process)
+        return buffer;
+    connect(process, &QProcess::readyReadStandardError, this,
+            [this, process, index, prefix, buffer] {
+                const QString chunk =
+                    QString::fromUtf8(process->readAllStandardError());
+                if (chunk.isEmpty())
+                    return;
+                buffer->append(chunk);
+                QString newest;
+                QString normalized = chunk;
+                normalized.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+                for (const QString &frame :
+                     normalized.split(QLatin1Char('\n'))) {
+                    const QString trimmed = frame.trimmed();
+                    if (!trimmed.isEmpty())
+                        newest = trimmed;
+                }
+                if (newest.isEmpty())
+                    return;
+                setRepoSyncActivity(index, prefix + newest);
+            });
+    return buffer;
+}
+
+QString MainWindow::gitErrorsWithoutProgress(const QString &text)
+{
+    static const QRegularExpression progressLine(
+        QStringLiteral("^(remote: )?(Enumerating|Counting|Compressing|Writing|"
+                       "Receiving|Resolving|Unpacking|Total|Updating) "));
+    QString normalized = text;
+    normalized.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    QStringList kept;
+    for (const QString &line : normalized.split(QLatin1Char('\n'))) {
+        const QString trimmed = line.trimmed();
+        if (trimmed.isEmpty() || progressLine.match(trimmed).hasMatch())
+            continue;
+        kept.append(trimmed);
+    }
+    return kept.join(QLatin1Char('\n')).trimmed();
 }
 
 // QSettings context (see loadDiffViewed) for the working-tree diff. One shared
@@ -1370,16 +1526,24 @@ void MainWindow::setupScmDiffPane()
         // so the state change is noticeable without shifting the header.
         auto *effect = new QGraphicsOpacityEffect(m_scmStickyViewed);
         effect->setOpacity(0.55);
+        // setGraphicsEffect() owns and *deletes* whichever effect is already
+        // installed, so it is the single delete for this one too: dropping it
+        // with setGraphicsEffect(nullptr) below and then calling deleteLater()
+        // on the same pointer was a use-after-free that crashed on the next
+        // click (adhoc #52). Clicking again inside the 180ms fade likewise
+        // destroys this effect early, so hold it (and the button) by QPointer
+        // and only clear the effect that is still ours.
         m_scmStickyViewed->setGraphicsEffect(effect);
         auto *animation =
             new QPropertyAnimation(effect, "opacity", m_scmStickyViewed);
         animation->setDuration(180);
         animation->setStartValue(0.55);
         animation->setEndValue(1.0);
-        connect(animation, &QPropertyAnimation::finished,
-                m_scmStickyViewed, [button = m_scmStickyViewed, effect] {
-                    button->setGraphicsEffect(nullptr);
-                    effect->deleteLater();
+        connect(animation, &QPropertyAnimation::finished, m_scmStickyViewed,
+                [button = QPointer<QPushButton>(m_scmStickyViewed),
+                 faded = QPointer<QGraphicsEffect>(effect)] {
+                    if (button && faded && button->graphicsEffect() == faded)
+                        button->setGraphicsEffect(nullptr); // deletes `faded`
                 });
         animation->start(QAbstractAnimation::DeleteWhenStopped);
         renderScmCombinedDiff();
@@ -1445,6 +1609,25 @@ void MainWindow::renderScmCombinedDiff()
     QList<DiffFileEntry> files;
     const QString ctx = scmViewedContext();
     const QSet<QString> viewed = loadDiffViewed(ctx);
+
+    // Everything the rendered document derives from. Building the HTML for a
+    // large working-tree diff is a GUI-thread string concatenation measured in
+    // hundreds of milliseconds, and this is re-entered on every commit-list
+    // reload and repo-update sweep — usually with the working tree exactly where
+    // it was. Nothing downstream (the section/anchor/sticky maps, the Viewed
+    // tally) can differ when the inputs don't, so skip the whole pass.
+    QStringList viewedKeys(viewed.cbegin(), viewed.cend());
+    viewedKeys.sort();
+    const QString sourceKey =
+        QString(diffSplitPref() ? QLatin1Char('s') : QLatin1Char('u')) +
+        QLatin1Char('\x1f') + diffStyleSheet(m_diffFontPt) + QLatin1Char('\x1f') +
+        ctx + QLatin1Char('\x1f') + viewedKeys.join(QLatin1Char('\x1e')) +
+        QLatin1Char('\x1f') + m_scmCombinedPatch;
+    if (!m_scmDiffSourceKey.isEmpty() && sourceKey == m_scmDiffSourceKey &&
+        !m_scmDiffRenderKey.isEmpty())
+        return;
+    m_scmDiffSourceKey = sourceKey;
+
     const QString html =
         renderDiffHtml(m_scmCombinedPatch, files, dir, QString(), QString(),
                        QString(), QHash<QString, QString>(), viewed);
@@ -2085,17 +2268,14 @@ QStringList MainWindow::scmDiffScopeArgs() const
     return {};
 }
 
-// A local, model-free commit-message drafter. It parses the diff to find the
-// symbols that changed — types/functions added or removed (keyword-led definitions
-// in any language, plus C++ header declarations) and the functions whose bodies
+// A local, model-free commit-message drafter. It parses the diff for the symbols
+// that changed — types/functions added or removed, plus the functions whose bodies
 // changed (from git's hunk-header context) — drops generic/internal names, then
-// builds the subject from the single most significant symbol, humanizing its
-// camelCase into words ("scmHeuristicCommitMessage" -> "scm heuristic commit
-// message"). The conventional type comes from the file kinds, the branch name, the
-// change shape and a bug-fix keyword scan. Not as good as the AI models, but
-// instant, private and free — and far more specific than "update N files"; the
-// result lands in the editable message field. `variant` > 0 rotates the symbol
-// choice and verb wording so re-clicking Generate offers alternative drafts.
+// builds the subject from the most significant one, humanizing its camelCase
+// ("scmHeuristicCommitMessage" -> "scm heuristic commit message"). The
+// conventional type comes from the file kinds, branch name, change shape and a
+// bug-fix keyword scan. Instant, private and far more specific than "update N
+// files"; `variant` > 0 rotates the symbol and verb so Generate offers drafts.
 QString MainWindow::scmHeuristicCommitMessage(int variant) const
 {
     const QString dir = sourceControlGitDir();
