@@ -136,6 +136,11 @@ const CAMERA_ZOOM_MIN = 0.06;
 const CAMERA_ZOOM_MAX = 28;
 const CAMERA_FAR_PLANE = 1800;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
+// Bound the *total* drawing-buffer area, not just DPR. A 4K display at DPR 1
+// is still 8.3 million pixels; with a multisampled color/depth buffer that can
+// consume hundreds of MB before a single World texture is counted. 1080p is
+// enough detail for this wide camera and keeps every object in the scene.
+const RENDER_PIXEL_BUDGET = 1920 * 1080;
 const RENDER_STALL_THRESHOLD_MS = 500;
 // DevTools console work is surprisingly expensive while WebGL is already
 // behind. Aggregate repeated stalls and emit at most one compact warning per
@@ -15986,9 +15991,28 @@ export function createWorldScene({
   const compactRenderer = Boolean(
     forceCompactRenderer || window.matchMedia?.("(pointer: coarse)")?.matches,
   );
+  const requestedPixelRatio = Math.max(
+    0.1,
+    Number(window.devicePixelRatio) || 1,
+  );
+  const initialBounds = container.getBoundingClientRect();
+  const requestedSurfacePixels =
+    Math.max(
+      Math.max(1, Number(initialBounds.width) || 0) *
+        Math.max(1, Number(initialBounds.height) || 0),
+      Math.max(1, Number(window.innerWidth) || 0) *
+        Math.max(1, Number(window.innerHeight) || 0),
+      Math.max(1, Number(window.screen?.width) || 0) *
+        Math.max(1, Number(window.screen?.height) || 0),
+    ) * requestedPixelRatio ** 2;
+  // Large desktop surfaces need the same allocation discipline as phones,
+  // without using compact mode's reduced decorative populations. Only raster
+  // resolution changes: all World objects, interactions, and animations stay.
+  const memoryConstrainedRenderer =
+    compactRenderer || requestedSurfacePixels > RENDER_PIXEL_BUDGET;
   // Set before anything paints: every plate below reads this while building
   // its backing store, and the tab is killed by their sum, not by any one.
-  canvasTextureScale = compactRenderer ? 0.5 : 1;
+  canvasTextureScale = memoryConstrainedRenderer ? 0.5 : 1;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(DAYLIGHT_ENVIRONMENT.background);
   const worldSky = createWorldSky({
@@ -16008,11 +16032,14 @@ export function createWorldScene({
   camera.position.set(...CAMERA_OFFSET);
 
   const renderer = new THREE.WebGLRenderer({
-    antialias: !compactRenderer,
+    antialias: !memoryConstrainedRenderer,
     alpha: false,
     // No World material or pass uses the stencil buffer. Avoid allocating and
     // clearing an attachment that otherwise adds bandwidth to every frame.
     stencil: false,
+    // A large desktop surface may have both integrated and discrete GPUs.
+    // Keep requesting the discrete GPU there; compact/mobile devices use the
+    // browser default because they generally have only one adapter.
     powerPreference: compactRenderer ? "default" : "high-performance",
   });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -34761,6 +34788,8 @@ export function createWorldScene({
         antialias: contextInfo.antialias,
         gpu: contextInfo.gpu,
         compactRenderer,
+        memoryConstrainedRenderer,
+        pixelBudget: RENDER_PIXEL_BUDGET,
         threeRevision: String(THREE.REVISION || ""),
         toneMapping: toneMappingName(renderer.toneMapping),
         exposure: renderer.toneMappingExposure,
