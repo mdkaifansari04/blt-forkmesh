@@ -2068,9 +2068,17 @@ private:
     // as stopSearch().
     void stopSizeMapScan();
     // Live "scanning <folder> · N files · M so far" line, driven from the walk
-    // itself (adhoc #112).
-    void showSizeMapScanProgress(const QString &current, qint64 bytes,
-                                 int files, bool elevated);
+    // itself (adhoc #112), plus one line per scanning thread beneath it
+    // (adhoc #95) — the walk is parallel, so a single line could only ever show
+    // one of the trees actually being read.
+    // root is the folder the scan was asked for: with the per-thread lines
+    // carrying the folders being walked, the summary names the stable one.
+    void showSizeMapScanProgress(
+        const QString &root,
+        const forkmesh::DirectorySizeScanProgressUpdate &update, bool elevated);
+    // Drops the per-thread lines and hides their box: every scan starts from no
+    // lines, and a finished one leaves the summary alone on screen.
+    void clearSizeMapWorkerLines();
     void applySizeMapResult(const QString &path,
                             forkmesh::DirectorySizeScanResult result,
                             bool hideIgnored, bool elevated);
@@ -5685,6 +5693,15 @@ private:
     // lands after the user switched repos.
     QWidget *m_sizeMapChart = nullptr;
     QLabel *m_sizeMapStatus = nullptr;
+    // One live line per scanning thread, under the status line and only while a
+    // scan runs (adhoc #95). The box holds the lines in worker order; a thread
+    // that has not reported yet has no line, so the box grows as the pool picks
+    // the work up.
+    QWidget *m_sizeMapWorkersBox = nullptr;
+    QList<QLabel *> m_sizeMapWorkerLines;
+    // Shown in place of the lines past kSizeMapWorkerLineLimit, so a many-core
+    // machine's scan cannot push the chart itself off the tab.
+    QLabel *m_sizeMapWorkerOverflow = nullptr;
     // Checkbox that drops .gitignored paths from the scan (adhoc #197).
     QCheckBox *m_sizeMapHideIgnored = nullptr;
     // Folder picked with "Choose folder…" so the map can size any directory on
