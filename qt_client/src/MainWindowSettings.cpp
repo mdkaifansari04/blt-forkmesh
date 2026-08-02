@@ -9,6 +9,7 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "NodeDiagnostics.h"
 #include "QrCode.h"
 #include "WorldSpeechBridge.h"
 
@@ -887,16 +888,29 @@ QWidget *MainWindow::buildSettingsSection()
     struct NodeStatToggle {
         const char *label;
         const QString &key;
+        bool defaultOn;
+        const char *tip;
     };
     const NodeStatToggle nodeStatToggles[] = {
-        {"Report CPU usage", TelemetrySettings::kReportCpu},
-        {"Report memory usage", TelemetrySettings::kReportMemory},
-        {"Report disk usage", TelemetrySettings::kReportDisk},
+        {"Report CPU usage", TelemetrySettings::kReportCpu, false, nullptr},
+        {"Report memory usage", TelemetrySettings::kReportMemory, false, nullptr},
+        {"Report disk usage", TelemetrySettings::kReportDisk, false, nullptr},
+        // On by default, unlike the three gauges: these are the problems nobody
+        // can see from the outside (adhoc #27), and they carry findings rather
+        // than load figures. The one caveat worth stating is the log summary.
+        {"Report self-diagnostics", TelemetrySettings::kReportDiagnostics, true,
+         "Run periodic health checks (disk filling up, inode and file-descriptor "
+         "pressure, defunct processes, relay link flapping, clock drift, errors "
+         "in this node's log) and push the findings to every node list. Includes "
+         "a short excerpt of the newest error line from this node's own log."},
     };
     QList<QCheckBox *> nodeStatChecks;
     for (const NodeStatToggle &toggle : nodeStatToggles) {
         auto *check = new QCheckBox(QString::fromUtf8(toggle.label));
-        check->setChecked(QSettings().value(toggle.key, false).toBool());
+        if (toggle.tip)
+            check->setToolTip(QString::fromUtf8(toggle.tip));
+        check->setChecked(
+            QSettings().value(toggle.key, toggle.defaultOn).toBool());
         const QString key = toggle.key;
         connect(check, &QCheckBox::toggled, this, [this, key](bool enabled) {
             QSettings().setValue(key, enabled);
@@ -4345,6 +4359,10 @@ void MainWindow::logSystem(const QString &text)
     plain.replace(QChar(0x2014), QLatin1Char('-'));
     plain.replace(QChar(0x2026), QStringLiteral("..."));
     const QString line = time + "  " + plain;
+    // Feed the node's self-check (adhoc #27): error lines here are what a
+    // headless node would otherwise only ever tell a terminal nobody reads, and
+    // the running tally is pushed to every node list with the heartbeat.
+    NodeDiagnostics::hostCollector().noteLogLine(plain);
     m_networkLog.append(line);
     bool chipsChanged = false;
     while (m_networkLog.size() > kNetworkLogLimit) {
