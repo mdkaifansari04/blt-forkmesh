@@ -157,6 +157,72 @@
     return `<div class="animate-pulse" role="status" aria-label="Loading tree…">${cells}<span class="sr-only">Loading tree…</span></div>`;
   }
 
+  // Rows for the cached code-tree listing, narrowed by the header search box
+  // (adhoc #37). Matches the entry name and its path within the repo, so a
+  // directory you can still walk into survives the filter. Nothing refetches.
+  function renderRepoTreeRows() {
+    const view = state.repoTreeView;
+    const treeBody = $("[data-repo-detail]")?.querySelector("[data-repo-tree]");
+    if (!treeBody || !view || !view.entries?.length) return;
+    const { repo, path } = view;
+    const queries = pageFilterQueries("");
+    const entries = queries.length
+      ? view.entries.filter((entry) => {
+          const haystack = [entry.name, repoChildPath(path, entry.name)]
+            .join(" ").toLowerCase();
+          return queries.every((query) => haystack.includes(query));
+        })
+      : view.entries;
+    treeBody.innerHTML = entries.length
+      ? entries.map((entry) => {
+        const childPath = repoChildPath(path, entry.name);
+        const isTree = entry.type === "tree";
+        const message = entry.message || entry.commitMessage || entry.subject || "mirrored repository object";
+        const date = formatTimeAgo(entry.date || entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
+        return `
+            <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
+              ${fileIconHtml(entry, "h-4 w-4 shrink-0")}
+              <span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(entry.name || "entry")}</span>
+              <span class="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">${escapeHtml(message)}</span>
+              <span class="shrink-0 text-xs text-muted-foreground font-mono">${escapeHtml(date)}</span>
+            </button>`;
+      }).join("")
+      : '<div class="px-4 py-3 text-sm text-muted-foreground">No files in this directory match this search.</div>';
+    window.lucide?.createIcons();
+  }
+
+  // The repo page's response to the header search box. Each list re-renders
+  // from what its tab already fetched, so a tab opened later picks the filter
+  // up on its own first render instead of needing to be told.
+  function renderRepoPageFilter() {
+    renderRepoTreeRows();
+    if (state.issuesView.items.length) renderRepoIssues();
+    renderRepoCollection("pulls");
+    renderRepoCollection("discussions");
+  }
+
+  // Rows the open tab is showing after the filter, for the header notice, or
+  // null on a tab the search box does not filter (insights, mirrors, ...) so
+  // the notice stays quiet rather than claiming "0 matches".
+  function repoPageFilterCount() {
+    const tab = state.activeRepoTab || "code";
+    if (tab === "code") {
+      const detail = $("[data-repo-detail]");
+      const panel = detail?.querySelector("[data-repo-tree-panel]");
+      // A file is open, so the listing this filters is off screen.
+      if (!panel || panel.classList.contains("hidden")) return null;
+      // Scoped to the file table: the Files sidebar renders the same path
+      // buttons and would double every count.
+      return detail.querySelectorAll(
+        "[data-repo-tree] [data-dashboard-tree-path], [data-repo-tree] [data-dashboard-blob-path]").length;
+    }
+    if (["issues", "pulls", "discussions"].includes(tab)) {
+      const container = $(`[data-repo-${tab}]`);
+      return container ? container.querySelectorAll("[data-repo-record-number]").length : null;
+    }
+    return null;
+  }
+
   async function loadRepositoryTree(repo, path = "", options = {}) {
     // background: warm the Code tab's tree/README underneath another visible
     // tab. A refresh on /owner/repo/issues restores the Issues tab first and
@@ -204,25 +270,16 @@
       });
       renderRepoExplorer(repo, path, entries);
       setRepoExplorerSelection(path, "tree");
+      // Held so the header search box can re-filter this listing in place
+      // (adhoc #37) instead of re-reading the tree from the mirror.
+      state.repoTreeView = { repo, path, entries };
       if (!entries.length) {
         treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">This directory is empty.</div>';
         if (!background) navigateHistory(repoPathUrl(repo, "tree", path));
         window.lucide?.createIcons();
         return;
       }
-      treeBody.innerHTML = entries.map((entry) => {
-        const childPath = repoChildPath(path, entry.name);
-        const isTree = entry.type === "tree";
-        const message = entry.message || entry.commitMessage || entry.subject || "mirrored repository object";
-        const date = formatTimeAgo(entry.date || entry.updatedAt || entry.committedAt || entry.commitDate || entry.mtime || repo.updatedAt || repo.lastSync);
-        return `
-            <button data-dashboard-${isTree ? "tree" : "blob"}-path="${escapeHtml(childPath)}" class="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-center gap-3 border-t border-border px-4 py-2.5 text-left text-sm hover:bg-secondary/40 transition-colors sm:grid-cols-[1.5rem_minmax(9rem,0.8fr)_minmax(0,1fr)_auto]">
-              ${fileIconHtml(entry, "h-4 w-4 shrink-0")}
-              <span class="min-w-0 truncate font-medium text-foreground">${escapeHtml(entry.name || "entry")}</span>
-              <span class="hidden min-w-0 truncate text-xs text-muted-foreground sm:block">${escapeHtml(message)}</span>
-              <span class="shrink-0 text-xs text-muted-foreground font-mono">${escapeHtml(date)}</span>
-            </button>`;
-      }).join("");
+      renderRepoTreeRows();
       if (!background) navigateHistory(repoPathUrl(repo, "tree", path));
       window.lucide?.createIcons();
       if (!path) {
@@ -2790,7 +2847,8 @@
       // list showed fewer issues than the Mirror nodes count (adhoc #96).
       if (issuesView.filter === "open") return issue.status !== "closed";
       return issue.status === "closed";
-    }).filter((issue) => issueMatchesQuery(issue, issuesView.query));
+    }).filter((issue) => pageFilterQueries(issuesView.query)
+      .every((query) => issueMatchesQuery(issue, query)));
     const config = repoCollectionConfig.issues;
     const filterBar = `<div class="flex items-center gap-1 border-b border-border px-4 py-2">
       ${["open", "closed", "all"].map((stateName) => `<button type="button" data-dashboard-issue-filter="${stateName}" aria-pressed="${stateName === "open" ? "true" : "false"}" class="inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${stateName === issuesView.filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}">${stateName[0].toUpperCase() + stateName.slice(1)}</button>`).join("")}
@@ -2817,8 +2875,8 @@
     // flash empty before its rows arrive.
     const emptyLabel = issuesView.closedLoading
       ? loadingHtml("Loading closed issues from the live mirror...")
-      : issuesView.query
-        ? `No issues matching "${escapeHtml(issuesView.query)}".`
+      : (issuesView.query || globalSearchPageQuery())
+        ? `No issues matching "${escapeHtml(pageFilterQueries(issuesView.query).join(" "))}".`
         : `No ${issuesView.filter === "all" ? "" : issuesView.filter + " "}issues.`;
     container.innerHTML = filterBar + warnBar + (filtered.length
       ? renderRepoRecordList(filtered, config, "issues")
@@ -3295,16 +3353,48 @@
       </div>`;
   }
 
+  // Rows a record list shows once the header search box has been applied. The
+  // records carry exactly the fields renderRepoRecordList prints, so the same
+  // matcher the issue search uses gives "matches the search" == "matches what
+  // is displayed" here too (adhoc #37).
+  function repoRecordsMatchingPageFilter(items) {
+    const queries = pageFilterQueries("");
+    if (!queries.length) return items;
+    return items.filter((item) =>
+      queries.every((query) => issueMatchesQuery(item, query)));
+  }
+
+  // Re-render a cached pull/discussion list through the current page filter.
+  // No mirror read: loadRepoCollection stashed the records it fetched.
+  function renderRepoCollection(kind) {
+    const container = $(`[data-repo-${kind}]`);
+    const config = repoCollectionConfig[kind];
+    const items = state.repoCollectionItems[kind];
+    if (!container || !config || !Array.isArray(items)) return;
+    const visible = repoRecordsMatchingPageFilter(items);
+    const empty = items.length && !visible.length
+      ? `No ${escapeHtml(config.label.toLowerCase())} match this search.`
+      : escapeHtml(config.empty);
+    container.innerHTML = visible.length
+      ? renderRepoRecordList(visible, config, kind)
+      : `<div class="px-4 py-3 text-sm text-muted-foreground">${empty}</div>`;
+    window.lucide?.createIcons();
+  }
+
   async function loadRepoCollection(repo, kind, containerSelector) {
     const container = $(containerSelector);
     const config = repoCollectionConfig[kind];
     if (!container || !config) return;
+    // Drop the previous repo's cache up front so a failed load can never leave
+    // the page filter re-rendering rows that are no longer on screen.
+    state.repoCollectionItems[kind] = null;
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml(`Loading ${escapeHtml(config.label.toLowerCase())} from the live mirror...`)}</div>`;
     try {
       const items = await loadRepoRecordsFromMirror(repo, config);
-      container.innerHTML = items.length
-        ? renderRepoRecordList(items, config, kind)
-        : `<div class="px-4 py-3 text-sm text-muted-foreground">${config.empty}</div>`;
+      // Counts below stay off the unfiltered set: the tab badge reports what
+      // the repo holds, not what the search box is currently showing.
+      state.repoCollectionItems[kind] = items;
+      renderRepoCollection(kind);
       if (kind === "pulls") {
         const openPulls = items.filter((item) => item.state === "open").length;
         setRepoTabCount("pulls", openPulls);

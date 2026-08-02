@@ -1,7 +1,7 @@
 {
-    "ceilingBytes": 138481269,
+    "ceilingBytes": 138629605,
     "ceilingDay": "2026-08-01",
-    "ceilingLines": 696247,
+    "ceilingLines": 699436,
     "days": [
         {
             "bytes": 138483148,
@@ -10,5 +10,5 @@
             "lines": 696280
         }
     ],
-    "ratchet": false
+    "ratchet": true
 }
