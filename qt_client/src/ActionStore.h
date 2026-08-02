@@ -87,6 +87,7 @@ public:
 
     QString spoolDir() const; // <root>/spool (push events land here)
     QString artifactsDir() const; // <root>/artifacts (validated run outputs)
+    QString sandboxDir() const; // <root>/sandbox (disposable per-run trees)
 
     // Runs
     QList<ActionRun> loadAllRuns() const;    // newest first

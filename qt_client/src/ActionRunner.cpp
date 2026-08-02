@@ -49,6 +49,48 @@ int actionCpuQuotaPercent()
     return qBound(200, (cores - 1) * 100, 800);
 }
 
+// Where a run's disposable trees live. These used to sit under QDir::tempPath(),
+// which on this fleet is a size-capped tmpfs shared with every other checkout on
+// the box — and the sandbox puts the read-only source, the writable clone, the
+// step's home and the step's own /tmp inside it, so a build's object files land
+// in RAM and compete for the same few gigabytes as unrelated work. Running out
+// there does not fail loudly: a tool that cannot write a generated file may drop
+// it and still report success, which is how "CI tests" reached `cmake --build`
+// with a configured build directory that had no Makefile in it. Keep the trees
+// beside the run's own records, on real disk.
+QString sandboxBaseDir(const ActionStore *store)
+{
+    const QString base = store ? store->sandboxDir() : QString();
+    if (base.isEmpty() || !QFileInfo(base).isWritable())
+        return QDir::tempPath();
+    return base;
+}
+
+// /tmp was self-cleaning; an app-data directory is not. A run whose node died
+// outright (SIGKILL, power loss) never reached cleanupWorktree(), so sweep those
+// leftovers before adding another. Anything older than two job deadlines belongs
+// to no live run — concurrent runners keep their own, much newer, trees.
+void removeStaleSandboxes(const QString &base, qint64 nowMs, int jobTimeoutMs)
+{
+    const qint64 keepMs = 2 * qMax<qint64>(jobTimeoutMs, 60 * 60 * 1000);
+    const QString prefix = QStringLiteral("forkmesh-run-");
+    const QDir dir(base);
+    const QStringList names =
+        dir.entryList({prefix + QLatin1Char('*')},
+                      QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &name : names) {
+        bool parsed = false;
+        const qint64 startedMs =
+            name.section(QLatin1Char('-'), -1).toLongLong(&parsed);
+        if (!parsed || nowMs - startedMs < keepMs)
+            continue;
+        // The source checkout is a worktree of the served mirror. Removing the
+        // directory leaves a registration behind, which Git prunes by itself
+        // once the path is gone.
+        QDir(dir.absoluteFilePath(name)).removeRecursively();
+    }
+}
+
 bool truthy(const QString &value)
 {
     const QString normalized = value.trimmed().toLower();
@@ -285,10 +327,12 @@ void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
         return;
     }
 
-    m_sandboxRoot =
-        QDir::tempPath() + QStringLiteral("/forkmesh-run-") +
-        QString::number(m_run.id) + QStringLiteral("-") +
-        QString::number(QDateTime::currentMSecsSinceEpoch());
+    const qint64 sandboxStampMs = QDateTime::currentMSecsSinceEpoch();
+    const QString sandboxBase = sandboxBaseDir(m_store);
+    removeStaleSandboxes(sandboxBase, sandboxStampMs, m_limits.jobTimeoutMs);
+    m_sandboxRoot = sandboxBase + QStringLiteral("/forkmesh-run-") +
+                    QString::number(m_run.id) + QStringLiteral("-") +
+                    QString::number(sandboxStampMs);
     m_worktree = m_sandboxRoot + QStringLiteral("/source");
     m_workspace = m_sandboxRoot + QStringLiteral("/workspace");
     m_sandboxHome = m_sandboxRoot + QStringLiteral("/home");
@@ -615,8 +659,35 @@ QStringList ActionRunner::sandboxArguments(const QString &shell,
          << QStringLiteral("--bind") << m_sandboxTmp
          << QStringLiteral("/tmp")
          << QStringLiteral("--bind") << m_releaseStaging
-         << QStringLiteral("/release-cas")
-         << QStringLiteral("--unsetenv")
+         << QStringLiteral("/release-cas");
+
+    // The runner "image" is whatever this node's own python3 can import.
+    // System packages arrive with the /usr mount above, but pip's per-user site
+    // directory sits in the host home, which never enters the namespace — so an
+    // offline step saw a Python missing exactly the packages the node has, and
+    // the CI suite failed with "Runner image is missing pytest" on a healthy
+    // tree. Re-expose only those site-packages trees, read-only, at the path the
+    // sandbox's own HOME resolves them from, so `python3 -m pytest` inside a
+    // step imports what the node does with no PYTHONPATH games. Nothing else
+    // from the host home is mounted; ~/.local/share, which holds this node's
+    // keys and repositories, stays outside.
+    const QString hostUserLib =
+        QDir::homePath() + QStringLiteral("/.local/lib");
+    const QStringList pythonDirs =
+        QDir(hostUserLib).entryList({QStringLiteral("python*")},
+                                    QDir::Dirs | QDir::NoDotAndDotDot,
+                                    QDir::Name);
+    for (const QString &python : pythonDirs) {
+        const QString site = hostUserLib + QLatin1Char('/') + python +
+                             QStringLiteral("/site-packages");
+        if (!QFileInfo(site).isDir())
+            continue;
+        args << QStringLiteral("--ro-bind") << site
+             << QStringLiteral("/home/forkmesh/.local/lib/%1/site-packages")
+                    .arg(python);
+    }
+
+    args << QStringLiteral("--unsetenv")
          << QStringLiteral("XDG_RUNTIME_DIR")
          << QStringLiteral("--unsetenv")
          << QStringLiteral("DBUS_SESSION_BUS_ADDRESS")
