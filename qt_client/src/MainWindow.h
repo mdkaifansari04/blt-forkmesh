@@ -6579,6 +6579,7 @@ private:
     QString m_overviewSortKey = QStringLiteral("name");
     bool m_overviewSortDesc = false;
     void populateOverviewTree(); // (re)fill m_overviewList from m_overviewRows
+    void showOverviewLoadingPlaceholders();
     QTextBrowser *m_readmeView = nullptr;
     QTreeWidget *m_repoFileTree = nullptr;
     QTabWidget *m_repoFileTabs = nullptr;

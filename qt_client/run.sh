@@ -4,7 +4,7 @@
 #   ./run.sh          build (incremental) and launch the app
 #   ./run.sh clean    clear the build cache (removes build/)
 #   ./run.sh rebuild  clear the cache, then build and launch
-#   ./run.sh test     build and run the headless backend tests
+#   ./run.sh test     build and run the sub-minute critical contracts
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -102,8 +102,9 @@ case "${1:-run}" in
         exec "$(forkmesh_bin)"
         ;;
     test)
-        # Build and run the test suites independently of the app. Force the test
-        # option on so a cached FORKMESH_BUILD_TESTS=OFF can't hide the targets.
+        # Build and run only the critical trust, encrypted-mirror, and agent
+        # transport contracts. Force the test option on so a cached
+        # FORKMESH_BUILD_TESTS=OFF can't hide the targets.
         check_stale_cache
         args=()
         while IFS= read -r -d '' arg; do
@@ -111,10 +112,9 @@ case "${1:-run}" in
         done < <(cmake_args)
         cmake -B build "${args[@]}" -DFORKMESH_BUILD_TESTS=ON
         cmake --build build --parallel "$(build_jobs)" \
-            --target forkmesh-tests forkmesh-codex-tests forkmesh-window-tests
-        QT_QPA_PLATFORM=offscreen ./build/forkmesh-tests
-        ./build/forkmesh-codex-tests
-        QT_QPA_PLATFORM=offscreen exec ./build/forkmesh-window-tests
+            --target forkmesh-control-tests forkmesh-private-mirror-tests \
+                     forkmesh-public-mirror-tests forkmesh-codex-tests
+        exec python3 ../tools/run_critical_tests.py qt --build-dir build
         ;;
     run)
         build

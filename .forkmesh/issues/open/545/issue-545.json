@@ -1,0 +1,40 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "ForkMesh Deploy",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785698277806,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Source: Forkmesh QA Bug Report FM-QA-2026-08-02 (BUG-01)\nSeverity: High\nArea: Overall Performance\nEnvironment: Web (desktop and mobile), with an active stable internet connection\n\n## Summary\nThe website takes noticeably longer than expected to render its initial view, delaying the 3D scene, UI panels, and fonts and increasing bounce risk.\n\n## Steps to reproduce\n1. Open a browser and navigate to the Forkmesh website on a stable internet connection.\n2. Observe how long the landing page and its assets (3D scene, UI panels, and fonts) take to become interactive.\n3. Compare the result with standard web performance targets, including LCP below 2.5 seconds.\n\n## Expected\nThe site reaches an interactive, visually complete state within 2\u20133 seconds on a stable connection while heavier 3D assets continue loading progressively in the background.\n\n## Actual\nThe initial view takes significantly longer than expected even on a fast, stable connection. Heavy assets appear to load synchronously or block the critical rendering path.\n\n## Investigation notes\nAudit bundle size and the critical path; code-split or lazy-load non-critical assets; compress 3D models and textures; and provide a loading skeleton or progress indicator.",
+            "id": "open-545",
+            "sig": "ujg7wqGwUYcsv2SLPoRPPjbFYL5aUB-i6SMF2rLRnyp0WMZFAmP4-QNXPoWHFC-S0E3W9WNNehAIJiBY9CLRBg",
+            "title": "Slow initial site load time",
+            "ts": 1785698277806,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "bug",
+        "ux",
+        "product",
+        "performance",
+        "severity:high"
+    ],
+    "milestone": "",
+    "number": 545,
+    "priority": 2,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Slow initial site load time",
+    "updatedAt": 1785698277806,
+    "votes": 0
+}
