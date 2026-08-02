@@ -3863,6 +3863,9 @@ void MainWindow::loadCommits()
     // until the new ones snap in, in one repaint when the guard unwinds.
     TableRepaintGuard repaintGuard(m_commitsTable);
     m_commitsTable->setRowCount(0);
+    // Drop the previous window's lane pitch: a load that bails out early must
+    // not leave the next repo's graph compressed to this repo's depth.
+    m_commitsTable->setProperty(kGraphLaneCountProperty, 0);
     showCommitList(); // always land on the list when (re)loading
     // The Insights "Contributors & activity" counts are derived from the same
     // history; keep them in step when it moves underneath an open Insights tab
@@ -3926,6 +3929,9 @@ void MainWindow::loadCommits()
     // is the hash the lane is currently waiting to reach; an empty entry is a free
     // slot a new branch can reuse.
     QList<QString> activeLanes;
+    // Widest the graph gets anywhere in this window. The delegate needs it up
+    // front to pick one lane pitch for every row (see commitGraphMetrics).
+    int graphLaneCount = 0;
     // Put outgoing work in the graph itself.  The synthetic dotted node's
     // bottom lane is the first real commit's top lane, so the connector reads
     // as one continuous graph rather than a detached warning card.
@@ -4033,6 +4039,13 @@ void MainWindow::loadCommits()
             if (!activeLanes.at(i).isEmpty())
                 botLaneCols.append(i);
         }
+        graphLaneCount = std::max({graphLaneCount, nodeLane + 1,
+                                   laneCols.isEmpty()
+                                       ? 0
+                                       : laneCols.last().toInt() + 1,
+                                   botLaneCols.isEmpty()
+                                       ? 0
+                                       : botLaneCols.last().toInt() + 1});
 
         const int row = m_commitsTable->rowCount();
         m_commitsTable->insertRow(row);
@@ -4158,11 +4171,14 @@ void MainWindow::loadCommits()
         updateCommitRowHover(row);
     }
     // The graph gutter needs no sizing pass: it is painted inside the summary
-    // cell and each row's text indents to its own rightmost lane (capped by
-    // kGraphMaxTextIndent in CommitSummaryDelegate). Repaints stay suspended
+    // cell and each row's text indents to its own rightmost lane. What the
+    // delegate does need is the window's widest lane count, so every row draws
+    // its lanes at the same pitch and the whole graph fits the gutter instead
+    // of striping across the messages (adhoc #60). Repaints stay suspended
     // through the banner update and filter re-apply below, so the whole reload
     // lands in one repaint. Rows stay in git-log order (no header sorting) so
     // the graph lanes always match the topology.
+    m_commitsTable->setProperty(kGraphLaneCountProperty, graphLaneCount);
 
     // Banner + expandable file view for the commits still waiting to sync
     // (m_commitsUnsyncedHashes was rebuilt by the row loop above).
