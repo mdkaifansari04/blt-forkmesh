@@ -8,6 +8,7 @@
 #include "IssueStore.h"
 #include "ProjectStore.h"
 #include "PullStore.h"
+#include "PullReviewModel.h"
 #include "CoveStore.h"
 #include "ActionStore.h"
 #include "ActionFile.h"
@@ -2073,6 +2074,10 @@ private:
     // forkmesh-commit:SHA → commit) and forkmesh:// permalinks (issue/pull/commit);
     // anything else opens externally.
     void openBodyReference(const QString &href);
+    // Resolve links emitted by ClaudeTranscriptView. Repository-local branch and
+    // file targets stay inside ForkMesh; issue, PR, commit and web links reuse
+    // the conversation reference resolver above.
+    void openAgentTranscriptReference(const QString &href);
     // Copy a forkmesh://<kind>/<owner>/<repo>/<id> permalink for the open PR or
     // commit to the clipboard (owner/repo from the repo detail view). Pasting it
     // into a comment renders a link via autolinkReferences() (issue #154).
@@ -2304,10 +2309,29 @@ private:
     // Enqueue every workflow found at `commit` for owner/name whose `on:` matches
     // `trigger`. Shared by the push handler, the PR "Run checks" button, and the
     // Releases panel's "Publish release" action.
+    //
+    // Asynchronous: reading the workflows out of the served mirror is several
+    // git subprocesses (diff-tree, ls-tree, one `show` per file) and the
+    // repository-state digest behind them archives and hashes the whole tree.
+    // On the GUI thread that measured 4-5.6s in the stall log, so the reads run
+    // on a worker and only the queueing decisions come back here. No caller
+    // depends on runs existing by the time this returns.
     void queueWorkflowsForCommit(int repoIndex, const QString &owner,
                                  const QString &name, const QString &commit,
                                  const QString &ref,
                                  WorkflowTrigger trigger = WorkflowTrigger::Push);
+    // What the worker above reads out of the mirror for one commit.
+    struct WorkflowScan {
+        bool mirrorMissing = false;
+        // Every path in the pushed commit lives under a metadata folder
+        // (issues/PRs/commit comments), so there is no code change to build.
+        bool metadataOnly = false;
+        QList<QPair<QString, QString>> workflows; // .forkmesh/<file> -> content
+    };
+    // GUI-thread half of queueWorkflowsForCommit.
+    void applyWorkflowScan(const QString &owner, const QString &name,
+                           const QString &commit, const QString &ref,
+                           WorkflowTrigger trigger, const WorkflowScan &scan);
     void submitPullComment();                       // post a comment on the PR
     void sendPullRevisionToAgent();                 // re-queue the linked agent with revision feedback
     void submitPullReview(const QString &state);    // approve / request changes
@@ -4155,6 +4179,7 @@ private:
     // Show the transparent public community reward pool. The pool key is not
     // available to the Worker and user wallets always remain self-custodial.
     void showTreasuryDonateDialog();
+    void showTreasuryDonateDialogForPool(const QJsonObject &pool);
     void copyIssueToClipboard();
     void copyIssueThreadToClipboard();
     void askAiForCurrentIssue();
@@ -5552,6 +5577,9 @@ private:
     QLineEdit *m_previewCacheRootEdit = nullptr;
     // Settings -> Data tab: storage breakdown table and backup/cleanup status.
     QTableWidget *m_dataDirTable = nullptr;
+    // Bumped for each Settings > Data refresh so a slow recursive directory
+    // scan cannot overwrite a newer table after its worker finishes.
+    quint64 m_dataDirScanGeneration = 0;
     QLabel *m_dataStatus = nullptr;
     // Settings -> Data tab: the hourly backup panel.
     QTableWidget *m_backupTable = nullptr;
@@ -5801,7 +5829,7 @@ private:
     QLabel *m_statusAppPath = nullptr;
     // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
     QPushButton *m_footerDiagnostics = nullptr;
-    // Live one-per-second moving sparklines for CPU, host memory and disk
+    // Live one-per-second moving sparklines for CPU, host memory, swap and disk
     // usage (adhoc #17), shown in the footer beside the diagnostics. Held as
     // QWidget* and poked via static_cast since ResourceSparkline is private to
     // MainWindowChat.cpp.
@@ -5812,6 +5840,7 @@ private:
     QToolButton *m_repoRatchetButton = nullptr;
     qint64 m_repoStatsLastRefreshMs = 0;
     QWidget *m_memChart = nullptr;
+    QWidget *m_swapChart = nullptr;
     QWidget *m_diskChart = nullptr;
     StallWatchdog *m_stallWatchdog = nullptr;
     QTimer *m_diagTimer = nullptr;
@@ -6355,6 +6384,7 @@ private:
     QWidget *m_scmSyncRow = nullptr;
     ElidingStatusLabel *m_scmSyncStatus = nullptr; // "Writing objects: 62%" …
     int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
+    quint64 m_scmStatusGeneration = 0; // rejects late `git status` callbacks
     // Inputs to updateScmCommitControlVisibility(). Commits waiting to sync used
     // to swap the commit row out for Sync Changes unconditionally, which stranded
     // a staged change with a typed message and no button to land it.
@@ -6728,6 +6758,14 @@ private:
         QStringList conflictFiles;
     };
     QHash<int, PullConflictEntry> m_pullConflictCache;
+    // Agent attribution per PR, read from the ForkMesh-Agent trailer in the
+    // signed commit series. Computed once per load on a worker rather than
+    // inside refreshPullList(), which called pullAgentProvenance() for every
+    // visible row: a PR with no trailer scans its whole (multi-megabyte) mbox to
+    // the end before answering "no", and the stall log caught that table build
+    // at 1.15s. Missing entry simply means "no badge yet".
+    QHash<int, PullAgentProvenance> m_pullProvenance;
+    quint64 m_pullProvenanceGen = 0;
     // Generation counter: each reloadPulls() bumps it so any in-flight async
     // conflict pass aborts once the repo/list it was started for has changed.
     quint64 m_pullConflictGen = 0;
@@ -7073,10 +7111,9 @@ private:
     QToolButton *m_agentStatusPill = nullptr; // compact model + outcome control
     // The session's field list (agent/model/mode/repo/status/issue/PR/branch/
     // worktree/stats) and the popup it lives in — opened from the header's
-    // "Info" button instead of sitting open above the transcript (adhoc #61).
+    // status control instead of sitting open above the transcript (adhoc #61).
     QLabel *m_agentMeta = nullptr;
     QFrame *m_agentMetaPopup = nullptr;
-    QPushButton *m_agentInfoButton = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create PR" — pull requests are user-driven (adhoc #2 follow-up): a run
