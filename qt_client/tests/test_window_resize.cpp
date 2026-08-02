@@ -2447,9 +2447,9 @@ int main(int argc, char *argv[])
         // silently omitted these and made the consolidated view look empty while
         // an agent was still working.
         const QString livePath = wtPath + QStringLiteral("/live-uncommitted.txt");
-        // Move main ahead immediately before opening the branch. The Git route's
-        // automatic pull must merge that new main tip inside the linked agent
-        // worktree, then rerender the range without losing its local file.
+        // Move main ahead immediately before opening the branch. Navigation is
+        // read-only: merely reviewing this linked agent branch must not create a
+        // merge commit or rewrite its worktree.
         {
             QFile mainShared(wtRepo.path() +
                              QStringLiteral("/auto-stash-overlap.txt"));
@@ -2507,51 +2507,52 @@ int main(int argc, char *argv[])
                   .arg(window.testCompareIndicatorText().isEmpty()
                            ? QStringLiteral("<hidden>")
                            : window.testCompareIndicatorText()));
-        QElapsedTimer autoPullTimer;
-        autoPullTimer.start();
-        QString autoPullCounts;
-        while (autoPullTimer.elapsed() < 5000) {
-            QApplication::processEvents(QEventLoop::AllEvents, 20);
-            autoPullCounts = gitOutput(
-                wtRepo.path(),
-                {"rev-list", "--left-right", "--count",
-                 "main...feature/keep-selected"});
-            if (autoPullCounts.startsWith(QLatin1Char('0')))
-                break;
-        }
-        check(autoPullCounts.startsWith(QLatin1Char('0')),
-              QString("opening a linked agent branch automatically pulls main "
-                      "into its own worktree (main...branch = %1)")
-                  .arg(autoPullCounts));
-        QFile restoredShared(wtPath +
-                             QStringLiteral("/auto-stash-overlap.txt"));
-        restoredShared.open(QIODevice::ReadOnly);
-        const QByteArray restoredSharedText = restoredShared.readAll();
-        const QString restoredStatus =
-            gitOutput(wtPath, {"status", "--short", "--",
-                               "auto-stash-overlap.txt"});
-        check(restoredSharedText.contains("agent changed line 1\n") &&
-                  restoredSharedText.contains("main changed line 12\n") &&
-                  restoredStatus.contains(QStringLiteral("auto-stash-overlap.txt")) &&
-                  gitOutput(wtPath, {"stash", "list"}).isEmpty(),
-              QString("Pull main protects and restores edits in files also changed "
-                      "on main (status = %1, stash = %2)")
-                  .arg(restoredStatus,
-                       gitOutput(wtPath, {"stash", "list"})));
-        // Advance main again and suppress the automatic path for this one view,
-        // so the actual toolbar button has to perform the update. This catches
+        QApplication::processEvents();
+        const QString reviewHead =
+            gitOutput(wtPath, {"rev-parse", "HEAD"}).trimmed();
+        const QString reviewCounts = gitOutput(
+            wtRepo.path(), {"rev-list", "--left-right", "--count",
+                            "main...feature/keep-selected"});
+        check(reviewCounts.startsWith(QLatin1Char('1')) &&
+                  reviewHead == gitOutput(
+                                    wtRepo.path(),
+                                    {"rev-parse", "feature/keep-selected"})
+                                    .trimmed(),
+              QString("opening a branch does not mutate its history "
+                      "(main...branch = %1)")
+                  .arg(reviewCounts));
+
+        // Bulk synchronization must also leave a divergent active agent branch
+        // untouched, and it must not manufacture a merge commit on a divergent
+        // inactive ref. A strictly-behind idle ref can still fast-forward.
+        runGitChecked(wtRepo.path(),
+                      {"branch", "regression/divergent-idle",
+                       "feature/keep-selected"});
+        runGitChecked(wtRepo.path(),
+                      {"branch", "regression/behind-idle", "main^"});
+        const QString divergentIdleHead =
+            gitOutput(wtRepo.path(),
+                      {"rev-parse", "regression/divergent-idle"})
+                .trimmed();
+        window.testPullBaseIntoAllBranches();
+        check(gitOutput(wtPath, {"rev-parse", "HEAD"}).trimmed() == reviewHead &&
+                  gitOutput(wtRepo.path(),
+                            {"rev-parse", "regression/divergent-idle"})
+                          .trimmed() == divergentIdleHead &&
+                  gitOutput(wtRepo.path(),
+                            {"rev-parse", "regression/behind-idle"})
+                          .trimmed() ==
+                      gitOutput(wtRepo.path(), {"rev-parse", "main"}).trimmed(),
+              QStringLiteral("bulk synchronization only fast-forwards idle refs"));
+        runGitChecked(wtRepo.path(),
+                      {"branch", "-D", "regression/divergent-idle"});
+        runGitChecked(wtRepo.path(),
+                      {"branch", "-D", "regression/behind-idle"});
+
+        // The actual toolbar button performs the intentional update. This catches
         // the manual route passing m_branchDiffBranch by reference across
         // event-pumping Git calls.
-        QFile manualPullFile(wtRepo.path() + QStringLiteral("/manual-pull.txt"));
-        if (manualPullFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            manualPullFile.write("arrived through Pull main\n");
-            manualPullFile.close();
-        }
-        runGitChecked(wtRepo.path(), {"add", "manual-pull.txt"});
-        runGitChecked(wtRepo.path(), {"commit", "-m", "advance main for manual pull"});
         window.testSwitchToBranchImmediateSelection(
-            QStringLiteral("feature/keep-selected"));
-        window.testSuppressAutoPullForBranch(
             QStringLiteral("feature/keep-selected"));
         QElapsedTimer pullButtonTimer;
         pullButtonTimer.start();
@@ -2564,14 +2565,26 @@ int main(int argc, char *argv[])
             wtRepo.path(),
             {"rev-list", "--left-right", "--count",
              "main...feature/keep-selected"});
+        QFile restoredShared(wtPath +
+                             QStringLiteral("/auto-stash-overlap.txt"));
+        restoredShared.open(QIODevice::ReadOnly);
+        const QByteArray restoredSharedText = restoredShared.readAll();
+        const QString restoredStatus =
+            gitOutput(wtPath, {"status", "--short", "--",
+                               "auto-stash-overlap.txt"});
         check(pullButtonClicked && manualPullCounts.startsWith(QLatin1Char('0')) &&
-                  QFileInfo::exists(wtPath + QStringLiteral("/manual-pull.txt")),
-              QString("Pull main button updates the linked branch it was clicked "
-                      "for (clicked = %1, main...branch = %2, file = %3)")
+                  restoredSharedText.contains("agent changed line 1\n") &&
+                  restoredSharedText.contains("main changed line 12\n") &&
+                  restoredStatus.contains(
+                      QStringLiteral("auto-stash-overlap.txt")) &&
+                  gitOutput(wtPath, {"stash", "list"}).isEmpty(),
+              QString("Pull main explicitly updates the linked branch and "
+                      "restores local edits (clicked=%1 counts=%2 status=%3 "
+                      "stash=%4)")
                   .arg(pullButtonClicked)
                   .arg(manualPullCounts)
-                  .arg(QFileInfo::exists(
-                           wtPath + QStringLiteral("/manual-pull.txt"))));
+                  .arg(restoredStatus,
+                       gitOutput(wtPath, {"stash", "list"})));
 
         // If main edits the exact same hunk as an agent's uncommitted change,
         // Git can finish the merge and only then fail while reapplying its
@@ -2597,8 +2610,6 @@ int main(int argc, char *argv[])
         runGitChecked(wtRepo.path(),
                       {"commit", "-m", "main overlaps protected agent edit"});
         window.testSwitchToBranchImmediateSelection(
-            QStringLiteral("feature/keep-selected"));
-        window.testSuppressAutoPullForBranch(
             QStringLiteral("feature/keep-selected"));
         QElapsedTimer conflictPullTimer;
         conflictPullTimer.start();
