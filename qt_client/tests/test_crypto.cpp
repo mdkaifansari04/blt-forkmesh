@@ -13,6 +13,7 @@
 #include "../src/DiscussionInboxBackoff.h"
 #include "../src/DiscussionStore.h"
 #include "../src/ForkMeshIdentity.h"
+#include "../src/GlobalSearchMatch.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
 #include "../src/LocalBackupStore.h"
@@ -361,6 +362,125 @@ int main(int argc, char *argv[])
         const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
         check(linked == input,
               "reference linker skips existing links, URLs, inline code, and code blocks");
+    }
+
+    // Ctrl+K search: the rules that decide what the overlay finds, and the
+    // parsers for the git output it searches (adhoc #28 widened it from
+    // issues/PRs/code to everything this node holds).
+    {
+        using namespace forkmesh::search;
+
+        QString where;
+        Issue issue;
+        issue.number = 7;
+        issue.title = QStringLiteral("Relay drops a heartbeat");
+        IssueEvent opened;
+        opened.type = QStringLiteral("open");
+        opened.body = QStringLiteral("The node stops advertising after an hour.");
+        IssueEvent comment;
+        comment.type = QStringLiteral("comment");
+        comment.body = QStringLiteral("Reproduced on mirror6 with a cold cache.");
+        issue.events = {opened, comment};
+        check(matchIssue(issue, QStringLiteral("HEARTBEAT"), &where) &&
+                  where == QStringLiteral("title"),
+              "search matches an issue title case-insensitively");
+        check(matchIssue(issue, QStringLiteral("advertising"), &where) &&
+                  !where.startsWith(QStringLiteral("comment: ")),
+              "search reports an open-event body hit as the description");
+        check(matchIssue(issue, QStringLiteral("mirror6"), &where) &&
+                  where.startsWith(QStringLiteral("comment: ")),
+              "search flags an issue comment hit as a comment");
+        check(!matchIssue(issue, QStringLiteral("solana"), &where),
+              "search leaves an unrelated issue alone");
+
+        PullRequest pull;
+        pull.title = QStringLiteral("Widen the search overlay");
+        pull.description = QStringLiteral("Also covers branches and worktrees.");
+        check(matchPull(pull, QStringLiteral("worktrees"), &where) &&
+                  where.contains(QStringLiteral("branches and worktrees")),
+              "search matches a pull request description and quotes it");
+
+        Discussion discussion;
+        discussion.title = QStringLiteral("Roadmap");
+        DiscussionEvent reply;
+        reply.type = QStringLiteral("comment");
+        reply.body = QStringLiteral("What about federated relays?");
+        discussion.events = {reply};
+        check(matchDiscussion(discussion, QStringLiteral("federated"), &where) &&
+                  where.startsWith(QStringLiteral("comment: ")),
+              "search matches a discussion comment");
+
+        Project project;
+        project.title = QStringLiteral("Phase 3");
+        project.body = QStringLiteral("Ship the global search overlay.");
+        check(matchProject(project, QStringLiteral("overlay"), &where),
+              "search matches a project description");
+
+        check(!containsFold(QString(), QStringLiteral("x")) &&
+                  !containsFold(QStringLiteral("x"), QString()),
+              "empty fields and empty queries never match");
+
+        const QString snippet = snippetAround(
+            QStringLiteral("alpha\nbeta gamma delta epsilon zeta eta theta iota "
+                           "kappa lambda mu nu xi omicron pi rho sigma NEEDLE "
+                           "tail"),
+            QStringLiteral("needle"));
+        check(snippet.contains(QStringLiteral("NEEDLE")) &&
+                  snippet.startsWith(QString::fromUtf8("\xE2\x80\xA6")) &&
+                  !snippet.contains(QLatin1Char('\n')),
+              "snippets are single-line, elided, and centred on the match");
+
+        // `git worktree list --porcelain`: records are separated by blank lines,
+        // but a new "worktree " line alone must also close the previous record.
+        const QVector<WorktreeRecord> worktrees = parseWorktreePorcelain(
+            {QStringLiteral("worktree /home/f/projects/forkmesh"),
+             QStringLiteral("HEAD 1111111111111111111111111111111111111111"),
+             QStringLiteral("branch refs/heads/main"),
+             QStringLiteral("worktree /tmp/forkmesh-worktrees/issue-0-s28"),
+             QStringLiteral("HEAD 2222222222222222222222222222222222222222"),
+             QStringLiteral("branch refs/heads/agent/adhoc-28-search"),
+             QStringLiteral("worktree /tmp/detached"),
+             QStringLiteral("HEAD 3333333333333333333333333333333333333333"),
+             QStringLiteral("detached")});
+        check(worktrees.size() == 3, "every worktree record is parsed");
+        check(worktrees.at(0).branch == QStringLiteral("main") &&
+                  worktrees.at(0).path ==
+                      QStringLiteral("/home/f/projects/forkmesh"),
+              "worktree branches lose their refs/heads/ prefix");
+        check(worktrees.at(1).branch ==
+                  QStringLiteral("agent/adhoc-28-search"),
+              "an agent worktree is parsed without a blank separator line");
+        check(worktrees.at(2).detached && worktrees.at(2).branch.isEmpty(),
+              "a detached worktree is flagged and carries no branch");
+        check(parseWorktreePorcelain({QStringLiteral("branch refs/heads/main")})
+                  .isEmpty(),
+              "an attribute with no worktree line is ignored");
+
+        // `git grep -n <rev>` prefixes each row with "<rev>:".
+        const CodeRow row = parseGrepRow(
+            QStringLiteral("main:qt_client/src/MainWindowSearch.cpp:42:  const "
+                           "int gen = ++m_searchGen;"),
+            QStringLiteral("main"));
+        check(row.valid && row.line == 42 &&
+                  row.path ==
+                      QStringLiteral("qt_client/src/MainWindowSearch.cpp") &&
+                  row.text.startsWith(QStringLiteral("const int gen")),
+              "a git grep row is split into path, line and trimmed text");
+        check(!parseGrepRow(QStringLiteral("no line number here"),
+                            QStringLiteral("main"))
+                   .valid,
+              "a malformed git grep row is dropped");
+
+        check(categoryIndexOf(QStringLiteral("repo")) <
+                      categoryIndexOf(QStringLiteral("branch")) &&
+                  categoryIndexOf(QStringLiteral("branch")) <
+                      categoryIndexOf(QStringLiteral("code")),
+              "search groups run from identity matches down to content matches");
+        check(categoryIndexOf(QStringLiteral("worktree")) < categoryCount() &&
+                  categoryIndexOf(QStringLiteral("agent")) < categoryCount(),
+              "worktrees and agent sessions are searchable categories");
+        check(categoryIndexOf(QStringLiteral("nonsense")) == categoryCount(),
+              "an unknown hit kind sorts last instead of vanishing");
     }
 
     {
