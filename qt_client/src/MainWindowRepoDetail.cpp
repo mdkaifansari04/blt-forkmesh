@@ -415,12 +415,20 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeCoveExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoCoveExplorer(); });
 
-    // Three related repository measures belong in one compact vertical-meter
-    // group, matching the Claude/Codex usage gauge instead of competing as
-    // three large horizontal cards.
-    auto *repoTrendChart = new RepositoryTrendMiniChart;
-    repoTrendChart->setObjectName(QStringLiteral("repoTrendChart"));
-    m_repoTrendChart = repoTrendChart;
+    // Restore the full thirty-day charts: each repository measure has its own
+    // history instead of being collapsed into a current-value meter.
+    auto *repoSizeChart = new ResourceSparkline(QStringLiteral("SIZE"), nullptr,
+                                                kResourceSparklineSide, 30);
+    auto *repoLinesChart = new ResourceSparkline(QStringLiteral("LOC"), nullptr,
+                                                 kResourceSparklineSide, 30);
+    auto *repoFilesChart = new ResourceSparkline(
+        QStringLiteral("FILES"), nullptr, kResourceSparklineSide, 30);
+    repoSizeChart->setObjectName(QStringLiteral("repoSizeChart"));
+    repoLinesChart->setObjectName(QStringLiteral("repoLinesChart"));
+    repoFilesChart->setObjectName(QStringLiteral("repoFilesChart"));
+    m_repoSizeChart = repoSizeChart;
+    m_repoLinesChart = repoLinesChart;
+    m_repoFilesChart = repoFilesChart;
     m_repoRatchetButton = new RatchetToggleButton;
     m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
     m_repoRatchetButton->setToolTip(
@@ -459,7 +467,9 @@ QWidget *MainWindow::buildRepoFilesPanel()
     modeRow->addSpacing(10);
     modeRow->addWidget(m_fileSearch);
     modeRow->addStretch(1);
-    modeRow->addWidget(repoTrendChart);
+    modeRow->addWidget(repoSizeChart);
+    modeRow->addWidget(repoLinesChart);
+    modeRow->addWidget(repoFilesChart);
     modeRow->addWidget(m_repoRatchetButton);
 
     auto *panel = new QWidget;
@@ -503,8 +513,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
 
     m_overviewList = new QTreeWidget;
     m_overviewList->setObjectName("overviewList");
-    m_overviewList->setColumnCount(3);
-    m_overviewList->setHeaderLabels({"Name", "Last commit", "Updated"});
+    m_overviewList->setColumnCount(2);
+    m_overviewList->setHeaderLabels({"Name and updated time", "Last commit"});
     m_overviewList->setRootIsDecorated(false);
     m_overviewList->setUniformRowHeights(true);
     m_overviewList->setSortingEnabled(false); // we sort the cached rows ourselves
@@ -512,12 +522,11 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewList->setAllColumnsShowFocus(true);
     m_overviewList->header()->hide();
     m_overviewList->header()->setStretchLastSection(false);
-    // The name column ends just past the longest filename.  A small fixed gutter
-    // keeps commit subjects readable without the old inline metric glyphs
-    // pushing every subject far across the page.
+    // Keep each entry's icon, metric tracks, name, and updated time together on
+    // the left. The commit subject then begins immediately after the widest
+    // entry cell instead of the timestamp floating at the far-right edge.
     m_overviewList->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_overviewList->header()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_overviewList->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_overviewList->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_overviewList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     enableHoverRowHighlight(m_overviewList);
@@ -3703,6 +3712,63 @@ void MainWindow::loadRepoOverview(const QString &path)
         page->setUpdatesEnabled(true);
 }
 
+// Three small tracks beside the entry icon summarize size, source lines and
+// recursive file count. Their tooltips retain the exact values while the row
+// stays compact.
+static QWidget *makeOverviewMetricTrack(double fraction, const QString &toolTip)
+{
+    auto *metric = new QWidget;
+    metric->setFixedSize(24, 8);
+    metric->setToolTip(toolTip);
+    auto *track = new QFrame(metric);
+    track->setObjectName("overviewMetricTrack");
+    track->setGeometry(0, 2, 24, 4);
+    auto *fill = new QFrame(track);
+    fill->setObjectName("overviewMetricFill");
+    const int width = fraction <= 0.0 ? 0 : qMax(2, qRound(24 * qMin(1.0, fraction)));
+    fill->setGeometry(0, 0, width, 4);
+    for (QWidget *child : {track, fill})
+        child->setAttribute(Qt::WA_TransparentForMouseEvents);
+    return metric;
+}
+
+static QWidget *makeOverviewNameCell(const QIcon &icon, const QString &name,
+                                     const QString &updated, double sizeFraction,
+                                     double locFraction, double fileFraction,
+                                     qint64 size, qint64 loc, qint64 files)
+{
+    auto *cell = new QWidget;
+    cell->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
+    cell->setAttribute(Qt::WA_TransparentForMouseEvents);
+    auto *layout = new QHBoxLayout(cell);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+    auto *iconLabel = new QLabel;
+    iconLabel->setFixedSize(16, 16);
+    iconLabel->setPixmap(icon.pixmap(16, 16));
+    auto *nameLabel = new QLabel(name);
+    nameLabel->setObjectName("overviewFileName");
+    auto *updatedLabel = new QLabel(updated);
+    updatedLabel->setObjectName("overviewUpdatedTime");
+    layout->addWidget(iconLabel);
+    layout->addWidget(makeOverviewMetricTrack(
+        sizeFraction, QStringLiteral("Size: %1").arg(formatByteSize(size))));
+    layout->addWidget(makeOverviewMetricTrack(
+        locFraction, loc > 0 ? QStringLiteral("Lines of code: %1").arg(QLocale().toString(loc))
+                             : QStringLiteral("No source lines")));
+    layout->addWidget(makeOverviewMetricTrack(
+        fileFraction,
+        files > 0 ? QStringLiteral("Files: %1").arg(QLocale().toString(files))
+                  : QStringLiteral("No files")));
+    layout->addSpacing(4);
+    layout->addWidget(nameLabel);
+    layout->addSpacing(4);
+    layout->addWidget(updatedLabel);
+    for (QWidget *child : {iconLabel, nameLabel, updatedLabel})
+        child->setAttribute(Qt::WA_TransparentForMouseEvents);
+    return cell;
+}
+
 void MainWindow::populateOverviewTree()
 {
     if (!m_overviewList)
@@ -3755,29 +3821,40 @@ void MainWindow::populateOverviewTree()
                   return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
               });
 
+    qint64 maxSize = 0;
+    qint64 maxLoc = 0;
+    qint64 maxFiles = 0;
+    for (const OverviewRow &e : std::as_const(rows)) {
+        maxSize = qMax(maxSize, e.size);
+        maxLoc = qMax(maxLoc, e.loc);
+        maxFiles = qMax(maxFiles, e.fileCount);
+    }
+
     for (const OverviewRow &e : std::as_const(rows)) {
         auto *item = new QTreeWidgetItem(m_overviewList);
         const QIcon icon = e.isDir ? iconForDir(false) : iconForFile(e.name);
-        item->setIcon(0, icon);
-        item->setText(0, e.name);
-        constexpr int kCommitGutter = 32;
-        item->setSizeHint(0, QSize(QFontMetrics(m_overviewList->font())
-                                       .horizontalAdvance(e.name) +
-                                   16 + kCommitGutter,
-                                   28));
+        const QString updated = formatShortRelativeTime(e.commitTs);
+        item->setSizeHint(
+            0, QSize(QFontMetrics(m_overviewList->font()).horizontalAdvance(e.name) +
+                         QFontMetrics(m_overviewList->font()).horizontalAdvance(updated) +
+                         16 + 3 * 24 + 4 * 7,
+                     28));
         item->setData(0, Qt::UserRole, e.path);
         item->setData(0, Qt::UserRole + 1, e.isDir ? 1 : 0);
         item->setToolTip(0, QStringLiteral("Size: %1\nLines of code: %2\nFiles: %3")
                                 .arg(formatByteSize(e.size), QLocale().toString(e.loc),
                                      QLocale().toString(e.fileCount)));
+        m_overviewList->setItemWidget(
+            item, 0,
+            makeOverviewNameCell(icon, e.name, updated,
+                                 maxSize > 0 ? double(e.size) / double(maxSize) : 0.0,
+                                 maxLoc > 0 ? double(e.loc) / double(maxLoc) : 0.0,
+                                 maxFiles > 0 ? double(e.fileCount) / double(maxFiles)
+                                              : 0.0,
+                                 e.size, e.loc, e.fileCount));
         item->setText(1, e.subject);
         item->setToolTip(1, e.subject);
-        item->setText(2, formatShortRelativeTime(e.commitTs));
-        item->setToolTip(2, e.whenText);
-        item->setForeground(2, QColor("#8b949e"));
-        QFont updatedFont = m_overviewList->font();
-        updatedFont.setPixelSize(10);
-        item->setFont(2, updatedFont);
+        item->setToolTip(0, item->toolTip(0) + QStringLiteral("\nUpdated: %1").arg(e.whenText));
     }
     int listHeight = m_overviewList->frameWidth() * 2;
     for (int row = 0; row < m_overviewList->topLevelItemCount(); ++row)
