@@ -1227,7 +1227,12 @@ void MainWindow::updateScmCommitControlVisibility()
         if (button)
             button->setVisible(showCommit);
     }
-    if (m_scmSyncButton)
+    // The sync button and its live progress note share one row, so the pair
+    // hides and shows as a unit; fall back to the bare button on the paths that
+    // run before the row exists.
+    if (m_scmSyncRow)
+        m_scmSyncRow->setVisible(m_scmOutgoingBlocking);
+    else if (m_scmSyncButton)
         m_scmSyncButton->setVisible(m_scmOutgoingBlocking);
 }
 
@@ -1236,15 +1241,8 @@ void MainWindow::refreshSourceControlOutgoing()
     if (!m_scmOutgoingPanel || !m_scmOutgoingLabel || !m_scmSyncButton)
         return;
     auto showCommitControls = [this](bool show) {
-        for (QPushButton *button : {m_scmCommitButton, m_scmCommitPushButton,
-                                    m_scmStageCommitPushButton}) {
-            if (button)
-                button->setVisible(show);
-        }
-        if (m_scmSyncRow)
-            m_scmSyncRow->setVisible(!show);
-        else if (m_scmSyncButton)
-            m_scmSyncButton->setVisible(!show);
+        m_scmOutgoingBlocking = !show;
+        updateScmCommitControlVisibility();
     };
     // The live note only belongs to the repo whose sync is actually running.
     const auto applySyncActivity = [this](int index, bool busy) {
