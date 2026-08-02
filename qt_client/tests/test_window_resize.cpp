@@ -1598,8 +1598,8 @@ int main(int argc, char *argv[])
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
-    // The fleet toolbar shows the live queue plus concurrent-agent limit beside
-    // Start all, and lets the common capacity adjustment happen in one click.
+    // The queue floats over the list's lower-right corner, preserving the rows
+    // behind it while keeping the common capacity adjustment one click away.
     {
         QLabel *queueStatus = window.findChild<QLabel *>(
             QStringLiteral("agentQueueStatusLabel"));
@@ -1609,10 +1609,19 @@ int main(int argc, char *argv[])
             QStringLiteral("agentQueueLimitIncreaseButton"));
         QLineEdit *settingsLimit = window.findChild<QLineEdit *>(
             QStringLiteral("maxRunningAgentsEdit"));
-        check(queueStatus && decrease && increase && settingsLimit &&
+        QWidget *queueOverlay = window.findChild<QWidget *>(
+            QStringLiteral("agentQueueOverlay"));
+        check(queueStatus && decrease && increase && settingsLimit && queueOverlay &&
+                  queueOverlay->parentWidget() &&
+                  queueOverlay->parentWidget()->parentWidget() &&
+                  queueOverlay->parentWidget()->parentWidget()->objectName() ==
+                      QStringLiteral("issueTable") &&
+                  queueOverlay->isVisible() &&
+                  queueOverlay->x() + queueOverlay->width() + 12 ==
+                      queueOverlay->parentWidget()->width() &&
                   queueStatus->text() == QStringLiteral("Queue: 0 / 5"),
-              QStringLiteral("Agents toolbar shows the queued count and run limit "
-                             "beside Start all"));
+              QStringLiteral("Agents queue floats over the list viewport with its "
+                             "queued count and run limit"));
         if (queueStatus && decrease && increase && settingsLimit) {
             increase->click();
             check(QSettings().value(QStringLiteral("agents/maxRunning")).toInt() == 6 &&
