@@ -5313,11 +5313,14 @@ void MainWindow::updateAgentsNavBadge()
     refreshAgentDotMatrix();
 }
 
-// The fleet matrix beside that button: one tiny square per session, tinted to
-// the same colour as its status icon in the agents list, with each running
-// session's live-output meter feeding the night-rider sweep so the row shows
-// real activity rather than a decorative animation. Cheap enough to call from
-// the scanner tick — the vector is small and the widget repaints itself.
+// The fleet matrix beside that button: one tiny square per active session,
+// tinted to the same colour as its status icon in the agents list. Completed
+// history belongs in the Agents page; keeping it out of the chrome means a
+// square always represents work that is running, queued, or waiting for input.
+// Each running session's live-output meter feeds the night-rider sweep so the
+// row shows real activity rather than a decorative animation. Cheap enough to
+// call from the scanner tick — the vector is small and the widget repaints
+// itself.
 void MainWindow::refreshAgentDotMatrix()
 {
     if (!m_agentDotMatrix)
@@ -5326,10 +5329,17 @@ void MainWindow::refreshAgentDotMatrix()
     dots.reserve(m_agentSessions.size());
     QHash<QString, int> tally; // status label -> count, for the tooltip
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        const bool active =
+            !session.merged &&
+            (session.status == AgentStatus::Running ||
+             session.status == AgentStatus::Queued ||
+             session.status == AgentStatus::Waiting);
+        if (!active)
+            continue;
         AgentDotMatrix::Dot dot;
         dot.sessionId = session.id;
         dot.color = agentStatusIconColor(session);
-        dot.running = !session.merged && session.status == AgentStatus::Running;
+        dot.running = session.status == AgentStatus::Running;
         if (dot.running) {
             dot.intensity = m_scannerStates.value(session.id).intensity;
             // Token throughput, scaled against a flat-out run, so the blink rate
@@ -5365,7 +5375,7 @@ void MainWindow::refreshAgentDotMatrix()
     if (key == m_agentDotTooltipKey)
         return;
     m_agentDotTooltipKey = key;
-    QString tip = QStringLiteral("%1 agent session%2 \xE2\x80\x94 %3")
+    QString tip = QStringLiteral("%1 active agent session%2 \xE2\x80\x94 %3")
                       .arg(dots.size())
                       .arg(dots.size() == 1 ? QString() : QStringLiteral("s"),
                            key);
@@ -5376,6 +5386,38 @@ void MainWindow::refreshAgentDotMatrix()
     tip += QStringLiteral("\nClick a square to open that session.");
     m_agentDotMatrix->setToolTip(tip);
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+int MainWindow::testAgentDotCount() const
+{
+    return m_agentDotMatrix && !m_agentDotMatrix->isHidden()
+               ? m_agentDotMatrix->shownCount()
+               : 0;
+}
+
+void MainWindow::testSetAgentSessionStatus(int sessionId, const QString &status)
+{
+    if (AgentSession *session = findAgentSession(sessionId)) {
+        session->status = status;
+        if (m_agentStore)
+            m_agentStore->saveSession(*session);
+        refreshAgentDotMatrix();
+    }
+}
+
+void MainWindow::testRemoveAgentSession(int sessionId)
+{
+    for (auto it = m_agentSessions.begin(); it != m_agentSessions.end(); ++it) {
+        if (it->id != sessionId)
+            continue;
+        if (m_agentStore)
+            m_agentStore->deleteSession(*it);
+        m_agentSessions.erase(it);
+        refreshAgentDotMatrix();
+        return;
+    }
+}
+#endif
 
 // What the Agents list is filtered by right now.  Its only search entry point
 // is the top bar, and it applies while this page is open.
