@@ -9204,12 +9204,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                   .arg(issueContextPrompt(issue))
             : customPrompt.trimmed();
     // A custom preamble from Settings → Agents still governs the run when the
-    // user wrote one; otherwise the task stands alone.
+    // user wrote one; otherwise the task stands alone. Every coding run then
+    // receives the same required completion behavior, even when an older saved
+    // custom preamble still says not to commit.
     const QString customPreamble =
         QSettings().value(kAgentPromptPreambleSetting).toString().trimmed();
     QString prompt = customPreamble.isEmpty()
                          ? lead
                          : customPreamble + QStringLiteral("\n\n") + lead;
+    prompt += QStringLiteral("\n\n") + AgentRunner::commitChangesInstruction();
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
