@@ -86,6 +86,7 @@ struct MirrorSelfSnapshot {
 #include <QMetaType>
 #include <QPixmap>
 #include <QPointer>
+#include <QRect>
 #include <QSet>
 #include <QTextBlockUserData>
 #include <QTextCursor>
@@ -4386,8 +4387,8 @@ private:
     bool m_logFilterEmptyNotice = false;
     void loadOlderNetworkLogSegment();
     void onNetworkLogScrolled(int value);
-    // Compact success/failure banner pinned to the top of the footer's mini-log
-    // panel, beside the log lines it explains. Auto-clears after a few seconds.
+    // Prompt-anchored success/failure bubble. It floats just above the footer
+    // composer, counts down and fades instead of taking space from the live log.
     // `clickHref` makes the whole toast a clickable link routed by the
     // m_topMessage linkActivated handler (e.g. "fm:agent:<id>" to jump to a
     // waiting agent). Empty = a plain, non-clickable toast.
@@ -4398,11 +4399,12 @@ private:
     void queueTopMessage(const QString &text, bool error); // park one behind the current toast
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
-    void renderTopMessage(); // (re)paint the toast, elided or expanded in place
-    void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
-    // False while the footer (and with it the mini-log the toast is docked in) is
-    // hidden — the Git workspace does that. Messages then float in the overlay
-    // instead of vanishing.
+    void renderTopMessage(); // (re)paint the current notification bubble
+    void positionTopMessageBubble(); // size + anchor the bubble above the prompt
+    QRect topMessageBubbleRect(); // calculates the prompt-relative bubble geometry
+    void setTopMessagePaused(bool paused); // hover pauses both fade and countdown
+    void showPromptBubble(const QString &prompt); // animate a submitted prompt into a bubble
+    // False while the footer composer is hidden (the Git workspace does that).
     bool topMessageDockVisible() const;
     MessageRow *addMessageRow(const ChatMessage &message);
     MessageRow *createMessageRow(const ChatMessage &message,
@@ -4858,16 +4860,18 @@ private:
     // Little crown badge painted over the top-left of the same avatar, shown
     // only while this node is an admin (see updateAdminCrownBadge()).
     QLabel *m_adminCrownBadge = nullptr;
-    QLabel *m_topMessage = nullptr;       // compact centered success/failure toast text
-    QFrame *m_topMessageContainer = nullptr; // bordered pill wrapping the text + Expand/Copy/✕
-    QTimer *m_topMessageTimer = nullptr;  // auto-clears the centered toast
-    QPushButton *m_topMessageCopy = nullptr; // copy-to-clipboard for error toasts
-    QPushButton *m_topMessageClose = nullptr; // dismiss "x" for persistent error toasts
-    QPushButton *m_topMessageExpand = nullptr; // expand/collapse a truncated toast in place
-    QFrame *m_topMessageOverlay = nullptr; // floats the expanded full text on top of the layout
-    QLabel *m_topMessageOverlayText = nullptr; // wrapped full-message label inside the overlay
-    QString m_topMessageRaw;              // plain text of the current toast, for copy
-    QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
+    QLabel *m_topMessage = nullptr;       // prompt-anchored success/failure bubble text
+    QFrame *m_topMessageContainer = nullptr; // floating bubble wrapping text + actions
+    QTimer *m_topMessageTimer = nullptr;  // auto-clears the bubble
+    QGraphicsOpacityEffect *m_topMessageOpacity = nullptr; // fade synchronized to timer
+    QPropertyAnimation *m_topMessageFade = nullptr;
+    QPropertyAnimation *m_topMessageFlight = nullptr; // composer-to-bubble send motion
+    QPushButton *m_topMessageCopy = nullptr;
+    QPushButton *m_topMessageSendToPrompt = nullptr;
+    QPushButton *m_topMessageClose = nullptr;
+    QPushButton *m_topMessageExpand = nullptr;
+    QString m_topMessageRaw;              // plain text of the current bubble, for copy/retry
+    QString m_topMessageBaseHtml;         // bubble HTML without the countdown suffix
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
     // Pending messages that arrived while another toast was already counting
@@ -4878,6 +4882,8 @@ private:
     // queued event keeps its colour.
     QList<QPair<QString, bool>> m_topMessageQueue;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
+    bool m_topMessageHovering = false;    // pauses countdown and fade while reading/actions
+    bool m_topMessageIsPromptBubble = false; // submitted prompt gets a fuller, animated treatment
     // Red border flashed around the whole window while an error ping arrives —
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
@@ -5450,6 +5456,7 @@ private:
     // line, so a typed prompt actually shows on two lines. Enter sends,
     // Shift+Enter inserts a newline; Up/Down still walk the prompt history.
     QPlainTextEdit *m_issueQuickAdd = nullptr;
+    QFrame *m_promptWrapper = nullptr; // geometry anchor for notification/prompt bubbles
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
     // Canonical provider state behind the combined visible picker. It also
     // carries a "Manual (create issue)" entry, which files an issue from the

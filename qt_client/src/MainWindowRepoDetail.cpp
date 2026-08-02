@@ -10299,6 +10299,8 @@ void MainWindow::showLoadStatus(const QString &what)
 {
     if (!m_topMessage || what.isEmpty())
         return;
+    m_topMessageIsPromptBubble = false;
+    m_topMessageHovering = false;
     m_topMessageRaw = what;
     // Blue, persistent progress pill — distinct from the green success / red
     // error toast — naming the current step. The node/repo button spinner and the
@@ -10309,19 +10311,28 @@ void MainWindow::showLoadStatus(const QString &what)
                  what.toHtmlEscaped()));
     m_topMessage->setWordWrap(false);
     m_topMessage->show();
-    if (m_topMessageContainer)
+    if (m_topMessageContainer) {
+        if (m_topMessageFlight)
+            m_topMessageFlight->stop();
+        if (m_topMessageOpacity)
+            m_topMessageOpacity->setOpacity(1.0);
+        positionTopMessageBubble();
         m_topMessageContainer->show();
+        m_topMessageContainer->raise();
+    }
     m_loadStatusShowing = true;
     m_topMessageElided = false;
     m_topMessageExpanded = false;
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't let it fade out mid-load
-    if (m_topMessageOverlay)
-        m_topMessageOverlay->hide(); // drop any leftover expanded panel
+    if (m_topMessageFade)
+        m_topMessageFade->stop();
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
+    if (m_topMessageSendToPrompt)
+        m_topMessageSendToPrompt->hide();
     if (m_topMessageClose)
         m_topMessageClose->hide();
 }

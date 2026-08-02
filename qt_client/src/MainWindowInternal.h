@@ -43,6 +43,7 @@
 #include "Theme.h"
 
 #include <QAbstractButton>
+#include <QAbstractAnimation>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
@@ -68,6 +69,7 @@
 #include <QFileDialog>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEasingCurve>
 #include <QFileInfo>
 #include <QMimeData>
 #include <QMutex>
