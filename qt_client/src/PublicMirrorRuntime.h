@@ -133,6 +133,13 @@ public:
                                   const QString &archiveId);
     static QString keyReference(const QString &archiveId);
 
+    // A supervised node keeps TMPDIR on persistent local disk so large mirror
+    // materializations do not exhaust a RAM-backed /tmp. Crashes cannot run
+    // QTemporaryDir/Python cleanup, so remove only exact ForkMesh-owned
+    // temporary-directory shapes after the single-instance lock is held.
+    static int cleanupStaleTemporaryDirectories(
+        const QString &temporaryRoot, QString *error = nullptr);
+
     // Remove a legacy durable bare mirror only when it resolves beneath the
     // explicitly managed root and after the replacement ciphertext has been
     // authenticated and reopened.

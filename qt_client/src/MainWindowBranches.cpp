@@ -2455,11 +2455,18 @@ QWidget *MainWindow::buildBranchesTab()
     layout->addLayout(headerRow);
 
     m_branchesTable = new QTableWidget(0, 5);
-    installColumnHeaderMenu(m_branchesTable); // 3-dots per-column menu (issue #318)
     m_branchesTable->setObjectName("issueTable");
+    // The list is a plain column of branches: no column headers (so no 3-dots
+    // header menu either) and no frame around it. The panel already has its own
+    // "Branches · N local …" heading and sits inside a padded page, so the
+    // header strip and the box border were two lines of chrome around a list
+    // whose single visible column needs no label.
+    m_branchesTable->setStyleSheet("#issueTable { border: none; }");
+    m_branchesTable->setFrameShape(QFrame::NoFrame);
     enableHoverRowHighlight(m_branchesTable);
     m_branchesTable->setHorizontalHeaderLabels(
         {"", "Branch", "Status", "Updated", "Worktree"});
+    m_branchesTable->horizontalHeader()->setVisible(false);
     m_branchesTable->verticalHeader()->setVisible(false);
     // Give each row enough height for the sm action buttons (max 28px tall) plus
     // breathing room, so the buttons don't crowd the row above/below.
@@ -2495,6 +2502,12 @@ QWidget *MainWindow::buildBranchesTab()
     // accessibility still read them) but remove the duplicate visual columns.
     m_branchesTable->setColumnHidden(kBranchesUpdatedColumn, true);
     m_branchesTable->setColumnHidden(kBranchesWorktreeColumn, true);
+    // Status ("N behind · N ahead") goes the same way: the leading Branch cell
+    // already draws the behind/ahead chart for those exact counts and the row
+    // tooltip spells them out, so the text column only repeated it at the far
+    // edge of a very wide row. The cell stays populated for the code that reads
+    // it back (conflict flagging, "Delete merged" enablement, automation).
+    m_branchesTable->setColumnHidden(kBranchesStatusColumn, true);
     // Selecting a real branch (click or arrow keys) retires the "merged &
     // deleted" check left where a branch used to be (adhoc #15). The diff
     // preview that used to ride this selection moved into the Git view's range
@@ -3512,8 +3525,12 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         del->setObjectName("issueIconButton");
         del->setFlat(true);
         del->setCursor(Qt::PointingHandCursor);
-        del->setIcon(themedOcticon("trash", QColor("#f85149"), 15));
-        del->setIconSize(QSize(15, 15));
+        // 16px, the octicon's native grid: at 15 the 0.75-unit strokes land on
+        // fractional pixels and the can's sides wash out to a half-drawn glyph.
+        // With the Status column gone this is the row's only button, so it has to
+        // read as a trash can at a glance.
+        del->setIcon(themedOcticon("trash", QColor("#f85149"), 16));
+        del->setIconSize(QSize(16, 16));
         del->setToolTip(QStringLiteral("Delete branch %1").arg(branch));
         const bool canDelete = writable && branch != base && branch != selected;
         del->setEnabled(canDelete);
@@ -3641,8 +3658,8 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         rdel->setObjectName("issueIconButton");
         rdel->setFlat(true);
         rdel->setCursor(Qt::PointingHandCursor);
-        rdel->setIcon(themedOcticon("trash", QColor("#f85149"), 15));
-        rdel->setIconSize(QSize(15, 15));
+        rdel->setIcon(themedOcticon("trash", QColor("#f85149"), 16));
+        rdel->setIconSize(QSize(16, 16));
         rdel->setEnabled(canDeleteRemote);
         rdel->setToolTip(canDeleteRemote
                              ? QStringLiteral("Delete branch %1 on %2")
@@ -3661,9 +3678,11 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         ractionRow->invalidate();
         actionWidth = qMax(actionWidth, ractions->sizeHint().width());
     }
-    if (actionWidth > 0)
-        m_branchesTable->horizontalHeader()->resizeSection(
-            kBranchesDeleteColumn, actionWidth + 4);
+    // Never narrower than the 16px glyph plus the button's 4px padding and the
+    // cell's 2px margins, whatever the measured hint says: this is the last
+    // resize of the run, and a short section here clips the trash can.
+    m_branchesTable->horizontalHeader()->resizeSection(
+        kBranchesDeleteColumn, qMax(actionWidth + 4, 30));
 
     // Header "Pull <base> into all" reflects the current base and is enabled only
     // when there's at least one behind branch to update.
