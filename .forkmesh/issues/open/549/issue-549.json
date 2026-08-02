@@ -18,6 +18,18 @@
             "title": "3D view responds slowly to user input",
             "ts": 1785698278121,
             "type": "open"
+        },
+        {
+            "attachments": [
+                "d0644b69.jpg"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Supporting screenshot from QA report FM-QA-2026-08-02, Fig. 1 \u2014 3D World section with the in-world chat overlay.\n\n![Fig. 1 \u2014 3D World with in-world chat overlay](d0644b69.jpg)",
+            "id": "2a5a41a4-315d-44e4-a59d-2f44665b6b70",
+            "sig": "NDjnfzwggVME8sqLYD3jY8x5ObmdcUwZ7Eeq1x4NBefxjBd9okaPYOzqEiM1TF1aLFkqwUdwkoiKxR3XDfoyBg",
+            "ts": 1785698775973,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -36,6 +48,6 @@
     "startDate": 0,
     "status": "open",
     "title": "3D view responds slowly to user input",
-    "updatedAt": 1785698278121,
+    "updatedAt": 1785698775973,
     "votes": 0
 }

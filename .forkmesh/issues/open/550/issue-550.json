@@ -18,6 +18,18 @@
             "title": "Three.js world lacks adaptive optimization across device tiers",
             "ts": 1785698278209,
             "type": "open"
+        },
+        {
+            "attachments": [
+                "d0644b69.jpg"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Supporting screenshot from QA report FM-QA-2026-08-02, Fig. 1 \u2014 3D World section with the in-world chat overlay.\n\n![Fig. 1 \u2014 3D World with in-world chat overlay](d0644b69.jpg)",
+            "id": "0f62b537-c132-48d3-837c-be21250af8de",
+            "sig": "DuhjrUW7rdj_feLVBozIZEiKhMF1smKVpBW9b9ZpcjJC6077Z6y7ZJx7l0FJpfgfXJ2FO7QKmcSTUAEbcbpDAw",
+            "ts": 1785698776058,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -36,6 +48,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Three.js world lacks adaptive optimization across device tiers",
-    "updatedAt": 1785698278209,
+    "updatedAt": 1785698776058,
     "votes": 0
 }

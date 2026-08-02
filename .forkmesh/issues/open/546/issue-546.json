@@ -18,6 +18,18 @@
             "title": "Black screen or missing content while scrolling",
             "ts": 1785698277862,
             "type": "open"
+        },
+        {
+            "attachments": [
+                "b9de94cf.jpg"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Supporting screenshot from QA report FM-QA-2026-08-02, Fig. 2 \u2014 chat panel load state showing content stacking and the render state.\n\n![Fig. 2 \u2014 Chat panel load and render state](b9de94cf.jpg)",
+            "id": "0926b898-ba4f-466b-a13f-54db207d6240",
+            "sig": "-YN5eeZmH-oa_ud28LDsV9FiOqXxZXccOn502itvUf1VcIF8xXvRusjwiL0h4LTqihTotHtHwJODzw9tRALMBw",
+            "ts": 1785698775730,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -35,6 +47,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Black screen or missing content while scrolling",
-    "updatedAt": 1785698277862,
+    "updatedAt": 1785698775730,
     "votes": 0
 }

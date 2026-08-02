@@ -18,6 +18,18 @@
             "title": "Animated cards and design elements fail to load on scroll",
             "ts": 1785698277946,
             "type": "open"
+        },
+        {
+            "attachments": [
+                "b9de94cf.jpg"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Supporting screenshot from QA report FM-QA-2026-08-02, Fig. 2 \u2014 chat panel load state showing content stacking and the render state.\n\n![Fig. 2 \u2014 Chat panel load and render state](b9de94cf.jpg)",
+            "id": "a9e5c743-5d32-46b0-a250-e16f3fad45de",
+            "sig": "hQboTGuXDZFzEFPNS6G0b8Tt__Ouv9WN7fRIDHhzNO7zFmRsEdtuk_wLxNcMSsvjZW6ztz7i26Cbd44B1ZwEDw",
+            "ts": 1785698775824,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -35,6 +47,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Animated cards and design elements fail to load on scroll",
-    "updatedAt": 1785698277946,
+    "updatedAt": 1785698775824,
     "votes": 0
 }

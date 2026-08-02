@@ -18,6 +18,18 @@
             "title": "Bottom 3D world section loads slowly and lags on scroll",
             "ts": 1785698278033,
             "type": "open"
+        },
+        {
+            "attachments": [
+                "d0644b69.jpg"
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Supporting screenshot from QA report FM-QA-2026-08-02, Fig. 1 \u2014 3D World section with the in-world chat overlay.\n\n![Fig. 1 \u2014 3D World with in-world chat overlay](d0644b69.jpg)",
+            "id": "e9140347-3b10-4a69-b457-dabfaaa8f161",
+            "sig": "wFlt0AMtQsWEVJQADHqSN51KKDQw0kPLCkK287ESRag7F6zEyeQbHmIQEpOcRcYud9MJHyLWWv3OnQI9xOCXDw",
+            "ts": 1785698775904,
+            "type": "comment"
         }
     ],
     "labels": [
@@ -36,6 +48,6 @@
     "startDate": 0,
     "status": "open",
     "title": "Bottom 3D world section loads slowly and lags on scroll",
-    "updatedAt": 1785698278033,
+    "updatedAt": 1785698775904,
     "votes": 0
 }
