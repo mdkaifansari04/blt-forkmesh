@@ -16,6 +16,7 @@
 
 #include <QTextLayout>
 #include <QTextOption>
+#include <QUrl>
 
 using namespace forkmesh::ui;
 
@@ -34,6 +35,119 @@ QString MainWindow::agentProviderName(const QString &provider) const
     if (provider.startsWith(QLatin1String("claude")))
         return QStringLiteral("Claude API");
     return QStringLiteral("OpenAI API");
+}
+
+void MainWindow::openAgentTranscriptReference(const QString &href)
+{
+    const QString branchPrefix = QStringLiteral("forkmesh-branch:");
+    if (href.startsWith(branchPrefix)) {
+        const QString branch = QUrl::fromPercentEncoding(
+                                   href.mid(branchPrefix.size()).toUtf8())
+                                   .trimmed();
+        const QString dir = repoGitDir();
+        if (dir.isEmpty()) {
+            flashMessage(QStringLiteral("Open this Agent's repository to view %1.")
+                             .arg(branch),
+                         true);
+            return;
+        }
+        if (!localBranchExists(dir, branch)) {
+            flashMessage(QStringLiteral("Branch %1 is not available in this repository.")
+                             .arg(branch),
+                         true);
+            return;
+        }
+        switchToBranch(branch);
+        return;
+    }
+
+    const QString filePrefix = QStringLiteral("forkmesh-file:");
+    if (href.startsWith(filePrefix)) {
+        QString encoded = href.mid(filePrefix.size());
+        int line = 0;
+        const int queryAt = encoded.indexOf(QStringLiteral("?line="));
+        if (queryAt >= 0) {
+            bool ok = false;
+            line = encoded.mid(queryAt + 6).toInt(&ok);
+            if (!ok || line < 1)
+                line = 0;
+            encoded.truncate(queryAt);
+        }
+        QString path = QUrl::fromPercentEncoding(encoded.toUtf8()).trimmed();
+        const QString dir = repoGitDir();
+        if (dir.isEmpty()) {
+            flashMessage(QStringLiteral("Open this Agent's repository to view %1.")
+                             .arg(path),
+                         true);
+            return;
+        }
+
+        const QString repoRoot = QDir(dir).absolutePath();
+        QString fileRoot = repoRoot;
+        QString agentBranch;
+        if (const AgentSession *session = findAgentSession(m_selectedAgentSessionId)) {
+            if (localBranchExists(dir, session->branchName)) {
+                agentBranch = session->branchName;
+                const QString worktree =
+                    worktreePathForBranch(dir, session->branchName);
+                if (!worktree.isEmpty())
+                    fileRoot = QDir(worktree).absolutePath();
+            }
+        }
+        if (QDir::isAbsolutePath(path)) {
+            const QString absolute = QDir::cleanPath(path);
+            const QString repoPrefix = repoRoot + QLatin1Char('/');
+            const QString filePrefixPath = fileRoot + QLatin1Char('/');
+            if (absolute.startsWith(filePrefixPath))
+                path = absolute.mid(filePrefixPath.size());
+            else if (absolute.startsWith(repoPrefix))
+                path = absolute.mid(repoPrefix.size());
+            else {
+                flashMessage(QStringLiteral("That file is outside the open repository."),
+                             true);
+                return;
+            }
+        }
+        while (path.startsWith(QStringLiteral("./")))
+            path.remove(0, 2);
+        if (path.startsWith(QStringLiteral("a/")) ||
+            path.startsWith(QStringLiteral("b/")))
+            path.remove(0, 2);
+        path = QDir::cleanPath(path);
+        if (path.isEmpty() || path == QLatin1String(".") ||
+            path == QLatin1String("..") || path.startsWith(QStringLiteral("../"))) {
+            flashMessage(QStringLiteral("That transcript file reference is not valid."),
+                         true);
+            return;
+        }
+
+        const bool workingFile = QFileInfo(QDir(fileRoot).filePath(path)).isFile();
+        QByteArray ignored;
+        QString gitError;
+        const QString ref = !agentBranch.isEmpty()
+                                ? agentBranch
+                                : (currentRef().isEmpty() ? QStringLiteral("HEAD")
+                                                          : currentRef());
+        const bool trackedFile = runGitCapture(
+            dir, {QStringLiteral("cat-file"), QStringLiteral("-e"),
+                  QStringLiteral("%1:%2").arg(ref, path)},
+            &ignored, &gitError);
+        if (!workingFile && !trackedFile) {
+            flashMessage(QStringLiteral("File %1 is not available in this repository.")
+                             .arg(path),
+                         true);
+            return;
+        }
+        if (!agentBranch.isEmpty() && currentRef() != agentBranch)
+            setRepoBranch(agentBranch);
+        if (line > 0)
+            openRepoFileAtLine(path, line);
+        else
+            openRepoFile(path);
+        return;
+    }
+
+    openBodyReference(href);
 }
 
 namespace {
@@ -837,7 +951,7 @@ double agentSpinStepDegrees(const AgentSession &s, qint64 tokens)
 // lines it added and removed, and how far its branch sits ahead of / behind base
 // (issue #170). The Diff *cell* no longer prints any of this: adhoc #84 replaced
 // the figures with the churn bar AgentDiffCellDelegate paints, so the words are
-// left to the cell's tooltip and the detail header's Info popup, which lists the
+// left to the cell's tooltip and the detail header's status popup, which lists the
 // same "Diff" figure. Reads "-" until a finished run has a patch and/or a
 // still-existing branch to measure.
 QString agentDiffSummaryText(const AgentDiffStat &stat)
@@ -1667,8 +1781,8 @@ QWidget *MainWindow::buildAgentsTab()
     // The session's field list (Agent/Model/Repo/Status/Issue/PR/… plus Branch
     // and Worktree) no longer sits open across the top of the detail pane: it
     // filled a full-width band above the transcript for information that is only
-    // occasionally read (adhoc #61). It moved into a popup behind the "Info"
-    // button beside the status pill, rendered as a vertical label/value list.
+    // occasionally read (adhoc #61). It lives in a popup behind the status
+    // control, rendered as a vertical label/value list.
     m_agentMeta = new QLabel;
     m_agentMeta->setObjectName("statusLine");
     // Selectable text plus clickable links: the issue and PR values link to their
@@ -1700,45 +1814,14 @@ QWidget *MainWindow::buildAgentsTab()
             m_agentMetaPopup->hide(); // the click navigated away from this pane
     });
 
-    // The popup the meta list lives in, and the little "Info" button that opens
-    // it (adhoc #61). A Qt::Popup closes on the next click outside itself, so
-    // the list behaves like a menu without having to wrap the rich-text label
-    // in a QWidgetAction.
+    // The popup the meta list lives in. A Qt::Popup closes on the next click
+    // outside itself, so the list behaves like a menu without having to wrap the
+    // rich-text label in a QWidgetAction.
     m_agentMetaPopup = new QFrame(this, Qt::Popup);
     m_agentMetaPopup->setObjectName("agentMetaPopup"); // themed like #reactionPicker
     auto *metaPopupLayout = new QVBoxLayout(m_agentMetaPopup);
     metaPopupLayout->setContentsMargins(12, 10, 12, 10);
     metaPopupLayout->addWidget(m_agentMeta);
-    m_agentInfoButton = railActionButton(
-        QStringLiteral("info"), QStringLiteral("Info"),
-        "Show this session's details: agent, model, mode, repo, status, issue, "
-        "PR, branch and worktree");
-    connect(m_agentInfoButton, &QPushButton::clicked, this, [this] {
-        if (!m_agentMetaPopup)
-            return;
-        if (m_agentMetaPopup->isVisible()) {
-            m_agentMetaPopup->hide();
-            return;
-        }
-        m_agentMetaPopup->adjustSize();
-        QPoint at =
-            m_agentInfoButton->mapToGlobal(QPoint(0, m_agentInfoButton->height() + 4));
-        // The list is as wide as its longest branch/worktree value now (adhoc
-        // #68), so a session deep in the screen's right half would otherwise open
-        // partly off it. Slide it back in.
-        const QScreen *screen = m_agentMetaPopup->screen()
-                                    ? m_agentMetaPopup->screen()
-                                    : QGuiApplication::primaryScreen();
-        if (screen) {
-            const QRect avail = screen->availableGeometry();
-            at.setX(qBound(avail.left(),
-                           qMin(at.x(), avail.right() - m_agentMetaPopup->width() + 1),
-                           avail.right()));
-        }
-        m_agentMetaPopup->move(at);
-        m_agentMetaPopup->show();
-    });
-
     m_agentStopButton = railActionButton(QStringLiteral("circle-slash"),
                                          QStringLiteral("Stop"),
                                          "Stop this session's running agent");
@@ -1905,15 +1988,36 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStatusPill->setIconSize(QSize(18, 18));
     m_agentStatusPill->setCursor(Qt::PointingHandCursor);
     connect(m_agentStatusPill, &QToolButton::clicked, this, [this] {
-        if (m_agentInfoButton)
-            m_agentInfoButton->click();
+        if (!m_agentMetaPopup)
+            return;
+        if (m_agentMetaPopup->isVisible()) {
+            m_agentMetaPopup->hide();
+            return;
+        }
+        m_agentMetaPopup->adjustSize();
+        QPoint at = m_agentStatusPill->mapToGlobal(
+            QPoint(0, m_agentStatusPill->height() + 4));
+        // The list is as wide as its longest branch/worktree value now (adhoc
+        // #68), so a session deep in the screen's right half would otherwise open
+        // partly off it. Slide it back in.
+        const QScreen *screen = m_agentMetaPopup->screen()
+                                    ? m_agentMetaPopup->screen()
+                                    : QGuiApplication::primaryScreen();
+        if (screen) {
+            const QRect avail = screen->availableGeometry();
+            at.setX(qBound(avail.left(),
+                           qMin(at.x(), avail.right() - m_agentMetaPopup->width() + 1),
+                           avail.right()));
+        }
+        m_agentMetaPopup->move(at);
+        m_agentMetaPopup->show();
     });
 
     // Branch / Worktree in the output toolbar (adhoc #51): a click opens that
     // branch in the Git view (adhoc #131 — switchToAgentBranch points the view at
     // the session's own repository first) or that worktree's row in the Worktrees
     // tab. They are plain full-size buttons (adhoc #61), with the names they open
-    // in the Info popup and the tooltip. Both are green (adhoc #84): opening a
+    // in the status popup and the tooltip. Both are green (adhoc #84): opening a
     // branch or checkout is the safe, ordinary thing to do from a finished run,
     // so they read as go actions beside the red Stop/Delete pair.
     m_agentBranchButton = railActionButton(
@@ -1966,7 +2070,6 @@ QWidget *MainWindow::buildAgentsTab()
     statusRow->setSpacing(8);
     statusRow->addStretch(1);
     statusRow->addWidget(m_agentStatusPill, 0, Qt::AlignVCenter);
-    statusRow->addWidget(m_agentInfoButton, 0, Qt::AlignVCenter);
     statusRow->addSpacing(4);
     statusRow->addLayout(actionRow);
     topRow->addLayout(statusRow);
@@ -2021,6 +2124,8 @@ QWidget *MainWindow::buildAgentsTab()
         QSettings().value(kClaudeDiffSplitSetting, false).toBool());
     m_agentTranscript->setMinimumHeight(320); // never collapse to a thin strip
     m_agentTranscript->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    connect(m_agentTranscript, &ClaudeTranscriptView::referenceActivated, this,
+            &MainWindow::openAgentTranscriptReference);
     connect(m_agentTranscript, &ClaudeTranscriptView::usageChanged, this,
             [this](const QString &kind, const QString &text, int percent) {
                 Q_UNUSED(text);
@@ -2379,8 +2484,8 @@ QWidget *MainWindow::buildAgentsTab()
     detailLayout->setContentsMargins(12, 12, 22, 14);
     detailLayout->setSpacing(8);
     detailLayout->addLayout(topRow);
-    // m_agentMeta is not laid out here any more — it lives in the Info popup
-    // opened from the header's "Info" button (adhoc #61).
+    // m_agentMeta is not laid out here any more — it lives in the popup opened
+    // from the header's status control (adhoc #61).
     detailLayout->addWidget(m_agentNetPanel);
     detailLayout->addWidget(outputContainer, 1); // the Agent transcript + Raw toggle
 
@@ -6486,7 +6591,7 @@ static QString issueLinkHtml(int issueNumber, const QString &title)
 // Renders the agent-detail meta fields as a label/value list — one row per
 // field, muted label on the left, value on the right. It used to be a wide
 // two-row table spread across the top of the detail pane (adhoc #90); adhoc #61
-// moved it into the header's "Info" popup, where a vertical list reads far
+// moved it into the header's status popup, where a vertical list reads far
 // better than a dozen side-by-side columns. Values are pre-built HTML
 // (links/spans already escaped by the caller); labels are escaped here.
 static QString agentDetailTableHtml(const QStringList &headers, const QStringList &values)
