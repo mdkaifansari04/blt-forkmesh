@@ -3377,6 +3377,7 @@
       const messages = {
         email_not_verified: "Verify your email before changing your username.",
         invalid_node_name: "Enter a valid username.",
+        inappropriate_node_name: "Choose a username without offensive language.",
         node_name_taken: "That username is already taken.",
         node_name_unchanged: "Enter a different username.",
         repo_namespace_conflict: "That namespace already has repository data.",
