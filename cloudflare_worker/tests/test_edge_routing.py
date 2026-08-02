@@ -215,6 +215,29 @@ def test_selection_cursor_round_robins_every_eligible_endpoint():
     )[0]["node"] == "mirror-a"
 
 
+def test_equal_signed_refs_expand_current_round_robin_set():
+    refs = "a" * 64
+    records = [
+        routing.normalize_endpoint_record(_record("mirror-a", refsSha256=refs)),
+        routing.normalize_endpoint_record(_record(
+            "mirror-b",
+            baseUrl="https://mirror-b.example.net",
+            refsSha256=refs,
+        )),
+        routing.normalize_endpoint_record(_record(
+            "mirror-c",
+            baseUrl="https://mirror-c.example.net",
+            refsSha256="b" * 64,
+        )),
+    ]
+    assert routing.equivalent_current_endpoint_nodes(
+        records, {"mirror-a"}, set()
+    ) == {"mirror-a", "mirror-b"}
+    assert routing.equivalent_current_endpoint_nodes(
+        records, set(), {refs}
+    ) == {"mirror-a", "mirror-b"}
+
+
 def test_internal_target_is_bounded_and_never_a_client_redirect_contract():
     target = routing.masked_target_url(
         "https://mirror.example.net/edge", "alice", "repo", "tree",

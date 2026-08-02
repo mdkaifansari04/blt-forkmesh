@@ -206,6 +206,12 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
     assert "content_length > REPOSITORY_METADATA_CACHE_MAX_BYTES" in put_source
     assert "X-ForkMesh-Served-By" not in get_source
 
+    candidates = _function_source("_https_mirror_candidates")
+    projection = _function_source("_https_mirror_endpoint_projection")
+    assert "forkmesh_refs_sha256" in candidates
+    assert '"refsSha256": row.get("forkmesh_refs_sha256")' in projection
+    assert "equivalent_current_endpoint_nodes" in candidates
+
     class MustNotClone:
         def clone(self):
             raise AssertionError("a non-200 upstream must never be cached")
