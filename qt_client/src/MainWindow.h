@@ -5913,7 +5913,9 @@ private:
     // QWidget* and poked via static_cast since the compact chart widgets live
     // in MainWindowInternal.h.
     QWidget *m_cpuChart = nullptr;
-    QWidget *m_repoTrendChart = nullptr;
+    QWidget *m_repoSizeChart = nullptr;
+    QWidget *m_repoLinesChart = nullptr;
+    QWidget *m_repoFilesChart = nullptr;
     QToolButton *m_repoRatchetButton = nullptr;
     qint64 m_repoStatsLastRefreshMs = 0;
     QWidget *m_memChart = nullptr;
