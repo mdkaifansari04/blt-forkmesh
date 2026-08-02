@@ -5758,12 +5758,37 @@ void MainWindow::updateCommitsCompareIndicator()
         m_commitsStack->currentIndex() == kCommitWorkspaceRangePage &&
         !m_branchDiffBranch.isEmpty();
     if (!comparing) {
+        // A comparison temporarily labels the left button from its diff head,
+        // which can differ from the primary checkout. Restore the actual
+        // browsed ref when the range page closes.
+        if (m_commitsBranchButton) {
+            const QString browsed =
+                m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
+            const QString headLabel = browsed.isEmpty()
+                                          ? QStringLiteral("(detached)")
+                                          : browsed;
+            if (auto *elider =
+                    dynamic_cast<ElidingPushButton *>(m_commitsBranchButton))
+                elider->setFullText(headLabel);
+            else
+                m_commitsBranchButton->setText(headLabel);
+        }
         m_commitsCompareArrow->hide();
         m_commitsCompareBaseButton->hide();
         return;
     }
     const QString base = branchCompareBase();
     const QString label = base.isEmpty() ? QStringLiteral("(no base)") : base;
+    // The diff head is the authoritative left end of a branch/PR comparison.
+    // Do not derive this label from the primary checkout: a PR backed by an
+    // agent worktree must read "agent/... -> main", never "main -> main".
+    if (m_commitsBranchButton) {
+        if (auto *elider =
+                dynamic_cast<ElidingPushButton *>(m_commitsBranchButton))
+            elider->setFullText(m_branchDiffBranch);
+        else
+            m_commitsBranchButton->setText(m_branchDiffBranch);
+    }
     // The button elides long agent branch names; the full story goes on the
     // tooltip (mirrors the branch button beside it).
     if (auto *elider =
