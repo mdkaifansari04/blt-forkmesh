@@ -2075,6 +2075,8 @@ private:
     void createDiscussionDialog();
     void postDiscussionComment();
     void deleteDiscussionComment(int number, const QString &eventId);
+    void setDiscussionStatus(const QString &status);
+    void deleteCurrentDiscussion();
     void startDiscussionFromComposer();
     static QString discussionTitleFromBody(const QString &body);
     void submitDiscussionEventToInbox(int number, const DiscussionEvent &ev,
@@ -6235,6 +6237,9 @@ private:
     QComboBox *m_discussionCategoryFilter = nullptr;
     QPushButton *m_discussionNewButton = nullptr;
     QPushButton *m_discussionSyncButton = nullptr;
+    QPushButton *m_discussionCloseButton = nullptr;
+    QPushButton *m_discussionArchiveButton = nullptr;
+    QPushButton *m_discussionDeleteButton = nullptr;
     QLabel *m_discussionTitle = nullptr;
     QLabel *m_discussionMeta = nullptr;
     QLabel *m_discussionInlineNotice = nullptr;
