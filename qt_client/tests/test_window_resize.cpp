@@ -1735,8 +1735,9 @@ int main(int argc, char *argv[])
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
-    // The queue floats over the list's lower-right corner, preserving the rows
-    // behind it while keeping the common capacity adjustment one click away.
+    // The complete fleet toolbar floats over the Agents view's bottom-right corner,
+    // preserving rows while keeping bulk actions, terminal launchers, and queue
+    // controls together.
     {
         QLabel *queueStatus = window.findChild<QLabel *>(
             QStringLiteral("agentQueueStatusLabel"));
@@ -1744,21 +1745,43 @@ int main(int argc, char *argv[])
             QStringLiteral("agentQueueLimitDecreaseButton"));
         QPushButton *increase = window.findChild<QPushButton *>(
             QStringLiteral("agentQueueLimitIncreaseButton"));
+        QPushButton *startAll = window.findChild<QPushButton *>(
+            QStringLiteral("agentStartAllButton"));
+        QPushButton *stopAll = window.findChild<QPushButton *>(
+            QStringLiteral("agentStopAllButton"));
+        QPushButton *deleteMerged = window.findChild<QPushButton *>(
+            QStringLiteral("agentDeleteMergedButton"));
+        QPushButton *hideDetail = window.findChild<QPushButton *>(
+            QStringLiteral("issueIconButton"));
+        QPushButton *claudeTerminal = window.findChild<QPushButton *>(
+            QStringLiteral("agentClaudeTerminalButton"));
+        QPushButton *codexTerminal = window.findChild<QPushButton *>(
+            QStringLiteral("agentCodexTerminalButton"));
         QLineEdit *settingsLimit = window.findChild<QLineEdit *>(
             QStringLiteral("maxRunningAgentsEdit"));
         QWidget *queueOverlay = window.findChild<QWidget *>(
             QStringLiteral("agentQueueOverlay"));
-        check(queueStatus && decrease && increase && settingsLimit && queueOverlay &&
+        check(queueStatus && decrease && increase && startAll && stopAll &&
+                  deleteMerged && hideDetail && claudeTerminal && codexTerminal &&
+                  settingsLimit &&
+                  queueOverlay &&
                   queueOverlay->parentWidget() &&
-                  queueOverlay->parentWidget()->parentWidget() &&
-                  queueOverlay->parentWidget()->parentWidget()->objectName() ==
-                      QStringLiteral("issueTable") &&
+                  queueOverlay->parentWidget()->objectName() ==
+                      QStringLiteral("agentsPage") &&
+                  startAll->parentWidget() == queueOverlay &&
+                  stopAll->parentWidget() == queueOverlay &&
+                  deleteMerged->parentWidget() == queueOverlay &&
+                  hideDetail->parentWidget() == queueOverlay &&
+                  claudeTerminal->parentWidget() == queueOverlay &&
+                  codexTerminal->parentWidget() == queueOverlay &&
                   queueOverlay->isVisible() &&
                   queueOverlay->x() + queueOverlay->width() + 12 ==
                       queueOverlay->parentWidget()->width() &&
+                  queueOverlay->y() + queueOverlay->height() + 12 ==
+                      queueOverlay->parentWidget()->height() &&
                   queueStatus->text() == QStringLiteral("Queue: 0 / 5"),
-              QStringLiteral("Agents queue floats over the list viewport with its "
-                             "running count and run limit"));
+              QStringLiteral("Agents fleet controls float together at the list "
+                             "bottom with terminal launchers and queue controls"));
         if (queueStatus && decrease && increase && settingsLimit) {
             AgentSession runningOne;
             runningOne.id = 133890;
