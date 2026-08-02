@@ -16715,10 +16715,6 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "activityBucket": activity_bucket,
         **_account_public_last_email(rec),
         **_account_world_client_fields(rec),
-        "lastEmailAt": max(
-            0, int((email_activity or {}).get("sent_at") or 0)),
-        "lastEmailStatus": clean_string(
-            (email_activity or {}).get("status") or "", 40).lower(),
     }
 
 
@@ -16777,19 +16773,6 @@ async def _account_users_directory(env, request):
     # A bucket label only, joined in from its own query so this function
     # body never handles the raw touch timestamp behind it.
     activity_buckets = await _world_user_activity_buckets(env)
-    email_activity = {}
-    try:
-        send_rows = await d1_all(
-            env,
-            "SELECT account_bi,status,sent_at FROM mailtrap_email_sends "
-            "ORDER BY sent_at DESC LIMIT 5000",
-        )
-        for send in send_rows or []:
-            account_bi = str(send.get("account_bi") or "")
-            if account_bi and account_bi not in email_activity:
-                email_activity[account_bi] = send
-    except Exception:
-        email_activity = {}
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
         if (not rec or _account_kind(rec) != "user"
@@ -16802,8 +16785,7 @@ async def _account_users_directory(env, request):
         seen.add(name)
         out.append(_account_chat_user_payload(
             rec, row.get("total_active_ms", 0),
-            activity_buckets.get(row.get("user_bi"), ""),
-            email_activity.get(row.get("user_bi"))))
+            activity_buckets.get(row.get("user_bi"), "")))
 
     # The campfire seats members in this same array order, one bench per
     # account for the session — so this is sorted by join date (oldest
