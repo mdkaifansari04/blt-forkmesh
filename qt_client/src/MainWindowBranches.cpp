@@ -1671,7 +1671,7 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                            : QStringLiteral("Merged %1 into %2").arg(branch, base))
                 + QStringLiteral("."),
             false);
-        if (deletedAgents.isEmpty()) {
+        if (!deleteAgent) {
             // Issue #291: flag any agent session that produced this branch. This is
             // idempotent when the cleanup path marked it above.
             markAgentSessionsMerged(0, branch, branchInBase);
