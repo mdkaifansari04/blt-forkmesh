@@ -1,4 +1,6 @@
 / /index.html 200
+/homev2 /homev2.html 200
+/homev2/ /homev2 308
 /favicon.ico /favicon/favicon.ico 200
 /dashboard /dashboard/index.html 200
 # Per-page dashboard documents (built by tools/build_dashboard_assets.py) are

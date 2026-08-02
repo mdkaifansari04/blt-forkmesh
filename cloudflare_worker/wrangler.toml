@@ -65,6 +65,7 @@ run_worker_first = [
   "/desktop.html",
   "/about.html",
   "/features.html",
+  "/homev2.html",
   "/pricing.html",
   "/press.html",
   "/careers.html",
