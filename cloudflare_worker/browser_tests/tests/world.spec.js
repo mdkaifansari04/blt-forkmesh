@@ -3117,6 +3117,62 @@ test("reef controls stay tank-mounted and report a live country school", async (
   expect(acrossCountries).toBeGreaterThan(withinCountry + 2);
 });
 
+test("aquarium draws one low-poly instanced fish for every public user", async ({
+  page,
+}) => {
+  const users = Array.from({ length: 31 }, (_, index) => ({
+    name: `reef-member-${String(index).padStart(2, "0")}`,
+    countryCode: index % 2 ? "US" : "CA",
+    browser: index % 2 ? "Firefox" : "Safari",
+    os: index % 2 ? "Linux" : "macOS",
+    activityBucket: index % 3 ? "24h" : "10d",
+  }));
+  await prepareWorldPage(page, "office-aquarium-all-public-users", {
+    directoryUsers: users,
+  });
+  await waitForWorld(page);
+  const school = await page.locator("forkmesh-world").evaluate(
+    (shell, userCount) => {
+      const aquarium = shell.world.scene.getObjectByName(
+        "forkmesh-office-marine-aquarium",
+      );
+      const batch = (name) =>
+        aquarium.getObjectByName(name);
+      const triangles = (mesh) =>
+        Math.floor(mesh.geometry.index.count / 3) * mesh.count;
+      const bodies = batch("forkmesh-office-aquarium-user-fish-bodies");
+      const tails = batch("forkmesh-office-aquarium-user-fish-tails");
+      const fins = batch("forkmesh-office-aquarium-user-fish-fins");
+      return {
+        accountPopulation: aquarium.userData.accountPopulation,
+        visibleFish: aquarium.userData.visibleFish,
+        allAnchorsPresent: Array.from(
+          { length: userCount },
+          (_, index) =>
+            aquarium.getObjectByName(
+              `forkmesh-office-aquarium-user-fish-${index}`,
+            ) !== undefined,
+        ).every(Boolean),
+        batches: [bodies, tails, fins].map((mesh) => ({
+          instanced: mesh.isInstancedMesh,
+          count: mesh.count,
+          triangles: triangles(mesh),
+        })),
+      };
+    },
+    users.length,
+  );
+
+  expect(school.accountPopulation).toBe(users.length);
+  expect(school.visibleFish).toBe(users.length);
+  expect(school.allAnchorsPresent).toBe(true);
+  expect(school.batches).toEqual([
+    { instanced: true, count: users.length, triangles: users.length * 36 },
+    { instanced: true, count: users.length, triangles: users.length * 2 },
+    { instanced: true, count: users.length * 4, triangles: users.length * 8 },
+  ]);
+});
+
 test("aquarium blocks lobby movement and double-click travel", async ({
   page,
 }) => {
