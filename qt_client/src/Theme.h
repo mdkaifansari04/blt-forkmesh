@@ -464,10 +464,11 @@ QPushButton#agentsMagicButton:checked {
         stop:0 #6d28d9, stop:0.5 #9333ea, stop:1 #0891b2);
     border-color: #ffffff;
 }
+/* Tiny SOL balance under the account avatar (adhoc #96). No font-size here: the
+   label carries its own font-size, picked by navBalanceFont() to fit the rail
+   item in whatever UI font the box has. */
 #navSolanaBalance {
-    background: transparent; border: none; border-radius: 8px;
-    color: #8b949e; font-size: 13px; font-weight: 700; padding: 5px 10px;
-    min-width: 126px; max-width: 126px;
+    background: transparent; border: none; color: #6e7681; padding: 0;
 }
 #topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
 #topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
@@ -1753,10 +1754,10 @@ QPushButton#agentsMagicButton:checked {
         stop:0 #5b21b6, stop:0.5 #7e22ce, stop:1 #0e7490);
     border-color: #1f2328;
 }
+/* Tiny SOL balance under the account avatar (adhoc #96) — see the dark rule for
+   why the font-size lives on the label instead. */
 #navSolanaBalance {
-    background: transparent; border: none; border-radius: 8px;
-    color: #656d76; font-size: 13px; font-weight: 700; padding: 5px 10px;
-    min-width: 126px; max-width: 126px;
+    background: transparent; border: none; color: #6e7781; padding: 0;
 }
 #topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
 #topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
