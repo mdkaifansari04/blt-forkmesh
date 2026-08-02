@@ -36902,16 +36902,29 @@ async def world_admin_errors_handler(env, request):
             data = await bounded_json_request(request)
             row_id = int(data.get("id") or 0)
         except (AttributeError, TypeError, ValueError):
+            data = {}
             row_id = 0
-        if row_id <= 0:
+        group = data.get("group") if isinstance(data, dict) else None
+        if row_id <= 0 and not isinstance(group, dict):
             return json_response(
                 {"error": "invalid_error_id"},
                 status=400,
                 cache_control="no-store",
             )
         if method == "POST":
+            if isinstance(group, dict):
+                form = {
+                    "group_status": [str(group.get("status") or "")[:12]],
+                    "group_method": [str(group.get("method") or "")[:12]],
+                    "group_path": [str(group.get("path") or "")[:2000]],
+                    "group_message": [str(group.get("message") or "")[:1000]],
+                    "group_users": [clean_string(
+                        group.get("users") or "", 300)],
+                }
+            else:
+                form = {"error_id": [str(row_id)]}
             message, details = await _admin_error_create_bot_task(
-                env, {"error_id": [str(row_id)]}, actor)
+                env, form, actor)
             if details.get("taskId"):
                 return json_response(
                     {"ok": True, "message": message, **details},
@@ -36924,7 +36937,25 @@ async def world_admin_errors_handler(env, request):
                 cache_control="no-store",
             )
         await ensure_schema(env)
-        await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
+        if isinstance(group, dict):
+            status = str(group.get("status") or "")[:12]
+            request_method = str(group.get("method") or "")[:12].upper()
+            path = str(group.get("path") or "")[:2000]
+            message = str(group.get("message") or "")[:1000]
+            if not status or not request_method:
+                return json_response(
+                    {"error": "invalid_error_group"},
+                    status=400,
+                    cache_control="no-store",
+                )
+            await d1_run(
+                env,
+                "DELETE FROM error_log WHERE CAST(status AS TEXT)=? "
+                "AND UPPER(method)=? AND path=? AND message=?",
+                status, request_method, path, message,
+            )
+        else:
+            await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
         return json_response({"ok": True}, cache_control="no-store")
     try:
         query = parse_qs(urlparse(request.url).query)
@@ -36956,6 +36987,8 @@ async def world_admin_errors_handler(env, request):
             "FROM error_log WHERE ts>=? ORDER BY id DESC LIMIT 1000",
             int(Date.now()) - 24 * 60 * 60 * 1000,
         )
+        now = int(Date.now())
+        hourly = [0] * 24
         groups = {}
         for row in grouped_rows or []:
             signature = (
@@ -36966,12 +36999,20 @@ async def world_admin_errors_handler(env, request):
             )
             group = groups.setdefault(signature, {
                 "count": 0,
-                "firstSeen": int(row.get("ts") or 0),
+                "firstSeen": 0,
                 "lastSeen": 0,
+                "hours": [0] * 24,
                 "actors": {},
                 "anonymous": 0,
             })
             timestamp = max(0, int(row.get("ts") or 0))
+            if 0 < timestamp < 10 ** 11:
+                timestamp *= 1000
+            age_hours = max(0, (now - timestamp) // (60 * 60 * 1000))
+            if age_hours < 24:
+                bucket = 23 - int(age_hours)
+                hourly[bucket] += 1
+                group["hours"][bucket] += 1
             group["count"] += 1
             group["firstSeen"] = min(group["firstSeen"] or timestamp, timestamp)
             group["lastSeen"] = max(group["lastSeen"], timestamp)
@@ -36982,6 +37023,7 @@ async def world_admin_errors_handler(env, request):
                     group["actors"].get(related_actor, 0) + 1)
             else:
                 group["anonymous"] += 1
+        payload["hourly"] = hourly
         payload["groups"] = [
             {
                 "status": signature[0],
@@ -36991,6 +37033,7 @@ async def world_admin_errors_handler(env, request):
                 "count": group["count"],
                 "firstSeen": group["firstSeen"],
                 "lastSeen": group["lastSeen"],
+                "hours": group["hours"],
                 "actors": [
                     {"name": name, "count": count}
                     for name, count in sorted(
