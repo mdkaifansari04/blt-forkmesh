@@ -44418,10 +44418,10 @@ async def _https_mirror_proxy(
             safe_segment(original_match.group(2)) if original_match else "")
         if (
             route_owner
-            and route_repo == context["repo"]
-            and route_owner != context["owner"]
+            and route_repo.lower() == repo.lower()
+            and route_owner != owner
             and await _org_repo_node(
-                env, route_owner, route_repo) == context["owner"]
+                env, route_owner, route_repo) == owner
         ):
             context = dict(context)
             context["routeOwner"] = route_owner
