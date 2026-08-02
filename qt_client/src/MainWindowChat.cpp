@@ -3694,8 +3694,22 @@ void MainWindow::refreshRepositoryStats()
         if (widget) widget->setVisible(available);
     if (!available) return;
 
+    // Daily samples are immutable after the first capture for that day. Keep
+    // the rendered trends in memory so switching back to Code (or its periodic
+    // refresh) does not repeatedly read the stats document and git config.
+    struct TrendCacheEntry {
+        QString day;
+        QVector<RepoStatsSample> days;
+    };
+    static QHash<QString, TrendCacheEntry> trendCache;
+    const QString today = QDate::currentDate().toString(Qt::ISODate);
+    TrendCacheEntry &cached = trendCache[dir];
     QString error;
-    const QVector<RepoStatsSample> days = RepoStatsStore::captureDaily(dir, &error);
+    if (cached.day != today || cached.days.isEmpty()) {
+        cached.days = RepoStatsStore::captureDaily(dir, &error);
+        cached.day = today;
+    }
+    const QVector<RepoStatsSample> &days = cached.days;
     if (days.isEmpty()) {
         if (!error.isEmpty()) logSystem(QStringLiteral("Repository stats: %1").arg(error));
         return;

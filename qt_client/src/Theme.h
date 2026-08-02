@@ -278,13 +278,13 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
     background-color: #161b22; border: 1px solid #30363d; border-radius: 6px;
     color: #e6edf3;
 }
-#commitBar { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; }
+#commitBar { background: transparent; border: none; }
 #commitBar QLabel { background: transparent; }
 #commitBarText { color: #e6edf3; }
-#overviewList { background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px; }
-#overviewList::item { padding: 6px 8px; color: #c9d1d9; }
+#overviewList { background: transparent; border: none; }
+#overviewList::item { padding: 2px 4px; color: #c9d1d9; }
 /* Hover fill is painted by HoverRowDelegate so the row never shifts. */
-#overviewList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 6px 8px; }
+#overviewList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 2px 4px; }
 #overviewList QHeaderView::section {
     background-color: #0d1117; color: #8b949e; padding: 4px 8px;
     border: none; border-bottom: 1px solid #21262d;
@@ -293,9 +293,10 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 /* Per-row size bar in the Code overview. */
 #sizeBarTrack { background-color: #21262d; border-radius: 3px; }
 #sizeBarFill { background-color: #3fb950; border-radius: 3px; }
+#overviewMetricTrack { background-color: #21262d; border-radius: 2px; }
+#overviewMetricFill { background-color: #3fb950; border-radius: 2px; }
 #readmeView {
-    background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
-    padding: 8px; color: #e6edf3;
+    background: transparent; border: none; padding: 0; color: #e6edf3;
 }
 /* GitHub-style repo header + About sidebar */
 #repoHeaderTitle { font-size: 20px; font-weight: 400; }
@@ -1343,10 +1344,9 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     color: #e6edf3;
 }
 #readmeView {
-    background-color: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    padding: 12px;
+    background: transparent;
+    border: none;
+    padding: 0;
     color: #e6edf3;
 }
 /* Agent detail: log terminal + status pill + API-traffic panel */
@@ -1601,13 +1601,13 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
     color: #1f2328;
 }
-#commitBar { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; }
+#commitBar { background: transparent; border: none; }
 #commitBar QLabel { background: transparent; }
 #commitBarText { color: #1f2328; }
-#overviewList { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }
-#overviewList::item { padding: 6px 8px; color: #1f2328; }
+#overviewList { background: transparent; border: none; }
+#overviewList::item { padding: 2px 4px; color: #1f2328; }
 /* Hover fill is painted by HoverRowDelegate so the row never shifts. */
-#overviewList::item:selected { background-color: #0969da; color: #ffffff; padding: 6px 8px; }
+#overviewList::item:selected { background-color: #0969da; color: #ffffff; padding: 2px 4px; }
 #overviewList QHeaderView::section {
     background-color: #ffffff; color: #656d76; padding: 4px 8px;
     border: none; border-bottom: 1px solid #d8dee4;
@@ -1616,9 +1616,10 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 /* Per-row size bar in the Code overview. */
 #sizeBarTrack { background-color: #eaeef2; border-radius: 3px; }
 #sizeBarFill { background-color: #2da44e; border-radius: 3px; }
+#overviewMetricTrack { background-color: #eaeef2; border-radius: 2px; }
+#overviewMetricFill { background-color: #2da44e; border-radius: 2px; }
 #readmeView {
-    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
-    padding: 8px; color: #1f2328;
+    background: transparent; border: none; padding: 0; color: #1f2328;
 }
 /* GitHub-style repo header + About sidebar */
 #repoHeaderTitle { font-size: 20px; font-weight: 400; }
@@ -2658,10 +2659,9 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     color: #1f2328;
 }
 #readmeView {
-    background-color: #ffffff;
-    border: 1px solid #d0d7de;
-    border-radius: 8px;
-    padding: 12px;
+    background: transparent;
+    border: none;
+    padding: 0;
     color: #1f2328;
 }
 /* Agent detail: log terminal + status pill + API-traffic panel */
