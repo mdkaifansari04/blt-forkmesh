@@ -25,7 +25,12 @@ const REPO_PAGE_PATH = path.resolve(
 );
 
 const REPOSITORIES = [
-  { owner: "alpha", name: "engine", description: "Physics core" },
+  {
+    owner: "alpha",
+    name: "engine",
+    description: "Physics core",
+    commit: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+  },
   { owner: "beta", name: "atlas", description: "Map tiles" },
   { owner: "gamma", name: "beacon", description: "Signal relay" },
 ].map((repo, index) => ({
@@ -102,6 +107,13 @@ test("header search filters the repositories on the page as you type", async ({
   await search.fill("gamma");
   await expect(cards).toHaveCount(1);
   await expect(cards.first()).toContainText("beacon");
+
+  // A short commit-hash prefix finds the repository that advertises that
+  // commit, just like names and descriptions do.
+  await search.fill("a1b2c3d");
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first()).toContainText("engine");
+  await expect(results).toHaveCount(1);
 
   // Clearing the box restores every row and retires the footer.
   await search.fill("");
