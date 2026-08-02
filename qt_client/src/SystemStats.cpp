@@ -9,6 +9,7 @@
 #include <QStringList>
 
 #include <chrono>
+#include <climits>
 
 #if defined(Q_OS_UNIX)
 #include <sys/resource.h>
@@ -303,6 +304,92 @@ SystemStats::DescendantLoad SystemStats::descendantsNamed(qint64 rootPid,
     }
 #endif
     return load;
+}
+
+int SystemStats::openFileCount()
+{
+#if defined(Q_OS_LINUX)
+    // Every entry is a symlink, and most of them (sockets, pipes, eventfds,
+    // deleted files) dangle, so the filters have to include System/Hidden or
+    // the count comes back far too low.
+    const QDir fdDir(QStringLiteral("/proc/self/fd"));
+    if (!fdDir.exists())
+        return 0;
+    return int(fdDir
+                   .entryList(QDir::AllEntries | QDir::System | QDir::Hidden |
+                              QDir::NoDotAndDotDot)
+                   .size());
+#else
+    return 0;
+#endif
+}
+
+int SystemStats::openFileSoftLimit()
+{
+#if defined(Q_OS_UNIX)
+    rlimit limit{};
+    if (::getrlimit(RLIMIT_NOFILE, &limit) == 0 &&
+        limit.rlim_cur != RLIM_INFINITY)
+        return int(qMin<qint64>(qint64(limit.rlim_cur), INT_MAX));
+#endif
+    return 0;
+}
+
+int SystemStats::openFileHardLimit()
+{
+#if defined(Q_OS_UNIX)
+    rlimit limit{};
+    if (::getrlimit(RLIMIT_NOFILE, &limit) == 0 &&
+        limit.rlim_max != RLIM_INFINITY)
+        return int(qMin<qint64>(qint64(limit.rlim_max), INT_MAX));
+#endif
+    return 0;
+}
+
+int SystemStats::threadCount()
+{
+#if defined(Q_OS_LINUX)
+    const QDir taskDir(QStringLiteral("/proc/self/task"));
+    if (taskDir.exists()) {
+        const int threads =
+            int(taskDir.entryList(QStringList() << QStringLiteral("[0-9]*"),
+                                  QDir::Dirs)
+                    .size());
+        if (threads > 0)
+            return threads;
+    }
+#endif
+    return 1;
+}
+
+int SystemStats::raiseOpenFileLimit()
+{
+#if defined(Q_OS_UNIX)
+    // 64k is well clear of anything this app can legitimately hold open while
+    // staying modest enough for the children that inherit it (some tools still
+    // walk the whole descriptor table on startup). Nothing here uses select(),
+    // so descriptors above FD_SETSIZE are safe.
+    constexpr rlim_t kTarget = 65536;
+
+    rlimit limit{};
+    if (::getrlimit(RLIMIT_NOFILE, &limit) != 0)
+        return 0;
+    if (limit.rlim_cur == RLIM_INFINITY)
+        return 0; // already unbounded; openFileSoftLimit() reports 0 for that
+    const rlim_t ceiling = limit.rlim_max == RLIM_INFINITY
+                               ? kTarget
+                               : qMin<rlim_t>(limit.rlim_max, kTarget);
+    // macOS caps descriptors at kern.maxfilesperproc regardless of what the
+    // hard limit claims, so step down until one value is accepted rather than
+    // giving up on the first refusal.
+    for (rlim_t want = ceiling; want > limit.rlim_cur; want /= 2) {
+        rlimit raised = limit;
+        raised.rlim_cur = want;
+        if (::setrlimit(RLIMIT_NOFILE, &raised) == 0)
+            break;
+    }
+#endif
+    return openFileSoftLimit();
 }
 
 QString SystemStats::formatBytes(qint64 bytes)
