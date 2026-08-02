@@ -42,6 +42,9 @@ public:
 
     // The built-in instruction preamble used when no custom prompt is configured.
     static QString defaultPromptPreamble();
+    // Required completion behavior for coding-agent runs. The session worktree is
+    // checked out on its own branch, so committing here never changes the base.
+    static QString commitChangesInstruction();
     static QString providerDisplayName(const QString &provider);
     static QString launchIdentityInstruction(const QString &provider,
                                              const QString &model,
