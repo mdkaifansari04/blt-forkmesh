@@ -878,6 +878,14 @@ int main(int argc, char *argv[])
     // register a fresh mirror's account non-interactively (the desktop pops a
     // "Join ForkMesh" dialog for that, which a headless VM cannot click).
     window->setHeadlessMode(headless);
+    // The splash has been a free-standing always-on-top window because until
+    // this line there was no window for it to be part of. Now there is: hand it
+    // into the main window, where it becomes a child widget hovering over the
+    // app's own content. Always-on-top is only ever a request, and several
+    // compositors granted the newly-mapped main window the top spot instead —
+    // which put the splash behind the app it was narrating. A child widget is
+    // simply part of the window and cannot be stacked behind it.
+    forkmesh::ui::attachStartupSplashTo(window);
     qInfo().noquote() << QStringLiteral("[startup +%1ms] MainWindow constructed")
                              .arg(startup.elapsed(), 5);
     // A later launch attempt bounces off acquireSingleInstance() above and
