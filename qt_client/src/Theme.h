@@ -846,6 +846,13 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: transparent; border: none;
     padding: 9px 4px; font-size: 14px;
 }
+/* The source-control draft is not inside the chat composer's framed host, so it
+   owns a thin input outline of its own. Green focus matches selected Git rows. */
+#scmMessageInput {
+    background-color: transparent; border: 1px solid #30363d;
+    border-radius: 4px; selection-background-color: #1f6feb;
+}
+#scmMessageInput:focus { border-color: #2da44e; }
 #emojiPickerButton {
     border: none; background: transparent; font-size: 18px;
     padding: 3px; border-radius: 6px;
@@ -896,6 +903,10 @@ QMessageBox, QInputDialog, QDialog { background-color: #161b22; }
 QPushButton[buttonSize="sm"] {
     min-height: 24px; max-height: 28px; padding: 3px 8px;
     font-size: 12px; border-radius: 6px;
+}
+QPushButton[buttonSize="xs"] {
+    min-height: 18px; max-height: 22px; padding: 1px 7px;
+    font-size: 11px; border-radius: 5px;
 }
 QPushButton#repoTab {
     background: transparent;
@@ -2158,6 +2169,11 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: transparent; border: none;
     padding: 9px 4px; font-size: 14px;
 }
+#scmMessageInput {
+    background-color: transparent; border: 1px solid #d0d7de;
+    border-radius: 4px; selection-background-color: #0969da;
+}
+#scmMessageInput:focus { border-color: #1a7f37; }
 #emojiPickerButton {
     border: none; background: transparent; font-size: 18px;
     padding: 3px; border-radius: 6px;
@@ -2208,6 +2224,10 @@ QMessageBox, QInputDialog, QDialog { background-color: #ffffff; }
 QPushButton[buttonSize="sm"] {
     min-height: 24px; max-height: 28px; padding: 3px 8px;
     font-size: 12px; border-radius: 6px;
+}
+QPushButton[buttonSize="xs"] {
+    min-height: 18px; max-height: 22px; padding: 1px 7px;
+    font-size: 11px; border-radius: 5px;
 }
 QPushButton#repoTab {
     background: transparent;
