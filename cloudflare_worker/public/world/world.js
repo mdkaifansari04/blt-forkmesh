@@ -5617,6 +5617,7 @@ class ForkMeshWorld extends HTMLElement {
     this.qaDeckSelectedKey = "";
     this.qaLoad = null;
     this.qaSaving = false;
+    this.qaResultTimer = 0;
     this.updateCheckTimer = 0;
     this.deployStatusTimer = 0;
     this.deployObservedRevision = "";
@@ -7894,9 +7895,13 @@ class ForkMeshWorld extends HTMLElement {
         { timeout: 8000 },
       );
       this.applyQaDeck(payload, { afterKey: card.key });
-      this.toast(
-        `${card.title}: ${verdict}. Your result and the shared QA totals were updated.`,
-      );
+      if (["pass", "fail"].includes(verdict)) {
+        this.announceQaVerdict(card, verdict);
+      } else {
+        this.toast(
+          `${card.title}: ${verdict}. Your result and the shared QA totals were updated.`,
+        );
+      }
       return true;
     } catch (error) {
       this.toast(
@@ -7906,6 +7911,57 @@ class ForkMeshWorld extends HTMLElement {
     } finally {
       this.qaSaving = false;
     }
+  }
+
+  announceQaVerdict(card, verdict) {
+    if (!card || !["pass", "fail"].includes(verdict)) return;
+    const title = String(card.title || "QA card").trim().slice(0, 120);
+    const passed = verdict === "pass";
+    const result = passed ? "passed" : "failed";
+    this.toast(
+      `QA ping · ${title} ${result}.${passed ? " 🎉" : ""}`,
+      { priority: 2, lockMs: 4500 },
+    );
+
+    this.$("[data-world-qa-result-effect]")?.remove();
+    window.clearTimeout(this.qaResultTimer);
+    const layer = document.createElement("section");
+    layer.className = `world-qa-result-effect world-qa-result-effect--${result}`;
+    layer.dataset.worldQaResultEffect = "true";
+    layer.setAttribute("role", "status");
+    layer.setAttribute(
+      "aria-label",
+      passed ? "QA card passed" : "QA card failed",
+    );
+    const notice = document.createElement("div");
+    notice.className = "world-qa-result-notice";
+    const heading = document.createElement("strong");
+    heading.textContent = passed ? "QA PASSED!" : "QA FAILED";
+    const copy = document.createElement("span");
+    copy.textContent = title;
+    notice.append(heading, copy);
+    layer.append(notice);
+    if (
+      passed &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      const confetti = document.createElement("div");
+      confetti.className = "world-qa-pass-confetti";
+      confetti.setAttribute("aria-hidden", "true");
+      for (let index = 0; index < 24; index += 1) {
+        const particle = document.createElement("i");
+        particle.style.setProperty("--x", `${18 + Math.random() * 64}%`);
+        particle.style.setProperty("--delay", `${Math.random() * 0.35}s`);
+        particle.style.setProperty("--hue", `${96 + Math.floor(Math.random() * 80)}`);
+        confetti.append(particle);
+      }
+      layer.append(confetti);
+    }
+    this.append(layer);
+    this.qaResultTimer = window.setTimeout(() => {
+      layer.remove();
+      this.qaResultTimer = 0;
+    }, passed ? 3600 : 4600);
   }
 
   async recordTaskQaVerdict(task, verdict) {
@@ -25517,7 +25573,7 @@ class ForkMeshWorld extends HTMLElement {
     const kind =
       /\b(?:failed|error|unavailable|could not|denied)\b/i.test(copy)
         ? "error"
-        : /\b(?:saved|ready|complete|success|online)\b/i.test(copy)
+        : /\b(?:saved|ready|complete|success|online|passed)\b/i.test(copy)
           ? "success"
           : "status";
     this.activityNotice(copy, { kind, sender: "ForkMesh" });
@@ -28813,6 +28869,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearTimeout(this.adminErrorEffectTimer);
     window.clearTimeout(this.instanceCelebrationTimer);
     window.clearTimeout(this.installCelebrationTimer);
+    window.clearTimeout(this.qaResultTimer);
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
