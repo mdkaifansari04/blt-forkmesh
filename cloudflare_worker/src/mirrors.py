@@ -132,6 +132,205 @@ def agent_provider_mirror_candidates(
     return [node for _last_sync, node in eligible]
 
 
+def agent_provider_target_decision(
+    records,
+    target,
+    source_node,
+    provider,
+    now,
+    fresh_ms,
+    preferred_node="",
+    org_owner=False,
+    source_owned=False,
+    platform_admin=False,
+):
+    """Choose a durable owner desktop or a fresh capable mirror.
+
+    The repository's retained source catalog record is a durable, signed
+    capability statement. An organization owner may therefore queue to their
+    own linked desktop while it is offline. Claiming and execution remain
+    separately authorized by the node-owner signature and the local fail-closed
+    safety preflight. Other routes keep the short publication lease required
+    for unattended mirrors.
+    """
+
+    source = str(source_node or "").strip().lower()
+    provider = str(provider or "").strip().lower()
+    preferred = str(preferred_node or "").strip().lower()
+    provider_label = "Codex" if provider == "codex" else "Claude Code"
+
+    def rejected(code, message, action, retryable=False, target_node=""):
+        return {
+            "ok": False,
+            "error": code,
+            "message": message,
+            "requiredAction": action,
+            "retryable": bool(retryable),
+            "provider": provider,
+            "targetNode": target_node or source,
+        }
+
+    if not isinstance(target, dict):
+        return rejected(
+            "repository_not_published",
+            (
+                "The linked repository has not been published by its source "
+                "desktop. Open ForkMesh on that desktop and publish the "
+                "repository once."
+            ),
+            "publish_repository",
+        )
+
+    source_runtime = str(target.get("runtimeMode") or "").strip().lower()
+    source_providers = {
+        str(value or "").strip().lower()
+        for value in (
+            target.get("agentProviders")
+            if isinstance(target.get("agentProviders"), list)
+            else []
+        )
+    }
+    try:
+        now_ms = int(now)
+        source_seen_at = int(
+            target.get("updatedAt") or target.get("lastSync") or 0)
+        lease_ms = max(1, int(fresh_ms))
+    except (TypeError, ValueError):
+        now_ms = 0
+        source_seen_at = 0
+        lease_ms = 1
+    source_online = bool(
+        source_seen_at and now_ms - source_seen_at <= lease_ms)
+
+    def source_desktop_decision():
+        if source_runtime != "desktop":
+            return rejected(
+                "target_not_desktop",
+                (
+                    "The linked source node is not an attended desktop. Link "
+                    "this repository to the desktop that should run agent "
+                    "tasks."
+                ),
+                "link_desktop_target",
+            )
+        if not source_owned:
+            return rejected(
+                "target_not_owned",
+                (
+                    "The linked desktop is not owned by your account. Link a "
+                    "desktop you own before queueing an organization agent."
+                ),
+                "link_owned_desktop",
+            )
+        if provider not in source_providers:
+            return rejected(
+                "provider_not_advertised",
+                (
+                    f"The linked desktop has not advertised {provider_label}. "
+                    f"Open ForkMesh there, install or sign in to "
+                    f"{provider_label}, and enable website agent publishing."
+                ),
+                "publish_provider_capability",
+            )
+        if org_owner or (platform_admin and source_online):
+            return {
+                "ok": True,
+                "targetNode": source,
+                "targetOnline": source_online,
+                "queueState": (
+                    "ready_for_claim"
+                    if source_online else "waiting_for_desktop"
+                ),
+                "route": (
+                    "owner_desktop"
+                    if org_owner else "platform_admin_desktop"
+                ),
+            }
+        return rejected(
+            "org_owner_required",
+            (
+                "Only an organization owner may save work for an offline "
+                "desktop. Ask an owner to queue it, or bring an eligible "
+                "agent mirror online."
+            ),
+            "ask_organization_owner",
+        )
+
+    eligible = agent_provider_mirror_candidates(
+        records, target, source, provider, now_ms, lease_ms)
+    if preferred:
+        if org_owner and preferred != source:
+            return rejected(
+                "preferred_target_ineligible",
+                (
+                    "Organization-owner offline queues must target the linked "
+                    "desktop they own. Select that desktop or update the "
+                    "repository link."
+                ),
+                "select_linked_desktop",
+                target_node=preferred,
+            )
+        if preferred == source:
+            return source_desktop_decision()
+        if preferred in eligible:
+            return {
+                "ok": True,
+                "targetNode": preferred,
+                "targetOnline": True,
+                "queueState": "ready_for_claim",
+                "route": "online_mirror",
+            }
+        return rejected(
+            "preferred_target_ineligible",
+            (
+                "The requested target is not a fresh repository mirror that "
+                f"advertises {provider_label}. Select the linked desktop or "
+                "bring that mirror online with agent publishing enabled."
+            ),
+            "select_eligible_target",
+            retryable=True,
+            target_node=preferred,
+        )
+
+    # An organization owner's linked desktop is authoritative for this route.
+    # Return its exact configuration problem instead of silently dispatching
+    # the owner's prompt to a different machine.
+    if org_owner:
+        return source_desktop_decision()
+    if (
+        platform_admin
+        and source_runtime == "desktop"
+        and source_owned
+        and provider in source_providers
+        and source_online
+    ):
+        return {
+            "ok": True,
+            "targetNode": source,
+            "targetOnline": True,
+            "queueState": "ready_for_claim",
+            "route": "platform_admin_desktop",
+        }
+    if eligible:
+        return {
+            "ok": True,
+            "targetNode": eligible[0],
+            "targetOnline": True,
+            "queueState": "ready_for_claim",
+            "route": "online_mirror",
+        }
+    return rejected(
+        "no_online_agent_mirror",
+        (
+            f"No online repository mirror currently advertises "
+            f"{provider_label}. Bring a capable mirror online or ask an "
+            "organization owner to queue the task for their linked desktop."
+        ),
+        "bring_agent_mirror_online",
+        retryable=True,
+    )
+
+
 def mirroring_owner_set(records):
     # Owners (node names) that host at least one repo ALSO hosted by a DIFFERENT
     # owner — i.e. a repo genuinely mirrored across nodes. Repos that only one

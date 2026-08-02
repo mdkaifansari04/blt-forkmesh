@@ -8373,14 +8373,10 @@ QString MainWindow::repoHeadBranch() const
     return b == QLatin1String("HEAD") ? QString() : b; // "HEAD" => detached
 }
 
-// Refresh the commits-page branch button: its label (the branch whose history is
-// on screen) and its dropdown (every branch, plus "Create new branch…").
-// Selecting a branch *browses* its commits, like the Code-tab switcher, rather
-// than checking it out. The list is driven by currentRef(), so the indicator
-// must track that same ref or the two disagree — the button claiming HEAD while
-// the list showed another branch turned a click into a heavyweight checkout.
-// Real checkouts live in the Branches panel.
-void MainWindow::refreshCommitsBranchButton()
+// Update only the label for the branch whose history is on screen. This is used
+// while refs are loading too, so it deliberately avoids rebuilding the branch
+// menu (which requires another git branch listing).
+void MainWindow::updateCommitsBranchButtonLabel()
 {
     if (!m_commitsBranchButton)
         return;
@@ -8412,6 +8408,21 @@ void MainWindow::refreshCommitsBranchButton()
                           "history here, its diff against the base on the "
                           "right) or create one")
             .arg(label));
+}
+
+// Refresh the commits-page branch button: its label (the branch whose history is
+// on screen) and its dropdown (every branch, plus "Create new branch…").
+// Selecting a branch *browses* its commits, like the Code-tab switcher, rather
+// than checking it out. The list is driven by currentRef(), so the indicator
+// must track that same ref or the two disagree — the button claiming HEAD while
+// the list showed another branch turned a click into a heavyweight checkout.
+// Real checkouts live in the Branches panel.
+void MainWindow::refreshCommitsBranchButton()
+{
+    if (!m_commitsBranchButton)
+        return;
+    updateCommitsBranchButtonLabel();
+    const QString browsed = m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
     // The compare indicator beside it names the base end of the comparison and
     // only shows while one is open (adhoc #16).
     updateCommitsCompareIndicator();

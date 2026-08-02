@@ -8350,6 +8350,12 @@ void MainWindow::performRelaySync()
             if (idx < 0)
                 continue;
             const RepositoryRecord repo = m_repositories.at(idx);
+            // Organization-agent jobs use their own authenticated lease
+            // endpoint rather than the owner-E2EE agentPrompts slice below.
+            // Run that drain on the normal consolidated-sync path as well as
+            // the legacy fallback so startup and reconnect catch up work that
+            // was durably queued while this desktop was offline.
+            drainOrgAgentJobsFor(repo);
             const RepositoryRecord writable = writableRecordFor(repo);
             // Same gates as pollOwnedInboxes: issues only merge into a clean
             // working tree with the auto-sync option on; the apply helpers
@@ -8384,5 +8390,9 @@ void MainWindow::performRelaySync()
                 }
             }
         }
+        // A terminal local run may have completed while the desktop was
+        // offline.  Its exact job/lease binding is persisted on AgentSession;
+        // retry that result on every successful consolidated sync.
+        reportCompletedOrgAgentJobs();
     });
 }

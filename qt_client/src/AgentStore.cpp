@@ -50,6 +50,7 @@ QJsonObject AgentSession::toJson() const
     obj["orgTaskId"] = orgTaskId;
     obj["startedByBot"] = startedByBot;
     obj["finishedByBot"] = finishedByBot;
+    obj["orgAgentJob"] = orgAgentJob;
     obj["prNumber"] = prNumber;
     obj["status"] = status;
     obj["branchName"] = branchName;
@@ -98,6 +99,7 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.orgTaskId = obj.value("orgTaskId").toString();
     session.startedByBot = obj.value("startedByBot").toString();
     session.finishedByBot = obj.value("finishedByBot").toString();
+    session.orgAgentJob = obj.value("orgAgentJob").toObject();
     session.prNumber = obj.value("prNumber").toInt();
     session.status = obj.value("status").toString(AgentStatus::Queued);
     session.branchName = obj.value("branchName").toString();
@@ -410,4 +412,25 @@ QList<AgentSession> AgentStore::loadAllSessions() const
                   return a.createdAtMs > b.createdAtMs;
               });
     return sessions;
+}
+
+QList<int> AgentStore::queuedSessionIdsOldestFirst(
+    const QList<AgentSession> &sessions)
+{
+    QList<const AgentSession *> queued;
+    for (const AgentSession &session : sessions) {
+        if (session.status == AgentStatus::Queued)
+            queued.append(&session);
+    }
+    std::sort(queued.begin(), queued.end(),
+              [](const AgentSession *a, const AgentSession *b) {
+                  if (a->createdAtMs != b->createdAtMs)
+                      return a->createdAtMs < b->createdAtMs;
+                  return a->id < b->id;
+              });
+    QList<int> ids;
+    ids.reserve(queued.size());
+    for (const AgentSession *session : std::as_const(queued))
+        ids.append(session->id);
+    return ids;
 }

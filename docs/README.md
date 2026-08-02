@@ -10,6 +10,7 @@ Start with the guide that matches what you are trying to do:
 | Understand what “done” requires | [Definition of done](engineering/definition-of-done.md) |
 | Import repositories from another forge | [Repository imports](repository-imports.md) |
 | Operate a desktop control node | [Desktop control node](operations/desktop-control-node.md) |
+| Operate the organization agent offline queue | [Organization agent offline queue](operations/organization-agent-offline-queue.md) |
 
 The hosted documentation at [forkmesh.com/docs](https://forkmesh.com/docs)
 contains the complete protocol reference, release notes, and build notes for
