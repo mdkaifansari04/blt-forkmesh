@@ -48,6 +48,7 @@ inline const char *iconColorForButton(const QString &objectName, bool dark)
     if (objectName == QStringLiteral("successButton"))
         return dark ? "#3fb950" : "#1a7f37";
     if (objectName == QStringLiteral("repoTab") ||
+        objectName == QStringLiteral("inlineHelpButton") ||
         objectName == QStringLiteral("socialIconButton"))
         return dark ? "#8b949e" : "#656d76";
     if (objectName == QStringLiteral("quickAddSendIcon"))
@@ -1054,6 +1055,13 @@ QPushButton#issueIconButton {
     padding: 4px;
 }
 QPushButton#issueIconButton:hover { background-color: #21262d; }
+QPushButton#inlineHelpButton {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 4px;
+}
+QPushButton#inlineHelpButton:hover { background-color: #21262d; }
 #issuePageScroll {
     background: transparent;
     border: none;
@@ -2321,6 +2329,13 @@ QPushButton#issueIconButton {
     padding: 4px;
 }
 QPushButton#issueIconButton:hover { background-color: #eaeef2; }
+QPushButton#inlineHelpButton {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 4px;
+}
+QPushButton#inlineHelpButton:hover { background-color: #eaeef2; }
 #issuePageScroll {
     background: transparent;
     border: none;

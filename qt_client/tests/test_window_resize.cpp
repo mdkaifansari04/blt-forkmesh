@@ -17,6 +17,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
@@ -362,6 +363,8 @@ int main(int argc, char *argv[])
     app.setApplicationName(testApplicationName);
     const bool fleetBinaryInstallOnly =
         app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
+    const bool hostsLayoutOnly =
+        app.arguments().contains(QStringLiteral("--hosts-layout-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -826,6 +829,39 @@ int main(int argc, char *argv[])
                 QJsonDocument::Compact)));
     window.testShowHostsSection();
     QApplication::processEvents();
+    QWidget *hostsPageBody =
+        window.findChild<QWidget *>(QStringLiteral("hostsPageBody"));
+    QLayout *hostsPageLayout = hostsPageBody ? hostsPageBody->layout() : nullptr;
+    QLayout *hostsProvisioningRow = window.findChild<QLayout *>(
+        QStringLiteral("hostsProvisioningRow"));
+    QTableWidget *hostsPageTable =
+        hostsPageBody
+            ? hostsPageBody->findChild<QTableWidget *>(QStringLiteral("issueTable"))
+            : nullptr;
+    check(hostsPageLayout && hostsPageTable && hostsProvisioningRow &&
+              hostsPageLayout->indexOf(hostsPageTable) == 0 &&
+              hostsPageLayout->indexOf(hostsProvisioningRow) == 1,
+          QStringLiteral(
+              "Hosts puts the saved-host fleet first and provisioning cards next"));
+    const QList<QPushButton *> inlineHelpButtons =
+        window.findChildren<QPushButton *>(QStringLiteral("inlineHelpButton"));
+    QSet<QString> inlineHelpNames;
+    for (const QPushButton *button : inlineHelpButtons)
+        inlineHelpNames.insert(button->accessibleName());
+    const bool completeInlineHelp =
+        inlineHelpNames.contains(QStringLiteral("About network diagnostics")) &&
+        inlineHelpNames.contains(QStringLiteral("About saved hosts")) &&
+        inlineHelpNames.contains(QStringLiteral("About adding a host")) &&
+        inlineHelpNames.contains(QStringLiteral("About Vultr mirrors")) &&
+        std::all_of(inlineHelpButtons.cbegin(), inlineHelpButtons.cend(),
+                    [](const QPushButton *button) {
+                        return !button->toolTip().isEmpty() &&
+                               !button->accessibleName().isEmpty() &&
+                               !button->accessibleDescription().isEmpty();
+                    });
+    check(completeInlineHelp,
+          QStringLiteral(
+              "Network and Hosts guidance is available from four accessible hover helpers"));
     check(window.findChild<QPushButton *>(
               QStringLiteral("hostActionsButton")) != nullptr,
           QStringLiteral(
@@ -845,6 +881,10 @@ int main(int argc, char *argv[])
           QStringLiteral(
               "Actions secret-entry widgets exist only inside the explicit dialog"));
     QSettings().remove(QStringLiteral("hosts/list"));
+    if (hostsLayoutOnly) {
+        stopChildProcesses(window);
+        return failures == 0 ? 0 : 1;
+    }
 
     // Settings is deferred independently from the Control Node. Navigate there
     // before checking its one-way legacy-custody migration and controls.

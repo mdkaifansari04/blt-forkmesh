@@ -66,6 +66,24 @@ constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
 // the log is persisted line by line. A pending summary is flushed once its
 // first ticket is this old, or as soon as the strip goes quiet.
 constexpr qint64 kBackgroundTaskFastFlushMs = 2000;
+
+QPushButton *makeInlineHelpButton(const QString &accessibleName,
+                                  const QString &helpText,
+                                  QWidget *parent = nullptr)
+{
+    auto *button = new QPushButton(parent);
+    button->setObjectName(QStringLiteral("inlineHelpButton"));
+    button->setAccessibleName(accessibleName);
+    button->setAccessibleDescription(helpText);
+    button->setToolTip(
+        QStringLiteral("<div style='width: 420px; white-space: normal;'>%1</div>")
+            .arg(helpText.toHtmlEscaped()));
+    button->setCursor(Qt::PointingHandCursor);
+    button->setFlat(true);
+    button->setFixedSize(24, 24);
+    setOcticon(button, "info", 14);
+    return button;
+}
 } // namespace
 
 // -------------------------------------------------------------- server rail
@@ -9678,6 +9696,25 @@ QWidget *MainWindow::buildHostsSection()
 
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(6);
+
+    auto *hostsLabel = new QLabel(QStringLiteral("Hosts"));
+    QFont hlf = hostsLabel->font();
+    hlf.setBold(true);
+    hostsLabel->setFont(hlf);
+    titleRow->addWidget(hostsLabel);
+    titleRow->addWidget(makeInlineHelpButton(
+        QStringLiteral("About saved hosts"), QString::fromUtf8(
+            "Click Update on a saved host to re-run the installer and bring it up to "
+            "the latest ForkMesh release. Click Uninstall to completely remove "
+            "ForkMesh \xE2\x80\x94 binary, launcher and ALL data \xE2\x80\x94 from "
+            "that host. Click Actions to enable its executor and optionally replace "
+            "its device-local variables through a one-shot SSH stdin request; secret "
+            "values are never saved by this controller. Click Logs to open a live "
+            "SSH tail for that host, or Size map to browse what is filling that "
+            "host's disk. Click Remove to drop a host from this list without "
+            "touching it \xE2\x80\x94 no SSH session is opened. Double-click a host "
+            "instead to reload it into the form below for editing.")));
     titleRow->addStretch(1);
     // Bulk one-click install: make every saved host install the current
     // published, checksum-verified release in parallel. This deliberately does
@@ -9725,31 +9762,14 @@ QWidget *MainWindow::buildHostsSection()
     titleRow->addWidget(m_hostUpdateAllSourceButton);
     outer->addLayout(titleRow);
 
-    auto *subtitle = new QLabel(QString::fromUtf8(
-        "Provision a remote machine onto the network. Enter its address and SSH "
-        "login and give it a node name, then click Add host to save it. With the "
-        "host saved, click Install ForkMesh and it will SSH in and run the hosted "
-        "installer in a plain shell. ForkMesh remembers the first host key in "
-        "its private trust store and rejects later mismatches. Your SSH agent, "
-        "default keys and ~/.ssh/config are used when the optional password is "
-        "blank; entered passwords remain in memory only. When installation "
-        "finishes the new node joins the network and shows up in each "
-        "repository's Mirror nodes list. Install "
-        "(binary) on one saved host uploads this app's own binary. Install from "
-        "binary (all hosts) instead makes every host download and checksum-verify "
-        "the current published release, then confirms the installed version and "
-        "exact source commit. No server yet? Create a Vultr mirror below "
-        "provisions a brand-new VPS from just an API key."));
-    subtitle->setObjectName("mutedLabel");
-    subtitle->setWordWrap(true);
-    outer->addWidget(subtitle);
-
     auto *scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     auto *body = new QWidget;
+    body->setObjectName(QStringLiteral("hostsPageBody"));
     auto *bodyCol = new QVBoxLayout(body);
+    bodyCol->setObjectName(QStringLiteral("hostsPageLayout"));
     bodyCol->setContentsMargins(0, 0, 0, 0);
     bodyCol->setSpacing(10);
 
@@ -9760,6 +9780,31 @@ QWidget *MainWindow::buildHostsSection()
     auto *formCol = new QVBoxLayout(formCard);
     formCol->setContentsMargins(12, 10, 12, 10);
     formCol->setSpacing(6);
+
+    auto *formTitleRow = new QHBoxLayout;
+    formTitleRow->setContentsMargins(0, 0, 0, 0);
+    formTitleRow->setSpacing(6);
+    auto *formTitle = new QLabel(QStringLiteral("Add a host"));
+    QFont ftf = formTitle->font();
+    ftf.setBold(true);
+    formTitle->setFont(ftf);
+    formTitleRow->addWidget(formTitle);
+    formTitleRow->addWidget(makeInlineHelpButton(
+        QStringLiteral("About adding a host"), QString::fromUtf8(
+            "Provision a remote machine onto the network. Enter its address and SSH "
+            "login and give it a node name, then click Add host to save it. With the "
+            "host saved, click Install ForkMesh and it will SSH in and run the hosted "
+            "installer in a plain shell. ForkMesh remembers the first host key in "
+            "its private trust store and rejects later mismatches. Your SSH agent, "
+            "default keys and ~/.ssh/config are used when the optional password is "
+            "blank; entered passwords remain in memory only. When installation "
+            "finishes the new node joins the network and shows up in each "
+            "repository's Mirror nodes list. Install (binary) on one saved host "
+            "uploads this app's own binary. Install from binary (all hosts) instead "
+            "makes every host download and checksum-verify the current published "
+            "release, then confirms the installed version and exact source commit.")));
+    formTitleRow->addStretch(1);
+    formCol->addLayout(formTitleRow);
 
     auto *form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignRight);
@@ -9827,7 +9872,6 @@ QWidget *MainWindow::buildHostsSection()
     m_hostInstallStatus->setWordWrap(true);
     runRow->addWidget(m_hostInstallStatus, 1);
     formCol->addLayout(runRow);
-    bodyCol->addWidget(formCard);
 
     // --- Create a Vultr mirror (adhoc #315) --------------------------------
     // Fully automated alternative to the manual form above: given only a Vultr
@@ -9842,36 +9886,36 @@ QWidget *MainWindow::buildHostsSection()
     vultrCol->setContentsMargins(12, 10, 12, 10);
     vultrCol->setSpacing(6);
 
+    auto *vultrTitleRow = new QHBoxLayout;
+    vultrTitleRow->setContentsMargins(0, 0, 0, 0);
+    vultrTitleRow->setSpacing(6);
     auto *vultrTitle = new QLabel(QStringLiteral("Create a Vultr mirror"));
     QFont vtf = vultrTitle->font();
     vtf.setBold(true);
     vultrTitle->setFont(vtf);
-    vultrCol->addWidget(vultrTitle);
-
-    auto *vultrHint = new QLabel(QString::fromUtf8(
-        "One click deploys a brand-new cloud mirror on your Vultr account: "
-        "ForkMesh picks the cheapest available US IPv4 plan with at least 1 GB "
-        "RAM, preferring New Jersey/New York metro and then Atlanta (smaller "
-        "plans cannot hold the encrypted mirror's temporary "
-        "working set; Vultr's IPv6-only tiers are also unreachable for the "
-        "mesh) running the latest Debian, "
-        "creates and manages the SSH key for it automatically, boots the "
-        "instance, installs ForkMesh over SSH and links the new node to your "
-        "account so it starts mirroring and syncing right away. The API key "
-        "(Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is saved once "
-        "Vultr accepts it \xE2\x80\x94 into this device's VULTR_API_KEY "
-        "variable (Settings \xE2\x86\x92 Variables / Secrets) and into "
-        "cloudflare_worker/.env.production \xE2\x80\x94 so you never have to "
-        "enter it again; it travels only in the Authorization header of this "
-        "app's HTTPS calls to Vultr, never in a command line. When a "
-        "CLOUDFLARE_API_TOKEN device variable and a Cloudflare zone are "
-        "configured, the new node also gets a <node>.<zone> DNS record so it "
-        "joins the mesh under a stable name like your other mirrors. The "
-        "instance is billed by Vultr to your account until you destroy it "
-        "there."));
-    vultrHint->setObjectName("mutedLabel");
-    vultrHint->setWordWrap(true);
-    vultrCol->addWidget(vultrHint);
+    vultrTitleRow->addWidget(vultrTitle);
+    vultrTitleRow->addWidget(makeInlineHelpButton(
+        QStringLiteral("About Vultr mirrors"), QString::fromUtf8(
+            "One click deploys a brand-new cloud mirror on your Vultr account: "
+            "ForkMesh picks the cheapest available US IPv4 plan with at least 1 GB "
+            "RAM, preferring New Jersey/New York metro and then Atlanta (smaller "
+            "plans cannot hold the encrypted mirror's temporary working set; "
+            "Vultr's IPv6-only tiers are also unreachable for the mesh) running the "
+            "latest Debian, creates and manages the SSH key for it automatically, "
+            "boots the instance, installs ForkMesh over SSH and links the new node "
+            "to your account so it starts mirroring and syncing right away. The API "
+            "key (Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is saved once "
+            "Vultr accepts it \xE2\x80\x94 into this device's VULTR_API_KEY variable "
+            "(Settings \xE2\x86\x92 Variables / Secrets) and into "
+            "cloudflare_worker/.env.production \xE2\x80\x94 so you never have to "
+            "enter it again; it travels only in the Authorization header of this "
+            "app's HTTPS calls to Vultr, never in a command line. When a "
+            "CLOUDFLARE_API_TOKEN device variable and a Cloudflare zone are "
+            "configured, the new node also gets a <node>.<zone> DNS record so it "
+            "joins the mesh under a stable name like your other mirrors. The "
+            "instance is billed by Vultr to your account until you destroy it there.")));
+    vultrTitleRow->addStretch(1);
+    vultrCol->addLayout(vultrTitleRow);
 
     auto *vultrForm = new QFormLayout;
     vultrForm->setLabelAlignment(Qt::AlignRight);
@@ -9931,14 +9975,11 @@ QWidget *MainWindow::buildHostsSection()
     m_vultrStatus->setWordWrap(true);
     vultrRow->addWidget(m_vultrStatus, 1);
     vultrCol->addLayout(vultrRow);
-    bodyCol->addWidget(vultrCard);
-
     // --- Live session / install output ------------------------------------
     auto *logLabel = new QLabel(QStringLiteral("Live output"));
     QFont llf = logLabel->font();
     llf.setBold(true);
     logLabel->setFont(llf);
-    bodyCol->addWidget(logLabel);
 
     m_hostInstallLog = new QPlainTextEdit;
     m_hostInstallLog->setObjectName("actionLog");
@@ -9950,7 +9991,6 @@ QWidget *MainWindow::buildHostsSection()
     m_hostInstallLog->setFont(mono);
     m_hostInstallLog->setPlaceholderText(QString::fromUtf8(
         "The SSH session and installer output will stream here\xE2\x80\xA6"));
-    bodyCol->addWidget(m_hostInstallLog);
 
     // --- Parallel fleet deploy: split live output --------------------------
     // When an "all hosts" action runs, every saved host deploys at once and
@@ -9962,38 +10002,14 @@ QWidget *MainWindow::buildHostsSection()
     dlf.setBold(true);
     m_hostDeployLabel->setFont(dlf);
     m_hostDeployLabel->setVisible(false);
-    bodyCol->addWidget(m_hostDeployLabel);
 
     m_hostDeployPanel = new QWidget;
     m_hostDeployGrid = new QGridLayout(m_hostDeployPanel);
     m_hostDeployGrid->setContentsMargins(0, 0, 0, 0);
     m_hostDeployGrid->setSpacing(10);
     m_hostDeployPanel->setVisible(false);
-    bodyCol->addWidget(m_hostDeployPanel);
 
     // --- Provisioned hosts list -------------------------------------------
-    auto *hostsLabel = new QLabel(QStringLiteral("Hosts"));
-    QFont hlf = hostsLabel->font();
-    hlf.setBold(true);
-    hostsLabel->setFont(hlf);
-    bodyCol->addWidget(hostsLabel);
-
-    auto *hostsHint = new QLabel(QString::fromUtf8(
-        "Click Update on a saved host to re-run the installer and bring it up to "
-        "the latest ForkMesh release. Click Uninstall to completely remove "
-        "ForkMesh \xE2\x80\x94 binary, launcher and ALL data \xE2\x80\x94 from "
-        "that host. Click Actions to enable its executor and optionally replace "
-        "its device-local variables through a one-shot SSH stdin request; secret "
-        "values are never saved by this controller. Click Logs to open a live "
-        "SSH tail for that host, or Size map to browse what is filling that "
-        "host's disk. Click Remove to drop a host from this list "
-        "without touching it \xE2\x80\x94 no SSH session is opened. "
-        "Double-click a host instead to reload it into the form "
-        "above for editing."));
-    hostsHint->setObjectName("mutedLabel");
-    hostsHint->setWordWrap(true);
-    bodyCol->addWidget(hostsHint);
-
     m_hostsTable = new QTableWidget(0, 7);
     installColumnHeaderMenu(m_hostsTable); // 3-dots per-column menu (issue #318)
     m_hostsTable->setObjectName("issueTable");
@@ -10018,7 +10034,22 @@ QWidget *MainWindow::buildHostsSection()
     // was entered or migrated during this process; otherwise key auth is used.
     connect(m_hostsTable, &QTableWidget::cellDoubleClicked, this,
             &MainWindow::loadHostIntoForm);
+
+    // Keep the fleet at the top of the page where it is visible immediately.
+    // The two provisioning paths share the next row, followed by output that
+    // spans the full width so neither form stretches into a long, sparse strip.
     bodyCol->addWidget(m_hostsTable);
+    auto *provisioningRow = new QHBoxLayout;
+    provisioningRow->setObjectName(QStringLiteral("hostsProvisioningRow"));
+    provisioningRow->setContentsMargins(0, 0, 0, 0);
+    provisioningRow->setSpacing(10);
+    provisioningRow->addWidget(vultrCard, 1);
+    provisioningRow->addWidget(formCard, 1);
+    bodyCol->addLayout(provisioningRow);
+    bodyCol->addWidget(logLabel);
+    bodyCol->addWidget(m_hostInstallLog);
+    bodyCol->addWidget(m_hostDeployLabel);
+    bodyCol->addWidget(m_hostDeployPanel);
     if (!m_hostProbeTimer) {
         m_hostProbeTimer = new QTimer(this);
         m_hostProbeTimer->setInterval(30000);
@@ -12738,6 +12769,12 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
     title->setFont(titleFont);
     header->addWidget(title);
 
+    header->addWidget(makeInlineHelpButton(
+        QStringLiteral("About network diagnostics"), QStringLiteral(
+            "The relays, nodes and hosts this client talks to, plus live endpoint "
+            "usage, websocket Durable Object details and the outbound request "
+            "firewall in one place.")));
+
     m_networkDiagnosticsStatus = new QLabel;
     m_networkDiagnosticsStatus->setObjectName("mutedLabel");
     header->addWidget(m_networkDiagnosticsStatus, 1);
@@ -12753,14 +12790,6 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
             });
     header->addWidget(m_networkDiagnosticsRefreshButton);
     outer->addLayout(header);
-
-    auto *summary = new QLabel(QStringLiteral(
-        "The relays, nodes and hosts this client talks to, plus live endpoint "
-        "usage, websocket Durable Object details and the outbound request "
-        "firewall in one place."));
-    summary->setObjectName("mutedLabel");
-    summary->setWordWrap(true);
-    outer->addWidget(summary);
 
     auto *tabs = new QTabWidget;
     // Its own object name, styled alongside #settingsTabs: sharing that name
