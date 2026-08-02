@@ -548,6 +548,25 @@ def build_repo_mirrors_payload(
             return None, None
         return min(used, total), total
 
+    def _changed_files(rec):
+        files = []
+        values = rec.get("changedFiles")
+        if not isinstance(values, list):
+            return files
+        for item in values[:16]:
+            path = str(item or "").strip().replace("\\", "/")
+            if (
+                    not path or len(path) > 160 or path.startswith("/")
+                    or path == ".." or path.startswith("../")
+                    or path in files
+                    or any(ord(char) < 0x20 or ord(char) == 0x7f
+                           for char in path)):
+                continue
+            files.append(path)
+            if len(files) >= 8:
+                break
+        return files
+
     mirrors = []
     for row in members:
         rec = row["data"]
@@ -727,6 +746,10 @@ def build_repo_mirrors_payload(
             "lastCommitAuthorName": (
                 str(rec.get("commitAuthorName") or "").strip() or None),
             "lastCommitAt": _mirror_ms(rec.get("commitAt")),
+            # The paths come from the same signed head record as the commit
+            # subject. Expose them here so World activity can describe the
+            # verified commit rather than echoing a socket doorbell.
+            "changedFiles": _changed_files(rec),
             "issueCount": issue_count,
             "commitCount": _int_field(rec, "commitCount"),
             "branchCount": _int_field(rec, "branchCount"),
