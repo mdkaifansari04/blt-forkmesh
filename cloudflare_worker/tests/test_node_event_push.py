@@ -27,6 +27,7 @@ ENTRY_TEXT = (ENTRY.read_text(encoding="utf-8") + "\n"
 
 NAMES = {
     "notify_repo_host",
+    "notify_repo_mirrors",
     "node_events_handler",
     "_node_events_do_name",
     "ForkMeshNodes",
@@ -245,6 +246,43 @@ def test_notify_failure_never_escapes_and_bad_segments_are_dropped():
     asyncio.run(ns["notify_repo_host"](env, "", "widgets", "issues"))
     asyncio.run(ns["notify_repo_host"](env, "alice", "../etc", "issues"))
     assert ids == []
+
+
+def test_mirror_notifications_reach_machine_and_linked_owner_channels():
+    notified = []
+
+    async def context(_env, owner, repo):
+        assert (owner, repo) == ("source", "widgets")
+        return {"nodes": {"mirror2", "mirror3"}}
+
+    async def d1_all(_env, sql, *args):
+        assert "LEFT JOIN users" in sql
+        assert set(args) == {"mirror2", "mirror3"}
+        return [
+            {"node_name": "mirror2", "owner": "jett"},
+            {"node_name": "mirror3", "owner": ""},
+        ]
+
+    async def notify(_env, owner, repo, topic):
+        notified.append((owner, repo, topic))
+
+    ns = _load({
+        **_base_globals(),
+        "_https_mirror_public_context": context,
+        "d1_all": d1_all,
+        "notify_repo_host": notify,
+        "valid_node_name": lambda value: bool(
+            re.fullmatch(r"[a-z][a-z0-9-]{0,62}", str(value or ""))),
+    })
+    # Replace the loaded notifier so notify_repo_mirrors observes the spy.
+    ns["notify_repo_mirrors"].__globals__["notify_repo_host"] = notify
+    asyncio.run(ns["notify_repo_mirrors"](
+        object(), "source", "widgets", "issues"))
+    assert notified == [
+        ("jett", "widgets", "issues"),
+        ("mirror2", "widgets", "issues"),
+        ("mirror3", "widgets", "issues"),
+    ]
 
 
 def test_write_paths_stay_wired_to_the_event_push():
