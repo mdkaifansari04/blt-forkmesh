@@ -117,6 +117,42 @@ QHash<QString, QString> refTips(const QString &repo, const QString &prefix,
 
 } // namespace
 
+bool configureForkCheckoutRemote(const QString &checkoutPath,
+                                 const QString &sourceUrl,
+                                 const QString &forkMirrorPath,
+                                 QString *error)
+{
+    if (error)
+        error->clear();
+    const QString path = checkoutPath.trimmed();
+    const QString source = sourceUrl.trimmed();
+    const QString mirror = forkMirrorPath.trimmed();
+    if (path.isEmpty() || source.isEmpty() || mirror.isEmpty() ||
+        !QFileInfo(QDir(path).filePath(QStringLiteral(".git"))).exists()) {
+        if (error)
+            *error = QStringLiteral(
+                "the fork checkout or one of its remotes is missing");
+        return false;
+    }
+    if (!runGit(path,
+                {QStringLiteral("remote"), QStringLiteral("set-url"),
+                 QStringLiteral("origin"), source},
+                nullptr)) {
+        if (error)
+            *error = QStringLiteral("could not set origin's fetch URL");
+        return false;
+    }
+    if (!runGit(path,
+                {QStringLiteral("remote"), QStringLiteral("set-url"),
+                 QStringLiteral("--push"), QStringLiteral("origin"), mirror},
+                nullptr)) {
+        if (error)
+            *error = QStringLiteral("could not set origin's push URL");
+        return false;
+    }
+    return true;
+}
+
 QString RefreshOutcome::summary() const
 {
     if (!error.isEmpty())
