@@ -33,9 +33,9 @@ struct AgentScannerState {
 };
 
 // Per-session "what did this agent change" summary shown in the agents list
-// (issue #170): files its patch touched, and how far its branch sits ahead of /
-// behind the base branch. -1 means "unknown / not applicable" — e.g. a running
-// session with no patch yet, or a branch that has since been removed.
+// (issue #170): files its live branch review touches (falling back to its stored
+// patch after cleanup), and how far the branch sits ahead of / behind its base.
+// -1 means "unknown / not applicable" — e.g. a running session with no patch yet.
 struct AgentDiffStat {
     int files = -1;
     int ahead = -1;
@@ -741,6 +741,7 @@ public:
     // prove browsing a branch shows what it is being compared against, and that
     // the base is switchable (adhoc #16).
     QString testCompareIndicatorText() const;
+    QString testComparedBranchText() const;
     // Point the compare indicator's base dropdown at another branch, so a test
     // can prove the range re-diffs against it (adhoc #16).
     void testSetCompareBase(const QString &base);
@@ -759,6 +760,12 @@ public:
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
     bool testClickBranchReviewMerge(bool deleteAll);
+    void testSuppressAutoPullForBranch(const QString &branch)
+    {
+        m_branchAutoPullAttempted = branch;
+    }
+    bool testBranchPullEnabled() const;
+    bool testClickBranchPull();
     // issue #291: when an agent task's worktree/PR lands in the base branch the
     // session is flagged "merged" on its Status column and detail page. Drive the
     // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
@@ -776,6 +783,16 @@ public:
     // as "files|dirty|worktree|behind|ahead", so a test can prove the chip's
     // file and visible branch-health markers are fed from the session's diff stat.
     QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
+    void testSetCachedAgentDiffFiles(int sessionId, int files)
+    {
+        AgentDiffStat stat = m_agentDiffStats.value(sessionId);
+        stat.files = files;
+        m_agentDiffStats.insert(sessionId, stat);
+    }
+    int testCachedAgentDiffFiles(int sessionId) const
+    {
+        return m_agentDiffStats.value(sessionId).files;
+    }
     bool testAgentSessionMerged(int sessionId) const;
 #endif
 
@@ -1236,6 +1253,9 @@ private:
     // the path to the user check for that.
     static QString stallLogPath();
     void updateFooterDiagnostics();
+    // Log a warning while descriptor use is still recoverable: exhausting the
+    // cap aborts the process from inside glib rather than failing an operation.
+    void checkFileDescriptorPressure();
     void refreshRepositoryStats();
     void toggleRepositoryRatchet(bool enabled);
     void onUiStall(qint64 peakMs, const QString &blockingCall, const QString &backtrace);
@@ -2241,6 +2261,9 @@ private:
     void updateAgentCostCell(int sessionId);   // in-place Cost-column update
     void updateAgentRunSummaryCells(int sessionId); // in-place Turns/Time update
     void updateAgentStatusCell(int sessionId); // in-place Status-column update
+    void applyAgentDiffStatResult(int generation, int repoIndex, int sessionId,
+                                  const AgentDiffStat &stat,
+                                  const QString &signature);
     void refreshAgentStatusPill(int sessionId); // in-place detail-header pill update
     void animateRunningAgentIcons();           // spins running rows' Status glyph
     // Pulse a session's night-rider light so the agents-list activity column
@@ -3029,7 +3052,7 @@ private:
     // opens its range diff against that base at the same time — one combined
     // view, "<branch> -> <base>", rather than a separate review page (adhoc
     // #16).
-    void switchToBranch(const QString &branch);
+    void switchToBranch(const QString &branch, int agentSessionId = -1);
     // Base branch of the Git view's comparison. Empty means "the repo's default
     // branch", which is where every comparison starts; the compare indicator's
     // base dropdown sets it, and leaving the compare view clears it (adhoc #16).
@@ -3112,7 +3135,7 @@ private:
     // a `git branch -D` (and its noisy "branch not found" error) when the branch was
     // already gone — the desired end state either way.
     bool localBranchExists(const QString &repoPath, const QString &branch) const;
-    void showBranchDiff(const QString &branch);
+    void showBranchDiff(const QString &branch, int agentSessionId = -1);
     // Paint the branch detail bar from already-gathered counts, and let auto-pull
     // decide once the bar reflects them (the counts arrive off-thread now).
     void applyBranchDetailActions(const QString &branch, const QString &base,
@@ -5433,6 +5456,10 @@ private:
     QHash<qint64, QVector<double>> m_highMemoryRssHistory;
     qulonglong m_diagLastCpuTicks = 0;
     qint64 m_diagLastCpuMs = 0;
+    // File-descriptor pressure sampling: every 15 s off the 1 s diagnostics
+    // tick, warning once per upward crossing (see checkFileDescriptorPressure).
+    qint64 m_fdPressureLastCheckMs = 0;
+    bool m_fdPressureAlertArmed = true;
 
     // Repo detail view
     int m_repoDetailIndex = -1;
@@ -5542,6 +5569,10 @@ private:
     // has since switched branch (issue #353 — showBranchDiff/
     // renderBranchScopeDiff shelled git on the GUI thread).
     int m_branchScopeDiffGen = 0;
+    // Agent session that opened the current live branch review. The completed
+    // diff uses this identity to reconcile its exact file count back into the
+    // Agents-list badge when the branch moved between refresh and click.
+    int m_branchDiffAgentSessionId = -1;
     // Branch merge-conflict probes. `git merge-tree` costs ~0.5-1s per branch on a
     // busy repo, so running one per row inline froze the branches panel for
     // seconds on every rebuild — and one lands after every delete/merge/pull

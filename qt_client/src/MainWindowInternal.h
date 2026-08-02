@@ -3021,10 +3021,9 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
 // Hourly local snapshots of the live database (Settings -> Data -> Automatic
-// backups). OFF by default everywhere except control nodes — the installs that
-// hold a Cloudflare API token (see forkmesh::autoBackupDefault) — because a
-// rolling day of ~1GB tarballs filled several small VPS disks. An explicit
-// true turns backups on for any node.
+// backups). OFF by default everywhere because a rolling day of multi-gigabyte
+// tarballs filled control machines and small VPS disks. An explicit true turns
+// backups on for any node.
 const QString kAutoBackupEnabledSetting = QStringLiteral("backup/hourlyEnabled");
 // How many hourly snapshots are kept before the oldest is pruned.
 const QString kAutoBackupKeepSetting = QStringLiteral("backup/keepCount");
@@ -7088,7 +7087,16 @@ inline QPixmap tintedOcticonPixmap(const QString &name, const QColor &color, int
 
     QPixmap pixmap = crispIconPixmap(size, dpr);
 
-    QSvgRenderer renderer(QStringLiteral(":/icons/octicons/%1.svg").arg(name));
+    // A few glyphs have no octicon (the git worktree symbol, for one); those come
+    // from VS Code's codicons under /icons/codicons. Both sets are 16x16 line art
+    // of the same weight, so they mix cleanly. The existence check comes first
+    // because handing QSvgRenderer a missing resource logs a qt.svg warning; only
+    // a cache miss pays for it at all.
+    QString path = QStringLiteral(":/icons/octicons/%1.svg").arg(name);
+    if (!QFile::exists(path))
+        path = QStringLiteral(":/icons/codicons/%1.svg").arg(name);
+
+    QSvgRenderer renderer(path);
     if (!renderer.isValid())
         return pixmap;
 

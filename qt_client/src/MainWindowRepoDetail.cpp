@@ -584,7 +584,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_worktreesButton->setCursor(Qt::PointingHandCursor);
     m_worktreesButton->setToolTip(
         "Open the Worktrees panel to view agent checkouts and their changes");
-    setOcticon(m_worktreesButton, "file-directory", 16);
+    setOcticon(m_worktreesButton, "worktree", 16);
     connect(m_worktreesButton, &QPushButton::clicked, this, [this] {
         // Worktrees, like Branches, has no top-level tab anymore (adhoc #170):
         // its panel lives inside the Code overview beside Branches, toggled by
@@ -3311,6 +3311,10 @@ void MainWindow::showOverviewBranches()
         m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(2);
+    // The panel owns the page's upper chrome (the latest-commit bar comes off
+    // while the branch list is up). Apply it explicitly: a route that arrives
+    // with the body stack already on 2 emits no currentChanged.
+    updateRepoActivityRail();
 }
 
 // Show the worktrees panel in the Code overview, beside the branches panel —
@@ -8526,7 +8530,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Quality", "check-circle"},
                                 {"Insights", "graph"},
                                 {"Branches", "repo-forked"},
-                                {"Worktrees", "file-directory"},
+                                {"Worktrees", "worktree"},
                                 {"Releases", "tag"},
                                 {"Mirror nodes", "server"},
                                 {"Artifacts", "package"},
@@ -8946,6 +8950,12 @@ void MainWindow::updateRepoActivityRail()
     const bool onChanges =
         onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+    // The Branches panel is a full-height list of its own: the latest-commit bar
+    // above it belongs to the files/README overview and says nothing about the
+    // branch being looked for, so it only pushed the list down the page.
+    const bool onBranches =
+        onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
+        m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 2;
     const bool onAgents =
         onHome && m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
     // Git is its own activity-rail destination. Hide every Code/repository
@@ -8960,7 +8970,7 @@ void MainWindow::updateRepoActivityRail()
     if (m_repoFilesModeBar)
         m_repoFilesModeBar->setVisible(!onChanges);
     if (m_repoOverviewChrome)
-        m_repoOverviewChrome->setVisible(!onChanges);
+        m_repoOverviewChrome->setVisible(!onChanges && !onBranches);
     if (m_footerDock)
         m_footerDock->setVisible(!onChanges);
     m_railCodeButton->setChecked(onCode && !onChanges);

@@ -65,6 +65,10 @@
 #include <mutex>
 #include <thread>
 
+#if defined(Q_OS_UNIX)
+#include <sys/resource.h> // descriptor-cap tests
+#endif
+
 namespace {
 
 int failures = 0;
@@ -2197,6 +2201,43 @@ int main(int argc, char *argv[])
                       publicationSource.contains(QStringLiteral(
                           "m_catalogPublishConsecutiveFailures.remove(publishKey)")),
                   "consecutive publish failures are counted, escalated, and cleared on success");
+
+            // The sticky "Viewed" fade installs a QGraphicsOpacityEffect on the
+            // button, and setGraphicsEffect() deletes whichever effect is
+            // already installed. Dropping it with setGraphicsEffect(nullptr)
+            // and then calling deleteLater() on the same pointer freed it twice
+            // and crashed inside QObject::deleteLater (adhoc #52), so the
+            // handler must delete once and hold the effect by QPointer.
+            QFile scmFile(QFileInfo(QString::fromUtf8(__FILE__))
+                              .absoluteDir()
+                              .filePath(QStringLiteral(
+                                  "../src/MainWindowSourceControl.cpp")));
+            const bool scmOpened = scmFile.open(QIODevice::ReadOnly);
+            const QString scmSource =
+                scmOpened ? QString::fromUtf8(scmFile.readAll()) : QString();
+            const int fadeStart = scmSource.indexOf(QStringLiteral(
+                "new QGraphicsOpacityEffect(m_scmStickyViewed)"));
+            const int fadeEnd =
+                scmSource.indexOf(QStringLiteral("animation->start("), fadeStart);
+            QString fadeHandler;
+            if (fadeStart >= 0 && fadeEnd > fadeStart) {
+                // Comment lines describe the old double-delete, so match the
+                // code alone.
+                const QStringList fadeLines =
+                    scmSource.mid(fadeStart, fadeEnd - fadeStart)
+                        .split(QLatin1Char('\n'));
+                for (const QString &line : fadeLines) {
+                    if (!line.trimmed().startsWith(QLatin1String("//")))
+                        fadeHandler += line + QLatin1Char('\n');
+                }
+            }
+            check(scmOpened && !fadeHandler.isEmpty() &&
+                      !fadeHandler.contains(QStringLiteral("deleteLater()")) &&
+                      fadeHandler.contains(QStringLiteral(
+                          "QPointer<QGraphicsEffect>(effect)")) &&
+                      fadeHandler.contains(QStringLiteral(
+                          "button->graphicsEffect() == faded")),
+                  "sticky Viewed fade deletes its opacity effect once, guarded by QPointer");
 
             RepoContributionPublicationCache scanCapacityCache(8, 2);
             check(scanCapacityCache.begin(contributionCacheKey, false) ==
@@ -6657,15 +6698,12 @@ int main(int argc, char *argv[])
               "nothing is pruned under the limit, and keep=0 still spares the "
               "newest snapshot");
 
-        // The hourly toggle's unset-default follows the Cloudflare API token:
-        // only a control node backs itself up without being asked, because
-        // every other install (desktop or VPS) would rather not spend a day of
-        // ~1GB tarballs it never opted into.
-        check(forkmesh::autoBackupDefault(QStringLiteral("cf-token")) &&
+        // Credentials never opt a machine into recurring multi-gigabyte disk
+        // writes. Every node starts off until its operator explicitly opts in.
+        check(!forkmesh::autoBackupDefault(QStringLiteral("cf-token")) &&
                   !forkmesh::autoBackupDefault(QString()) &&
                   !forkmesh::autoBackupDefault(QStringLiteral("   ")),
-              "hourly backups default on only for control nodes, and a blank "
-              "token is not one");
+              "hourly backups require an explicit opt-in on every node");
 
         const QDateTime now =
             QDateTime::fromString(QStringLiteral("2026-07-28T10:00:00"),
@@ -7290,6 +7328,52 @@ int main(int argc, char *argv[])
                       .severity == Warning,
               "once the interval passes the extra link drops are evaluated");
     }
+#if defined(Q_OS_LINUX)
+    {
+        // Descriptor accounting and the startup limit raise. The app dies with
+        // a SIGTRAP inside glib (g_wakeup_new -> g_error) when a thread start
+        // finds no descriptors left, so the 1024 soft cap most distributions
+        // ship has to be lifted before Qt starts any thread.
+        const int hard = SystemStats::openFileHardLimit();
+        check(hard > 0 && SystemStats::openFileSoftLimit() > 0,
+              "the descriptor caps are readable");
+        check(SystemStats::threadCount() >= 1, "this process has threads");
+
+        const int before = SystemStats::openFileCount();
+        check(before > 0 && before <= SystemStats::openFileSoftLimit(),
+              "open descriptors are counted and fit under the soft cap");
+        {
+            QFile held(QStringLiteral("/proc/self/status"));
+            check(held.open(QIODevice::ReadOnly), "opened a probe descriptor");
+            check(SystemStats::openFileCount() > before,
+                  "an extra open descriptor shows up in the count");
+        }
+
+        // Drop the soft cap the way a stock login session does, then confirm
+        // the raise takes it back up to the hard cap (bounded by the 64k
+        // target) without ever exceeding what the kernel allows.
+        rlimit narrowed{};
+        check(::getrlimit(RLIMIT_NOFILE, &narrowed) == 0, "read RLIMIT_NOFILE");
+        const rlim_t restore = narrowed.rlim_cur;
+        narrowed.rlim_cur = 256;
+        if (::setrlimit(RLIMIT_NOFILE, &narrowed) == 0) {
+            check(SystemStats::openFileSoftLimit() == 256,
+                  "the lowered soft cap is reported");
+            const int raised = SystemStats::raiseOpenFileLimit();
+            check(raised == qMin(hard, 65536),
+                  "raiseOpenFileLimit lifts the soft cap to the hard cap, "
+                  "capped at 64k");
+            check(raised <= hard && raised == SystemStats::openFileSoftLimit(),
+                  "the raise never exceeds the hard cap and is the live value");
+            // Idempotent: calling it again on an already-raised process is a
+            // no-op rather than a downgrade.
+            check(SystemStats::raiseOpenFileLimit() == raised,
+                  "a second raise leaves the soft cap alone");
+            narrowed.rlim_cur = restore;
+            ::setrlimit(RLIMIT_NOFILE, &narrowed);
+        }
+    }
+#endif
 
     if (failures) {
         qCritical("TESTS FAILED");

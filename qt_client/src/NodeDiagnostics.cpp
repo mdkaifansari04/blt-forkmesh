@@ -9,10 +9,8 @@
 #include <QJsonObject>
 #include <QLocale>
 #include <algorithm>
-#include <climits>
 
 #if defined(Q_OS_UNIX)
-#include <sys/resource.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
 #endif
@@ -374,22 +372,14 @@ void sampleInodes(const QString &path, qint64 *total, qint64 *free)
 }
 
 // Open descriptors for this process and the soft RLIMIT_NOFILE (-1 unknown).
+// The counting lives in SystemStats (it is the same sample main() uses to raise
+// the cap at startup, adhoc #40); here it only has to become a finding.
 void sampleFileDescriptors(int *open, int *limit)
 {
-    *open = -1;
-    *limit = -1;
-#if defined(Q_OS_LINUX)
-    QDir fds(QStringLiteral("/proc/self/fd"));
-    if (fds.exists())
-        *open = int(fds.entryList(QDir::Files | QDir::Dirs | QDir::System |
-                                  QDir::NoDotAndDotDot)
-                        .size());
-#endif
-#if defined(Q_OS_UNIX)
-    struct rlimit rl;
-    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY)
-        *limit = int(qMin<qulonglong>(rl.rlim_cur, INT_MAX));
-#endif
+    const int count = SystemStats::openFileCount();
+    const int soft = SystemStats::openFileSoftLimit();
+    *open = count > 0 ? count : -1;
+    *limit = soft > 0 ? soft : -1;
 }
 
 // Defunct children of this process (-1 where /proc isn't available).

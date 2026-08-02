@@ -3264,6 +3264,14 @@ void MainWindow::startDiagnostics()
 // resident memory, read from /proc, plus any UI-stall count.
 void MainWindow::updateFooterDiagnostics()
 {
+    // Descriptor pressure is a process-health check rather than a footer
+    // readout, so it samples ahead of the widget guard: a headless node has no
+    // footer, runs for weeks, and is the likeliest place for a leak to build.
+    const qint64 fdNow = QDateTime::currentMSecsSinceEpoch();
+    if (fdNow - m_fdPressureLastCheckMs >= 15000) {
+        m_fdPressureLastCheckMs = fdNow;
+        checkFileDescriptorPressure();
+    }
     if (!m_footerDiagnostics)
         return;
     const qint64 statsNow = QDateTime::currentMSecsSinceEpoch();
@@ -3378,6 +3386,38 @@ void MainWindow::updateFooterDiagnostics()
     }
 }
 
+// Watch how close this process is to its file-descriptor cap. Running out is a
+// silent execution stop rather than an error the app can report: glib aborts
+// with SIGTRAP from g_wakeup_new() the moment a new event dispatcher cannot get
+// its pipes, which is what the v0.7.9 "crash inside
+// g_main_context_new_with_flags" report was. main() raises the soft cap at
+// startup, so reaching even 70% of it means something is leaking descriptors —
+// log that (with the thread count, since each thread pins a wakeup pipe) while
+// there is still headroom to find the leak instead of after the abort.
+void MainWindow::checkFileDescriptorPressure()
+{
+    const int limit = SystemStats::openFileSoftLimit();
+    const int open = SystemStats::openFileCount();
+    if (limit <= 0 || open <= 0)
+        return; // platform doesn't expose them; nothing to police
+    const double used = 100.0 * double(open) / double(limit);
+    // Log once per upward crossing, rearming only after usage falls well back,
+    // so a node parked near the line doesn't write a line every 15 seconds.
+    if (used >= 70.0 && m_fdPressureAlertArmed) {
+        m_fdPressureAlertArmed = false;
+        logSystem(QStringLiteral(
+                      "Warning: %1 of %2 file descriptors in use (%3%), %4 "
+                      "threads. Descriptor exhaustion aborts the app, so this "
+                      "is worth reporting with what was running.")
+                      .arg(open)
+                      .arg(limit)
+                      .arg(used, 0, 'f', 0)
+                      .arg(SystemStats::threadCount()));
+    } else if (used < 55.0) {
+        m_fdPressureAlertArmed = true;
+    }
+}
+
 void MainWindow::refreshRepositoryStats()
 {
     // The trend charts and Ratchet toggle live on the Code overview's mode row
@@ -3440,7 +3480,9 @@ void MainWindow::toggleRepositoryRatchet(bool enabled)
     }
     flashMessage(enabled ? QStringLiteral("Ratchet Mode enabled: commits must shrink or stay flat.")
                          : QStringLiteral("Ratchet Mode disabled."));
-    refreshRepositoryStats();
+    // The button already reflects the new state. Do not run the daily stats
+    // capture here: that writes the tracked trend document and would make a
+    // local-only mode toggle appear to require a repository commit.
 }
 
 // A UI stall ended: record it, surface it in the system log, and reflect the
@@ -5654,8 +5696,24 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     chromeScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     chromeScroll->setMinimumWidth(0);
-    chromeScroll->setFixedHeight(54);
     chromeScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // The scroll area is exactly as tall as the chrome bar it wraps, and only
+    // grows by the scrollbar's own height on the frames where a narrow window
+    // really does have something to scroll to (adhoc #38). It used to be pinned
+    // at a flat 54 — 42 for the bar plus a permanent 12px reservation for a
+    // scrollbar that is usually absent — which left a dead strip spanning the
+    // whole window under the chrome line, holding the navigation rail (and its
+    // left-hand edge) that far down the window for no reason.
+    const int chromeHeight = chrome->height();
+    QScrollBar *chromeHBar = chromeScroll->horizontalScrollBar();
+    auto syncChromeScrollHeight = [chromeScroll, chromeHBar, chromeHeight] {
+        const bool scrollable = chromeHBar->maximum() > chromeHBar->minimum();
+        chromeScroll->setFixedHeight(
+            chromeHeight + (scrollable ? chromeHBar->sizeHint().height() : 0));
+    };
+    connect(chromeHBar, &QScrollBar::rangeChanged, chromeScroll,
+            [syncChromeScrollHeight](int, int) { syncChromeScrollHeight(); });
+    syncChromeScrollHeight();
     layout->addWidget(chromeScroll);
 
     // The node switcher was retired from the global header. Keep its object
@@ -12200,7 +12258,9 @@ void MainWindow::deleteMeshNodeCompletely(const QString &node,
         return;
 
     setNodeDeleteStatus(
-        QString::fromUtf8("Deleting \"%1\"\xE2\x80\xA6").arg(target));
+        QString::fromUtf8("1/3 \xE2\x80\x94 Destroying the server for "
+                          "\"%1\"\xE2\x80\xA6")
+            .arg(target));
     // Provider teardown first (it is the step that costs money to skip), then
     // DNS, then the mesh. Both provider steps report what they did and hand
     // control on regardless: a node this app never provisioned still has to
@@ -12208,9 +12268,17 @@ void MainWindow::deleteMeshNodeCompletely(const QString &node,
     destroyVultrServerForNode(target, [this, target, nodeId](QString outcome) {
         if (!outcome.isEmpty())
             setNodeDeleteStatus(outcome);
+        setNodeDeleteStatus(
+            QString::fromUtf8("2/3 \xE2\x80\x94 Removing DNS for "
+                              "\"%1\"\xE2\x80\xA6")
+                .arg(target));
         removeVultrMirrorDns(target, [this, target, nodeId](QString dnsOutcome) {
             if (!dnsOutcome.isEmpty())
                 setNodeDeleteStatus(dnsOutcome);
+            setNodeDeleteStatus(
+                QString::fromUtf8("3/3 \xE2\x80\x94 Removing \"%1\" from "
+                                  "the mesh\xE2\x80\xA6")
+                    .arg(target));
             sendMeshNodeDeleteRequest(target, nodeId);
         });
     });
@@ -12303,7 +12371,8 @@ void MainWindow::sendNodeVultrDestroy(
         return;
     }
     setNodeDeleteStatus(
-        QString::fromUtf8("Destroying the Vultr server behind \"%1\"\xE2\x80\xA6")
+        QString::fromUtf8("1/3 \xE2\x80\x94 Destroying the Vultr server "
+                          "behind \"%1\"\xE2\x80\xA6")
             .arg(node));
     vultrApiCall(
         apiKey, QStringLiteral("/v2/instances/") + instanceId,
@@ -12457,7 +12526,9 @@ void MainWindow::sendMeshNodeDeleteRequest(const QString &node,
         {QStringLiteral("confirmation"), QStringLiteral("DELETE ") + node},
     };
     setNodeDeleteStatus(
-        QString::fromUtf8("Removing \"%1\" from the mesh\xE2\x80\xA6").arg(node));
+        QString::fromUtf8("3/3 \xE2\x80\x94 Removing \"%1\" from the "
+                          "mesh\xE2\x80\xA6")
+            .arg(node));
     QNetworkReply *reply = m_networkAccess->post(
         request, QJsonDocument(body).toJson(QJsonDocument::Compact));
     connect(reply, &QNetworkReply::finished, this, [this, reply, node] {
@@ -12501,8 +12572,9 @@ void MainWindow::sendMeshNodeDeleteRequest(const QString &node,
         refreshNodesTable();
         // After refreshNodesTable, which re-stamps the summary line.
         setNodeDeleteStatus(
-            QString::fromUtf8("Deleted \"%1\" \xE2\x80\x94 no trace of it is "
-                              "left in the mesh, mirrors or status page.")
+            QString::fromUtf8("3/3 complete \xE2\x80\x94 Deleted \"%1\"; no "
+                              "trace of it is left in the mesh, mirrors or "
+                              "status page.")
                 .arg(node));
         flashMessage(QString::fromUtf8("Deleted node \"%1\".").arg(node));
     });
