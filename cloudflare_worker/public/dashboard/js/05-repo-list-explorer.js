@@ -447,25 +447,15 @@
   function repoActivitySparkline(values, options = {}) {
     const series = normalizeActivityWeeks(values);
     const max = Math.max(1, ...series);
-    const activityTotal = series.reduce((sum, n) => sum + n, 0);
+    const total = series.reduce((sum, n) => sum + n, 0);
     const totalHint = Number(options.totalHint);
-    // The chart only represents the past 52 weeks, while commitCount is the
-    // repository's complete history and is also what the detail page shows.
-    // Prefer that catalog total for the visible count so opening a card never
-    // changes (for example) "3 commits" into "1" merely because two commits
-    // predate this chart's window.
-    const hasCatalogTotal = Number.isFinite(totalHint) && totalHint > 0;
-    const displayTotal = hasCatalogTotal ? totalHint : activityTotal;
-    const commitLabel = (count) =>
-      `${formatCount(count)} commit${count === 1 ? "" : "s"}`;
+    const displayTotal = total || (Number.isFinite(totalHint) && totalHint > 0 ? totalHint : 0);
     const loading = Boolean(options.loading);
     const title = loading
-      ? `Loading activity for ${commitLabel(displayTotal)}`
-      : hasCatalogTotal && activityTotal && activityTotal !== displayTotal
-        ? `${commitLabel(displayTotal)} total; ${commitLabel(activityTotal)} in the past 52 weeks`
-        : activityTotal
-          ? `${commitLabel(activityTotal)} in the past 52 weeks`
-          : commitLabel(displayTotal);
+      ? `Loading activity for ${formatCount(displayTotal)} commits`
+      : total
+        ? `${formatCount(total)} commits in the past 52 weeks`
+        : `${formatCount(displayTotal)} commits`;
     const bars = series.map((value) => {
       const height = value > 0 ? Math.max(3, Math.round((value / max) * 30)) : 2;
       const tone = value > 0 ? "bg-primary" : loading ? "bg-muted-foreground/30" : "bg-muted-foreground/20";
@@ -475,7 +465,7 @@
       <div data-repo-activity-sparkline class="repo-activity-sparkline w-full" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
         <div class="mb-1 flex items-center justify-between gap-2 text-[10px] font-mono text-muted-foreground">
           <span>52 weeks</span>
-          <span>${loading ? "loading" : commitLabel(displayTotal)}</span>
+          <span>${loading ? "loading" : `${formatCount(displayTotal)} commits`}</span>
         </div>
         <div class="repo-activity-bars h-8">${bars}</div>
       </div>

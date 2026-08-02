@@ -30,8 +30,6 @@ const REPOSITORIES = [
     name: "engine",
     description: "Physics core",
     commit: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
-    commitCount: 3,
-    activityWeeks: [...Array(51).fill(0), 1],
   },
   { owner: "beta", name: "atlas", description: "Map tiles" },
   { owner: "gamma", name: "beacon", description: "Signal relay" },
@@ -63,12 +61,6 @@ async function stubDashboard(page) {
   await page.route("**/dashboard/repos", (route) =>
     route.fulfill({
       path: REPOS_PAGE_PATH,
-      contentType: "text/html; charset=utf-8",
-    }),
-  );
-  await page.route("**/alpha/engine", (route) =>
-    route.fulfill({
-      path: REPO_PAGE_PATH,
       contentType: "text/html; charset=utf-8",
     }),
   );
@@ -127,27 +119,6 @@ test("header search filters the repositories on the page as you type", async ({
   await search.fill("");
   await expect(cards).toHaveCount(REPOSITORIES.length);
   await expect(page.locator("[data-global-search-page-filter]")).toBeHidden();
-});
-
-test("repository sparkline keeps its total aligned with the detail page", async ({
-  page,
-}) => {
-  await stubDashboard(page);
-  await page.goto("/dashboard/repos");
-
-  const card = page.locator("#repoList .repo-card").filter({ hasText: "engine" });
-  const sparkline = card.locator("[data-repo-activity-sparkline]");
-  await expect(sparkline).toContainText("3 commits");
-  await expect(sparkline).toHaveAttribute(
-    "aria-label",
-    "3 commits total; 1 commit in the past 52 weeks",
-  );
-
-  await card.click();
-  await expect(page).toHaveURL(/\/alpha\/engine$/);
-  await expect(
-    page.locator('[data-dashboard-repo-tab="commits"]'),
-  ).toContainText("3");
 });
 
 test("header search filters the repo page's file listing in place", async ({
