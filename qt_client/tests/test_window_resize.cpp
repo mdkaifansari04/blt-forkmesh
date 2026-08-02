@@ -2437,6 +2437,19 @@ int main(int argc, char *argv[])
         check(window.testGitPromptFloatsBottomRight(),
               QStringLiteral("Git floats only its prompt at the lower-right, "
                              "leaving the graph's left side at full height"));
+        // Returning through the Code route must reattach and reveal the footer
+        // composer. Reparenting a hidden QWidget does not make it visible again.
+        window.testClickRepoDetailTab(0);
+        QApplication::processEvents();
+        QFrame *promptWrapper = window.findChild<QFrame *>(
+            QStringLiteral("promptWrapper"));
+        QWidget *footerDock = window.findChild<QWidget *>(
+            QStringLiteral("logDock"));
+        check(promptWrapper && footerDock &&
+                  promptWrapper->parentWidget() == footerDock &&
+                  promptWrapper->isVisibleTo(&window),
+              QStringLiteral("returning from Git to Code restores the visible "
+                             "footer prompt"));
 
         // adhoc #420: following a branch link must land on the branch straight
         // away. The panel's git reads run on a worker thread now, so the
