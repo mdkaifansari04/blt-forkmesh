@@ -35,6 +35,7 @@
 #include <QTimer>
 #include <QPushButton>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QSplitter>
@@ -387,6 +388,8 @@ int main(int argc, char *argv[])
     app.setApplicationName(testApplicationName);
     const bool fleetBinaryInstallOnly =
         app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
+    const bool hostsLayoutOnly =
+        app.arguments().contains(QStringLiteral("--hosts-layout-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -881,6 +884,39 @@ int main(int argc, char *argv[])
                 QJsonDocument::Compact)));
     window.testShowHostsSection();
     QApplication::processEvents();
+    QWidget *hostsPageBody =
+        window.findChild<QWidget *>(QStringLiteral("hostsPageBody"));
+    QLayout *hostsPageLayout = hostsPageBody ? hostsPageBody->layout() : nullptr;
+    QLayout *hostsProvisioningRow = window.findChild<QLayout *>(
+        QStringLiteral("hostsProvisioningRow"));
+    QTableWidget *hostsPageTable =
+        hostsPageBody
+            ? hostsPageBody->findChild<QTableWidget *>(QStringLiteral("issueTable"))
+            : nullptr;
+    check(hostsPageLayout && hostsPageTable && hostsProvisioningRow &&
+              hostsPageLayout->indexOf(hostsPageTable) == 0 &&
+              hostsPageLayout->indexOf(hostsProvisioningRow) == 1,
+          QStringLiteral(
+              "Hosts puts the saved-host fleet first and provisioning cards next"));
+    const QList<QPushButton *> inlineHelpButtons =
+        window.findChildren<QPushButton *>(QStringLiteral("inlineHelpButton"));
+    QSet<QString> inlineHelpNames;
+    for (const QPushButton *button : inlineHelpButtons)
+        inlineHelpNames.insert(button->accessibleName());
+    const bool completeInlineHelp =
+        inlineHelpNames.contains(QStringLiteral("About network diagnostics")) &&
+        inlineHelpNames.contains(QStringLiteral("About saved hosts")) &&
+        inlineHelpNames.contains(QStringLiteral("About adding a host")) &&
+        inlineHelpNames.contains(QStringLiteral("About Vultr mirrors")) &&
+        std::all_of(inlineHelpButtons.cbegin(), inlineHelpButtons.cend(),
+                    [](const QPushButton *button) {
+                        return !button->toolTip().isEmpty() &&
+                               !button->accessibleName().isEmpty() &&
+                               !button->accessibleDescription().isEmpty();
+                    });
+    check(completeInlineHelp,
+          QStringLiteral(
+              "Network and Hosts guidance is available from four accessible hover helpers"));
     check(window.findChild<QPushButton *>(
               QStringLiteral("hostActionsButton")) != nullptr,
           QStringLiteral(
@@ -900,6 +936,10 @@ int main(int argc, char *argv[])
           QStringLiteral(
               "Actions secret-entry widgets exist only inside the explicit dialog"));
     QSettings().remove(QStringLiteral("hosts/list"));
+    if (hostsLayoutOnly) {
+        stopChildProcesses(window);
+        return failures == 0 ? 0 : 1;
+    }
 
     // Settings is deferred independently from the Control Node. Navigate there
     // before checking its one-way legacy-custody migration and controls.
@@ -1569,6 +1609,45 @@ int main(int argc, char *argv[])
     // prompt box — no provider dropdown to pick a resolver from. adhoc #59: the
     // whole header row is icon-over-caption rail tiles ("repoActionStack"), the
     // same form as the activity rail, instead of a mix of pill shapes.
+    window.testClickRepoDetailTab(4); // Pull requests
+    QApplication::processEvents();
+    // The pull-list actions float over the lower-right corner instead of
+    // consuming a footer row.  Keep the geometry contract explicit: all five
+    // repository actions form one horizontal cluster, anchored inside the
+    // list pane and overlapping the table's layout area.
+    {
+        QWidget *bar = window.findChild<QWidget *>(
+            QStringLiteral("pullListFloatingBar"));
+        QWidget *pane = bar ? bar->parentWidget() : nullptr;
+        QTableWidget *table =
+            pane ? pane->findChild<QTableWidget *>(QStringLiteral("issueTable"))
+                 : nullptr;
+        check(bar && pane && table,
+              QStringLiteral("pull actions are hosted by a floating list bar"));
+        if (bar && pane && table) {
+            check(pane->width() - bar->geometry().right() <= 12 &&
+                      pane->height() - bar->geometry().bottom() <= 12 &&
+                      bar->geometry().intersects(table->geometry()),
+                  QStringLiteral("pull action bar floats at the list's lower-right "
+                                 "corner"));
+            const QList<QPushButton *> buttons =
+                bar->findChildren<QPushButton *>(QString(),
+                                                 Qt::FindDirectChildrenOnly);
+            const QStringList expected = {QStringLiteral("New"),
+                                          QStringLiteral("Directory"),
+                                          QStringLiteral("Import"),
+                                          QStringLiteral("Inbox"),
+                                          QStringLiteral("Merged")};
+            QStringList captions;
+            for (QPushButton *button : buttons) {
+                if (!button->text().isEmpty())
+                    captions.append(button->text());
+            }
+            check(captions == expected,
+                  QStringLiteral("all pull-list actions stay aligned in one "
+                                 "floating row"));
+        }
+    }
     bool prFixButtonFound = false;
     bool prHeaderStyleUniform = true;
     for (QPushButton *b : window.findChildren<QPushButton *>()) {
@@ -3323,14 +3402,18 @@ int main(int argc, char *argv[])
                   !genieButton->toolTip().contains(QStringLiteral("agent"),
                                                    Qt::CaseInsensitive),
               QStringLiteral("the composer task button files a General task"));
-        auto *repoTrendChart = seeded.findChild<QWidget *>(QStringLiteral("repoTrendChart"));
+        auto *repoSizeChart = seeded.findChild<QWidget *>(QStringLiteral("repoSizeChart"));
+        auto *repoLinesChart = seeded.findChild<QWidget *>(QStringLiteral("repoLinesChart"));
+        auto *repoFilesChart = seeded.findChild<QWidget *>(QStringLiteral("repoFilesChart"));
+        auto *overviewList = seeded.findChild<QTreeWidget *>(QStringLiteral("overviewList"));
         auto *ratchet = seeded.findChild<QToolButton *>(QStringLiteral("repoRatchetButton"));
-        check(repoTrendChart && ratchet && repoTrendChart->width() == 24 &&
-                  repoTrendChart->height() == 24 &&
-                  repoTrendChart->accessibleName() == QStringLiteral("Repository trends") &&
-                  ratchet->isCheckable() &&
+        check(repoSizeChart && repoLinesChart && repoFilesChart && ratchet &&
+                  repoSizeChart->width() == 34 && repoLinesChart->width() == 34 &&
+                  repoFilesChart->width() == 34 && ratchet->isCheckable() &&
                   ratchet->text() == QStringLiteral("Ratchet"),
-              QStringLiteral("repository trends use one compact vertical meter group"));
+              QStringLiteral("repository trends use three history charts"));
+        check(overviewList && overviewList->columnCount() == 2,
+              QStringLiteral("overview keeps entry metrics and updated time on the left"));
         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.

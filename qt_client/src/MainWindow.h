@@ -2242,7 +2242,6 @@ private:
     // Takes the PR by value: runIdsForPull() below pumps the event loop, which
     // can re-enter reloadPulls() and reassign m_currentPulls — a reference into
     // it would dangle mid-call (adhoc #119).
-    void renderPullReviewSummary(PullRequest pr);
     // Render every changed file of the current PR into one continuously
     // scrollable diff view (issue #250), so the reviewer can scroll the whole PR
     // and the file list / Prev-Next jump between files.
@@ -5913,7 +5912,9 @@ private:
     // QWidget* and poked via static_cast since the compact chart widgets live
     // in MainWindowInternal.h.
     QWidget *m_cpuChart = nullptr;
-    QWidget *m_repoTrendChart = nullptr;
+    QWidget *m_repoSizeChart = nullptr;
+    QWidget *m_repoLinesChart = nullptr;
+    QWidget *m_repoFilesChart = nullptr;
     QToolButton *m_repoRatchetButton = nullptr;
     qint64 m_repoStatsLastRefreshMs = 0;
     QWidget *m_memChart = nullptr;
@@ -6674,7 +6675,6 @@ private:
     QLabel *m_pullTitle = nullptr;
     QLabel *m_pullMeta = nullptr;
     QLabel *m_pullMergeStatus = nullptr; // conflict / ready-to-merge banner
-    QLabel *m_pullReviewSummary = nullptr;
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
     QPushButton *m_pullResolveButton = nullptr; // opens the conflict merge editor
@@ -6804,6 +6804,11 @@ private:
     QPushButton *m_pullCommentButton = nullptr;
     QPushButton *m_pullApproveButton = nullptr;
     QPushButton *m_pullRequestChangesButton = nullptr;
+    // Terminal PR actions are repeated below the review composer so completing
+    // a review does not require scrolling back to the crowded header toolbar.
+    QPushButton *m_pullConversationMergeButton = nullptr;
+    QPushButton *m_pullConversationCloseButton = nullptr;
+    QPushButton *m_pullConversationDeleteButton = nullptr;
     // Agent revision: send feedback back to the agent that created this PR.
     QWidget *m_pullAgentRevisionRow = nullptr;
     QLineEdit *m_pullAgentRevisionEdit = nullptr;

@@ -182,7 +182,6 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -1090,69 +1089,6 @@ private:
     QString m_stats; // per-session token/cost line, shown under the gauges
     int m_flash = 0;     // 0 = none, 1 = refreshed (green), -1 = failed (red)
     int m_flashToken = 0; // guards against an older flash clearing a newer one
-};
-
-// The Code overview uses the same compact, vertical-meter language as the
-// Claude/Codex usage readout.  Its three tracks summarize the latest repository
-// size, source-line, and file-count samples against their respective 30-day
-// highs; the precise values and date range remain available in the tooltip.
-// Keeping the related measures in one small control avoids three competing
-// square charts at the far end of the repository toolbar.
-class RepositoryTrendMiniChart : public QWidget
-{
-public:
-    explicit RepositoryTrendMiniChart(QWidget *parent = nullptr) : QWidget(parent)
-    {
-        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(24, 24);
-        setCursor(Qt::PointingHandCursor);
-        setAccessibleName(QStringLiteral("Repository trends"));
-    }
-
-    void setRatios(double size, double lines, double files)
-    {
-        const std::array<double, 3> next{
-            qBound(0.0, size, 1.0), qBound(0.0, lines, 1.0),
-            qBound(0.0, files, 1.0)};
-        if (m_ratios == next)
-            return;
-        m_ratios = next;
-        update();
-    }
-
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-
-        constexpr qreal kBarWidth = 4.0;
-        constexpr qreal kGap = 3.0;
-        constexpr qreal kTrackHeight = 18.0;
-        const qreal totalWidth = 3 * kBarWidth + 2 * kGap;
-        qreal x = (width() - totalWidth) / 2.0;
-        const qreal top = (height() - kTrackHeight) / 2.0;
-        QColor track = palette().color(QPalette::WindowText);
-        track.setAlpha(38);
-        const QColor fill(currentThemeIsDark() ? "#3fb950" : "#1f883d");
-        p.setPen(Qt::NoPen);
-        for (const double ratio : m_ratios) {
-            const QRectF slot(x, top, kBarWidth, kTrackHeight);
-            p.setBrush(track);
-            p.drawRoundedRect(slot, kBarWidth / 2.0, kBarWidth / 2.0);
-            if (ratio > 0.0) {
-                const qreal fillHeight = kTrackHeight * ratio;
-                const QRectF bar(x, top + kTrackHeight - fillHeight,
-                                 kBarWidth, fillHeight);
-                p.setBrush(fill);
-                p.drawRoundedRect(bar, kBarWidth / 2.0, kBarWidth / 2.0);
-            }
-            x += kBarWidth + kGap;
-        }
-    }
-
-private:
-    std::array<double, 3> m_ratios{0.0, 0.0, 0.0};
 };
 
 // A tiny moving line chart for one system resource (CPU, memory or disk). New

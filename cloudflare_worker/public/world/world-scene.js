@@ -6146,6 +6146,16 @@ function createAvatarJetpack(THREE) {
     trim,
   );
   group.add(spine);
+  const hint = makeLabelSprite(
+    THREE,
+    "JETPACK FLIGHT",
+    "WASD MOVE · SPACE UP · C DOWN · SHIFT BOOST",
+    "#ffcf70",
+  );
+  hint.name = "forkmesh-jetpack-control-hint";
+  hint.position.set(0, 3.2, 0);
+  hint.scale.set(6.4, 2.15, 1);
+  group.add(hint);
   group.visible = false;
   group.userData.tanks = tanks;
   group.userData.flames = flames;
@@ -16886,6 +16896,16 @@ export function createWorldScene({
     bike.add(seat);
     interactive.push(seat);
     bike.userData.bikeIndex = index;
+    const hint = makeLabelSprite(
+      THREE,
+      "RIDE BIKE",
+      "CLICK OR E · W/S PEDAL · A/D STEER",
+      color,
+    );
+    hint.name = `forkmesh-world-bike-${index + 1}-control-hint`;
+    hint.position.set(0, 3.25, 0);
+    hint.scale.set(5.6, 1.9, 1);
+    bike.add(hint);
     setShadows(bike);
     world.add(bike);
     registerWorldElement("bikes", "World bikes", "Vehicles & rides", bike);
@@ -17079,6 +17099,16 @@ export function createWorldScene({
     }
     car.position.set(BEACH_ROAD_MIN_X + 22, 0.04, BEACH_CENTER_Z);
     car.rotation.y = -Math.PI / 2;
+    const hint = makeLabelSprite(
+      THREE,
+      "DRIVE",
+      "CLICK TO ENTER · WASD DRIVE · SHIFT BOOST",
+      "#9ef7c6",
+    );
+    hint.name = "forkmesh-beach-road-car-control-hint";
+    hint.position.set(0, 4.35, 0);
+    hint.scale.set(6.8, 2.25, 1);
+    car.add(hint);
     car.traverse((child) => {
       if (!child.isMesh) return;
       child.userData.carIndex = 0;
@@ -17159,6 +17189,16 @@ export function createWorldScene({
     );
     landingLight.position.set(0, 0.34, -1.32);
     quadcopter.add(landingLight);
+    const hint = makeLabelSprite(
+      THREE,
+      "FLY QUADCOPTER",
+      "CLICK OR E · WASD · SPACE UP · C DOWN",
+      "#79c0ff",
+    );
+    hint.name = "forkmesh-world-quadcopter-control-hint";
+    hint.position.set(0, 4.45, 0);
+    hint.scale.set(7.2, 2.4, 1);
+    quadcopter.add(hint);
     quadcopter.position.set(-34, 0.24, -42);
     quadcopter.traverse((child) => {
       if (!child.isMesh) return;
@@ -17174,6 +17214,7 @@ export function createWorldScene({
       quadcopter,
       rotors,
       seat,
+      hint,
       moving: false,
     });
   }
@@ -25677,6 +25718,7 @@ export function createWorldScene({
     dismountCar({ relocate: false });
     dismountQuadcopter({ relocate: false });
     bikeRide = { index };
+    state.hint.visible = false;
     completeStartHereStep("explore");
     cancelDash();
     cameraFocus = null;
@@ -25758,6 +25800,7 @@ export function createWorldScene({
     bikeRide = null;
     if (state) state.moving = false;
     if (state) state.travelDirection = 0;
+    if (state?.hint) state.hint.visible = true;
     player.rotation.x = 0;
     player.userData.leftArm.rotation.x = 0;
     player.userData.rightArm.rotation.x = 0;
@@ -25783,6 +25826,7 @@ export function createWorldScene({
     dismountQuadcopter({ relocate: false });
     standUpFromBench();
     carRide = { index };
+    state.hint.visible = false;
     completeStartHereStep("explore");
     cancelDash();
     cameraFocus = null;
@@ -25831,6 +25875,7 @@ export function createWorldScene({
     const state = carStates[carRide.index];
     carRide = null;
     if (state) state.moving = false;
+    if (state?.hint) state.hint.visible = true;
     player.rotation.x = 0;
     player.userData.leftArm.rotation.x = 0;
     player.userData.rightArm.rotation.x = 0;
@@ -25856,6 +25901,7 @@ export function createWorldScene({
     dismountCar({ relocate: false });
     standUpFromBench();
     quadcopterRide = { index };
+    state.hint.visible = false;
     completeStartHereStep("explore");
     cancelDash();
     cameraFocus = null;
@@ -25911,6 +25957,7 @@ export function createWorldScene({
     const state = quadcopterStates[quadcopterRide.index];
     quadcopterRide = null;
     if (state) state.moving = false;
+    if (state?.hint) state.hint.visible = true;
     player.userData.leftArm.rotation.x = 0;
     player.userData.rightArm.rotation.x = 0;
     applyLegPitch(player, 0, 0);
