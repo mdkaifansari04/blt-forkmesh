@@ -352,6 +352,8 @@ function mountForkMeshDashboardChat() {
   let inboundFrameQueue = Promise.resolve();
   const DISCORD_REFRESH_MS = 60_000;
   const DISCORD_REFRESH_JITTER_MS = 15_000;
+  const DISCORD_BACKOFF_BASE_MS = 60_000;
+  const DISCORD_BACKOFF_MAX_MS = 15 * 60_000;
   const DISCORD_MAX_ORGANIZATIONS = 3;
   const DISCORD_MAX_CHANNELS = 5;
   const DISCORD_MAX_INITIAL_MESSAGES = 40;
@@ -706,12 +708,44 @@ function mountForkMeshDashboardChat() {
     return headers;
   }
 
+  function discordRetryAfterMs(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return 0;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds)) {
+      return Math.max(0, Math.min(DISCORD_BACKOFF_MAX_MS, seconds * 1000));
+    }
+    const retryAt = Date.parse(raw);
+    return Number.isFinite(retryAt)
+      ? Math.max(0, Math.min(DISCORD_BACKOFF_MAX_MS, retryAt - Date.now()))
+      : 0;
+  }
+
+  function deferDiscordRefresh(retryAfter = "") {
+    discordFailureCount = Math.min(8, discordFailureCount + 1);
+    const exponential = Math.min(
+      DISCORD_BACKOFF_MAX_MS,
+      DISCORD_BACKOFF_BASE_MS * (2 ** (discordFailureCount - 1)),
+    );
+    const retryAfterMs = discordRetryAfterMs(retryAfter);
+    discordBackoffUntil = Math.max(
+      discordBackoffUntil,
+      Date.now() + Math.max(exponential, retryAfterMs),
+    );
+  }
+
   async function discordJson(path) {
-    const response = await fetch(path, {
-      headers: discordRequestHeaders(),
-      credentials: "same-origin",
-      cache: "no-store",
-    });
+    let response;
+    try {
+      response = await fetch(path, {
+        headers: discordRequestHeaders(),
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+    } catch (error) {
+      deferDiscordRefresh();
+      throw error;
+    }
     if (!response.ok) {
       const error = new Error(`Discord source unavailable (${response.status})`);
       error.status = response.status;
@@ -854,6 +888,10 @@ function mountForkMeshDashboardChat() {
       }
       discordBackoffAttempts = 0;
       discordInitialMessagesLoaded = true;
+      if (!refreshFailed) {
+        discordFailureCount = 0;
+        discordBackoffUntil = 0;
+      }
       if (appended) {
         console.info("[ForkMesh chat] Discord messages refreshed", {
           sources: sources.length,

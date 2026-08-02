@@ -7821,8 +7821,21 @@ class ForkMeshWorld extends HTMLElement {
         assigned: assigned.has(issue.key),
       }));
       this.world?.updateBuildBoard?.(payload);
+      this.buildBoardFailureCount = 0;
+      this.buildBoardRetryAt = 0;
       return payload;
       } catch (_) {
+        this.buildBoardFailureCount = Math.min(
+          8,
+          this.buildBoardFailureCount + 1,
+        );
+        this.buildBoardRetryAt =
+          Date.now() +
+          Math.min(
+            15 * 60_000,
+            WORLD_BUILD_BOARD_POLL_MS *
+              (2 ** (this.buildBoardFailureCount - 1)),
+          );
         if (!quiet) {
           this.toast("The shared build board is temporarily unavailable.");
         }
@@ -8924,6 +8937,22 @@ class ForkMeshWorld extends HTMLElement {
       renderTargetMb: complexity
         ? Math.round(Number(complexity.renderTargetBytes) / 1048576)
         : -1,
+      objects: complexity ? Math.round(complexity.objects) : -1,
+      meshes: complexity ? Math.round(complexity.meshes) : -1,
+      materials: complexity ? Math.round(complexity.uniqueMaterials) : -1,
+      canvasTextureScale: output
+        ? Number(output.canvasTextureScale) || 1
+        : 1,
+      topElements: (Array.isArray(complexity?.topElements)
+        ? complexity.topElements
+        : []
+      )
+        .slice(0, 3)
+        .map((element) => ({
+          label: String(element?.label || "").slice(0, 32),
+          triangles: Math.max(0, Math.round(Number(element?.triangles) || 0)),
+          drawables: Math.max(0, Math.round(Number(element?.drawables) || 0)),
+        })),
       safeMode: this.rendererSafeMode === true,
       gpu: this.rendererGpuLabel(),
     };
@@ -8962,6 +8991,16 @@ class ForkMeshWorld extends HTMLElement {
     // volatile readings below are bucketed so equivalent crashes group;
     // small exact counts (peers, crashes, context losses) stay exact.
     const gpu = String(record.gpu || "").slice(0, 120);
+    const topElements = (Array.isArray(record.topElements)
+      ? record.topElements
+      : []
+    )
+      .slice(0, 3)
+      .map(
+        (element) =>
+          `${String(element?.label || "unknown").slice(0, 32)} ${coarseCrashLabel(element?.triangles)}t/${coarseCrashLabel(element?.drawables)}d`,
+      )
+      .join(", ");
     const parts = [
       discarded
         ? "World reloaded after the browser discarded the tab"
@@ -8971,7 +9010,13 @@ class ForkMeshWorld extends HTMLElement {
       `cores ${describe(device.cores)}`,
       `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
       `renderer ${rendererModeLabel(record)} webgl${record.webgl2 === true ? "2" : "1"}`,
+      `canvas raster ${Math.round((Number(record.canvasTextureScale) || 1) * 100)}%`,
       `safe mode ${record.safeMode === true ? "on" : "off"}`,
+      `estimated GPU resources textures ${coarseCrashLabel(record.textureMb, "MB")} geometries ${coarseCrashLabel(record.geometryMb, "MB")} targets ${coarseCrashLabel(record.renderTargetMb, "MB")}`,
+      `scene objects ${coarseCrashLabel(record.objects)} meshes ${coarseCrashLabel(record.meshes)} materials ${coarseCrashLabel(record.materials)}`,
+      `textures resident/live ${coarseCrashLabel(record.textures)}/${coarseCrashLabel(record.liveTextures)}`,
+      `geometries resident/live ${coarseCrashLabel(record.geometries)}/${coarseCrashLabel(record.liveGeometries)}`,
+      ...(topElements ? [`heaviest ${topElements}`] : []),
       `uptime ${coarseCrashLabel((beatAt - Number(record.startedAt)) / 1000, "s")}`,
       `heartbeat gap ${coarseCrashLabel((Date.now() - beatAt) / 1000, "s")}`,
       `navigation ${navigation}`,
@@ -8984,10 +9029,7 @@ class ForkMeshWorld extends HTMLElement {
       `frame ${coarseCrashLabel(record.frameTimeMs, "ms")} worst ${coarseCrashLabel(record.longestFrameMs, "ms")}`,
       `triangles ${coarseCrashLabel(record.triangles)}`,
       `draws ${coarseCrashLabel(record.calls)}`,
-      `textures resident/live ${coarseCrashLabel(record.textures)}/${coarseCrashLabel(record.liveTextures)}`,
-      `geometries resident/live ${coarseCrashLabel(record.geometries)}/${coarseCrashLabel(record.liveGeometries)}`,
       `programs ${coarseCrashLabel(record.programs)}`,
-      `estimated GPU resources textures ${coarseCrashLabel(record.textureMb, "MB")} geometries ${coarseCrashLabel(record.geometryMb, "MB")} targets ${coarseCrashLabel(record.renderTargetMb, "MB")}`,
       `buffer ${buffer} at dpr ${Number(record.pixelRatio) || 0}`,
       `heap ${coarseCrashLabel(record.heapUsedMb, "MB")} of ${coarseCrashLabel(record.heapLimitMb, "MB")}`,
       `context losses ${describe(record.contextLosses)}`,
@@ -27415,6 +27457,10 @@ class ForkMeshWorld extends HTMLElement {
             compactRenderer: sceneOutput.compactRenderer === true,
             memoryConstrainedRenderer:
               sceneOutput.memoryConstrainedRenderer === true,
+            canvasTextureScale: Math.max(
+              0.1,
+              Math.min(1, Number(sceneOutput.canvasTextureScale) || 1),
+            ),
             pixelBudget: clampCount(sceneOutput.pixelBudget, 100_000_000),
             gpu: String(sceneOutput.gpu || "").slice(0, 96),
             threeRevision: String(sceneOutput.threeRevision || "").slice(
