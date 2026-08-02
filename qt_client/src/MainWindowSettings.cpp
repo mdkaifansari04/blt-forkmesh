@@ -1865,6 +1865,10 @@ QWidget *MainWindow::buildSettingsSection()
     addTab(buildDataSection(), "Data");
 
     m_settingsTabs = tabs;
+    // Each settings tab is its own destination on the Back/Forward trail
+    // (adhoc #50), so leaving one and coming back lands where you were.
+    connect(tabs, &QTabWidget::currentChanged, this,
+            [this](int) { scheduleNavRecord(); });
     layout->addWidget(tabs, 1);
     layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);

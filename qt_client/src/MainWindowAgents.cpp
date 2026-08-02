@@ -5958,6 +5958,9 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
 void MainWindow::showAgentSession(int sessionId)
 {
     m_selectedAgentSessionId = sessionId;
+    // The session on screen is the Agents tab's place, so Back walks between
+    // sessions the same way it walks between issues (adhoc #50).
+    scheduleNavRecord();
     AgentSession *liveSession = findAgentSession(sessionId);
     if (!liveSession) {
         setAgentTitleText(m_agentTitle, QStringLiteral("Select a session"));

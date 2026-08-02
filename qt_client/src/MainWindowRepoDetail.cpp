@@ -800,8 +800,12 @@ QWidget *MainWindow::buildRepoEditorPage()
             showRepoOverview();
         updateRepoFileSaveActions();
     });
-    connect(m_repoFileTabs, &QTabWidget::currentChanged, this,
-            [this] { updateRepoFileSaveActions(); });
+    connect(m_repoFileTabs, &QTabWidget::currentChanged, this, [this] {
+        updateRepoFileSaveActions();
+        // Each open file is a place on the Back/Forward trail, so opening one
+        // from the file list (or switching tabs) is a step (adhoc #50).
+        scheduleNavRecord();
+    });
     // Ctrl+S saves the current tab: commit direct when this node owns a working
     // tree, otherwise fall back to opening a PR (the only save path on a mirror).
     auto *saveShortcut = new QShortcut(QKeySequence::Save, m_repoFileTabs);
@@ -3383,6 +3387,7 @@ void MainWindow::loadRepoOverview(const QString &path)
                             .arg(path, currentRef(), head);
     if (key == m_overviewLoadedKey && m_overviewList->topLevelItemCount() > 0) {
         m_overviewPath = path;
+        scheduleNavRecord();
         return;
     }
     m_overviewLoadedKey.clear(); // cleared until this load completes successfully
@@ -3394,6 +3399,9 @@ void MainWindow::loadRepoOverview(const QString &path)
     GitKeepAlive keepAlive;
 
     m_overviewPath = path;
+    // Walking into (or out of) a directory in the file list is a browser-style
+    // step, so Back returns to the directory you came from (adhoc #50).
+    scheduleNavRecord();
 
     // Gather phase: every git read below lands in locals only. The keep-alive
     // pump services paint events between reads, so any widget cleared or
@@ -5156,8 +5164,15 @@ void MainWindow::recordNavLocation()
     if (here.detailTab == 0 && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack)
         here.overviewPage = m_overviewBodyStack->currentIndex();
-    if (here.overviewPage == 1)
+    if (here.overviewPage == 1) {
         here.branch = m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
+        // A commit's diff is its own place on the Git view, so Back from a
+        // commit returns to the list rather than leaving the repo.
+        if (m_commitsStack &&
+            m_commitsStack->currentIndex() == kCommitWorkspaceCommitPage)
+            here.commit = m_currentCommitHash;
+    }
+    captureNavSubPlace(here);
 
     // Remember the tab actually being viewed so a relaunch can restore it
     // (see kLastRepoDetailTabSetting / runDeferredStartup) instead of always
@@ -5180,6 +5195,141 @@ void MainWindow::recordNavLocation()
     updateNavHistoryButtons();
 }
 
+// Repo-relative path of the file the editor is showing, or an empty string when
+// no file tab is open.
+QString MainWindow::openRepoFilePath() const
+{
+    if (!m_repoFileTabs)
+        return QString();
+    QWidget *current = m_repoFileTabs->currentWidget();
+    if (!current)
+        return QString();
+    return m_openFileTabs.key(current);
+}
+
+// Fill in the half of a place that lives *below* the tab bar (adhoc #50): which
+// sub-menu the view is on and which item it has open. Kept next to
+// applyNavSubPlace so capture and replay stay in step — every view added to one
+// needs the matching arm in the other.
+void MainWindow::captureNavSubPlace(NavPlace &place) const
+{
+    if (place.section == 2) {
+        // Chat: the open room/DM is the destination, not "Chat" as a whole.
+        place.conversation = m_currentConversation;
+        return;
+    }
+    if (place.section == 1) {
+        if (m_settingsTabs)
+            place.subTab = m_settingsTabs->currentIndex();
+        return;
+    }
+    if (place.section == kNetworkDiagnosticsSectionIndex ||
+        place.section == kNodesSectionIndex) {
+        // Both sections are views onto the same tab widget (Nodes is one of its
+        // tabs), so the open tab is what distinguishes the places.
+        if (m_networkTabs)
+            place.subTab = m_networkTabs->currentIndex();
+        return;
+    }
+    if (place.repoIndex < 0)
+        return;
+    switch (place.detailTab) {
+    case 0: // Code
+        if (m_filesStack && m_filesStack->currentIndex() == 1)
+            place.filePath = openRepoFilePath();
+        else if (place.overviewPage <= 0)
+            // Walking into a directory in the file list is a step of its own.
+            place.overviewDir = m_overviewPath;
+        break;
+    case 2: // Issues
+        if (m_issueListStack)
+            place.subTab = m_issueListStack->currentIndex();
+        if (m_issueDetail && !m_issueDetail->isHidden())
+            place.itemNumber = m_currentIssueNumber;
+        break;
+    case 3: // Agents — the selected session is what the pane shows
+        place.itemNumber = m_selectedAgentSessionId;
+        break;
+    case 4: // Pull requests
+        place.itemNumber = m_currentPullNumber;
+        if (m_pullSubStack && m_currentPullNumber > 0)
+            place.subTab = m_pullSubStack->currentIndex();
+        break;
+    default:
+        break;
+    }
+}
+
+// Replay the sub-menu / open item captured by captureNavSubPlace, driving the
+// same entry points a click would so each view loads its data.
+void MainWindow::applyNavSubPlace(const NavPlace &place)
+{
+    if (place.section == 2) {
+        if (!place.conversation.isEmpty())
+            switchConversation(place.conversation);
+        return;
+    }
+    if (place.section == 1) {
+        if (m_settingsTabs && place.subTab >= 0 &&
+            place.subTab < m_settingsTabs->count())
+            m_settingsTabs->setCurrentIndex(place.subTab);
+        return;
+    }
+    if (place.section == kNetworkDiagnosticsSectionIndex ||
+        place.section == kNodesSectionIndex) {
+        if (m_networkTabs && place.subTab >= 0 &&
+            place.subTab < m_networkTabs->count())
+            showNetworkTab(place.subTab);
+        return;
+    }
+    if (place.repoIndex < 0 || place.repoIndex != m_repoDetailIndex)
+        return;
+    switch (place.detailTab) {
+    case 0: // Code
+        if (!place.filePath.isEmpty()) {
+            openRepoFile(place.filePath);
+        } else if (place.overviewPage <= 0) {
+            // Leaving the editor behind: back to the file list, at the
+            // directory this place was recorded in.
+            if (m_filesStack && m_filesStack->currentIndex() != 0)
+                m_filesStack->setCurrentIndex(0);
+            if (m_overviewPath != place.overviewDir)
+                loadRepoOverview(place.overviewDir);
+        }
+        break;
+    case 2: // Issues
+        if (place.subTab >= 0)
+            selectIssueListTab(place.subTab);
+        if (place.itemNumber > 0) {
+            showIssue(place.itemNumber);
+        } else if (m_issueDetail && !m_issueDetail->isHidden()) {
+            // The recorded place had no issue open — close the detail pane so
+            // Back out of an issue lands on the bare list.
+            m_issueDetail->hide();
+            if (m_issueDetailToggle)
+                m_issueDetailToggle->setText(QStringLiteral("Show detail"));
+        }
+        break;
+    case 3: // Agents
+        if (place.itemNumber > 0 && m_selectedAgentSessionId != place.itemNumber &&
+            findAgentSession(place.itemNumber))
+            showAgentSession(place.itemNumber);
+        break;
+    case 4: // Pull requests
+        if (place.itemNumber > 0) {
+            if (m_currentPullNumber != place.itemNumber)
+                showPull(place.itemNumber);
+            if (place.subTab >= 0 && m_pullSubTabs &&
+                m_pullSubTabs->button(place.subTab) &&
+                m_pullSubStack->currentIndex() != place.subTab)
+                m_pullSubTabs->button(place.subTab)->click();
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 void MainWindow::restoreNavEntry(int index)
 {
     if (index < 0 || index >= m_navHistory.size())
@@ -5199,6 +5349,7 @@ void MainWindow::restoreNavEntry(int index)
         const NavPlace target = place;
         QTimer::singleShot(0, this, [this, target] {
             applyNavDetailTab(target);
+            applyNavSubPlace(target);
             m_navRestoring = false;
             updateNavHistoryButtons();
         });
@@ -5206,6 +5357,7 @@ void MainWindow::restoreNavEntry(int index)
     }
     showSection(place.section);
     applyNavDetailTab(place);
+    applyNavSubPlace(place);
     m_navRestoring = false;
     updateNavHistoryButtons();
 }
@@ -5250,6 +5402,13 @@ void MainWindow::applyNavDetailTab(const NavPlace &place)
             else
                 loadCommits();
         }
+        // A commit diff is a place inside the Git view: reopen the one this
+        // entry was recorded on, or step back out of whichever is on screen.
+        if (!place.commit.isEmpty())
+            showCommit(place.commit);
+        else if (m_commitsStack &&
+                 m_commitsStack->currentIndex() == kCommitWorkspaceCommitPage)
+            setCommitWorkspacePage(kCommitWorkspaceChangesPage);
         return;
     }
     if (m_repoDetailStack->currentIndex() == place.detailTab)
@@ -5294,6 +5453,11 @@ QString MainWindow::navPlaceLabel(const NavPlace &place) const
                                   .arg(place.branch.isEmpty()
                                            ? QStringLiteral("main")
                                            : place.branch);
+                // A commit diff names the commit it is showing, so Back out of
+                // one reads as a step rather than a repeat of "Git · main".
+                if (!place.commit.isEmpty())
+                    destination = QStringLiteral("%1 · %2")
+                                      .arg(destination, place.commit.left(7));
                 break;
             case 2:
                 destination = QStringLiteral("Branches");
@@ -5303,17 +5467,68 @@ QString MainWindow::navPlaceLabel(const NavPlace &place) const
                 break;
             default:
                 destination = QStringLiteral("Code");
+                if (!place.filePath.isEmpty())
+                    destination = QStringLiteral("Code · %1").arg(place.filePath);
+                else if (!place.overviewDir.isEmpty())
+                    destination =
+                        QStringLiteral("Code · %1/").arg(place.overviewDir);
                 break;
             }
+        } else if (place.detailTab == 3) {
+            // Agents lost its top-bar button (adhoc #178), so name it directly.
+            destination = place.itemNumber > 0
+                              ? QStringLiteral("Agent session %1").arg(place.itemNumber)
+                              : QStringLiteral("Agents");
         } else if (m_repoDetailTabs && m_repoDetailTabs->button(place.detailTab)) {
             destination = m_repoDetailTabs->button(place.detailTab)->text();
+            if (place.detailTab == 2) { // Issues
+                if (place.subTab > 0 && m_issueTabGroup &&
+                    m_issueTabGroup->button(place.subTab))
+                    destination = m_issueTabGroup->button(place.subTab)->text();
+                if (place.itemNumber > 0)
+                    destination = QStringLiteral("Issue #%1").arg(place.itemNumber);
+            } else if (place.detailTab == 4 && place.itemNumber > 0) { // Pulls
+                destination = QStringLiteral("PR #%1").arg(place.itemNumber);
+                if (place.subTab > 0 && m_pullSubTabs &&
+                    m_pullSubTabs->button(place.subTab))
+                    destination =
+                        QStringLiteral("%1 · %2")
+                            .arg(destination,
+                                 m_pullSubTabs->button(place.subTab)->text());
+            }
         } else {
             destination = QStringLiteral("Repository");
         }
     } else {
         switch (place.section) {
-        case 2:
+        case 1:
+            destination = QStringLiteral("Settings");
+            if (m_settingsTabs && place.subTab >= 0 &&
+                place.subTab < m_settingsTabs->count())
+                destination = QStringLiteral("Settings · %1")
+                                  .arg(m_settingsTabs->tabText(place.subTab));
+            break;
+        case 2: {
             destination = QStringLiteral("Chat");
+            if (!place.conversation.isEmpty()) {
+                // Same naming switchConversation puts in the channel header, so
+                // the tooltip reads like the room the user sees.
+                const QString room =
+                    isDirectConversation(place.conversation)
+                        ? kDmPrefix + m_dmNames.value(dmPeerId(place.conversation),
+                                                      QStringLiteral("unknown"))
+                        : place.conversation;
+                destination = QStringLiteral("Chat · %1").arg(room);
+            }
+            break;
+        }
+        case kNetworkDiagnosticsSectionIndex:
+        case kNodesSectionIndex:
+            destination = QStringLiteral("Network");
+            if (m_networkTabs && place.subTab >= 0 &&
+                place.subTab < m_networkTabs->count())
+                destination = QStringLiteral("Network · %1")
+                                  .arg(m_networkTabs->tabText(place.subTab));
             break;
         default:
             destination = QStringLiteral("Home");
@@ -5718,6 +5933,10 @@ void MainWindow::setCommitWorkspacePage(int page)
         m_gitHistorySlot->setCurrentIndex(0);
     updateCommitsCompareIndicator();
     updateRepoActivityRail();
+    // Opening a commit's diff (and stepping back out of it) is a move the
+    // Back/Forward arrows can replay. Debounced, so the capture reads the
+    // commit hash showCommit assigns right after this call.
+    scheduleNavRecord();
 }
 
 // The "<branch> -> <base>" compare indicator on the graph's branch row: while a
@@ -8892,7 +9111,12 @@ QWidget *MainWindow::buildRepoDetailSection()
                 });
     if (m_filesStack)
         connect(m_filesStack, &QStackedWidget::currentChanged, this,
-                [this](int) { updateRepoActivityRail(); });
+                [this](int) {
+                    updateRepoActivityRail();
+                    // Crossing between the file list and the editor is a move
+                    // Back can undo.
+                    scheduleNavRecord();
+                });
     updateRepoActivityRail();
 
     m_repoDetailChrome = new QWidget;

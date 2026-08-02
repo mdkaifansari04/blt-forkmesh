@@ -3435,6 +3435,12 @@ private:
     void restoreNavEntry(int index);           // navigate to a recorded place
     struct NavPlace;
     void applyNavDetailTab(const NavPlace &place); // re-select a recorded repo tab
+    // The level below the tab bar: sub-menus (Issues list/board, PR sub-tabs,
+    // Settings/Nodes tabs) and the item open inside them (issue, pull, commit,
+    // file, chat room). Capture and replay are deliberately adjacent.
+    void captureNavSubPlace(NavPlace &place) const;
+    void applyNavSubPlace(const NavPlace &place);
+    QString openRepoFilePath() const; // file the code editor is showing
     QString navPlaceLabel(const NavPlace &place) const; // human-readable trail destination
     void navigateBack();
     void navigateForward();
@@ -5861,17 +5867,38 @@ private:
     // place we landed on: section, repository, repo tab, and—inside Git—the
     // browsed branch. This lets Back / Forward cross Code ↔ Git and branch ↔
     // branch rather than treating them as the same Code-tab location.
+    //
+    // The trail goes one level deeper than the tab bar (adhoc #50): the sub-menu
+    // a tab is showing (Issues' list/board/labels, a PR's Conversation/Files,
+    // the Settings and Nodes tab bars) and the item open inside it (issue, pull,
+    // commit, file, chat conversation) are all part of the place, so opening one
+    // and pressing Back returns to the list you came from instead of jumping a
+    // whole tab away.
     struct NavPlace {
         int section = 0;
         int repoIndex = -1;
         int detailTab = -1;
         int overviewPage = -1; // files=0, Git=1, branches=2, worktrees=3
         QString branch;
+        // Sub-menu inside the current tab: the Issues list stack (table /
+        // milestones / labels / board), a pull request's sub-tabs, or the
+        // Settings / Nodes QTabWidget page when the place is one of those
+        // sections. -1 when the tab has no sub-menu.
+        int subTab = -1;
+        // The issue or pull request opened in that tab's detail pane (-1 = none).
+        int itemNumber = -1;
+        QString commit;    // Git view: the commit whose diff is open
+        QString filePath;  // Code view: the file open in the editor
+        QString overviewDir; // Code view: the directory the file list is showing
+        QString conversation; // Chat: the room / DM on screen
         bool operator==(const NavPlace &o) const
         {
             return section == o.section && repoIndex == o.repoIndex &&
                    detailTab == o.detailTab && overviewPage == o.overviewPage &&
-                   branch == o.branch;
+                   branch == o.branch && subTab == o.subTab &&
+                   itemNumber == o.itemNumber && commit == o.commit &&
+                   filePath == o.filePath && overviewDir == o.overviewDir &&
+                   conversation == o.conversation;
         }
     };
     QPushButton *m_navBackButton = nullptr;

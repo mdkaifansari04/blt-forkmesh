@@ -13673,8 +13673,12 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
     tabs->addTab(buildRelaysSection(), QStringLiteral("Relays"));
     tabs->addTab(buildNodesSection(), QStringLiteral("Nodes"));
     tabs->addTab(buildHostsSection(), QStringLiteral("Hosts"));
-    connect(tabs, &QTabWidget::currentChanged, this,
-            [this](int index) { refreshNetworkTab(index); });
+    connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
+        refreshNetworkTab(index);
+        // Relays / Nodes / Hosts / diagnostics are separate destinations, so the
+        // Back arrow returns to the tab you were on (adhoc #50).
+        scheduleNavRecord();
+    });
 
     auto *endpointsPage = networkTabPage();
     auto *endpointsLayout = qobject_cast<QVBoxLayout *>(endpointsPage->layout());
