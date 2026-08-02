@@ -3480,7 +3480,9 @@ void MainWindow::toggleRepositoryRatchet(bool enabled)
     }
     flashMessage(enabled ? QStringLiteral("Ratchet Mode enabled: commits must shrink or stay flat.")
                          : QStringLiteral("Ratchet Mode disabled."));
-    refreshRepositoryStats();
+    // The button already reflects the new state. Do not run the daily stats
+    // capture here: that writes the tracked trend document and would make a
+    // local-only mode toggle appear to require a repository commit.
 }
 
 // A UI stall ended: record it, surface it in the system log, and reflect the

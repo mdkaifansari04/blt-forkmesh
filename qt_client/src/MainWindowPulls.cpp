@@ -1883,7 +1883,11 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     // The graph browses the PR's head branch when it still exists, so the view
     // reads as one "<head> -> <base>" comparison (adhoc #16). With the branch
     // gone there is nothing to browse, so the graph stays on the default branch.
-    const QString graphRef = liveBranch ? pr.head : repoDefaultBranchFast();
+    const QString defaultBase = repoDefaultBranchFast();
+    m_branchCompareBase =
+        pr.base.trimmed().isEmpty() || pr.base == defaultBase ? QString()
+                                                               : pr.base;
+    const QString graphRef = liveBranch ? pr.head : defaultBase;
     if (!graphRef.isEmpty() && m_repoBranch != graphRef)
         setRepoBranch(graphRef);
     setCommitWorkspacePage(kCommitWorkspaceRangePage);
