@@ -131,6 +131,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QProgressBar>
+#include <QProxyStyle>
 #include <QTextCursor>
 #include <QTimeZone>
 #include <QPushButton>
@@ -152,6 +153,7 @@
 #include <QStringList>
 #include <QStringListModel>
 #include <QStyle>
+#include <QStyleOptionButton>
 #include <QStylePainter>
 #include <QStyledItemDelegate>
 #include <QStyleHints>
@@ -7344,6 +7346,123 @@ inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleD
     return out;
 }
 
+// Shared painter for ordinary page actions that receive an Octicon. The newer
+// repository controls put the glyph above a short caption; installing this
+// proxy from setOcticon() extends that same visual language to actions on every
+// lazily-built page without requiring hundreds of call sites to remember a
+// special QPushButton subclass.
+//
+// Purpose-built controls (repo/activity tabs, icon-only buttons, and the bottom
+// status bar) keep their own painters or geometry. Extra-small actions stay
+// horizontal because they live inside dense rows where a 44px tool would not
+// fit.
+class PageIconButtonStyle final : public QProxyStyle
+{
+public:
+    PageIconButtonStyle() : QProxyStyle(QStringLiteral("Fusion")) {}
+
+    QSize sizeFromContents(ContentsType type, const QStyleOption *option,
+                           const QSize &contentsSize,
+                           const QWidget *widget) const override
+    {
+        QSize size = QProxyStyle::sizeFromContents(type, option, contentsSize,
+                                                   widget);
+        const auto *button = qobject_cast<const QPushButton *>(widget);
+        const auto *buttonOption = qstyleoption_cast<const QStyleOptionButton *>(option);
+        if (type != CT_PushButton || !usesStackedLayout(button, buttonOption))
+            return size;
+
+        QFont caption = button->font();
+        caption.setPixelSize(10);
+        caption.setWeight(QFont::DemiBold);
+        const int textWidth = QFontMetrics(caption).horizontalAdvance(
+            buttonOption->text);
+        const int iconWidth = qMax(16, buttonOption->iconSize.width());
+        // The stacked form is intentionally narrower than Qt's ordinary
+        // side-by-side icon + caption calculation.
+        size.setWidth(qMax(44, qMax(textWidth, iconWidth) + 16));
+        size.setHeight(qMax(size.height(), 44));
+        return size;
+    }
+
+    void drawControl(ControlElement element, const QStyleOption *option,
+                     QPainter *painter,
+                     const QWidget *widget = nullptr) const override
+    {
+        const auto *button = qobject_cast<const QPushButton *>(widget);
+        const auto *buttonOption = qstyleoption_cast<const QStyleOptionButton *>(option);
+        if (element != CE_PushButtonLabel ||
+            !usesStackedLayout(button, buttonOption)) {
+            QProxyStyle::drawControl(element, option, painter, widget);
+            return;
+        }
+
+        painter->save();
+        const QRect content = buttonOption->rect.adjusted(4, 3, -4, -3);
+        const QSize iconSize(qMax(16, buttonOption->iconSize.width()),
+                             qMax(16, buttonOption->iconSize.height()));
+        const int captionHeight = 13;
+        const int gap = 2;
+        const int blockHeight = iconSize.height() + gap + captionHeight;
+        const int top = content.top() + qMax(0, (content.height() - blockHeight) / 2);
+        const QRect iconRect(content.center().x() - iconSize.width() / 2, top,
+                             iconSize.width(), iconSize.height());
+
+        QIcon::Mode mode = QIcon::Normal;
+        if (!(buttonOption->state & State_Enabled))
+            mode = QIcon::Disabled;
+        else if (buttonOption->state & State_MouseOver)
+            mode = QIcon::Active;
+        const QIcon::State state = (buttonOption->state & State_On)
+                                       ? QIcon::On
+                                       : QIcon::Off;
+        buttonOption->icon.paint(painter, iconRect, Qt::AlignCenter, mode, state);
+
+        QFont caption = button->font();
+        caption.setPixelSize(10);
+        caption.setWeight(QFont::DemiBold);
+        painter->setFont(caption);
+        const QPalette::ColorGroup colorGroup =
+            (buttonOption->state & State_Enabled) ? QPalette::Active
+                                                   : QPalette::Disabled;
+        painter->setPen(
+            buttonOption->palette.color(colorGroup, QPalette::ButtonText));
+        const QRect textRect(content.left(), iconRect.bottom() + gap,
+                             content.width(), captionHeight);
+        const QString text = QFontMetrics(caption).elidedText(
+            buttonOption->text, Qt::ElideRight, textRect.width());
+        painter->drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, text);
+        painter->restore();
+    }
+
+private:
+    static bool usesStackedLayout(const QPushButton *button,
+                                  const QStyleOptionButton *option)
+    {
+        if (!button || !option || option->icon.isNull() || option->text.isEmpty() ||
+            !button->property("forkmeshPageIconButton").toBool() ||
+            button->property("buttonSize").toString() == QStringLiteral("xs"))
+            return false;
+
+        for (const QWidget *ancestor = button; ancestor;
+             ancestor = ancestor->parentWidget()) {
+            if (ancestor->objectName() == QStringLiteral("appStatusBar"))
+                return false;
+        }
+        return true;
+    }
+};
+
+inline QStyle *pageIconButtonStyle()
+{
+    static PageIconButtonStyle *style = [] {
+        auto *created = new PageIconButtonStyle;
+        created->setParent(qApp);
+        return created;
+    }();
+    return style;
+}
+
 inline void applyStoredOcticon(QPushButton *button)
 {
     if (!button)
@@ -7372,6 +7491,15 @@ inline void applyStoredOcticon(QPushButton *button)
         button->setIcon(themedOcticon(name, color, px));
     }
     button->setIconSize(QSize(px, px));
+    // A captioned Octicon action uses the current icon-over-caption component
+    // on every page. Custom-painted VerticalIconButton/StackedIconButton
+    // instances still own their paintEvent, so this style only supplies their
+    // unchanged chrome when they ask Qt to draw it.
+    if (!button->text().isEmpty()) {
+        button->setProperty("forkmeshPageIconButton", true);
+        button->setStyle(pageIconButtonStyle());
+        button->updateGeometry();
+    }
 }
 
 inline void setOcticon(QPushButton *button, const QString &name, int size = 16,

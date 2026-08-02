@@ -955,6 +955,17 @@ QPushButton[buttonSize="xs"] {
     min-height: 18px; max-height: 22px; padding: 1px 7px;
     font-size: 11px; border-radius: 5px;
 }
+/* Captioned Octicon actions use the same 44px icon-over-label tile on every
+   page. Extra-small row controls remain horizontal and retain the rule above. */
+QPushButton[forkmeshPageIconButton="true"] {
+    min-height: 40px; max-height: 44px; padding: 2px 8px;
+}
+QPushButton[forkmeshPageIconButton="true"][buttonSize="xs"] {
+    min-height: 18px; max-height: 22px; padding: 1px 7px;
+}
+#appStatusBar QPushButton[forkmeshPageIconButton="true"] {
+    min-height: 0; max-height: 18px; padding: 0 4px;
+}
 QPushButton#repoTab {
     background: transparent;
     border: none;
@@ -2319,6 +2330,16 @@ QPushButton[buttonSize="sm"] {
 QPushButton[buttonSize="xs"] {
     min-height: 18px; max-height: 22px; padding: 1px 7px;
     font-size: 11px; border-radius: 5px;
+}
+/* App-wide captioned Octicon actions share the new icon-over-label tile. */
+QPushButton[forkmeshPageIconButton="true"] {
+    min-height: 40px; max-height: 44px; padding: 2px 8px;
+}
+QPushButton[forkmeshPageIconButton="true"][buttonSize="xs"] {
+    min-height: 18px; max-height: 22px; padding: 1px 7px;
+}
+#appStatusBar QPushButton[forkmeshPageIconButton="true"] {
+    min-height: 0; max-height: 18px; padding: 0 4px;
 }
 QPushButton#repoTab {
     background: transparent;
