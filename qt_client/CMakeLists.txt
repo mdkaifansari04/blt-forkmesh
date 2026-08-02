@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.9 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.10 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -299,6 +299,8 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowReleases.cpp
     src/MainWindowShortcuts.cpp
     src/MainWindowSearch.cpp
+    src/GlobalSearchMatch.h
+    src/GlobalSearchMatch.cpp
     src/MainWindowSettings.cpp
     src/MainWindowMcp.cpp
     src/MainWindowData.cpp
@@ -556,6 +558,8 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
+        src/GlobalSearchMatch.h
+        src/GlobalSearchMatch.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/UsageLimitCalendar.h
