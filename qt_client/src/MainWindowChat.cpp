@@ -797,6 +797,29 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddModeSelector->addItem(agentControlIcon(8), kAgentAskModeLabel, false);
     m_quickAddModeSelector->addItem(agentControlIcon(9), QStringLiteral("Plan"), false);
     m_quickAddModeSelector->addItem(agentControlIcon(10), QStringLiteral("Edit"), false);
+    // The four labels name the mode but not what it permits, and the closed
+    // control shows only an icon — so the permission each one grants is spelled
+    // out beside its label once the popup is open (adhoc #1204). The item text
+    // itself stays as-is: it is what kAgentModeSetting persists and what the
+    // launch paths compare against.
+    {
+        const QStringList permissions = {
+            QStringLiteral("run without asking"),
+            QStringLiteral("confirm every change"),
+            QStringLiteral("read-only, propose a plan"),
+            QStringLiteral("edit files, ask before commands"),
+        };
+        for (int i = 0; i < permissions.size() && i < m_quickAddModeSelector->count();
+             ++i) {
+            m_quickAddModeSelector->setItemData(i, permissions.at(i),
+                                                kAgentChoiceDescriptionRole);
+            m_quickAddModeSelector->setItemData(
+                i,
+                QStringLiteral("%1 — %2")
+                    .arg(m_quickAddModeSelector->itemText(i), permissions.at(i)),
+                Qt::ToolTipRole);
+        }
+    }
     m_quickAddModeSelector->view()->setIconSize(QSize(26, 26));
     m_quickAddModeSelector->setMaxVisibleItems(30);
     m_quickAddModeSelector->setToolTip(
@@ -2144,6 +2167,14 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // Build the one visible agent/model menu from the canonical hidden provider and
 // model controls. Each row stores provider in UserRole and model in UserRole+1,
 // allowing a single click to update both without changing the launch contract.
+//
+// Rows read as the bare model name (adhoc #1204): "Opus 5", not "Opus 5 · Claude
+// Code". Which CLI runs a model follows from the model, so the suffix was the
+// same handful of words repeated down the whole menu; the tooltip still carries
+// it. Models are ordered strongest-first by agentModelPowerRank(), and the
+// superseded/small-sibling ones agentModelIsMinorTier() flags are left out
+// entirely — except when one of them is the live selection, which must stay
+// visible or picking it once would make it unpickable again.
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -2159,14 +2190,27 @@ void MainWindow::refreshQuickAddAgentModelSelector()
     const QSignalBlocker blocker(m_quickAddAgentModelSelector);
     m_quickAddAgentModelSelector->clear();
 
-    auto addChoice = [this](const QIcon &icon, const QString &label,
-                            const QString &provider, const QString &model) {
-        const int row = m_quickAddAgentModelSelector->count();
-        m_quickAddAgentModelSelector->addItem(icon, label, provider);
-        m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
+    struct Choice {
+        QIcon icon;
+        QString label;
+        QString provider;
+        QString model;
+        QString agentName; // which CLI/API runs it, for the tooltip
+        int rank = 0;      // higher sorts nearer the top
+        bool minor = false;
     };
-    addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
-              QStringLiteral("manual"), QString());
+    QList<Choice> models;
+    auto addModel = [&models, selectedProvider, selectedModel](
+                        const QIcon &icon, const QString &label,
+                        const QString &provider, const QString &model,
+                        const QString &agentName) {
+        const bool isSelection =
+            provider == selectedProvider &&
+            (selectedModel.isEmpty() || model == selectedModel);
+        models.append(Choice{icon, label, provider, model, agentName,
+                             agentModelPowerRank(model, label),
+                             !isSelection && agentModelIsMinorTier(model, label)});
+    };
 
     QComboBox claudeModels;
     populateClaudeModelCombo(&claudeModels);
@@ -2184,26 +2228,57 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             icon = 2;
         else if (lower.contains(QLatin1String("haiku")))
             icon = 3;
-        addChoice(agentControlIcon(icon),
-                  QStringLiteral("%1 · Claude Code")
-                      .arg(compactModelName(claudeModels.itemText(i))),
-                  QStringLiteral("claude-code"), id);
+        addModel(agentControlIcon(icon),
+                 compactModelName(claudeModels.itemText(i)),
+                 QStringLiteral("claude-code"), id,
+                 QStringLiteral("Claude Code"));
     }
 
     QComboBox codexModels;
     populateCodexModelCombo(&codexModels);
     for (int i = 0; i < codexModels.count(); ++i) {
-        addChoice(agentControlIcon(4 + (i % 3)),
-                  QStringLiteral("%1 · Codex").arg(codexModels.itemText(i)),
-                  kCodexProvider, codexModels.itemData(i).toString());
+        addModel(agentControlIcon(4 + (i % 3)), codexModels.itemText(i),
+                 kCodexProvider, codexModels.itemData(i).toString(),
+                 QStringLiteral("Codex"));
+    }
+
+    // Strongest first. Rank ties (Opus 4.8 and Sonnet 5 score the same) keep the
+    // order the provider catalog listed them in, so the menu never reshuffles
+    // between two equally-ranked models from one refresh to the next.
+    std::stable_sort(models.begin(), models.end(),
+                     [](const Choice &a, const Choice &b) {
+                         return a.rank > b.rank;
+                     });
+
+    auto addChoice = [this](const QIcon &icon, const QString &label,
+                            const QString &provider, const QString &model,
+                            const QString &tooltip) {
+        const int row = m_quickAddAgentModelSelector->count();
+        m_quickAddAgentModelSelector->addItem(icon, label, provider);
+        m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
+        if (!tooltip.isEmpty())
+            m_quickAddAgentModelSelector->setItemData(row, tooltip,
+                                                      Qt::ToolTipRole);
+    };
+    addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
+              QStringLiteral("manual"), QString(),
+              QStringLiteral("File an issue from this prompt instead of "
+                             "starting an agent"));
+    for (const Choice &choice : models) {
+        if (choice.minor)
+            continue;
+        addChoice(choice.icon, choice.label, choice.provider, choice.model,
+                  QStringLiteral("%1 · %2").arg(choice.label, choice.agentName));
     }
 
     // These API agents do not expose a per-run model chooser in this composer,
     // but remain first-class choices in the combined menu.
     addChoice(agentControlIcon(4), QStringLiteral("OpenAI API"),
-              QStringLiteral("openai"), QString());
+              QStringLiteral("openai"), QString(),
+              QStringLiteral("Headless OpenAI API agent"));
     addChoice(agentControlIcon(2), QStringLiteral("Claude API"),
-              QStringLiteral("claude-api"), QString());
+              QStringLiteral("claude-api"), QString(),
+              QStringLiteral("Headless Claude API agent"));
 
     int selected = -1;
     for (int i = 0; i < m_quickAddAgentModelSelector->count(); ++i) {
@@ -2219,9 +2294,26 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         }
     }
     m_quickAddAgentModelSelector->setCurrentIndex(selected >= 0 ? selected : 0);
+    // The visible label is the bare model name now, so the accessible name and
+    // the control's tooltip carry the "which agent runs it" half that the row
+    // labels dropped.
+    const int current = m_quickAddAgentModelSelector->currentIndex();
+    const QString currentTip =
+        current >= 0
+            ? m_quickAddAgentModelSelector->itemData(current, Qt::ToolTipRole)
+                  .toString()
+            : QString();
     m_quickAddAgentModelSelector->setAccessibleName(
         QStringLiteral("Agent and model: %1")
-            .arg(m_quickAddAgentModelSelector->currentText()));
+            .arg(currentTip.isEmpty()
+                     ? m_quickAddAgentModelSelector->currentText()
+                     : currentTip));
+    m_quickAddAgentModelSelector->setToolTip(
+        currentTip.isEmpty()
+            ? QStringLiteral("Choose the agent and model that will handle this "
+                             "prompt.")
+            : QStringLiteral("%1. Click to choose a different agent or model.")
+                  .arg(currentTip));
 }
 
 // Ask the installed `claude` CLI which --effort values it accepts (adhoc #38)
