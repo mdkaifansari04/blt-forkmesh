@@ -68,6 +68,25 @@ constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
 // the log is persisted line by line. A pending summary is flushed once its
 // first ticket is this old, or as soon as the strip goes quiet.
 constexpr qint64 kBackgroundTaskFastFlushMs = 2000;
+
+QPushButton *makeInlineHelpButton(const QString &accessibleName,
+                                  const QString &helpText,
+                                  QWidget *parent = nullptr)
+{
+    auto *button = new QPushButton(parent);
+    button->setObjectName(QStringLiteral("inlineHelpButton"));
+    button->setAccessibleName(accessibleName);
+    button->setAccessibleDescription(helpText);
+    button->setToolTip(
+        QStringLiteral("<div style='width: 420px; white-space: normal;'>%1</div>")
+            .arg(helpText.toHtmlEscaped()));
+    button->setCursor(Qt::PointingHandCursor);
+    button->setFlat(true);
+    button->setFixedSize(24, 24);
+    setOcticon(button, "info", 14);
+    return button;
+}
+
 const QString kVultrProvisionSetting =
     QStringLiteral("hosts/vultrProvision/v1");
 constexpr int kVultrProvisionStageCount = 6;

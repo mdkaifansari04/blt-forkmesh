@@ -758,7 +758,6 @@ void MainWindow::ensureDirectMirrorRegistrationTimer(QObject *parent)
     connect(m_directMirrorRegistrationTimer, &QTimer::timeout, this,
             [this] {
                 checkDirectMirrorGatewayHealth();
-                registerDirectMirrorEndpoint();
             });
     m_directMirrorRegistrationTimer->start();
 }
@@ -2075,6 +2074,14 @@ void MainWindow::checkDirectMirrorGatewayHealth()
                             .toString() ==
                         QLatin1String("direct-https");
                 reply->deleteLater();
+                // The loopback health request is asynchronous. Registering
+                // beside checkDirectMirrorGatewayHealth() made a fresh
+                // headless node race the reply while the previous healthy bit
+                // was still false, silently skipping its endpoint renewal.
+                // Chain registration from the verified reply so every initial
+                // start and five-minute renewal uses current health state.
+                if (m_directMirrorGatewayHealthy)
+                    registerDirectMirrorEndpoint();
                 refreshControlNode();
             });
 }

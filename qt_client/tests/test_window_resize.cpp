@@ -1774,14 +1774,26 @@ int main(int argc, char *argv[])
               QStringLiteral("agent matrix shows only running, queued, and waiting "
                              "sessions (not terminal history)"));
 
+        // The chrome matrix is deliberately unbounded: every active agent must
+        // remain visible and clickable, including sessions beyond its former
+        // 66-dot limit.
+        for (int id = 133908; id < 133978; ++id)
+            addAgent(id, AgentStatus::Running);
+        window.testRefreshAgentDotMatrix();
+        check(window.testAgentDotCount() == dotsBefore + 73,
+              QStringLiteral("agent matrix keeps every active session visible "
+                             "beyond 66 dots"));
+
         window.testSetAgentSessionStatus(133901, AgentStatus::Success);
         window.testSetAgentSessionStatus(133902, AgentStatus::Success);
         window.testSetAgentSessionStatus(133903, AgentStatus::Success);
+        for (int id = 133908; id < 133978; ++id)
+            window.testSetAgentSessionStatus(id, AgentStatus::Success);
         check(window.testAgentDotCount() == dotsBefore,
               QStringLiteral("agent matrix removes each dot when its session "
                              "reaches a terminal state"));
 
-        for (int id = 133901; id <= 133907; ++id)
+        for (int id = 133901; id < 133978; ++id)
             window.testRemoveAgentSession(id);
     }
 
@@ -2268,7 +2280,7 @@ int main(int argc, char *argv[])
                           "(got id %1)").arg(mirror1Id));
             check(!sawOffline,
                   QStringLiteral("offline mirror nodes are hidden while Online only is checked"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 1) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 2) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
             // Columns: Node, Owner, Latest commit, Message, Author, Synced,
@@ -2437,6 +2449,19 @@ int main(int argc, char *argv[])
         check(window.testGitPromptFloatsBottomRight(),
               QStringLiteral("Git floats only its prompt at the lower-right, "
                              "leaving the graph's left side at full height"));
+        // Returning through the Code route must reattach and reveal the footer
+        // composer. Reparenting a hidden QWidget does not make it visible again.
+        window.testClickRepoDetailTab(0);
+        QApplication::processEvents();
+        QFrame *promptWrapper = window.findChild<QFrame *>(
+            QStringLiteral("promptWrapper"));
+        QWidget *footerDock = window.findChild<QWidget *>(
+            QStringLiteral("logDock"));
+        check(promptWrapper && footerDock &&
+                  promptWrapper->parentWidget() == footerDock &&
+                  promptWrapper->isVisibleTo(&window),
+              QStringLiteral("returning from Git to Code restores the visible "
+                             "footer prompt"));
 
         // adhoc #420: following a branch link must land on the branch straight
         // away. The panel's git reads run on a worker thread now, so the
