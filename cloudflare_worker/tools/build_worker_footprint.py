@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the measured Worker/source footprint used by the World chart."""
+"""Validate the measured Worker/source footprint used by the World chart.
+
+This module is deliberately read-only.  The checked-in chart is a fixed design
+asset and deploy/build commands must never rewrite it from a transient checkout.
+"""
 
 import json
 import re
@@ -299,26 +303,6 @@ def needs_refresh(data=None):
         return True
 
 
-def build(force=False):
-    # validate_budgets always runs against the live tree, so the Free-plan
-    # growth guard still fails the deploy build even when nothing is rewritten.
-    snapshot = validate_budgets()
-    if not force and not needs_refresh(snapshot):
-        return False
-    content = rendered(snapshot)
-    old = OUTPUT.read_text(encoding="utf-8") if OUTPUT.exists() else ""
-    if old == content:
-        return False
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(content, encoding="utf-8")
-    return True
-
-
 if __name__ == "__main__":
-    import sys
-
-    print(
-        "Built Worker footprint chart data."
-        if build(force="--force" in sys.argv[1:])
-        else "Worker footprint chart data is up to date."
-    )
+    validate_budgets()
+    print("Worker footprint budgets are valid; the chart asset was not modified.")

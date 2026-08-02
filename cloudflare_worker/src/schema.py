@@ -655,7 +655,10 @@ SCHEMA_STATEMENTS = [
         claimed_at INTEGER NOT NULL)""",
     # Edge repository-render monitor state. One row is enough to deduplicate
     # outage/recovery mail while the normal status tables retain the public
-    # minute/hour/day history.
+    # minute/hour/day history. Pings and email are independently switchable, so
+    # each channel keeps its own delivered-transition marker: pinged_state must
+    # not be inferred from notified_state or a deployment with mail off would
+    # re-announce the same recovery on every cron tick.
     """CREATE TABLE IF NOT EXISTS repository_monitor_state (
         monitor_id TEXT PRIMARY KEY,
         is_up INTEGER NOT NULL DEFAULT 1,
@@ -663,7 +666,8 @@ SCHEMA_STATEMENTS = [
         outage_started_at INTEGER NOT NULL DEFAULT 0,
         checked_at INTEGER NOT NULL,
         reason TEXT,
-        notified_state TEXT NOT NULL DEFAULT '')""",
+        notified_state TEXT NOT NULL DEFAULT '',
+        pinged_state TEXT NOT NULL DEFAULT '')""",
     # Founders-outreach team: accounts an admin has authorized to send email
     # from the shared founders address via /outreach. `name` is the public
     # account name in plaintext (like users.username) so the roster is listable
