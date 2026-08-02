@@ -10,6 +10,7 @@
 #include "ServerNode.h"
 #include "SingleInstance.h"
 #include "StartupSplash.h"
+#include "StartupTrace.h"
 #include "SystemStats.h"
 #include "Theme.h"
 
