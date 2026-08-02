@@ -14408,6 +14408,11 @@ class ForkMeshWorld extends HTMLElement {
                   )}</code> to confirm
                     <input name="confirmation" autocomplete="off" required />
                   </label>
+                  <ol class="world-node-delete-progress" aria-label="Node deletion progress">
+                    <li data-world-delete-step="1" data-state="ready"><b>1</b><span>Confirm node</span></li>
+                    <li data-world-delete-step="2" data-state="waiting"><b>2</b><span>Erase scoped state</span></li>
+                    <li data-world-delete-step="3" data-state="waiting"><b>3</b><span>Refresh the network</span></li>
+                  </ol>
                   <div class="world-detail-actions">
                     <button class="world-danger-action" type="submit">Delete this node entirely</button>
                   </div>
@@ -15063,6 +15068,14 @@ class ForkMeshWorld extends HTMLElement {
         new FormData(form).get("confirmation") || "",
       ).trim();
       const status = form.querySelector("[data-world-admin-delete-status]");
+      const setStep = (step, state) => {
+        form.querySelectorAll("[data-world-delete-step]").forEach((item) => {
+          const number = Number(item.dataset.worldDeleteStep || 0);
+          if (number < step) item.dataset.state = "complete";
+          else if (number === step) item.dataset.state = state;
+          else item.dataset.state = "waiting";
+        });
+      };
       if (confirmation !== `DELETE ${nodeName}`) {
         if (status) status.textContent = `Type DELETE ${nodeName} exactly.`;
         return;
@@ -15072,7 +15085,8 @@ class ForkMeshWorld extends HTMLElement {
       }
       const controls = [...form.elements];
       controls.forEach((control) => { control.disabled = true; });
-      if (status) status.textContent = "Deleting node and scoped state…";
+      setStep(2, "active");
+      if (status) status.textContent = "2/3 — Deleting node and scoped state…";
       try {
         const result = await this.postJSON("/api/world/admin/nodes/delete", {
           nodeName,
@@ -15089,13 +15103,19 @@ class ForkMeshWorld extends HTMLElement {
             ? result.identifiers
             : [],
         });
-        this.closeLandmark();
+        setStep(3, "active");
+        if (status) status.textContent = "3/3 — Refreshing the network…";
         if (effectStarted) {
           await new Promise((resolve) => window.setTimeout(resolve, 760));
         }
         await this.loadWorldData({ forceMirrors: true });
+        setStep(3, "complete");
+        if (status) status.textContent = "3/3 complete — Node deleted.";
+        await new Promise((resolve) => window.setTimeout(resolve, 450));
+        this.closeLandmark();
       } catch (error) {
         controls.forEach((control) => { control.disabled = false; });
+        setStep(2, "error");
         if (status) {
           status.textContent = `Delete failed: ${String(
             error?.message || "unknown error",
