@@ -1821,8 +1821,9 @@ int MainWindow::pendingActionCount() const
 }
 
 // The recent-runs strip beside the agent fleet matrix on the window-chrome line
-// (adhoc #70): the newest ActionRunStrip::kMaxCells runs, newest on the left,
-// each square tinted with the same colour the Actions table gives that status.
+// (adhoc #70): the newest ActionRunStrip::kMaxCells runs, newest top-left in the
+// same three-deep grid the agent and node dots use, each square tinted with the
+// same colour the Actions table gives that status.
 // Driven from updateNotificationButton(), which every run-state change already
 // reaches.
 void MainWindow::refreshActionRunStrip()
@@ -1846,6 +1847,7 @@ void MainWindow::refreshActionRunStrip()
     }
     m_actionRunStrip->setCells(cells);
     m_actionRunStrip->setVisible(!cells.isEmpty());
+    updateChromeDotDivider(); // the runs' hairline follows the strip itself
     if (cells.isEmpty()) {
         m_actionRunStripTooltipKey.clear();
         return;

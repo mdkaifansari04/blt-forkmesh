@@ -8924,7 +8924,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
-    tabRow->setContentsMargins(12, 0, 12, 0);
+    // 4px of air above the icons so the row doesn't sit flush against the
+    // window-chrome line. The rail carries the same inset (buildBreadcrumb's
+    // m_appNavigationRailLayout) so its first icon stays on this row's line.
+    tabRow->setContentsMargins(12, kRepoTabRowTopInset, 12, 0);
     tabRow->setSpacing(10);
     for (int i = 0; i < tabs.size(); ++i) {
         // Four ids get no top-bar tab: Commits (1), reached from the activity
@@ -9038,9 +9041,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBarScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     tabBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     tabBarScroll->setMinimumWidth(0);
-    // Tall enough for the stacked icon-over-caption tabs (44px, adhoc #91)
-    // plus the horizontal scrollbar a narrow window needs.
-    tabBarScroll->setFixedHeight(56);
+    // Tall enough for the stacked icon-over-caption tabs (44px, adhoc #91),
+    // their top inset, plus the horizontal scrollbar a narrow window needs.
+    tabBarScroll->setFixedHeight(56 + kRepoTabRowTopInset);
 
     // The integrity-pin warning ("clones are being rejected — reset the pin")
     // doesn't live in an in-page banner here; refreshRepoPinBanner surfaces it as
