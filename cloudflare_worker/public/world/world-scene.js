@@ -9540,218 +9540,6 @@ function repositoryRecordPagerTexture(THREE, title, subtitle, color) {
   });
 }
 
-function repositoryAgentTerminalTexture(THREE, task = {}) {
-  const provider =
-    String(task.provider || "").toUpperCase() === "CODEX"
-      ? "CODEX"
-      : "CLAUDE";
-  const status = String(
-    task.displayStatus || task.status || "running",
-  ).toUpperCase();
-  const color = provider === "CODEX" ? "#8fffe0" : "#ef9f74";
-  const history = Array.isArray(task.history) ? task.history : [];
-  const latestTerminalLine = history
-    .slice()
-    .reverse()
-    .map((entry) =>
-      String(entry?.text || "")
-        .replace(/[\u0000-\u001f\u007f]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim(),
-    )
-    .find(Boolean);
-  return canvasTexture(THREE, 512, 384, (context) => {
-    context.fillStyle = "#06130f";
-    context.fillRect(0, 0, 512, 384);
-    context.lineWidth = 10;
-    context.strokeStyle = color;
-    context.strokeRect(7, 7, 498, 370);
-    context.textAlign = "left";
-    context.textBaseline = "middle";
-    context.fillStyle = color;
-    context.font = '900 44px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(provider, 28, 52);
-    context.textAlign = "right";
-    context.fillStyle = "#9ef7c6";
-    context.font = '800 30px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(status, 484, 52);
-    context.textAlign = "left";
-    context.fillStyle = "#f4fff8";
-    context.font = '800 31px "ForkMesh Mono", ui-monospace, monospace';
-    wrapCanvasText(
-      context,
-      String(task.title || "Agent session"),
-      28,
-      104,
-      456,
-      36,
-      2,
-    );
-    context.fillStyle = "#9ef7c6";
-    context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      clipCanvasText(
-        context,
-        latestTerminalLine ? `> ${latestTerminalLine}` : "> session is live…",
-        456,
-      ),
-      28,
-      218,
-    );
-    context.fillStyle = "#77d9ff";
-    context.font = '800 25px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      `NODE · ${String(task.targetNode || "PENDING").toUpperCase().slice(0, 24)}`,
-      28,
-      272,
-    );
-    context.fillStyle = "#91a39a";
-    context.font = '700 20px "ForkMesh Mono", ui-monospace, monospace';
-    const age = Number(task.updatedAt)
-      ? mirrorCommitAgeLabel(
-          Math.max(0, Date.now() - Number(task.updatedAt)),
-        )
-      : "NOW";
-    context.fillText(`UPDATED ${String(age).toUpperCase()}`, 28, 322);
-    context.textAlign = "right";
-    context.fillStyle = color;
-    context.font = '800 18px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("CLICK · TRANSCRIPT + PROMPT", 484, 354);
-  });
-}
-
-function createRepositoryAgentTerminal(THREE, task = {}) {
-  const group = new THREE.Group();
-  group.name = `repository-agent-robot-terminal:${String(task.id || "session")}`;
-  const provider =
-    String(task.provider || "").toUpperCase() === "CODEX"
-      ? "codex"
-      : "claude";
-  const accent = provider === "codex" ? "#8fffe0" : "#ef9f74";
-  const bodyMaterial = makeMaterial(THREE, "#10251f", {
-    emissive: provider === "codex" ? "#123c32" : "#3c271f",
-    emissiveIntensity: 0.34,
-    metalness: 0.34,
-    roughness: 0.48,
-  });
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(1.34, 0.42, 0.9),
-    bodyMaterial,
-  );
-  body.name = `repository-agent-robot-body:${String(task.id || "")}`;
-  body.position.set(0, 0.3, 0);
-  group.add(body);
-  for (const side of [-1, 1]) {
-    const wheel = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.23, 0.23, 0.14, 12),
-      makeMaterial(THREE, "#17201e", {
-        metalness: 0.46,
-        roughness: 0.64,
-      }),
-    );
-    wheel.name = `repository-agent-robot-wheel:${side}`;
-    wheel.rotation.z = Math.PI / 2;
-    wheel.position.set(side * 0.72, 0.24, 0.08);
-    group.add(wheel);
-    const arm = new THREE.Mesh(
-      new THREE.BoxGeometry(0.16, 0.16, 0.58),
-      bodyMaterial,
-    );
-    arm.name = `repository-agent-robot-arm:${side}`;
-    arm.position.set(side * 0.76, 0.42, -0.02);
-    group.add(arm);
-  }
-  const screenShell = new THREE.Mesh(
-    new THREE.BoxGeometry(1.48, 0.1, 1.08),
-    makeMaterial(THREE, "#0b1714", {
-      emissive: "#102820",
-      emissiveIntensity: 0.3,
-      metalness: 0.24,
-    }),
-  );
-  screenShell.name = `repository-agent-robot-screen-shell:${String(task.id || "")}`;
-  screenShell.position.set(0, 0.61, 0);
-  group.add(screenShell);
-  const screen = new THREE.Mesh(
-    new THREE.PlaneGeometry(1.34, 0.94),
-    new THREE.MeshBasicMaterial({
-      map: repositoryAgentTerminalTexture(THREE, task),
-      side: THREE.DoubleSide,
-      forceSinglePass: true,
-      toneMapped: false,
-    }),
-  );
-  screen.name = `repository-agent-terminal-screen:${String(task.id || "")}`;
-  // The terminal is the robot's upward-facing face. Visitors can read it from
-  // above instead of looking through a row of upright slabs.
-  screen.rotation.x = -Math.PI / 2;
-  screen.position.set(0, 0.665, 0);
-  screen.userData.landmark = "repositories";
-  screen.userData.agentBotChat = provider;
-  screen.userData.repositoryAgentSession = {
-    id: String(task.id || ""),
-    provider,
-    targetNode: String(task.targetNode || ""),
-    title: String(task.title || "Agent session"),
-    status: String(task.displayStatus || task.status || "running"),
-  };
-  group.add(screen);
-  const status = new THREE.Mesh(
-    new THREE.BoxGeometry(1.48, 0.025, 0.07),
-    makeMaterial(THREE, accent, {
-      emissive: accent,
-      emissiveIntensity: 0.9,
-      roughness: 0.44,
-    }),
-  );
-  status.position.set(0, 0.68, -0.52);
-  group.add(status);
-  const viewButton = new THREE.Mesh(
-    new THREE.PlaneGeometry(0.3, 0.18),
-    new THREE.MeshBasicMaterial({
-      map: canvasTexture(THREE, 256, 144, (context) => {
-        context.clearRect(0, 0, 256, 144);
-        roundedRect(context, 5, 5, 246, 134, 24);
-        context.fillStyle = "#071b17";
-        context.fill();
-        context.lineWidth = 9;
-        context.strokeStyle = accent;
-        context.stroke();
-        context.textAlign = "center";
-        context.textBaseline = "middle";
-        context.fillStyle = accent;
-        context.font = '900 54px "ForkMesh Mono", ui-monospace, monospace';
-        context.fillText("1P", 128, 76);
-      }),
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-      toneMapped: false,
-    }),
-  );
-  viewButton.name =
-    `repository-agent-terminal-first-person:${String(task.id || "")}`;
-  viewButton.rotation.x = -Math.PI / 2;
-  viewButton.position.set(0.48, 0.69, 0.37);
-  viewButton.renderOrder = 48;
-  const viewingPoint = new THREE.Object3D();
-  viewingPoint.name =
-    `repository-agent-terminal-viewing-point:${String(task.id || "")}`;
-  viewingPoint.position.set(0, 0, 1.58);
-  group.add(viewingPoint);
-  viewButton.userData.landmark = "repositories";
-  viewButton.userData.repositoryAgentViewingPad = {
-    target: screen,
-    standingPoint: viewingPoint,
-    sessionId: String(task.id || ""),
-    title: String(task.title || "Agent session"),
-  };
-  group.add(viewButton);
-  group.userData.screen = screen;
-  group.userData.viewButton = viewButton;
-  return group;
-}
-
 function repositoryIssueAgentProviderTexture(THREE, provider, active = false) {
   const claude = provider === "claude-code";
   const color = claude ? "#ef9f74" : "#8fffe0";
@@ -13159,7 +12947,7 @@ function officeDoorStatusTexture(THREE, state = "open") {
   });
 }
 
-function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
+function createOfficeMarineAquarium(THREE, animated) {
   const group = new THREE.Group();
   group.name = "forkmesh-office-marine-aquarium";
   group.position.set(-82.9, 0, -10.5);
@@ -13184,7 +12972,6 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
     Object.freeze({ id: "agent", label: "AGENT" }),
   ]);
   const AQUARIUM_ANIMATION_MS = 1000 / 20;
-  const fishLimit = clamp(Math.round(Number(maxFish) || 24), 6, 48);
   const feedingCenter = new THREE.Vector3(0.68, 6.9, -1.8);
   let feedingStartedAt = -Infinity;
   let feedingActive = false;
@@ -13374,7 +13161,7 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       new THREE.Vector2(species.height * 0.23, half * 0.91),
       new THREE.Vector2(0.075, half),
     ];
-    const geometry = new THREE.LatheGeometry(profile, 24);
+    const geometry = new THREE.LatheGeometry(profile, 12);
     geometry.rotateX(Math.PI / 2);
     geometry.scale(species.thickness / species.height, 1, 1);
     geometry.computeVertexNormals();
@@ -13523,7 +13310,7 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
     const highlightMaterial = new THREE.MeshBasicMaterial({ color: "#ffffff" });
     for (const side of [-1, 1]) {
       const eye = new THREE.Mesh(
-        new THREE.SphereGeometry(species.height * 0.105, 16, 12),
+        new THREE.SphereGeometry(species.height * 0.105, 8, 6),
         eyeWhiteMaterial,
       );
       eye.name = `forkmesh-office-aquarium-fish-eye-${species.id}-${side}`;
@@ -13534,7 +13321,7 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       );
       fish.add(eye);
       const iris = new THREE.Mesh(
-        new THREE.SphereGeometry(species.height * 0.067, 14, 10),
+        new THREE.SphereGeometry(species.height * 0.067, 6, 5),
         irisMaterial,
       );
       iris.name = `forkmesh-office-aquarium-fish-iris-${species.id}-${side}`;
@@ -13545,7 +13332,7 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       );
       fish.add(iris);
       const highlight = new THREE.Mesh(
-        new THREE.SphereGeometry(species.height * 0.018, 8, 6),
+        new THREE.SphereGeometry(species.height * 0.018, 4, 3),
         highlightMaterial,
       );
       highlight.name =
@@ -13560,8 +13347,8 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
         new THREE.TorusGeometry(
           species.height * 0.16,
           species.height * 0.018,
-          6,
-          18,
+          4,
+          10,
           Math.PI * 1.18,
         ),
         irisMaterial,
@@ -13580,8 +13367,8 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       new THREE.TorusGeometry(
         species.height * 0.055,
         species.height * 0.016,
-        6,
-        12,
+        4,
+        8,
       ),
       irisMaterial,
     );
@@ -13590,7 +13377,7 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
     mouth.userData.restZ = mouth.position.z;
     fish.add(mouth);
     const lateralHighlight = new THREE.Mesh(
-      new THREE.SphereGeometry(0.5, 18, 10),
+      new THREE.SphereGeometry(0.5, 8, 5),
       new THREE.MeshBasicMaterial({
         color: "#dfffff",
         transparent: true,
@@ -13608,6 +13395,116 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
     lateralHighlight.position.x = species.thickness * 0.52;
     fish.add(lateralHighlight);
     return { fish, tail, pectoralFins, mouth };
+  }
+
+  // Public-account fish keep an Object3D anchor for their individual routes,
+  // but their visible parts are shared instanced geometry. The old cinematic
+  // model used sixteen meshes and roughly a thousand triangles per account;
+  // this school is 46 triangles per account in three draw submissions.
+  function createInstancedUserFish(THREE, count) {
+    const school = new THREE.Group();
+    school.name = "forkmesh-office-aquarium-user-fish-school";
+    const body = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1, 6, 4),
+      new THREE.MeshStandardMaterial({
+        color: "#ffffff",
+        roughness: 0.48,
+        metalness: 0.03,
+      }),
+      count,
+    );
+    body.name = "forkmesh-office-aquarium-user-fish-bodies";
+    const tail = new THREE.InstancedMesh(
+      new THREE.BufferGeometry(),
+      new THREE.MeshStandardMaterial({
+        color: "#ffffff",
+        transparent: true,
+        opacity: 0.9,
+        roughness: 0.42,
+        side: THREE.DoubleSide,
+        forceSinglePass: true,
+        depthWrite: false,
+      }),
+      count,
+    );
+    tail.geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute([
+        0, 0, 0,
+        0, 1, -1,
+        0, -1, -1,
+        0, 0, -0.78,
+      ], 3),
+    );
+    tail.geometry.setIndex([0, 1, 3, 0, 3, 2]);
+    tail.geometry.computeVertexNormals();
+    tail.name = "forkmesh-office-aquarium-user-fish-tails";
+    const fins = new THREE.InstancedMesh(
+      createReefFishFinGeometry(THREE, 1, 1),
+      new THREE.MeshStandardMaterial({
+        color: "#ffffff",
+        transparent: true,
+        opacity: 0.84,
+        roughness: 0.46,
+        side: THREE.DoubleSide,
+        forceSinglePass: true,
+        depthWrite: false,
+      }),
+      count * 4,
+    );
+    fins.name = "forkmesh-office-aquarium-user-fish-fins";
+    for (const mesh of [body, tail, fins]) {
+      mesh.frustumCulled = false;
+      mesh.instanceMatrix.setUsage?.(THREE.DynamicDrawUsage);
+      school.add(mesh);
+    }
+    return {
+      school,
+      body,
+      tail,
+      fins,
+      matrix: new THREE.Matrix4(),
+      localMatrix: new THREE.Matrix4(),
+      bodyColor: new THREE.Color(),
+      finColor: new THREE.Color(),
+    };
+  }
+
+  function createUserFishAnchor(THREE, species, instanceIndex) {
+    const fish = new THREE.Group();
+    fish.name = `${species.sceneName}-${instanceIndex}`;
+    const body = new THREE.Object3D();
+    body.scale.set(
+      species.thickness / 2,
+      species.height / 2,
+      species.length / 2,
+    );
+    const tail = new THREE.Object3D();
+    tail.position.z = -species.length / 2 + 0.04;
+    tail.scale.set(1, species.height * 0.74, species.length * 0.45);
+    const dorsalFin = new THREE.Object3D();
+    dorsalFin.position.set(0, species.height * 0.5, -species.length * 0.06);
+    dorsalFin.scale.set(1, species.height * 0.68, species.length * 0.68);
+    const analFin = new THREE.Object3D();
+    analFin.position.set(0, -species.height * 0.46, -species.length * 0.08);
+    analFin.scale.set(1, species.height * 0.36, species.length * 0.46);
+    analFin.rotation.z = Math.PI;
+    const pectoralFins = [];
+    for (const side of [-1, 1]) {
+      const pectoralFin = new THREE.Object3D();
+      pectoralFin.position.set(
+        side * species.thickness * 0.46,
+        -species.height * 0.06,
+        species.length * 0.16,
+      );
+      pectoralFin.scale.set(1, species.height * 0.46, species.length * 0.3);
+      pectoralFin.rotation.z = side * (Math.PI / 2 + 0.22);
+      pectoralFin.userData.restZ = pectoralFin.rotation.z;
+      pectoralFins.push(pectoralFin);
+    }
+    const fins = [dorsalFin, analFin, ...pectoralFins];
+    fish.add(body, tail, ...fins);
+    return { fish, body, tail, pectoralFins, fins };
   }
 
   function aquariumCylinderBetween(
@@ -14322,7 +14219,11 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
   // and curated colourways used by the procedural shirts determine its body,
   // accent, species, scale, speed, and route, so the school is stable on every
   // device without ever painting a person's name onto an animal.
+  const userFishAnchors = new THREE.Group();
+  userFishAnchors.name = "forkmesh-office-aquarium-user-fish-anchors";
+  group.add(userFishAnchors);
   const fishStates = [];
+  let userFishInstances = null;
   let fishPopulationKey = "";
   let visitorReaction = 0;
   let visitorReactionTarget = 0;
@@ -14356,13 +14257,42 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
   function disposeAquariumFish() {
     while (fishStates.length) {
       const state = fishStates.pop();
-      group.remove(state.fish);
-      state.fish.traverse((child) => {
+      userFishAnchors.remove(state.fish);
+    }
+    if (userFishInstances) {
+      group.remove(userFishInstances.school);
+      userFishInstances.school.traverse((child) => {
         child.geometry?.dispose?.();
-        child.material?.map?.dispose?.();
         child.material?.dispose?.();
       });
+      userFishInstances = null;
     }
+  }
+
+  function updateInstancedUserFish() {
+    if (!userFishInstances) return;
+    const { body, tail, fins, matrix, localMatrix } = userFishInstances;
+    for (let index = 0; index < fishStates.length; index += 1) {
+      const state = fishStates[index];
+      state.fish.updateMatrix();
+      state.body.updateMatrix();
+      matrix.multiplyMatrices(state.fish.matrix, state.body.matrix);
+      body.setMatrixAt(index, matrix);
+      state.tail.updateMatrix();
+      matrix.multiplyMatrices(state.fish.matrix, state.tail.matrix);
+      tail.setMatrixAt(index, matrix);
+      for (let finIndex = 0; finIndex < state.fins.length; finIndex += 1) {
+        state.fins[finIndex].updateMatrix();
+        localMatrix.multiplyMatrices(
+          state.fish.matrix,
+          state.fins[finIndex].matrix,
+        );
+        fins.setMatrixAt(index * state.fins.length + finIndex, localMatrix);
+      }
+    }
+    body.instanceMatrix.needsUpdate = true;
+    tail.instanceMatrix.needsUpdate = true;
+    fins.instanceMatrix.needsUpdate = true;
   }
 
   function aquariumSchoolValue(value, placeholders = []) {
@@ -14593,11 +14523,9 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
         };
       })
       .filter((user) => user.name);
-    // The directory can contain a thousand lifetime accounts. A cinematic
-    // fish is sixteen meshes, so constructing one per account turns a lobby
-    // decoration into tens of thousands of drawables. Keep a deterministic,
-    // activity-first representative school and expose the full population as
-    // metadata for diagnostics/UI without allocating it into the scene.
+    // Every public account gets one fish. They are still ordered
+    // deterministically so an account's route, colour, and scale persist
+    // across reloads, but their render parts are instanced into three draws.
     const visibleUsers = [...normalized]
       .sort((left, right) => {
         const leftRecent =
@@ -14614,20 +14542,20 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
           Number(rightRecent) - Number(leftRecent) ||
           hashNumber(left.name) - hashNumber(right.name)
         );
-      })
-      .slice(0, fishLimit);
+      });
     group.userData.accountPopulation = normalized.length;
     group.userData.visibleFish = visibleUsers.length;
-    group.userData.fishLimit = fishLimit;
     const nextKey = JSON.stringify(visibleUsers);
     if (nextKey === fishPopulationKey) return;
     fishPopulationKey = nextKey;
     finishAquariumSchool(lastAquariumFishTime, false);
     scheduleNextAquariumSchool(lastAquariumFishTime, true);
     disposeAquariumFish();
-    const population = Math.max(1, visibleUsers.length);
+    const population = visibleUsers.length;
+    userFishInstances = createInstancedUserFish(THREE, population);
+    group.add(userFishInstances.school);
     const schoolScale = clamp(
-      0.78 - Math.log2(population + 1) * 0.055,
+      0.78 - Math.log2(Math.max(1, population) + 1) * 0.055,
       0.32,
       0.7,
     );
@@ -14641,7 +14569,8 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
         accent,
         sceneName: "forkmesh-office-aquarium-user-fish",
       };
-      const { fish, tail, pectoralFins, mouth } = createReefFish(
+      const { fish, body: fishBody, tail, pectoralFins, fins } =
+        createUserFishAnchor(
         THREE,
         species,
         index,
@@ -14676,9 +14605,10 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       const phase = (spread + rng.next() * 0.08) % 1;
       fishStates.push({
         fish,
+        body: fishBody,
         tail,
         pectoralFins,
-        mouth,
+        fins,
         curve: new THREE.CatmullRomCurve3(
           points,
           true,
@@ -14713,8 +14643,32 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
         schoolPoint: new THREE.Vector3(),
         schoolTangent: new THREE.Vector3(),
       });
-      group.add(fish);
+      userFishInstances.body.setColorAt(
+        index,
+        userFishInstances.bodyColor.set(body),
+      );
+      userFishInstances.tail.setColorAt(
+        index,
+        userFishInstances.bodyColor,
+      );
+      userFishInstances.finColor.set(accent);
+      for (let finIndex = 0; finIndex < fins.length; finIndex += 1) {
+        userFishInstances.fins.setColorAt(
+          index * fins.length + finIndex,
+          userFishInstances.finColor,
+        );
+      }
+      userFishAnchors.add(fish);
     });
+    if (userFishInstances.body.instanceColor) {
+      userFishInstances.body.instanceColor.needsUpdate = true;
+    }
+    if (userFishInstances.tail.instanceColor) {
+      userFishInstances.tail.instanceColor.needsUpdate = true;
+    }
+    if (userFishInstances.fins.instanceColor) {
+      userFishInstances.fins.instanceColor.needsUpdate = true;
+    }
     if (visitorReactionTarget > 0) selectVisitorFish();
     updateAquariumFish(0, false);
   }
@@ -15107,17 +15061,8 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
           ) *
             (0.12 + feedingBlend * 0.035);
       }
-      const mouthPuff =
-        index === visitorFocusIndex
-          ? approachBlend *
-            (0.38 +
-              (Math.sin(motionTime * 0.0062 + state.phase * 17) + 1) *
-                0.16)
-          : 0;
-      state.mouth.scale.setScalar(1 + mouthPuff);
-      state.mouth.position.z =
-        state.mouth.userData.restZ + mouthPuff * 0.035;
     }
+    updateInstancedUserFish();
   }
   function updateAquariumReef(time) {
     for (let index = 0; index < corals.length; index += 1) {
@@ -19630,11 +19575,7 @@ export function createWorldScene({
     floorGroup.add(coffeeTable);
   }
   addOfficeFloorAtmosphere(officeInterior, "lobby", 0);
-  const officeAquarium = createOfficeMarineAquarium(
-    THREE,
-    animated,
-    compactRenderer ? 12 : 24,
-  );
+  const officeAquarium = createOfficeMarineAquarium(THREE, animated);
   officeInterior.add(officeAquarium.group);
   const aquariumControlLocalPosition = new THREE.Vector3();
   let aquariumControlsNearby = false;
@@ -25009,58 +24950,6 @@ export function createWorldScene({
     renderer.domElement.dataset.cameraMode = cameraMode;
     if (changed) onCameraMode({ mode: cameraMode, reason });
     return cameraMode;
-  }
-
-  function focusRepositoryAgentTerminal(button = null) {
-    if (officeSceneMode !== "town" || !button?.isObject3D) return false;
-    const data = button.userData?.repositoryAgentViewingPad;
-    const target = data?.target;
-    const standingTarget = data?.standingPoint;
-    if (!target?.isObject3D || !standingTarget?.isObject3D) return false;
-    dismountSwing({ relocate: false });
-    dismountBike({ relocate: false });
-    dismountCar({ relocate: false });
-    dismountQuadcopter({ relocate: false });
-    standUpFromBench();
-    cancelDash();
-    const standingPoint = standingTarget.getWorldPosition(
-      new THREE.Vector3(),
-    );
-    const targetPoint = target.getWorldPosition(new THREE.Vector3());
-    player.position.set(standingPoint.x, currentFloorY, standingPoint.z);
-    lastPosition.copy(player.position);
-    const eye = player.position
-      .clone()
-      .add(new THREE.Vector3(0, FIRST_PERSON_EYE_HEIGHT, 0));
-    const delta = targetPoint.sub(eye);
-    const horizontal = Math.max(0.001, Math.hypot(delta.x, delta.z));
-    cameraYaw = Math.atan2(-delta.x, -delta.z);
-    firstPersonPitch = clamp(
-      -Math.atan2(delta.y, horizontal),
-      FIRST_PERSON_PITCH_MIN,
-      FIRST_PERSON_PITCH_MAX,
-    );
-    player.rotation.y = cameraYaw;
-    cameraFocus = null;
-    selectedLandmark = "repositories";
-    setCameraMode("first-person", "repository-agent-terminal");
-    // A mild optical zoom makes the upward-facing terminal fill the view while
-    // retaining enough robot body around it to preserve spatial context.
-    firstPersonZoom = 1.35;
-    camera.fov = clamp(44 / firstPersonZoom, 10, 110);
-    camera.updateProjectionMatrix();
-    queueMovementEvent({
-      x: Number(player.position.x.toFixed(2)),
-      y: Number(player.position.y.toFixed(2)),
-      z: Number(player.position.z.toFixed(2)),
-      heading: Number(player.rotation.y.toFixed(3)),
-      space: currentSpace,
-      moving: false,
-      activity: `reading agent terminal ${String(
-        data.sessionId || "",
-      ).slice(0, 40)}`,
-    });
-    return true;
   }
 
   function lockOfficeElevatorCamera() {
@@ -31117,13 +31006,7 @@ export function createWorldScene({
           (left.createdAt || left.number),
       )
       .slice(0, REPOSITORY_RECORDS_MAX);
-    const repositoryRunningTasks = agentBotAccessAllowed
-      ? (repositoryAgentTasksByRepository.get(repositoryKey) || []).slice(0, 5)
-      : [];
-    if (
-      !mount ||
-      (!issues.length && !pulls.length && !repositoryRunningTasks.length)
-    ) {
+    if (!mount || (!issues.length && !pulls.length)) {
       return;
     }
 
@@ -31429,38 +31312,6 @@ export function createWorldScene({
       7.75,
       "#9ef7c6",
     );
-
-    if (agentBotAccessAllowed) {
-      const runningTasks = repositoryRunningTasks;
-      if (runningTasks.length) {
-        const terminalDock = new THREE.Group();
-        terminalDock.name = `repository-agent-control-dock:${repositoryKey}`;
-        const dockBase = new THREE.Mesh(
-          new THREE.BoxGeometry(7.1, 0.16, 1.34),
-          makeMaterial(THREE, "#0b1b17", {
-            emissive: "#163a30",
-            emissiveIntensity: 0.3,
-            metalness: 0.25,
-            roughness: 0.62,
-          }),
-        );
-        dockBase.position.set(0, groundY + 0.08, 5.02);
-        terminalDock.add(dockBase);
-        runningTasks.forEach((task, index) => {
-          const terminal = createRepositoryAgentTerminal(THREE, task);
-          terminal.position.set(
-            (index - (runningTasks.length - 1) / 2) * 1.36,
-            groundY + 0.12,
-            5.02,
-          );
-          terminal.scale.setScalar(0.78);
-          terminalDock.add(terminal);
-          interactive.push(terminal.userData.screen);
-          interactive.push(terminal.userData.viewButton);
-        });
-        layer.add(terminalDock);
-      }
-    }
 
     if (
       issueBoard &&
@@ -33314,10 +33165,6 @@ export function createWorldScene({
     }
     if (hit?.object?.userData?.forkbotChat) {
       onForkbotChat();
-      return;
-    }
-    if (hit?.object?.userData?.repositoryAgentViewingPad) {
-      focusRepositoryAgentTerminal(hit.object);
       return;
     }
     if (hit?.object?.userData?.agentBotChat) {

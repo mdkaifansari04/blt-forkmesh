@@ -128,6 +128,7 @@ struct PublicSyncWorkerResult {
     QString upstreamSummary;
     bool created = false;
     bool legacyRemoved = true;
+    bool reusedOpenMaterialization = false;
 };
 
 QString cleanCatalogString(const QJsonObject &object, const QString &key,
@@ -5181,7 +5182,8 @@ void MainWindow::syncMirrorsBehindRoster()
         // publish clobber them.
         const bool sourceOfTruth =
             !repo.isPrivate && repo.publishToNetwork &&
-            repo.owner.trimmed().toLower() == selfAccount;
+            !repo.localPath.trimmed().isEmpty() &&
+            catalogOwner(repo).trimmed().toLower() == selfAccount;
         if (repositorySource(repo).isEmpty() && !sourceOfTruth)
             continue; // not ours and no upstream route — nothing to pull
         if (repo.mirrorPath.trimmed().isEmpty() || !QDir(repo.mirrorPath).exists())
@@ -5405,8 +5407,17 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     // refs/heads) come along with the code. Quiet so it doesn't spam unless
     // something changed. The sync's completion broadcasts notifyMirrorSynced,
     // reporting back the moment the fetch lands the new commit.
-    if (!m_syncingRepos.contains(matchIndex))
-        syncRepository(matchIndex, /*quiet=*/true);
+    if (!m_syncingRepos.contains(matchIndex)) {
+        const QString selfAccount = accountOwner().trimmed().toLower();
+        const bool sourceOfTruth =
+            !matched.isPrivate && matched.publishToNetwork &&
+            !matched.localPath.trimmed().isEmpty() &&
+            catalogOwner(matched).trimmed().toLower() == selfAccount;
+        if (sourceOfTruth)
+            convergeSourceRepoFromMesh(matchIndex);
+        else
+            syncRepository(matchIndex, /*quiet=*/true);
+    }
     if (notifyEnabled(kMirrorUpdateAlertSetting) && m_trayIcon &&
         QSystemTrayIcon::supportsMessages())
         m_trayIcon->showMessage("ForkMesh — mirror updated", msg,
@@ -6430,6 +6441,8 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     const QString vaultPath = publicIdentityVaultPath();
     const QString owner = repo.owner;
     const QString name = repo.name;
+    const std::shared_ptr<PublicMirrorMaterialization> openMaterialization =
+        m_publicMirrorMaterializations.value(existingArchiveId);
     // Each seal stage announces itself from the worker thread; hop it back to
     // the GUI thread, where the sync button's live status line lives.
     PublicMirrorRuntime::Progress progress = [this, index](const QString &line) {
@@ -6439,7 +6452,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     };
     QThread *worker = QThread::create(
         [result, source, recoverySource, upstreamUrl, managedCheckoutSource,
-         archiveRoot, vaultPath, progress,
+         archiveRoot, vaultPath, progress, openMaterialization,
          mutableVaultSecret = std::move(vaultSecret), existingArchiveId,
          legacyMirrorPath, managedMirrorRoot]() mutable {
             if (!upstreamUrl.isEmpty()) {
@@ -6450,7 +6463,31 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                         recoverySource, upstreamUrl)
                         .summary();
             }
-            if (source.isEmpty()) {
+            // If the source refs still match the seal and its authenticated
+            // materialization is already alive, retaining that exact checkout
+            // is the complete sync. Reopening the same large archive used to
+            // emit a new advert and feed back into another sync request.
+            if (!managedCheckoutSource && !source.isEmpty() &&
+                openMaterialization && openMaterialization->isValid() &&
+                PublicMirrorRuntime::isArchiveId(existingArchiveId)) {
+                progress(QStringLiteral(
+                    "Checking whether the open encrypted mirror is current…"));
+                const PublicMirrorRuntime::Metadata metadata =
+                    PublicMirrorRuntime::readMetadata(
+                        archiveRoot, existingArchiveId, nullptr);
+                const QString refs =
+                    PublicMirrorRuntime::repositoryRefsSha256(
+                        source, PublicMirrorRuntime::Tools(), nullptr);
+                if (metadata.isValid() && !refs.isEmpty() &&
+                    refs == metadata.expectedRefsSha256) {
+                    result->metadata = metadata;
+                    result->materialization = openMaterialization;
+                    result->reusedOpenMaterialization = true;
+                    progress(QStringLiteral(
+                        "Repository unchanged — encrypted mirror is already open."));
+                }
+            }
+            if (!result->materialization && source.isEmpty()) {
                 progress(QStringLiteral("Opening the sealed archive…"));
                 result->metadata = PublicMirrorRuntime::readMetadata(
                     archiveRoot, existingArchiveId, &result->error);
@@ -6593,6 +6630,23 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                                            "valid source are required")
                                      : result->error),
                         true);
+                }
+                return;
+            }
+
+            if (result->reusedOpenMaterialization) {
+                // A proven no-op must not move lastSyncMs or advertise itself;
+                // that would turn unchanged state into a fresh peer event and
+                // recreate the sync loop.
+                const bool shouldPublish = current.publishToNetwork;
+                refreshRepositoryList();
+                if (index == m_repoDetailIndex)
+                    refreshRepoSyncIndicators();
+                if (!quiet) {
+                    flashMessage(QStringLiteral("%1/%2 is already synced.")
+                                     .arg(owner, name));
+                    if (shouldPublish)
+                        publishRepository(index, false);
                 }
                 return;
             }
