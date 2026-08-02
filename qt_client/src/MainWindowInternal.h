@@ -7202,7 +7202,7 @@ private:
 // icon-over-words form as the activity rail's entries (adhoc #91) — but driven
 // by the button's live text(), so the existing "Issues (60)" / "Fork 0" count
 // updates keep working. Three forms: Tab paints the repo tabs' checked
-// underline, Action paints the repoAction pill's fill and border, and Bare
+// underline, Action paints a pill only under the pointer, and Bare
 // paints neither — just the rail's own icon over caption, resting grey and
 // brightening under the pointer (adhoc #59). Fully custom-painted (like
 // ActivityRailButton), so the QPushButton QSS box — including #repoAction's
@@ -7267,8 +7267,8 @@ protected:
         const bool hovered = isEnabled() && underMouse();
         QColor fg;
         // Tab and Bare both rest in the rail's grey and brighten under the
-        // pointer; Action sits inside a pill that already separates it from the
-        // page, so it stays at full contrast.
+        // pointer; Action carries the header's primary verbs, so it stays at
+        // full contrast even with no pill behind it.
         if (m_form == Action)
             fg = dark ? QColor("#e6edf3") : QColor("#1f2328");
         else
@@ -7278,11 +7278,15 @@ protected:
             fg = QColor("#6e7681");
 
         if (m_form == Action) {
-            p.setPen(QColor(dark ? "#30363d" : "#d0d7de"));
-            p.setBrush(QColor(dark ? (hovered ? "#30363d" : "#21262d")
-                                   : (hovered ? "#d0d7de" : "#eaeef2")));
-            p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6,
-                              6);
+            // No resting fill or border: the repo header's actions read as
+            // plain icon-over-caption tiles on the page background, and only
+            // the pointer raises a pill under them.
+            if (hovered) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(QColor(dark ? "#21262d" : "#eaeef2"));
+                p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+                                  6, 6);
+            }
         } else if (m_form == Tab && isChecked()) {
             p.fillRect(QRect(0, height() - 2, width(), 2),
                        QColor(dark ? "#2ea043" : "#1f883d"));
