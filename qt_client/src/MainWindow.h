@@ -895,10 +895,7 @@ public:
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
     bool testClickBranchReviewMerge(bool deleteAll);
-    void testSuppressAutoPullForBranch(const QString &branch)
-    {
-        m_branchAutoPullAttempted = branch;
-    }
+    void testPullBaseIntoAllBranches() { pullBaseIntoAllBranches(); }
     bool testBranchPullEnabled() const;
     bool testClickBranchPull();
     // issue #291: exercise the trusted in-app merge hand-off. An unverified
@@ -3503,12 +3500,10 @@ private:
     // already gone — the desired end state either way.
     bool localBranchExists(const QString &repoPath, const QString &branch) const;
     void showBranchDiff(const QString &branch, int agentSessionId = -1);
-    // Paint the branch detail bar from already-gathered counts, and let auto-pull
-    // decide once the bar reflects them (the counts arrive off-thread now).
+    // Paint the branch detail bar from already-gathered counts.
     void applyBranchDetailActions(const QString &branch, const QString &base,
                                   int behind, int ahead, bool hasConflict,
                                   bool worktreeConflict = false);
-    void maybeAutoPullBranch(const QString &branch);
     // Bumped per branch selection so a detail-bar read that lands late is dropped.
     int m_branchDetailActionsGen = 0;
     // Render the branch's whole range diff (everything it adds over base).
@@ -3559,10 +3554,8 @@ private:
     // Bring `branch` up to date with base via the interactive merge editor,
     // resolving conflicts by hand. Reached from the "Merge editor" button.
     void openBranchMergeEditor(const QString &branch);
-    // Merge the default branch into every branch that's behind it in one pass;
-    // clean merges land via plumbing (no checkout), conflicts are reported so the
-    // list can surface them and offer "Fix with agent". Runs without a
-    // confirmation prompt; the "Pull into all" button spins while it works.
+    // Fast-forward inactive branches with no unique commits to the default
+    // branch. Active or divergent branches are intentionally left unchanged.
     void pullBaseIntoAllBranches();
     // Merge the default branch into `branch` and have a low-cost model resolve any
     // conflicts, committing the merge onto the branch (watched on the Agents tab).
@@ -6045,10 +6038,7 @@ private:
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
     QLabel *m_branchesSummary = nullptr;
-    QPushButton *m_branchPullAllButton = nullptr; // "Pull <base> into all" header action
-    // When checked, a successful "Merge to main" auto-runs "Pull <base> into all"
-    // so the remaining branches catch up with the merge (adhoc #250).
-    QCheckBox *m_branchAutoPullAllCheck = nullptr;
+    QPushButton *m_branchPullAllButton = nullptr; // safe bulk fast-forward action
     QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
@@ -6058,11 +6048,6 @@ private:
     // PR mode renders the PR's review threads + comment gutters into the diff
     // and shows the "PR #N" button that opens the full pull request page.
     int m_branchDiffPullNumber = -1;
-    // Branch that auto-pull has already been attempted for (see showBranchDiff),
-    // so a failed update doesn't retry on every incidental rebuild while the same
-    // branch stays selected. Cleared implicitly by simply differing once another
-    // branch is selected.
-    QString m_branchAutoPullAttempted;
     // Bumped each time a branch is selected / a range diff is requested so the
     // off-thread git read that renders the diff can drop its result if the user
     // has since switched branch (issue #353 — showBranchDiff/
