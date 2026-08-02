@@ -26,6 +26,15 @@
 //     mirror must never fork.
 namespace forkmesh::upstream {
 
+// Give a personal fork the normal split remote used by ForkMesh: `git pull`
+// fetches from the repository it was forked from, while `git push` writes to
+// the fork's own served mirror.  Keeping both directions on `origin` preserves
+// the branch tracking established by `git clone`.
+bool configureForkCheckoutRemote(const QString &checkoutPath,
+                                 const QString &sourceUrl,
+                                 const QString &forkMirrorPath,
+                                 QString *error = nullptr);
+
 struct RefreshOutcome {
     bool fetchOk = false;
     int branchesUpdated = 0; // fast-forwarded, created, or force-tracked
