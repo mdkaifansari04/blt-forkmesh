@@ -3974,8 +3974,24 @@ void MainWindow::refreshHighMemoryProcessTable()
         m_highMemoryProcessTable->rowCount() == 0
             ? QStringLiteral("Scanning for the largest memory users…")
             : QStringLiteral("Refreshing memory culprits in the background…"));
-    auto *query = new QProcess(m_highMemoryDialog);
+    // Parented to the window, not the panel it fills. ~QWidget deletes a
+    // widget's QProcess children from deleteChildren(), and ~QProcess kills the
+    // child and waits for it, emitting finished() while the same pass has
+    // already deleted the table and status label this handler writes to — the
+    // panel is WA_DeleteOnClose, so closing it mid-scan hits exactly that order
+    // (same shape as the MainWindow teardown crash, adhoc #51). MainWindow's own
+    // teardown sweep disconnects the query when the window goes away.
+    auto *query = new QProcess(this);
     m_highMemoryProcessQuery = query;
+    // The scan must still die with the panel that asked for it. destroyed()
+    // fires from ~QObject, after the dialog's widgets are gone, so this touches
+    // nothing but the process.
+    connect(m_highMemoryDialog.data(), &QObject::destroyed, query, [query] {
+        query->disconnect();
+        if (query->state() != QProcess::NotRunning)
+            query->kill();
+        query->deleteLater();
+    });
     connect(query, &QProcess::finished, this,
             [this, query](int exitCode, QProcess::ExitStatus status) {
                 const QByteArray output = query->readAllStandardOutput();
