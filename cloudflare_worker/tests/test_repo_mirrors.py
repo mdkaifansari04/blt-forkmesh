@@ -1005,7 +1005,7 @@ def _response(data, status=200, **_kwargs):
 
 def _load_handler(
     *, rows, first_hosted=None,
-    linked_canonical=False, endpoint_nodes=None,
+    linked_canonical=False, endpoint_nodes=None, serve_counts=None,
 ):
     calls = []
 
@@ -1035,6 +1035,8 @@ def _load_handler(
                 for item in rows
                 if item.get("data", {}).get("visibility", "public") == "public"
             ]
+        if "FROM mirror_serve_counters" in sql:
+            return serve_counts or []
         return []
 
     async def d1_first(_env, sql, *args):
@@ -1125,6 +1127,39 @@ def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
     # its clone-integrity verdict.
     assert any("FROM repo_state_history" in call for call in calls)
     assert all("integrity" in mirror for mirror in response["data"]["mirrors"])
+
+
+def test_repo_mirrors_handler_aggregates_traffic_across_group_aliases():
+    handler, calls = _load_handler(
+        rows=[
+            {"key_bi": "a", "data": _row(
+                "a", "mirror2", "forkmesh", root="abc")["data"]},
+            {"key_bi": "b", "data": _row(
+                "b", "mirror10", "forkmesh", root="abc",
+                source="remote-clone")["data"]},
+        ],
+        serve_counts=[
+            {"node_name": "mirror2", "clones": 8, "website": 21},
+            {"node_name": "mirror10", "clones": 5, "website": 34},
+        ],
+    )
+
+    response = asyncio.run(
+        handler(object(), _Request("GET"), "mirror2", "forkmesh")
+    )
+
+    mirrors = {
+        mirror["node"]: mirror for mirror in response["data"]["mirrors"]
+    }
+    assert mirrors["mirror2"]["clonesServed"] == 8
+    assert mirrors["mirror2"]["websiteServed"] == 21
+    assert mirrors["mirror10"]["clonesServed"] == 5
+    assert mirrors["mirror10"]["websiteServed"] == 34
+    query = next(
+        sql for sql in calls if "FROM mirror_serve_counters" in sql
+    )
+    assert "SUM(clones) AS clones" in query
+    assert "GROUP BY node_name" in query
 
 
 def test_repo_mirrors_handler_keeps_inactive_rows_visible_offline():
