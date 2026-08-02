@@ -13170,6 +13170,19 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
   const AQUARIUM_FEEDING_APPROACH_MS = 4_200;
   const AQUARIUM_FEEDING_RETURN_MS = 6_500;
   const AQUARIUM_GLASS_TAP_REACTION_MS = 2_600;
+  const AQUARIUM_SCHOOL_INITIAL_DELAY_MS = 14_000;
+  const AQUARIUM_SCHOOL_MIN_IDLE_MS = 24_000;
+  const AQUARIUM_SCHOOL_MAX_IDLE_MS = 38_000;
+  const AQUARIUM_SCHOOL_DURATION_MS = 11_000;
+  const AQUARIUM_SCHOOL_TRANSITION_MS = 1_600;
+  const AQUARIUM_SCHOOL_MODES = Object.freeze([
+    Object.freeze({ id: "country", label: "COUNTRY" }),
+    Object.freeze({ id: "browser", label: "BROWSER" }),
+    // Raw user-agent strings never enter the public member directory. This
+    // privacy-safe signature combines its already-public coarse browser and
+    // operating-system families instead.
+    Object.freeze({ id: "agent", label: "AGENT" }),
+  ]);
   const AQUARIUM_ANIMATION_MS = 1000 / 20;
   const fishLimit = clamp(Math.round(Number(maxFish) || 24), 6, 48);
   const feedingCenter = new THREE.Vector3(0.68, 6.9, -1.8);
