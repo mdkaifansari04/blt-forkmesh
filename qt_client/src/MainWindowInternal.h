@@ -3379,6 +3379,11 @@ inline void selectQuickAddAgentProvider(QComboBox *combo)
     combo->setCurrentIndex(index >= 0 ? index : 0);
 }
 
+// One-line explanation painted beside a popup row's label by
+// AgentChoiceDescriptionDelegate — "Ask" alone does not say what it permits, and
+// the closed control has no room to say so (adhoc #1204).
+constexpr int kAgentChoiceDescriptionRole = Qt::UserRole + 7;
+
 // A QComboBox whose popup always opens tall enough to show every item, with no
 // up/down scroll-arrow buttons (issue #348). Once a Qt Style Sheet is applied
 // app-wide (Theme::kStyleSheet, set in MainWindow's ctor), Qt's CSS engine
@@ -3423,6 +3428,35 @@ protected:
         QComboBox::paintEvent(event);
     }
 
+    // The Qt::Popup window Qt parents the drop-down view into (the view itself on
+    // styles that do not wrap it). Both the width and the height fit-up below
+    // resize this, not the view.
+    QWidget *popupContainer() const
+    {
+        QAbstractItemView *v = view();
+        if (!v)
+            return nullptr;
+        for (QWidget *w = v; w; w = w->parentWidget()) {
+            if (w->windowFlags().testFlag(Qt::Popup))
+                return w;
+        }
+        QWidget *top = v->window();
+        if (top && top->windowFlags().testFlag(Qt::Popup))
+            return top;
+        return v;
+    }
+
+    QRect availableScreenRect(const QWidget *popup) const
+    {
+        QScreen *screen = popup ? popup->screen() : nullptr;
+        if (!screen && windowHandle())
+            screen = windowHandle()->screen();
+        if (!screen)
+            screen = QGuiApplication::primaryScreen();
+        return screen ? screen->availableGeometry()
+                      : QRect(QPoint(0, 0), QSize(10000, 10000));
+    }
+
     void showPopup() override
     {
         setMaxVisibleItems(qMax(maxVisibleItems(), count()));
@@ -3430,18 +3464,8 @@ protected:
         QAbstractItemView *v = view();
         if (!v || count() == 0)
             return;
-        QWidget *popup = v;
-        for (QWidget *w = v; w; w = w->parentWidget()) {
-            if (w->windowFlags().testFlag(Qt::Popup)) {
-                popup = w;
-                break;
-            }
-        }
-        if (!popup->windowFlags().testFlag(Qt::Popup)) {
-            QWidget *top = v->window();
-            if (top && top->windowFlags().testFlag(Qt::Popup))
-                popup = top;
-        }
+        QWidget *popup = popupContainer();
+        fitPopupWidth(v, popup);
         // Height for every row plus the view frame. sizeHintForRow under-reports
         // the styled row height (the rows aren't laid out with their stylesheet
         // metrics yet when the base showPopup returns) and the view's own
@@ -3458,14 +3482,7 @@ protected:
         }
         const int fullHeight = 2 * v->frameWidth() + rowsH;
         QRect geo = popup->geometry();
-        QScreen *screen = popup->screen();
-        if (!screen && windowHandle())
-            screen = windowHandle()->screen();
-        if (!screen)
-            screen = QGuiApplication::primaryScreen();
-        const QRect avail =
-            screen ? screen->availableGeometry()
-                   : QRect(QPoint(0, 0), QSize(10000, 10000));
+        const QRect avail = availableScreenRect(popup);
         const int height = qMin(fullHeight, avail.height());
         v->setVerticalScrollBarPolicy(fullHeight <= avail.height()
                                           ? Qt::ScrollBarAlwaysOff
@@ -3482,6 +3499,48 @@ protected:
             geo.moveBottom(avail.bottom());
         if (geo.top() < avail.top())
             geo.moveTop(avail.top());
+        popup->setGeometry(geo);
+    }
+
+    // Qt sizes a combo popup to the closed control, and these controls are
+    // deliberately only as wide as the label they are showing (adhoc #72) — so a
+    // short selection ("Opus 5", or nothing at all on the icon-only pickers)
+    // clipped every longer row in the open menu (adhoc #1204). Widen the popup to
+    // its widest row once it is up: the same after-the-fact fix-up the caller
+    // does for height, and it leaves the closed control untouched.
+    void fitPopupWidth(QAbstractItemView *v, QWidget *popup)
+    {
+        if (!v || !popup || count() == 0)
+            return;
+        const QFontMetrics fm = v->fontMetrics();
+        int content = 0;
+        for (int row = 0; row < count(); ++row) {
+            int rowW = fm.horizontalAdvance(itemText(row));
+            const QString description =
+                itemData(row, kAgentChoiceDescriptionRole).toString();
+            if (!description.isEmpty())
+                rowW += 12 + fm.horizontalAdvance(description);
+            content = qMax(content, rowW);
+        }
+        // Room for the row's icon plus the view's own item padding, then take
+        // whichever of the two measurements is larger: the styled hint knows the
+        // stylesheet's padding, the hand count knows the delegate's description.
+        content += v->iconSize().width() + 28;
+        int width = qMax(content, v->sizeHintForColumn(0)) + 2 * v->frameWidth();
+        QRect geo = popup->geometry();
+        if (geo.width() >= width)
+            return;
+        const QRect avail = availableScreenRect(popup);
+        width = qMin(width, avail.width());
+        v->setMinimumWidth(width - 2 * v->frameWidth());
+        popup->setMinimumWidth(width);
+        geo.setWidth(width);
+        // Keep the now-wider popup on screen: growing it off the right edge would
+        // otherwise let Qt clamp the width straight back.
+        if (geo.right() > avail.right())
+            geo.moveRight(avail.right());
+        if (geo.left() < avail.left())
+            geo.moveLeft(avail.left());
         popup->setGeometry(geo);
     }
 
@@ -3508,6 +3567,59 @@ private:
     QString m_hintedText;
 };
 
+// Paints "<label>   <description>" for rows carrying kAgentChoiceDescriptionRole
+// and leaves every other row to the default delegate. The description is drawn
+// in the row's own text colour at reduced alpha so it reads as secondary in both
+// themes and stays legible on the selected (filled) row.
+class AgentChoiceDescriptionDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override
+    {
+        QSize hint = QStyledItemDelegate::sizeHint(option, index);
+        const QString description =
+            index.data(kAgentChoiceDescriptionRole).toString();
+        if (!description.isEmpty())
+            hint.setWidth(hint.width() + kGap +
+                          option.fontMetrics.horizontalAdvance(description));
+        return hint;
+    }
+
+protected:
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyledItemDelegate::paint(painter, option, index);
+        const QString description =
+            index.data(kAgentChoiceDescriptionRole).toString();
+        if (description.isEmpty())
+            return;
+        QStyleOptionViewItem styled(option);
+        initStyleOption(&styled, index);
+        const QWidget *widget = styled.widget;
+        QStyle *style = widget ? widget->style() : QApplication::style();
+        QRect textRect =
+            style->subElementRect(QStyle::SE_ItemViewItemText, &styled, widget);
+        textRect.setLeft(textRect.left() +
+                         styled.fontMetrics.horizontalAdvance(styled.text) + kGap);
+        if (textRect.width() <= 0)
+            return;
+        QColor colour = styled.palette.color(QPalette::Text);
+        colour.setAlpha(160);
+        painter->save();
+        painter->setPen(colour);
+        painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter,
+                          styled.fontMetrics.elidedText(
+                              description, Qt::ElideRight, textRect.width()));
+        painter->restore();
+    }
+
+private:
+    static constexpr int kGap = 12;
+};
+
 // Compact composer controls whose closed state is just the selected icon. The
 // popup still uses the normal combo model, so opening it reveals the full icon
 // + label rows (Auto / Ask / Plan / Edit or the effort ladder). This keeps the
@@ -3518,8 +3630,11 @@ public:
         : FullPopupComboBox(parent)
     {
         setIconSize(QSize(22, 22));
+        // 22px icon + the 4px of side padding Theme.h gives these two controls.
+        // A narrower box clips the icon's right edge (adhoc #1204).
         setFixedWidth(30);
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setItemDelegate(new AgentChoiceDescriptionDelegate(this));
     }
 
     QSize sizeHint() const override
@@ -3830,6 +3945,101 @@ inline QString compactModelName(const QString &name)
         }
     }
     return label.isEmpty() ? name.trimmed() : label;
+}
+
+// Version number carried by a model id or display name: "claude-opus-4-8" and
+// "Opus 4.8" both read as 4.8, "claude-opus-5" as 5.0, "gpt-5.6-sol" as 5.6. The
+// negative lookahead keeps a dated snapshot ("claude-haiku-4-5-20251001") from
+// swallowing the release date as a minor version. Returns 0 when nothing looks
+// like a version.
+inline double agentModelVersionNumber(const QString &text)
+{
+    static const QRegularExpression version(
+        QStringLiteral("(\\d+)(?:[.\\-](\\d{1,2})(?![0-9]))?"));
+    const QRegularExpressionMatch match = version.match(text);
+    if (!match.hasMatch())
+        return 0.0;
+    const double major = match.captured(1).toDouble();
+    const QString minor = match.captured(2);
+    return minor.isEmpty() ? major : major + minor.toDouble() / 10.0;
+}
+
+// How powerful a model is, for sorting the composer's combined agent+model menu
+// strongest-first (adhoc #1204). Within the Claude family the published ordering
+// is Fable > Opus > Sonnet > Haiku with a newer version winning; Codex/GPT models
+// sort among themselves the same way. The two families sit in separate bands
+// (Claude above GPT) because version numbers are not comparable across vendors —
+// "GPT-5.6" is not a later release of "Opus 5". A model whose id carries no
+// version is treated as current-generation so a line-up that lands after this
+// binary shipped still sorts near the top instead of the bottom.
+inline int agentModelPowerRank(const QString &model, const QString &label)
+{
+    const QString id = model.trimmed().toLower();
+    const QString name = label.trimmed().toLower();
+    // The router can escalate to any model in the ladder, so it belongs above
+    // every concrete one rather than wherever its name happens to sort.
+    if (id == kClaudeAutoModelId)
+        return 100000;
+    const QString text = id.isEmpty() ? name : id;
+    double version = agentModelVersionNumber(text);
+    if (version <= 0.0)
+        version = agentModelVersionNumber(name);
+    if (version <= 0.0)
+        version = 5.0; // unknown/new: assume the current generation
+    const bool claudeFamily =
+        !text.startsWith(QLatin1String("gpt")) &&
+        !text.startsWith(QLatin1String("o1")) &&
+        !text.startsWith(QLatin1String("o3"));
+    if (!claudeFamily) {
+        // GPT band. "mini"/"nano"/"spark" variants are the small siblings of
+        // their own version, so they sit just under it.
+        int rank = int(version * 100.0 + 0.5);
+        if (text.contains(QLatin1String("mini")) ||
+            text.contains(QLatin1String("nano")) ||
+            text.contains(QLatin1String("spark")))
+            rank -= 10;
+        return rank;
+    }
+    int tier = 20; // unrecognised Claude id: park it at the Sonnet tier
+    if (text.contains(QLatin1String("fable")) ||
+        text.contains(QLatin1String("mythos")))
+        tier = 60;
+    else if (text.contains(QLatin1String("opus")))
+        tier = 40;
+    else if (text.contains(QLatin1String("sonnet")))
+        tier = 20;
+    else if (text.contains(QLatin1String("haiku")))
+        tier = 0;
+    // The +500 base keeps the whole Claude band above the GPT one.
+    return 500 + int(version * 100.0 + 0.5) + tier;
+}
+
+// Models the composer's menu hides by default (adhoc #1204): superseded and
+// small-sibling releases that nobody should be reaching for when a stronger
+// model of the same family is one row up. Hiding is presentation only — a run
+// already pinned to one of these keeps working, and the picker still shows the
+// row when it is the live selection.
+inline bool agentModelIsMinorTier(const QString &model, const QString &label)
+{
+    const QString id = model.trimmed().toLower();
+    const QString name = label.trimmed().toLower();
+    const QString text = id.isEmpty() ? name : id;
+    if (text.isEmpty() || text == kClaudeAutoModelId)
+        return false;
+    double version = agentModelVersionNumber(text);
+    if (version <= 0.0)
+        version = agentModelVersionNumber(name);
+    const bool gptFamily = text.startsWith(QLatin1String("gpt"));
+    if (gptFamily) {
+        if (text.contains(QLatin1String("mini")) ||
+            text.contains(QLatin1String("nano")) ||
+            text.contains(QLatin1String("spark")))
+            return true;
+        return version > 0.0 && version < 5.4;
+    }
+    if (text.contains(QLatin1String("haiku")))
+        return true;
+    return version > 0.0 && version < 4.6;
 }
 
 inline QString agentModelLabel(const QString &model)
@@ -7249,6 +7459,153 @@ private:
     }
 
     QString m_fullText;
+};
+
+// A toolbar button that stacks its glyph over a small caption instead of setting
+// them side by side. A row of these reads as a bar of tools rather than a run of
+// sentences: the icon carries the recognition and the word underneath removes
+// the guesswork an icon-only bar leaves behind (adhoc #223).
+//
+// The label is painted verbatim, so an ampersand in a caption ("Merge & clean
+// up") stays an ampersand rather than being eaten as a mnemonic — which is what
+// the stock QPushButton painter did to that very button.
+//
+// Everything else is a plain QPushButton: setText() still sets the caption,
+// setOcticon()/setIcon() still set the glyph, and the QSS background/border for
+// #ghostButton / #primaryButton is drawn by the style exactly as before.
+class StackedIconButton : public QPushButton
+{
+public:
+    using QPushButton::QPushButton;
+
+    // Painted in the icon slot for buttons with no octicon of their own (the
+    // diff zoom −/+ pair, whose "icon" has always been a typographic glyph).
+    void setGlyph(const QString &glyph)
+    {
+        m_glyph = glyph;
+        updateGeometry();
+        update();
+    }
+
+    QSize sizeHint() const override
+    {
+        const QSize slot = iconSlotSize();
+        const QFontMetrics fm(captionFont());
+        const bool hasCaption = !text().isEmpty();
+        // +2 of slack: an exact fit rounds the wrong way often enough that the
+        // caption elides itself at its own natural width.
+        const int captionW = hasCaption ? fm.horizontalAdvance(text()) + 2 : 0;
+        const int captionH = hasCaption ? fm.height() + kGap : 0;
+        return QSize(qMax(slot.width(), captionW) + 2 * kPadH,
+                     slot.height() + captionH + 2 * kPadV);
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    // The theme sizes fonts from the style sheet, which lands on the widget
+    // after the first layout pass — without this the button keeps the geometry
+    // it hinted at under the default font and clips its own caption.
+    bool event(QEvent *e) override
+    {
+        switch (e->type()) {
+        case QEvent::FontChange:
+        case QEvent::StyleChange:
+        case QEvent::ApplicationFontChange:
+            updateGeometry();
+            break;
+        default:
+            break;
+        }
+        return QPushButton::event(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QStylePainter painter(this);
+        QStyleOptionButton opt;
+        initStyleOption(&opt);
+        // Draw the chrome only. Handing the style an empty label keeps the QSS
+        // background, border and hover/pressed states while leaving the content
+        // rect for us to fill.
+        const QIcon glyphIcon = opt.icon;
+        opt.text.clear();
+        opt.icon = QIcon();
+        opt.iconSize = QSize();
+        painter.drawControl(QStyle::CE_PushButton, opt);
+
+        const QSize slot = iconSlotSize();
+        const QFont caption = captionFont();
+        const QFontMetrics fm(caption);
+        const bool hasCaption = !text().isEmpty();
+        const int captionH = hasCaption ? fm.height() : 0;
+        const int blockH = slot.height() + (hasCaption ? kGap + captionH : 0);
+        int top = rect().top() + (height() - blockH) / 2;
+
+        const QRect slotRect((width() - slot.width()) / 2, top, slot.width(),
+                             slot.height());
+        if (!glyphIcon.isNull()) {
+            // themedOcticon only carries Off-state pixmaps; asking for On would
+            // fall back to it anyway, so name it explicitly.
+            glyphIcon.paint(&painter, slotRect, Qt::AlignCenter,
+                            isEnabled() ? QIcon::Normal : QIcon::Disabled,
+                            QIcon::Off);
+        } else if (!m_glyph.isEmpty()) {
+            QFont glyphFont = font();
+            glyphFont.setBold(true);
+            if (glyphFont.pixelSize() > 0)
+                glyphFont.setPixelSize(slot.height());
+            else
+                glyphFont.setPointSize(qMax(9, slot.height() - 3));
+            painter.setFont(glyphFont);
+            painter.setPen(labelColor(opt));
+            painter.drawText(slotRect, Qt::AlignCenter, m_glyph);
+        }
+
+        if (!hasCaption)
+            return;
+        const QRect captionRect(kPadH, top + slot.height() + kGap,
+                                qMax(0, width() - 2 * kPadH), captionH);
+        painter.setFont(caption);
+        painter.setPen(labelColor(opt));
+        painter.drawText(captionRect, Qt::AlignHCenter | Qt::AlignVCenter,
+                         fm.elidedText(text(), Qt::ElideRight, captionRect.width()));
+    }
+
+private:
+    static constexpr int kPadH = 8;
+    static constexpr int kPadV = 4;
+    static constexpr int kGap = 3; // between the glyph and its caption
+
+    QSize iconSlotSize() const
+    {
+        if (!icon().isNull() && iconSize().isValid())
+            return iconSize();
+        return QSize(16, 16);
+    }
+
+    // QSS `color:` lands on the widget palette when QStyleSheetStyle polishes
+    // the button, so the theme's ghost/primary foregrounds come through here.
+    QColor labelColor(const QStyleOptionButton &opt) const
+    {
+        return opt.palette.color(isEnabled() ? QPalette::Active
+                                             : QPalette::Disabled,
+                                 QPalette::ButtonText);
+    }
+
+    QFont captionFont() const
+    {
+        QFont f = font();
+        // The theme sizes fonts in pixels; fall back to points for any style
+        // that doesn't.
+        if (f.pixelSize() > 0)
+            f.setPixelSize(qMax(9, f.pixelSize() - 4));
+        else
+            f.setPointSize(qMax(7, f.pointSize() - 3));
+        f.setWeight(QFont::DemiBold);
+        return f;
+    }
+
+    QString m_glyph;
 };
 
 // A one-line, muted status label that sits beside a busy button and carries the

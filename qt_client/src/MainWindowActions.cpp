@@ -1752,11 +1752,9 @@ void MainWindow::recordNotification(AppNotification item)
 }
 
 // The pill above the footer mini-log is this window's ping area, so every
-// recorded event shows there. A routine event queues behind whatever is
-// already counting down rather than stomping it; an error must be seen the
-// moment it happens, so it goes straight through flashMessage (which replaces
-// a routine toast immediately and only queues behind another error) and
-// flashes the red app border (adhoc #77).
+// recorded event shows there. Events that arrive while another toast is up are
+// added to its visible queue rather than stomping it; errors also flash the red
+// app border (adhoc #77).
 void MainWindow::flashNotification(const AppNotification &item)
 {
     QString text = item.title.simplified();

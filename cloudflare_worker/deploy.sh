@@ -231,6 +231,9 @@ mark_interrupted_world_deploy() {
 
 build_dashboard_assets() {
     python3 tools/build_dashboard_assets.py
+    # Fail before touching production D1 or uploading a version when an eager
+    # import has pushed the Python Worker back toward its startup-memory limit.
+    python3 tools/build_worker_footprint.py
 }
 
 # Fallback HTTP GET for when curl itself is broken. Seen live (adhoc #136): a

@@ -263,7 +263,10 @@ QWidget *MainWindow::buildSourceControlPanel()
     auto *panel = new QWidget;
     m_scmPanel = panel;
     auto *root = new QVBoxLayout(panel);
-    root->setContentsMargins(16, 10, 16, 6);
+    // A narrow column can't afford a 16px gutter on either side of it: that
+    // inset, the tree's indent and the row's own padding stacked up to ~44px of
+    // dead space before a filename started (adhoc #223).
+    root->setContentsMargins(8, 10, 8, 4);
     root->setSpacing(6);
 
     // A compact two-line compose field stays visible. Less-common generation
@@ -602,6 +605,10 @@ QWidget *MainWindow::buildSourceControlPanel()
     // the left column may get (adhoc #74); rows elide, so they stay readable.
     m_scmTree->setMinimumWidth(160);
     m_scmTree->setRootIsDecorated(true);
+    // Just enough to keep the group's expand arrow clickable. The default 20px
+    // indent pushed every filename a fifth of the column to the right for a
+    // tree that is only ever two levels deep (adhoc #223).
+    m_scmTree->setIndentation(10);
     m_scmTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     // ScmFileRow (via setItemWidget) draws its own thin green selection
     // outline; blank the app-wide #fileTree::item:selected solid fill so it

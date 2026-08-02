@@ -53,6 +53,74 @@ struct AgentImageBatch {
     QHash<int, QString> stamps;
 };
 
+QString agentMergeBase(const AgentSession &s);
+
+int agentStatusModelIconIndex(const AgentSession &session)
+{
+    const QString model = session.model.toLower();
+    if (session.provider.startsWith(QLatin1String("claude"))) {
+        if (model.contains(QLatin1String("opus")))
+            return 1;
+        if (model.contains(QLatin1String("haiku")))
+            return 3;
+        if (model.contains(QLatin1String("sonnet")) ||
+            model.contains(QLatin1String("fable")))
+            return 2;
+        return 0; // Auto / the provider default.
+    }
+    if (model.contains(QLatin1String("mini")) ||
+        model.contains(QLatin1String("nano")))
+        return 6;
+    if (model.contains(QLatin1String("codex")))
+        return 5;
+    return 4;
+}
+
+QString agentStatusBadgeText(const AgentSession &session)
+{
+    if (session.merged)
+        return QStringLiteral("Merged");
+    if (session.status == AgentStatus::Success)
+        return QStringLiteral("Done");
+    if (session.status == AgentStatus::Failed)
+        return QStringLiteral("Failed");
+    if (session.status == AgentStatus::Stopped)
+        return QStringLiteral("Stopped");
+    if (session.status == AgentStatus::Running)
+        return QStringLiteral("Working");
+    if (session.status == AgentStatus::Waiting)
+        return QStringLiteral("Waiting");
+    if (session.status == AgentStatus::Queued)
+        return QStringLiteral("Queued");
+    return QStringLiteral("Idle");
+}
+
+QString agentStatusBadgeTone(const AgentSession &session)
+{
+    if (session.merged || session.status == AgentStatus::Success)
+        return QStringLiteral("success");
+    if (session.status == AgentStatus::Failed ||
+        session.status == AgentStatus::Stopped)
+        return QStringLiteral("failure");
+    if (session.status == AgentStatus::Running ||
+        session.status == AgentStatus::Waiting ||
+        session.status == AgentStatus::Queued)
+        return QStringLiteral("pending");
+    return QStringLiteral("neutral");
+}
+
+QString agentStatusBadgeToolTip(const AgentSession &session)
+{
+    QStringList details;
+    details << agentStatusBadgeText(session);
+    if (session.merged)
+        details << QStringLiteral("Merged into %1").arg(agentMergeBase(session));
+    if (session.status == AgentStatus::Failed && !session.lastError.trimmed().isEmpty())
+        details << session.lastError.trimmed();
+    details << QStringLiteral("Click to show session details.");
+    return details.join(QLatin1Char('\n'));
+}
+
 void summarizeAgentPatch(const QString &patch, AgentDiffStat *stat)
 {
     if (!stat)
@@ -1689,24 +1757,46 @@ QWidget *MainWindow::buildAgentsTab()
     // Delete the agent together with its worktree folder and branch in one action.
     // adhoc #51 folded the session-only "Delete" that sat beside it into this one
     // button, so watch-only rows (no branch of ours to clean up) go down the
-    // session-only path from here.
+    // session-only path from here — as does any row with no worktree or branch
+    // left to remove, which used to leave the entry undeletable.
     m_agentDeleteAllButton = railActionButton(
         QStringLiteral("trash"), QStringLiteral("Delete"),
-        "Delete this agent session, its worktree folder and its branch");
+        "Delete this agent session, along with its worktree folder and branch "
+        "when it still has them");
     connect(m_agentDeleteAllButton, &QPushButton::clicked, this, [this] {
         if (isExternalSession(m_selectedAgentSessionId)) {
             deleteSelectedAgentSession();
             return;
         }
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
-        if (!s || s->branchName.isEmpty())
+        if (!s)
             return;
         const int repoIndex = repoIndexFor(s->owner, s->name);
-        if (repoIndex < 0)
-            return;
         const int sessionId = s->id;
         const QString branch = s->branchName;
-        const QString repoPath = m_repositories.at(repoIndex).localPath;
+        const QString repoPath =
+            repoIndex >= 0 ? m_repositories.at(repoIndex).localPath : QString();
+        // Nothing of ours left to clean up: the run never got as far as stamping
+        // a branch on itself, or the repository it ran in is no longer on this
+        // machine. Take the entry out on its own instead of bailing — the
+        // combined teardown below keys everything off the branch and the open
+        // checkout, so it would quietly do nothing and the row would sit in the
+        // list undeletable forever.
+        if (branch.isEmpty() || repoPath.isEmpty()) {
+            deleteAgentSessionEntry(sessionId);
+            return;
+        }
+        // Same cross-repo bind the Files tab's Delete needs: the teardown resolves
+        // the checkout from the repo the detail view holds, not from the session,
+        // and the Agents tab is global. Without this a session belonging to any
+        // other repo matches nothing and the click is a silent no-op. Snapshotted
+        // above first — the bind pumps the event loop and can reallocate both
+        // lists (git-pump UAF family). If it fails there is no checkout to clean
+        // against, so drop the entry rather than leaving it stuck.
+        if (!bindRepoDetailToRepo(repoIndex)) {
+            deleteAgentSessionEntry(sessionId);
+            return;
+        }
         // Every step of the teardown — looking the worktree up, clearing the
         // issue, dropping the stored session, the reloads — is synchronous git,
         // so the click used to sit there for seconds with nothing to show it
@@ -1806,11 +1896,18 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentCreateIssueButton, &QPushButton::clicked, this,
             &MainWindow::createLinkedIssueForSelectedSession);
 
-    // Connected/working status pill next to the title.
-    m_agentStatusPill = new QLabel;
+    // The model icon doubles as the compact outcome control. Its outline is
+    // outcome-coloured and the one-word label keeps the header scannable; hover
+    // or click reveals the fuller session detail without restoring a long pill.
+    m_agentStatusPill = new QToolButton;
     m_agentStatusPill->setObjectName("agentStatusPill");
-    m_agentStatusPill->setTextFormat(Qt::RichText);
-    m_agentStatusPill->setAlignment(Qt::AlignCenter);
+    m_agentStatusPill->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_agentStatusPill->setIconSize(QSize(18, 18));
+    m_agentStatusPill->setCursor(Qt::PointingHandCursor);
+    connect(m_agentStatusPill, &QToolButton::clicked, this, [this] {
+        if (m_agentInfoButton)
+            m_agentInfoButton->click();
+    });
 
     // Branch / Worktree in the output toolbar (adhoc #51): a click opens that
     // branch in the Git view (adhoc #131 — switchToAgentBranch points the view at
@@ -1970,6 +2067,7 @@ QWidget *MainWindow::buildAgentsTab()
                     as->status = AgentStatus::Running;
                     as->finishedAtMs = 0;
                     as->lastError.clear();
+                    as->mergeCandidateHead.clear();
                     if (m_agentStore)
                         m_agentStore->saveSession(*as);
                     updateAgentStatusCell(sid);
@@ -2446,6 +2544,7 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
             as->status = AgentStatus::Running;
             as->finishedAtMs = 0;
             as->lastError.clear();
+            as->mergeCandidateHead.clear();
             if (m_agentStore)
                 m_agentStore->saveSession(*as);
             updateAgentStatusCell(sid);
@@ -6068,32 +6167,37 @@ bool MainWindow::bindAgentSessionsToPull(int prNumber,
     return changed;
 }
 
-// Issue #291: has this branch's work landed in the repo's base branch? The
-// branch must still exist locally, and every commit the run added since its
-// fork point must now be contained in the base branch — i.e. the work merged,
-// not merely that an empty branch trivially shares history. Pure git reads over
-// value-captured strings, so refreshAgentMergeState() can run it on a worker
-// thread (off the GUI thread runGitCapture blocks without pumping).
-static bool agentBranchLandedInBase(const QString &dir, const QString &branch,
-                                    const QString &baseRef, const QString &base)
+// Is this exact, previously observed source commit now part of the base branch?
+// Never infer this from the mutable branch name: an agent can reset its branch to
+// main, which makes the base's own commits look like work that the agent landed.
+// Pure git reads over value-captured strings, so refreshAgentMergeState() can run
+// this on a worker thread (off the GUI thread runGitCapture blocks without pumping).
+static bool agentCommitLandedInBase(const QString &dir, const QString &commit,
+                                    const QString &base)
 {
-    // The branch must still exist locally to reason about it.
+    if (commit.isEmpty() || base.isEmpty())
+        return false;
+    return runGitCapture(dir,
+                         {"merge-base", "--is-ancestor", commit, base},
+                         nullptr, nullptr);
+}
+
+// Return the branch tip only while it represents work not already in base. This
+// is the evidence retained for a later refresh after the branch has been merged
+// and deleted.
+static QString agentBranchHeadOutsideBase(const QString &dir, const QString &branch,
+                                          const QString &base)
+{
+    if (branch.isEmpty() || base.isEmpty())
+        return {};
+    QByteArray out;
     if (!runGitCapture(dir,
                        {"rev-parse", "--verify", "--quiet",
                         QStringLiteral("refs/heads/%1").arg(branch)},
-                       nullptr, nullptr))
-        return false;
-    auto count = [&](const QString &range) -> int {
-        QByteArray out;
-        if (!runGitCapture(dir, {"rev-list", "--count", range}, &out, nullptr))
-            return -1;
-        return QString::fromUtf8(out).trimmed().toInt();
-    };
-    // The run must have produced commits since it forked …
-    if (count(QStringLiteral("%1..%2").arg(baseRef, branch)) <= 0)
-        return false;
-    // … and all of them must now be reachable from base (nothing left outside).
-    return count(QStringLiteral("%1..%2").arg(base, branch)) == 0;
+                       &out, nullptr))
+        return {};
+    const QString head = QString::fromUtf8(out).trimmed();
+    return agentCommitLandedInBase(dir, head, base) ? QString() : head;
 }
 
 // Issue #170: the files-changed + branch ahead/behind figures behind a session's
@@ -6116,9 +6220,14 @@ AgentDiffStat MainWindow::agentDiffStat(const AgentSession &session,
 // the status cell / detail page. Called from the in-app merge flows so the note
 // appears even when the PR/branch is about to be deleted. Returns whether any
 // session was newly marked.
-bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
+bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch,
+                                         bool mergeVerified)
 {
-    if (!m_agentStore || m_repoDetailIndex < 0 ||
+    // This is deliberately not a generic session-state setter. Its callers are
+    // the successful PR/branch merge paths, which pass their Git/PullStore
+    // proof. In particular, agent output must never be able to turn a completed
+    // run into a claimed merge merely by naming its branch.
+    if (!mergeVerified || !m_agentStore || m_repoDetailIndex < 0 ||
         m_repoDetailIndex >= m_repositories.size())
         return false;
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
@@ -6165,10 +6274,9 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
 //
 // PR-backed sessions are decided here from the loaded pull's status (so a PR
 // merged here, or synced from a peer as merged, both count — no git needed).
-// Branch-only sessions need git (rev-parse + two rev-lists each), which inline
-// blocked the GUI thread for the length of every subprocess even under the
-// GitKeepAlive pump. Those reads run on a worker thread over value-captured
-// (id, branch, fork point) snapshots, applied by id in markAgentSessionsLanded().
+// Branch-only sessions need Git. We first remember an exact unmerged branch tip,
+// then mark landed only after that immutable commit reaches base. The reads run
+// on a worker thread over value-captured snapshots.
 void MainWindow::refreshAgentMergeState()
 {
     if (!m_agentStore)
@@ -6199,7 +6307,7 @@ void MainWindow::refreshAgentMergeState()
     struct Candidate {
         int id;
         QString branch;
-        QString baseRef;
+        QString mergeHead;
     };
     QList<Candidate> candidates;
     QList<int> mergedFromPulls;
@@ -6223,15 +6331,14 @@ void MainWindow::refreshAgentMergeState()
                 continue; // an open/closed PR settles it; no git fallback needed
             }
         }
-        if (dir.isEmpty() || s.branchName.isEmpty())
+        if (dir.isEmpty())
             continue;
-        if (!base.isEmpty() && s.branchName == base)
+        if (s.mergeCandidateHead.isEmpty() && s.branchName.isEmpty())
             continue;
-        // Without a recorded fork point we can't distinguish a merged branch
-        // from an un-started one that shares the base's history, so don't guess.
-        if (s.baseRef.isEmpty())
+        if (!base.isEmpty() && s.mergeCandidateHead.isEmpty() &&
+            s.branchName == base)
             continue;
-        candidates.append({s.id, s.branchName, s.baseRef});
+        candidates.append({s.id, s.branchName, s.mergeCandidateHead});
     }
     // reloadAgents() refreshes the table right after this returns, so the
     // pull-status verdicts don't need a refresh of their own.
@@ -6240,9 +6347,10 @@ void MainWindow::refreshAgentMergeState()
         return;
     m_agentMergeStateRefreshing = true;
     auto landed = std::make_shared<QList<int>>();
+    auto observedHeads = std::make_shared<QHash<int, QString>>();
     const QString checkedOut = m_repoBranch;
     QThread *worker = QThread::create(
-        [dir, base, configuredBase, checkedOut, candidates, landed]() {
+        [dir, base, configuredBase, checkedOut, candidates, landed, observedHeads]() {
         const forkmesh::BackgroundScope activity(
             QStringLiteral("agents"),
             QStringLiteral("detect branches landed in base"),
@@ -6253,17 +6361,47 @@ void MainWindow::refreshAgentMergeState()
                 : base;
         if (resolvedBase.isEmpty())
             return;
-        for (const Candidate &c : candidates)
-            if (c.branch != resolvedBase &&
-                agentBranchLandedInBase(dir, c.branch, c.baseRef, resolvedBase))
+        for (const Candidate &c : candidates) {
+            const QString head =
+                agentBranchHeadOutsideBase(dir, c.branch, resolvedBase);
+            // The branch may have new, unmerged work after a previously observed
+            // tip landed. Refresh that evidence first; a partial merge must not
+            // make the still-active session read as fully merged.
+            if (!head.isEmpty()) {
+                observedHeads->insert(c.id, head);
+                continue;
+            }
+            if (!c.mergeHead.isEmpty() &&
+                agentCommitLandedInBase(dir, c.mergeHead, resolvedBase))
                 landed->append(c.id);
+        }
     });
-    connect(worker, &QThread::finished, this, [this, worker, landed]() {
+    connect(worker, &QThread::finished, this,
+            [this, worker, landed, observedHeads]() {
         m_agentMergeStateRefreshing = false;
         worker->deleteLater();
+        updateAgentMergeCandidates(*observedHeads);
         markAgentSessionsLanded(*landed, /*refreshUi=*/true);
     });
     worker->start();
+}
+
+// Keep an exact source tip only while it is still outside the base branch. This
+// is intentionally a separate persistence step from marking it merged: a branch
+// reset to base has no candidate and therefore cannot self-report as landed.
+void MainWindow::updateAgentMergeCandidates(const QHash<int, QString> &heads)
+{
+    if (!m_agentStore || heads.isEmpty())
+        return;
+    for (AgentSession &s : m_agentSessions) {
+        const auto it = heads.constFind(s.id);
+        if (it == heads.constEnd() || s.merged ||
+            s.status == AgentStatus::Queued || s.status == AgentStatus::Running ||
+            s.mergeCandidateHead == it.value())
+            continue;
+        s.mergeCandidateHead = it.value();
+        m_agentStore->saveSession(s);
+    }
 }
 
 // Apply "landed in base" verdicts by session id (issue #291): records the merge
@@ -6660,8 +6798,11 @@ void MainWindow::showAgentSession(int sessionId)
     AgentSession *liveSession = findAgentSession(sessionId);
     if (!liveSession) {
         setAgentTitleText(m_agentTitle, QStringLiteral("Select a session"));
-        if (m_agentStatusPill)
-            m_agentStatusPill->clear();
+        if (m_agentStatusPill) {
+            m_agentStatusPill->setText(QString());
+            m_agentStatusPill->setIcon(QIcon());
+            m_agentStatusPill->hide();
+        }
         if (m_agentMeta)
             m_agentMeta->clear();
         if (m_agentMetaPopup)
@@ -7756,6 +7897,7 @@ void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
     // running instead of stuck on the stale merged badge.
     session->merged = false;
     session->mergedAtMs = 0;
+    session->mergeCandidateHead.clear();
     m_agentStore->saveSession(*session);
     m_agentStore->appendLog(
         *session,
@@ -7810,13 +7952,18 @@ void MainWindow::fixAgentConflictsWithAgent(int sessionId)
 
 void MainWindow::deleteSelectedAgentSession()
 {
+    deleteAgentSessionEntry(m_selectedAgentSessionId);
+}
+
+void MainWindow::deleteAgentSessionEntry(int sessionId)
+{
     // External (watch-only) rows aren't in the store — Delete kills the real CLI
     // process it mirrors (if still running), then drops the temporary mirror.
-    if (isExternalSession(m_selectedAgentSessionId)) {
-        deleteExternalSession(m_selectedAgentSessionId);
+    if (isExternalSession(sessionId)) {
+        deleteExternalSession(sessionId);
         return;
     }
-    if (!deleteStoredAgentSession(m_selectedAgentSessionId))
+    if (!deleteStoredAgentSession(sessionId))
         return;
     reloadAgents();
     reloadIssues();
@@ -8592,6 +8739,7 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    session.mergeCandidateHead.clear();
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
@@ -9185,6 +9333,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    session.mergeCandidateHead.clear();
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
@@ -10454,6 +10603,7 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     s->finishedAtMs = 0;
     s->merged = false;
     s->mergedAtMs = 0;
+    s->mergeCandidateHead.clear();
     if (s->startedAtMs <= 0)
         s->startedAtMs = QDateTime::currentMSecsSinceEpoch();
     if (m_agentStore && !isExternalSession(sessionId))
@@ -10589,10 +10739,10 @@ void MainWindow::applyAgentDiffStatResult(int generation, int repoIndex,
     }
 }
 
-// Rebuild the "Connected · working on the task…" pill in the session detail
-// header from the session's current status. Split out of showAgentSession so
-// a targeted status flip (updateAgentStatusCell) can refresh just this pill
-// without paying for a full header/meta rebuild.
+// Rebuild the compact model/outcome control in the session detail header from
+// the current status. Split out of showAgentSession so a targeted status flip
+// (updateAgentStatusCell) refreshes just this control without rebuilding the
+// header or detail popup.
 void MainWindow::refreshAgentStatusPill(int sessionId)
 {
     if (!m_agentStatusPill || sessionId != m_selectedAgentSessionId)
@@ -10600,45 +10750,13 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     AgentSession *session = findAgentSession(sessionId);
     if (!session)
         return;
-    const QString s = session->status;
-    QString dotColor = agentStatusColor(s).name();
-    QString label;
-    if (s == AgentStatus::Running)
-        label = "Connected \xC2\xB7 working on the task\xE2\x80\xA6";
-    else if (s == AgentStatus::Queued)
-        label = "Queued";
-    else if (s == AgentStatus::Waiting)
-        label = "Waiting";
-    else if (s == AgentStatus::Success)
-        label = "Done";
-    else if (s == AgentStatus::Failed) {
-        // Never a bare "Failed": say why on the pill itself, one line, with the
-        // full text (a traceback, a rate-limit message) on hover. The transcript
-        // row carries the same reason in full.
-        label = "Failed";
-        QString why = session->lastError.trimmed();
-        if (!why.isEmpty()) {
-            QString oneLine = why.section(QLatin1Char('\n'), 0, 0).trimmed();
-            if (oneLine.size() > 120)
-                oneLine = oneLine.left(119) + QString::fromUtf8("\xE2\x80\xA6");
-            label += QString::fromUtf8(" \xC2\xB7 ") + oneLine;
-        }
-    } else
-        label = agentStatusText(s);
-    QString pill =
-        QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> "
-                          "<span style='color:#8b949e'>%2</span>")
-            .arg(dotColor, label.toHtmlEscaped());
-    m_agentStatusPill->setToolTip(s == AgentStatus::Failed
-                                      ? session->lastError.trimmed()
-                                      : QString());
-    // Issue #291: once the worktree/PR has landed in the base branch, flag
-    // it right on the status pill in the merged-purple used elsewhere.
-    if (session->merged)
-        pill += QString::fromUtf8(
-                    " <span style='color:#a371f7'>\xE2\x97\x8F merged into %1</span>")
-                    .arg(agentMergeBase(*session).toHtmlEscaped());
-    m_agentStatusPill->setText(pill);
+    m_agentStatusPill->setProperty("outcomeTone", agentStatusBadgeTone(*session));
+    m_agentStatusPill->setIcon(agentControlIcon(agentStatusModelIconIndex(*session)));
+    m_agentStatusPill->setText(agentStatusBadgeText(*session));
+    m_agentStatusPill->setToolTip(agentStatusBadgeToolTip(*session));
+    m_agentStatusPill->style()->unpolish(m_agentStatusPill);
+    m_agentStatusPill->style()->polish(m_agentStatusPill);
+    m_agentStatusPill->show();
 }
 
 // Spin the blue "sync" glyph on every running row's "#" cell so the agents
@@ -12082,15 +12200,16 @@ void MainWindow::updateAgentActionState()
     // Block deleting the session whose working-tree git-am the in-flight AI fix is
     // still holding open.
     const bool aiFixBusy = m_aiFix && m_aiFix->sessionId == m_selectedAgentSessionId;
-    // "Delete" also nukes the worktree + branch, so it needs a real stored session
-    // with a branch; on an external watch-only row it drops just the mirrored
-    // session instead (adhoc #51), which is always available.
+    // "Delete" also nukes the worktree + branch when the session still has them,
+    // so it needs a real stored session — but NOT a branch: a run that never got
+    // one (or whose repo has since gone away) deletes its entry alone, and gating
+    // on the branch left those rows stuck in the list with a dead button. On an
+    // external watch-only row it drops just the mirrored session (adhoc #51).
     if (m_agentDeleteAllButton)
         m_agentDeleteAllButton->setEnabled(
             !aiFixBusy
             && (externalSelected
-                || (selected && session && !session->associationOnly &&
-                    !session->branchName.isEmpty())));
+                || (selected && session && !session->associationOnly)));
     updateQuickAddEnterTarget();
 }
 

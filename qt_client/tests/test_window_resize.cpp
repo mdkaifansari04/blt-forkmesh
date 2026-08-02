@@ -1418,6 +1418,16 @@ int main(int argc, char *argv[])
     window.testOpenRepository(repoIdx);
     QApplication::processEvents();
 
+    // Historical signed PR heads can be pruned after repair/cleanup. The PR's
+    // durable canonical branch remains the review source, so every PR surface
+    // must resolve that instead of feeding a missing name to `git diff`.
+    runGitChecked(repoDir.path(), {"branch", "pr/404", "HEAD"});
+    PullRequest repairedPull;
+    repairedPull.number = 404;
+    repairedPull.head = QStringLiteral("api-pr/removed/historical-head");
+    check(window.testResolvablePullHead(repairedPull) == QStringLiteral("pr/404"),
+          QStringLiteral("a missing signed PR head falls back to pr/<number>"));
+
     // adhoc #55: the status strip names the commit the open branch is on —
     // short SHA, date, subject and author. The read is detached (it must not
     // block the GUI thread), so pump the loop until it lands.
@@ -3045,16 +3055,49 @@ int main(int argc, char *argv[])
                     !iconContainsChromaKey(quickAgentModel->itemIcon(i));
             }
         }
+        // adhoc #1204: rows are the bare model name — no "· Claude Code" /
+        // "· Codex" suffix repeated down the whole menu; the per-row tooltip
+        // still says which agent runs the model.
         check(quickAgentModel && quickAgentModel->isVisible() &&
                   quickAgentModel->maxVisibleItems() >= quickAgentModel->count() &&
-                  agentModelLabels.contains(QStringLiteral("Auto · Claude Code")) &&
-                  agentModelLabels.contains(QStringLiteral("GPT-5.5 · Codex")) &&
+                  agentModelLabels.contains(QStringLiteral("Auto")) &&
+                  agentModelLabels.contains(QStringLiteral("GPT-5.5")) &&
                   agentModelLabels.contains(QStringLiteral("OpenAI API")) &&
                   agentModelLabels.contains(QStringLiteral("Claude API")) &&
+                  std::none_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
+                               [](const QString &label) {
+                                   return label.contains(
+                                              QStringLiteral("Claude Code")) ||
+                                          label.endsWith(QStringLiteral("Codex"));
+                               }) &&
+                  quickAgentModel->itemData(
+                      quickAgentModel->findText(QStringLiteral("GPT-5.5")),
+                      Qt::ToolTipRole).toString() ==
+                      QStringLiteral("GPT-5.5 · Codex") &&
                   allAgentModelsHaveIcons && agentModelIconsAreClean && quickProvider &&
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
               QString("one icon-rich composer dropdown combines agents and models (%1)")
                   .arg(agentModelLabels.join(QStringLiteral(", "))));
+        // The menu is ordered strongest-model-first, and the superseded /
+        // small-sibling models are left out entirely (adhoc #1204). Offline this
+        // is the static fallback line-up, so the order is exact: the Auto router
+        // above every concrete model, then Claude strongest-first, then Codex —
+        // with Haiku 4.5 and GPT-5.4-Mini dropped.
+        QStringList rankedLabels;
+        for (int i = 0; i < quickAgentModel->count(); ++i) {
+            // Manual and the two API agents carry no model of their own.
+            if (quickAgentModel->itemData(i, Qt::UserRole + 1).toString().isEmpty())
+                continue;
+            rankedLabels << quickAgentModel->itemText(i);
+        }
+        check(rankedLabels == QStringList({QStringLiteral("Auto"),
+                                           QStringLiteral("Fable 5"),
+                                           QStringLiteral("Opus 4.8"),
+                                           QStringLiteral("Sonnet 4.6"),
+                                           QStringLiteral("GPT-5.5"),
+                                           QStringLiteral("GPT-5.4")}),
+              QString("composer models sort most powerful first, weak ones hidden (%1)")
+                  .arg(rankedLabels.join(QStringLiteral(", "))));
         QComboBox *canonicalModel =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));
         int concreteClaudeChoice = -1;
@@ -3113,6 +3156,16 @@ int main(int argc, char *argv[])
                   .arg(speedLabels.join(QStringLiteral(", "))));
         QComboBox *quickMode =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModeSelector"));
+        // adhoc #1204: each row also carries the permission it grants, spelled out
+        // beside the label once the popup is open (Qt::UserRole + 7), so the open
+        // menu is not four bare words.
+        bool modesExplainPermissions = quickMode;
+        if (quickMode) {
+            for (int i = 0; i < quickMode->count(); ++i) {
+                modesExplainPermissions &=
+                    !quickMode->itemData(i, Qt::UserRole + 7).toString().isEmpty();
+            }
+        }
         check(quickMode && quickMode->width() <= 32 &&
                   quickMode->accessibleName().startsWith(
                       QStringLiteral("Permission mode:")) &&
@@ -3120,6 +3173,7 @@ int main(int argc, char *argv[])
                   quickMode->itemText(1) == QStringLiteral("Ask") &&
                   quickMode->itemText(2) == QStringLiteral("Plan") &&
                   quickMode->itemText(3) == QStringLiteral("Edit") &&
+                  modesExplainPermissions &&
                   !quickMode->itemIcon(0).isNull() &&
                   !quickMode->itemIcon(3).isNull() &&
                   !iconContainsChromaKey(quickMode->itemIcon(0)) &&
@@ -3187,7 +3241,11 @@ int main(int argc, char *argv[])
         const QStringList codexModels = seeded.testQuickAddModelLabels();
         check(!seeded.testQuickAddModelVisible() &&
                   quickAgentModel && quickAgentModel->isVisible() &&
-                  quickAgentModel->currentText().endsWith(QStringLiteral("· Codex")) &&
+                  quickAgentModel->currentText().startsWith(QStringLiteral("GPT-")) &&
+                  quickAgentModel
+                      ->itemData(quickAgentModel->currentIndex(), Qt::ToolTipRole)
+                      .toString()
+                      .endsWith(QStringLiteral("· Codex")) &&
                   !seeded.testQuickAddModelEditable() && codexModels ==
                       QStringList({QStringLiteral("GPT-5.5"),
                                    QStringLiteral("GPT-5.4"),
@@ -3635,10 +3693,22 @@ int main(int argc, char *argv[])
                       "worktree/PR lands (issue #291, cell = %1)")
                   .arg(window.testAgentStatusCellText(2910)));
 
-        // Merging the session's branch into the base flags it.
-        check(window.testMarkAgentBranchMerged(
+        // A completed agent cannot claim that its branch landed merely by naming
+        // it. Only a merge path that already proved the Git/PullStore operation
+        // succeeded may set the durable merged state.
+        check(!window.testMarkAgentBranchMerged(
                   QStringLiteral("agent/issue-291-merge-note")),
-              QStringLiteral("merging an agent task's branch flags its session "
+              QStringLiteral("an unverified agent branch cannot mark its session "
+                             "merged (issue #291)"));
+        check(!window.testAgentSessionMerged(2910) &&
+                  window.testAgentStatusCellText(2910) == QStringLiteral("Success"),
+              QStringLiteral("a rejected merge claim leaves the run status intact "
+                             "(issue #291)"));
+
+        check(window.testMarkAgentBranchMerged(
+                  QStringLiteral("agent/issue-291-merge-note"),
+                  /*mergeVerified=*/true),
+              QStringLiteral("a verified branch merge flags its agent session "
                              "(issue #291)"));
 
         // The Status column now reads "merged" and the flag is persisted, so both
@@ -3678,6 +3748,100 @@ int main(int argc, char *argv[])
                   QStringLiteral("agent/issue-291-unrelated")),
               QStringLiteral("merging an unrelated branch flags no agent session "
                              "(issue #291)"));
+    }
+
+    // A branch is mutable after an agent starts. In particular, an agent that
+    // resets it to an advanced main must not be read as having merged its work:
+    // the commits after baseRef belong to main, not to the agent. The background
+    // detector instead needs a tip it observed while that tip was outside main.
+    {
+        QTemporaryDir mergeDetectionRepo;
+        if (initGitRepo(mergeDetectionRepo)) {
+            const int mergeDetectionRepoIdx = window.testAddLocalRepository(
+                "me", "merge-detection", mergeDetectionRepo.path());
+            window.testOpenRepository(mergeDetectionRepoIdx);
+            QElapsedTimer idleTimer;
+            idleTimer.start();
+            while (window.testAgentMergeStateRefreshing() && idleTimer.elapsed() < 5000)
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+
+            const QString baseRef =
+                gitOutput(mergeDetectionRepo.path(), {"rev-parse", "main"});
+            const QString resetBranch =
+                QStringLiteral("agent/issue-291-reset-to-main");
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "-b", resetBranch});
+            QFile resetFile(mergeDetectionRepo.path() + QStringLiteral("/reset.txt"));
+            if (resetFile.open(QIODevice::WriteOnly)) {
+                resetFile.write("discarded agent draft\n");
+                resetFile.close();
+            }
+            runGitChecked(mergeDetectionRepo.path(), {"add", "reset.txt"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"commit", "-m", "temporary agent draft"});
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "main"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"commit", "--allow-empty", "-m", "advance main"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"branch", "-f", resetBranch, "main"});
+
+            AgentSession resetSession;
+            resetSession.id = 2911;
+            resetSession.owner = QStringLiteral("me");
+            resetSession.name = QStringLiteral("merge-detection");
+            resetSession.branchName = resetBranch;
+            resetSession.baseRef = baseRef;
+            resetSession.baseBranch = QStringLiteral("main");
+            resetSession.status = AgentStatus::Success;
+            window.testAddAgentSession(resetSession);
+            window.testRefreshAgentMergeState();
+            QElapsedTimer resetScanTimer;
+            resetScanTimer.start();
+            while (window.testAgentMergeStateRefreshing() &&
+                   resetScanTimer.elapsed() < 5000)
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+            check(!window.testAgentMergeStateRefreshing() &&
+                      !window.testAgentSessionMerged(resetSession.id),
+                  QStringLiteral("resetting an agent branch to an advanced main does "
+                                 "not self-report a merge (issue #291)"));
+
+            const QString landedBranch =
+                QStringLiteral("agent/issue-291-observed-tip");
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "-b", landedBranch});
+            QFile landedFile(mergeDetectionRepo.path() + QStringLiteral("/landed.txt"));
+            if (landedFile.open(QIODevice::WriteOnly)) {
+                landedFile.write("agent work that landed\n");
+                landedFile.close();
+            }
+            runGitChecked(mergeDetectionRepo.path(), {"add", "landed.txt"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"commit", "-m", "agent change"});
+            const QString observedHead =
+                gitOutput(mergeDetectionRepo.path(), {"rev-parse", landedBranch});
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "main"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"merge", "--no-ff", landedBranch, "-m", "merge agent work"});
+
+            AgentSession landedSession;
+            landedSession.id = 2912;
+            landedSession.owner = QStringLiteral("me");
+            landedSession.name = QStringLiteral("merge-detection");
+            landedSession.branchName = landedBranch;
+            landedSession.baseBranch = QStringLiteral("main");
+            landedSession.mergeCandidateHead = observedHead;
+            landedSession.status = AgentStatus::Success;
+            window.testAddAgentSession(landedSession);
+            window.testRefreshAgentMergeState();
+            QElapsedTimer landedScanTimer;
+            landedScanTimer.start();
+            while (window.testAgentMergeStateRefreshing() &&
+                   landedScanTimer.elapsed() < 5000)
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+            check(!window.testAgentMergeStateRefreshing() &&
+                      window.testAgentSessionMerged(landedSession.id),
+                  QStringLiteral("an observed agent tip is marked merged only after "
+                                 "Git proves it reached main (issue #291)"));
+            window.testOpenRepository(repoIdx);
+        }
     }
 
     // The top bar's search box searches the page in front of you: on the Agents
