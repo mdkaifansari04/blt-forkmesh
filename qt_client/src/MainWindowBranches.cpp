@@ -11,6 +11,8 @@
 #include "PacmanProgress.h"
 
 #include <QComboBox>
+#include <QPointer>
+#include <QQueue>
 #include <QTimer>
 
 #include <algorithm>
@@ -482,32 +484,107 @@ QWidget *MainWindow::buildWorktreesTab()
     return page;
 }
 
-void MainWindow::runGitDetached(const QString &dir, const QStringList &args,
-                                std::function<void(bool, const QByteArray &)> onDone)
+namespace {
+
+// Callers fan this helper out per row, so the number of children it wants to run
+// at once scales with the repo rather than with the machine: the worktrees panel
+// starts two reads per worktree and a checkout that hosts an agent per branch
+// carries well over a hundred of them. Every live QProcess costs descriptors (a
+// pipe per standard channel plus the child watcher), so an unbounded fan-out
+// walks straight through the 1024-descriptor soft limit and the whole process
+// starts failing with "QProcess: Cannot create pipe (Too many open files)" —
+// including work that has nothing to do with git, such as the age/tar pipeline
+// behind the encrypted public mirror. Cap what is in flight and queue the rest;
+// every callback here already re-checks generation counters and widget pointers
+// before touching the UI, so a read that starts late is safe.
+constexpr int kMaxDetachedGitInFlight = 12;
+
+// Nothing this helper runs is interactive, so a read still going after a minute
+// is wedged rather than slow (a stale index.lock, an unreachable remote). Kill
+// it so one hung child can't hold a queue slot — and its descriptors — for the
+// rest of the session.
+constexpr int kDetachedGitTimeoutMs = 60000;
+
+struct DetachedGitRequest {
+    QPointer<MainWindow> window;
+    QString dir;
+    QStringList args;
+    std::function<void(bool, const QByteArray &)> onDone;
+};
+
+int g_detachedGitInFlight = 0;
+QQueue<DetachedGitRequest> g_detachedGitQueue;
+
+void startDetachedGit(DetachedGitRequest request);
+
+void pumpDetachedGitQueue()
 {
-    auto *git = new QProcess(this);
-    if (!dir.isEmpty())
-        git->setWorkingDirectory(dir);
+    while (g_detachedGitInFlight < kMaxDetachedGitInFlight &&
+           !g_detachedGitQueue.isEmpty()) {
+        DetachedGitRequest request = g_detachedGitQueue.dequeue();
+        if (!request.window)
+            continue; // the window closed while this read waited its turn
+        startDetachedGit(std::move(request));
+    }
+}
+
+void startDetachedGit(DetachedGitRequest request)
+{
+    MainWindow *window = request.window;
+    auto *git = new QProcess(window);
+    if (!request.dir.isEmpty())
+        git->setWorkingDirectory(request.dir);
+    ++g_detachedGitInFlight;
     // FailedToStart fires errorOccurred but not finished, and a crash fires both,
     // so guard the callback so it runs exactly once whichever way the process ends.
     auto done = std::make_shared<bool>(false);
-    auto finish = [git, done, onDone = std::move(onDone)](bool ok) {
+    auto finish = [git, done, onDone = std::move(request.onDone)](bool ok) {
         if (*done)
             return;
         *done = true;
+        --g_detachedGitInFlight;
         if (onDone)
             onDone(ok, git->readAllStandardOutput());
         git->deleteLater();
+        // Start the next queued read last: onDone may enqueue follow-up work of
+        // its own, and running the pump after it keeps the queue FIFO.
+        pumpDetachedGitQueue();
     };
-    connect(git, &QProcess::finished, this,
-            [finish](int code, QProcess::ExitStatus st) {
-                finish(st == QProcess::NormalExit && code == 0);
-            });
-    connect(git, &QProcess::errorOccurred, this,
-            [finish](QProcess::ProcessError) { finish(false); });
+    // Teardown destroys the QProcess children without either signal firing; drop
+    // the slot then too so a reopened window doesn't inherit a shrunken cap.
+    QObject::connect(git, &QObject::destroyed, git, [done](QObject *) {
+        if (*done)
+            return;
+        *done = true;
+        --g_detachedGitInFlight;
+    });
+    QObject::connect(git, &QProcess::finished, window,
+                     [finish](int code, QProcess::ExitStatus st) {
+                         finish(st == QProcess::NormalExit && code == 0);
+                     });
+    QObject::connect(git, &QProcess::errorOccurred, window,
+                     [finish](QProcess::ProcessError) { finish(false); });
+    QTimer::singleShot(kDetachedGitTimeoutMs, git, [git] {
+        if (git->state() != QProcess::NotRunning)
+            git->kill(); // finished() follows and releases the slot
+    });
     trackProcessActivity(git, QStringLiteral("git"),
-                         QStringLiteral("git ") + args.join(QLatin1Char(' ')));
-    git->start(QStringLiteral("git"), args);
+                         QStringLiteral("git ") +
+                             request.args.join(QLatin1Char(' ')));
+    git->start(QStringLiteral("git"), request.args);
+    // These reads never feed the child stdin; closing the channel now returns a
+    // descriptor per in-flight process instead of holding it open until exit.
+    git->closeWriteChannel();
+}
+
+} // namespace
+
+void MainWindow::runGitDetached(const QString &dir, const QStringList &args,
+                                std::function<void(bool, const QByteArray &)> onDone)
+{
+    g_detachedGitQueue.enqueue(
+        DetachedGitRequest{this, dir, args, std::move(onDone)});
+    pumpDetachedGitQueue();
 }
 
 void MainWindow::focusRepoDetailTable(int id)
