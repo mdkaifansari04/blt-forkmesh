@@ -705,6 +705,22 @@ public:
     // lazily-built list back the way a user reaches it (adhoc #119).
     void testOpenAgentsOverview() { openAgentsOverview(); }
     void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
+    // Live search: type into the top bar the way a user does (textChanged drives
+    // the whole feature), persist a line of a session's transcript, force the
+    // debounced transcript scan to run now, and read the filtered list back.
+    void testTypeGlobalSearch(const QString &text);
+    QString testAgentSearchText() const;
+    QString testTranscriptSearchText() const;
+    void testAppendAgentTranscript(int sessionId, const QString &text)
+    {
+        if (const AgentSession *session = findAgentSession(sessionId))
+            if (m_agentStore)
+                m_agentStore->appendLog(*session, text);
+    }
+    void testRunAgentTranscriptSearch() { runAgentTranscriptSearch(); }
+    // The Agents list's visible rows, as the issue/title column renders them
+    // (including the "· N in transcript" marker).
+    QStringList testAgentRowTitles() const;
     // Whether the leading Branch cell for `branch` carries an icon, so a test can
     // prove the list stamps agent status at the row's left edge (adhoc #251).
     bool testBranchAttachmentHasIcon(const QString &branch) const;
@@ -3474,6 +3490,11 @@ private:
     // its own): mirror what's typed into the commit-list filter, and clear the
     // filter again when the page isn't on screen.
     void syncGitCommitFilter();
+    // Same idea on the Agents page, and live as you type: the top-bar box drives
+    // the session list's filter and the open session's transcript search, so a
+    // query narrows the list and highlights inside the transcript on the spot
+    // instead of only offering results in the dropdown.
+    void syncAgentPageSearch();
     // --- Browser-style back / forward navigation, sat just left of the search box.
     // A history of "places" (section + open repo + repo tab) is recorded as you
     // move around; Back and Forward walk it without recording new entries.
@@ -5911,6 +5932,11 @@ private:
     QLineEdit *m_globalSearch = nullptr;
     QListWidget *m_globalSearchPopup = nullptr;
     QTimer *m_globalSearchTimer = nullptr;     // debounce keystrokes before rebuilding
+    // The query syncAgentPageSearch last pushed into the Agents page's own search
+    // boxes. A box holding anything else was typed on the page itself, and the
+    // mirror leaves it alone rather than clearing someone's filter out from under
+    // them when the top bar is emptied.
+    QString m_agentPageSearchMirror;
     // Back / forward navigation trail (left of the search box). Each entry is a
     // place we landed on: section, repository, repo tab, and—inside Git—the
     // browsed branch. This lets Back / Forward cross Code ↔ Git and branch ↔
@@ -6647,8 +6673,39 @@ private:
     void fixCurrentPullFindingsWithAgent();
     QTableWidget *m_agentTable = nullptr;
     // Free-text filter over the session list: matches issue number/title,
-    // provider, status and PR. Empty shows everything (issue #82).
+    // provider, status and PR, plus anything in a session's transcript (see
+    // m_agentTranscriptHits). Empty shows everything (issue #82).
     QLineEdit *m_agentSearch = nullptr;
+    // Live transcript search behind that filter — and behind the top bar's box,
+    // which mirrors into it on this page. A session whose transcript contains the
+    // query stays in the list even when its title says nothing about it, with the
+    // hit count and the text around the first hit shown on the row. The scan is
+    // debounced and runs off the GUI thread (it reads every session's transcript
+    // tail), so it lands a beat after the in-memory title filter rather than
+    // stalling the keystroke.
+    struct AgentTranscriptHit {
+        int count = 0;
+        QString snippet;
+    };
+    QTimer *m_agentTranscriptSearchTimer = nullptr;
+    // The query m_agentTranscriptHits was built for. Hits are only trusted while
+    // this still matches what is typed, so a stale scan can never widen the list.
+    QString m_agentTranscriptSearchQuery;
+    // Repo the hits were scanned in, so arriving on the Agents page with a query
+    // already typed rescans after a repo switch instead of trusting hits that
+    // belong to another repository's sessions.
+    QString m_agentTranscriptSearchRepo;
+    QHash<int, AgentTranscriptHit> m_agentTranscriptHits; // session id -> hit
+    int m_agentTranscriptSearchGen = 0;
+    void scheduleAgentTranscriptSearch(); // (re)start the debounce
+    void runAgentTranscriptSearch();      // scan transcripts off-thread
+    // The hit for a session, or a zero hit when the scan is for another query.
+    AgentTranscriptHit agentTranscriptHit(int sessionId) const;
+    QString agentTranscriptSearchRepoKey() const;
+    // What the Agents list is currently filtered by (the page's own box), and
+    // what the transcripts are scanned for (that box, or the top bar's).
+    QString agentFilterQuery() const;
+    QString agentTranscriptQuery() const;
     // Compose row at the top of the session list (adhoc #234): type a prompt,
     // pick a repo and an agent provider, and start an ad-hoc agent right there
     // without going through the footer quick-add bar.
