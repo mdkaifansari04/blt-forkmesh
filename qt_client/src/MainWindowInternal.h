@@ -299,9 +299,12 @@ QString diffStickyLabelHtml(const DiffFileEntry &f);
 // bounded blocks stream one event-loop turn at a time.
 void renderDiffStreamed(QTextEdit *view, const QString &html,
                         const QString &styleSheet);
-// Force everything still queued for `view` into its document now. Call before an
-// operation that needs the whole document (an anchor jump, a document-wide
-// search, a file-position scan) rather than only what is on screen.
+// Ensure a streamed diff continues filling. This deliberately does *not* force
+// its remaining HTML into the document synchronously: doing that from an anchor
+// jump or a document-wide search bypassed the streaming limits and recreated the
+// multi-second UI stalls streaming was introduced to prevent. Operations may use
+// the portion currently available; their normal stream-finished hooks refresh
+// complete-document state once the bounded batches have landed.
 void flushDiffStream(QTextEdit *view);
 // Register a callback run every time `view`'s diff finishes streaming (and
 // immediately at the end of a render that needed no streaming), for state that

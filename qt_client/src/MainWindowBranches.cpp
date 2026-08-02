@@ -1648,7 +1648,7 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                     && s.branchName == branch && !isExternalSession(s.id))
                     retainedAgents.append(s.id);
             }
-            markAgentSessionsMerged(0, branch);
+            markAgentSessionsMerged(0, branch, branchInBase);
         }
         bool removed = false;
         if (!worktreePath.isEmpty() &&
@@ -1683,7 +1683,7 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             false);
         // Issue #291: flag any agent session that produced this branch. This is
         // idempotent when the cleanup path marked it above.
-        markAgentSessionsMerged(0, branch);
+        markAgentSessionsMerged(0, branch, branchInBase);
         // adhoc #250: with the "Auto after merge" toggle on, bring every other
         // branch up to date with the just-merged base in the same step. It runs
         // without a confirmation prompt and sets its own detail notice
