@@ -795,6 +795,20 @@ public:
     void testNavigateForward() { navigateForward(); }
     QString testNavBackToolTip() const;
     QString testNavForwardToolTip() const;
+    // Sub-tab-level navigation (adhoc #50): open a file / walk a directory in
+    // the Code view and read back which one the view is showing, so a test can
+    // prove Back and Forward step between them instead of jumping a tab away.
+    void testOpenRepoFile(const QString &path) { openRepoFile(path); }
+    QString testOpenRepoFilePath() const { return openRepoFilePath(); }
+    void testOpenRepoDirectory(const QString &path) { loadRepoOverview(path); }
+    QString testOverviewDirectory() const { return m_overviewPath; }
+    // Which half of the Code view is on screen: 0 = file list, 1 = editor.
+    // (Out of line: QStackedWidget is only forward-declared here.)
+    int testFilesStackPage() const;
+    // The commit whose diff the Git view is showing ("" when it is on the
+    // working-tree page), so a test can prove Back leaves a commit diff.
+    QString testOpenCommitHash() const;
+    void testShowCommit(const QString &hash) { showCommit(hash); }
     // Click the range pane's "Merge to main" (deleteAll=false) or "Merge & delete
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
@@ -3510,6 +3524,15 @@ private:
     void restoreNavEntry(int index);           // navigate to a recorded place
     struct NavPlace;
     void applyNavDetailTab(const NavPlace &place); // re-select a recorded repo tab
+    // The level below the tab bar: sub-menus (Issues list/board, PR sub-tabs,
+    // Settings/Nodes tabs) and the item open inside them (issue, pull, commit,
+    // file, chat room). Capture and replay are deliberately adjacent.
+    void captureNavSubPlace(NavPlace &place) const;
+    void applyNavSubPlace(const NavPlace &place);
+    QString openRepoFilePath() const; // file the code editor is showing
+    // Whether the Git workspace is the view on screen right now (see the
+    // definition): async page re-asserts must not fire once it isn't.
+    bool gitWorkspaceIsVisible() const;
     QString navPlaceLabel(const NavPlace &place) const; // human-readable trail destination
     void navigateBack();
     void navigateForward();
@@ -5947,17 +5970,38 @@ private:
     // place we landed on: section, repository, repo tab, and—inside Git—the
     // browsed branch. This lets Back / Forward cross Code ↔ Git and branch ↔
     // branch rather than treating them as the same Code-tab location.
+    //
+    // The trail goes one level deeper than the tab bar (adhoc #50): the sub-menu
+    // a tab is showing (Issues' list/board/labels, a PR's Conversation/Files,
+    // the Settings and Nodes tab bars) and the item open inside it (issue, pull,
+    // commit, file, chat conversation) are all part of the place, so opening one
+    // and pressing Back returns to the list you came from instead of jumping a
+    // whole tab away.
     struct NavPlace {
         int section = 0;
         int repoIndex = -1;
         int detailTab = -1;
         int overviewPage = -1; // files=0, Git=1, branches=2, worktrees=3
         QString branch;
+        // Sub-menu inside the current tab: the Issues list stack (table /
+        // milestones / labels / board), a pull request's sub-tabs, or the
+        // Settings / Nodes QTabWidget page when the place is one of those
+        // sections. -1 when the tab has no sub-menu.
+        int subTab = -1;
+        // The issue or pull request opened in that tab's detail pane (-1 = none).
+        int itemNumber = -1;
+        QString commit;    // Git view: the commit whose diff is open
+        QString filePath;  // Code view: the file open in the editor
+        QString overviewDir; // Code view: the directory the file list is showing
+        QString conversation; // Chat: the room / DM on screen
         bool operator==(const NavPlace &o) const
         {
             return section == o.section && repoIndex == o.repoIndex &&
                    detailTab == o.detailTab && overviewPage == o.overviewPage &&
-                   branch == o.branch;
+                   branch == o.branch && subTab == o.subTab &&
+                   itemNumber == o.itemNumber && commit == o.commit &&
+                   filePath == o.filePath && overviewDir == o.overviewDir &&
+                   conversation == o.conversation;
         }
     };
     QPushButton *m_navBackButton = nullptr;
@@ -7413,6 +7457,7 @@ private:
     // Projects tab widgets + state (issue #384).
     QTableWidget *m_projectTable = nullptr;
     QStackedWidget *m_projectViewStack = nullptr; // 0 list table, 1 Gantt
+    QButtonGroup *m_projectViewTabs = nullptr;    // its List / Gantt toggle
     QComboBox *m_projectStatusFilter = nullptr;   // Open | Closed | All
     // The Gantt chart (a ProjectGantt, kept as a QWidget* since that type is
     // only included by MainWindowProjects.cpp) and its scroll host.

@@ -2407,6 +2407,67 @@ int main(int argc, char *argv[])
                       "(branch = %1, page = %2)")
                   .arg(window.testBrowsedBranch())
                   .arg(window.testCommitWorkspacePage()));
+
+        // adhoc #50: the trail reaches below the tab bar. A commit's diff and an
+        // open file are places of their own, so Back returns to the list they
+        // were opened from instead of jumping a whole tab away.
+        const QString navCommit =
+            gitOutput(wtRepo.path(), {"rev-parse", "main"}).trimmed();
+        window.testShowCommit(navCommit);
+        QApplication::processEvents();
+        check(window.testOpenCommitHash() == navCommit,
+              QStringLiteral("opening a commit shows its diff in the Git view"));
+        check(window.testNavBackToolTip().contains(QStringLiteral("Git · main")),
+              QString("Back out of a commit is identified as the Git view it came "
+                      "from (%1)")
+                  .arg(window.testNavBackToolTip()));
+        window.testNavigateBack();
+        QApplication::processEvents();
+        check(window.testOpenCommitHash().isEmpty() &&
+                  window.testCommitWorkspacePage() == 0,
+              QString("Back steps out of a commit diff to the Git view "
+                      "(commit = %1, page = %2)")
+                  .arg(window.testOpenCommitHash())
+                  .arg(window.testCommitWorkspacePage()));
+        check(window.testNavForwardToolTip().contains(navCommit.left(7)),
+              QString("Forward names the commit it would reopen (%1)")
+                  .arg(window.testNavForwardToolTip()));
+        window.testNavigateForward();
+        QApplication::processEvents();
+        check(window.testOpenCommitHash() == navCommit,
+              QString("Forward reopens the commit's diff (commit = %1)")
+                  .arg(window.testOpenCommitHash()));
+
+        window.testOpenRepoFile(QStringLiteral("base-delete.txt"));
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 1 &&
+                  window.testOpenRepoFilePath() ==
+                      QStringLiteral("base-delete.txt"),
+              QString("opening a file shows it in the Code editor (page = %1, "
+                      "file = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenRepoFilePath()));
+        check(window.testNavBackToolTip().contains(navCommit.left(7)),
+              QString("Back from an open file returns to the commit it was "
+                      "opened from (%1)")
+                  .arg(window.testNavBackToolTip()));
+        window.testNavigateBack();
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 0 &&
+                  window.testOpenCommitHash() == navCommit,
+              QString("Back leaves the file editor for the previous place "
+                      "(page = %1, commit = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenCommitHash()));
+        window.testNavigateForward();
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 1 &&
+                  window.testOpenRepoFilePath() ==
+                      QStringLiteral("base-delete.txt"),
+              QString("Forward reopens the file that was on screen (page = %1, "
+                      "file = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenRepoFilePath()));
         QFile::remove(livePath);
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
