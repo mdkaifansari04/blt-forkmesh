@@ -1657,8 +1657,8 @@ void MainWindow::onReleaseMetadataLanded(int runId)
     refreshRepoSyncIndicators();
 }
 
-// After action-run state changes, keep an open PR's Checks tab and the inline
-// Conversation summary current without waiting for a re-select.
+// After action-run state changes, keep an open PR's Checks tab and inline
+// checks card current without waiting for a re-select.
 void MainWindow::refreshOpenPullChecks()
 {
     if (m_currentPullNumber < 0)
@@ -1673,7 +1673,6 @@ void MainWindow::refreshOpenPullChecks()
         const PullRequest pr = it;
         renderPullChecks(pr);
         renderPullChecksSummary(pr);
-        renderPullReviewSummary(pr);
         updatePullSubTabCounts(pr);
         return;
     }
