@@ -701,6 +701,10 @@ public:
     // issue/agent a branch is attached to (adhoc #191).
     void testAddAgentSession(const AgentSession &session)
     {
+        // Test fixtures must survive the same delayed reloads as production
+        // sessions; keeping them memory-only made timer timing erase rows.
+        if (m_agentStore)
+            m_agentStore->saveSession(session);
         for (AgentSession &existing : m_agentSessions) {
             if (existing.id == session.id) {
                 existing = session;
@@ -708,6 +712,22 @@ public:
             }
         }
         m_agentSessions.append(session);
+    }
+    int testAgentSessionForPullId(int prNumber, const QString &headBranch) const
+    {
+        const AgentSession *session = agentSessionForPull(prNumber, headBranch);
+        return session ? session->id : 0;
+    }
+    bool testBindAgentSessionsToPull(int prNumber, const QString &headBranch)
+    {
+        return bindAgentSessionsToPull(prNumber, headBranch);
+    }
+    int testAgentSessionPullNumber(int sessionId) const
+    {
+        for (const AgentSession &session : m_agentSessions)
+            if (session.id == sessionId)
+                return session.prNumber;
+        return 0;
     }
     // Take the nav strip's route to the Agents tab, so a test can read that
     // lazily-built list back the way a user reaches it (adhoc #119).
@@ -726,9 +746,21 @@ public:
                 m_agentStore->appendLog(*session, text);
     }
     void testRunAgentTranscriptSearch() { runAgentTranscriptSearch(); }
+    // Force the coalesced attachment scan to run now (adhoc #222), the way the
+    // hook above forces the debounced transcript scan.
+    void testScanAgentSessionImages()
+    {
+        m_agentImageScanPending = true;
+        refreshAgentTable();
+    }
     // The Agents list's visible rows, as the issue/title column renders them
     // (including the "· N in transcript" marker).
     QStringList testAgentRowTitles() const;
+    // adhoc #222: the attachments the list is carrying for a session's row, and
+    // whether that row has drawn the little square yet — so a test can prove a
+    // picture named in a prompt reaches the row and is decoded into a thumbnail.
+    QStringList testAgentRowImages(int sessionId) const;
+    bool testAgentRowHasThumbnail(int sessionId) const;
     // Whether the leading Branch cell for `branch` carries an icon, so a test can
     // prove the list stamps agent status at the row's left edge (adhoc #251).
     bool testBranchAttachmentHasIcon(const QString &branch) const;
@@ -2475,6 +2507,10 @@ private:
     // a like-named branch in another repo.
     const AgentSession *agentSessionForPull(int prNumber,
                                             const QString &headBranch = QString()) const;
+    // Persist the PR number on every existing Agent session that produced this
+    // repo-scoped source branch. This turns the branch fallback into a durable
+    // PR association without inventing an Agent for a manual branch.
+    bool bindAgentSessionsToPull(int prNumber, const QString &headBranch);
     // Issue #291: flag agent sessions whose worktree/PR has landed in the base
     // branch. markAgentSessionsMerged() records it eagerly when ForkMesh merges
     // a PR/worktree; refreshAgentMergeState() is the catch-all run on reload (it
@@ -4042,6 +4078,7 @@ private:
     // neither is known yet.
     QStringList agentEffortLevels() const;
     void refreshQuickAddSpeedSelector();
+    void refreshQuickAddAgentModelSelector();
     // Probe the installed `claude` CLI for the effort levels it accepts and
     // cache them (kClaudeEffortLevelsCacheSetting). Cheap (`claude --help`),
     // once per app run, and a no-op while a probe is already in flight.
@@ -5492,12 +5529,16 @@ private:
     QPlainTextEdit *m_issueQuickAdd = nullptr;
     QFrame *m_promptWrapper = nullptr; // geometry anchor for notification/prompt bubbles
     QLabel *m_quickAddCharCount = nullptr; // characters left in the title (max 16000)
-    // Agent/model chooser (adhoc #29): also carries a "Manual (create issue)"
-    // entry that replaces the old Agent / Create-issue checkboxes — picking it
-    // files an issue from the prompt instead of starting an agent.
+    // Canonical provider state behind the combined visible picker. It also
+    // carries a "Manual (create issue)" entry, which files an issue from the
+    // prompt instead of starting an agent.
     QComboBox *m_quickAddAgentProvider = nullptr;
-    // Prompt-row model chooser (adhoc #261/#349): Claude Code gets the live
-    // Claude model list; Codex gets an editable OpenAI model list.
+    // Visible combined agent/model menu. The two legacy controls below remain
+    // as hidden state holders so all launch/session code continues to consume
+    // the same canonical provider and model values.
+    QComboBox *m_quickAddAgentModelSelector = nullptr;
+    // Canonical model state behind the combined visible picker: Claude Code
+    // gets the live Claude list and Codex gets its app-server list.
     QComboBox *m_quickAddClaudeModel = nullptr;
     // Permission-mode chooser (issue #348): Ask before edits/Edit automatically/
     // Plan mode/Auto mode, styled like the provider/model combos beside it and
@@ -6899,6 +6940,33 @@ private:
     // what the transcripts are scanned for (that box, or the top bar's).
     QString agentFilterQuery() const;
     QString agentTranscriptQuery() const;
+    // Attachment thumbnails in the sessions list (adhoc #222): a session started
+    // from — or steered with — a pasted screenshot shows it as a small square at
+    // the head of its row, and clicking that square opens the picture full size.
+    // The scan for "Attached image:" lines reads prompts and transcripts off the
+    // GUI thread and is coalesced behind m_agentImageScanPending, the way the
+    // per-row diff probes are; the decode of each thumbnail is off-thread too.
+    QHash<int, QStringList> m_agentSessionImages; // session id -> image paths
+    QHash<int, QString> m_agentImageStamps;       // session id -> scanned stamp
+    int m_agentImageScanGen = 0;
+    bool m_agentImageScanRunning = false;
+    bool m_agentImageScanQueued = false;
+    bool m_agentImageScanPending = true;
+    // image path -> its square, or a null icon once the file has been found
+    // unreadable (so a row asks for it once rather than every refresh)
+    QHash<QString, QIcon> m_agentThumbnails;
+    QSet<QString> m_agentThumbnailsPending;       // decodes in flight
+    void scanAgentSessionImages(const QList<AgentSession> &sessions,
+                                const QString &owner, const QString &name);
+    // The images a row draws from, readable-and-still-on-disk only. Cache-only:
+    // it never touches the disk, so refreshAgentTable() can call it per row.
+    QStringList agentSessionImages(int sessionId) const;
+    // The row's square for `path`, decoding it in the background (and filling the
+    // row in when that lands) the first time it is asked for.
+    QIcon agentThumbnail(const QString &path);
+    void applyAgentThumbnail(const QString &path);
+    // Open a session's attachments full size, one under another.
+    void showAgentSessionImages(int sessionId);
     // Compose row at the top of the session list (adhoc #234): type a prompt,
     // pick a repo and an agent provider, and start an ad-hoc agent right there
     // without going through the footer quick-add bar.

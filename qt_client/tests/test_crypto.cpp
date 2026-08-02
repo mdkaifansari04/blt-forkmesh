@@ -4892,6 +4892,138 @@ int main(int argc, char *argv[])
         git({"commit", "-q", "-m", "test: settle pre-pull-tests state",
             "--allow-empty"});
 
+        // --- PullStore materializes durable, visible per-PR branches ------
+        // Every PR gets refs/heads/pr/<n> in addition to the historical
+        // refs/pr/<n>/head compatibility ref. Re-materialization is idempotent,
+        // while a branch whose tip diverged is never force-overwritten.
+        {
+            QTemporaryDir branchRoot;
+            const QString branchRepo = branchRoot.path();
+            bool branchSetup =
+                branchRoot.isValid() &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("init"), QStringLiteral("-q"),
+                            QStringLiteral("-b"), QStringLiteral("main")}) &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("config"), QStringLiteral("user.name"),
+                            QStringLiteral("PR Branch Tester")}) &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("config"), QStringLiteral("user.email"),
+                            QStringLiteral("pr-branch@example.test")}) &&
+                writeTestFile(branchRepo + QStringLiteral("/base.txt"),
+                              QByteArrayLiteral("base\n")) &&
+                commitTestTree(branchRepo, QStringLiteral("base"),
+                               QStringLiteral("2026-08-01T10:00:00Z"),
+                               QStringLiteral("PR Branch Tester"),
+                               QStringLiteral("pr-branch@example.test")) &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("checkout"), QStringLiteral("-q"),
+                            QStringLiteral("-b"), QStringLiteral("feature-pr")}) &&
+                writeTestFile(branchRepo + QStringLiteral("/feature.txt"),
+                              QByteArrayLiteral("feature\n")) &&
+                commitTestTree(branchRepo, QStringLiteral("feature"),
+                               QStringLiteral("2026-08-01T11:00:00Z"),
+                               QStringLiteral("PR Branch Tester"),
+                               QStringLiteral("pr-branch@example.test"));
+            const QString featureTip = testGitHead(branchRepo);
+            branchSetup = branchSetup && !featureTip.isEmpty() &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("branch"),
+                                      QStringLiteral("feature-pr-idempotent"),
+                                      featureTip}) &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("branch"),
+                                      QStringLiteral("feature-pr-divergent"),
+                                      featureTip}) &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("checkout"),
+                                      QStringLiteral("-q"),
+                                      QStringLiteral("main")}) &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("checkout"),
+                                      QStringLiteral("-q"),
+                                      QStringLiteral("-b"),
+                                      QStringLiteral("independent-pr-work")}) &&
+                          writeTestFile(branchRepo +
+                                            QStringLiteral("/independent.txt"),
+                                        QByteArrayLiteral("independent\n")) &&
+                          commitTestTree(
+                              branchRepo, QStringLiteral("independent"),
+                              QStringLiteral("2026-08-01T12:00:00Z"),
+                              QStringLiteral("PR Branch Tester"),
+                              QStringLiteral("pr-branch@example.test"));
+            const QString divergentTip = testGitHead(branchRepo);
+            branchSetup = branchSetup && !divergentTip.isEmpty() &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("checkout"),
+                                      QStringLiteral("-q"),
+                                      QStringLiteral("main")});
+            check(branchSetup, "set up durable per-PR branch fixtures");
+
+            auto refTip = [&](const QString &ref) {
+                QByteArray output;
+                return runTestGit(branchRepo,
+                                  {QStringLiteral("rev-parse"),
+                                   QStringLiteral("--verify"), ref},
+                                  &output)
+                           ? QString::fromUtf8(output).trimmed()
+                           : QString();
+            };
+            if (branchSetup) {
+                PullStore branchPulls(branchRepo, QString(), &identity,
+                                      QStringLiteral("tester"));
+                QString branchError;
+                const int created = branchPulls.createPull(
+                    QStringLiteral("Visible branch"), QStringLiteral("body"),
+                    QStringLiteral("main"), QStringLiteral("feature-pr"),
+                    QString(), QString(), /*branchBacked=*/true, &branchError);
+                check(created == 1 && branchError.isEmpty() &&
+                          refTip(QStringLiteral("refs/heads/pr/1")) == featureTip &&
+                          refTip(QStringLiteral("refs/pr/1/head")) == featureTip,
+                      "materializing a PR creates pr/1 and its compatibility ref");
+
+                check(runTestGit(branchRepo,
+                                 {QStringLiteral("update-ref"),
+                                  QStringLiteral("refs/heads/pr/2"), featureTip}),
+                      "pre-create an idempotent PR branch at the desired tip");
+                const int idempotent = branchPulls.createPull(
+                    QStringLiteral("Idempotent branch"), QStringLiteral("body"),
+                    QStringLiteral("main"),
+                    QStringLiteral("feature-pr-idempotent"), QString(), QString(),
+                    /*branchBacked=*/true, &branchError);
+                check(idempotent == 2 &&
+                          refTip(QStringLiteral("refs/heads/pr/2")) == featureTip &&
+                          refTip(QStringLiteral("refs/pr/2/head")) == featureTip,
+                      "re-materializing the same PR tip is idempotent");
+
+                check(runTestGit(branchRepo,
+                                 {QStringLiteral("update-ref"),
+                                  QStringLiteral("refs/heads/pr/3"), divergentTip}),
+                      "pre-create a divergent visible PR branch");
+                const int divergent = branchPulls.createPull(
+                    QStringLiteral("Preserve divergence"),
+                    QStringLiteral("body"), QStringLiteral("main"),
+                    QStringLiteral("feature-pr-divergent"), QString(), QString(),
+                    /*branchBacked=*/true, &branchError);
+                PullRequest divergentRecord;
+                for (const PullRequest &candidate : branchPulls.loadAll()) {
+                    if (candidate.number == divergent)
+                        divergentRecord = candidate;
+                }
+                check(divergent == 3 &&
+                          refTip(QStringLiteral("refs/heads/pr/3")) == divergentTip &&
+                          refTip(QStringLiteral("refs/pr/3/head")) == featureTip,
+                      "materialization preserves a divergent pr/3 branch");
+                check(divergentRecord.head ==
+                              QStringLiteral("feature-pr-divergent") &&
+                          verifyEd25519(divergentRecord.author,
+                                        divergentRecord.sig,
+                                        PullStore::canonicalString(
+                                            divergentRecord)),
+                      "canonical branch materialization preserves signed pr.head metadata");
+            }
+        }
+
         // --- PullStore conversation round-trip ---------------------------
         PullStore pulls(tmp.path(), QString(), &identity, "tester");
         const int pn = pulls.createPull(
@@ -6058,6 +6190,71 @@ int main(int argc, char *argv[])
               "the tail of a long transcript is still searched");
     }
 
+    // Attachment scan behind the sessions list's little square (adhoc #222): the
+    // pictures a run was started from — or steered with — are named as "Attached
+    // image: <path>" lines in the prompt and in the transcripts, and the list has
+    // to find them in both without reading a whole multi-megabyte transcript.
+    {
+        check(AgentStore::attachmentPathsIn("nothing attached here").isEmpty(),
+              "a prompt with no attachment line yields no images");
+        const QStringList plain = AgentStore::attachmentPathsIn(
+            "look at this\nAttached image: /tmp/shot.png\nand fix it");
+        check(plain == QStringList{"/tmp/shot.png"},
+              "an attachment path is lifted out of plain prompt text");
+        // Transcript events store the same line JSON-encoded, so the path ends at
+        // the escape or the closing quote rather than at a real newline.
+        const QStringList encoded = AgentStore::attachmentPathsIn(
+            "{\"type\":\"_local_user\",\"text\":\"fix this\\nAttached image: "
+            "/tmp/a.png\\nthanks\"}");
+        check(encoded == QStringList{"/tmp/a.png"},
+              "an attachment path is lifted out of a JSON-encoded event line");
+        const QStringList many = AgentStore::attachmentPathsIn(
+            "Attached image: /tmp/a.png\nAttached image: /tmp/b.png\n"
+            "Attached image: /tmp/a.png\n");
+        check(many == (QStringList{"/tmp/a.png", "/tmp/b.png"}),
+              "attachments keep their order and are de-duplicated");
+
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "attachment scan temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session.prompt = "make it blue\nAttached image: /tmp/launch.png";
+        session = store.createSession(session);
+
+        const QString firstStamp = store.transcriptStamp(session);
+        check(store.attachmentPaths(session) == QStringList{"/tmp/launch.png"},
+              "an ad-hoc session's launch attachment is found in its prompt");
+
+        // A follow-up only ever reaches disk as a transcript turn.
+        store.appendEvent(session,
+                          QJsonObject{{"type", "_local_user"},
+                                      {"text", "and this one\nAttached image: "
+                                               "/tmp/followup.png"}});
+        check(store.attachmentPaths(session) ==
+                  (QStringList{"/tmp/launch.png", "/tmp/followup.png"}),
+              "an attachment steered into a running session is found too");
+        check(store.transcriptStamp(session) != firstStamp,
+              "the transcript stamp moves when a session is appended to, so the "
+              "scan knows to re-read it");
+
+        // The middle of a long run is skipped, but both of its ends are read: an
+        // attachment can only be named in a prompt, and those sit at the opening
+        // turn or at the newest follow-up.
+        AgentSession chatty;
+        chatty.owner = "octo";
+        chatty.name = "demo";
+        chatty = store.createSession(chatty);
+        store.appendLog(chatty, "Attached image: /tmp/opening.png");
+        store.appendLog(chatty, QString(3 * AgentStore::kAttachmentScanBytes,
+                                        QLatin1Char('x')));
+        store.appendLog(chatty, "Attached image: /tmp/latest.png");
+        check(store.attachmentPaths(chatty) ==
+                  (QStringList{"/tmp/opening.png", "/tmp/latest.png"}),
+              "both ends of a long transcript are scanned for attachments");
+    }
+
     // The Claude Code run summary the CLI reports on finish ("done · N turns ·
     // Ms · $X") is stored on the session and survives a restart (issue #296).
     {
@@ -6094,14 +6291,16 @@ int main(int argc, char *argv[])
         session = store.createSession(session);
         check(!session.yolo, "a session defaults to no auto-merge");
         session.yolo = true;
+        session.associationOnly = true;
         session.branchName = "agent/adhoc-1-yolo";
         check(store.saveSession(session), "saving a YOLO session succeeds");
 
         AgentStore reopened(tmp.path());
         const QList<AgentSession> sessions = reopened.loadAllSessions();
         check(sessions.size() == 1 && sessions.first().yolo &&
+                  sessions.first().associationOnly &&
                   !sessions.first().merged,
-              "the YOLO flag reloads intact after a restart, still unmerged");
+              "session behavior flags reload intact after a restart");
 
         // Sessions written before the flag existed must read back as opt-out —
         // an absent "yolo" key can never turn into an unattended merge.
@@ -6109,6 +6308,9 @@ int main(int argc, char *argv[])
         legacy.remove("yolo");
         check(!AgentSession::fromJson(legacy).yolo,
               "a session JSON without the yolo key never auto-merges");
+        legacy.remove("associationOnly");
+        check(!AgentSession::fromJson(legacy).associationOnly,
+              "legacy session JSON never becomes a provenance-only record");
 
         // Genie (adhoc #38) is stamped the same way: the launch attaches the MCP
         // connector because the run was started as a genie, so the flag has to

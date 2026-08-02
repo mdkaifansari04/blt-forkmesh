@@ -162,6 +162,19 @@ const DISABLED_ELEMENTS_KEY = "forkmesh.world.disabledElements.v1";
 // the current sort are painted so a busy scene cannot stall the panel.
 const WORLD_OBJECT_NUMERIC_KEYS = new Set(["triangles", "instances"]);
 const WORLD_OBJECT_ROW_LIMIT = 300;
+// Expanding an element row in the Elements tab walks one level further into
+// its subtree: the cabinets inside Mirror node cabinets, the portals on the
+// ring, the desks inside Office interior. Each opened level carries its own
+// sort, and the depth limit stops a pathological rig from nesting forever.
+const WORLD_ELEMENT_PART_COLUMNS = [
+  { key: "label", heading: "Piece" },
+  { key: "type", heading: "Kind" },
+  { key: "drawables", heading: "Drawn" },
+  { key: "triangles", heading: "Tri" },
+  { key: "interactives", heading: "Click" },
+];
+const WORLD_ELEMENT_PART_TEXT_KEYS = new Set(["label", "type"]);
+const WORLD_ELEMENT_PART_DEPTH_LIMIT = 12;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 // Everything a fresh page load pulls in — the relayed chat backlog, the first
@@ -634,6 +647,113 @@ function escapeHTML(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+// Clicking the HUD logo opens this switcher rather than silently reloading:
+// the 3D city is a peer of the console, not a detour away from it, so every
+// dashboard page stays one hop from wherever the camera is standing.
+const WORLD_BRAND_NAV_PAGES = Object.freeze([
+  {
+    href: "/dashboard",
+    label: "Overview",
+    copy: "Activity, nodes, and pings",
+    icon: `<path d="M4 11.2 12 4l8 7.2V20a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z"></path>`,
+  },
+  {
+    href: "/dashboard/profile",
+    label: "Profile",
+    copy: "Your public page and stats",
+    icon: `<circle cx="12" cy="8" r="3.6"></circle><path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6"></path>`,
+  },
+  {
+    href: "/dashboard/repos",
+    label: "Repositories",
+    copy: "Code, issues, and pulls",
+    icon: `<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v14H6.5A1.5 1.5 0 0 0 5 18.5zM5 18.5A1.5 1.5 0 0 0 6.5 20H19"></path>`,
+  },
+  {
+    href: "/dashboard/tasks",
+    label: "Tasks",
+    copy: "Assigned and open work",
+    icon: `<path d="M4 7.5 5.8 9.3 9 6M4 16.5l1.8 1.8L9 15M12.5 8H20M12.5 17H20"></path>`,
+  },
+  {
+    href: "/dashboard/network",
+    label: "Network",
+    copy: "Mirrors, relays, and health",
+    icon: `<path d="M3 12h3.5l3 7 4-14 3 7H20"></path>`,
+  },
+  {
+    href: "/dashboard/chat",
+    label: "Chat",
+    copy: "Rooms, direct messages, #general",
+    icon: `<path d="M20 15a2 2 0 0 1-2 2H8.6L4 20.5V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2z"></path>`,
+  },
+  {
+    href: "/dashboard/settings",
+    label: "Settings",
+    copy: "Account, keys, and preferences",
+    icon: `<path d="M4 8h9M17.5 8H20M4 16h3M11.5 16H20"></path><circle cx="15" cy="8" r="2.2"></circle><circle cx="9" cy="16" r="2.2"></circle>`,
+  },
+]);
+
+// Second row of the switcher: the public pages a visitor is most likely to
+// want next. They are chips, not rows, so the dashboard list stays the
+// obvious answer to "where do I go from here".
+const WORLD_BRAND_NAV_SHORTCUTS = Object.freeze([
+  { href: "/", label: "Home" },
+  { href: "/docs", label: "Docs" },
+  { href: "/network", label: "Live mesh" },
+  { href: "/status", label: "Status" },
+]);
+
+// Every destination targets _top because the World is framed as well as
+// visited directly (homepage footer band, signup page). A console page must
+// never load inside that little embedded strip.
+function worldBrandNavMarkup() {
+  const pages = WORLD_BRAND_NAV_PAGES.map(
+    (page) => `
+              <a
+                class="world-brand-nav-link"
+                href="${escapeHTML(page.href)}"
+                target="_top"
+                data-world-brand-nav-link
+              >
+                <span class="world-hud-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false">${page.icon}</svg>
+                </span>
+                <span class="world-brand-nav-label">${escapeHTML(page.label)}</span>
+                <span class="world-brand-nav-copy">${escapeHTML(page.copy)}</span>
+              </a>`,
+  ).join("");
+  const shortcuts = WORLD_BRAND_NAV_SHORTCUTS.map(
+    (shortcut) => `
+                <a
+                  class="world-brand-nav-chip"
+                  href="${escapeHTML(shortcut.href)}"
+                  target="_top"
+                  data-world-brand-nav-link
+                >${escapeHTML(shortcut.label)}</a>`,
+  ).join("");
+  return `
+          <nav
+            class="world-brand-nav"
+            id="world-brand-nav"
+            data-world-brand-nav
+            aria-label="ForkMesh dashboard pages"
+          >
+            <p class="world-brand-nav-heading">Dashboard</p>
+            <div class="world-brand-nav-pages">${pages}</div>
+            <p class="world-brand-nav-heading">Elsewhere on ForkMesh</p>
+            <div class="world-brand-nav-chips">${shortcuts}</div>
+            <button
+              class="world-brand-nav-reload"
+              type="button"
+              data-world-logo-refresh
+            >
+              <span aria-hidden="true">↻</span><span>Reload World</span>
+            </button>
+          </nav>`;
 }
 
 const INFRASTRUCTURE_CONSOLE_METHODS = Object.freeze([
@@ -4219,12 +4339,24 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
 
       <div class="world-hud" data-world-hud data-hud-expanded="false">
         <header class="world-topbar">
-          <a class="world-brand brand" href="/world/" data-world-logo-refresh aria-label="Refresh ForkMesh World">
-            <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
-            <span class="world-connection-ring" data-world-presence-state="connecting">
-              <span class="world-visually-hidden" data-world-presence-copy>Joining world</span>
-            </span>
-          </a>
+          <div class="world-brand-menu" data-world-brand-menu data-open="false">
+            <button
+              class="world-brand brand"
+              type="button"
+              data-world-logo-menu
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="world-brand-nav"
+              aria-label="ForkMesh menu — go to a dashboard page"
+              title="Go to a dashboard page"
+            >
+              <img class="brand-mark" src="/assets/logo.png" alt="" aria-hidden="true" />
+              <span class="world-connection-ring" data-world-presence-state="connecting">
+                <span class="world-visually-hidden" data-world-presence-copy>Joining world</span>
+              </span>
+            </button>
+            ${worldBrandNavMarkup()}
+          </div>
 
           <nav class="world-top-actions" data-world-top-actions aria-label="World tools">
             <a
@@ -5282,7 +5414,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 and its per-frame work stops — then watch the Debug tab to see
                 what it was costing. Switch it back on to restore it. Choices
                 apply to this browser only; every other visitor still sees the
-                full world.
+                full world. Click an element name to open it up: every piece
+                inside — each mirror node cabinet, each portal on the ring,
+                each fitting in the office — with its own counts, its own
+                sortable columns, and its own pieces below that.
               </p>
               <div class="world-element-master">
                 <button type="button" data-world-element-master="on">Everything on</button>
@@ -5749,6 +5884,11 @@ class ForkMeshWorld extends HTMLElement {
     this.disabledWorldElements = storedDisabledWorldElements();
     this.worldElementSort = "drawables";
     this.worldElementSortAscending = false;
+    // Expanded rows in the Elements tab, keyed by element id plus the child
+    // path below it ("node-cabinets", then "node-cabinets/2"), and the sort
+    // each expanded level carries — every open list sorts on its own.
+    this.expandedWorldElements = new Set();
+    this.worldElementPartSorts = new Map();
     // Per-object triangle table in the Debug tab: sort key and the last
     // scene walk, kept until the tab is reopened or Re-walk is pressed.
     this.worldObjectSort = "triangles";
@@ -5991,6 +6131,23 @@ class ForkMeshWorld extends HTMLElement {
         location.reload();
       },
     );
+    this.$("[data-world-logo-menu]")?.addEventListener("click", (event) => {
+      const opening =
+        this.$("[data-world-brand-menu]")?.dataset.open !== "true";
+      this.setBrandNavOpen(opening);
+      // A keyboard activation reports no pointer detail. Only then does the
+      // menu take focus, so a mouse user is never pulled out of the canvas.
+      if (opening && event.detail === 0) {
+        this.$("[data-world-brand-nav-link]")?.focus();
+      }
+    });
+    // Following a destination unpins the menu, so coming back through the
+    // browser's history cache does not land on a stale open panel.
+    this.$("[data-world-brand-nav]")?.addEventListener("click", (event) => {
+      if (event.target.closest("[data-world-brand-nav-link]")) {
+        this.setBrandNavOpen(false);
+      }
+    });
     this.startClock();
     this.armCrashGuard();
     this.startDiagnostics();
@@ -10661,6 +10818,13 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         diagnostics.removeAttribute("open");
       }
+      const brandMenu = this.$("[data-world-brand-menu]");
+      if (
+        brandMenu?.dataset.open === "true" &&
+        !event.target.closest("[data-world-brand-menu]")
+      ) {
+        this.setBrandNavOpen(false);
+      }
       const onlineMenu = this.$("[data-world-online-menu]");
       if (
         onlineMenu?.dataset.open === "true" &&
@@ -10992,6 +11156,21 @@ class ForkMeshWorld extends HTMLElement {
           this.worldElementSortAscending = key === "label" || key === "category";
         }
         this.renderWorldElementsPane();
+        return;
+      }
+      const elementExpand = event.target.closest("[data-world-element-expand]");
+      if (elementExpand) {
+        this.toggleWorldElementExpanded(
+          elementExpand.dataset.worldElementExpand,
+        );
+        return;
+      }
+      const partSort = event.target.closest("[data-world-element-part-sort]");
+      if (partSort) {
+        this.sortWorldElementParts(
+          partSort.dataset.worldElementPartScope,
+          partSort.dataset.worldElementPartSort,
+        );
         return;
       }
       if (event.target.closest("[data-world-object-refresh]")) {
@@ -11787,7 +11966,10 @@ class ForkMeshWorld extends HTMLElement {
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
       if (this.$("[data-world-chat-terminal]")?.open) return;
-      if (this.$("[data-world-online-menu]")?.dataset.open === "true") {
+      if (this.$("[data-world-brand-menu]")?.dataset.open === "true") {
+        this.setBrandNavOpen(false);
+        this.$("[data-world-logo-menu]")?.focus();
+      } else if (this.$("[data-world-online-menu]")?.dataset.open === "true") {
         this.setOnlineRosterOpen(false);
         this.$("[data-world-online-toggle]")?.focus();
       } else if (
@@ -24360,27 +24542,199 @@ class ForkMeshWorld extends HTMLElement {
       .map((element) => {
         const count = (value) =>
           element.system ? "—" : compactCountLabel(value);
-        return `
-        <label
+        const parts = Number(element.parts) || 0;
+        const expanded = this.expandedWorldElements.has(element.id);
+        const name = parts
+          ? `
+          <button
+            type="button"
+            class="world-element-name"
+            data-world-element-expand="${escapeHTML(element.id)}"
+            aria-expanded="${expanded}"
+            title="${escapeHTML(
+              `${element.label} — ${parts.toLocaleString()} piece${
+                parts === 1 ? "" : "s"
+              } inside`,
+            )}"
+          >
+            <span class="world-element-twisty" aria-hidden="true">${
+              expanded ? "▾" : "▸"
+            }</span>
+            <strong>${escapeHTML(element.label)}</strong>
+          </button>`
+          : `<span class="world-element-name" data-world-element-leaf>
+            <span class="world-element-twisty" aria-hidden="true"></span>
+            <strong>${escapeHTML(element.label)}</strong>
+          </span>`;
+        return (
+          `
+        <div
           class="world-element-row"
           role="row"
           data-enabled="${element.enabled}"
+          data-expanded="${expanded}"
           ${element.system ? 'title="Per-frame system — no geometry of its own"' : ""}
         >
           <input
             type="checkbox"
+            aria-label="${escapeHTML(`Keep ${element.label} in the world`)}"
             data-world-element-toggle="${escapeHTML(element.id)}"
             ${element.enabled ? "checked" : ""}
           />
-          <strong>${escapeHTML(element.label)}</strong>
+          ${name}
           <span class="world-element-group">${escapeHTML(element.category)}</span>
           <span class="world-element-count">${escapeHTML(count(element.drawables))}</span>
           <span class="world-element-count">${escapeHTML(count(element.triangles))}</span>
           <span class="world-element-count">${escapeHTML(count(element.interactives))}</span>
-        </label>`;
+        </div>` + this.renderWorldElementParts(element.id, [], 1)
+        );
       })
       .join("");
     list.innerHTML = header + rows;
+  }
+
+  worldElementPartScope(elementId, path) {
+    return path.length ? `${elementId}/${path.join(".")}` : String(elementId);
+  }
+
+  // An expanded list keeps its own sort. Opening one for the first time picks
+  // up whatever the element table is sorted by — heaviest first, usually — so
+  // the drill-down starts where the eye already is, and every later click on a
+  // sub-header only moves that one list.
+  worldElementPartSortFor(scope) {
+    const stored = this.worldElementPartSorts.get(scope);
+    if (stored) return stored;
+    return WORLD_ELEMENT_PART_COLUMNS.some(
+      (column) => column.key === this.worldElementSort,
+    )
+      ? {
+          key: this.worldElementSort,
+          ascending: this.worldElementSortAscending === true,
+        }
+      : { key: "drawables", ascending: false };
+  }
+
+  sortWorldElementParts(scope, key) {
+    if (!scope || !key) return;
+    const current = this.worldElementPartSortFor(scope);
+    this.worldElementPartSorts.set(
+      scope,
+      current.key === key
+        ? { key, ascending: current.ascending !== true }
+        : { key, ascending: WORLD_ELEMENT_PART_TEXT_KEYS.has(key) },
+    );
+    this.renderWorldElementsPane();
+  }
+
+  toggleWorldElementExpanded(scope) {
+    const key = String(scope || "");
+    if (!key) return;
+    if (this.expandedWorldElements.has(key)) {
+      this.expandedWorldElements.delete(key);
+    } else {
+      this.expandedWorldElements.add(key);
+    }
+    this.renderWorldElementsPane();
+  }
+
+  // One expanded level: its own sortable sub-header, one row per piece, and a
+  // recursive call for any piece the visitor has opened in turn. The scene is
+  // re-read on every render, so a rebuilt cabinet or a despawned avatar is
+  // reflected the moment anything in this panel changes.
+  renderWorldElementParts(elementId, path, depth) {
+    const scope = this.worldElementPartScope(elementId, path);
+    if (
+      !this.expandedWorldElements.has(scope) ||
+      depth > WORLD_ELEMENT_PART_DEPTH_LIMIT
+    ) {
+      return "";
+    }
+    const walk = this.world?.listWorldElementParts?.(elementId, path) || {};
+    const parts = Array.isArray(walk.parts) ? walk.parts : [];
+    const indent = `style="--world-part-depth:${depth}"`;
+    if (!parts.length) {
+      return `<p class="world-element-part-note" ${indent}>This piece has nothing inside it — it is a single object.</p>`;
+    }
+    const sort = this.worldElementPartSortFor(scope);
+    const textSort = WORLD_ELEMENT_PART_TEXT_KEYS.has(sort.key);
+    const comparePart = (left, right) => {
+      const delta = textSort
+        ? String(left[sort.key]).localeCompare(String(right[sort.key]))
+        : Number(right[sort.key]) - Number(left[sort.key]);
+      return (
+        (textSort === sort.ascending ? delta : -delta) ||
+        left.label.localeCompare(right.label)
+      );
+    };
+    const subhead = `
+      <div class="world-element-subhead" role="row" ${indent}>
+        <span aria-hidden="true"></span>
+        ${WORLD_ELEMENT_PART_COLUMNS.map((column) => {
+          const active = column.key === sort.key;
+          return `
+          <button
+            type="button"
+            role="columnheader"
+            data-world-element-part-scope="${escapeHTML(scope)}"
+            data-world-element-part-sort="${column.key}"
+            aria-sort="${active ? (sort.ascending ? "ascending" : "descending") : "none"}"
+          >${column.heading}${active ? (sort.ascending ? " ▲" : " ▼") : ""}</button>`;
+        }).join("")}
+      </div>`;
+    const rows = [...parts]
+      .sort(comparePart)
+      .map((part) => {
+        const partScope = this.worldElementPartScope(elementId, part.path);
+        const open = this.expandedWorldElements.has(partScope);
+        const detail = [
+          part.geometry,
+          part.instances ? `${part.instances.toLocaleString()} instances` : "",
+          `${part.objects.toLocaleString()} objects`,
+          part.visible ? "" : "hidden",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        const name = part.parts
+          ? `
+          <button
+            type="button"
+            class="world-element-name"
+            data-world-element-expand="${escapeHTML(partScope)}"
+            aria-expanded="${open}"
+          >
+            <span class="world-element-twisty" aria-hidden="true">${open ? "▾" : "▸"}</span>
+            <strong>${escapeHTML(part.label)}</strong>
+          </button>`
+          : `<span class="world-element-name" data-world-element-leaf>
+            <span class="world-element-twisty" aria-hidden="true"></span>
+            <strong>${escapeHTML(part.label)}</strong>
+          </span>`;
+        return (
+          `
+        <div
+          class="world-element-part"
+          role="row"
+          data-visible="${part.visible}"
+          data-expanded="${open}"
+          ${indent}
+          title="${escapeHTML(`${part.label} · ${detail}`)}"
+        >
+          <span aria-hidden="true"></span>
+          ${name}
+          <span class="world-element-group">${escapeHTML(part.type)}</span>
+          <span class="world-element-count">${escapeHTML(compactCountLabel(part.drawables))}</span>
+          <span class="world-element-count">${escapeHTML(compactCountLabel(part.triangles))}</span>
+          <span class="world-element-count">${escapeHTML(compactCountLabel(part.interactives))}</span>
+        </div>` + this.renderWorldElementParts(elementId, part.path, depth + 1)
+        );
+      })
+      .join("");
+    const total = Number(walk.total) || parts.length;
+    const trimmed =
+      total > parts.length
+        ? `<p class="world-element-part-note" ${indent}>Showing ${parts.length.toLocaleString()} of ${total.toLocaleString()} pieces.</p>`
+        : "";
+    return subhead + rows + trimmed;
   }
 
   // The Debug tab's per-object triangle table. The scene walk is explicit —
@@ -28656,6 +29010,16 @@ class ForkMeshWorld extends HTMLElement {
           ? `<p class="world-online-more">Realtime presence is offline, so only you are counted until it reconnects.</p>`
           : ""
       }`;
+  }
+
+  setBrandNavOpen(open) {
+    const menu = this.$("[data-world-brand-menu]");
+    if (!menu) return;
+    menu.dataset.open = open ? "true" : "false";
+    this.$("[data-world-logo-menu]")?.setAttribute(
+      "aria-expanded",
+      open ? "true" : "false",
+    );
   }
 
   setOnlineRosterOpen(open) {

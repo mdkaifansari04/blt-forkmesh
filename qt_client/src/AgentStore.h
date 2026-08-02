@@ -39,6 +39,10 @@ struct AgentSession {
     // today (see agentModeSkipsPermissions).
     QString mode;
     bool createPr = false;
+    // A durable branch/PR association created for work that did not originate
+    // in an Agent run. It is provenance only: it must never be resumed or claim
+    // that an agent authored the branch's commits.
+    bool associationOnly = false;
     // "YOLO" (adhoc #12): merge this session's branch straight into the repo's
     // default branch as soon as the run finishes successfully, with no review
     // step. Captured from the quick-add bar's checkbox when the session starts.
@@ -142,6 +146,26 @@ public:
     static constexpr qint64 kTranscriptSearchTailBytes = 512 * 1024;
     int searchTranscript(const AgentSession &session, const QString &needle,
                          QString *snippet = nullptr) const;
+
+    // Image attachments a session carries (adhoc #222), so the sessions list can
+    // show a thumbnail of the screenshot a run was started from. Prompts and
+    // transcripts name them as "Attached image: <path>" lines (see
+    // AgentPromptImages), which is all this looks for. Paths come back exactly as
+    // they were written, in the order they appear and de-duplicated: whether the
+    // file is still on disk — and where it moved to — is the caller's business.
+    static QStringList attachmentPathsIn(const QString &text);
+    // The same, for one session: its stored prompt plus both persisted
+    // transcripts. Only the two ends of each transcript are read (see
+    // kAttachmentScanBytes), so scanning every session of a repo stays cheap.
+    QStringList attachmentPaths(const AgentSession &session) const;
+    // Cheap "has this session's transcript moved" stamp — the size and modified
+    // time of both transcript files — so a caller can skip re-scanning a session
+    // nothing has been appended to.
+    QString transcriptStamp(const AgentSession &session) const;
+    // How much of each transcript file the attachment scan reads, from the head
+    // and again from the tail: the launch prompt sits at the head and the newest
+    // follow-up at the tail, and an attachment can only be named in a prompt.
+    static constexpr qint64 kAttachmentScanBytes = 128 * 1024;
 
 private:
     QString sessionsDir() const;
