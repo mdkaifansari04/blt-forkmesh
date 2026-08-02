@@ -1432,6 +1432,9 @@ private:
     // Terminate every process sharing `name` (the `killall` shape), skipping
     // ForkMesh itself and PID 1. `pids` is the set listed in the panel.
     void killAllHighMemoryProcesses(const QString &name, const QList<qint64> &pids);
+    // Row-level "Stop agent" (adhoc #228): halt the agent run a listed process
+    // belongs to, rather than SIGTERMing one process out from under it.
+    void stopHighMemoryAgent(int sessionId, const QString &label);
     // Full-height "Log" section (section 4) showing the whole network log.
     QWidget *buildLogSection();
     void showCloudflareWorkerLogs();
@@ -2804,6 +2807,14 @@ private:
     QList<int> stoppableAgentSessionIds() const;
     // Stop every session above and clear the pending queue (adhoc #433).
     void stopAllRunningAgents();
+    // Stop one session: its runner, its stream and its place in the queue, with
+    // the status transition a queued or wedged row would otherwise never make.
+    // Returns false if the id names nothing stoppable. Shared by the high-memory
+    // panel's per-row "Stop agent" (adhoc #228).
+    bool stopAgentSessionById(int sessionId);
+    // True while sessionId is one "Stop" would act on (running, waiting or
+    // queued, and not already merged).
+    bool isStoppableAgentSession(int sessionId) const;
     // "Stop all" read backwards (adhoc #136): the idle sessions — stopped or
     // failed, ours, not merged — that can be resumed, across all repos.
     QList<int> startableAgentSessionIds() const;
