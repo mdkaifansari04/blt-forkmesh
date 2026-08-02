@@ -891,6 +891,19 @@ public:
     {
         return markAgentSessionsMerged(0, branch, mergeVerified);
     }
+    // The "Merge & clean up" buttons (Branches, Worktrees and the agent detail
+    // rail): merge the branch into the default branch, then delete its worktree,
+    // its branch and the agent session(s) that produced it.
+    bool testMergeBranchAndCleanUp(const QString &branch)
+    {
+        return mergeWorktreeIntoMain(branch,
+                                     worktreePathForBranch(repoGitDir(), branch),
+                                     /*deleteAgent=*/true);
+    }
+    bool testHasAgentSession(int sessionId)
+    {
+        return findAgentSession(sessionId) != nullptr;
+    }
     void testRefreshAgentMergeState() { refreshAgentMergeState(); }
     bool testAgentMergeStateRefreshing() const { return m_agentMergeStateRefreshing; }
     QString testAgentStatusCellText(int sessionId) const;
