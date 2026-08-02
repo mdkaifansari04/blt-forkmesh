@@ -3625,6 +3625,10 @@ int main(int argc, char *argv[])
                                  "[a1b2c3d](forkmesh-commit:a1b2c3d)"),
               QStringLiteral("agent transcript links issue and commit references"));
         check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("show d6c14744")) ==
+                  QStringLiteral("show [d6c14744](forkmesh-commit:d6c14744)"),
+              QStringLiteral("agent transcript links hexadecimal commit references"));
+        check(ClaudeTranscriptView::linkifyReferences(
                   QStringLiteral("```\nMainWindow.h\nfeat/not-a-link\n```")) ==
                   QStringLiteral("```\nMainWindow.h\nfeat/not-a-link\n```"),
               QStringLiteral("agent transcript leaves fenced code untouched"));
