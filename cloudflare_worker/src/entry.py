@@ -21418,6 +21418,13 @@ async def _sweep_element_deposit(env, row, balance=None):
     purchase_id = str(row.get("purchase_id") or "")
     if row.get("sweep_signature"):
         return str(row.get("sweep_signature"))
+    # Two concurrent pollers can both reach here, because D1 gives no atomic
+    # compare-and-swap to claim the sweep with. The chain settles it instead:
+    # same signer, transfers and blockhash produce a byte-identical
+    # transaction, which the cluster deduplicates by signature; if the
+    # blockhash has rolled, the second attempt spends an already-emptied
+    # account and is rejected for insufficient funds. Either way the deposit
+    # cannot be sent twice.
     from_addr = str(row.get("deposit_address") or "")
     stored = str(row.get("deposit_secret") or "")
     if not SOLANA_RE.match(from_addr) or not stored:
