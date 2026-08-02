@@ -59,6 +59,7 @@ RESERVED_ROUTE_PREFIXES = frozenset({
     "status",
     "referrals",
     "leaderboards",
+    "notes",
     # Referral share links (/r/<name>) are worker-owned counters.
     "r",
 })
@@ -72,6 +73,7 @@ DASHBOARD_PAGE_ASSETS = {
     "/dashboard/network": "dashboard/network/index.html",
     "/dashboard/chat": "dashboard/chat/index.html",
     "/dashboard/tasks": "dashboard/tasks/index.html",
+    "/dashboard/notes": "dashboard/notes/index.html",
     "/dashboard/settings": "dashboard/settings/index.html",
     "/dashboard/profile": "dashboard/profile/index.html",
     "/dashboard/profile/repositories": "dashboard/profile/repositories/index.html",
@@ -121,6 +123,7 @@ BLOCKED_STATIC_HTML_PATHS = frozenset({
     "/dashboard/network/index.html",
     "/dashboard/chat/index.html",
     "/dashboard/tasks/index.html",
+    "/dashboard/notes/index.html",
     "/dashboard/settings/index.html",
     "/dashboard/profile/index.html",
     "/dashboard/profile/repositories/index.html",

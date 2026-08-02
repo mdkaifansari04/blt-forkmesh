@@ -2132,46 +2132,6 @@ forkmesh-world.world-admin-error-arrival::after {
   flex: 0 0 auto;
 }
 
-.world-diagnostics-music-compact {
-  display: inline-flex;
-  max-width: 220px;
-  align-items: center;
-  gap: 4px;
-  color: var(--world-sun);
-}
-
-.world-diagnostics-music-compact [data-world-diagnostics-music-label] {
-  max-width: 118px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.world-diagnostics-music-compact progress {
-  width: 58px;
-  height: 4px;
-  flex: 0 0 auto;
-  overflow: hidden;
-  appearance: none;
-  border: 0;
-  border-radius: 999px;
-  background: rgb(247 201 107 / 0.18);
-}
-
-.world-diagnostics-music-compact progress::-webkit-progress-bar {
-  border-radius: 999px;
-  background: rgb(247 201 107 / 0.18);
-}
-
-.world-diagnostics-music-compact progress::-webkit-progress-value {
-  border-radius: 999px;
-  background: var(--world-sun);
-}
-
-.world-diagnostics-music-compact progress::-moz-progress-bar {
-  border-radius: 999px;
-  background: var(--world-sun);
-}
-
 .world-diagnostics-light {
   width: 5px;
   height: 5px;
@@ -4862,9 +4822,7 @@ forkmesh-world.world-office-active .world-quick-dock {
 .world-repo-actions button,
 .world-repo-actions a,
 .world-repo-explorer header button,
-.world-home-card button,
-.world-media-list button,
-.world-media-now button {
+.world-home-card button {
   min-height: 30px;
   border: 1px solid var(--world-line);
   border-radius: 0;
@@ -4888,11 +4846,7 @@ forkmesh-world.world-office-active .world-quick-dock {
 .world-repo-explorer header button:hover,
 .world-repo-explorer header button:focus-visible,
 .world-home-card button:hover,
-.world-home-card button:focus-visible,
-.world-media-list button:hover,
-.world-media-list button:focus-visible,
-.world-media-now button:hover,
-.world-media-now button:focus-visible {
+.world-home-card button:focus-visible {
   border-color: var(--detail-color);
   color: var(--detail-color);
   outline: none;
@@ -6429,170 +6383,6 @@ forkmesh-world.world-office-active .world-quick-dock {
   padding: 0 11px 11px;
 }
 
-.world-focus-music {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 16px;
-  border: 1px solid color-mix(in srgb, var(--detail-color) 55%, var(--world-line));
-  background: #071712;
-  padding: 12px;
-}
-
-.world-focus-music > header {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.world-focus-music > header span,
-.world-focus-music > header > strong {
-  color: var(--detail-color);
-  font: 600 0.5rem "ForkMesh Mono", monospace;
-  letter-spacing: 0.08em;
-}
-
-.world-focus-music h3 {
-  margin: 3px 0 0;
-  font-size: 0.9rem;
-}
-
-.world-focus-music-intro,
-.world-focus-status {
-  margin: 0;
-  color: var(--world-muted);
-  font-size: 0.58rem;
-  line-height: 1.45;
-}
-
-.world-focus-track-list {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-}
-
-.world-focus-track {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 7px;
-  border: 1px solid var(--world-line);
-  background: #0d211b;
-  padding: 9px;
-  cursor: pointer;
-}
-
-.world-focus-track[data-selected="true"] {
-  border-color: var(--detail-color);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--detail-color) 35%, transparent);
-}
-
-.world-focus-track:focus-within {
-  outline: 2px solid var(--detail-color);
-  outline-offset: 2px;
-}
-
-.world-focus-track input {
-  margin: 2px 0 0;
-  accent-color: var(--detail-color);
-}
-
-.world-focus-track > span {
-  min-width: 0;
-}
-
-.world-focus-track strong,
-.world-focus-track small {
-  display: block;
-}
-
-.world-focus-track strong {
-  overflow: hidden;
-  font-size: 0.65rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.world-focus-track small {
-  margin-top: 3px;
-  color: var(--world-muted);
-  font-size: 0.48rem;
-}
-
-.world-focus-track-links {
-  grid-column: 2;
-  display: flex;
-  gap: 8px;
-}
-
-.world-focus-track-links a {
-  color: var(--detail-color);
-  font-size: 0.5rem;
-}
-
-.world-focus-transport {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.world-focus-transport button {
-  min-height: 30px;
-  border: 1px solid var(--world-line);
-  background: #102b22;
-  padding: 0 9px;
-  color: var(--world-copy);
-  cursor: pointer;
-  font: 600 0.54rem "ForkMesh Mono", monospace;
-}
-
-.world-focus-transport button:hover,
-.world-focus-transport button:focus-visible {
-  border-color: var(--detail-color);
-  color: var(--detail-color);
-  outline: none;
-}
-
-.world-focus-transport button[aria-pressed="true"] {
-  border-color: var(--detail-color);
-  color: var(--detail-color);
-}
-
-.world-focus-transport button:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.world-focus-transport label {
-  display: grid;
-  grid-template-columns: auto minmax(90px, 1fr) 36px;
-  align-items: center;
-  flex: 1 1 190px;
-  gap: 6px;
-  color: var(--world-muted);
-  font: 0.5rem "ForkMesh Mono", monospace;
-}
-
-.world-focus-transport input {
-  width: 100%;
-  accent-color: var(--detail-color);
-}
-
-.world-focus-transport output {
-  color: var(--world-copy);
-  text-align: right;
-}
-
-.world-focus-status {
-  min-height: 1.3em;
-  color: var(--world-copy);
-}
-
-.world-media-list {
-  display: grid;
-  gap: 8px;
-}
-
 .world-media-room {
   display: grid;
   gap: 10px;
@@ -6653,66 +6443,6 @@ forkmesh-world.world-office-active .world-quick-dock {
 .world-media-queue a {
   color: var(--detail-color);
   font-size: 0.53rem;
-}
-
-.world-media-list article {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  border: 1px solid var(--world-line);
-  padding: 10px;
-}
-
-.world-media-list strong,
-.world-media-list span {
-  display: block;
-}
-
-.world-media-list span {
-  color: var(--detail-color);
-  font-family: "ForkMesh Mono", monospace;
-  font-size: 0.5rem;
-  text-transform: uppercase;
-}
-
-.world-media-list strong {
-  margin-top: 3px;
-  font-size: 0.72rem;
-}
-
-.world-media-list p {
-  margin: 5px 0 0;
-  color: var(--world-muted);
-  font-size: 0.6rem;
-}
-
-.world-media-list a {
-  grid-column: 2;
-  color: var(--world-muted);
-  font-size: 0.56rem;
-  text-align: right;
-}
-
-.world-media-now {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 10px;
-  border-top: 1px solid var(--world-line);
-  padding-top: 10px;
-}
-
-.world-media-now span,
-.world-media-now strong,
-.world-media-now small {
-  display: block;
-  font-size: 0.62rem;
-}
-
-.world-media-now small {
-  margin-top: 3px;
-  color: var(--world-muted);
 }
 
 .world-field {
@@ -8858,20 +8588,6 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     line-height: 1.08;
   }
 
-  .world-diagnostics-music-compact {
-    max-width: 142px;
-    gap: 2px;
-  }
-
-  .world-diagnostics-music-compact [data-world-diagnostics-music-label] {
-    max-width: 62px;
-  }
-
-  .world-diagnostics-music-compact progress {
-    width: 32px;
-    height: 3px;
-  }
-
   .world-diagnostics:not(.world-chat-terminal)
     .world-diagnostics-toggle {
     display: none;
@@ -8916,22 +8632,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .world-focus-music > header {
-    display: grid;
-  }
-
-  .world-focus-track-list {
-    grid-template-columns: 1fr;
-  }
-
-  .world-media-list article,
   .world-home-card {
     grid-template-columns: 1fr;
-  }
-
-  .world-media-list a {
-    grid-column: 1;
-    text-align: left;
   }
 }
 

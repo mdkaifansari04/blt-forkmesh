@@ -9,6 +9,7 @@
     "network": initNetworkPage,
     "chat": initChatPage,
     "tasks": initTasksPage,
+    "notes": initNotesPage,
     "settings": initSettingsPage,
     "profile": initProfileOverviewPage,
     "profile-repositories": initProfileOverviewPage,

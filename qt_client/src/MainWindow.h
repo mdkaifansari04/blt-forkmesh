@@ -1027,6 +1027,7 @@ private:
     static constexpr int kNodesSectionIndex = 13; // "Nodes" directory (adhoc #9)
     static constexpr int kControlNodeSectionIndex = 14;
     static constexpr int kOrganizationTasksSectionIndex = 15;
+    static constexpr int kNotesSectionIndex = 16;
 
     // Setup page
     QWidget *buildSetupPage();
@@ -1513,6 +1514,20 @@ private:
     QWidget *buildIssuesSection();
     QWidget *buildOrganizationTasksSection();
     void refreshOrganizationTasks();
+    QWidget *buildNotesSection();
+    void refreshNotes();
+    void renderNotesList(const QString &selectId = QString());
+    void selectNote(const QString &id, const QString &storage);
+    void createNote();
+    void saveNote();
+    void deleteNote();
+    void shareNote();
+    void attachNoteConversation();
+    void showNoteVersions();
+    using NoteReplyHandler = std::function<void(
+        bool, const QJsonObject &, const QString &)>;
+    void requestNotes(const QByteArray &method, const QString &path,
+                      const QJsonObject &body, NoteReplyHandler handler);
     void applyOrganizationTasks(const QJsonObject &payload);
     // The table paints one page of the catalog at a time (adhoc #24): search
     // and the summary still run over every task, only the rows are bounded.
@@ -5057,6 +5072,20 @@ private:
     QTimer *m_webSolanaTimer = nullptr;
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QPushButton *m_tasksNavButton = nullptr;
+    QPushButton *m_notesNavButton = nullptr;
+    QListWidget *m_notesList = nullptr;
+    QLineEdit *m_noteTitle = nullptr;
+    MarkdownEditor *m_noteEditor = nullptr;
+    QComboBox *m_noteStorageMode = nullptr;
+    QCheckBox *m_notePublic = nullptr;
+    QLabel *m_notesStatus = nullptr;
+    QJsonArray m_localNotes;
+    QJsonArray m_cloudNotes;
+    QJsonObject m_selectedNote;
+    QString m_selectedNoteStorage;
+    bool m_notesLoading = false;
+    bool m_noteDirty = false;
+    QTimer *m_noteRefreshTimer = nullptr;
     QTableWidget *m_organizationTasksTable = nullptr;
     QTableWidget *m_organizationTaskQueueTable = nullptr;
     QLineEdit *m_organizationTasksSearch = nullptr;
