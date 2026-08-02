@@ -163,8 +163,15 @@ public:
     // the session "Waiting" (hand icon) as a real AskUserQuestion turn does.
     static bool parseInlineChoices(const QString &markdown, QStringList &options);
 
+    // Turn repository references in transcript prose into private links the
+    // host can navigate: branches, filenames (with optional line numbers),
+    // issues/PRs, commit SHAs and forkmesh:// permalinks. Fenced code and
+    // existing Markdown links remain untouched.
+    static QString linkifyReferences(const QString &markdown);
+
 signals:
     void searchResultsChanged(int current, int total);
+    void referenceActivated(const QString &href);
 
 private:
     void applyScheme();
@@ -182,6 +189,8 @@ private:
     void smoothScrollTo(int value);
     void fadeIn(QWidget *card);
     QString accentFor(const QString &toolName) const;
+    void enableReferenceLinks(QLabel *label);
+    QString referenceHtml(const QString &plainText) const;
 
     Collapsible *makeCollapsible(const QString &header, QWidget *body,
                                  bool expanded);

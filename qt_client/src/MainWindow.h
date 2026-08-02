@@ -2074,6 +2074,10 @@ private:
     // forkmesh-commit:SHA → commit) and forkmesh:// permalinks (issue/pull/commit);
     // anything else opens externally.
     void openBodyReference(const QString &href);
+    // Resolve links emitted by ClaudeTranscriptView. Repository-local branch and
+    // file targets stay inside ForkMesh; issue, PR, commit and web links reuse
+    // the conversation reference resolver above.
+    void openAgentTranscriptReference(const QString &href);
     // Copy a forkmesh://<kind>/<owner>/<repo>/<id> permalink for the open PR or
     // commit to the clipboard (owner/repo from the repo detail view). Pasting it
     // into a comment renders a link via autolinkReferences() (issue #154).
@@ -5822,7 +5826,7 @@ private:
     QLabel *m_statusAppPath = nullptr;
     // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
     QPushButton *m_footerDiagnostics = nullptr;
-    // Live one-per-second moving sparklines for CPU, host memory and disk
+    // Live one-per-second moving sparklines for CPU, host memory, swap and disk
     // usage (adhoc #17), shown in the footer beside the diagnostics. Held as
     // QWidget* and poked via static_cast since ResourceSparkline is private to
     // MainWindowChat.cpp.
@@ -5833,6 +5837,7 @@ private:
     QToolButton *m_repoRatchetButton = nullptr;
     qint64 m_repoStatsLastRefreshMs = 0;
     QWidget *m_memChart = nullptr;
+    QWidget *m_swapChart = nullptr;
     QWidget *m_diskChart = nullptr;
     StallWatchdog *m_stallWatchdog = nullptr;
     QTimer *m_diagTimer = nullptr;
@@ -7107,10 +7112,9 @@ private:
     QToolButton *m_agentStatusPill = nullptr; // compact model + outcome control
     // The session's field list (agent/model/mode/repo/status/issue/PR/branch/
     // worktree/stats) and the popup it lives in — opened from the header's
-    // "Info" button instead of sitting open above the transcript (adhoc #61).
+    // status control instead of sitting open above the transcript (adhoc #61).
     QLabel *m_agentMeta = nullptr;
     QFrame *m_agentMetaPopup = nullptr;
-    QPushButton *m_agentInfoButton = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create PR" — pull requests are user-driven (adhoc #2 follow-up): a run
