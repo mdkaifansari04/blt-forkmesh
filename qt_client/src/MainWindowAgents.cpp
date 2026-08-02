@@ -1229,12 +1229,12 @@ QWidget *MainWindow::buildAgentsTab()
 
     auto *listPane = new QWidget;
     listPane->setMinimumWidth(260);
-    // The heading shares the toolbar row rather than owning a line of its own:
-    // with the repository band hidden on this tab (updateRepoActivityRail) the
-    // session list starts at the top of the page, and a one-line header keeps it
-    // there instead of spending two rows on chrome.
-    auto *heading = new QLabel("Agent sessions");
-    heading->setObjectName("channelTitle");
+    // No heading at all any more (adhoc #224): with the repository band hidden
+    // on this tab (updateRepoActivityRail) and the toolbar moved to the pane's
+    // foot, the session list starts in the page's very top-left corner — the
+    // first row's selection outline begins on the window's left rule. The tab is
+    // already named "Agents" in the rail, so a second "Agent sessions" line only
+    // pushed the list it labels down and in.
 
     m_agentTable = new QTableWidget(0, 2);
     m_agentTable->setObjectName("issueTable");
@@ -1315,8 +1315,10 @@ QWidget *MainWindow::buildAgentsTab()
     m_externalClaudeTimer->start();
 
     auto *listLayout = new QVBoxLayout(listPane);
-    listLayout->setContentsMargins(18, 12, 12, 14);
-    listLayout->setSpacing(8);
+    // The table owns the pane edge-to-edge (adhoc #224); the footer bar built
+    // below carries its own padding, so nothing here insets the list itself.
+    listLayout->setContentsMargins(0, 0, 0, 0);
+    listLayout->setSpacing(0);
 
     // The top-of-list "Start agent" compose row (adhoc #234) was removed from
     // the desktop app (adhoc #271) — starting a new ad-hoc agent now happens
@@ -1328,7 +1330,11 @@ QWidget *MainWindow::buildAgentsTab()
     // whose transcript does, which is scanned in the background as you type.
     m_agentSearch = new QLineEdit;
     m_agentSearch->setObjectName("issueSearch");
-    m_agentSearch->setPlaceholderText(QString::fromUtf8(
+    // Short placeholder now that the box shares the footer with the fleet
+    // buttons (adhoc #224); the full sentence rides the tooltip.
+    m_agentSearch->setPlaceholderText(
+        QString::fromUtf8("Search agents\xE2\x80\xA6"));
+    m_agentSearch->setToolTip(QString::fromUtf8(
         "Search agents and transcripts by issue, agent, status or PR\xE2\x80\xA6"));
     m_agentSearch->setClearButtonEnabled(true);
     connect(m_agentSearch, &QLineEdit::textChanged, this, [this] {
@@ -1338,15 +1344,16 @@ QWidget *MainWindow::buildAgentsTab()
         scheduleAgentTranscriptSearch();
     });
 
-    // "Delete all merged" sits on top of the list and wipes every merged session's
-    // worktree, branch and agent in one batch (adhoc #235). It shares the search
-    // row to keep the toolbar compact and stays disabled until something is merged.
-    m_agentDeleteMergedButton = new QPushButton("Delete all merged");
-    m_agentDeleteMergedButton->setObjectName("dangerButton");
-    m_agentDeleteMergedButton->setCursor(Qt::PointingHandCursor);
-    m_agentDeleteMergedButton->setToolTip(
+    // The fleet buttons below are the same octicon-over-caption tiles as the
+    // detail pane's session actions and the left rail (adhoc #224) — one visual
+    // language for every action on the page — and they sit under the list rather
+    // than over it, so the list itself can start at the top of the pane.
+
+    // "Delete all merged" wipes every merged session's worktree, branch and
+    // agent in one batch (adhoc #235). Disabled until something is merged.
+    m_agentDeleteMergedButton = railActionButton(
+        QStringLiteral("trash"), QStringLiteral("Del merged"),
         "Delete the worktree, branch and session of every merged agent");
-    setOcticon(m_agentDeleteMergedButton, "trash", 16);
     connect(m_agentDeleteMergedButton, &QPushButton::clicked, this,
             &MainWindow::deleteAllMergedAgentSessions);
 
@@ -1379,26 +1386,20 @@ QWidget *MainWindow::buildAgentsTab()
     // "Stop all" halts every ForkMesh-run session in one click (adhoc #433) —
     // the companion to the concurrency cap, since a full queue can otherwise
     // only be drained one Stop at a time. Disabled while nothing is in flight.
-    m_agentStopAllButton = new QPushButton("Stop all");
-    m_agentStopAllButton->setObjectName("dangerButton");
-    m_agentStopAllButton->setCursor(Qt::PointingHandCursor);
-    m_agentStopAllButton->setToolTip(
+    m_agentStopAllButton = railActionButton(
+        QStringLiteral("circle-slash"), QStringLiteral("Stop all"),
         "Stop every running agent and cancel the queued ones. External "
         "Claude Code sessions started outside ForkMesh are left alone.");
-    setOcticon(m_agentStopAllButton, "circle-slash", 16);
     connect(m_agentStopAllButton, &QPushButton::clicked, this,
             &MainWindow::stopAllRunningAgents);
 
     // "Start all" is the way back from "Stop all" (adhoc #136): resume every
     // idle session in one click instead of reopening each row and continuing it.
-    // Green outline beside the red one, and disabled while nothing is resumable.
-    m_agentStartAllButton = new QPushButton("Start all");
-    m_agentStartAllButton->setObjectName("successButton");
-    m_agentStartAllButton->setCursor(Qt::PointingHandCursor);
-    m_agentStartAllButton->setToolTip(
+    // Disabled while nothing is resumable.
+    m_agentStartAllButton = railActionButton(
+        QStringLiteral("rocket"), QStringLiteral("Start all"),
         "Resume every stopped or failed agent. Merged sessions and external "
         "Claude Code sessions started outside ForkMesh are left alone.");
-    setOcticon(m_agentStartAllButton, "rocket", 16);
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
@@ -1437,19 +1438,21 @@ QWidget *MainWindow::buildAgentsTab()
     agentQueueLayout->addWidget(m_agentQueueLimitIncreaseButton);
     refreshAgentQueueControls();
 
+    // Fleet toolbar, now the pane's footer (adhoc #224): the list gets the top
+    // of the page, and the controls that act on the whole fleet sit under the
+    // rows they act on rather than between them and the top of the window.
     auto *agentListToolbar = new QHBoxLayout;
-    agentListToolbar->setContentsMargins(0, 0, 0, 0);
-    agentListToolbar->setSpacing(8);
-    agentListToolbar->addWidget(heading, 0);
-    agentListToolbar->addWidget(m_agentSearch, 1);
+    agentListToolbar->setContentsMargins(10, 2, 10, 8);
+    agentListToolbar->setSpacing(6);
     agentListToolbar->addWidget(m_agentStartAllButton, 0);
-    agentListToolbar->addWidget(agentQueueControl, 0);
+    agentListToolbar->addWidget(agentQueueControl, 0, Qt::AlignVCenter);
     agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
-    agentListToolbar->addWidget(m_agentHideDetailButton, 0);
-    listLayout->addLayout(agentListToolbar);
+    agentListToolbar->addWidget(m_agentSearch, 1, Qt::AlignVCenter);
+    agentListToolbar->addWidget(m_agentHideDetailButton, 0, Qt::AlignVCenter);
 
     listLayout->addWidget(m_agentTable, 1);
+    listLayout->addLayout(agentListToolbar);
 
     auto *detailPane = new QWidget;
     // Keep the whole title on one line; the detail pane's actual right edge is
@@ -1715,23 +1718,25 @@ QWidget *MainWindow::buildAgentsTab()
     actionRow->addWidget(m_agentBranchButton);
     actionRow->addWidget(m_agentWorktreeButton);
 
-    // The title still owns its row outright (adhoc #35): sharing it with the mode
-    // selector left a long, prompt-derived ad-hoc title inside a narrow column
-    // with acres of unused space beside it. The header reads title, then
-    // the status pill with the session's actions beside it, then the meta table.
+    // The header's first line is the run's state and everything you can do about
+    // it, pushed into the pane's top-right corner (adhoc #224): status pill,
+    // Info, the session actions, and — appended further down, once they exist —
+    // the Transcript/Raw view switch. The prompt-derived title reads on the line
+    // underneath them all, where a long ad-hoc title has the width to itself
+    // (which is what adhoc #35 gave it a row of its own for).
     auto *topRow = new QVBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
     topRow->setSpacing(4);
-    topRow->addWidget(m_agentTitle);
     auto *statusRow = new QHBoxLayout;
     statusRow->setContentsMargins(0, 0, 0, 0);
     statusRow->setSpacing(8);
-    statusRow->addWidget(m_agentStatusPill, 0, Qt::AlignLeft);
-    statusRow->addWidget(m_agentInfoButton, 0, Qt::AlignLeft);
+    statusRow->addStretch(1);
+    statusRow->addWidget(m_agentStatusPill, 0, Qt::AlignVCenter);
+    statusRow->addWidget(m_agentInfoButton, 0, Qt::AlignVCenter);
     statusRow->addSpacing(4);
     statusRow->addLayout(actionRow);
-    statusRow->addStretch(1);
     topRow->addLayout(statusRow);
+    topRow->addWidget(m_agentTitle);
 
     m_agentLog = new QPlainTextEdit;
     m_agentLog->setReadOnly(true);
@@ -1849,14 +1854,19 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentOutputStack->addWidget(m_agentTerminal);   // page 1: embedded terminal
     m_agentOutputStack->addWidget(m_agentTranscript); // page 2: rich transcript
 
-    // Transcript | Raw toggle, shown only for Claude Code transcript sessions.
-    m_transcriptModeButton = new QPushButton(QStringLiteral("Transcript"));
-    m_terminalModeButton = new QPushButton(QStringLiteral("Raw"));
-    for (QPushButton *b : {m_transcriptModeButton, m_terminalModeButton}) {
+    // Transcript | Raw switch, shown only for Claude Code transcript sessions.
+    // The same octicon-over-caption tiles as the session actions it now sits
+    // beside in the header (adhoc #224) — the segmented pill it used to be was
+    // the last control on the page with a look of its own. Still checkable, so
+    // the rail button's green accent line marks the view you are on.
+    m_transcriptModeButton =
+        railActionButton(QStringLiteral("comment"), QStringLiteral("Transcript"),
+                         "Show this run as rendered transcript cards");
+    m_terminalModeButton =
+        railActionButton(QStringLiteral("terminal"), QStringLiteral("Raw"),
+                         "Show this run's raw, unformatted output");
+    for (QPushButton *b : {m_transcriptModeButton, m_terminalModeButton})
         b->setCheckable(true);
-        b->setCursor(Qt::PointingHandCursor);
-        b->setObjectName("segButton");
-    }
     m_transcriptModeButton->setChecked(true);
     connect(m_transcriptModeButton, &QPushButton::clicked, this, [this] {
         m_transcriptModeButton->setChecked(true);
@@ -1872,19 +1882,16 @@ QWidget *MainWindow::buildAgentsTab()
     // The unified/split diff-style selector that used to sit here is gone (adhoc
     // #51); the transcript still honours the stored kClaudeDiffSplitSetting.
 
-    // Search the transcript (adhoc #201): a query box with a "3/12" match counter.
-    // Typing highlights every match in the transcript and jumps to the first;
-    // Enter walks the hits (adhoc #51 dropped the prev/next steppers).
-    m_transcriptSearch = new QLineEdit;
-    m_transcriptSearch->setObjectName("issueSearch"); // reuse the styled search look
-    // Placeholder trimmed to just "Search" so the box can be short (adhoc #61) —
-    // it sits inside the transcript toolbar, where what it searches is obvious.
-    m_transcriptSearch->setPlaceholderText(QStringLiteral("Search"));
-    m_transcriptSearch->setClearButtonEnabled(true);
-    m_transcriptSearch->setFixedWidth(120);
-    m_transcriptSearch->setToolTip(QStringLiteral("Search the transcript"));
-    m_transcriptSearchCount = new QLabel;
-    m_transcriptSearchCount->setObjectName("agentFilesHeading"); // small muted text
+    // Transcript search (adhoc #201). The box itself is gone from the toolbar
+    // (adhoc #224) — the window's own top-bar search already mirrors into it
+    // (syncAgentPageSearchFromGlobal), so the detail pane carried a second
+    // search field for a query that is typed up there. The QLineEdit stays as
+    // the query's home so that mirror, its Enter-walks-the-hits behaviour and
+    // reapplyTranscriptSearch() keep working; it is simply never shown.
+    m_transcriptSearch = new QLineEdit(detailPane);
+    m_transcriptSearch->hide();
+    m_transcriptSearchCount = new QLabel(detailPane);
+    m_transcriptSearchCount->hide();
     connect(m_transcriptSearch, &QLineEdit::textChanged, this,
             [this](const QString &t) {
                 if (!m_agentTranscript)
@@ -1910,32 +1917,13 @@ QWidget *MainWindow::buildAgentsTab()
                           : QStringLiteral("%1/%2").arg(current).arg(total));
             });
 
-    // Search box and match counter — the transcript-only half of the output
-    // toolbar, grouped so it can be shown and hidden as one (adhoc #35).
-    auto *transcriptToolsRow = new QHBoxLayout;
-    transcriptToolsRow->setContentsMargins(0, 0, 0, 0);
-    transcriptToolsRow->setSpacing(0);
-    transcriptToolsRow->addWidget(m_transcriptSearch, 1);
-    transcriptToolsRow->addSpacing(6);
-    transcriptToolsRow->addWidget(m_transcriptSearchCount);
-    m_agentTranscriptTools = new QWidget;
-    m_agentTranscriptTools->setLayout(transcriptToolsRow);
-
-    // With the session actions back up in the header (adhoc #84) the toolbar is
-    // just the Transcript | Raw toggle and the search box — so the search takes
-    // the whole remaining width instead of hugging the right edge with a gap
-    // where the buttons used to be.
-    auto *toggleRow = new QHBoxLayout;
-    toggleRow->setContentsMargins(0, 0, 0, 0);
-    toggleRow->setSpacing(0);
-    toggleRow->addWidget(m_transcriptModeButton);
-    toggleRow->addWidget(m_terminalModeButton);
-    toggleRow->addSpacing(12);
-    toggleRow->addWidget(m_agentTranscriptTools, 1);
-    m_agentOutputToggle = new QWidget;
-    m_agentOutputToggle->setLayout(toggleRow);
-    // The toolbar itself always shows; the detail pane it lives in is what stays
-    // hidden until a session is opened.
+    // The output toolbar is gone with the search box it was built around (adhoc
+    // #224): its last two controls, Transcript and Raw, join the actions in the
+    // header's top-right corner, so the transcript starts directly under the
+    // title instead of a row down.
+    statusRow->addSpacing(8);
+    statusRow->addWidget(m_transcriptModeButton, 0, Qt::AlignVCenter);
+    statusRow->addWidget(m_terminalModeButton, 0, Qt::AlignVCenter);
 
     // Edited-files list for the "Files changed" tab: the files this session has
     // touched in its branch (derived from Edit/Write/MultiEdit tool calls, and
@@ -2085,12 +2073,12 @@ QWidget *MainWindow::buildAgentsTab()
     filesChangedLayout->addLayout(filesActionBar);
     filesChangedLayout->addWidget(filesDiffSplit, 1);
 
-    // Agent tab: the Transcript|Raw toggle over the output stack.
+    // Agent tab: just the output stack now — the Transcript|Raw toggle that used
+    // to head it moved up into the header (adhoc #224).
     auto *agentOutputPage = new QWidget;
     auto *agentOutputLayout = new QVBoxLayout(agentOutputPage);
     agentOutputLayout->setContentsMargins(0, 8, 0, 0);
     agentOutputLayout->setSpacing(6);
-    agentOutputLayout->addWidget(m_agentOutputToggle);
     agentOutputLayout->addWidget(m_agentOutputStack, 1);
 
     // The "Files changed" tab (issue #131) has been removed (adhoc #42): it had
@@ -6384,15 +6372,13 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLog->setPlainText(QString());
         m_agentLogSession = -1; // set out-of-band; the async set re-renders
     }
-    // The output toolbar stays put — it carries this session's action buttons now
-    // (adhoc #35) — but its transcript-only controls come and go with the surface
-    // they act on.
+    // The Transcript/Raw switch lives in the header with the session actions
+    // (adhoc #224) and comes and goes with the surface it acts on: a plain
+    // log/terminal session has no transcript to switch to.
     if (m_transcriptModeButton)
         m_transcriptModeButton->setVisible(transcript);
     if (m_terminalModeButton)
         m_terminalModeButton->setVisible(transcript);
-    if (m_agentTranscriptTools)
-        m_agentTranscriptTools->setVisible(transcript);
     // The "Files changed" tab only applies to local transcript sessions (external
     // sessions have no worktree/diff here). Hide it otherwise and fall back to the
     // Agent tab so the user never lands on an empty tab.
