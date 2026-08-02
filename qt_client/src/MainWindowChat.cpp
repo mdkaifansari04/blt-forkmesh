@@ -5413,8 +5413,11 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessage = new QLabel;
     m_topMessage->setObjectName("topMessageText");
     m_topMessage->setTextFormat(Qt::RichText);
-    // Keep the useful start visible when a narrow window clips a one-line bubble.
-    m_topMessage->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    // The message is never truncated: it wraps across the bubble's full width and
+    // the countdown/actions sit on their own row underneath it, so no part of a
+    // notification is ever hidden behind an ellipsis.
+    m_topMessage->setWordWrap(true);
+    m_topMessage->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     // Selectable, plus clickable links (e.g. the "jump to agent" notification).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                           Qt::LinksAccessibleByMouse);
@@ -5478,6 +5481,14 @@ QWidget *MainWindow::buildBreadcrumb()
         m_issueQuickAdd->setFocus();
     });
 
+    // Dim countdown / queue / paused text. It used to be appended to the message
+    // itself; on its own row it can never push the message into an ellipsis.
+    m_topMessageMeta = new QLabel;
+    m_topMessageMeta->setObjectName("topMessageMeta");
+    m_topMessageMeta->setTextFormat(Qt::PlainText);
+    m_topMessageMeta->setFocusPolicy(Qt::NoFocus);
+    m_topMessageMeta->setMinimumWidth(1);
+
     // A plain "x" to dismiss a bubble without copying it.
     m_topMessageClose = new QPushButton;
     m_topMessageClose->setObjectName("ghostButton");
@@ -5489,26 +5500,10 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageClose, &QPushButton::clicked, this,
             [this] { dismissTopMessage(); }); // always fully close, even if another error is queued
 
-    // Shown beside a long regular notification. Clicking it expands the full
-    // text in place (wrapped, growing the bubble)
-    // and toggles back to the elided one-liner — no modal pops up.
-    m_topMessageExpand = new QPushButton;
-    m_topMessageExpand->setObjectName("ghostButton");
-    m_topMessageExpand->setCursor(Qt::PointingHandCursor);
-    m_topMessageExpand->setToolTip(QStringLiteral("Show the full message"));
-    m_topMessageExpand->setFocusPolicy(Qt::NoFocus);
-    setOcticon(m_topMessageExpand, "chevron-down", 14);
-    m_topMessageExpand->hide();
-    connect(m_topMessageExpand, &QPushButton::clicked, this, [this] {
-        m_topMessageExpanded = !m_topMessageExpanded;
-        renderTopMessage();
-        positionTopMessageBubble();
-        // Keep the live countdown suffix if a success toast is still ticking.
-        if (m_topMessageTimer && m_topMessageTimer->isActive())
-            renderTopMessageCountdown();
-    });
-
     // A single floating unit keeps its text and actions together while it fades.
+    // The bubble stacks vertically: the whole message across the full width, then
+    // a full-width row carrying the countdown and the action buttons. Nothing
+    // competes with the text for horizontal room, so it never has to be elided.
     m_topMessageContainer = new QFrame(this);
     m_topMessageContainer->setObjectName("topMessage");
     m_topMessageContainer->setFocusPolicy(Qt::NoFocus);
@@ -5516,16 +5511,46 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     m_topMessageContainer->setMouseTracking(true);
     m_topMessageContainer->installEventFilter(this);
-    auto *topMessageRow = new QHBoxLayout(m_topMessageContainer);
-    topMessageRow->setContentsMargins(12, 7, 8, 7);
-    topMessageRow->setSpacing(4);
-    topMessageRow->addWidget(m_topMessage, 1);
-    topMessageRow->addWidget(m_topMessageExpand);
-    topMessageRow->addWidget(m_topMessageCopy);
-    topMessageRow->addWidget(m_topMessageSendToPrompt);
-    topMessageRow->addWidget(m_topMessageClose);
+
+    // Only a message taller than the room above the composer ever scrolls; the
+    // usual few-line toast shows entirely, with no scrollbar (topMessageBubbleRect
+    // sizes this to the text).
+    m_topMessageScroll = new QScrollArea;
+    m_topMessageScroll->setObjectName("topMessageScroll");
+    m_topMessageScroll->setFrameShape(QFrame::NoFrame);
+    m_topMessageScroll->setWidgetResizable(true);
+    m_topMessageScroll->setFocusPolicy(Qt::NoFocus);
+    m_topMessageScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_topMessageScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_topMessageScroll->setWidget(m_topMessage);
+    // setWidget turns on the label's own background fill, which would paint a
+    // grey slab over the bubble's rounded, themed one.
+    m_topMessage->setAutoFillBackground(false);
+    m_topMessageScroll->viewport()->setAutoFillBackground(false);
+    m_topMessageScroll->viewport()->setObjectName("topMessageViewport");
+
+    m_topMessageActions = new QWidget;
+    m_topMessageActions->setObjectName("topMessageActions");
+    m_topMessageActions->setFocusPolicy(Qt::NoFocus);
+    auto *topMessageActionRow = new QHBoxLayout(m_topMessageActions);
+    topMessageActionRow->setContentsMargins(0, 0, 0, 0);
+    topMessageActionRow->setSpacing(4);
+    topMessageActionRow->addWidget(m_topMessageMeta);
+    topMessageActionRow->addStretch(1);
+    topMessageActionRow->addWidget(m_topMessageCopy);
+    topMessageActionRow->addWidget(m_topMessageSendToPrompt);
+    topMessageActionRow->addWidget(m_topMessageClose);
+
+    auto *topMessageColumn = new QVBoxLayout(m_topMessageContainer);
+    topMessageColumn->setContentsMargins(12, 8, 10, 8);
+    topMessageColumn->setSpacing(6);
+    topMessageColumn->addWidget(m_topMessageScroll, 1);
+    topMessageColumn->addWidget(m_topMessageActions);
     for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
-                            static_cast<QWidget *>(m_topMessageExpand),
+                            static_cast<QWidget *>(m_topMessageScroll),
+                            static_cast<QWidget *>(m_topMessageScroll->viewport()),
+                            static_cast<QWidget *>(m_topMessageActions),
+                            static_cast<QWidget *>(m_topMessageMeta),
                             static_cast<QWidget *>(m_topMessageCopy),
                             static_cast<QWidget *>(m_topMessageSendToPrompt),
                             static_cast<QWidget *>(m_topMessageClose)})

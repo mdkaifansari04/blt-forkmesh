@@ -4996,6 +4996,12 @@ private:
     QLabel *m_adminCrownBadge = nullptr;
     QLabel *m_topMessage = nullptr;       // prompt-anchored success/failure bubble text
     QFrame *m_topMessageContainer = nullptr; // floating bubble wrapping text + actions
+    // The text always shows in full (wrapped, full bubble width). The scroll area
+    // only ever kicks in for a message too tall for the window, so nothing is
+    // hidden even then.
+    QScrollArea *m_topMessageScroll = nullptr;
+    QWidget *m_topMessageActions = nullptr; // full-width row beneath the text: countdown + buttons
+    QLabel *m_topMessageMeta = nullptr;   // dim "5s · +2 more · paused" on the left of that row
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the bubble
     // Composer-to-bubble send motion, reused for the slide-off exit so only one
     // animation ever drives the bubble's geometry.
@@ -5004,9 +5010,8 @@ private:
     QPushButton *m_topMessageCopy = nullptr;
     QPushButton *m_topMessageSendToPrompt = nullptr;
     QPushButton *m_topMessageClose = nullptr;
-    QPushButton *m_topMessageExpand = nullptr;
     QString m_topMessageRaw;              // plain text of the current bubble, for copy/retry
-    QString m_topMessageBaseHtml;         // bubble HTML without the countdown suffix
+    QString m_topMessageBaseHtml;         // bubble HTML (the whole message; never elided)
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast slides away
     // Pending messages that arrived while another toast was already counting
@@ -5023,8 +5028,6 @@ private:
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
     QTimer *m_errorBorderTimer = nullptr;
-    bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
-    bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
     bool m_repoPinMismatch = false;       // true when the open repo's served refs no longer match the relay's pinned hash (adhoc #65)
     QHash<QString, qint64> m_repoPinAutoHealAtMs; // owner/name -> last automatic pin re-attest (rate-limits the source-of-truth auto-heal in refreshRepoPinBanner)
 
