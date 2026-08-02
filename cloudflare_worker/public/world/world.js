@@ -5694,6 +5694,7 @@ class ForkMeshWorld extends HTMLElement {
     this.adminStatusIssueActive = false;
     this.adminErrors = [];
     this.adminErrorGroups = [];
+    this.adminErrorHours = [];
     this.adminErrorsState = "idle";
     this.adminErrorBoardSearch = "";
     this.adminErrorBoardFilter = "all";
@@ -11059,6 +11060,27 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
+      const errorGroupDelete = event.target.closest(
+        "[data-world-admin-error-group-delete]",
+      );
+      if (errorGroupDelete) {
+        void this.deleteAdminErrorGroup(errorGroupDelete.dataset);
+        return;
+      }
+      const errorGroupTask = event.target.closest(
+        "[data-world-admin-error-group-task]",
+      );
+      if (errorGroupTask) {
+        void this.createTaskFromAdminErrorGroup(errorGroupTask.dataset);
+        return;
+      }
+      const errorCopy = event.target.closest("[data-world-admin-error-copy]");
+      if (errorCopy) {
+        void this.copyAdminErrorMessage(
+          errorCopy.dataset.worldAdminErrorCopy,
+        );
+        return;
+      }
       if (event.target.closest("[data-world-focus-play]")) {
         void this.playFocusMusic();
         return;
@@ -12815,7 +12837,11 @@ class ForkMeshWorld extends HTMLElement {
         const status = Number(item.status) || 0;
         if (filter === "server" && status < 500) return false;
         if (filter === "client" && (status < 400 || status >= 500)) return false;
-        if (filter === "browser" && item.method !== "BROWSER") return false;
+        if (
+          filter === "browser" &&
+          item.method !== "JS" &&
+          !String(item.path || "").startsWith("/client-error/")
+        ) return false;
         if (
           query &&
           ![
@@ -12859,7 +12885,11 @@ class ForkMeshWorld extends HTMLElement {
       const status = Number(item.status) || 0;
       if (filter === "server" && status < 500) return false;
       if (filter === "client" && (status < 400 || status >= 500)) return false;
-      if (filter === "browser" && item.method !== "BROWSER") return false;
+      if (
+        filter === "browser" &&
+        item.method !== "JS" &&
+        !String(item.path || "").startsWith("/client-error/")
+      ) return false;
       return (
         !query ||
         [
@@ -12885,6 +12915,40 @@ class ForkMeshWorld extends HTMLElement {
           .join("")}
         ${anonymous ? `<i title="${anonymous.toLocaleString()} anonymous occurrence(s)">?</i>` : ""}
       </span>`;
+    const errorSource = (item) =>
+      item.method === "JS" || String(item.path || "").startsWith("/client-error/")
+        ? "JavaScript"
+        : "Worker";
+    const sourceBadge = (item) =>
+      `<span class="world-error-source world-error-source--${
+        errorSource(item) === "JavaScript" ? "javascript" : "worker"
+      }">${errorSource(item)}</span>`;
+    const exactTime = (timestamp) => {
+      const instant = new Date(timestamp);
+      return Number.isNaN(instant.getTime()) ? "Unknown time" : instant.toLocaleString();
+    };
+    const relativeTime = (timestamp) =>
+      timestamp ? relativeTimeLabel(timestamp) : "unknown";
+    const chartHours = Array.from({ length: 24 }, (_, index) =>
+      Math.max(0, Number(this.adminErrorHours[index]) || 0),
+    );
+    const chartPeak = Math.max(0, ...chartHours);
+    const chartTotal = chartHours.reduce((total, count) => total + count, 0);
+    const hourLabel = (index) => {
+      const hoursAgo = 23 - index;
+      return hoursAgo === 0 ? "current hour" : `${hoursAgo} hours ago`;
+    };
+    const groupDataAttributes = (group) => {
+      const users = [
+        ...group.actors.map((actor) => `${actor.name} (${actor.count})`),
+        ...(group.anonymous ? [`anonymous (${group.anonymous})`] : []),
+      ].join(", ");
+      return `data-world-admin-error-group-status="${escapeHTML(group.status)}"
+        data-world-admin-error-group-method="${escapeHTML(group.method)}"
+        data-world-admin-error-group-path="${escapeHTML(group.path)}"
+        data-world-admin-error-group-message="${escapeHTML(group.message)}"
+        data-world-admin-error-group-users="${escapeHTML(users)}"`;
+    };
     return `
       <section class="world-activity-board world-activity-board--errors" aria-label="Error log">
         <header class="world-activity-board-heading">
@@ -12918,27 +12982,49 @@ class ForkMeshWorld extends HTMLElement {
           <div data-tone="warning"><strong>${total4xx}</strong><span>Client</span></div>
           <div data-tone="cool"><strong>${rows.length}</strong><span>Showing</span></div>
         </div>
+        <section class="world-error-analytics" aria-labelledby="world-error-analytics-title">
+          <h4 id="world-error-analytics-title">Previous 24 hours · ${chartTotal.toLocaleString()} occurrence${chartTotal === 1 ? "" : "s"}</h4>
+          <div class="world-error-chart" role="img" aria-label="24-hour error frequency">
+            ${chartHours
+              .map((count, index) => `<span tabindex="0" role="img" aria-label="${hourLabel(index)}: ${count} error${count === 1 ? "" : "s"}" data-empty="${count === 0}" style="height:${chartPeak ? Math.max(2, Math.round((132 * count) / chartPeak) : 2)}px" title="${hourLabel(index)} · ${count}"></span>`)
+              .join("")}
+          </div>
+          <div class="world-error-hours"><span>24h ago</span><span>12h ago</span><span>now</span></div>
+        </section>
         <section class="world-error-groups" aria-labelledby="world-error-groups-title">
           <h4 id="world-error-groups-title">Equivalent errors · previous 24 hours</h4>
           <div class="world-error-group-table" role="table" aria-label="Grouped error occurrences">
             <div class="world-error-group-header" role="row">
-              <span>Count</span><span>Status</span><span>Method</span>
-              <span>Path</span><span>Message</span><span>Users</span>
-              <span>First</span><span>Last</span>
+              <span>Count</span><span>24-hour frequency</span><span>Source</span>
+              <span>Status</span><span>Method</span><span>Path</span><span>Message</span>
+              <span>Users</span><span>First</span><span>Last</span><span>Actions</span>
             </div>
             ${grouped.length
               ? grouped
                   .map(
-                    (group) => `<div class="world-error-group-row" role="row">
+                    (group) => {
+                      const hours = Array.from({ length: 24 }, (_, index) =>
+                        Math.max(0, Number(group.hours[index]) || 0),
+                      );
+                      const peak = Math.max(0, ...hours);
+                      const attrs = groupDataAttributes(group);
+                      return `<div class="world-error-group-row" role="row">
                       <strong>${group.count.toLocaleString()}</strong>
+                      <span class="world-error-sparkline" tabindex="0" role="img" aria-label="24-hour frequency: ${group.count.toLocaleString()} occurrence${group.count === 1 ? "" : "s"}">${hours.map((count, index) => `<i data-empty="${count === 0}" style="height:${peak ? Math.max(2, Math.round((28 * count) / peak)) : 2}px" title="${hourLabel(index)} · ${count}"></i>`).join("")}</span>
+                      ${sourceBadge(group)}
                       <span>${escapeHTML(group.status || "ERR")}</span>
                       <span>${escapeHTML(group.method || "—")}</span>
                       <code title="${escapeHTML(group.path || "—")}">${escapeHTML(group.path || "—")}</code>
-                      <span title="${escapeHTML(group.message || "—")}">${escapeHTML(group.message || "—")}</span>
+                      <span class="world-error-message" title="${escapeHTML(group.message || "—")}"><span>${escapeHTML(group.message || "—")}</span><button type="button" data-world-admin-error-copy="${escapeHTML(group.message || "")}" title="Copy this message">Copy</button></span>
                       ${errorActorFaces(group.actors, group.anonymous)}
-                      <time>${escapeHTML(group.firstSeen ? new Date(group.firstSeen).toLocaleString() : "—")}</time>
-                      <time>${escapeHTML(group.lastSeen ? new Date(group.lastSeen).toLocaleString() : "—")}</time>
-                    </div>`,
+                      <time datetime="${escapeHTML(group.firstSeen ? new Date(group.firstSeen).toISOString() : "")}" title="${escapeHTML(exactTime(group.firstSeen))}">${escapeHTML(relativeTime(group.firstSeen))}</time>
+                      <time datetime="${escapeHTML(group.lastSeen ? new Date(group.lastSeen).toISOString() : "")}" title="${escapeHTML(exactTime(group.lastSeen))}">${escapeHTML(relativeTime(group.lastSeen))}</time>
+                      <span class="world-error-row-actions">
+                        <button type="button" ${attrs} data-world-admin-error-group-task>Task</button>
+                        <button type="button" ${attrs} data-world-admin-error-group-delete>Delete group</button>
+                      </span>
+                    </div>`;
+                    },
                   )
                   .join("")
               : '<p class="world-activity-empty">No grouped errors match these controls.</p>'}
@@ -12946,7 +13032,7 @@ class ForkMeshWorld extends HTMLElement {
         </section>
         <h4 class="world-error-raw-title">Individual records</h4>
         <div class="world-error-table-header" role="row">
-          <span>ID</span><span>Time</span><span>Status</span><span>Method</span>
+          <span>ID</span><span>Time</span><span>Source</span><span>Status</span><span>Method</span>
           <span>Path</span><span>Message</span><span>User</span><span>CF-Ray</span>
           <span>Actions</span>
         </div>
@@ -12968,10 +13054,11 @@ class ForkMeshWorld extends HTMLElement {
                     return `<li class="world-activity-row world-error-row" data-tone="${tone}">
                       <span>${escapeHTML(item.id)}</span>
                       <time datetime="${escapeHTML(Number.isNaN(instant.getTime()) ? "" : instant.toISOString())}">${escapeHTML(Number.isNaN(instant.getTime()) ? "Unknown" : instant.toLocaleString())}</time>
+                      ${sourceBadge(item)}
                       <strong>${escapeHTML(item.status || "ERR")}</strong>
                       <span>${escapeHTML(item.method || "—")}</span>
                       <code title="${escapeHTML(item.path || "—")}">${escapeHTML(item.path || "—")}</code>
-                      <span title="${escapeHTML(item.message || "Logged error")}">${escapeHTML(item.message || "Logged error")}</span>
+                      <span class="world-error-message" title="${escapeHTML(item.message || "Logged error")}"><span>${escapeHTML(item.message || "Logged error")}</span><button type="button" data-world-admin-error-copy="${escapeHTML(item.message || "")}" title="Copy this message">Copy</button></span>
                       <span class="world-error-single-actor" title="${escapeHTML(actor)}">${escapeHTML(actor.slice(0, 1).toUpperCase())}</span>
                       <span title="${escapeHTML(item.ray || "—")}">${escapeHTML(item.ray || "—")}</span>
                       <span class="world-error-row-actions">
@@ -13035,6 +13122,9 @@ class ForkMeshWorld extends HTMLElement {
           count: Math.max(0, Number(group?.count) || 0),
           firstSeen: Math.max(0, Number(group?.firstSeen) || 0),
           lastSeen: Math.max(0, Number(group?.lastSeen) || 0),
+          hours: Array.from({ length: 24 }, (_, index) =>
+            Math.max(0, Number(group?.hours?.[index]) || 0),
+          ),
           actors: (Array.isArray(group?.actors) ? group.actors : [])
             .slice(0, 16)
             .map((entry) => ({
@@ -13044,6 +13134,9 @@ class ForkMeshWorld extends HTMLElement {
             .filter((entry) => entry.name),
           anonymous: Math.max(0, Number(group?.anonymous) || 0),
         }));
+      this.adminErrorHours = Array.from({ length: 24 }, (_, index) =>
+        Math.max(0, Number(payload?.hourly?.[index]) || 0),
+      );
       this.adminErrorsState = this.adminErrors.length ? "ready" : "empty";
     } catch (_) {
       this.adminErrorsState = "unavailable";
@@ -13085,6 +13178,70 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {
       this.toast("A Bot task could not be created from that error.");
     }
+  }
+
+  adminErrorGroupFromDataset(dataset) {
+    return {
+      status: sanitizePresenceText(dataset.worldAdminErrorGroupStatus, "", 12),
+      method: sanitizePresenceText(
+        dataset.worldAdminErrorGroupMethod,
+        "",
+        12,
+      ).toUpperCase(),
+      path: sanitizeNotificationText(dataset.worldAdminErrorGroupPath, "", 2000),
+      message: sanitizeNotificationText(
+        dataset.worldAdminErrorGroupMessage,
+        "",
+        1000,
+      ),
+      users: sanitizeNotificationText(
+        dataset.worldAdminErrorGroupUsers,
+        "",
+        300,
+      ),
+    };
+  }
+
+  async deleteAdminErrorGroup(dataset) {
+    if (this.identity?.isAdmin !== true) return;
+    const group = this.adminErrorGroupFromDataset(dataset);
+    if (!group.status || !group.method) return;
+    if (!window.confirm("Delete every error in this group? This cannot be undone.")) {
+      return;
+    }
+    try {
+      await this.postJSON(
+        "/api/world/admin/errors",
+        { group },
+        { method: "DELETE", timeout: 7000 },
+      );
+      await this.refreshAdminErrorRows();
+      this.toast("Equivalent error group deleted.");
+    } catch (_) {
+      this.toast("Error group could not be deleted.");
+    }
+  }
+
+  async createTaskFromAdminErrorGroup(dataset) {
+    if (this.identity?.isAdmin !== true) return;
+    const group = this.adminErrorGroupFromDataset(dataset);
+    if (!group.status || !group.method) return;
+    try {
+      await this.postJSON(
+        "/api/world/admin/errors",
+        { group },
+        { timeout: 7000 },
+      );
+      this.toast("Equivalent error group sent to the organization task list.");
+      this.officeTasks?.refresh?.({ quiet: true, force: true });
+    } catch (_) {
+      this.toast("A Bot task could not be created from that error group.");
+    }
+  }
+
+  async copyAdminErrorMessage(message) {
+    if (await copyWorldText(message)) this.toast("Error message copied.");
+    else this.toast("The error message could not be copied.");
   }
 
   async openAdminErrors(returnFocus = null) {
