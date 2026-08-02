@@ -1,0 +1,41 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "ForkMesh Deploy",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785698278209,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Source: Forkmesh QA Bug Report FM-QA-2026-08-02 (BUG-06; supporting screenshot Fig. 1)\nSeverity: High\nArea: Cross-Device / Three.js Rendering\nEnvironment: Web across high-end desktop, mid-tier laptop, mid-tier mobile, and low-tier mobile devices\n\n## Summary\nThe 3D world is not consistently visible or performant across device classes. Lower-end devices experience lag or rendering failures without an apparent graceful-degradation path.\n\n## Steps to reproduce\n1. Open the world section on a high-end desktop, mid-tier laptop, mid-tier mobile device, and low-tier mobile device.\n2. Compare element visibility, rendering quality, frame rate, and input or scroll lag.\n3. Repeat with browser CPU/GPU throttling and on real low-tier Android hardware.\n\n## Expected\nThe world remains fully visible and reasonably responsive across supported tiers, reducing particle counts, level of detail, texture quality, shadows, resolution, or draw distance on weaker hardware as needed.\n\n## Actual\nThe world renders inconsistently and lags on lower-spec devices, with no evident adaptive quality or fallback behavior.\n\n## Investigation notes\nAdd device-tier detection and dynamic quality scaling. Profile frustum/occlusion culling and pause the render loop while the canvas is off-screen.",
+            "id": "open-550",
+            "sig": "_tXraI4SGlpRejFbuXQA_pOkypt5oo7-bcDLFknTXkegc4nw02V5cy7OqcVJFwAIb_4t1lEwQSH8M36jCr7EDg",
+            "title": "Three.js world lacks adaptive optimization across device tiers",
+            "ts": 1785698278209,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "bug",
+        "ux",
+        "product",
+        "performance",
+        "3d",
+        "severity:high"
+    ],
+    "milestone": "",
+    "number": 550,
+    "priority": 2,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Three.js world lacks adaptive optimization across device tiers",
+    "updatedAt": 1785698278209,
+    "votes": 0
+}

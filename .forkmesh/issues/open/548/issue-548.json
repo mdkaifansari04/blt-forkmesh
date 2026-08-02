@@ -1,0 +1,41 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "ForkMesh Deploy",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785698278033,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Source: Forkmesh QA Bug Report FM-QA-2026-08-02 (BUG-04; supporting screenshot Fig. 1)\nSeverity: Critical\nArea: 3D World Section\nEnvironment: Web (desktop and mobile)\n\n## Summary\nThe 3D world section at the bottom of the page takes longer to load than the surrounding content and exhibits stuttering or frame drops while the user scrolls into and through it.\n\n## Steps to reproduce\n1. Scroll to the bottom section containing the 3D world/environment.\n2. Measure how long the scene takes to become fully visible and rendered.\n3. Continue scrolling into and through the section.\n4. Observe frame rate and animation smoothness.\n\n## Expected\nThe world loads in a timeframe comparable with other sections, or presents a clear loading state, and scrolls and animates smoothly without stutter.\n\n## Actual\nThe world loads noticeably later than the rest of the page, and scrolling around it is sluggish with visible frame drops.\n\n## Investigation notes\nProfile frame time during scroll and confirm whether the 3D canvas continues rendering off-screen and consuming GPU budget.",
+            "id": "open-548",
+            "sig": "cYVlpIuY3jl59ebCpYWg3Slk-Zedps4T9X0PX8hwcxVH21E2UhRYRLk_3QBNY9HkkByjKyAKi38wW0LpOCPwBg",
+            "title": "Bottom 3D world section loads slowly and lags on scroll",
+            "ts": 1785698278033,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "bug",
+        "ux",
+        "product",
+        "performance",
+        "3d",
+        "severity:critical"
+    ],
+    "milestone": "",
+    "number": 548,
+    "priority": 1,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Bottom 3D world section loads slowly and lags on scroll",
+    "updatedAt": 1785698278033,
+    "votes": 0
+}

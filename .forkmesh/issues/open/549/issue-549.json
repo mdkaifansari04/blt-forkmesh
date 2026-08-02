@@ -1,0 +1,41 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "ForkMesh Deploy",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785698278121,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Source: Forkmesh QA Bug Report FM-QA-2026-08-02 (BUG-05; supporting screenshot Fig. 1)\nSeverity: High\nArea: 3D Interaction\nEnvironment: Web (desktop and mobile)\n\n## Summary\nCamera movement, avatar rendering, and the in-world chat overlay respond with a noticeable delay after user input.\n\n## Steps to reproduce\n1. Enter the 3D world view.\n2. Interact with the camera or scene by clicking or dragging, and open or use the in-world chat panel.\n3. Measure the delay between the input and the visible response.\n\n## Expected\nThe scene responds within a near-instant window, targeting less than approximately 100 ms of input latency.\n\n## Actual\nThere is a perceptible delay between input and the corresponding camera, scene, avatar, or overlay response, making the world feel unresponsive.",
+            "id": "open-549",
+            "sig": "fq7dmbcjHOHdLy87c8IpmT-cndMmz0L2PnGA7R1jfDtdS8OEkAck4npDWnunCzur_naXeq01OD2rlvesfNM8Bw",
+            "title": "3D view responds slowly to user input",
+            "ts": 1785698278121,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "bug",
+        "ux",
+        "product",
+        "performance",
+        "3d",
+        "severity:high"
+    ],
+    "milestone": "",
+    "number": 549,
+    "priority": 2,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "3D view responds slowly to user input",
+    "updatedAt": 1785698278121,
+    "votes": 0
+}

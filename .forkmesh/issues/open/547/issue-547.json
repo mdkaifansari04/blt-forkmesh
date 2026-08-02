@@ -1,0 +1,40 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "ForkMesh Deploy",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785698277946,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Source: Forkmesh QA Bug Report FM-QA-2026-08-02 (BUG-03; supporting screenshot Fig. 2)\nSeverity: High\nArea: Animation / Cards\nEnvironment: Web (desktop and mobile)\n\n## Summary\nSome animated cards and design elements do not reliably trigger or complete their entrance animations during scrolling, leaving static, broken, unstyled, or partially rendered UI.\n\n## Steps to reproduce\n1. Scroll through site sections containing animated cards or design panels.\n2. Observe each element as it enters the viewport.\n3. Repeat at different scroll speeds and in both directions.\n4. Note elements that remain static, appear abruptly, lose styling, or stop before completing their transition.\n\n## Expected\nEvery card and design element animates into view consistently and completely, regardless of scroll speed or direction.\n\n## Actual\nSome elements fail to trigger, appear broken or unstyled, or do not complete their transition.\n\n## Investigation notes\nThis may share a root cause with the black-screen scroll-rendering defect. Exercise viewport mounting under multiple scroll speeds and CPU throttling.",
+            "id": "open-547",
+            "sig": "1IjILbApmxnX8MgqnzxuiEXXtqAXheIt283B0O9nl5o4TOjQaf3uGNdGtdMrToaPYgJExsSvI7YoVYc_RV9nCg",
+            "title": "Animated cards and design elements fail to load on scroll",
+            "ts": 1785698277946,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "bug",
+        "ux",
+        "product",
+        "animation",
+        "severity:high"
+    ],
+    "milestone": "",
+    "number": 547,
+    "priority": 2,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Animated cards and design elements fail to load on scroll",
+    "updatedAt": 1785698277946,
+    "votes": 0
+}

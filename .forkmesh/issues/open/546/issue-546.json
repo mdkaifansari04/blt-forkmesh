@@ -1,0 +1,40 @@
+{
+    "assignees": [],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "ForkMesh Deploy",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785698277862,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "ForkMesh Deploy",
+            "body": "Source: Forkmesh QA Bug Report FM-QA-2026-08-02 (BUG-02; supporting screenshot Fig. 2)\nSeverity: Critical\nArea: Scroll Rendering\nEnvironment: Web (desktop and mobile)\n\n## Summary\nSections intermittently fail to render while scrolling between the top and bottom of the site. A black screen is shown before the content appears after a noticeable delay.\n\n## Steps to reproduce\n1. Load the Forkmesh homepage and allow it to finish rendering.\n2. Scroll quickly from the top of the page to the bottom.\n3. Scroll back from the bottom to the top.\n4. Observe sections as they enter the viewport in each direction.\n\n## Expected\nEvery section renders smoothly and immediately when it enters the viewport, in either scroll direction, without blank or black frames.\n\n## Actual\nContent intermittently fails to render during scrolling. The viewport becomes black and content pops in only after a delay.\n\n## Investigation notes\nReview viewport-based lazy mounting, virtualization, and IntersectionObserver behavior. Canvas or content may be unmounted, or its render loop paused, without a reliable repaint on re-entry. Preserve a placeholder and pre-render buffer rather than exposing an empty frame.",
+            "id": "open-546",
+            "sig": "HQKj_kG04XJJ_t1weSw0EqXm0LQBT9uqJ8q_Me6q-lvoMnNXVJvRPxdEj5M2N20I_9xEm8sMxZ6EFa2pr6T4Cw",
+            "title": "Black screen or missing content while scrolling",
+            "ts": 1785698277862,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "bug",
+        "ux",
+        "product",
+        "rendering",
+        "severity:critical"
+    ],
+    "milestone": "",
+    "number": 546,
+    "priority": 1,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Black screen or missing content while scrolling",
+    "updatedAt": 1785698277862,
+    "votes": 0
+}
