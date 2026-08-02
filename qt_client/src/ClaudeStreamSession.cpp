@@ -151,6 +151,11 @@ bool ClaudeStreamSession::running() const
     return m_proc && m_proc->state() != QProcess::NotRunning;
 }
 
+qint64 ClaudeStreamSession::processId() const
+{
+    return running() ? m_proc->processId() : 0;
+}
+
 void ClaudeStreamSession::onStdout()
 {
     if (!m_proc)

@@ -30,18 +30,29 @@ struct AgentSession {
     // this is a CLI alias: opus | sonnet | haiku. Applied on the next launch or
     // continuation, and shown in the agent header.
     QString model;
-    // Permission mode this session runs under, as the human-readable label from
-    // the composer's mode selector ("Ask before edits" / "Edit automatically" /
-    // "Plan mode" / "Auto mode"). Captured when a follow-up prompt is sent so the
-    // next resume honors the live selection, and shown in the agent header. Empty
-    // falls back to the global kClaudeAutoModeSetting. Only "Auto mode" skips the
-    // CLI's permission prompts today (see agentModeSkipsPermissions).
+    // Permission mode this session runs under, as the label from the composer's
+    // mode selector ("Ask" / "Edit" / "Plan" / "Auto"; sessions written before
+    // adhoc #38 shortened them say "Ask before edits" / "Auto mode" / …).
+    // Captured when a follow-up prompt is sent so the next resume honors the live
+    // selection, and shown in the agent header. Empty falls back to the global
+    // kClaudeAutoModeSetting. Only "Auto" skips the CLI's permission prompts
+    // today (see agentModeSkipsPermissions).
     QString mode;
     bool createPr = false;
+    // A durable branch/PR association created for work that did not originate
+    // in an Agent run. It is provenance only: it must never be resumed or claim
+    // that an agent authored the branch's commits.
+    bool associationOnly = false;
     // "YOLO" (adhoc #12): merge this session's branch straight into the repo's
     // default branch as soon as the run finishes successfully, with no review
     // step. Captured from the quick-add bar's checkbox when the session starts.
     bool yolo = false;
+    // "Genie" (adhoc #42/#38): launched from the composer's genie button, which
+    // starts a long-running run against the website's remote MCP server so the
+    // agent works the organization's shared task list on its own. Stamped at
+    // launch so a resumed genie is still one, and so every list can draw it with
+    // its own sparkle status glyph instead of the ordinary run spinner.
+    bool genie = false;
     // Reasoning strength ("low"/"medium"/"high"/"xhigh"/"max") the run was
     // launched with, snapshotted from kClaudeEffortSetting alongside the model
     // and mode so the organization task records what this run actually used.
@@ -68,6 +79,11 @@ struct AgentSession {
     QString branchName;
     QString baseRef;    // base commit SHA captured at run start (worktree/diff)
     QString baseBranch; // base branch the PR targets (e.g. main)
+    // Exact source-branch tip ForkMesh observed while it was still ahead of the
+    // base branch. A background merge check may only call the work landed once
+    // this specific commit is reachable from base; the mutable branch name is
+    // not proof on its own because an agent can reset it to main.
+    QString mergeCandidateHead;
     // Set once this session's worktree/PR has landed in the base branch (issue
     // #291), so the status and detail page can flag it.
     bool merged = false;
@@ -95,6 +111,16 @@ struct AgentSession {
     qint64 durationMs = 0;
     QString lastError;
 
+    // Whether this run should be drawn with the genie sparkle (adhoc #38): a
+    // genie that is still working. Merged and finished sessions keep the
+    // ordinary status glyphs, so their outcome reads like every other run's.
+    bool genieInFlight() const
+    {
+        return genie && !merged &&
+               (status == AgentStatus::Running || status == AgentStatus::Queued ||
+                status == AgentStatus::Waiting);
+    }
+
     QString repoKey() const;
     QJsonObject toJson() const;
     static AgentSession fromJson(const QJsonObject &obj);
@@ -120,6 +146,38 @@ public:
     void clearEvents(const AgentSession &session) const;
     void writePatch(const AgentSession &session, const QString &patch) const;
     QString readPatch(const AgentSession &session) const;
+
+    // Live transcript search: count case-insensitive occurrences of `needle`
+    // across this session's persisted transcript — both the raw log and the
+    // stream-json events, since a Claude Code run only writes the latter. Only
+    // the last kTranscriptSearchTailBytes of each file are read, so scanning
+    // every session of a repo on each keystroke stays cheap even next to a run
+    // that has been talking for hours. `snippet`, when given, receives the text
+    // around the first hit (for the matching row's tooltip). Event lines are
+    // searched as stored, so a query is matched against JSON-escaped text.
+    static constexpr qint64 kTranscriptSearchTailBytes = 512 * 1024;
+    int searchTranscript(const AgentSession &session, const QString &needle,
+                         QString *snippet = nullptr) const;
+
+    // Image attachments a session carries (adhoc #222), so the sessions list can
+    // show a thumbnail of the screenshot a run was started from. Prompts and
+    // transcripts name them as "Attached image: <path>" lines (see
+    // AgentPromptImages), which is all this looks for. Paths come back exactly as
+    // they were written, in the order they appear and de-duplicated: whether the
+    // file is still on disk — and where it moved to — is the caller's business.
+    static QStringList attachmentPathsIn(const QString &text);
+    // The same, for one session: its stored prompt plus both persisted
+    // transcripts. Only the two ends of each transcript are read (see
+    // kAttachmentScanBytes), so scanning every session of a repo stays cheap.
+    QStringList attachmentPaths(const AgentSession &session) const;
+    // Cheap "has this session's transcript moved" stamp — the size and modified
+    // time of both transcript files — so a caller can skip re-scanning a session
+    // nothing has been appended to.
+    QString transcriptStamp(const AgentSession &session) const;
+    // How much of each transcript file the attachment scan reads, from the head
+    // and again from the tail: the launch prompt sits at the head and the newest
+    // follow-up at the tail, and an attachment can only be named in a prompt.
+    static constexpr qint64 kAttachmentScanBytes = 128 * 1024;
 
 private:
     QString sessionsDir() const;

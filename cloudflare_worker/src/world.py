@@ -65,6 +65,18 @@ WORLD_FIRST_VISIT_AGE_VALUES = frozenset({
     "over-a-year", "hidden",
 })
 WORLD_DOOR_VALUES = frozenset({"closed", "knock", "open"})
+# Text-free consent frames addressed at exactly one live peer. A handshake is
+# the two-person greeting: one visitor offers, the other shakes back (or
+# declines, which says nothing beyond "not now"). Only an accepted handshake
+# becomes public, and then only as the pair of peer ids that shook.
+WORLD_TARGETED_INTERACTION_KINDS = (
+    "knock",
+    "home-grant",
+    "home-decline",
+    "handshake-offer",
+    "handshake-accept",
+    "handshake-decline",
+)
 WORLD_EMOTE_VALUES = frozenset({
     "backflip",
     "celebrate",
@@ -861,7 +873,7 @@ def sanitize_interaction(payload, sender_state):
     if not _PEER_ID_RE.fullmatch(sender):
         return None
     kind = str(payload.get("kind") or "").strip().lower()
-    if kind in ("knock", "home-grant", "home-decline"):
+    if kind in WORLD_TARGETED_INTERACTION_KINDS:
         target = str(payload.get("target") or "").strip()
         if not _PEER_ID_RE.fullmatch(target) or target == sender:
             return None

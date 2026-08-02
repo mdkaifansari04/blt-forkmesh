@@ -1484,6 +1484,7 @@ def test_encrypted_archive_materializer_uses_ciphertext_digest_and_key_reference
     captured = {}
 
     def materialize(command, **kwargs):
+        captured["helperTimeout"] = kwargs["timeout"]
         request = json.loads(kwargs["input"])
         captured.update(request)
         destination = Path(request["destination"])
@@ -1498,6 +1499,7 @@ def test_encrypted_archive_materializer_uses_ciphertext_digest_and_key_reference
         archive, destination
     )
     assert result == destination / "repo.git"
+    assert captured["helperTimeout"] == 5 * 60
     assert captured["keyReference"] == "keychain:forkmesh/alice-project"
     assert "key" not in {
         key.lower()

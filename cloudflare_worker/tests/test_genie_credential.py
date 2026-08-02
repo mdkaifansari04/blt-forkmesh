@@ -32,7 +32,12 @@ QT_MCP = (
     ENTRY.parents[2] / "qt_client" / "src" / "MainWindowMcp.cpp"
 ).read_text(encoding="utf-8")
 
-FUNCS = {"_genie_credential_signed_session", "clean_string"}
+FUNCS = {
+    "_genie_credential_signed_session",
+    "_owner_signing_pubkeys",
+    "_verify_owner_signature",
+    "clean_string",
+}
 CONSTANTS = {"GENIE_CREDENTIAL_PROOF", "ORG_TASK_OPEN_PROOF"}
 
 HANDLER = ENTRY_TEXT[
@@ -89,7 +94,9 @@ def _fake_sig(pubkey, canonical):
     return "sig-" + pubkey + "-" + digest
 
 
-def _harness(accounts, ts_ok=True):
+def _harness(accounts, ts_ok=True, devices=None):
+    devices = devices or {}
+
     async def _account_row(_env, name):
         key = str(name or "").strip().lower()
         record = accounts.get(key)
@@ -106,6 +113,12 @@ def _harness(accounts, ts_ok=True):
     async def ed25519_verify(pubkey, sig, canonical):
         return bool(pubkey) and sig == _fake_sig(pubkey, canonical)
 
+    async def blind_index(_env, value):
+        return "bi:" + str(value or "").strip().lower()
+
+    async def _account_devices_list(_env, account_bi):
+        return [dict(device) for device in devices.get(account_bi, [])]
+
     namespace = _load({
         "re": re,
         "parse_qs": parse_qs,
@@ -114,6 +127,8 @@ def _harness(accounts, ts_ok=True):
         "_ts_ok": lambda _ts: ts_ok,
         "_owner_pubkey": _owner_pubkey,
         "_account_row": _account_row,
+        "_account_devices_list": _account_devices_list,
+        "blind_index": blind_index,
         "_account_kind": lambda record: record.get("kind", "user"),
         "ed25519_verify": ed25519_verify,
         "MAX_NODE_NAME": 63,
@@ -145,6 +160,30 @@ def test_key_signed_desktop_resolves_its_own_account():
             env, _Request(url=_signed_url(namespace))))
     assert account_bi == "bi:alice"
     assert record["name"] == "alice"
+
+
+def test_registered_device_key_mints_the_credential():
+    """A restarted/reinstalled desktop signs with its account_devices key.
+
+    The primary pubkey still names the install that created the account, so
+    the gate has to accept every enabled owner_sign device — the same rule
+    the task board follows (adhoc #63).
+    """
+    namespace, env = _harness(
+        {"alice": _user()},
+        devices={"bi:alice": [
+            {"pubkey": "PK-alice-laptop", "capabilities": ["owner_sign"],
+             "enabled": True},
+            {"pubkey": "PK-alice-retired", "capabilities": ["owner_sign"],
+             "enabled": False},
+        ]},
+    )
+    resolve = namespace["_genie_credential_signed_session"]
+    account_bi, record = asyncio.run(resolve(env, _Request(
+        url=_signed_url(namespace, pubkey="PK-alice-laptop"))))
+    assert (account_bi, record["name"]) == ("bi:alice", "alice")
+    assert asyncio.run(resolve(env, _Request(
+        url=_signed_url(namespace, pubkey="PK-alice-retired")))) == ("", None)
 
 
 def test_genie_proof_is_post_only_and_not_interchangeable_with_task_proofs():

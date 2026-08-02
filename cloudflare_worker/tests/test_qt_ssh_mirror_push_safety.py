@@ -7,6 +7,9 @@ ROOT = Path(__file__).resolve().parents[2]
 REPOS = (ROOT / "qt_client/src/MainWindowRepos.cpp").read_text(
     encoding="utf-8"
 )
+ACTIONS = (ROOT / "qt_client/src/MainWindowActions.cpp").read_text(
+    encoding="utf-8"
+)
 
 
 def test_automatic_ssh_mirror_push_cannot_rewind_or_prune_remote_refs():
@@ -40,3 +43,18 @@ def test_automatic_ssh_mirror_push_uses_explicit_fast_forward_policy():
         'QStringLiteral("refs/heads/*:refs/heads/*")'
     )
     assert 'QStringLiteral("+refs/' not in command
+
+
+def test_direct_push_fans_out_to_ssh_mirrors_immediately():
+    spool = ACTIONS.split("void MainWindow::scanActionSpool()", 1)[1].split(
+        "\nvoid MainWindow::syncMirrorActionsConfiguration", 1
+    )[0]
+
+    # A receive-pack that lands directly on the source's served bare mirror
+    # bypasses syncPublicEncryptedRepository(), where normal SSH fanout occurs.
+    # The post-receive spool consumer must therefore fan it out itself.
+    assert "m_backend->notifyMirrorUpdated(" in spool
+    assert "pushToSshMirrorRemotes(idx);" in spool
+    assert spool.index("m_backend->notifyMirrorUpdated(") < spool.index(
+        "pushToSshMirrorRemotes(idx);"
+    )

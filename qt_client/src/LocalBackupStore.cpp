@@ -16,6 +16,16 @@ const QString kBackupStampFormat = QStringLiteral("yyyyMMdd-HHmmss");
 
 namespace forkmesh {
 
+bool autoBackupDefault(const QString &cloudflareApiToken)
+{
+    // A control node's live store can be several gigabytes. Keeping 24 hourly
+    // compressed copies filled both desktops and the small VPSes they manage.
+    // Backups remain available as an explicit opt-in, but credentials must
+    // never silently turn a storage-heavy recurring job on.
+    (void)cloudflareApiToken;
+    return false;
+}
+
 QString defaultBackupRoot()
 {
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +

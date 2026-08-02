@@ -32,6 +32,11 @@ cd "$(dirname "$0")"
 # secret that isn't in the config), so the admin URL keeps working. The Worker
 # reads them the same way (env.ADMIN_PATH, etc.).
 ENV_FILE=".env.production"
+# Operators with a valid Wrangler OAuth session can deliberately ignore an
+# expired API token in .env.production without rewriting the secrets file.
+# The account id is still loaded from that file and Cloudflare validates that
+# the OAuth identity owns the configured Worker and D1 database.
+USE_WRANGLER_OAUTH="${FORKMESH_USE_WRANGLER_OAUTH:-0}"
 
 # Strip a trailing CR (CRLF-saved files) and surrounding whitespace. A stray \r
 # or space on a value is a classic cause of a secret that "exists" in the
@@ -65,6 +70,12 @@ if [ -f "$ENV_FILE" ]; then
             CLOUDFLARE_ACCOUNT_ID)
                 if [ -n "$value" ]; then
                     CF_ACCOUNT_ID_SET=1
+                    export "$key=$value"
+                fi
+                continue
+                ;;
+            CLOUDFLARE_API_TOKEN)
+                if [ "$USE_WRANGLER_OAUTH" != "1" ] && [ -n "$value" ]; then
                     export "$key=$value"
                 fi
                 continue
@@ -118,6 +129,11 @@ adopt_cloudflare_token_alias() {
 # wrangler's own interactive detection (stdin && stdout), so this errors exactly
 # when wrangler would have, never sooner.
 require_cloudflare_auth() {
+    if [ "$USE_WRANGLER_OAUTH" = "1" ]; then
+        unset CLOUDFLARE_API_TOKEN
+        echo "note: using the existing Wrangler OAuth session for this deploy." >&2
+        return 0
+    fi
     adopt_cloudflare_token_alias || true
     [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && return 0
     if [ -t 0 ] && [ -t 1 ]; then
@@ -215,6 +231,9 @@ mark_interrupted_world_deploy() {
 
 build_dashboard_assets() {
     python3 tools/build_dashboard_assets.py
+    # Fail before touching production D1 or uploading a version when an eager
+    # import has pushed the Python Worker back toward its startup-memory limit.
+    python3 tools/build_worker_footprint.py
 }
 
 # Fallback HTTP GET for when curl itself is broken. Seen live (adhoc #136): a
@@ -546,6 +565,7 @@ verify_marketing_routes() {
 
     local checks=(
         "/|ForkMesh - Local-first source code preservation"
+        "/homev2|ForkMesh - A resilient, local-first Git forge"
         "/pricing|ForkMesh Pricing - Coding Reimagined for Teams"
         "/blog|Blog · ForkMesh"
         "/blog/introducing-forkmesh/|Introducing ForkMesh"
@@ -565,7 +585,7 @@ verify_marketing_routes() {
         fi
     done
     if [ "$failed" != "0" ]; then
-        echo "       The main Worker must own /, /pricing, /blog and posts before" >&2
+        echo "       The main Worker must own /, /homev2, /pricing, /blog and posts before" >&2
         echo "       the legacy marketing Worker/routes are retired." >&2
         return 1
     fi
@@ -630,6 +650,14 @@ push_secrets() {
                 key="WORKERS_OBSERVABILITY_API_TOKEN"
                 ;;
             CLOUDFLARE_*)
+                continue
+                ;;
+            # Provisioning credentials for the operator's own infrastructure:
+            # the desktop app saves the Vultr API key here beside the
+            # Cloudflare ones so it never has to ask for it twice. No Worker
+            # code path reaches Vultr, so pushing it would only widen the
+            # runtime's secret surface.
+            VULTR_API_KEY|VULTR_API_TOKEN|VULTR_TOKEN|VULTR_KEY)
                 continue
                 ;;
         esac

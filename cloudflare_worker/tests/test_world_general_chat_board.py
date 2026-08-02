@@ -47,7 +47,7 @@ def test_physical_chat_board_is_beside_events_and_opens_full_chat():
         '"forkmesh-world-general-chat-board"',
         '"forkmesh-world-general-chat-board-face"',
         '"world-general-chat-board"',
-        'registerMovableObject("world-general-chat-board"',
+        "placeBillboardOnIsland(worldGeneralChatBoard);",
         "function updateWorldGeneralChat(messages = [])",
         "updateWorldGeneralChat,",
         "onWorldGeneralChatSelect()",

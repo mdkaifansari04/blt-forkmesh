@@ -126,6 +126,7 @@ def test_session_list_is_account_scoped_and_shows_only_owner_visible_detail():
         "lastEmailAt": 0,
         "lastEmailStatus": "",
         "lastEmailKind": "",
+        "emailSendCount": 0,
     }
     encoded = json.dumps(response)
     assert "sensitive raw agent" not in encoded
@@ -152,6 +153,7 @@ def test_session_list_reports_last_seen_and_last_email():
             "last_email_ts": 1_700_000,
             "last_email_kind": "notifications",
             "last_email_ok": False,
+            "email_send_count": 4,
         })
     response = asyncio.run(sessions(
         object(), SimpleNamespace(method="GET", headers={})))
@@ -160,6 +162,8 @@ def test_session_list_reports_last_seen_and_last_email():
         "lastEmailAt": 1_700_000,
         "lastEmailStatus": "failed",
         "lastEmailKind": "notifications",
+        # How many account-directed emails have gone out in total.
+        "emailSendCount": 4,
     }
     activity = next(
         call for call in calls if call[0] == "first" and "MAX(seen)" in call[1])

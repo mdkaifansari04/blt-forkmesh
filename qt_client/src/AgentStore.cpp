@@ -3,7 +3,9 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QVariant>
 
 #include <algorithm>
@@ -40,7 +42,9 @@ QJsonObject AgentSession::toJson() const
     obj["model"] = model;
     obj["mode"] = mode;
     obj["createPr"] = createPr;
+    obj["associationOnly"] = associationOnly;
     obj["yolo"] = yolo;
+    obj["genie"] = genie;
     obj["strength"] = strength;
     obj["orgTask"] = orgTask;
     obj["orgTaskId"] = orgTaskId;
@@ -52,6 +56,7 @@ QJsonObject AgentSession::toJson() const
     obj["branchName"] = branchName;
     obj["baseRef"] = baseRef;
     obj["baseBranch"] = baseBranch;
+    obj["mergeCandidateHead"] = mergeCandidateHead;
     obj["merged"] = merged;
     obj["mergedAtMs"] = mergedAtMs;
     obj["createdAtMs"] = createdAtMs;
@@ -86,7 +91,9 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.model = obj.value("model").toString();
     session.mode = obj.value("mode").toString();
     session.createPr = obj.value("createPr").toBool();
+    session.associationOnly = obj.value("associationOnly").toBool();
     session.yolo = obj.value("yolo").toBool();
+    session.genie = obj.value("genie").toBool();
     session.strength = obj.value("strength").toString();
     session.orgTask = obj.value("orgTask").toBool();
     session.orgTaskId = obj.value("orgTaskId").toString();
@@ -98,6 +105,7 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.branchName = obj.value("branchName").toString();
     session.baseRef = obj.value("baseRef").toString();
     session.baseBranch = obj.value("baseBranch").toString();
+    session.mergeCandidateHead = obj.value("mergeCandidateHead").toString();
     session.merged = obj.value("merged").toBool();
     session.mergedAtMs = obj.value("mergedAtMs").toVariant().toLongLong();
     session.createdAtMs = obj.value("createdAtMs").toVariant().toLongLong();
@@ -243,6 +251,141 @@ QString AgentStore::readPatch(const AgentSession &session) const
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return QString();
     return QString::fromUtf8(file.readAll());
+}
+
+namespace {
+
+// Read the tail of a transcript file, dropping the first (partial) line so the
+// scan never starts mid-line — or mid-UTF-8-character.
+QString readTranscriptTail(const QString &path, qint64 tailBytes)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return QString();
+    const qint64 size = file.size();
+    if (size > tailBytes) {
+        file.seek(size - tailBytes);
+        file.readLine();
+    }
+    return QString::fromUtf8(file.readAll());
+}
+
+// Both ends of a transcript file, whole lines only: the first `endBytes` and the
+// last `endBytes`, with the middle of a long run skipped. An attachment is named
+// in a prompt, and a session's prompts are either the opening turn (head) or the
+// latest follow-up (tail) — so reading the ends finds them without pulling a
+// multi-megabyte transcript through memory on every scan.
+QString readTranscriptEnds(const QString &path, qint64 endBytes)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return QString();
+    const qint64 size = file.size();
+    if (size <= 2 * endBytes)
+        return QString::fromUtf8(file.readAll());
+    QByteArray head = file.read(endBytes);
+    // Drop the trailing partial line, which also keeps the cut on a UTF-8
+    // character boundary.
+    const qsizetype lastNewline = head.lastIndexOf('\n');
+    head.truncate(lastNewline < 0 ? 0 : lastNewline + 1);
+    file.seek(size - endBytes);
+    file.readLine(); // …and the leading partial line of the tail
+    return QString::fromUtf8(head) + QString::fromUtf8(file.readAll());
+}
+
+// Size + modified time of a file, or an empty stamp when it isn't there.
+QString fileStamp(const QString &path)
+{
+    const QFileInfo info(path);
+    if (!info.exists())
+        return QStringLiteral("-");
+    return QStringLiteral("%1:%2")
+        .arg(info.size())
+        .arg(info.lastModified().toMSecsSinceEpoch());
+}
+
+// One line of context around a hit, whitespace-collapsed so a snippet lifted out
+// of a JSON event line still reads as a sentence in a tooltip.
+QString hitSnippet(const QString &text, int at, int length)
+{
+    constexpr int kContext = 60;
+    const qsizetype from = std::max<qsizetype>(0, at - kContext);
+    const qsizetype to =
+        std::min<qsizetype>(text.size(), at + length + kContext);
+    QString snippet = text.mid(from, to - from).simplified();
+    if (from > 0)
+        snippet.prepend(QString::fromUtf8("\xE2\x80\xA6"));
+    if (to < text.size())
+        snippet.append(QString::fromUtf8("\xE2\x80\xA6"));
+    return snippet;
+}
+
+} // namespace
+
+int AgentStore::searchTranscript(const AgentSession &session,
+                                 const QString &needle, QString *snippet) const
+{
+    const QString query = needle.trimmed();
+    if (query.isEmpty())
+        return 0;
+    const QString dir = sessionDir(session);
+    const QStringList files{QStringLiteral("/transcript.txt"),
+                            QStringLiteral("/events.jsonl")};
+    int hits = 0;
+    for (const QString &name : files) {
+        const QString text =
+            readTranscriptTail(dir + name, kTranscriptSearchTailBytes);
+        int at = text.indexOf(query, 0, Qt::CaseInsensitive);
+        while (at >= 0) {
+            if (snippet && snippet->isEmpty())
+                *snippet = hitSnippet(text, at, query.size());
+            ++hits;
+            at = text.indexOf(query, at + query.size(), Qt::CaseInsensitive);
+        }
+    }
+    return hits;
+}
+
+QStringList AgentStore::attachmentPathsIn(const QString &text)
+{
+    if (!text.contains(QLatin1String("Attached image:")))
+        return {}; // the common case: no regex pass over a whole transcript
+    // The path runs to the end of its line. The same line is read back both as
+    // plain prompt text and out of a JSON-encoded transcript event, where the
+    // line ends at the closing quote or at an escape ("\n") rather than at a real
+    // newline — so a quote and a backslash end the path too.
+    static const QRegularExpression marker(
+        QStringLiteral("Attached image:[ \\t]*([^\"\\\\\\r\\n]+)"));
+    QStringList paths;
+    QRegularExpressionMatchIterator it = marker.globalMatch(text);
+    while (it.hasNext()) {
+        const QString path = it.next().captured(1).trimmed();
+        if (!path.isEmpty() && !paths.contains(path))
+            paths.append(path);
+    }
+    return paths;
+}
+
+QStringList AgentStore::attachmentPaths(const AgentSession &session) const
+{
+    const QString dir = sessionDir(session);
+    QStringList paths = attachmentPathsIn(session.prompt);
+    for (const QString &name : {QStringLiteral("/transcript.txt"),
+                                QStringLiteral("/events.jsonl")}) {
+        const QStringList found = attachmentPathsIn(
+            readTranscriptEnds(dir + name, kAttachmentScanBytes));
+        for (const QString &path : found)
+            if (!paths.contains(path))
+                paths.append(path);
+    }
+    return paths;
+}
+
+QString AgentStore::transcriptStamp(const AgentSession &session) const
+{
+    const QString dir = sessionDir(session);
+    return fileStamp(dir + QStringLiteral("/transcript.txt")) +
+           QLatin1Char('|') + fileStamp(dir + QStringLiteral("/events.jsonl"));
 }
 
 QList<AgentSession> AgentStore::loadAllSessions() const

@@ -23,7 +23,7 @@ def test_swing_set_has_three_clickable_seats():
     assert "seat.userData.swingSeat = seatIndex;" in build
     assert "rope.userData.swingSeat = seatIndex;" in build
     assert build.count("interactive.push") >= 2
-    assert "registerMovableObject(\"swing-set\", swingSet);" in build
+    assert "world.add(swingSet);" in build
 
 
 def test_clicking_a_seat_rides_and_clicking_again_hops_off():

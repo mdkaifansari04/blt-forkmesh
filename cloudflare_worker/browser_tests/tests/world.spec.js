@@ -2351,6 +2351,22 @@ test("World chat keeps five replayed messages lazy and its prompt in view", asyn
   await expect(page.locator(".chat-history-indicator")).toContainText(
     "7 earlier messages",
   );
+  // Oldest at the top, newest on the bottom rail, with the "earlier messages"
+  // handle above the first row and the feed parked at the latest line.
+  const feedOrder = await page.locator("#fullChatMessages").evaluate((element) => {
+    const rows = Array.from(element.querySelectorAll(".chat-message-row"));
+    const indicator = element.querySelector(".chat-history-indicator");
+    return {
+      texts: rows.map((row) => row.querySelector("p")?.textContent?.trim() || ""),
+      indicatorFirst: element.firstElementChild === indicator,
+      atBottom:
+        element.scrollHeight - element.scrollTop - element.clientHeight <= 2,
+    };
+  });
+  expect(feedOrder.indicatorFirst).toBe(true);
+  expect(feedOrder.atBottom).toBe(true);
+  expect(feedOrder.texts[0]).toContain("Retained message 8.");
+  expect(feedOrder.texts.at(-1)).toContain("Edited retained message 12.");
   await expect(page.locator("#fullChatInput")).toBeInViewport();
 
   const geometry = await terminal.evaluate((element) => {
@@ -4484,12 +4500,7 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
     const teamLayers = [
       "marketing",
       "engineering",
-      "product-design",
-      "security",
       "infrastructure",
-      "community",
-      "partnerships",
-      "operations",
     ].flatMap((floorId) => transparentMeshes(
       scene.getObjectByName(`forkmesh-office-floor-${floorId}`)
     ));
@@ -4549,7 +4560,7 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
   expect(glass.doors).toEqual({ count: 2, stable: true });
 });
 
-test("Office elevator exposes ten floors while enforcing team access", async ({
+test("Office elevator exposes five floors while enforcing team access", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -4628,29 +4639,24 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
         : null,
     };
   });
-  expect(access.destinations).toHaveLength(10);
+  expect(access.destinations).toHaveLength(5);
   expect(access.destinations.map((floor) => floor.id)).toEqual([
     "lobby",
     "marketing",
     "engineering",
-    "product-design",
-    "security",
     "infrastructure",
-    "community",
-    "partnerships",
-    "operations",
     "rooftop",
   ]);
-  expect(access.buttonCount).toBe(10);
+  expect(access.buttonCount).toBe(5);
   expect(access.destinations.map((floor) => floor.number)).toEqual([
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    1, 2, 3, 4, 5,
   ]);
   expect(access.destinations[0].teamLabel).toBe("LOBBY");
   expect(access.destinations[2].teamLabel).toBe("ENGINEERING");
-  expect(access.destinations[9].teamLabel).toBe("ROOF");
+  expect(access.destinations[4].teamLabel).toBe("ROOF");
   expect(access.destinations[0].y).toBe(access.destinations[1].y);
   expect(access.destinations[1].y).toBeLessThan(access.destinations[2].y);
-  expect(access.destinations[2].y).toBeLessThan(access.destinations[9].y);
+  expect(access.destinations[2].y).toBeLessThan(access.destinations[4].y);
   expect(access.buttonsMoveWithCar).toBe(true);
   expect(access.panelParent).toBe("forkmesh-office-glass-elevator-car");
   expect(access.carPosition).toMatchObject({ x: 70, y: 0 });
@@ -4665,7 +4671,7 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
     lobby: true,
     marketing: true,
     engineering: true,
-    security: false,
+    infrastructure: false,
     rooftop: true,
   });
 
@@ -4689,7 +4695,7 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
       return { x: avatar.position.x, z: avatar.position.z };
     });
   const locked = await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.world.travelToOfficeFloor("security")
+    shell.world.travelToOfficeFloor("infrastructure")
   );
   expect(locked).toBe(false);
   const travelled = await page.locator("forkmesh-world").evaluate((shell) =>
@@ -6129,7 +6135,9 @@ test("local diagnostics report renderer and existing socket state without new te
   await expect(diagnostics).toContainText("Socket frames");
   await expect(diagnostics).toContainText("coalesced");
   await expect(diagnostics).toContainText("dddddddddddd");
-  await expect(diagnostics).toContainText("No diagnostics are transmitted");
+  await expect(diagnostics).toContainText(
+    "Nothing here is transmitted while you are in the World",
+  );
 
   const snapshot = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.lastDiagnosticsSnapshot,
@@ -6163,6 +6171,156 @@ test("local diagnostics report renderer and existing socket state without new te
   expect(JSON.stringify(snapshot)).not.toContain("127.0.0.1");
   expect(JSON.stringify(snapshot)).not.toContain("/world/");
   expect(socketCount).toBe(1);
+});
+
+test("the Debug tab lists every individual object drawing triangles and sorts by any column", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-debug-objects");
+  await waitForWorld(page);
+
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="debug"]').click();
+
+  const rows = page.locator("[data-world-object-list] .world-object-row");
+  await expect(rows.first()).toBeVisible();
+  const status = page.locator("[data-world-object-status]");
+  await expect(status).toContainText("objects");
+  await expect(status).toContainText("triangles");
+
+  // Every row is one real mesh, and the scene walk agrees with the table.
+  const objects = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.listSceneObjects(),
+  );
+  expect(objects.length).toBeGreaterThan(10);
+  expect(objects.every((object) => object.triangles > 0)).toBe(true);
+  expect(objects.every((object) => typeof object.label === "string")).toBe(true);
+  expect(new Set(objects.map((object) => object.element)).size).toBeGreaterThan(
+    1,
+  );
+
+  const readLabels = async () =>
+    page
+      .locator("[data-world-object-list] .world-object-row strong")
+      .allInnerTexts();
+
+  // Default order is heaviest triangle count first.
+  const labelsByTriangles = await readLabels();
+  expect(labelsByTriangles.length).toBeGreaterThan(1);
+
+  // Clicking the active column reverses it; clicking another sorts by it.
+  await page.locator('[data-world-object-sort="triangles"]').click();
+  await expect(
+    page.locator('[data-world-object-sort="triangles"]'),
+  ).toHaveAttribute("aria-sort", "ascending");
+  expect(await readLabels()).not.toEqual(labelsByTriangles);
+
+  await page.locator('[data-world-object-sort="label"]').click();
+  await expect(page.locator('[data-world-object-sort="label"]')).toHaveAttribute(
+    "aria-sort",
+    "ascending",
+  );
+  const byLabel = await readLabels();
+  expect(byLabel).toEqual([...byLabel].sort((a, b) => a.localeCompare(b)));
+
+  // Re-walking keeps the panel populated.
+  await page.locator("[data-world-object-refresh]").click();
+  await expect(rows.first()).toBeVisible();
+});
+
+test("every element in the Elements tab opens into its own pieces, each list sorted on its own", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-element-parts");
+  await waitForWorld(page);
+
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="elements"]').click();
+
+  const officeRow = page.locator(
+    '[data-world-element-expand="office-interior"]',
+  );
+  await expect(officeRow).toBeVisible();
+  await expect(officeRow).toHaveAttribute("aria-expanded", "false");
+
+  // Opening an element lists the pieces inside it, not the element again.
+  await officeRow.click();
+  await expect(officeRow).toHaveAttribute("aria-expanded", "true");
+  const parts = page.locator("[data-world-element-list] .world-element-part");
+  await expect(parts.first()).toBeVisible();
+  const partCount = await parts.count();
+  expect(partCount).toBeGreaterThan(1);
+
+  // The pieces of one element never outweigh the element itself.
+  const totals = await page.locator("forkmesh-world").evaluate((shell) => {
+    const element = shell.world
+      .listWorldElements()
+      .find((entry) => entry.id === "office-interior");
+    const walk = shell.world.listWorldElementParts("office-interior", []);
+    return {
+      elementTriangles: element.triangles,
+      partTriangles: walk.parts.reduce((sum, part) => sum + part.triangles, 0),
+      parts: walk.parts.length,
+      total: walk.total,
+    };
+  });
+  expect(totals.parts).toBeGreaterThan(1);
+  expect(totals.partTriangles).toBe(totals.elementTriangles);
+
+  const scope = "office-interior";
+  const readParts = async () =>
+    page
+      .locator(
+        `[data-world-element-list] .world-element-part:not([style*="depth:2"]) strong`,
+      )
+      .allInnerTexts();
+  const byDrawn = await readParts();
+
+  // Each opened list sorts on its own header.
+  await page
+    .locator(
+      `[data-world-element-part-scope="${scope}"][data-world-element-part-sort="label"]`,
+    )
+    .click();
+  await expect(
+    page.locator(
+      `[data-world-element-part-scope="${scope}"][data-world-element-part-sort="label"]`,
+    ),
+  ).toHaveAttribute("aria-sort", "ascending");
+  const byLabelParts = await readParts();
+  expect(byLabelParts).toEqual(
+    [...byLabelParts].sort((a, b) => a.localeCompare(b)),
+  );
+  expect(byLabelParts).not.toEqual(byDrawn);
+
+  // A piece with pieces of its own opens again, one level deeper.
+  const nested = page
+    .locator('.world-element-part [data-world-element-expand^="office-interior/"]')
+    .first();
+  await expect(nested).toBeVisible();
+  await nested.click();
+  await expect(nested).toHaveAttribute("aria-expanded", "true");
+  await expect(
+    page.locator("[data-world-element-list] .world-element-subhead"),
+  ).toHaveCount(2);
+
+  // The checkbox still switches the whole element off, and the tree survives.
+  await page
+    .locator('[data-world-element-toggle="office-interior"]')
+    .setChecked(false);
+  await expect(
+    page.locator('[data-world-element-toggle="office-interior"]'),
+  ).not.toBeChecked();
+  await expect(officeRow).toHaveAttribute("aria-expanded", "true");
+  await expect(parts.first()).toBeVisible();
+
+  // Collapsing hides every row underneath it.
+  await page
+    .locator('[data-world-element-toggle="office-interior"]')
+    .setChecked(true);
+  await officeRow.click();
+  await expect(officeRow).toHaveAttribute("aria-expanded", "false");
+  await expect(parts).toHaveCount(0);
 });
 
 test("the topbar has no clock or emote actions and local light level survives movement without becoming presence data", async ({
@@ -6210,6 +6368,101 @@ test("the topbar has no clock or emote actions and local light level survives mo
     (shell) => shell.identity,
   );
   expect(publicIdentityState.lightLevel).toBeUndefined();
+});
+
+test("a handshake is offered to one visitor and poses both avatars once accepted", async ({
+  page,
+}) => {
+  test.slow();
+  const frames = [];
+  let relay = null;
+  await prepareWorldPage(page, "handshake-host", {
+    worldSocketHandler(socket, socketId) {
+      relay = socket;
+      socket.onMessage((raw) => frames.push(JSON.parse(String(raw))));
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        peers: [
+          {
+            id: "peer-neighbor",
+            name: "Neighbor",
+            status: "available",
+            x: 3,
+            y: 0.38,
+            z: 4,
+            yaw: 0,
+            space: "town-square",
+          },
+        ],
+      }));
+    },
+  });
+  await waitForWorld(page);
+
+  // A handshake is offered from the selected visitor's own profile, so it is
+  // always addressed at exactly one live peer.
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.openWorldMemberDetail({
+      peerId: "peer-neighbor",
+      name: "Neighbor",
+      accountStatus: "Guest",
+    });
+  });
+  await page.getByRole("button", { name: "Offer handshake" }).click();
+  await expect
+    .poll(() => frames.filter((frame) => frame.kind === "handshake-offer"))
+    .toEqual([
+      { type: "interaction", kind: "handshake-offer", target: "peer-neighbor" },
+    ]);
+  await expect(
+    page.getByRole("button", { name: "Handshake offered" }),
+  ).toBeDisabled();
+
+  // The relay publishes the accepted pair to the room; both halves pose.
+  relay.send(JSON.stringify({
+    type: "interaction",
+    kind: "handshake",
+    from: "peer-neighbor",
+    with: "handshake-host",
+  }));
+  await expect
+    .poll(() =>
+      page.locator("forkmesh-world").evaluate((shell) => ({
+        self:
+          Number(shell.world.player.userData.handshakeStartedAt || 0) > 0,
+        peer:
+          Number(
+            shell.world.scene.getObjectByName("avatar:peer-neighbor")
+              ?.userData?.handshakeStartedAt || 0,
+          ) > 0,
+      })),
+    )
+    .toEqual({ self: true, peer: true });
+  await expect(
+    page.getByRole("button", { name: "Offer handshake" }),
+  ).toBeEnabled();
+
+  // An offer arriving from that peer turns the same panel into the answer.
+  relay.send(JSON.stringify({
+    type: "interaction",
+    kind: "handshake-offer",
+    from: "peer-neighbor",
+  }));
+  await page.getByRole("button", { name: "Shake hands back" }).click();
+  await expect
+    .poll(() => frames.filter((frame) => frame.kind === "handshake-accept"))
+    .toEqual([
+      {
+        type: "interaction",
+        kind: "handshake-accept",
+        target: "peer-neighbor",
+      },
+    ]);
+  // Answering consumes the offer: the panel goes back to offering one.
+  await expect(
+    page.getByRole("button", { name: "Offer handshake" }),
+  ).toBeVisible();
 });
 
 test("Unicode emoji status is local-persisted, coalesced, and available to every avatar label", async ({
@@ -6531,6 +6784,94 @@ test("thumbstick motion is continuous, proportional, and recenters on release", 
     ),
   ).toBe("0px");
   await client.detach();
+  await context.close();
+});
+
+test("thumbstick recenters when its terminal event arrives outside the control", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "thumbstick-interrupted-release");
+  await waitForWorld(page);
+
+  const thumbstick = page.locator("[data-world-thumbstick]");
+  const handle = page.locator("[data-world-thumbstick-handle]");
+  const box = await thumbstick.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+  };
+  const dispatchThumbstickPointer = (type, pointerId) =>
+    thumbstick.evaluate(
+      (element, { type, pointerId, x, y }) => {
+        element.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId,
+            pointerType: "touch",
+            clientX: x,
+            clientY: y,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      },
+      {
+        type,
+        pointerId,
+        x: centre.x,
+        y: centre.y - (type === "pointermove" ? box.height * 0.3 : 0),
+      },
+    );
+  await dispatchThumbstickPointer("pointerdown", 1);
+  await dispatchThumbstickPointer("pointermove", 1);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(true);
+
+  // Simulate a mobile browser delivering the terminal event at window rather
+  // than at the captured control. The element listener alone cannot see this.
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new PointerEvent("pointercancel", {
+        pointerId: 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  });
+
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(false);
+  await expect(thumbstick).toHaveAttribute("data-active", "false");
+  for (const property of ["--thumb-x", "--thumb-y"]) {
+    expect(
+      await handle.evaluate((element, name) =>
+        getComputedStyle(element).getPropertyValue(name).trim(),
+        property,
+      ),
+    ).toBe("0px");
+  }
+
+  // A fresh touch must be accepted instead of being blocked by stale state.
+  await dispatchThumbstickPointer("pointerdown", 2);
+  await dispatchThumbstickPointer("pointermove", 2);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(true);
+  await dispatchThumbstickPointer("pointerup", 2);
   await context.close();
 });
 
@@ -9158,4 +9499,170 @@ test("ForkMesh Office remains a continuous World at 320 CSS pixels", async ({
   await expect(page.locator("[data-world-office-lobby]")).toBeHidden();
   await expect(page.locator("canvas.world-canvas")).toBeVisible();
   await context.close();
+});
+
+test("the HUD online pill counts everyone here and drops the roster down on hover", async ({
+  page,
+}) => {
+  let relay = null;
+  await prepareWorldPage(page, "roster-host", {
+    worldSocketHandler(socket, socketId) {
+      relay = socket;
+      socket.send(
+        JSON.stringify({
+          type: "welcome",
+          id: socketId,
+          peers: [
+            {
+              id: "peer-zoe",
+              name: "Zoe",
+              status: "away",
+              countryCode: "SE",
+              x: 3,
+              y: 0.38,
+              z: 4,
+              yaw: 0,
+              space: "town-square",
+            },
+            {
+              id: "peer-ada",
+              name: "Ada",
+              status: "online",
+              countryCode: "GB",
+              x: -2,
+              y: 0.38,
+              z: 1,
+              yaw: 0,
+              space: "town-square",
+            },
+          ],
+        }),
+      );
+    },
+  });
+  await waitForWorld(page);
+
+  const pill = page.locator("[data-world-online-toggle]");
+  const roster = page.locator("[data-world-online-list]");
+  await expect(page.locator("[data-world-online-count]")).toHaveText("3");
+  await expect(pill).toHaveAttribute(
+    "aria-label",
+    "3 people online right now — show who is here",
+  );
+
+  // The roster stays out of the way until the pointer asks for it.
+  const rosterOpacity = () =>
+    roster.evaluate((node) => getComputedStyle(node).opacity);
+  expect(await rosterOpacity()).toBe("0");
+  await pill.hover();
+  await expect.poll(rosterOpacity).toBe("1");
+
+  // You are listed first; every other visitor follows in name order.
+  await expect(roster.locator(".world-online-name")).toHaveText([
+    /\(you\)$/,
+    "Ada",
+    "Zoe",
+  ]);
+  await expect(roster.locator(".world-online-activity").nth(2)).toHaveText(
+    "Away",
+  );
+
+  // A roster row is the same door the avatar is: it opens the public profile.
+  await roster.getByRole("button", { name: /^Ada/ }).click();
+  await expect(page.locator("[data-world-detail]")).toHaveAttribute(
+    "data-open",
+    "true",
+  );
+  await expect(page.locator("#world-detail-title")).toContainText("Ada");
+
+  // A departure is reflected without a reload.
+  relay.send(JSON.stringify({ type: "leave", id: "peer-zoe" }));
+  await expect(page.locator("[data-world-online-count]")).toHaveText("2");
+  await expect(roster.locator(".world-online-name")).toHaveText([
+    /\(you\)$/,
+    "Ada",
+  ]);
+});
+
+test("World logo opens a dashboard switcher instead of silently reloading", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await prepareWorldPage(page, "world-brand-nav");
+  await waitForWorld(page);
+
+  const menu = page.locator("[data-world-brand-menu]");
+  const trigger = page.getByRole("button", {
+    name: "ForkMesh menu — go to a dashboard page",
+  });
+  const nav = page.locator("[data-world-brand-nav]");
+
+  // Closed by default, and closed means out of the tab order — not merely
+  // transparent — so the HUD's keyboard path is unchanged for anyone who
+  // never opens the menu.
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expect(nav).toBeHidden();
+
+  await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(menu).toHaveAttribute("data-open", "true");
+  await expect(nav).toBeVisible();
+
+  await expect(nav.locator(".world-brand-nav-label")).toHaveText([
+    "Overview",
+    "Profile",
+    "Repositories",
+    "Tasks",
+    "Network",
+    "Chat",
+    "Settings",
+  ]);
+  expect(
+    await nav
+      .locator("[data-world-brand-nav-link]")
+      .evaluateAll((links) =>
+        links.map((link) => [link.getAttribute("href"), link.target]),
+      ),
+  ).toEqual([
+    ["/dashboard", "_top"],
+    ["/dashboard/profile", "_top"],
+    ["/dashboard/repos", "_top"],
+    ["/dashboard/tasks", "_top"],
+    ["/dashboard/network", "_top"],
+    ["/dashboard/chat", "_top"],
+    ["/dashboard/settings", "_top"],
+    // Public pages ride along as chips under the dashboard list.
+    ["/", "_top"],
+    ["/docs", "_top"],
+    ["/network", "_top"],
+    ["/status", "_top"],
+  ]);
+
+  // The logo's original job survives as an explicit row.
+  await expect(nav.locator("[data-world-logo-refresh]")).toContainText(
+    "Reload World",
+  );
+
+  // Escape closes and hands focus back to the logo.
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveAttribute("data-open", "false");
+  await expect(nav).toBeHidden();
+  await expect(trigger).toBeFocused();
+
+  // Clicking back into the world dismisses it as well.
+  await trigger.click();
+  await expect(menu).toHaveAttribute("data-open", "true");
+  await page.locator("[data-world-canvas-wrap]").click({ position: { x: 40, y: 300 } });
+  await expect(menu).toHaveAttribute("data-open", "false");
+
+  // A keyboard opening lands on the first destination, but a pointer opening
+  // leaves focus on the logo so a mouse user is never pulled out of the
+  // canvas. This is why the panel's visibility is stepped rather than
+  // transitioned: focus() on a still-hidden element is a silent no-op.
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await expect(nav.locator("[data-world-brand-nav-link]").first()).toBeFocused();
+  await page.keyboard.press("Escape");
+  await trigger.click();
+  await expect(trigger).toBeFocused();
 });

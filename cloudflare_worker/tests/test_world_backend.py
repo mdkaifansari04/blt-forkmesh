@@ -847,6 +847,53 @@ def test_home_grants_and_declines_are_targeted_text_free_consent_frames():
     assert '"kind": interaction["kind"]' in ENTRY_TEXT
 
 
+def test_handshake_offers_are_targeted_one_use_and_only_public_when_accepted():
+    sender = world.default_presence("peer_greeter", 1000)
+    for kind in ("handshake-offer", "handshake-accept", "handshake-decline"):
+        assert world.sanitize_interaction({
+            "type": "interaction",
+            "kind": kind,
+            "target": "peer_neighbor",
+            "from": "impersonated",
+            "text": "private message",
+        }, sender) == {
+            "type": "interaction",
+            "kind": kind,
+            "target": "peer_neighbor",
+        }
+    for invalid in (
+        {"type": "interaction", "kind": "handshake", "target": "peer_a"},
+        {
+            "type": "interaction",
+            "kind": "handshake-offer",
+            "target": "peer_greeter",
+        },
+        {
+            "type": "interaction",
+            "kind": "handshake-offer",
+            "target": "../private",
+        },
+        {"type": "interaction", "kind": "handshake-accept", "target": ""},
+    ):
+        assert world.sanitize_interaction(invalid, sender) is None
+
+    # The offer reaches exactly one live peer and parks there as a one-use
+    # consent record; only that record makes an answer possible.
+    assert '"kind": "handshake-offer"' in ENTRY_TEXT
+    assert '"pending_handshakes": pending_handshakes' in ENTRY_TEXT
+    assert 'pending_handshakes=pending[-8:]' in ENTRY_TEXT
+    assert '_ws_attr(ws, "pending_handshakes", []) or []' in ENTRY_TEXT
+    # A declined handshake goes back to the offerer alone; an accepted one is
+    # the only frame the rest of the room ever sees, and it carries just the
+    # two peer ids.
+    handshake_broadcast = ENTRY_TEXT[
+        ENTRY_TEXT.index('"kind": "handshake",'):
+    ][:400]
+    assert '"with": interaction["target"]' in handshake_broadcast
+    assert 'exclude_id=state.get("id"), budgeted=True' in handshake_broadcast
+    assert "text" not in handshake_broadcast
+
+
 def test_emotes_are_broadcast_as_a_tiny_fixed_vocabulary():
     sender = world.default_presence("peer_sender", 1000)
     for emote in (

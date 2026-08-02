@@ -322,12 +322,12 @@ def test_floor_projection_grants_defaults_plus_server_derived_team_floors():
         "trust-safety",
         "unmapped-team",
     ]
-    # An account on no marketing team is not admitted to the Marketing floor.
+    # An account on no marketing team is not admitted to the Marketing floor,
+    # and Trust & Safety no longer maps anywhere: Security is not a floor.
     assert admitted["data"]["allowedFloorIds"] == [
         "lobby",
         "rooftop",
         "engineering",
-        "security",
     ]
     query, params = state["queries"][-1]
     assert "FROM org_team_members tm" in query

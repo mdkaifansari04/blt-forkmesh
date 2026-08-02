@@ -252,7 +252,8 @@ def test_attendance_has_member_leaderboard_and_individual_punch_clock():
     for contract in (
         "OFFICE_ATTENDANCE_HEARTBEAT_MS = 30_000",
         'direction === "heartbeat"',
-        "{ action, floor: attendanceFloorId }",
+        "{ action, floor: attendanceFloorId, visitId }",
+        "attendanceVisitId = newOfficeAttendanceVisitId()",
         "startAttendanceHeartbeat()",
         "stopAttendanceHeartbeat()",
     ):
@@ -336,6 +337,58 @@ def test_attendance_leaderboard_deduplicates_sorts_and_ticks_active_stays():
     ]
 
 
+def test_a_tabbed_away_member_resumes_attendance_as_a_new_visit():
+    office = source(OFFICE_PATH)
+    # The tick, not the interval callback, owns the punch decision, so returning
+    # to a hidden tab resumes immediately instead of one heartbeat later.
+    for contract in (
+        "const OFFICE_ATTENDANCE_LIVE_TTL_MS = 75_000",
+        "export function officeAttendanceVisitExpired(seenAt, now)",
+        'if (action !== "out") attendanceSeenAt = Date.now()',
+        'document.addEventListener("visibilitychange", onVisibilityChange)',
+        'document.removeEventListener("visibilitychange", onVisibilityChange)',
+        "punchAttendanceTick,",
+    ):
+        assert contract in office
+    tick = function_body(office, "punchAttendanceTick")
+    assert "officeAttendanceVisitExpired(attendanceSeenAt, Date.now())" in tick
+    assert "attendanceVisitId = newOfficeAttendanceVisitId()" in tick
+    assert 'void recordAttendance("in")' in tick
+    visibility = function_body(office, "onVisibilityChange")
+    assert "document.hidden" in visibility
+    assert "punchAttendanceTick()" in visibility
+    # A still-open visit keeps riding the interval instead of posting on every
+    # tab switch.
+    assert (
+        "if (!officeAttendanceVisitExpired(attendanceSeenAt, Date.now())) return;"
+        in visibility
+    )
+
+    script = f"""
+      import {{ officeAttendanceVisitExpired }} from {
+          json.dumps(OFFICE_PATH.as_uri())
+      };
+      process.stdout.write(JSON.stringify([
+        officeAttendanceVisitExpired(0, 10_000_000),
+        officeAttendanceVisitExpired(1_000_000, 0),
+        officeAttendanceVisitExpired(1_000_000, 1_074_999),
+        officeAttendanceVisitExpired(1_000_000, 1_075_000),
+        officeAttendanceVisitExpired(1_000_000, 9_000_000),
+        officeAttendanceVisitExpired(null, 9_000_000),
+        officeAttendanceVisitExpired("nope", 9_000_000),
+      ]));
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert json.loads(result.stdout) == [
+        False, False, False, True, True, False, False,
+    ]
+
+
 def test_floor_access_is_loaded_once_and_only_server_grants_unlock_buttons():
     office = source(OFFICE_PATH)
     scene = source(SCENE_PATH)
@@ -368,6 +421,11 @@ def test_explicit_floor_refresh_updates_access_without_attendance_or_polling():
         setTimeout,
         clearTimeout,
         requestAnimationFrame(callback) {{ callback(); }},
+        addEventListener() {{}},
+        removeEventListener() {{}},
+      }};
+      globalThis.document = {{
+        hidden: false,
         addEventListener() {{}},
         removeEventListener() {{}},
       }};
@@ -621,32 +679,38 @@ def test_office_glass_uses_one_stable_non_depth_writing_envelope():
     assert "child.receiveShadow = false" in scene
 
 
-def test_tower_is_eleven_stories_and_about_ten_times_the_old_width():
+def test_tower_is_five_stories_and_about_ten_times_the_old_width():
     scene = source(SCENE_PATH)
     tower = source(TOWER_PATH)
     assert "export const OFFICE_WIDTH = 170" in tower
-    assert "export const OFFICE_FLOOR_COUNT = 11" in tower
+    assert "export const OFFICE_FLOOR_COUNT = 5" in tower
     assert "export const OFFICE_FLOOR_HEIGHT = 16" in tower
-    assert tower.count("level: ") == 11
+    assert tower.count("level: ") == 5
     for floor_id in (
         "lobby",
         "marketing",
         "engineering",
+        "infrastructure",
+        "rooftop",
+    ):
+        assert f'id: "{floor_id}"' in tower
+    # The retired department storeys keep their team names elsewhere in the
+    # product, but no longer exist as floors of the virtual office.
+    for floor_id in (
         "product-design",
         "security",
-        "infrastructure",
         "community",
         "partnerships",
         "operations",
         "executive",
-        "rooftop",
     ):
-        assert f'id: "{floor_id}"' in tower
+        assert f'id: "{floor_id}"' not in tower
+        assert f'officeFloorGroups.get("{floor_id}")' not in scene
     assert "for (let level = 1; level < OFFICE_FLOOR_COUNT; level += 1)" in scene
     assert "OFFICE_FLOORS.slice(1).forEach((floor, interiorIndex) => {" in scene
     assert "function addOfficeFunFloorProps()" in scene
-    assert 'officeFloorGroups.get("executive")' in scene
-    assert "forkmesh-office-executive-strategy-table" in scene
+    assert 'officeFloorGroups.get("infrastructure")' in scene
+    assert "forkmesh-office-executive-strategy-table" not in scene
 
 
 def test_aerial_lod_never_removes_world_sections_and_sol_sign_is_attached():
@@ -704,17 +768,16 @@ def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():
         "elevatorCutMaxX",
         "elevatorCutMinZ",
         "forkmesh-office-floor-slab-",
-        "new THREE.TorusKnotGeometry(3.8, 0.6",
-        'shield.name = "forkmesh-office-feature-security-shield"',
         "OFFICE_FLOOR_HEIGHT / 2",
-        "orbitPivot.rotation.y",
-        "forkmesh-office-feature-partnerships-orbit-",
     ):
         assert contract in scene
     # These rotations were the source of the giant pink/cyan shapes visibly
-    # slicing through adjacent floors.
+    # slicing through adjacent floors. The exhibits that used them belonged to
+    # retired storeys and are gone with their floors.
     assert "new THREE.TorusKnotGeometry(8, 1.35" not in scene
     assert "orbit.rotation.z" not in scene
+    assert "forkmesh-office-feature-partnerships-orbit-" not in scene
+    assert "forkmesh-office-feature-security-shield" not in scene
 
 
 def test_office_uses_solid_floor_finishes_and_batched_ceiling_light_grids():

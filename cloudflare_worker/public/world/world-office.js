@@ -16,6 +16,37 @@ const OFFICE_ENTRY_PATH = "/api/world/office/general/entry";
 const OFFICE_FLOORS_PATH = "/api/world/office/floors";
 const OFFICE_ATTENDANCE_PATH = "/api/world/office/attendance";
 const OFFICE_ATTENDANCE_HEARTBEAT_MS = 30_000;
+// Mirrors the Worker's OFFICE_ATTENDANCE_LIVE_TTL_MS: once our writes have been
+// quiet for this long the server has closed the open visit, and that visit id
+// can no longer be extended.
+const OFFICE_ATTENDANCE_LIVE_TTL_MS = 75_000;
+
+function newOfficeAttendanceVisitId() {
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID === "function") {
+    return randomUUID.call(globalThis.crypto).replaceAll("-", "");
+  }
+  const bytes = new Uint8Array(16);
+  if (typeof globalThis.crypto?.getRandomValues === "function") {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+  return [...bytes]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// True once the server can no longer be holding this visit open. Exported so
+// the resume rule is testable without a live Office session.
+export function officeAttendanceVisitExpired(seenAt, now) {
+  const acknowledged = Number(seenAt) || 0;
+  const observed = Number(now) || 0;
+  if (acknowledged <= 0 || observed <= 0) return false;
+  return observed - acknowledged >= OFFICE_ATTENDANCE_LIVE_TTL_MS;
+}
 
 export function createWorldOfficeController({
   root,
@@ -48,7 +79,9 @@ export function createWorldOfficeController({
   let attendanceAccount = "";
   let attendanceWrite = Promise.resolve();
   let attendanceFloorId = "lobby";
+  let attendanceVisitId = "";
   let attendanceHeartbeat = null;
+  let attendanceSeenAt = 0;
 
   const resolvedChatURL = new URL(chatPath, window.location.origin);
   if (
@@ -230,6 +263,7 @@ export function createWorldOfficeController({
     } = {},
   ) {
     const account = String(attendanceAccount || "");
+    const visitId = String(attendanceVisitId || "");
     if (!account || typeof root.postJSON !== "function") {
       return attendanceWrite;
     }
@@ -246,10 +280,13 @@ export function createWorldOfficeController({
       .then(async () => {
         const payload = await root.postJSON(
           OFFICE_ATTENDANCE_PATH,
-          { action, floor: attendanceFloorId },
+          { action, floor: attendanceFloorId, visitId },
           { timeout: 6000 },
         );
         applyAttendance(payload);
+        // Server-acknowledged liveness for this visit id. A gap wider than the
+        // Worker's TTL means the visit was closed behind our back.
+        if (action !== "out") attendanceSeenAt = Date.now();
         return payload;
       })
       .catch(async () => {
@@ -275,19 +312,45 @@ export function createWorldOfficeController({
     attendanceHeartbeat = null;
   }
 
+  function punchAttendanceTick() {
+    if (!active || document.hidden || !attendanceAccount) return;
+    // The scene owns the physical building boundary. A delayed doorway
+    // callback must never let general World time leak into Office Hours.
+    if (world.isOfficeInterior?.() === false) {
+      stopAttendanceHeartbeat();
+      void recordAttendance("out");
+      return;
+    }
+    // Heartbeats pause while the tab is hidden (and stop outright during a
+    // network outage), so the Worker's live-presence TTL closes the visit. A
+    // heartbeat can no longer extend that closed id: resume as a new visit
+    // instead, otherwise the member is stuck AWAY on the Office leaderboard and
+    // the rest of the stay they are physically still in never counts.
+    if (officeAttendanceVisitExpired(attendanceSeenAt, Date.now())) {
+      attendanceVisitId = newOfficeAttendanceVisitId();
+      void recordAttendance("in");
+      return;
+    }
+    void recordAttendance("heartbeat");
+  }
+
   function startAttendanceHeartbeat() {
     stopAttendanceHeartbeat();
-    attendanceHeartbeat = window.setInterval(() => {
-      if (!active || document.hidden || !attendanceAccount) return;
-      // The scene owns the physical building boundary. A delayed doorway
-      // callback must never let general World time leak into Office Hours.
-      if (world.isOfficeInterior?.() === false) {
-        stopAttendanceHeartbeat();
-        void recordAttendance("out");
-        return;
-      }
-      void recordAttendance("heartbeat");
-    }, OFFICE_ATTENDANCE_HEARTBEAT_MS);
+    attendanceHeartbeat = window.setInterval(
+      punchAttendanceTick,
+      OFFICE_ATTENDANCE_HEARTBEAT_MS,
+    );
+  }
+
+  // Resume the moment the tab is looked at again rather than up to one heartbeat
+  // later, so a member who tabbed away is counted as present right away. Only
+  // the resume case is urgent: a visit the server still holds open is refreshed
+  // by the regular heartbeat, and punching on every tab switch would add
+  // avoidable Worker traffic.
+  function onVisibilityChange() {
+    if (document.hidden || !attendanceHeartbeat) return;
+    if (!officeAttendanceVisitExpired(attendanceSeenAt, Date.now())) return;
+    punchAttendanceTick();
   }
 
   function initialOfficeAccess() {
@@ -306,6 +369,8 @@ export function createWorldOfficeController({
     officeAccess = initialOfficeAccess();
     attendanceAccount = "";
     attendanceFloorId = "lobby";
+    attendanceVisitId = newOfficeAttendanceVisitId();
+    attendanceSeenAt = 0;
     stopAttendanceHeartbeat();
     world.setOfficeAccess?.(officeAccess);
     officeEntryTicket = "";
@@ -551,6 +616,8 @@ export function createWorldOfficeController({
     officeAccess = normalizeOfficeFloorAccess({});
     attendanceAccount = "";
     attendanceFloorId = "lobby";
+    attendanceVisitId = "";
+    attendanceSeenAt = 0;
     world.setOfficeAccess?.(officeAccess);
     world.setOfficeDoorStatus?.("open");
     authorizationGeneration += 1;
@@ -638,6 +705,7 @@ export function createWorldOfficeController({
     root.removeEventListener("click", onClick);
     window.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("message", onMessage);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
     meeting.setEntryTicket?.("", 0);
     officeEntryTicket = "";
     officeEntryExpiresAt = 0;
@@ -657,6 +725,7 @@ export function createWorldOfficeController({
   world.setOfficeFloorHandler?.(travelToOfficeFloor);
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("message", onMessage);
+  document.addEventListener("visibilitychange", onVisibilityChange);
 
   return {
     setProximity,

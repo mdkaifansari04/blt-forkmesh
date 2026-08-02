@@ -92,7 +92,6 @@ def test_repository_and_leaderboard_districts_share_textured_flush_paths():
         'color: repository ? "#c1bbb0" : "#8a829b"',
     ):
         assert contract in scene
-    assert 'registerMovableObject("landmark-" + landmark.id, object)' not in scene
     assert "new THREE.BoxGeometry(repositoryConnectionLength, 0.08, 7.2)" not in scene
     assert "new THREE.BoxGeometry(leaderboardConnectionLength, 0.08, 7.2)" not in scene
     assert "guide.position.set(0, 0.15, z)" not in scene

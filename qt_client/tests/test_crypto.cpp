@@ -7,12 +7,13 @@
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
 #include "../src/ChatVisitorPresence.h"
-#include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
+#include "../src/DirectorySizeScan.h"
 #include "../src/DiscussionInboxBackoff.h"
 #include "../src/DiscussionStore.h"
 #include "../src/ForkMeshIdentity.h"
+#include "../src/GlobalSearchMatch.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
 #include "../src/LocalBackupStore.h"
@@ -20,6 +21,7 @@
 #include "../src/PrivateMirrorStore.h"
 #include "../src/McpConnector.h"
 #include "../src/NetworkBackoff.h"
+#include "../src/NodeDiagnostics.h"
 #include "../src/PlatformLogFilter.h"
 #include "../src/ProjectStore.h"
 #include "../src/PullAiReview.h"
@@ -31,6 +33,8 @@
 #include "../src/RepoSecurity.h"
 #include "../src/RoomCrypto.h"
 #include "../src/StrictGitReader.h"
+#include "../src/SystemStats.h"
+#include "../src/UsageLimitCalendar.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -49,6 +53,7 @@
 #include <QProcessEnvironment>
 #include <QFileInfo>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 
@@ -60,6 +65,10 @@
 #include <cstring>
 #include <mutex>
 #include <thread>
+
+#if defined(Q_OS_UNIX)
+#include <sys/resource.h> // descriptor-cap tests
+#endif
 
 namespace {
 
@@ -354,6 +363,193 @@ int main(int argc, char *argv[])
         const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
         check(linked == input,
               "reference linker skips existing links, URLs, inline code, and code blocks");
+    }
+
+    // Ctrl+K search: the rules that decide what the overlay finds, and the
+    // parsers for the git output it searches (adhoc #28 widened it from
+    // issues/PRs/code to everything this node holds).
+    {
+        using namespace forkmesh::search;
+
+        QString where;
+        Issue issue;
+        issue.number = 7;
+        issue.title = QStringLiteral("Relay drops a heartbeat");
+        IssueEvent opened;
+        opened.type = QStringLiteral("open");
+        opened.body = QStringLiteral("The node stops advertising after an hour.");
+        IssueEvent comment;
+        comment.type = QStringLiteral("comment");
+        comment.body = QStringLiteral("Reproduced on mirror6 with a cold cache.");
+        issue.events = {opened, comment};
+        check(matchIssue(issue, QStringLiteral("HEARTBEAT"), &where) &&
+                  where == QStringLiteral("title"),
+              "search matches an issue title case-insensitively");
+        check(matchIssue(issue, QStringLiteral("advertising"), &where) &&
+                  !where.startsWith(QStringLiteral("comment: ")),
+              "search reports an open-event body hit as the description");
+        check(matchIssue(issue, QStringLiteral("mirror6"), &where) &&
+                  where.startsWith(QStringLiteral("comment: ")),
+              "search flags an issue comment hit as a comment");
+        check(!matchIssue(issue, QStringLiteral("solana"), &where),
+              "search leaves an unrelated issue alone");
+
+        PullRequest pull;
+        pull.title = QStringLiteral("Widen the search overlay");
+        pull.description = QStringLiteral("Also covers branches and worktrees.");
+        check(matchPull(pull, QStringLiteral("worktrees"), &where) &&
+                  where.contains(QStringLiteral("branches and worktrees")),
+              "search matches a pull request description and quotes it");
+
+        Discussion discussion;
+        discussion.title = QStringLiteral("Roadmap");
+        DiscussionEvent reply;
+        reply.type = QStringLiteral("comment");
+        reply.body = QStringLiteral("What about federated relays?");
+        discussion.events = {reply};
+        check(matchDiscussion(discussion, QStringLiteral("federated"), &where) &&
+                  where.startsWith(QStringLiteral("comment: ")),
+              "search matches a discussion comment");
+
+        Project project;
+        project.title = QStringLiteral("Phase 3");
+        project.body = QStringLiteral("Ship the global search overlay.");
+        check(matchProject(project, QStringLiteral("overlay"), &where),
+              "search matches a project description");
+
+        check(!containsFold(QString(), QStringLiteral("x")) &&
+                  !containsFold(QStringLiteral("x"), QString()),
+              "empty fields and empty queries never match");
+
+        const QString snippet = snippetAround(
+            QStringLiteral("alpha\nbeta gamma delta epsilon zeta eta theta iota "
+                           "kappa lambda mu nu xi omicron pi rho sigma NEEDLE "
+                           "tail"),
+            QStringLiteral("needle"));
+        check(snippet.contains(QStringLiteral("NEEDLE")) &&
+                  snippet.startsWith(QString::fromUtf8("\xE2\x80\xA6")) &&
+                  !snippet.contains(QLatin1Char('\n')),
+              "snippets are single-line, elided, and centred on the match");
+
+        // `git worktree list --porcelain`: records are separated by blank lines,
+        // but a new "worktree " line alone must also close the previous record.
+        const QVector<WorktreeRecord> worktrees = parseWorktreePorcelain(
+            {QStringLiteral("worktree /home/f/projects/forkmesh"),
+             QStringLiteral("HEAD 1111111111111111111111111111111111111111"),
+             QStringLiteral("branch refs/heads/main"),
+             QStringLiteral("worktree /tmp/forkmesh-worktrees/issue-0-s28"),
+             QStringLiteral("HEAD 2222222222222222222222222222222222222222"),
+             QStringLiteral("branch refs/heads/agent/adhoc-28-search"),
+             QStringLiteral("worktree /tmp/detached"),
+             QStringLiteral("HEAD 3333333333333333333333333333333333333333"),
+             QStringLiteral("detached")});
+        check(worktrees.size() == 3, "every worktree record is parsed");
+        check(worktrees.at(0).branch == QStringLiteral("main") &&
+                  worktrees.at(0).path ==
+                      QStringLiteral("/home/f/projects/forkmesh"),
+              "worktree branches lose their refs/heads/ prefix");
+        check(worktrees.at(1).branch ==
+                  QStringLiteral("agent/adhoc-28-search"),
+              "an agent worktree is parsed without a blank separator line");
+        check(worktrees.at(2).detached && worktrees.at(2).branch.isEmpty(),
+              "a detached worktree is flagged and carries no branch");
+        check(parseWorktreePorcelain({QStringLiteral("branch refs/heads/main")})
+                  .isEmpty(),
+              "an attribute with no worktree line is ignored");
+
+        // `git grep -n <rev>` prefixes each row with "<rev>:".
+        const CodeRow row = parseGrepRow(
+            QStringLiteral("main:qt_client/src/MainWindowSearch.cpp:42:  const "
+                           "int gen = ++m_searchGen;"),
+            QStringLiteral("main"));
+        check(row.valid && row.line == 42 &&
+                  row.path ==
+                      QStringLiteral("qt_client/src/MainWindowSearch.cpp") &&
+                  row.text.startsWith(QStringLiteral("const int gen")),
+              "a git grep row is split into path, line and trimmed text");
+        check(!parseGrepRow(QStringLiteral("no line number here"),
+                            QStringLiteral("main"))
+                   .valid,
+              "a malformed git grep row is dropped");
+
+        check(categoryIndexOf(QStringLiteral("repo")) <
+                      categoryIndexOf(QStringLiteral("branch")) &&
+                  categoryIndexOf(QStringLiteral("branch")) <
+                      categoryIndexOf(QStringLiteral("code")),
+              "search groups run from identity matches down to content matches");
+        check(categoryIndexOf(QStringLiteral("worktree")) < categoryCount() &&
+                  categoryIndexOf(QStringLiteral("agent")) < categoryCount(),
+              "worktrees and agent sessions are searchable categories");
+        check(categoryIndexOf(QStringLiteral("nonsense")) == categoryCount(),
+              "an unknown hit kind sorts last instead of vanishing");
+    }
+
+    {
+        const qint64 resetMs = QDateTime::fromString(
+                                   QStringLiteral("2026-08-01T12:30:00Z"),
+                                   Qt::ISODate)
+                                   .toMSecsSinceEpoch();
+        const QString calendar = UsageLimitCalendar::eventText(
+            QStringLiteral("claude"), QStringLiteral("5h"),
+            QStringLiteral("Claude Code"), QStringLiteral("5-hour"), resetMs,
+            resetMs - 60 * 1000);
+        check(calendar.contains(QStringLiteral("BEGIN:VCALENDAR\r\n")) &&
+                  calendar.contains(QStringLiteral("METHOD:PUBLISH\r\n")) &&
+                  calendar.contains(QStringLiteral(
+                      "UID:forkmesh-usage-claude-5h-1785587400000@local\r\n")) &&
+                  calendar.contains(QStringLiteral("DTSTART:20260801T123000Z\r\n")) &&
+                  calendar.contains(QStringLiteral("TRIGGER:PT0M\r\n")) &&
+                  calendar.contains(QStringLiteral(
+                      "SUMMARY:ForkMesh: Claude Code usage is ready\r\n")),
+              "usage-limit calendar export is a timed iCalendar event with an alarm");
+        check(UsageLimitCalendar::eventText(
+                  QStringLiteral("claude"), QStringLiteral("5h"),
+                  QStringLiteral("Claude Code"), QStringLiteral("5-hour"), 0)
+                  .isEmpty(),
+              "usage-limit calendar export rejects a missing reset time");
+
+        const QString path = UsageLimitCalendar::writeEvent(
+            QStringLiteral("codex"), QStringLiteral("weekly"),
+            QStringLiteral("Codex"), QStringLiteral("weekly"), resetMs);
+        QFile file(path);
+        check(!path.isEmpty() && file.open(QIODevice::ReadOnly) &&
+                  QString::fromUtf8(file.readAll()).contains(
+                      QStringLiteral("ForkMesh: Codex usage is ready")),
+              "usage-limit calendar event is written atomically under app data");
+    }
+
+    {
+        const qint64 resetMs = QDateTime::fromString(
+                                   QStringLiteral("2026-08-01T12:30:00Z"),
+                                   Qt::ISODate)
+                                   .toMSecsSinceEpoch();
+        const QString calendar = UsageLimitCalendar::eventText(
+            QStringLiteral("claude"), QStringLiteral("5h"),
+            QStringLiteral("Claude Code"), QStringLiteral("5-hour"), resetMs,
+            resetMs - 60 * 1000);
+        check(calendar.contains(QStringLiteral("BEGIN:VCALENDAR\r\n")) &&
+                  calendar.contains(QStringLiteral("METHOD:PUBLISH\r\n")) &&
+                  calendar.contains(QStringLiteral(
+                      "UID:forkmesh-usage-claude-5h-1785587400000@local\r\n")) &&
+                  calendar.contains(QStringLiteral("DTSTART:20260801T123000Z\r\n")) &&
+                  calendar.contains(QStringLiteral("TRIGGER:PT0M\r\n")) &&
+                  calendar.contains(QStringLiteral(
+                      "SUMMARY:ForkMesh: Claude Code usage is ready\r\n")),
+              "usage-limit calendar export is a timed iCalendar event with an alarm");
+        check(UsageLimitCalendar::eventText(
+                  QStringLiteral("claude"), QStringLiteral("5h"),
+                  QStringLiteral("Claude Code"), QStringLiteral("5-hour"), 0)
+                  .isEmpty(),
+              "usage-limit calendar export rejects a missing reset time");
+
+        const QString path = UsageLimitCalendar::writeEvent(
+            QStringLiteral("codex"), QStringLiteral("weekly"),
+            QStringLiteral("Codex"), QStringLiteral("weekly"), resetMs);
+        QFile file(path);
+        check(!path.isEmpty() && file.open(QIODevice::ReadOnly) &&
+                  QString::fromUtf8(file.readAll()).contains(
+                      QStringLiteral("ForkMesh: Codex usage is ready")),
+              "usage-limit calendar event is written atomically under app data");
     }
 
     {
@@ -1221,17 +1417,6 @@ int main(int argc, char *argv[])
         check(prompts == 1 && !manager.seenPaths.isEmpty(),
               "the accepted firewall rule whitelists subsequent requests");
     }
-
-    // --- Commit comment signing ------------------------------------------
-    CommitComment commitVec;
-    commitVec.author = "TESTPUB";
-    commitVec.ts = 3000;
-    commitVec.body = "Nice";
-    const QByteArray expectedCommit =
-        "forkmesh-commit-comment-v1\nabc123\nTESTPUB\n3000\n"
-        "fdc96ffbf256523aec8846ae56321053c7ab751c99eb766e6bb4a7d362a4f060";
-    check(CommitCommentStore::canonicalString("abc123", commitVec) == expectedCommit,
-          "commit-comment canonical string matches the cross-language vector");
 
     // A burn-up series must reconstruct historical state, including a close
     // and a later reopening, rather than repeating today's status backwards.
@@ -2170,6 +2355,43 @@ int main(int argc, char *argv[])
                       publicationSource.contains(QStringLiteral(
                           "m_catalogPublishConsecutiveFailures.remove(publishKey)")),
                   "consecutive publish failures are counted, escalated, and cleared on success");
+
+            // The sticky "Viewed" fade installs a QGraphicsOpacityEffect on the
+            // button, and setGraphicsEffect() deletes whichever effect is
+            // already installed. Dropping it with setGraphicsEffect(nullptr)
+            // and then calling deleteLater() on the same pointer freed it twice
+            // and crashed inside QObject::deleteLater (adhoc #52), so the
+            // handler must delete once and hold the effect by QPointer.
+            QFile scmFile(QFileInfo(QString::fromUtf8(__FILE__))
+                              .absoluteDir()
+                              .filePath(QStringLiteral(
+                                  "../src/MainWindowSourceControl.cpp")));
+            const bool scmOpened = scmFile.open(QIODevice::ReadOnly);
+            const QString scmSource =
+                scmOpened ? QString::fromUtf8(scmFile.readAll()) : QString();
+            const int fadeStart = scmSource.indexOf(QStringLiteral(
+                "new QGraphicsOpacityEffect(m_scmStickyViewed)"));
+            const int fadeEnd =
+                scmSource.indexOf(QStringLiteral("animation->start("), fadeStart);
+            QString fadeHandler;
+            if (fadeStart >= 0 && fadeEnd > fadeStart) {
+                // Comment lines describe the old double-delete, so match the
+                // code alone.
+                const QStringList fadeLines =
+                    scmSource.mid(fadeStart, fadeEnd - fadeStart)
+                        .split(QLatin1Char('\n'));
+                for (const QString &line : fadeLines) {
+                    if (!line.trimmed().startsWith(QLatin1String("//")))
+                        fadeHandler += line + QLatin1Char('\n');
+                }
+            }
+            check(scmOpened && !fadeHandler.isEmpty() &&
+                      !fadeHandler.contains(QStringLiteral("deleteLater()")) &&
+                      fadeHandler.contains(QStringLiteral(
+                          "QPointer<QGraphicsEffect>(effect)")) &&
+                      fadeHandler.contains(QStringLiteral(
+                          "button->graphicsEffect() == faded")),
+                  "sticky Viewed fade deletes its opacity effect once, guarded by QPointer");
 
             RepoContributionPublicationCache scanCapacityCache(8, 2);
             check(scanCapacityCache.begin(contributionCacheKey, false) ==
@@ -4670,6 +4892,150 @@ int main(int argc, char *argv[])
         git({"commit", "-q", "-m", "test: settle pre-pull-tests state",
             "--allow-empty"});
 
+        // --- PullStore materializes durable, visible per-PR branches ------
+        // Every PR gets refs/heads/pr/<n> in addition to the historical
+        // refs/pr/<n>/head compatibility ref. Re-materialization is idempotent,
+        // while a branch whose tip diverged is never force-overwritten.
+        {
+            QTemporaryDir branchRoot;
+            const QString branchRepo = branchRoot.path();
+            bool branchSetup =
+                branchRoot.isValid() &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("init"), QStringLiteral("-q"),
+                            QStringLiteral("-b"), QStringLiteral("main")}) &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("config"), QStringLiteral("user.name"),
+                            QStringLiteral("PR Branch Tester")}) &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("config"), QStringLiteral("user.email"),
+                            QStringLiteral("pr-branch@example.test")}) &&
+                writeTestFile(branchRepo + QStringLiteral("/base.txt"),
+                              QByteArrayLiteral("base\n")) &&
+                commitTestTree(branchRepo, QStringLiteral("base"),
+                               QStringLiteral("2026-08-01T10:00:00Z"),
+                               QStringLiteral("PR Branch Tester"),
+                               QStringLiteral("pr-branch@example.test")) &&
+                runTestGit(branchRepo,
+                           {QStringLiteral("checkout"), QStringLiteral("-q"),
+                            QStringLiteral("-b"), QStringLiteral("feature-pr")}) &&
+                writeTestFile(branchRepo + QStringLiteral("/feature.txt"),
+                              QByteArrayLiteral("feature\n")) &&
+                commitTestTree(branchRepo, QStringLiteral("feature"),
+                               QStringLiteral("2026-08-01T11:00:00Z"),
+                               QStringLiteral("PR Branch Tester"),
+                               QStringLiteral("pr-branch@example.test"));
+            const QString featureTip = testGitHead(branchRepo);
+            branchSetup = branchSetup && !featureTip.isEmpty() &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("branch"),
+                                      QStringLiteral("feature-pr-idempotent"),
+                                      featureTip}) &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("branch"),
+                                      QStringLiteral("feature-pr-divergent"),
+                                      featureTip}) &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("checkout"),
+                                      QStringLiteral("-q"),
+                                      QStringLiteral("main")}) &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("checkout"),
+                                      QStringLiteral("-q"),
+                                      QStringLiteral("-b"),
+                                      QStringLiteral("independent-pr-work")}) &&
+                          writeTestFile(branchRepo +
+                                            QStringLiteral("/independent.txt"),
+                                        QByteArrayLiteral("independent\n")) &&
+                          commitTestTree(
+                              branchRepo, QStringLiteral("independent"),
+                              QStringLiteral("2026-08-01T12:00:00Z"),
+                              QStringLiteral("PR Branch Tester"),
+                              QStringLiteral("pr-branch@example.test"));
+            const QString divergentTip = testGitHead(branchRepo);
+            branchSetup = branchSetup && !divergentTip.isEmpty() &&
+                          runTestGit(branchRepo,
+                                     {QStringLiteral("checkout"),
+                                      QStringLiteral("-q"),
+                                      QStringLiteral("main")});
+            check(branchSetup, "set up durable per-PR branch fixtures");
+
+            auto refTip = [&](const QString &ref) {
+                QByteArray output;
+                return runTestGit(branchRepo,
+                                  {QStringLiteral("rev-parse"),
+                                   QStringLiteral("--verify"), ref},
+                                  &output)
+                           ? QString::fromUtf8(output).trimmed()
+                           : QString();
+            };
+            if (branchSetup) {
+                PullStore branchPulls(branchRepo, QString(), &identity,
+                                      QStringLiteral("tester"));
+                QString branchError;
+                const int created = branchPulls.createPull(
+                    QStringLiteral("Visible branch"), QStringLiteral("body"),
+                    QStringLiteral("main"), QStringLiteral("feature-pr"),
+                    QString(), QString(), /*branchBacked=*/true, &branchError);
+                check(created == 1 && branchError.isEmpty() &&
+                          refTip(QStringLiteral("refs/heads/pr/1")) == featureTip &&
+                          refTip(QStringLiteral("refs/pr/1/head")) == featureTip &&
+                          !refTip(QStringLiteral("refs/pr/1/metadata")).isEmpty(),
+                      "materializing a PR creates code and metadata refs");
+
+                const QString metadataBefore =
+                    refTip(QStringLiteral("refs/pr/1/metadata"));
+                check(branchPulls.addComment(
+                          1, QStringLiteral("metadata belongs to this PR"),
+                          &branchError) &&
+                          refTip(QStringLiteral("refs/pr/1/metadata")) !=
+                              metadataBefore &&
+                          refTip(QStringLiteral("refs/pr/1/head")) == featureTip &&
+                          refTip(QStringLiteral("refs/heads/pr/1")) == featureTip,
+                      "PR conversation advances only its metadata ref");
+
+                check(runTestGit(branchRepo,
+                                 {QStringLiteral("update-ref"),
+                                  QStringLiteral("refs/heads/pr/2"), featureTip}),
+                      "pre-create an idempotent PR branch at the desired tip");
+                const int idempotent = branchPulls.createPull(
+                    QStringLiteral("Idempotent branch"), QStringLiteral("body"),
+                    QStringLiteral("main"),
+                    QStringLiteral("feature-pr-idempotent"), QString(), QString(),
+                    /*branchBacked=*/true, &branchError);
+                check(idempotent == 2 &&
+                          refTip(QStringLiteral("refs/heads/pr/2")) == featureTip &&
+                          refTip(QStringLiteral("refs/pr/2/head")) == featureTip,
+                      "re-materializing the same PR tip is idempotent");
+
+                check(runTestGit(branchRepo,
+                                 {QStringLiteral("update-ref"),
+                                  QStringLiteral("refs/heads/pr/3"), divergentTip}),
+                      "pre-create a divergent visible PR branch");
+                const int divergent = branchPulls.createPull(
+                    QStringLiteral("Preserve divergence"),
+                    QStringLiteral("body"), QStringLiteral("main"),
+                    QStringLiteral("feature-pr-divergent"), QString(), QString(),
+                    /*branchBacked=*/true, &branchError);
+                PullRequest divergentRecord;
+                for (const PullRequest &candidate : branchPulls.loadAll()) {
+                    if (candidate.number == divergent)
+                        divergentRecord = candidate;
+                }
+                check(divergent == 3 &&
+                          refTip(QStringLiteral("refs/heads/pr/3")) == divergentTip &&
+                          refTip(QStringLiteral("refs/pr/3/head")) == featureTip,
+                      "materialization preserves a divergent pr/3 branch");
+                check(divergentRecord.head ==
+                              QStringLiteral("feature-pr-divergent") &&
+                          verifyEd25519(divergentRecord.author,
+                                        divergentRecord.sig,
+                                        PullStore::canonicalString(
+                                            divergentRecord)),
+                      "canonical branch materialization preserves signed pr.head metadata");
+            }
+        }
+
         // --- PullStore conversation round-trip ---------------------------
         PullStore pulls(tmp.path(), QString(), &identity, "tester");
         const int pn = pulls.createPull(
@@ -4840,6 +5206,24 @@ int main(int argc, char *argv[])
               "discussion remote comment applies");
         check(discussions.applyRemoteEvent(dn, remoteComment, "Remote welcome", &err),
               "discussion remote comment reapply is idempotent");
+        check(discussions.setStatus(dn, "closed", &err),
+              "discussion close succeeds");
+        loadedDiscussions = discussions.loadAll();
+        check(!loadedDiscussions.isEmpty() &&
+                  loadedDiscussions.first().status == "closed",
+              "closed discussion status round-trips");
+        check(!discussions.addComment(dn, "should be rejected", &err),
+              "closed discussion rejects new comments");
+        check(discussions.setStatus(dn, "archived", &err),
+              "discussion archive succeeds");
+        check(discussions.setStatus(dn, "open", &err),
+              "archived discussion can be reopened");
+        check(discussions.deleteDiscussion(dn, &err),
+              "discussion delete succeeds");
+        const QList<Discussion> afterDiscussionDelete = discussions.loadAll();
+        check(std::none_of(afterDiscussionDelete.begin(), afterDiscussionDelete.end(),
+                           [&](const Discussion &d) { return d.number == dn; }),
+              "deleted discussion no longer loads");
 
         PullRequest reviewPr;
         reviewPr.number = 99;
@@ -5487,16 +5871,6 @@ int main(int argc, char *argv[])
                   "checkMergeable names the conflicting file from the ref-merge");
         }
 
-        // --- CommitCommentStore round-trip -------------------------------
-        const QByteArray head = gitOutput({"rev-parse", "HEAD"}).trimmed();
-        CommitCommentStore comments(tmp.path(), QString(), &identity, "tester");
-        check(comments.addComment(QString::fromUtf8(head), "great commit", &err),
-              "commit addComment succeeds");
-        const QList<CommitComment> loadedComments =
-            comments.loadFor(QString::fromUtf8(head));
-        check(loadedComments.size() == 1 && loadedComments.first().body == "great commit",
-              "commit comment round-trips from commits/<sha>/NNNN-comment.md");
-
         // --- CoveStore round-trip ----------------------------------------
         // Create an encrypted cove, confirm the committed file is opaque, then
         // unlock it from a fresh envelope read and verify the documents.
@@ -5778,6 +6152,121 @@ int main(int argc, char *argv[])
               "clearEvents starts the next run with a clean transcript");
     }
 
+    // Live transcript search: the search bar filters the session list by what a
+    // run actually said, so the store has to find a query across both the raw log
+    // and the stream-json events, count the hits, and hand back the surrounding
+    // text for the matching row's tooltip.
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "transcript search temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session = store.createSession(session);
+
+        check(store.searchTranscript(session, "recovery") == 0,
+              "an empty transcript matches nothing");
+
+        store.appendLog(session, "only seeing RECOVERY pings here");
+        store.appendEvent(session,
+                          QJsonObject{{"type", "assistant"},
+                                      {"text", "failure pings need recovery"}});
+
+        QString snippet;
+        check(store.searchTranscript(session, "recovery", &snippet) == 2,
+              "hits are counted across the raw log and the event stream");
+        check(snippet.contains("seeing RECOVERY pings"),
+              "the snippet carries the text around the first hit");
+        check(store.searchTranscript(session, "Recovery") == 2,
+              "transcript search is case-insensitive");
+        check(store.searchTranscript(session, "nowhere in here") == 0,
+              "a query the run never said matches nothing");
+        check(store.searchTranscript(session, "   ") == 0,
+              "a blank query never claims a match");
+
+        // Only the tail of a long-running session is read, so scanning every
+        // session on each keystroke stays cheap.
+        AgentSession chatty;
+        chatty.owner = "octo";
+        chatty.name = "demo";
+        chatty = store.createSession(chatty);
+        store.appendLog(chatty, "needle at the very start");
+        store.appendLog(chatty,
+                        QString(AgentStore::kTranscriptSearchTailBytes + 4096,
+                                QLatin1Char('x')));
+        check(store.searchTranscript(chatty, "needle") == 0,
+              "text older than the search tail is out of scope");
+        store.appendLog(chatty, "needle again at the end");
+        check(store.searchTranscript(chatty, "needle") == 1,
+              "the tail of a long transcript is still searched");
+    }
+
+    // Attachment scan behind the sessions list's little square (adhoc #222): the
+    // pictures a run was started from — or steered with — are named as "Attached
+    // image: <path>" lines in the prompt and in the transcripts, and the list has
+    // to find them in both without reading a whole multi-megabyte transcript.
+    {
+        check(AgentStore::attachmentPathsIn("nothing attached here").isEmpty(),
+              "a prompt with no attachment line yields no images");
+        const QStringList plain = AgentStore::attachmentPathsIn(
+            "look at this\nAttached image: /tmp/shot.png\nand fix it");
+        check(plain == QStringList{"/tmp/shot.png"},
+              "an attachment path is lifted out of plain prompt text");
+        // Transcript events store the same line JSON-encoded, so the path ends at
+        // the escape or the closing quote rather than at a real newline.
+        const QStringList encoded = AgentStore::attachmentPathsIn(
+            "{\"type\":\"_local_user\",\"text\":\"fix this\\nAttached image: "
+            "/tmp/a.png\\nthanks\"}");
+        check(encoded == QStringList{"/tmp/a.png"},
+              "an attachment path is lifted out of a JSON-encoded event line");
+        const QStringList many = AgentStore::attachmentPathsIn(
+            "Attached image: /tmp/a.png\nAttached image: /tmp/b.png\n"
+            "Attached image: /tmp/a.png\n");
+        check(many == (QStringList{"/tmp/a.png", "/tmp/b.png"}),
+              "attachments keep their order and are de-duplicated");
+
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "attachment scan temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session.prompt = "make it blue\nAttached image: /tmp/launch.png";
+        session = store.createSession(session);
+
+        const QString firstStamp = store.transcriptStamp(session);
+        check(store.attachmentPaths(session) == QStringList{"/tmp/launch.png"},
+              "an ad-hoc session's launch attachment is found in its prompt");
+
+        // A follow-up only ever reaches disk as a transcript turn.
+        store.appendEvent(session,
+                          QJsonObject{{"type", "_local_user"},
+                                      {"text", "and this one\nAttached image: "
+                                               "/tmp/followup.png"}});
+        check(store.attachmentPaths(session) ==
+                  (QStringList{"/tmp/launch.png", "/tmp/followup.png"}),
+              "an attachment steered into a running session is found too");
+        check(store.transcriptStamp(session) != firstStamp,
+              "the transcript stamp moves when a session is appended to, so the "
+              "scan knows to re-read it");
+
+        // The middle of a long run is skipped, but both of its ends are read: an
+        // attachment can only be named in a prompt, and those sit at the opening
+        // turn or at the newest follow-up.
+        AgentSession chatty;
+        chatty.owner = "octo";
+        chatty.name = "demo";
+        chatty = store.createSession(chatty);
+        store.appendLog(chatty, "Attached image: /tmp/opening.png");
+        store.appendLog(chatty, QString(3 * AgentStore::kAttachmentScanBytes,
+                                        QLatin1Char('x')));
+        store.appendLog(chatty, "Attached image: /tmp/latest.png");
+        check(store.attachmentPaths(chatty) ==
+                  (QStringList{"/tmp/opening.png", "/tmp/latest.png"}),
+              "both ends of a long transcript are scanned for attachments");
+    }
+
     // The Claude Code run summary the CLI reports on finish ("done · N turns ·
     // Ms · $X") is stored on the session and survives a restart (issue #296).
     {
@@ -5869,14 +6358,16 @@ int main(int argc, char *argv[])
         session = store.createSession(session);
         check(!session.yolo, "a session defaults to no auto-merge");
         session.yolo = true;
+        session.associationOnly = true;
         session.branchName = "agent/adhoc-1-yolo";
         check(store.saveSession(session), "saving a YOLO session succeeds");
 
         AgentStore reopened(tmp.path());
         const QList<AgentSession> sessions = reopened.loadAllSessions();
         check(sessions.size() == 1 && sessions.first().yolo &&
+                  sessions.first().associationOnly &&
                   !sessions.first().merged,
-              "the YOLO flag reloads intact after a restart, still unmerged");
+              "session behavior flags reload intact after a restart");
 
         // Sessions written before the flag existed must read back as opt-out —
         // an absent "yolo" key can never turn into an unattended merge.
@@ -5884,6 +6375,39 @@ int main(int argc, char *argv[])
         legacy.remove("yolo");
         check(!AgentSession::fromJson(legacy).yolo,
               "a session JSON without the yolo key never auto-merges");
+        legacy.remove("associationOnly");
+        check(!AgentSession::fromJson(legacy).associationOnly,
+              "legacy session JSON never becomes a provenance-only record");
+
+        // Genie (adhoc #38) is stamped the same way: the launch attaches the MCP
+        // connector because the run was started as a genie, so the flag has to
+        // survive a restart (a resumed genie must get its tools back) and an
+        // older session file must not read as one.
+        check(!AgentSession::fromJson(legacy).genie,
+              "a session JSON without the genie key is not a genie run");
+        session.genie = true;
+        check(store.saveSession(session), "saving a genie session succeeds");
+        AgentStore genieReopened(tmp.path());
+        const QList<AgentSession> genieSessions = genieReopened.loadAllSessions();
+        check(genieSessions.size() == 1 && genieSessions.first().genie,
+              "the genie flag reloads intact after a restart");
+        // The sparkle glyph marks a genie only while it is still in flight; a
+        // finished or merged one reads exactly like every other run.
+        AgentSession live = genieSessions.first();
+        live.status = AgentStatus::Running;
+        check(live.genieInFlight(), "a running genie is drawn with the genie glyph");
+        live.status = AgentStatus::Success;
+        check(!live.genieInFlight(),
+              "a finished genie falls back to the ordinary status glyph");
+        live.status = AgentStatus::Running;
+        live.merged = true;
+        check(!live.genieInFlight(),
+              "a merged genie shows the merge glyph, not the genie one");
+        AgentSession ordinary = live;
+        ordinary.genie = false;
+        ordinary.merged = false;
+        check(!ordinary.genieInFlight(),
+              "an ordinary run never shows the genie glyph");
     }
 
     {
@@ -6665,6 +7189,13 @@ int main(int argc, char *argv[])
               "nothing is pruned under the limit, and keep=0 still spares the "
               "newest snapshot");
 
+        // Credentials never opt a machine into recurring multi-gigabyte disk
+        // writes. Every node starts off until its operator explicitly opts in.
+        check(!forkmesh::autoBackupDefault(QStringLiteral("cf-token")) &&
+                  !forkmesh::autoBackupDefault(QString()) &&
+                  !forkmesh::autoBackupDefault(QStringLiteral("   ")),
+              "hourly backups require an explicit opt-in on every node");
+
         const QDateTime now =
             QDateTime::fromString(QStringLiteral("2026-07-28T10:00:00"),
                                   Qt::ISODate);
@@ -6745,6 +7276,78 @@ int main(int argc, char *argv[])
                   !forkmesh::isFontDatabaseNoise(
                       QStringLiteral("forkmesh-419-control-line")),
               "isFontDatabaseNoise matches only the font-database warning");
+    }
+
+    // The app's progress lines and Qt's own warnings belong in the Log view, not
+    // in the terminal the desktop was launched from. The filter's sink is what
+    // moves them: it takes the message *instead of* the console, except headless
+    // (keepConsoleEcho), where the operator only has the console.
+    {
+        QStringList captured;
+        capturedMessages = &captured;
+        QtMessageHandler previous = qInstallMessageHandler(captureMessages);
+        forkmesh::installPlatformLogFilter(); // chains to captureMessages
+
+        QList<QPair<QtMsgType, QString>> sunk;
+        const auto record = [&sunk](QtMsgType type, const QString &message) {
+            sunk.append({type, message});
+        };
+
+        forkmesh::setAppLogSink(record, /*keepConsoleEcho=*/false);
+        qWarning("QProcess: Destroyed while process (\"git\") is still running.");
+        qInfo("Catalog publish response: jett/forkmesh 201 0");
+        // Noise stays noise: the sink must not be handed what the console was
+        // already spared.
+        qWarning("OpenType support missing for \"Noto Mono\", script 9");
+
+        forkmesh::setAppLogSink(record, /*keepConsoleEcho=*/true);
+        qWarning("forkmesh-headless-echo-line");
+
+        // A sink that logs would otherwise re-enter itself forever.
+        forkmesh::setAppLogSink(
+            [&sunk](QtMsgType type, const QString &message) {
+                sunk.append({type, message});
+                if (!message.startsWith(QLatin1String("re-entrant")))
+                    qWarning("re-entrant sink line");
+            },
+            /*keepConsoleEcho=*/false);
+        qWarning("forkmesh-reentrant-trigger");
+
+        forkmesh::clearAppLogSink();
+        qWarning("forkmesh-after-clear-line");
+        qInstallMessageHandler(previous); // restore so PASS/FAIL output prints
+        capturedMessages = nullptr;
+
+        const QString console = captured.join(QLatin1Char('\n'));
+        QStringList sunkText;
+        for (const auto &entry : sunk)
+            sunkText << entry.second;
+        const QString logged = sunkText.join(QLatin1Char('\n'));
+
+        check(logged.contains(QStringLiteral(
+                  "QProcess: Destroyed while process (\"git\") is still "
+                  "running.")) &&
+                  !console.contains(QStringLiteral("QProcess: Destroyed")),
+              "Qt's QProcess teardown warning goes to the log, not the console");
+        check(logged.contains(QStringLiteral("Catalog publish response")) &&
+                  !console.contains(QStringLiteral("Catalog publish response")),
+              "the app's own qInfo progress lines go to the log only");
+        check(!logged.contains(QStringLiteral("OpenType support missing")),
+              "known platform noise is still dropped before the sink");
+        check(sunk.first().first == QtWarningMsg &&
+                  sunk.at(1).first == QtInfoMsg,
+              "the sink is told each message's severity");
+        check(logged.contains(QStringLiteral("forkmesh-headless-echo-line")) &&
+                  console.contains(QStringLiteral("forkmesh-headless-echo-line")),
+              "keepConsoleEcho (headless) logs and still prints to the console");
+        // Qt refuses to re-enter an installed handler at all — the nested line
+        // goes straight to stderr, past captureMessages — so the observable
+        // guarantee is that it never loops back into the sink.
+        check(sunkText.count(QStringLiteral("re-entrant sink line")) == 0,
+              "a sink that logs re-entrantly does not feed itself");
+        check(!logged.contains(QStringLiteral("forkmesh-after-clear-line")) &&
+                  console.contains(QStringLiteral("forkmesh-after-clear-line")),
+              "clearAppLogSink sends messages back to the console");
     }
 
     // MCP connector (adhoc #16): the token is a bearer credential that lets an
@@ -6854,6 +7457,555 @@ int main(int argc, char *argv[])
                   maskToken(QString()).isEmpty(),
               "masking hides the middle of the token");
     }
+
+    {
+        // Size map over a folder the user cannot fully read (adhoc #76): the
+        // mount table has to yield the pseudo filesystems Qt's QStorageInfo
+        // hides (or /proc/kcore's fictional terabytes swallow a scan of "/"),
+        // unreadable directories have to be counted rather than silently
+        // skipped, and the tree has to survive the trip back from the elevated
+        // helper process.
+        using namespace forkmesh;
+
+        const QByteArray mountInfo =
+            "23 28 0:22 / /proc rw,nosuid,relatime shared:12 - proc proc rw\n"
+            "24 28 0:23 / /sys rw,nosuid shared:2 - sysfs sysfs rw\n"
+            "31 28 0:29 / /media/My\\040Disk rw,relatime shared:5 - ext4 "
+            "/dev/sdb1 rw\n";
+        const QSet<QString> mounts = mountPointsFromMountTable(mountInfo);
+        check(mounts.contains(QStringLiteral("/proc")) &&
+                  mounts.contains(QStringLiteral("/sys")) &&
+                  mounts.contains(QStringLiteral("/media/My Disk")),
+              "mountinfo yields the pseudo mounts QStorageInfo hides, "
+              "unescaped");
+        const QSet<QString> mtab = mountPointsFromMountTable(
+            "proc /proc proc rw,nosuid 0 0\ntmpfs /run tmpfs rw 0 0\n");
+        check(mtab.contains(QStringLiteral("/proc")) &&
+                  mtab.contains(QStringLiteral("/run")) && mtab.size() == 2,
+              "the /proc/mounts layout parses to the same mount points");
+
+        QTemporaryDir tree;
+        check(tree.isValid(), "the size-map scan gets a scratch tree");
+        const QDir root(tree.path());
+        check(root.mkpath(QStringLiteral("keep")) &&
+                  root.mkpath(QStringLiteral("pruned")) &&
+                  root.mkpath(QStringLiteral("locked")),
+              "the scratch tree has readable, pruned and locked folders");
+        const auto writeBytes = [&root](const QString &relative, int size) {
+            QFile file(root.absoluteFilePath(relative));
+            return file.open(QIODevice::WriteOnly) &&
+                   file.write(QByteArray(size, 'x')) == size;
+        };
+        check(writeBytes(QStringLiteral("keep/a.bin"), 4096) &&
+                  writeBytes(QStringLiteral("pruned/b.bin"), 8192) &&
+                  writeBytes(QStringLiteral("locked/c.bin"), 2048),
+              "the scratch tree has one file per folder");
+        QFile::setPermissions(root.absoluteFilePath(QStringLiteral("locked")),
+                              QFileDevice::WriteOwner);
+
+        DirectorySizeScanOptions options;
+        options.pruned.insert(root.absoluteFilePath(QStringLiteral("pruned")));
+        const DirectorySizeScanResult scan =
+            scanDirectorySizes(tree.path(), options);
+        check(scan.root.size == 4096 &&
+                  (runningAsRoot() || scan.root.fileCount == 1),
+              "pruned paths contribute no bytes to the totals");
+        if (!runningAsRoot()) {
+            check(scan.unreadableDirs == 1 &&
+                      scan.unreadableSample.size() == 1 &&
+                      scan.unreadableSample.first().endsWith(
+                          QStringLiteral("/locked")),
+                  "an unlistable directory is reported, not silently dropped");
+            // What decides whether selecting a folder asks for the root password
+            // before scanning it at all (adhoc #112).
+            check(scanNeedsElevation(tree.path(), {}),
+                  "a folder holding an unlistable directory wants root up front");
+            check(!scanNeedsElevation(
+                      tree.path(),
+                      {root.absoluteFilePath(QStringLiteral("locked"))}),
+                  "a folder whose only locked child is pruned does not");
+            check(!scanNeedsElevation(
+                      root.absoluteFilePath(QStringLiteral("keep")), {}),
+                  "a fully readable folder never raises a password prompt");
+        } else {
+            check(!scanNeedsElevation(tree.path(), {}),
+                  "already running as root, there is nothing left to ask for");
+        }
+        // Restore, or QTemporaryDir cannot clean up after itself.
+        QFile::setPermissions(root.absoluteFilePath(QStringLiteral("locked")),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                  QFileDevice::ExeOwner);
+
+        QString requestPath;
+        DirectorySizeScanOptions decodedOptions;
+        check(decodeScanRequest(encodeScanRequest(tree.path(), options),
+                                &requestPath, &decodedOptions) &&
+                  requestPath == tree.path() &&
+                  decodedOptions.pruned == options.pruned &&
+                  decodedOptions.maxDepth == options.maxDepth,
+              "the elevated helper's request survives the round trip");
+        check(!decodeScanRequest(QByteArray("{}"), &requestPath, &decodedOptions),
+              "a request without a folder is rejected");
+
+        DirectorySizeScanResult decoded;
+        check(decodeScanResult(encodeScanResult(scan), &decoded) &&
+                  decoded.root.size == scan.root.size &&
+                  decoded.root.children.size() == scan.root.children.size() &&
+                  decoded.unreadableDirs == scan.unreadableDirs &&
+                  decoded.unreadableSample == scan.unreadableSample,
+              "the elevated helper's tree survives the round trip");
+        check(!decodeScanResult(QByteArray("not a scan"), &decoded) &&
+                  !decodeScanResult(QByteArray(), &decoded),
+              "a truncated or foreign payload is never read as a tree");
+
+        // Live progress (adhoc #112): the walk names the folder it is inside so
+        // the tab can show it, and the same updates survive the trip out of the
+        // elevated helper on stderr.
+        QStringList visited;
+        qint64 lastBytes = -1;
+        int firstWorker = -1;
+        scanDirectorySizes(tree.path(), options,
+                           [&](const DirectorySizeScanProgressUpdate &update) {
+                               // Serialized by the scan, so no lock is needed
+                               // here however many threads are walking.
+                               if (visited.isEmpty())
+                                   firstWorker = update.worker;
+                               visited.append(update.path);
+                               lastBytes = update.bytes;
+                           });
+        check(visited.contains(QDir::cleanPath(tree.path())) && lastBytes >= 0,
+              "a scan reports the folder it is walking, root first");
+        check(firstWorker == 0,
+              "worker 0 is the thread that asked for the scan");
+
+        // Per-thread lines (adhoc #95): a wide tree is what the walk actually
+        // spreads across the pool, and every update it produces has to name the
+        // thread behind it. The slot a thread holds must be stable — a thread
+        // that finishes one top-level tree and picks up the next keeps its line
+        // rather than opening a second one — and no slot may be shared.
+        {
+            const QDir wide(tree.path());
+            bool built = true;
+            for (int i = 0; i < 24; ++i) {
+                const QString branch = QStringLiteral("wide/b%1").arg(i);
+                built = built && wide.mkpath(branch) &&
+                        writeBytes(branch + QStringLiteral("/f.bin"), 512);
+            }
+            check(built, "the wide tree has a file in each of its 24 branches");
+            QHash<int, quintptr> threadOfSlot;
+            QHash<quintptr, int> slotOfThread;
+            QSet<int> wentIdle;
+            bool stable = true;
+            bool inRange = true;
+            int slotCount = 0; // not "slots": Qt's own keyword macro
+            scanDirectorySizes(
+                wide.absoluteFilePath(QStringLiteral("wide")), {},
+                [&](const DirectorySizeScanProgressUpdate &update) {
+                    // The scan serializes its callback, so these plain maps need
+                    // no lock however many threads are walking.
+                    const auto thread =
+                        reinterpret_cast<quintptr>(QThread::currentThread());
+                    stable = stable &&
+                             threadOfSlot.value(update.worker, thread) == thread &&
+                             slotOfThread.value(thread, update.worker) ==
+                                 update.worker;
+                    threadOfSlot.insert(update.worker, thread);
+                    slotOfThread.insert(thread, update.worker);
+                    inRange = inRange && update.worker >= 0 &&
+                              update.worker < update.workers;
+                    if (update.idle)
+                        wentIdle.insert(update.worker);
+                    slotCount = qMax(slotCount, update.workers);
+                });
+            check(stable,
+                  "one thread holds one worker slot for a whole scan, and no "
+                  "slot is shared");
+            check(inRange && slotCount >= threadOfSlot.size() &&
+                      !threadOfSlot.isEmpty(),
+                  "every update names a slot inside the worker count it reports");
+            // Without this a thread that finished its branch early would leave
+            // its line frozen on a folder it left, reading as a stalled scan.
+            check(wentIdle.size() == threadOfSlot.size(),
+                  "every worker reports going idle when its tree is counted");
+        }
+
+        DirectorySizeScanProgressUpdate progress;
+        // A newline in a filename would otherwise split one update into two, and
+        // a space would be read as another counter.
+        DirectorySizeScanProgressUpdate sent;
+        sent.path = tree.path() + QStringLiteral("/od d\nname 100%");
+        sent.bytes = 4096;
+        sent.files = 7;
+        sent.worker = 3;
+        sent.workers = 5;
+        sent.workerBytes = 1024;
+        sent.workerFiles = 2;
+        sent.idle = true;
+        check(decodeScanProgress(encodeScanProgress(sent), &progress) &&
+                  progress.path == sent.path && progress.bytes == 4096 &&
+                  progress.files == 7 && progress.worker == 3 &&
+                  progress.workers == 5 && progress.workerBytes == 1024 &&
+                  progress.workerFiles == 2 && progress.idle,
+              "a progress line round-trips its worker and a path with a newline");
+        check(encodeScanProgress(sent).count('\n') == 1,
+              "one progress update is exactly one line");
+        check(!decodeScanProgress(QByteArray("sudo: a password is required"),
+                                  &progress) &&
+                  !decodeScanProgress(QByteArray("FMSZ-PROGRESS 12"), &progress),
+              "sudo's own chatter and a truncated line are not progress");
+        // An older helper left on disk by a half-applied update still sends the
+        // two-counter line; it reads as a single worker rather than vanishing.
+        check(decodeScanProgress(QByteArray("FMSZ-PROGRESS 4096 7 /tmp/x"),
+                                 &progress) &&
+                  progress.worker == 0 && progress.workers == 1 &&
+                  progress.workerBytes == 4096 && progress.workerFiles == 7 &&
+                  !progress.idle && progress.path == QStringLiteral("/tmp/x"),
+              "a pre-worker progress line still reads as one thread's progress");
+
+        // Stop button: a canceled poll must unwind before the walk descends
+        // into anything, rather than finishing the tree and throwing it away.
+        int cancelChecks = 0;
+        const DirectorySizeScanResult stopped = scanDirectorySizes(
+            tree.path(), options, {},
+            [&] { ++cancelChecks; return true; });
+        check(stopped.root.size == 0 && stopped.root.fileCount == 0 &&
+                  stopped.root.children.isEmpty() && cancelChecks > 0,
+              "a scan canceled up front produces an empty tree, not a partial one");
+    }
+
+#if defined(Q_OS_LINUX)
+    {
+        // Counting an agent's own compilers (adhoc #57): the /proc walk has to
+        // find a grandchild by command name and ignore everything outside the
+        // tree it was asked about.
+        using SystemStats::descendantsNamed;
+        check(descendantsNamed(0, QStringLiteral("sleep")).count == 0 &&
+                  descendantsNamed(QCoreApplication::applicationPid(), QString())
+                          .count == 0,
+              "an invalid root PID or empty name counts nothing");
+
+        QProcess child;
+        // `sh` execs the sleep, so the match is a grandchild of this process —
+        // the same shape as claude → bash → cc1plus.
+        child.start(QStringLiteral("/bin/sh"),
+                    {QStringLiteral("-c"), QStringLiteral("sleep 30")});
+        if (child.waitForStarted(5000)) {
+            SystemStats::DescendantLoad load;
+            QElapsedTimer waited;
+            waited.start();
+            while (waited.elapsed() < 5000 && load.count == 0) {
+                load = descendantsNamed(QCoreApplication::applicationPid(),
+                                        QStringLiteral("sleep"));
+                if (load.count == 0)
+                    QThread::msleep(50); // sh hasn't exec'd the sleep yet
+            }
+            check(load.count >= 1 && load.residentBytes > 0,
+                  "a descendant process is counted with its resident memory");
+            check(descendantsNamed(child.processId(),
+                                   QStringLiteral("forkmesh-tests"))
+                          .count == 0,
+                  "processes outside the subtree are not counted");
+            child.kill();
+            child.waitForFinished(5000);
+        }
+    }
+#endif
+
+
+    {
+        // Node self-diagnostics (adhoc #27): the checks a node runs on itself
+        // and pushes to every node list. The gauges already show CPU/RAM/disk;
+        // these rules exist for what a point sample cannot show, so each one is
+        // pinned here against the shape of input that must (and must not) trip it.
+        using namespace NodeDiagnostics;
+        const qint64 hour = 60 * 60 * 1000;
+        const qint64 gb = 1024LL * 1024 * 1024;
+        auto findingFor = [](const QList<Finding> &findings, const char *id) {
+            for (const Finding &f : findings) {
+                if (f.id == QLatin1String(id))
+                    return f;
+            }
+            return Finding{};
+        };
+        auto has = [&](const QList<Finding> &findings, const char *id) {
+            return !findingFor(findings, id).id.isEmpty();
+        };
+        auto diskInputs = [&](qint64 spanMs, qint64 startFree, qint64 endFree) {
+            Inputs in;
+            in.nowMs = 1000 * hour;
+            in.windowMs = kWindowMs;
+            in.diskHistory = {DiskSample{in.nowMs - spanMs, startFree, 100 * gb},
+                              DiskSample{in.nowMs, endFree, 100 * gb}};
+            return in;
+        };
+
+        // A volume losing 1 GB/hour with 10 GB left is hours from wedging, and
+        // its disk bar still reads a comfortable 90%.
+        const Finding trend =
+            findingFor(evaluate(diskInputs(4 * hour, 14 * gb, 10 * gb)),
+                       "disk-trend");
+        check(trend.severity == Critical && trend.message.contains("Disk filling") &&
+                  trend.message.contains("hours"),
+              "a fast-filling disk is critical with a time-to-full horizon");
+        check(findingFor(evaluate(diskInputs(24 * hour, 100 * gb, 90 * gb)),
+                         "disk-trend")
+                      .severity == Warning,
+              "10 GB/day against 90 GB free is a warning, not a crisis");
+        check(findingFor(evaluate(diskInputs(24 * hour, 92 * gb, 90 * gb)),
+                         "disk-trend")
+                      .severity == Info,
+              "a month and a half of headroom is a note");
+        check(!has(evaluate(diskInputs(24 * hour, 91 * gb, 90 * gb)), "disk-trend"),
+              "three months out is not worth telling the fleet about");
+        check(!has(evaluate(diskInputs(2 * 60 * 1000, 14 * gb, 10 * gb)),
+                   "disk-trend"),
+              "a trend measured over two minutes is noise, not a trend");
+        check(!has(evaluate(diskInputs(4 * hour, 10 * gb, 14 * gb)), "disk-trend"),
+              "a disk that is freeing space raises nothing");
+        check(!has(evaluate(diskInputs(4 * hour, 10 * gb, 10 * gb - 1024)),
+                   "disk-trend"),
+              "a kilobyte of churn an hour is not a leak");
+
+        Inputs base;
+        base.nowMs = 1000 * hour;
+        base.windowMs = kWindowMs;
+
+        // Inodes and file descriptors: both fail writes/connections while every
+        // gauge on the row still looks fine.
+        Inputs inodes = base;
+        inodes.inodesTotal = 1000000;
+        inodes.inodesFree = 100000; // 90% used
+        check(findingFor(evaluate(inodes), "disk-inodes").severity == Warning,
+              "90% of inodes used warns before the disk does");
+        inodes.inodesFree = 20000; // 98% used
+        check(findingFor(evaluate(inodes), "disk-inodes").severity == Critical,
+              "a nearly full inode table is critical");
+        check(!has(evaluate(base), "disk-inodes"),
+              "a host that cannot report inodes reports nothing about them");
+
+        Inputs fds = base;
+        fds.openFileDescriptors = 800;
+        fds.fileDescriptorLimit = 1024;
+        check(findingFor(evaluate(fds), "file-descriptors").severity == Warning,
+              "descriptors at 78% of the limit warn");
+        fds.openFileDescriptors = 1000;
+        check(findingFor(evaluate(fds), "file-descriptors").severity == Critical,
+              "descriptors about to hit the limit are critical");
+        fds.openFileDescriptors = -1;
+        check(!has(evaluate(fds), "file-descriptors"),
+              "an unknown descriptor count raises nothing");
+
+        Inputs readonly = base;
+        readonly.dataDirWritable = false;
+        check(findingFor(evaluate(readonly), "data-dir").severity == Critical,
+              "a read-only data directory is critical");
+
+        Inputs zombies = base;
+        zombies.zombieProcesses = 30;
+        check(findingFor(evaluate(zombies), "zombie-processes").severity == Warning,
+              "a pile of defunct children warns");
+        zombies.zombieProcesses = 4;
+        check(!has(evaluate(zombies), "zombie-processes"),
+              "a handful of defunct children is a race, not a leak");
+
+        // Log errors: the whole point of pushing them is that nobody reads a
+        // headless node's terminal, so the newest line travels with the count.
+        Inputs logs = base;
+        logs.logErrors = 12;
+        logs.logErrorSample = QStringLiteral("mirror push failed: exit 128");
+        const Finding logFinding = findingFor(evaluate(logs), "log-errors");
+        check(logFinding.severity == Warning &&
+                  logFinding.message.contains("12 errors") &&
+                  logFinding.message.contains("exit 128"),
+              "a run of log errors warns and carries the newest line");
+        logs.logErrors = 2;
+        check(findingFor(evaluate(logs), "log-errors").severity == Info,
+              "a couple of log errors is a note, not a warning");
+        check(!has(evaluate(base), "log-errors"),
+              "a quiet log raises nothing");
+
+        Inputs link = base;
+        link.relayDrops = 6;
+        link.backpressureDrops = 40;
+        check(findingFor(evaluate(link), "relay-flap").severity == Warning &&
+                  findingFor(evaluate(link), "relay-backpressure").severity ==
+                      Warning,
+              "a flapping relay link and dropped frames are both reported");
+
+        Inputs skew = base;
+        skew.clockSkewKnown = true;
+        skew.clockSkewMs = 6 * 60 * 1000;
+        check(findingFor(evaluate(skew), "clock-skew").severity == Critical &&
+                  findingFor(evaluate(skew), "clock-skew").message.contains("ahead of"),
+              "a badly drifted clock is critical and says which way it drifted");
+        skew.clockSkewMs = -3 * 60 * 1000;
+        check(findingFor(evaluate(skew), "clock-skew").message.contains("behind"),
+              "a clock running slow is described as behind");
+        skew.clockSkewMs = 20 * 1000;
+        check(!has(evaluate(skew), "clock-skew"),
+              "twenty seconds of drift is not worth a row");
+
+        // Ordering and the node-list column text.
+        Inputs many = base;
+        many.dataDirWritable = false;
+        many.relayDrops = 6;
+        many.logErrors = 1;
+        const QList<Finding> ranked = evaluate(many);
+        check(ranked.size() == 3 && ranked.first().severity == Critical &&
+                  ranked.last().severity == Info,
+              "findings come back worst first");
+        check(summaryLabel(ranked, true) ==
+                  QString::fromUtf8("1 critical \xC2\xB7 1 warning"),
+              "the column counts criticals and warnings, notes only when alone");
+        check(summaryLabel({}, true) == QStringLiteral("OK"),
+              "a node that checked and found nothing reads OK");
+        check(summaryLabel({}, false) == QString::fromUtf8("\xE2\x80\x94"),
+              "a node that never reported is unknown, not healthy");
+        check(worstSeverity({}) == Ok && worstSeverity(ranked) == Critical,
+              "the worst severity drives the row's colour");
+
+        // Wire form: bounded in both directions, so neither our heartbeat nor a
+        // hostile peer's can inflate a frame or a tooltip.
+        QList<Finding> wide;
+        for (int i = 0; i < 12; ++i)
+            wide.append(Finding{QStringLiteral("check-%1").arg(i), Warning,
+                                QString(400, QLatin1Char('x'))});
+        const QJsonArray encoded = toJson(wide);
+        check(encoded.size() == kMaxWireFindings &&
+                  encoded.first().toObject().value("m").toString().size() ==
+                      kMaxMessageChars,
+              "the wire form caps how many findings and how long each one is");
+        check(fromJson(encoded).size() == kMaxWireFindings,
+              "a peer cannot push more findings than the wire allows");
+        const QList<Finding> hostile = fromJson(QJsonArray{
+            QJsonObject{{"i", QStringLiteral("evil")},
+                        {"s", 99},
+                        {"m", QString(400, QLatin1Char('y'))}},
+            QJsonObject{{"i", QStringLiteral("low")}, {"s", -5}, {"m", QStringLiteral("hm")}},
+            QJsonObject{{"i", QString()}, {"s", 2}, {"m", QString()}}});
+        check(hostile.size() == 2 && hostile.first().severity == Critical &&
+                  hostile.first().message.size() == kMaxMessageChars &&
+                  hostile.last().severity == Ok,
+              "a peer's severities are clamped, its text truncated and its "
+              "empty rows dropped");
+        const QList<Finding> roundTripped = fromJson(toJson(ranked));
+        check(roundTripped.size() == ranked.size() &&
+                  roundTripped.first().id == ranked.first().id &&
+                  roundTripped.first().severity == Critical,
+              "a decoded set keeps its worst-first order");
+
+        // The collector: what it counts, and what it refuses to count.
+        QTemporaryDir logDir;
+        check(logDir.isValid(), "the diagnostics test has a temporary log dir");
+        const QString logPath = logDir.filePath(QStringLiteral("node.log"));
+        {
+            QFile seed(logPath);
+            check(seed.open(QIODevice::WriteOnly),
+                  "the test log file can be created");
+            seed.write("2026-01-01 00:00:00  older error nobody should re-report\n");
+            seed.close();
+        }
+        Collector collector;
+        collector.setLogPaths({logPath});
+        const qint64 t0 = base.nowMs;
+        collector.run(t0); // first pass baselines the existing log
+        check(!has(collector.findings(), "log-errors"),
+              "a log file's existing history is not replayed as fresh errors");
+        {
+            QFile append(logPath);
+            check(append.open(QIODevice::WriteOnly | QIODevice::Append),
+                  "the test log file can be appended to");
+            append.write("2026-01-01 00:01:00  mirror sync failed: exit 128\n");
+            append.write("2026-01-01 00:01:01  everything is fine here\n");
+            append.write("2026-01-01 00:01:02    UI stalled ~900 ms\n");
+            append.close();
+        }
+        const QList<Finding> scanned = collector.run(t0 + Collector::kRunIntervalMs);
+        check(findingFor(scanned, "log-errors").message.contains("1 error"),
+              "only the newly appended error line is counted");
+        check(!has(scanned, "ui-stalls"),
+              "one stall report is below the threshold that would report it");
+
+        Collector counters;
+        counters.noteLogLine(QStringLiteral("push failed: remote hung up"), t0);
+        counters.noteLogLine(QStringLiteral("published 3 repositories"), t0);
+        counters.noteLogLine(
+            QStringLiteral("Self-diagnostics: 1 error in the log"), t0);
+        const QList<Finding> fromApp = counters.run(t0);
+        check(findingFor(fromApp, "log-errors").message.contains("1 error"),
+              "the app log feeds the check, and its own summary line does not");
+        // A restart resets the node's counters; that must not read as a burst.
+        counters.noteBackpressureDrops(500);
+        check(!has(counters.run(t0 + Collector::kRunIntervalMs),
+                   "relay-backpressure"),
+              "the first backpressure reading is a baseline, not 500 drops");
+        counters.noteBackpressureDrops(560);
+        check(findingFor(counters.run(t0 + 2 * Collector::kRunIntervalMs),
+                         "relay-backpressure")
+                  .message.contains("60"),
+              "only frames dropped since the baseline are reported");
+
+        Collector throttled;
+        throttled.noteRelayDrop(t0);
+        throttled.noteRelayDrop(t0);
+        check(findingFor(throttled.run(t0), "relay-flap").severity == Info,
+              "two link drops in the window are a note");
+        throttled.noteRelayDrop(t0);
+        throttled.noteRelayDrop(t0);
+        throttled.noteRelayDrop(t0);
+        check(findingFor(throttled.run(t0 + 1000), "relay-flap").severity == Info,
+              "a re-run inside the interval hands back the cached findings");
+        check(findingFor(throttled.run(t0 + Collector::kRunIntervalMs),
+                         "relay-flap")
+                      .severity == Warning,
+              "once the interval passes the extra link drops are evaluated");
+    }
+#if defined(Q_OS_LINUX)
+    {
+        // Descriptor accounting and the startup limit raise. The app dies with
+        // a SIGTRAP inside glib (g_wakeup_new -> g_error) when a thread start
+        // finds no descriptors left, so the 1024 soft cap most distributions
+        // ship has to be lifted before Qt starts any thread.
+        const int hard = SystemStats::openFileHardLimit();
+        check(hard > 0 && SystemStats::openFileSoftLimit() > 0,
+              "the descriptor caps are readable");
+        check(SystemStats::threadCount() >= 1, "this process has threads");
+
+        const int before = SystemStats::openFileCount();
+        check(before > 0 && before <= SystemStats::openFileSoftLimit(),
+              "open descriptors are counted and fit under the soft cap");
+        {
+            QFile held(QStringLiteral("/proc/self/status"));
+            check(held.open(QIODevice::ReadOnly), "opened a probe descriptor");
+            check(SystemStats::openFileCount() > before,
+                  "an extra open descriptor shows up in the count");
+        }
+
+        // Drop the soft cap the way a stock login session does, then confirm
+        // the raise takes it back up to the hard cap (bounded by the 64k
+        // target) without ever exceeding what the kernel allows.
+        rlimit narrowed{};
+        check(::getrlimit(RLIMIT_NOFILE, &narrowed) == 0, "read RLIMIT_NOFILE");
+        const rlim_t restore = narrowed.rlim_cur;
+        narrowed.rlim_cur = 256;
+        if (::setrlimit(RLIMIT_NOFILE, &narrowed) == 0) {
+            check(SystemStats::openFileSoftLimit() == 256,
+                  "the lowered soft cap is reported");
+            const int raised = SystemStats::raiseOpenFileLimit();
+            check(raised == qMin(hard, 65536),
+                  "raiseOpenFileLimit lifts the soft cap to the hard cap, "
+                  "capped at 64k");
+            check(raised <= hard && raised == SystemStats::openFileSoftLimit(),
+                  "the raise never exceeds the hard cap and is the live value");
+            // Idempotent: calling it again on an already-raised process is a
+            // no-op rather than a downgrade.
+            check(SystemStats::raiseOpenFileLimit() == raised,
+                  "a second raise leaves the soft cap alone");
+            narrowed.rlim_cur = restore;
+            ::setrlimit(RLIMIT_NOFILE, &narrowed);
+        }
+    }
+#endif
 
     if (failures) {
         qCritical("TESTS FAILED");

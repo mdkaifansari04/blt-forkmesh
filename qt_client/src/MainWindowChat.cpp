@@ -1,13 +1,13 @@
 // MainWindowChat: MainWindow feature methods, split out of MainWindow.cpp.
 // Peer chat: the server rail, favicons, and the chat page (messages, rooms, DMs).
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+// These are MainWindow member functions in their own translation unit; the class
+// is declared in MainWindow.h and shared helpers live in MainWindowInternal.h /
+// MainWindowShared.cpp (namespace forkmesh::ui).
 
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "RepoStatsStore.h"
 #include "ActionStore.h"
 #include "ControlNode.h"
 #include "CurrentPageStack.h"
@@ -17,7 +17,6 @@
 #include "RepoSecurity.h"
 #include "RewardPoolSigner.h"
 #include "ScreenCaptureOverlay.h"
-#include "ScreenDrawOverlay.h"
 #include "ScreenshotMarkupWindow.h"
 #include "TerminalWidget.h"
 #include "WorldSpeechBridge.h"
@@ -25,16 +24,20 @@
 #include <QBrush>
 #include <QCryptographicHash>
 #include <QDialog>
+#include <QElapsedTimer>
 #include <QGraphicsDropShadowEffect>
+#include <QGuiApplication>
 #include <QInputDialog>
 #include <QNetworkInformation>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QScreen>
 #include <QSharedPointer>
 #include <QStandardPaths>
 #include <QTabWidget>
+#include <QUrlQuery>
 #include <QUuid>
 
 #include <algorithm>
@@ -65,6 +68,9 @@ constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
 // the log is persisted line by line. A pending summary is flushed once its
 // first ticket is this old, or as soon as the strip goes quiet.
 constexpr qint64 kBackgroundTaskFastFlushMs = 2000;
+const QString kVultrProvisionSetting =
+    QStringLiteral("hosts/vultrProvision/v1");
+constexpr int kVultrProvisionStageCount = 6;
 } // namespace
 
 // -------------------------------------------------------------- server rail
@@ -308,12 +314,11 @@ void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
         m_faviconFetching.contains(host) || m_faviconMissing.contains(host))
         return;
 
-    // Hosts with a hardcoded mark (api.anthropic.com and friends) never hit the
-    // network: they answer 404 for /favicon.ico, which showed up in the log as
-    // an error line per request (adhoc #436).
-    // Cached like a downloaded icon (but never written to the disk cache) so the
-    // breadcrumb rail and both log views pick it up the same way; no breadcrumb
-    // rebuild from here, since this runs while a log line is being rendered.
+    // Hosts with a hardcoded mark (API endpoints such as api.anthropic.com) never
+    // hit the network: their /favicon.ico requests fail and show up as error lines
+    // in the log. Cached like a downloaded icon (but never written to the disk
+    // cache) so the breadcrumb rail and both log views pick it up the same way; no
+    // breadcrumb rebuild here, since this runs while a log line is rendered.
     const QPixmap builtin = builtinFavicon(host);
     if (!builtin.isNull()) {
         m_faviconCache.insert(host, builtin);
@@ -419,25 +424,19 @@ QWidget *MainWindow::buildChatPage()
     layout->setSpacing(0);
     layout->addWidget(buildSolanaNotice());
     layout->addWidget(buildWalletVerifyNotice());
-    // No page-wide QScrollArea around the sections any more (adhoc #108).
-    // Each section scrolls its own content (QScrollArea panels, tables and
-    // lists), so the outer wrapper only added a second scroll surface plus its
-    // sizeHint-driven overflow spacing. The Ignored vertical policy keeps a
-    // tall page from growing the window's minimum height (CurrentPageStack
-    // already sizes the stack to the current page, not the tallest sibling).
+    // No page-wide QScrollArea around the sections (adhoc #108): each scrolls its
+    // own content, so the outer wrapper only added a second scroll surface plus
+    // sizeHint-driven overflow spacing. The Ignored vertical policy keeps a tall
+    // page from growing the window's minimum height (CurrentPageStack already
+    // sizes the stack to the current page, not the tallest sibling).
     content->setMinimumHeight(0);
     content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
     // The main content and the always-on prompt/log footer sit one above the
-    // other with the footer pinned to a fixed height (adhoc #86). Before this,
-    // the footer was a stretch-0 strip whose height tracked its own contents,
-    // so anything that changed its size — the "Agents:" status strip
-    // appearing, an attachment thumbnail, a growing prompt — reflowed the
-    // strip and dragged the whole toolbar up or down as the interface
-    // "shifted". A user-draggable splitter (adhoc #19) fixed that but its
-    // handle flashed a bright, saturated blue on hover/drag; since the footer
-    // no longer needs to be resizable, a fixed-height widget with the same
-    // subtle divider line gives the definite height without the loud handle.
+    // other with the footer pinned to a fixed height (adhoc #86). A footer that
+    // sized to its own contents let anything inside it — the "Agents:" strip,
+    // an attachment thumbnail, a growing prompt — drag the whole toolbar up and
+    // down; a splitter fixed that but flashed a loud blue handle on hover.
     auto *bodyLayout = new QVBoxLayout;
     bodyLayout->setContentsMargins(0, 0, 0, 0);
     bodyLayout->setSpacing(0);
@@ -453,74 +452,62 @@ QWidget *MainWindow::buildChatPage()
     // the edge-to-edge header and remains visible beside every app view.
     auto *rail = new QWidget;
     rail->setObjectName(QStringLiteral("appNavigationRailContent"));
-    rail->setMinimumWidth(kRailItemWidth);
+    rail->setMinimumWidth(railItemWidth());
     m_appNavigationRailLayout = new QVBoxLayout(rail);
-    m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
+    // The rail and the repo tab row start at the same y — both begin at the top
+    // of the content area below the chrome — and the tab row's buttons are
+    // pinned to its top edge, so the rail's top inset has to be exactly the tab
+    // row's (kRepoTabRowTopInset) for the rail's first icon and caption to land
+    // on the two lines the tab row draws its own on (adhoc #421). Any other
+    // value re-introduces the skew.
+    m_appNavigationRailLayout->setContentsMargins(0, kRepoTabRowTopInset, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
-    // Agents is deliberately absent here: it lives on the window-chrome line
-    // beside its live fleet matrix (see buildBreadcrumb). Listing it would
-    // re-parent the button into the rail and silently undo that placement.
+    // Every rail destination is the same item (adhoc #117): one
+    // ActivityRailButton — a 16px octicon SVG over a 10px caption at
+    // railItemWidth() x kRailItemHeight — so icons, words, hover and the
+    // checked accent line all read identically down the rail. Agents is badged
+    // with the running-session count; only its fleet matrix stayed on the
+    // window-chrome line (see buildBreadcrumb). buildRepoDetail() inserts the
+    // contextual Code entry above it and Git below it; Log and Tasks live in
+    // the bottom utility group, Tasks directly above Pings (adhoc #97).
     for (QPushButton *button :
-         {m_reposNavButton, m_tasksNavButton, m_chatButton,
-          m_controlNodeNavButton, m_logNavButton, m_hostsNavButton, m_nodesNavButton,
-          m_relaysNavButton, m_networkNavButton}) {
-        if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
-            railButton->setCompact(false);
-            railButton->setFixedSize(kRailItemWidth, 40);
-        }
+         {m_agentsNavButton, m_reposNavButton, m_chatButton,
+          m_controlNodeNavButton, m_networkNavButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
-    }
     // Repo is redundant with the contextual Code entry. Keep the hidden button
     // as section 0's QButtonGroup state carrier for programmatic navigation.
     m_repoViewButton->setParent(header);
     m_repoViewButton->hide();
     m_appNavigationRailLayout->addStretch();
 
-    // Settings and screen/dev tools form the bottom utility group. Their normal
-    // QPushButton icon handling (notably the rebuild spinner) is retained inside
-    // a tiny icon-over-caption wrapper so every rail destination is named.
-    auto addUtility = [this](QPushButton *button, const QString &caption) {
-        button->setProperty("railUtility", true);
-        button->setFixedSize(kRailItemWidth, 18);
-        auto *label = new QLabel(caption);
-        label->setObjectName(QStringLiteral("railItemLabel"));
-        label->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
-        auto *host = new QWidget;
-        host->setFixedSize(kRailItemWidth, 28);
-        auto *hostLayout = new QVBoxLayout(host);
-        hostLayout->setContentsMargins(0, 0, 0, 0);
-        hostLayout->setSpacing(0);
-        hostLayout->addWidget(button);
-        hostLayout->addWidget(label, 0, Qt::AlignHCenter);
-        m_appNavigationRailLayout->addWidget(host, 0, Qt::AlignHCenter);
-    };
-    addUtility(m_settingsNavButton, QStringLiteral("Settings"));
-    addUtility(m_navDrawButton, QStringLiteral("Draw"));
-    addUtility(m_navScreenshotButton, QStringLiteral("Capture"));
-    addUtility(m_navResizeButton, QStringLiteral("Resize"));
-    addUtility(m_notificationButton, QStringLiteral("Alerts"));
+    // Settings and the screen/dev tools form the bottom utility group — the
+    // same full rail items as the primary destinations above the stretch, in
+    // the established order: Settings, Log, Capture, Resize, then Tasks
+    // directly above Pings (adhoc #97).
+    for (QPushButton *button :
+         {m_settingsNavButton, m_logNavButton, m_navScreenshotButton,
+          m_navResizeButton, m_tasksNavButton, m_notificationButton})
+        m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
 
-    // Pending approvals use the same corner-count language as Chat and Agents:
-    // the count rides the bell's own top-right corner (updateNotificationButton
-    // places it), not the item's right edge, so it stays inside the rail.
-    m_notificationRailBadge = new QLabel(m_notificationButton);
-    m_notificationRailBadge->setObjectName(QStringLiteral("chatUnreadBadge"));
-    m_notificationRailBadge->setAlignment(Qt::AlignCenter);
-    m_notificationRailBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_notificationRailBadge->hide();
-
-    // The account avatar is intentionally the bottom-most rail destination.
+    // The account avatar is intentionally the bottom-most rail destination. It
+    // keeps the round user picture (not an octicon), sized and captioned like
+    // every other item. The public SOL balance is a third, tinier line beneath
+    // the caption (adhoc #96) — it used to sit on the top-chrome line, far from
+    // the account it describes, so the item is one balance-line taller than the
+    // standard kRailItemHeight.
     auto *accountLabel = new QLabel(QStringLiteral("Account"));
     accountLabel->setObjectName(QStringLiteral("railItemLabel"));
     accountLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
     auto *accountHost = new QWidget;
-    accountHost->setFixedSize(kRailItemWidth, 52);
+    accountHost->setFixedSize(railItemWidth(),
+                              kRailItemHeight + navBalanceLineHeight());
     auto *accountLayout = new QVBoxLayout(accountHost);
-    accountLayout->setContentsMargins(0, 0, 0, 0);
-    accountLayout->setSpacing(0);
+    accountLayout->setContentsMargins(0, 2, 0, 0);
+    accountLayout->setSpacing(2);
     accountLayout->addWidget(m_userAvatarNavButton, 0, Qt::AlignHCenter);
     accountLayout->addWidget(accountLabel, 0, Qt::AlignHCenter);
-    m_appNavigationRailLayout->addWidget(accountHost);
+    accountLayout->addWidget(m_navSolanaBalance, 0, Qt::AlignHCenter);
+    m_appNavigationRailLayout->addWidget(accountHost, 0, Qt::AlignLeft);
     updateNotificationButton();
 
     // A short window can scroll the rail without forcing the whole app taller.
@@ -533,7 +520,7 @@ QWidget *MainWindow::buildChatPage()
     railScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     railScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     railScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
-    railScroll->setFixedWidth(kRailWidth);
+    railScroll->setFixedWidth(railWidth());
     railScroll->setMinimumHeight(0);
     railScroll->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Ignored);
 
@@ -560,7 +547,8 @@ QWidget *MainWindow::buildChatPage()
 // of the running executable. The widgets are created here, not in the repo pages
 // they came from, because those pages build lazily on first navigation while the
 // strip has to be populated from the first frame; setRepoBranch /
-// loadBranchesAndTags / updateFooterGitIdentity keep filling them in as before.
+// loadBranchesAndTags / updateFooterGitIdentity keep filling them in as before,
+// and updateFooterCommitInfo adds the commit that branch is on.
 QWidget *MainWindow::buildStatusBar()
 {
     auto *bar = new QWidget;
@@ -578,6 +566,12 @@ QWidget *MainWindow::buildStatusBar()
     m_footerGitIdentity->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_footerGitIdentity->setToolTip(
         "Git author identity configured for the repository you're viewing");
+
+    m_footerCommitInfo = new QLabel;
+    m_footerCommitInfo->setObjectName("footerCommitInfo");
+    m_footerCommitInfo->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_footerCommitInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_footerCommitInfo->setToolTip("Commit the browsed branch points at");
 
     // Elided up front rather than on every resize: the path never changes while
     // the app runs, and a full path left unelided would drag the window's
@@ -599,6 +593,7 @@ QWidget *MainWindow::buildStatusBar()
     row->setSpacing(10);
     row->addWidget(m_branchButton);
     row->addWidget(m_footerGitIdentity);
+    row->addWidget(m_footerCommitInfo);
     row->addStretch(1);
     row->addWidget(m_statusAppPath);
 
@@ -624,9 +619,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_footerDock = dock;
     dock->setObjectName("logDock");
 
-    auto *card = new QWidget;
-    card->setObjectName("quickAddCard");
-
     // A three-line wrapping box (adhoc #12, #107), not a single-line edit, so the
     // typed prompt is actually visible on three lines. Enter sends / Shift+Enter
     // adds a newline (handled in the event filter); Up/Down walk prompt history.
@@ -639,12 +631,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Pin the field to a fixed number of prompt lines (adhoc #107) so it stays
     // compact instead of stretching to fill the whole footer; longer prompts
     // scroll within it. Moving the send column out to the side (adhoc #115) freed
-    // the vertical space the toolbar used to reserve for the stacked buttons, so
-    // the box now shows four lines rather than three.
+    // the vertical space the toolbar used to reserve for the stacked buttons, and
+    // dropping the surrounding card and the "Agents:" strip (adhoc #60) freed two
+    // more rows, so the box now shows six lines and the prompt frame fills the
+    // footer top to bottom the way the log panel beside it does.
     m_issueQuickAdd->document()->setDocumentMargin(3);
-    // 4 rows + the QSS vertical padding (8px top/bottom) + document margins.
+    // 6 rows + the QSS vertical padding (8px top/bottom) + document margins.
     const int kQuickAddRowH = m_issueQuickAdd->fontMetrics().lineSpacing();
-    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 4 + 16 + 6);
+    m_issueQuickAdd->setFixedHeight(kQuickAddRowH * 6 + 16 + 6);
     m_issueQuickAdd->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     // In "No issue" mode the typed text becomes a Claude agent's prompt, so the
     // field is capped at the same length as the Claude prompt / message input
@@ -700,26 +694,33 @@ QWidget *MainWindow::buildNetworkLogDock()
             });
     updateQuickAddCharCount();
 
-    m_quickAddAgentProvider = new FullPopupComboBox; // no scroll arrows (issue #348)
+    // Hidden canonical provider state. The user-facing agent + model menu is
+    // built below after this control and the model control are ready.
+    m_quickAddAgentProvider = new FullPopupComboBox;
     m_quickAddAgentProvider->setObjectName("quickAddAgentSelector");
-    // "Manual (create issue)" (adhoc #29): the no-agent choice that replaces the
-    // old Agent / Create-issue checkboxes — picking it files an issue from the
-    // typed prompt instead of starting a coding agent.
-    m_quickAddAgentProvider->addItem(QStringLiteral("Manual (create issue)"),
+    // "Manual" (adhoc #29): the no-agent choice that replaces the old Agent /
+    // Create-issue checkboxes — picking it files an issue from the typed prompt
+    // instead of starting a coding agent. Every item is short (adhoc #38) so the
+    // four dropdowns fit the composer row side by side; the tooltip carries what
+    // the labels no longer spell out.
+    m_quickAddAgentProvider->addItem(QStringLiteral("Manual"),
                                      QStringLiteral("manual"));
     m_quickAddAgentProvider->addItem(QStringLiteral("Codex"), kCodexProvider);
-    m_quickAddAgentProvider->addItem(QStringLiteral("OpenAI API"),
+    m_quickAddAgentProvider->addItem(QStringLiteral("OpenAI"),
                                      QStringLiteral("openai"));
     m_quickAddAgentProvider->addItem(QStringLiteral("Claude API"),
                                      QStringLiteral("claude-api"));
     // "Claude Code" drives the real `claude` CLI headlessly (no input) in a
     // tracked agent session, working until ForkMesh can open a PR from its diff.
-    m_quickAddAgentProvider->addItem(QStringLiteral("Claude Code"),
+    m_quickAddAgentProvider->addItem(QStringLiteral("CC"),
                                      QStringLiteral("claude-code"));
     selectQuickAddAgentProvider(m_quickAddAgentProvider);
-    m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
-    m_quickAddAgentProvider->setMinimumWidth(112);
-    m_quickAddAgentProvider->setMaximumWidth(150);
+    m_quickAddAgentProvider->setToolTip(
+        "What picks this prompt up: CC (Claude Code) or Codex run the CLI agents, "
+        "OpenAI/Claude API run the headless API agents, and Manual files an issue "
+        "instead of starting one.");
+    // No fixed width band (adhoc #72): FullPopupComboBox sizes itself to the
+    // label it is showing, so the four dropdowns take only the room they need.
     // Show the whole list at once rather than a scrollable popup (adhoc #99).
     m_quickAddAgentProvider->setMaxVisibleItems(30);
     m_quickAddAgentProvider->view()->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -727,14 +728,16 @@ QWidget *MainWindow::buildNetworkLogDock()
     // list; Codex uses the ChatGPT-backed Codex CLI's supported model list.
     m_quickAddClaudeModel = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddClaudeModel->setObjectName("quickAddModelSelector");
-    m_quickAddClaudeModel->setMinimumWidth(130);
-    m_quickAddClaudeModel->setMaximumWidth(180);
-    m_quickAddClaudeModel->setMinimumContentsLength(10);
-    m_quickAddClaudeModel->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
     // Show the whole model list at once rather than a scrollable popup, even
     // once the live provider list-up fills in more than a handful (adhoc #99).
     m_quickAddClaudeModel->setMaxVisibleItems(30);
+    m_quickAddAgentModelSelector = new FullPopupComboBox;
+    m_quickAddAgentModelSelector->setObjectName("quickAddAgentModelSelector");
+    m_quickAddAgentModelSelector->setIconSize(QSize(22, 22));
+    m_quickAddAgentModelSelector->view()->setIconSize(QSize(26, 26));
+    m_quickAddAgentModelSelector->setMaxVisibleItems(30);
+    m_quickAddAgentModelSelector->setToolTip(
+        "Choose the agent and model that will handle this prompt.");
     auto refreshQuickAddModelPicker = [this]() {
         if (!m_quickAddAgentProvider || !m_quickAddClaudeModel)
             return;
@@ -765,6 +768,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddClaudeModel->view()->installEventFilter(this);
     refreshQuickAddModelPicker();
     auto persistQuickAddModel = [this]() {
+        // A Codex model change can change the effort ladder itself (adhoc #38).
+        refreshQuickAddSpeedSelector();
         if (!m_quickAddAgentProvider || !m_quickAddClaudeModel)
             return;
         const QString provider = m_quickAddAgentProvider->currentData().toString();
@@ -777,6 +782,7 @@ QWidget *MainWindow::buildNetworkLogDock()
             if (m_codexModelEdit)
                 m_codexModelEdit->setText(safeModel);
         }
+        refreshQuickAddAgentModelSelector();
     };
     connect(m_quickAddClaudeModel, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [persistQuickAddModel](int) { persistQuickAddModel(); });
@@ -785,17 +791,36 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Permission/sandbox mode for both structured CLI integrations. Claude maps
     // this to its skip-permissions switch; Codex app-server maps every option to
     // a distinct approval policy and sandbox, including interactive requests.
-    m_quickAddModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
+    m_quickAddModeSelector = new IconOnlyFullPopupComboBox;
     m_quickAddModeSelector->setObjectName("quickAddModeSelector");
-    m_quickAddModeSelector->setMinimumWidth(118);
-    m_quickAddModeSelector->setMaximumWidth(170);
-    m_quickAddModeSelector->setMinimumContentsLength(10);
-    m_quickAddModeSelector->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_quickAddModeSelector->addItem(QStringLiteral("Ask before edits"), false);
-    m_quickAddModeSelector->addItem(QStringLiteral("Edit automatically"), false);
-    m_quickAddModeSelector->addItem(QStringLiteral("Plan mode"), false);
-    m_quickAddModeSelector->addItem(kClaudeAutoModeLabel, true);
+    m_quickAddModeSelector->addItem(agentControlIcon(7), kClaudeAutoModeLabel, true);
+    m_quickAddModeSelector->addItem(agentControlIcon(8), kAgentAskModeLabel, false);
+    m_quickAddModeSelector->addItem(agentControlIcon(9), QStringLiteral("Plan"), false);
+    m_quickAddModeSelector->addItem(agentControlIcon(10), QStringLiteral("Edit"), false);
+    // The four labels name the mode but not what it permits, and the closed
+    // control shows only an icon — so the permission each one grants is spelled
+    // out beside its label once the popup is open (adhoc #1204). The item text
+    // itself stays as-is: it is what kAgentModeSetting persists and what the
+    // launch paths compare against.
+    {
+        const QStringList permissions = {
+            QStringLiteral("run without asking"),
+            QStringLiteral("confirm every change"),
+            QStringLiteral("read-only, propose a plan"),
+            QStringLiteral("edit files, ask before commands"),
+        };
+        for (int i = 0; i < permissions.size() && i < m_quickAddModeSelector->count();
+             ++i) {
+            m_quickAddModeSelector->setItemData(i, permissions.at(i),
+                                                kAgentChoiceDescriptionRole);
+            m_quickAddModeSelector->setItemData(
+                i,
+                QStringLiteral("%1 — %2")
+                    .arg(m_quickAddModeSelector->itemText(i), permissions.at(i)),
+                Qt::ToolTipRole);
+        }
+    }
+    m_quickAddModeSelector->view()->setIconSize(QSize(26, 26));
     m_quickAddModeSelector->setMaxVisibleItems(30);
     m_quickAddModeSelector->setToolTip(
         "How much freedom the agent has to make changes without asking first.");
@@ -815,7 +840,49 @@ QWidget *MainWindow::buildNetworkLogDock()
                                      m_quickAddModeSelector->currentData().toBool());
                 QSettings().setValue(kAgentModeSetting,
                                      m_quickAddModeSelector->currentText());
+                const QString description =
+                    QStringLiteral("Permission mode: %1")
+                        .arg(m_quickAddModeSelector->currentText());
+                m_quickAddModeSelector->setAccessibleName(description);
+                m_quickAddModeSelector->setToolTip(
+                    description + QStringLiteral(". Click to choose a mode."));
             });
+    {
+        const QString description =
+            QStringLiteral("Permission mode: %1")
+                .arg(m_quickAddModeSelector->currentText());
+        m_quickAddModeSelector->setAccessibleName(description);
+        m_quickAddModeSelector->setToolTip(
+            description + QStringLiteral(". Click to choose a mode."));
+    }
+    // Speed (reasoning effort) beside the mode selector (adhoc #38): the same
+    // setting the "/" popup's effort dots write, promoted to the composer so the
+    // choice is visible where prompts are launched. The item list is per
+    // provider — Codex reports supportedReasoningEfforts per model, the `claude`
+    // CLI is probed for what it accepts — so filling it lives in
+    // refreshQuickAddSpeedSelector() and re-runs whenever either changes.
+    m_quickAddSpeedSelector = new IconOnlyFullPopupComboBox;
+    m_quickAddSpeedSelector->setObjectName("quickAddSpeedSelector");
+    m_quickAddSpeedSelector->setMaxVisibleItems(30);
+    m_quickAddSpeedSelector->setToolTip(
+        "Speed: how hard the model thinks about each turn (the CLI's reasoning "
+        "effort). Higher is slower and more thorough.");
+    connect(m_quickAddSpeedSelector, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                const QString level =
+                    m_quickAddSpeedSelector->currentData().toString();
+                if (level.isEmpty())
+                    return;
+                QSettings().setValue(kClaudeEffortSetting, level);
+                // The "/" popup shows the same setting; keep it truthful if it
+                // happens to be open.
+                if (m_slashActionsPopup && m_slashActionsPopup->isVisible())
+                    populateSlashActionsList();
+            });
+    refreshQuickAddSpeedSelector();
+    // Ask the installed CLI what it actually accepts; the picker repopulates
+    // when the answer lands.
+    refreshClaudeEffortLevels();
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
         "When quick-add assigns an agent, create a pull request from its patch.");
@@ -880,35 +947,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddVoiceAutoSubmit, &QCheckBox::toggled, this, [](bool on) {
         QSettings().setValue(kVoiceAutoSubmitSetting, on);
     });
-    // YOLO toggle beside it (adhoc #12): when checked, an agent started from the
-    // prompt bar merges its own branch into the default branch as soon as its run
-    // finishes successfully — no PR review, no manual "Merge into main" click.
-    // Persisted across launches like the Auto toggle, and off by default: it
-    // rewrites the default branch without asking.
-    m_quickAddYolo = new QCheckBox("YOLO");
-    m_quickAddYolo->setObjectName("quickAddAutoCheck");
-    m_quickAddYolo->setToolTip(
-        "Auto-merge: when an agent finishes its task, merge its branch straight "
-        "into the default branch (no review), then delete its worktree and "
-        "branch.");
-    m_quickAddYolo->setChecked(QSettings().value(kQuickAddYoloSetting, false).toBool());
-    connect(m_quickAddYolo, &QCheckBox::toggled, this, [](bool on) {
-        QSettings().setValue(kQuickAddYoloSetting, on);
-    });
-    // "Task" toggle beside YOLO (adhoc #18): when checked, starting an agent from
-    // the prompt bar also opens an organization task for the run, stamped with the
-    // bot that launched it and the model/mode/strength it was given, and closed out
-    // with the bot that finished it. On by default — prompted work should be
-    // visible to the organization — and unticked for throwaway prompts.
-    m_quickAddTask = new QCheckBox("Task");
-    m_quickAddTask->setObjectName("quickAddAutoCheck");
-    m_quickAddTask->setToolTip(
-        "Open an organization task for this run, recording which bot started "
-        "and finished it and the model, mode, and strength it used.");
-    m_quickAddTask->setChecked(QSettings().value(kQuickAddTaskSetting, true).toBool());
-    connect(m_quickAddTask, &QCheckBox::toggled, this, [](bool on) {
-        QSettings().setValue(kQuickAddTaskSetting, on);
-    });
+    // The "YOLO" (adhoc #12) and "Task" (adhoc #18) toggles that used to sit
+    // beside the Auto checkbox are gone from the composer (adhoc #120): the
+    // prompt bar keeps only the controls that describe the prompt itself. Every
+    // prompted run now takes the defaults those toggles carried — no unattended
+    // auto-merge, and an organization task opened for the run — see
+    // startAgentForIssue()/startAdHocAgentForRepo() in MainWindowAgents.cpp.
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
@@ -921,8 +965,18 @@ QWidget *MainWindow::buildNetworkLogDock()
         const QString provider = m_quickAddAgentProvider->currentData().toString();
         const bool claudeCode = provider == QLatin1String("claude-code");
         const bool codex = agentIsCodexProvider(provider);
-        m_quickAddClaudeModel->setVisible(claudeCode || codex);
+        // Provider and model now appear in m_quickAddAgentModelSelector. These
+        // controls retain the canonical state expected by the launch paths.
+        m_quickAddAgentProvider->setVisible(false);
+        m_quickAddClaudeModel->setVisible(false);
+        m_quickAddAgentModelSelector->setVisible(true);
         m_quickAddModeSelector->setVisible(claudeCode || codex);
+        if (m_quickAddSpeedSelector) {
+            m_quickAddSpeedSelector->setVisible(claudeCode || codex);
+            // Codex's ladder is per model, so the items themselves change with
+            // the provider — not just whether the picker is shown.
+            refreshQuickAddSpeedSelector();
+        }
     };
     connect(m_quickAddAgentProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, syncQuickAddAgentControls, refreshQuickAddModelPicker](int) {
@@ -931,7 +985,31 @@ QWidget *MainWindow::buildNetworkLogDock()
                     m_quickAddAgentProvider->currentData().toString());
                 refreshQuickAddModelPicker();
                 syncQuickAddAgentControls();
+                refreshQuickAddAgentModelSelector();
             });
+    connect(m_quickAddAgentModelSelector,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+                if (index < 0 || !m_quickAddAgentProvider ||
+                    !m_quickAddClaudeModel)
+                    return;
+                const QString provider =
+                    m_quickAddAgentModelSelector->itemData(index).toString();
+                const QString model = m_quickAddAgentModelSelector
+                                          ->itemData(index, Qt::UserRole + 1)
+                                          .toString();
+                const QSignalBlocker selectorBlock(m_quickAddAgentModelSelector);
+                const int providerIndex =
+                    m_quickAddAgentProvider->findData(provider);
+                if (providerIndex >= 0 &&
+                    providerIndex != m_quickAddAgentProvider->currentIndex())
+                    m_quickAddAgentProvider->setCurrentIndex(providerIndex);
+                if (!model.isEmpty())
+                    selectModelComboValue(m_quickAddClaudeModel, model);
+                refreshQuickAddSpeedSelector();
+                refreshQuickAddAgentModelSelector();
+            });
+    refreshQuickAddAgentModelSelector();
 
     // Slash-actions button (adhoc #116): a small bordered "/" box, like the
     // Claude Code extension's, that opens the filterable actions popup —
@@ -963,18 +1041,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     connect(m_quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
-    // Green "Enter" badge (adhoc #89): shown on whichever of the two send
-    // buttons Enter currently activates, kept in sync by
-    // updateQuickAddEnterTarget(). Parented to the button so it rides along
-    // without needing its own layout slot; both buttons are fixed-size so a
-    // one-time corner position is enough.
-    m_quickAddSendEnterBadge = new QLabel(QStringLiteral("⏎"), m_quickAddSendButton);
-    m_quickAddSendEnterBadge->setObjectName("quickAddEnterBadge");
-    m_quickAddSendEnterBadge->setAlignment(Qt::AlignCenter);
-    m_quickAddSendEnterBadge->setFixedSize(14, 14);
-    m_quickAddSendEnterBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_quickAddSendEnterBadge->move(m_quickAddSendButton->width() - 12, -5);
-    m_quickAddSendEnterBadge->hide();
+    // No corner glyph on the button any more (adhoc #120): the little green "⏎"
+    // badge (adhoc #89) that rode the top-right corner of "new" while Enter
+    // targeted it is gone. The button's own green outline, applied by
+    // updateQuickAddEnterTarget(), still marks which send Enter activates.
 
     // Second paper airplane, rotated to point straight up, stacked above the
     // regular send icon (adhoc #99): sends the typed prompt as a follow-up
@@ -1022,30 +1092,27 @@ QWidget *MainWindow::buildNetworkLogDock()
             recordQuickAddHistory(typed);
         m_issueQuickAdd->clear();
         clearQuickAddImages();
+        showPromptBubble(prompt);
         sendPromptToSelectedAgent(prompt);
     });
 
-    // Third button, stacked above "add" and "new" (adhoc #42): "genie" doesn't
-    // send the typed prompt at all — it starts an agent wired to the remote MCP
-    // server configured on the website, so the agent picks its own work off the
-    // organization's shared task list and reports back through the same tools.
-    // Anything typed in the box rides along as extra guidance for that run.
-    m_quickAddGenieButton = new QPushButton(QStringLiteral("genie"));
+    // Third button, stacked above "add" and "new": file the typed prompt in the
+    // organization's general task list. This used to launch a genie agent that
+    // picked some *other* shared task, which made a button labelled "task" do the
+    // opposite of what the prompt beside it described (adhoc #151).
+    m_quickAddGenieButton = new QPushButton(QStringLiteral("task"));
     m_quickAddGenieButton->setObjectName("quickAddGenieButton");
     m_quickAddGenieButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_quickAddGenieButton, "star", 15);
+    setOcticon(m_quickAddGenieButton, "list-unordered", 15);
     m_quickAddGenieButton->setFixedWidth(58);
     m_quickAddGenieButton->setMinimumHeight(24);
     m_quickAddGenieButton->setSizePolicy(QSizePolicy::Fixed,
                                          QSizePolicy::Expanding);
     m_quickAddGenieButton->setToolTip(
-        QString::fromUtf8("Genie \xE2\x80\x94 start a running agent session that "
-                          "picks its own work off the organization's shared task "
-                          "list. No setup: the first press mints this node's own "
-                          "task credential from the account you are signed in "
-                          "as."));
+        QString::fromUtf8("Task \xE2\x80\x94 add this prompt to the organization's "
+                          "general task list."));
     connect(m_quickAddGenieButton, &QPushButton::clicked, this,
-            &MainWindow::startGenieAgent);
+            &MainWindow::createQuickAddOrganizationTask);
 
     // Vertically Expanding (not Fixed) so the text area absorbs any spare height
     // in the prompt frame. With the fixed-height bottom bar below it, that keeps
@@ -1058,7 +1125,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Three buttons stacked in a full-height column down the prompt's right edge
     // (adhoc #115): each stretches to take its share of the frame height, so the
     // text area to their left ends flush against them and the whole prompt box is
-    // just as tall as the genie/add/new stack. "genie" sits on top (adhoc #42).
+    // just as tall as the task/add/new stack. "task" sits on top (adhoc #42).
     auto *sendColumn = new QVBoxLayout;
     sendColumn->setContentsMargins(0, 0, 0, 0);
     sendColumn->setSpacing(2);
@@ -1068,19 +1135,21 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Enter targets "new" until an agent session is opened above.
     updateQuickAddEnterTarget();
 
-    // Agent hand-off controls (adhoc #99): the provider/model/mode dropdowns,
-    // grouped as one unit in the middle of the bottom bar. The provider dropdown
-    // now also carries "Manual (create issue)" (adhoc #29). No border/frame
-    // around them any more (adhoc #111 removed the pill outline) — they just sit
-    // inline in the bar.
+    // Agent hand-off controls: one combined agent/model picker followed by the
+    // icon-only mode and reasoning-effort pickers. No border/frame around the
+    // group; it sits inline in the bottom bar.
     auto *agentBox = new QWidget;
     agentBox->setObjectName("quickAddAgentBox");
     auto *agentBoxRow = new QHBoxLayout(agentBox);
     agentBoxRow->setContentsMargins(6, 1, 4, 1);
     agentBoxRow->setSpacing(2);
+    agentBoxRow->addWidget(m_quickAddAgentModelSelector);
+    // Hidden compatibility state; adding them gives the widgets the same owner
+    // and lifecycle they had before the visible controls were combined.
     agentBoxRow->addWidget(m_quickAddAgentProvider);
     agentBoxRow->addWidget(m_quickAddClaudeModel);
     agentBoxRow->addWidget(m_quickAddModeSelector);
+    agentBoxRow->addWidget(m_quickAddSpeedSelector);
     // Apply initial visibility only after the controls have their real parent.
     // Showing a parentless combo and then reparenting it can leave it hidden,
     // which made the Claude model picker depend on event-loop timing at startup.
@@ -1090,13 +1159,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     // #99): paperclip and mic at the bottom-left (opposite the send icons),
     // the Auto/Create-issue toggles, the Agent box centred by the stretches on
     // either side, then the character count immediately left of the send icons.
-    // No bottom margin (adhoc #111) so the row sits flush against the bottom
-    // edge of the prompt frame instead of leaving a gap under it.
-    // Every widget is bottom-aligned (adhoc #114): the send column is two
-    // stacked 28px icons and taller than the rest of the row, so without an
-    // explicit alignment Qt centres the shorter controls in that extra height
-    // and they read as floating above the send icons instead of level with
-    // them.
+    // No bottom margin (adhoc #111) so the row sits flush against the frame.
+    // Everything is bottom-aligned (adhoc #114): the send column is two stacked
+    // 28px icons, so without it Qt centres the shorter controls in that extra
+    // height and they float above the send icons instead of sitting level.
     auto *bottomBar = new QHBoxLayout;
     bottomBar->setContentsMargins(8, 4, 6, 0);
     bottomBar->setSpacing(5);
@@ -1105,8 +1171,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_voiceLevelMeter, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddAttachStrip, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddVoiceAutoSubmit, 0, Qt::AlignBottom);
-    bottomBar->addWidget(m_quickAddYolo, 0, Qt::AlignBottom);
-    bottomBar->addWidget(m_quickAddTask, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
     // The "/" actions box sits immediately left of the agent box (adhoc #116),
     // matching where the Claude Code extension keeps its actions menu.
@@ -1158,6 +1222,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // controls read as an overlay along the foot of the prompt input rather
     // than a separate strip above it.
     auto *promptWrapper = new QFrame;
+    m_promptWrapper = promptWrapper;
     promptWrapper->setObjectName("promptWrapper");
     // Horizontal split (adhoc #115): the text area + its bottom toolbar stack in
     // a left column, and the genie/add/new buttons form a full-height column down
@@ -1177,68 +1242,13 @@ QWidget *MainWindow::buildNetworkLogDock()
     promptLayout->addLayout(promptLeftCol, 1);
     promptLayout->addLayout(sendColumn, 0);
 
-    // "Agents:" status strip above the prompt input (adhoc #111): a clickable
-    // label plus one small colored dot per known agent session — a status
-    // dashboard at a glance. The label jumps to the most relevant session's
-    // Agents tab; each dot jumps straight to that one. Populated by
-    // refreshAgentStatusRow() (called from reloadAgents()), hidden until there
-    // is at least one session to show.
-    m_agentStatusLabel = new QPushButton("Agents:");
-    m_agentStatusLabel->setObjectName("agentStatusLabel");
-    m_agentStatusLabel->setFlat(true);
-    m_agentStatusLabel->setCursor(Qt::PointingHandCursor);
-    m_agentStatusLabel->setToolTip("Open the Agents tab");
-    connect(m_agentStatusLabel, &QPushButton::clicked, this,
-            &MainWindow::openAgentsOverview);
-
-    // The icon dots live directly in the row now (adhoc #115) — no scroll area.
-    // refreshAgentStatusRow() caps how many dots it packs in and hides the rest
-    // behind the "N more" button, so a horizontal scrollbar can never appear and
-    // steal height the way it used to inside the old fixed-height viewport.
-    m_agentStatusIconsHost = new QWidget;
-    m_agentStatusIconsLayout = new QHBoxLayout(m_agentStatusIconsHost);
-    m_agentStatusIconsLayout->setContentsMargins(0, 0, 0, 0);
-    m_agentStatusIconsLayout->setSpacing(4);
-
-    // "N more" button that opens the Agents tab (adhoc #115), shown on the right
-    // only when the session count exceeds what the capped icon row displays.
-    m_agentStatusMoreButton = new QPushButton;
-    m_agentStatusMoreButton->setObjectName("agentStatusMore");
-    m_agentStatusMoreButton->setFlat(true);
-    m_agentStatusMoreButton->setCursor(Qt::PointingHandCursor);
-    m_agentStatusMoreButton->setToolTip("Open the Agents tab");
-    m_agentStatusMoreButton->hide();
-    connect(m_agentStatusMoreButton, &QPushButton::clicked, this,
-            &MainWindow::openAgentsOverview);
-
-    m_agentStatusRow = new QWidget;
-    m_agentStatusRow->setObjectName("agentStatusRow");
-    auto *agentStatusRowLayout = new QHBoxLayout(m_agentStatusRow);
-    agentStatusRowLayout->setContentsMargins(2, 0, 2, 6);
-    agentStatusRowLayout->setSpacing(6);
-    agentStatusRowLayout->addWidget(m_agentStatusLabel);
-    agentStatusRowLayout->addWidget(m_agentStatusIconsHost, 0);
-    agentStatusRowLayout->addStretch(1);
-    agentStatusRowLayout->addWidget(m_agentStatusMoreButton, 0);
-    m_agentStatusRow->setVisible(false); // shown once refreshAgentStatusRow() finds sessions
-
-    // Card (right half): the "Agents:" strip on top of the prompt frame, whose
-    // controls live inside it as the bottom bar.
-    auto *cardLayout = new QVBoxLayout(card);
-    cardLayout->setContentsMargins(12, 8, 12, 8);
-    cardLayout->setSpacing(4);
-    // A top stretch sinks the compact "Agents:" strip + prompt group to the foot
-    // of the footer dock (adhoc #107): the prompt no longer stretches to fill the
-    // dock, so without this it would float at the top with dead space beneath.
-    // Anchoring it low keeps the whole log/prompt area down near the bottom edge.
-    cardLayout->addStretch(1);
-    cardLayout->addWidget(m_agentStatusRow);
-    cardLayout->addWidget(promptWrapper, 0);
-    card->setMinimumWidth(0);
-    // Expanding vertically so the card fills the whole fixed-height footer dock
-    // like the log pane beside it; the top stretch above absorbs the slack so the
-    // prompt group stays flush with the foot of the panel.
-    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    // The prompt frame is the right half of the footer on its own (adhoc #60):
+    // no surrounding card chrome and no "Agents:" status strip above it (that
+    // fleet state already lives on the window-chrome dot matrix beside the Agents
+    // nav button), so the bordered box reads exactly like the log and Background
+    // panels and fills the dock top to bottom and edge to edge.
+    promptWrapper->setMinimumWidth(0);
+    promptWrapper->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 
     // A scrollable strip below the quick-add bar: the always-on live log. It
     // fills as much height as the dock row allows (matching the prompt card
@@ -1308,6 +1318,43 @@ QWidget *MainWindow::buildNetworkLogDock()
     }
 
     m_footerUpdateLog->installEventFilter(this);
+
+    // Tiny pause-scroll toggle floating over the strip's bottom-right corner
+    // (adhoc #92). It rides on top of the log instead of taking a layout row so
+    // the fixed-height footer doesn't lose a line of history to it. The log
+    // otherwise always follows the newest line; this parks that follow.
+    m_footerLogPauseButton = new QPushButton(m_footerUpdateLog);
+    m_footerLogPauseButton->setObjectName("footerLogPauseButton");
+    m_footerLogPauseButton->setCheckable(true);
+    m_footerLogPauseButton->setFocusPolicy(Qt::NoFocus);
+    m_footerLogPauseButton->setCursor(Qt::PointingHandCursor);
+    m_footerLogPauseButton->setFixedSize(18, 14);
+    m_footerLogPauseButton->setIconSize(QSize(8, 8));
+    // The strip's canvas is forced white in both themes (styleFooterUpdateLog),
+    // so the toggle carries its own light-on-white look rather than a theme rule.
+    m_footerLogPauseButton->setStyleSheet(QStringLiteral(
+        "QPushButton#footerLogPauseButton{background:#f6f8fa;border:1px solid "
+        "#d0d7de;border-radius:4px;color:#57606a;font-size:8px;padding:0;}"
+        "QPushButton#footerLogPauseButton:hover{background:#eaeef2;color:#1f2328;}"
+        "QPushButton#footerLogPauseButton:checked{background:#ddf4e4;"
+        "border-color:#1a7f37;color:#1a7f37;}"));
+    connect(m_footerLogPauseButton, &QPushButton::toggled, this,
+            [this](bool paused) {
+                m_footerLogScrollPaused = paused;
+                updateFooterLogPauseButton();
+                // Un-pausing catches up immediately: the point of resuming is to
+                // be back on the newest line, not wherever the view was parked.
+                if (!paused && m_footerUpdateLog)
+                    if (QScrollBar *bar = m_footerUpdateLog->verticalScrollBar())
+                        bar->setValue(bar->maximum());
+            });
+    updateFooterLogPauseButton();
+    positionFooterLogPauseButton();
+    // The strip's own resize event doesn't fire when the scrollbar appears or
+    // goes away (that only changes the viewport), so re-park the toggle whenever
+    // the scroll range flips between "fits" and "scrolls".
+    connect(m_footerUpdateLog->verticalScrollBar(), &QScrollBar::rangeChanged,
+            this, [this] { positionFooterLogPauseButton(); });
 
     // Background work is visible without taking over the app: this narrow strip
     // sits exactly between the live log and the agent prompt and lists one
@@ -1385,53 +1432,46 @@ QWidget *MainWindow::buildNetworkLogDock()
                 Qt::QueuedConnection);
         });
 
-    // The live log and Background queue form one left-hand region. A definite
-    // divider comes after both, so Background can never drift into the prompt
-    // half. Each compact panel has the same rounded green border language as the
-    // prompt.
+    // The live log and Background queue form one left-hand region, butted
+    // together and ending where the prompt half begins. Each compact panel has
+    // the same rounded green border language as the prompt.
     auto *logPanel = new QFrame;
     logPanel->setObjectName(QStringLiteral("footerLogPanel"));
     auto *logPanelLayout = new QVBoxLayout(logPanel);
     logPanelLayout->setContentsMargins(1, 1, 1, 1);
     logPanelLayout->setSpacing(2);
-    // Errors and successes land at the very top of the mini-log, pushed against
-    // its first line rather than floating up in the window chrome: the toast and
-    // the log lines it summarises are read together. It is hidden by default and
-    // only borrows height from the log while a message is up — the footer's own
-    // height is fixed, so nothing else in the window moves (adhoc #14).
-    // buildBreadcrumb() runs before this dock is built, so the pill already exists.
-    logPanelLayout->addWidget(m_topMessageContainer, 0, Qt::AlignTop);
+    // Notifications deliberately do not live in this layout. They float over
+    // the composer instead, so a long error never steals a line from this log.
     logPanelLayout->addWidget(m_footerUpdateLog, 1);
 
     auto *leftRegion = new QWidget;
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
     auto *leftRegionLayout = new QHBoxLayout(leftRegion);
     leftRegionLayout->setContentsMargins(0, 0, 0, 0);
+    // The log and the Background panel are separated by exactly the gap the row
+    // uses everywhere else — the same 8px as the dock's own margins and the gap
+    // to the prompt (adhoc #92). Butting them together (adhoc #84) left their two
+    // rounded borders touching as one 2px line that pinched apart at the corners.
     leftRegionLayout->setSpacing(8);
     leftRegionLayout->addWidget(logPanel, 1);
     leftRegionLayout->addWidget(m_backgroundQueue, 0);
 
-    auto *footerDivider = new QFrame;
-    footerDivider->setObjectName(QStringLiteral("footerDivider"));
-    footerDivider->setFrameShape(QFrame::VLine);
-    footerDivider->setFixedWidth(1);
-
-    // Horizontal split: bordered log + Background, divider, then prompt.
+    // Horizontal split: bordered log + Background, then prompt. The hairline
+    // rule that used to sit between the two halves is gone (adhoc #84): every
+    // panel in the row already carries its own border, so the extra line was one
+    // divider too many.
     auto *dockRow = new QHBoxLayout(dock);
     dockRow->setContentsMargins(8, 8, 8, 8);
     dockRow->setSpacing(8);
     dockRow->addWidget(leftRegion, 1);
-    dockRow->addWidget(footerDivider, 0);
-    dockRow->addWidget(card, 1);
+    dockRow->addWidget(promptWrapper, 1);
 
-    // Pin the footer to just the compact card's height (adhoc #107): margins +
-    // the (hidden-by-default) "Agents:" strip + the three-line prompt + its
-    // controls. Reserving the agents-strip height keeps the footer from reflowing
-    // when the strip toggles, exactly as the old fixed 240px did — only now the
-    // dock is sized to the content instead of stranding blank space above it.
-    dock->setFixedHeight(card->sizeHint().height() +
-                         m_agentStatusRow->sizeHint().height() +
-                         cardLayout->spacing() + 16);
+    // Pin the footer to just the compact prompt's height (adhoc #107): the dock
+    // margins plus the six-line prompt and its controls. With the card padding
+    // and the "Agents:" strip gone (adhoc #60) the prompt frame is the tallest
+    // thing in the row, so the log panel beside it is exactly as tall as the
+    // prompt and nothing reflows.
+    dock->setFixedHeight(promptWrapper->sizeHint().height() + 16);
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
@@ -1855,47 +1895,12 @@ void MainWindow::populateSlashActionsList()
     const bool codexProvider =
         m_quickAddAgentProvider &&
         agentIsCodexProvider(m_quickAddAgentProvider->currentData().toString());
-    QStringList effortLevels{QStringLiteral("low"), QStringLiteral("medium"),
-                             QStringLiteral("high"), QStringLiteral("xhigh"),
-                             QStringLiteral("max")};
-    QStringList effortLabels{QStringLiteral("Low"), QStringLiteral("Medium"),
-                             QStringLiteral("High"), QStringLiteral("Extra high"),
-                             QStringLiteral("Max")};
-    if (codexProvider && m_quickAddClaudeModel) {
-        const QString selectedModel = selectedModelComboValue(m_quickAddClaudeModel);
-        const QJsonArray models = QJsonDocument::fromJson(
-                                      QSettings()
-                                          .value(kCodexModelsCacheSetting)
-                                          .toByteArray())
-                                      .array();
-        for (const QJsonValue &value : models) {
-            const QJsonObject model = value.toObject();
-            QString id = model.value(QStringLiteral("model")).toString();
-            if (id.isEmpty())
-                id = model.value(QStringLiteral("id")).toString();
-            if (id != selectedModel)
-                continue;
-            QStringList liveLevels, liveLabels;
-            for (const QJsonValue &effortValue :
-                 model.value(QStringLiteral("supportedReasoningEfforts")).toArray()) {
-                const QJsonObject effort = effortValue.toObject();
-                const QString id =
-                    effort.value(QStringLiteral("reasoningEffort")).toString();
-                if (id.isEmpty())
-                    continue;
-                liveLevels << id;
-                QString label = id;
-                if (!label.isEmpty())
-                    label[0] = label[0].toUpper();
-                liveLabels << label;
-            }
-            if (!liveLevels.isEmpty()) {
-                effortLevels = liveLevels;
-                effortLabels = liveLabels;
-            }
-            break;
-        }
-    }
+    // What the current provider actually accepts (adhoc #38): shared with the
+    // composer's speed picker, which writes the same setting these dots do.
+    const QStringList effortLevels = agentEffortLevels();
+    QStringList effortLabels;
+    for (const QString &level : effortLevels)
+        effortLabels << agentEffortLabel(level);
     const QString currentEffort =
         QSettings().value(kClaudeEffortSetting, QStringLiteral("high")).toString();
     int effortIdx = effortLevels.indexOf(currentEffort);
@@ -1915,7 +1920,9 @@ void MainWindow::populateSlashActionsList()
         addHeader(QStringLiteral("Model"));
         if (matches(QStringLiteral("Switch model")))
             addRow(QStringLiteral("Switch model\xE2\x80\xA6"),
-                   m_quickAddClaudeModel ? m_quickAddClaudeModel->currentText() : QString(),
+                   m_quickAddAgentModelSelector
+                       ? m_quickAddAgentModelSelector->currentText()
+                       : QString(),
                    QStringLiteral("switchModel"), QString());
         if (matches(QStringLiteral("Effort"))) {
             auto *row = new QFrame;
@@ -2038,23 +2045,14 @@ void MainWindow::activateSlashActionRow(QWidget *row)
         sendIssueContextToSelectedAgent();
     } else if (kind == QLatin1String("switchModel")) {
         closePopup();
-        if (m_quickAddAgentProvider) {
-            const QString provider =
-                m_quickAddAgentProvider->currentData().toString();
-            if (provider != QLatin1String("claude-code") &&
-                !agentIsCodexProvider(provider)) {
-                const int idx = m_quickAddAgentProvider->findData(
-                    QStringLiteral("claude-code"));
-                if (idx >= 0)
-                    m_quickAddAgentProvider->setCurrentIndex(idx);
-            }
-        }
-        if (m_quickAddClaudeModel) {
-            m_quickAddClaudeModel->setFocus();
-            m_quickAddClaudeModel->showPopup();
+        if (m_quickAddAgentModelSelector) {
+            m_quickAddAgentModelSelector->setFocus();
+            m_quickAddAgentModelSelector->showPopup();
         }
     } else if (kind == QLatin1String("effortLevel")) {
         QSettings().setValue(kClaudeEffortSetting, value);
+        // The composer's speed picker shows the same setting (adhoc #38).
+        refreshQuickAddSpeedSelector();
         populateSlashActionsList();
     } else if (kind == QLatin1String("toggleThinking")) {
         QSettings().setValue(kClaudeThinkingSetting,
@@ -2082,6 +2080,312 @@ void MainWindow::activateSlashActionRow(QWidget *row)
         if (m_issueQuickAdd)
             m_issueQuickAdd->setFocus();
     }
+}
+
+// The reasoning-effort ladder the composer's provider actually accepts (adhoc
+// #38). Codex publishes supportedReasoningEfforts per model in the app-server
+// catalog, so a model that only does low/medium never offers "max"; Claude Code
+// is probed for what its installed CLI takes (refreshClaudeEffortLevels), since
+// the ladder has grown over releases. Neither known yet => the default ladder.
+QStringList MainWindow::agentEffortLevels() const
+{
+    const QString provider =
+        m_quickAddAgentProvider ? m_quickAddAgentProvider->currentData().toString()
+                                : QString();
+    if (agentIsCodexProvider(provider) && m_quickAddClaudeModel) {
+        const QString selectedModel = selectedModelComboValue(m_quickAddClaudeModel);
+        const QJsonArray models =
+            QJsonDocument::fromJson(
+                QSettings().value(kCodexModelsCacheSetting).toByteArray())
+                .array();
+        for (const QJsonValue &value : models) {
+            const QJsonObject model = value.toObject();
+            QString id = model.value(QStringLiteral("model")).toString();
+            if (id.isEmpty())
+                id = model.value(QStringLiteral("id")).toString();
+            if (id != selectedModel)
+                continue;
+            QStringList levels;
+            for (const QJsonValue &effortValue :
+                 model.value(QStringLiteral("supportedReasoningEfforts")).toArray()) {
+                const QString level = effortValue.toObject()
+                                          .value(QStringLiteral("reasoningEffort"))
+                                          .toString();
+                if (!level.isEmpty())
+                    levels << level;
+            }
+            if (!levels.isEmpty())
+                return levels;
+            break;
+        }
+        return defaultAgentEffortLevels();
+    }
+    const QStringList probed =
+        QSettings().value(kClaudeEffortLevelsCacheSetting).toStringList();
+    return probed.isEmpty() ? defaultAgentEffortLevels() : probed;
+}
+
+// Rebuild the composer's speed picker from agentEffortLevels() and select the
+// live kClaudeEffortSetting. A stored level the current provider doesn't offer
+// (switching to a Codex model with a shorter ladder) falls back to "high", or to
+// the top of the ladder, and is written back so the launch and this picker never
+// disagree about what the run will use.
+void MainWindow::refreshQuickAddSpeedSelector()
+{
+    if (!m_quickAddSpeedSelector)
+        return;
+    const QStringList levels = agentEffortLevels();
+    if (levels.isEmpty())
+        return;
+    QString current = QSettings()
+                          .value(kClaudeEffortSetting, QStringLiteral("high"))
+                          .toString()
+                          .trimmed()
+                          .toLower();
+    if (!levels.contains(current)) {
+        current = levels.contains(QStringLiteral("high")) ? QStringLiteral("high")
+                                                          : levels.last();
+        QSettings().setValue(kClaudeEffortSetting, current);
+    }
+    const QSignalBlocker block(m_quickAddSpeedSelector);
+    m_quickAddSpeedSelector->clear();
+    for (int i = 0; i < levels.size(); ++i)
+        m_quickAddSpeedSelector->addItem(
+            agentControlIcon(11 + qMin(i, 4)), agentEffortLabel(levels.at(i)),
+            levels.at(i));
+    const int idx = m_quickAddSpeedSelector->findData(current);
+    m_quickAddSpeedSelector->setCurrentIndex(idx >= 0 ? idx : 0);
+    const QString description =
+        QStringLiteral("Reasoning effort: %1")
+            .arg(m_quickAddSpeedSelector->currentText());
+    m_quickAddSpeedSelector->setAccessibleName(description);
+    m_quickAddSpeedSelector->setToolTip(
+        description +
+        QStringLiteral(". Higher levels are slower and more thorough."));
+}
+
+// Build the one visible agent/model menu from the canonical hidden provider and
+// model controls. Each row stores provider in UserRole and model in UserRole+1,
+// allowing a single click to update both without changing the launch contract.
+//
+// Rows read as the bare model name (adhoc #1204): "Opus 5", not "Opus 5 · Claude
+// Code". Which CLI runs a model follows from the model, so the suffix was the
+// same handful of words repeated down the whole menu; the tooltip still carries
+// it. Models are ordered strongest-first by agentModelPowerRank(), and the
+// superseded/small-sibling ones agentModelIsMinorTier() flags are left out
+// entirely — except when one of them is the live selection, which must stay
+// visible or picking it once would make it unpickable again.
+void MainWindow::refreshQuickAddAgentModelSelector()
+{
+    if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
+        !m_quickAddClaudeModel)
+        return;
+    const QString selectedProvider =
+        m_quickAddAgentProvider->currentData().toString();
+    const QString selectedModel =
+        (selectedProvider == QLatin1String("claude-code") ||
+         agentIsCodexProvider(selectedProvider))
+            ? selectedModelComboValue(m_quickAddClaudeModel)
+            : QString();
+    const QSignalBlocker blocker(m_quickAddAgentModelSelector);
+    m_quickAddAgentModelSelector->clear();
+
+    struct Choice {
+        QIcon icon;
+        QString label;
+        QString provider;
+        QString model;
+        QString agentName; // which CLI/API runs it, for the tooltip
+        int rank = 0;      // higher sorts nearer the top
+        bool minor = false;
+    };
+    QList<Choice> models;
+    auto addModel = [&models, selectedProvider, selectedModel](
+                        const QIcon &icon, const QString &label,
+                        const QString &provider, const QString &model,
+                        const QString &agentName) {
+        const bool isSelection =
+            provider == selectedProvider &&
+            (selectedModel.isEmpty() || model == selectedModel);
+        models.append(Choice{icon, label, provider, model, agentName,
+                             agentModelPowerRank(model, label),
+                             !isSelection && agentModelIsMinorTier(model, label)});
+    };
+
+    QComboBox claudeModels;
+    populateClaudeModelCombo(&claudeModels);
+    if (!m_liveClaudeModels.isEmpty())
+        mergeLiveClaudeModels(&claudeModels, m_liveClaudeModels);
+    for (int i = 0; i < claudeModels.count(); ++i) {
+        const QString id = claudeModels.itemData(i).toString();
+        const QString lower = id.toLower();
+        int icon = 7;
+        if (lower.contains(QLatin1String("opus")))
+            icon = 0;
+        else if (lower.contains(QLatin1String("fable")))
+            icon = 1;
+        else if (lower.contains(QLatin1String("sonnet")))
+            icon = 2;
+        else if (lower.contains(QLatin1String("haiku")))
+            icon = 3;
+        addModel(agentControlIcon(icon),
+                 compactModelName(claudeModels.itemText(i)),
+                 QStringLiteral("claude-code"), id,
+                 QStringLiteral("Claude Code"));
+    }
+
+    QComboBox codexModels;
+    populateCodexModelCombo(&codexModels);
+    for (int i = 0; i < codexModels.count(); ++i) {
+        addModel(agentControlIcon(4 + (i % 3)), codexModels.itemText(i),
+                 kCodexProvider, codexModels.itemData(i).toString(),
+                 QStringLiteral("Codex"));
+    }
+
+    // Strongest first. Rank ties (Opus 4.8 and Sonnet 5 score the same) keep the
+    // order the provider catalog listed them in, so the menu never reshuffles
+    // between two equally-ranked models from one refresh to the next.
+    std::stable_sort(models.begin(), models.end(),
+                     [](const Choice &a, const Choice &b) {
+                         return a.rank > b.rank;
+                     });
+
+    auto addChoice = [this](const QIcon &icon, const QString &label,
+                            const QString &provider, const QString &model,
+                            const QString &tooltip) {
+        const int row = m_quickAddAgentModelSelector->count();
+        m_quickAddAgentModelSelector->addItem(icon, label, provider);
+        m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
+        if (!tooltip.isEmpty())
+            m_quickAddAgentModelSelector->setItemData(row, tooltip,
+                                                      Qt::ToolTipRole);
+    };
+    addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
+              QStringLiteral("manual"), QString(),
+              QStringLiteral("File an issue from this prompt instead of "
+                             "starting an agent"));
+    for (const Choice &choice : models) {
+        if (choice.minor)
+            continue;
+        addChoice(choice.icon, choice.label, choice.provider, choice.model,
+                  QStringLiteral("%1 · %2").arg(choice.label, choice.agentName));
+    }
+
+    // These API agents do not expose a per-run model chooser in this composer,
+    // but remain first-class choices in the combined menu.
+    addChoice(agentControlIcon(4), QStringLiteral("OpenAI API"),
+              QStringLiteral("openai"), QString(),
+              QStringLiteral("Headless OpenAI API agent"));
+    addChoice(agentControlIcon(2), QStringLiteral("Claude API"),
+              QStringLiteral("claude-api"), QString(),
+              QStringLiteral("Headless Claude API agent"));
+
+    int selected = -1;
+    for (int i = 0; i < m_quickAddAgentModelSelector->count(); ++i) {
+        if (m_quickAddAgentModelSelector->itemData(i).toString() !=
+            selectedProvider)
+            continue;
+        const QString rowModel = m_quickAddAgentModelSelector
+                                     ->itemData(i, Qt::UserRole + 1)
+                                     .toString();
+        if (selectedModel.isEmpty() || rowModel == selectedModel) {
+            selected = i;
+            break;
+        }
+    }
+    m_quickAddAgentModelSelector->setCurrentIndex(selected >= 0 ? selected : 0);
+    // The visible label is the bare model name now, so the accessible name and
+    // the control's tooltip carry the "which agent runs it" half that the row
+    // labels dropped.
+    const int current = m_quickAddAgentModelSelector->currentIndex();
+    const QString currentTip =
+        current >= 0
+            ? m_quickAddAgentModelSelector->itemData(current, Qt::ToolTipRole)
+                  .toString()
+            : QString();
+    m_quickAddAgentModelSelector->setAccessibleName(
+        QStringLiteral("Agent and model: %1")
+            .arg(currentTip.isEmpty()
+                     ? m_quickAddAgentModelSelector->currentText()
+                     : currentTip));
+    m_quickAddAgentModelSelector->setToolTip(
+        currentTip.isEmpty()
+            ? QStringLiteral("Choose the agent and model that will handle this "
+                             "prompt.")
+            : QStringLiteral("%1. Click to choose a different agent or model.")
+                  .arg(currentTip));
+}
+
+// Ask the installed `claude` CLI which --effort values it accepts (adhoc #38)
+// instead of hard-coding a ladder that drifts with the CLI. `claude --help`
+// prints the flag with its choices, e.g.
+//   --effort <level>   Reasoning effort (choices: "low", "medium", "high")
+// so the levels are read off that line and cached
+// (kClaudeEffortLevelsCacheSetting). Once per app run; anything unparseable
+// leaves the cached/default ladder in place.
+void MainWindow::refreshClaudeEffortLevels()
+{
+    if (m_claudeEffortProbe)
+        return;
+    auto *proc = new QProcess(this);
+    m_claudeEffortProbe = proc;
+    m_claudeEffortProbeBuf.clear();
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
+        m_claudeEffortProbeBuf += proc->readAllStandardOutput();
+    });
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, proc](int, QProcess::ExitStatus) {
+                if (m_claudeEffortProbe == proc)
+                    m_claudeEffortProbe = nullptr;
+                const QString help = QString::fromUtf8(m_claudeEffortProbeBuf);
+                m_claudeEffortProbeBuf.clear();
+                proc->deleteLater();
+                static const QRegularExpression effortLine(
+                    QStringLiteral("--effort[^\\n]*"));
+                const QRegularExpressionMatch line = effortLine.match(help);
+                if (!line.hasMatch())
+                    return;
+                // Quoted choices on that line, in the order the CLI lists them.
+                static const QRegularExpression choice(
+                    QStringLiteral("\"([A-Za-z][A-Za-z0-9_-]*)\""));
+                QStringList levels;
+                QRegularExpressionMatchIterator it =
+                    choice.globalMatch(line.captured(0));
+                while (it.hasNext()) {
+                    const QString level = it.next().captured(1).toLower();
+                    if (!levels.contains(level))
+                        levels << level;
+                }
+                if (levels.isEmpty()) {
+                    // Plainer help text lists them unquoted: "(choices: low,
+                    // medium, high)".
+                    static const QRegularExpression bare(
+                        QStringLiteral("choices:\\s*([^)]+)"));
+                    const QRegularExpressionMatch list = bare.match(line.captured(0));
+                    if (!list.hasMatch())
+                        return;
+                    static const QRegularExpression separator(
+                        QStringLiteral("[,\\s]+"));
+                    static const QRegularExpression wordOnly(
+                        QStringLiteral("^[a-z][a-z0-9_-]*$"));
+                    for (const QString &part :
+                         list.captured(1).split(separator, Qt::SkipEmptyParts)) {
+                        const QString level = part.trimmed().toLower();
+                        if (wordOnly.match(level).hasMatch() && !levels.contains(level))
+                            levels << level;
+                    }
+                }
+                if (levels.isEmpty())
+                    return;
+                QSettings().setValue(kClaudeEffortLevelsCacheSetting, levels);
+                refreshQuickAddSpeedSelector();
+                if (m_slashActionsPopup && m_slashActionsPopup->isVisible())
+                    populateSlashActionsList();
+            });
+    // A login shell so a `claude` in ~/.local/bin resolves exactly as it does for
+    // the real launches.
+    proc->start(QStringLiteral("bash"),
+                {QStringLiteral("-lc"), QStringLiteral("claude --help 2>/dev/null")});
 }
 
 // Probes the live `claude` CLI for its slash-command list via the same
@@ -3015,21 +3319,136 @@ void MainWindow::updateFooterGitIdentity()
         });
 }
 
+// The tip of the branch named by the footer's branch button: date, subject and
+// author, so the strip says where that branch actually sits (adhoc #55). Read
+// detached for the same reason the identity above is — this runs from
+// openRepoDetail, where a synchronous git call blocks the GUI thread. The strip
+// fits one elided line, so the same read also pulls what it cannot show — hash,
+// decorations, emails, body, diffstat — for the hover tooltip (adhoc #65).
+void MainWindow::updateFooterCommitInfo()
+{
+    if (!m_footerCommitInfo)
+        return;
+    const QString dir = repoGitDir();
+    if (dir.isEmpty()) {
+        m_footerCommitInfo->clear();
+        return;
+    }
+    const QString ref = currentRef();
+    runGitDetached(
+        dir,
+        // Separators are git's own %x1f/%x1e placeholders rather than literal
+        // escapes so the body (which is last, and may contain anything) stays
+        // unambiguous. --root so the initial commit still reports a diffstat.
+        {QStringLiteral("log"), QStringLiteral("-1"), QStringLiteral("--root"),
+         QStringLiteral("--shortstat"),
+         QStringLiteral("--date=format:%Y-%m-%d %H:%M"),
+         QStringLiteral("--pretty=%H%x1f%h%x1f%ad%x1f%s%x1f%an%x1f%ct%x1f%ae"
+                        "%x1f%cn%x1f%cd%x1f%D%x1f%b%x1e"),
+         ref, QStringLiteral("--")},
+        [this, dir, ref](bool ok, const QByteArray &out) {
+            if (!m_footerCommitInfo)
+                return;
+            // Repo or branch switched (or closed) while the read was in flight.
+            if (repoGitDir() != dir || currentRef() != ref)
+                return;
+            const QString raw = QString::fromUtf8(out);
+            const QStringList f =
+                raw.section(QLatin1Char('\x1e'), 0, 0).split(QLatin1Char('\x1f'));
+            // No commits yet (fresh repo), or the ref doesn't resolve.
+            if (!ok || f.size() < 5) {
+                m_footerCommitInfo->clear();
+                m_footerCommitInfo->setToolTip(
+                    QStringLiteral("Commit the browsed branch points at"));
+                return;
+            }
+            const QString date = f.at(2), subject = f.at(3), author = f.at(4);
+            const QString rel =
+                formatShortRelativeTime(f.value(5).toLongLong());
+            // Long subjects are elided rather than allowed to push the app-path
+            // label off the strip; the tooltip keeps the full text.
+            const QString shortSubject = m_footerCommitInfo->fontMetrics().elidedText(
+                subject, Qt::ElideRight, 360);
+            m_footerCommitInfo->setText(
+                QString::fromUtf8("\xC2\xB7 %1 \xC2\xB7 %2 \xC2\xB7 %3 \xC2\xB7 %4")
+                    .arg(f.at(1), date, shortSubject, author));
+
+            // Everything the one-line strip had to drop, laid out for hover.
+            const QString email = f.value(6).trimmed();
+            const QString committer = f.value(7).trimmed();
+            const QString commitDate = f.value(8).trimmed();
+            const QString refs = f.value(9).trimmed();
+            // Rejoin past field 10: a message body may legitimately contain the
+            // separator, and losing the tail would be worse than keeping it.
+            QString body = f.mid(10).join(QLatin1Char('\x1f')).trimmed();
+            const QString stat = raw.section(QLatin1Char('\x1e'), 1)
+                                     .trimmed()
+                                     .section(QLatin1Char('\n'), 0, 0);
+
+            const QString muted = QStringLiteral("#8b949e");
+            QStringList lines;
+            lines << QStringLiteral("<b>%1</b>").arg(subject.toHtmlEscaped());
+            if (!body.isEmpty()) {
+                // A long body is trimmed here, not scrolled: a tooltip taller
+                // than the window is worse than a truncated one.
+                if (body.size() > 800)
+                    body = body.left(800) + QString::fromUtf8("\xE2\x80\xA6");
+                lines << QStringLiteral("<span style='color:%1'>%2</span>")
+                             .arg(muted, body.toHtmlEscaped().replace(
+                                             QLatin1Char('\n'),
+                                             QStringLiteral("<br>")));
+            }
+            QStringList meta;
+            meta << QStringLiteral("Commit: %1").arg(f.at(0).toHtmlEscaped());
+            if (!refs.isEmpty())
+                meta << QStringLiteral("Refs: %1").arg(refs.toHtmlEscaped());
+            meta << QStringLiteral("Author: %1")
+                        .arg((email.isEmpty()
+                                  ? author
+                                  : QStringLiteral("%1 <%2>").arg(author, email))
+                                 .toHtmlEscaped());
+            if (!committer.isEmpty() && committer != author)
+                meta << QStringLiteral("Committer: %1").arg(committer.toHtmlEscaped());
+            meta << QStringLiteral("Authored: %1%2")
+                        .arg(date.toHtmlEscaped(),
+                             rel.isEmpty()
+                                 ? QString()
+                                 : QString::fromUtf8(" (%1 ago)").arg(rel));
+            if (!commitDate.isEmpty() && commitDate != date)
+                meta << QStringLiteral("Committed: %1").arg(commitDate.toHtmlEscaped());
+            if (!stat.isEmpty())
+                meta << QStringLiteral("Changes: %1").arg(stat.toHtmlEscaped());
+            lines << QStringLiteral("<span style='color:%1'>%2</span>")
+                         .arg(muted, meta.join(QStringLiteral("<br>")));
+
+            // A width attribute, not CSS: Qt's rich text ignores the latter, and
+            // without it the hash and body lines lay out as one endless row.
+            m_footerCommitInfo->setToolTip(
+                QStringLiteral("<table cellspacing='0' cellpadding='0'><tr>"
+                               "<td width='460'>%1</td></tr></table>")
+                    .arg(lines.join(QStringLiteral("<br><br>"))));
+        });
+}
+
 // Start the UI-stall watchdog + the live CPU/memory readout. Called once the
 // window is up so the heartbeat reflects a real, interactive event loop.
+QString MainWindow::stallLogPath()
+{
+#ifdef FORKMESH_WINDOW_TESTS
+    // Test binaries stall on purpose (blocking asserts, offscreen waits) —
+    // never let their reports pollute the user's real diagnostics log.
+    return QString();
+#else
+    return QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/stalls.log");
+#endif
+}
+
 void MainWindow::startDiagnostics()
 {
     if (!m_stallWatchdog) {
         m_stallWatchdog = new StallWatchdog(this);
         connect(m_stallWatchdog, &StallWatchdog::stalled, this, &MainWindow::onUiStall);
-#ifdef FORKMESH_WINDOW_TESTS
-        // Test binaries stall on purpose (blocking asserts, offscreen waits) —
-        // never let their reports pollute the user's real diagnostics log.
-        const QString logPath;
-#else
-        const QString logPath =
-            QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/stalls.log");
-#endif
+        const QString logPath = stallLogPath();
         m_stallLogPath = logPath;
         // Rotate an oversized log (it had grown past 12 MB) so appends and any
         // "read the stall log" tooling stay fast; one previous generation kept.
@@ -3047,6 +3466,12 @@ void MainWindow::startDiagnostics()
         // old threshold let real (but shorter) click-freezes go unrecorded. Every
         // report names the blocking operation via the BlockingCallScope crumbs.
         m_stallWatchdog->start(/*stallThresholdMs=*/500, logPath, buildInfo);
+        // Name the durable log in the main app log once per run, so where the
+        // full backtraces live is discoverable from the Log view alone and not
+        // only from the diagnostics dialog (adhoc #73).
+        if (!logPath.isEmpty())
+            logSystem(QStringLiteral("UI-stall watchdog armed; reports append to %1")
+                          .arg(QDir::toNativeSeparators(logPath)));
     }
     if (!m_diagTimer) {
         m_diagTimer = new QTimer(this);
@@ -3062,8 +3487,21 @@ void MainWindow::startDiagnostics()
 // resident memory, read from /proc, plus any UI-stall count.
 void MainWindow::updateFooterDiagnostics()
 {
+    // Descriptor pressure is a process-health check rather than a footer
+    // readout, so it samples ahead of the widget guard: a headless node has no
+    // footer, runs for weeks, and is the likeliest place for a leak to build.
+    const qint64 fdNow = QDateTime::currentMSecsSinceEpoch();
+    if (fdNow - m_fdPressureLastCheckMs >= 15000) {
+        m_fdPressureLastCheckMs = fdNow;
+        checkFileDescriptorPressure();
+    }
     if (!m_footerDiagnostics)
         return;
+    const qint64 statsNow = QDateTime::currentMSecsSinceEpoch();
+    if (statsNow - m_repoStatsLastRefreshMs >= 60000) {
+        m_repoStatsLastRefreshMs = statsNow;
+        refreshRepositoryStats();
+    }
     double cpuPct = -1.0;
     long rssMb = -1;
 #if defined(__linux__)
@@ -3094,9 +3532,9 @@ void MainWindow::updateFooterDiagnostics()
                                       (1024 * 1024));
     }
 #endif
-    // Feed the three moving sparklines. CPU is this process's busy fraction of
-    // one core (the /proc/self/stat figure above); memory and disk are the
-    // host's used fraction, so all three plot on a 0..100% scale (adhoc #17).
+    // Feed the moving sparklines. CPU is this process's busy fraction of
+    // one core (the /proc/self/stat figure above); memory, swap and disk are the
+    // host's used fraction, so all four plot on a 0..100% scale (adhoc #17).
     const QString dash = QString::fromUtf8("\xE2\x80\x94"); // em dash
     if (auto *cpu = static_cast<ResourceSparkline *>(m_cpuChart)) {
         cpu->addSample(cpuPct >= 0 ? cpuPct : 0.0, 100.0,
@@ -3123,6 +3561,23 @@ void MainWindow::updateFooterDiagnostics()
                       .arg(SystemStats::formatBytes(total - avail),
                            SystemStats::formatBytes(total))
                 : QStringLiteral("Host memory in use"));
+    }
+    if (auto *swap = static_cast<ResourceSparkline *>(m_swapChart)) {
+        const qint64 total = SystemStats::totalSwapBytes();
+        const qint64 free = SystemStats::freeSwapBytes();
+        double pct = -1.0;
+        if (total > 0 && free >= 0 && free <= total)
+            pct = 100.0 * double(total - free) / double(total);
+        swap->addSample(pct >= 0 ? pct : 0.0, 100.0,
+                        pct >= 0 ? QStringLiteral("%1%").arg(pct, 0, 'f', 0)
+                                 : dash);
+        swap->setToolTip(
+            total > 0
+                ? QStringLiteral("Swap in use: %1 of %2 (%3 free)")
+                      .arg(SystemStats::formatBytes(total - free),
+                           SystemStats::formatBytes(total),
+                           SystemStats::formatBytes(free))
+                : QStringLiteral("Swap is disabled or unavailable"));
     }
 #ifndef FORKMESH_WINDOW_TESTS
     // Open once on the upward crossing. It rearms only after memory has fallen
@@ -3153,7 +3608,7 @@ void MainWindow::updateFooterDiagnostics()
                 : QStringLiteral("Drive space in use"));
     }
 
-    // The diagnostics indicator rides beside the CPU/MEM/DISK sparklines now
+    // The diagnostics indicator rides beside the CPU/MEM/SWAP/DISK sparklines now
     // (adhoc #145). Crisp octicons replace the old 🖥/⚠ emoji: a muted monitor
     // while the UI has stayed smooth, and an amber alert plus the running count
     // once a stall has been recorded so it reads as a real warning.
@@ -3171,6 +3626,106 @@ void MainWindow::updateFooterDiagnostics()
     }
 }
 
+// Watch how close this process is to its file-descriptor cap. Running out is a
+// silent execution stop rather than an error the app can report: glib aborts
+// with SIGTRAP from g_wakeup_new() the moment a new event dispatcher cannot get
+// its pipes, which is what the v0.7.9 "crash inside
+// g_main_context_new_with_flags" report was. main() raises the soft cap at
+// startup, so reaching even 70% of it means something is leaking descriptors —
+// log that (with the thread count, since each thread pins a wakeup pipe) while
+// there is still headroom to find the leak instead of after the abort.
+void MainWindow::checkFileDescriptorPressure()
+{
+    const int limit = SystemStats::openFileSoftLimit();
+    const int open = SystemStats::openFileCount();
+    if (limit <= 0 || open <= 0)
+        return; // platform doesn't expose them; nothing to police
+    const double used = 100.0 * double(open) / double(limit);
+    // Log once per upward crossing, rearming only after usage falls well back,
+    // so a node parked near the line doesn't write a line every 15 seconds.
+    if (used >= 70.0 && m_fdPressureAlertArmed) {
+        m_fdPressureAlertArmed = false;
+        logSystem(QStringLiteral(
+                      "Warning: %1 of %2 file descriptors in use (%3%), %4 "
+                      "threads. Descriptor exhaustion aborts the app, so this "
+                      "is worth reporting with what was running.")
+                      .arg(open)
+                      .arg(limit)
+                      .arg(used, 0, 'f', 0)
+                      .arg(SystemStats::threadCount()));
+    } else if (used < 55.0) {
+        m_fdPressureAlertArmed = true;
+    }
+}
+
+void MainWindow::refreshRepositoryStats()
+{
+    // The trend charts and Ratchet toggle live on the Code overview's mode row
+    // (adhoc #6), which is built lazily with the repo detail's Code tab.
+    if (!m_repoSizeChart || !m_repoLinesChart || !m_repoFilesChart)
+        return;
+    const QString dir = repoGitDir();
+    const bool available = !dir.isEmpty() && repoHasWorkingTree();
+    const QList<QWidget *> statsWidgets{m_repoSizeChart, m_repoLinesChart,
+                                        m_repoFilesChart, m_repoRatchetButton};
+    for (QWidget *widget : statsWidgets)
+        if (widget) widget->setVisible(available);
+    if (!available) return;
+
+    QString error;
+    const QVector<RepoStatsSample> days = RepoStatsStore::captureDaily(dir, &error);
+    if (days.isEmpty()) {
+        if (!error.isEmpty()) logSystem(QStringLiteral("Repository stats: %1").arg(error));
+        return;
+    }
+    QVector<double> sizes, lines, files;
+    double maxSize = 1, maxLines = 1, maxFiles = 1;
+    for (const RepoStatsSample &day : days) {
+        sizes << double(day.bytes); lines << double(day.lines); files << double(day.files);
+        maxSize = qMax(maxSize, double(day.bytes));
+        maxLines = qMax(maxLines, double(day.lines));
+        maxFiles = qMax(maxFiles, double(day.files));
+    }
+    const RepoStatsSample &latest = days.last();
+    static_cast<ResourceSparkline *>(m_repoSizeChart)->setSamples(
+        sizes, maxSize, SystemStats::formatBytes(latest.bytes));
+    static_cast<ResourceSparkline *>(m_repoLinesChart)->setSamples(
+        lines, maxLines, QString::number(latest.lines));
+    static_cast<ResourceSparkline *>(m_repoFilesChart)->setSamples(
+        files, maxFiles, QString::number(latest.files));
+    const QString span = days.size() == 1
+                             ? QStringLiteral("today")
+                             : QStringLiteral("%1 to %2").arg(days.first().day,
+                                                               days.last().day);
+    m_repoSizeChart->setToolTip(QStringLiteral("Tracked repository size, %1").arg(span));
+    m_repoLinesChart->setToolTip(QStringLiteral("Tracked lines of code, %1").arg(span));
+    m_repoFilesChart->setToolTip(QStringLiteral("Tracked files, %1").arg(span));
+    if (m_repoRatchetButton) {
+        QSignalBlocker blocker(m_repoRatchetButton);
+        m_repoRatchetButton->setChecked(RepoStatsStore::ratchetEnabled(dir));
+    }
+}
+
+void MainWindow::toggleRepositoryRatchet(bool enabled)
+{
+    const QString dir = repoGitDir();
+    QString error;
+    if (dir.isEmpty() || !RepoStatsStore::setRatchetEnabled(dir, enabled, &error)) {
+        if (m_repoRatchetButton) {
+            QSignalBlocker blocker(m_repoRatchetButton);
+            m_repoRatchetButton->setChecked(!enabled);
+        }
+        flashMessage(QStringLiteral("Could not update Ratchet Mode: %1").arg(error), true);
+        return;
+    }
+    flashMessage(enabled ? QStringLiteral("Ratchet Mode enabled: the repository may not grow "
+                                          "past the size it is now until tomorrow.")
+                         : QStringLiteral("Ratchet Mode disabled: commits are no longer checked."));
+    // The button already reflects the new state. Do not run the daily stats
+    // capture here: that writes the tracked trend document and would make a
+    // local-only mode toggle appear to require a repository commit.
+}
+
 // A UI stall ended: record it, surface it in the system log, and reflect the
 // running count in the footer. The full backtrace is kept for the detail dialog.
 void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
@@ -3185,8 +3740,13 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
         head += QStringLiteral(" while %1").arg(blockingCall);
     // Shows up in the app's Log view under its own STALL badge (filterable from
     // the chip row); logSystem stamps the time itself, so the dialog's copy is
-    // the one that carries it.
-    logSystem(head);
+    // the one that carries it. The main-log copy also names the durable report
+    // file so the full backtrace is findable from the Log view (adhoc #73).
+    QString logLine = head;
+    if (!m_stallLogPath.isEmpty())
+        logLine += QStringLiteral(" - full backtrace in %1")
+                       .arg(QDir::toNativeSeparators(m_stallLogPath));
+    logSystem(logLine);
     QString entry = QStringLiteral("[%1] %2").arg(when, head);
     if (!backtrace.isEmpty())
         entry += QLatin1Char('\n') + backtrace;
@@ -3195,7 +3755,8 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
         m_stallLog.removeFirst();
     if (m_footerDiagnostics)
         m_footerDiagnostics->setToolTip(
-            QStringLiteral("Last UI stall: ~%1 ms at %2%3. Click for details (%4 logged).")
+            QStringLiteral("Last UI stall: ~%1 ms at %2%3 (%4 logged). Click to draft a "
+                           "fix-it prompt in the composer; right-click for details.")
                 .arg(peakMs)
                 .arg(when)
                 .arg(blockingCall.isEmpty() ? QString()
@@ -3219,6 +3780,13 @@ void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace
     // never turn those synthetic stalls into real CLI agent processes.
     return;
 #endif
+    // A headless mirror has no interactive GUI to repair, and its expected
+    // low-memory Git/encryption work can delay the offscreen event loop. Never
+    // turn those service-side diagnostics into coding-agent processes: doing
+    // so competes with the mirror seal for RAM/disk and can create a feedback
+    // loop where each stall launches more work and makes the next stall worse.
+    if (m_headless)
+        return;
     if (!QSettings().value(kAutoAgentOnStallSetting, true).toBool())
         return;
     // The watchdog now *records* everything past 500 ms (sub-second jank matters
@@ -3291,7 +3859,8 @@ void MainWindow::clearStallLog()
     if (m_footerDiagnostics)
         m_footerDiagnostics->setToolTip(
             QStringLiteral("UI-stall diagnostics: any freezes long enough to trip the "
-                           "Wait/Kill prompt land here. Click for the recorded stall "
+                           "Wait/Kill prompt land here. Click to draft a fix-it prompt "
+                           "in the composer; right-click for the recorded stall "
                            "details."));
     updateFooterDiagnostics();
 }
@@ -3321,8 +3890,9 @@ bool MainWindow::sendStallLogToAgent()
             "was blocked, which makes the window freeze. For each report below, find "
             "the blocking call in the backtrace and fix it so the UI stays responsive "
             "(move the slow work off the main thread, or skip it when nothing "
-            "changed). Recorded stalls:\n\n%2")
+            "changed).\n\n%2\nRecorded stalls:\n\n%3")
             .arg(m_stallLog.size())
+            .arg(stallLogLocationsBlock())
             .arg(m_stallLog.join(QStringLiteral("\n\n---\n\n")));
     if (startAdHocAgentForRepo(repoIndex, prompt, defaultAgentProvider(),
                                /*createPr=*/true) <= 0) {
@@ -3333,6 +3903,109 @@ bool MainWindow::sendStallLogToAgent()
     logSystem(QStringLiteral("Started an agent to fix the %1 recorded UI stall(s).")
                   .arg(m_stallLog.size()));
     return true;
+}
+
+// Keep the drafted prompt inside the quick-add composer's 16000-char cap. The
+// composer trims overflow off the *end*, which would cut a backtrace mid-frame,
+// so build the text to fit instead and say so where reports were dropped.
+static constexpr int kStallPromptMaxChars = 15500;
+
+// The "please fix these stalls" prompt the footer badge drafts: the ask, where
+// both logs live, and the recorded reports newest-first (the freshest freeze is
+// the one most likely still reproducible).
+// Both on-disk logs an agent needs to work a stall report, plus the standing ask
+// to sweep them for work that should have been backgrounded but was not: the
+// sampled backtrace only names the call that happened to be on the stack, while
+// the app log records every slow main-thread operation of the session (adhoc #90).
+QString MainWindow::stallLogLocationsBlock() const
+{
+    QString block;
+    const QString stallLog =
+        m_stallLogPath.isEmpty() ? stallLogPath() : m_stallLogPath;
+    if (!stallLog.isEmpty())
+        block += QStringLiteral("Stall log: %1\n")
+                     .arg(QDir::toNativeSeparators(stallLog));
+    block += QStringLiteral("App log: %1\n")
+                 .arg(QDir::toNativeSeparators(networkLogPath()));
+    block += QStringLiteral(
+        "\nAlso read both logs for any other work that never got backgrounded — "
+        "slow git/network/disk operations still running on the GUI thread — and "
+        "move those off the main thread too, not just the sampled frames below.\n");
+    return block;
+}
+
+QString MainWindow::stallFixPrompt() const
+{
+    QString head =
+        QStringLiteral(
+            "Please fix these UI stalls. ForkMesh's GUI thread was blocked %1 "
+            "time(s) this session, which freezes the window. For each report "
+            "below, find the blocking call in the backtrace and fix it so the UI "
+            "stays responsive (move the slow work off the main thread, or skip it "
+            "when nothing changed).\n\n")
+            .arg(m_stallCount);
+    head += stallLogLocationsBlock();
+    head += QStringLiteral("\nRecorded stalls (newest first):\n\n");
+
+    QString body;
+    const QString separator = QStringLiteral("\n\n---\n\n");
+    for (int i = m_stallLog.size() - 1; i >= 0; --i) {
+        const QString entry = m_stallLog.at(i);
+        if (!body.isEmpty() &&
+            head.size() + body.size() + separator.size() + entry.size() >
+                kStallPromptMaxChars) {
+            body += QStringLiteral(
+                "\n\n(older reports omitted - the full history is in the stall log above)");
+            break;
+        }
+        if (!body.isEmpty())
+            body += separator;
+        body += entry;
+    }
+    if (body.isEmpty())
+        body = QStringLiteral("(nothing recorded yet)");
+    // A single oversized backtrace can still overrun the budget; clamp so the
+    // composer never has to trim (and never silently drops the trailing text).
+    return (head + body).left(kStallPromptMaxChars);
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testQuickAddText() const
+{
+    return m_issueQuickAdd ? m_issueQuickAdd->toPlainText() : QString();
+}
+
+bool MainWindow::testDraftStallPromptInComposer()
+{
+    if (!m_issueQuickAdd)
+        return false;
+    sendStallReportToComposer();
+    return true;
+}
+#endif
+
+// Footer stall badge click (adhoc #73): rather than only showing the read-only
+// dialog, draft the fix-it prompt straight into the quick-add composer so the
+// recorded freezes are one Enter away from an agent run. The detail dialog is
+// still one right-click away (and is the fallback when nothing was recorded).
+void MainWindow::sendStallReportToComposer()
+{
+    if (!m_issueQuickAdd || m_stallLog.isEmpty()) {
+        showDiagnosticsDialog();
+        return;
+    }
+    // Anything half-typed goes into the recall history first, so overwriting the
+    // box with the draft never loses a prompt — Up brings it straight back.
+    recordQuickAddHistory(m_issueQuickAdd->toPlainText());
+    m_issueQuickAdd->setPlainText(stallFixPrompt());
+    m_issueQuickAdd->moveCursor(QTextCursor::End);
+    m_issueQuickAdd->setFocus();
+    logSystem(QStringLiteral("Drafted a fix-it prompt for the %1 recorded UI stall(s); "
+                             "details in %2")
+                  .arg(m_stallLog.size())
+                  .arg(m_stallLogPath.isEmpty()
+                           ? QStringLiteral("this session's diagnostics")
+                           : QDir::toNativeSeparators(m_stallLogPath)));
 }
 
 // Detail view for the diagnostics readout: the recorded UI stalls (with the
@@ -3368,20 +4041,31 @@ void MainWindow::showDiagnosticsDialog()
     auto *clearBtn = new QPushButton(QStringLiteral("Clear"));
     clearBtn->setToolTip(QStringLiteral("Forget every recorded stall (and its durable log)"));
     clearBtn->setEnabled(haveStalls);
+    auto *draftBtn = new QPushButton(QStringLiteral("Draft in composer"));
+    draftBtn->setToolTip(
+        QStringLiteral("Fill the footer composer with a \"fix these stalls\" prompt "
+                       "(with the log locations) so it can be reviewed before sending"));
+    draftBtn->setEnabled(haveStalls);
     auto *sendBtn = new QPushButton(QStringLiteral("Send to a new agent"));
     sendBtn->setToolTip(
         QStringLiteral("Hand all recorded stalls to a coding agent to investigate and fix"));
     sendBtn->setEnabled(haveStalls);
     auto *close = new QPushButton(QStringLiteral("Close"));
 
-    connect(clearBtn, &QPushButton::clicked, &dlg, [this, summary, view, clearBtn, sendBtn] {
-        clearStallLog();
-        summary->setText(
-            QStringLiteral("No UI stalls detected this session. The app watches the "
-                           "GUI thread and records any freeze longer than 1.5s here."));
-        view->setPlainText(QStringLiteral("(nothing recorded yet)"));
-        clearBtn->setEnabled(false);
-        sendBtn->setEnabled(false);
+    connect(clearBtn, &QPushButton::clicked, &dlg,
+            [this, summary, view, clearBtn, sendBtn, draftBtn] {
+                clearStallLog();
+                summary->setText(QStringLiteral(
+                    "No UI stalls detected this session. The app watches the "
+                    "GUI thread and records any freeze longer than 1.5s here."));
+                view->setPlainText(QStringLiteral("(nothing recorded yet)"));
+                clearBtn->setEnabled(false);
+                sendBtn->setEnabled(false);
+                draftBtn->setEnabled(false);
+            });
+    connect(draftBtn, &QPushButton::clicked, &dlg, [this, &dlg] {
+        sendStallReportToComposer();
+        dlg.accept();
     });
     connect(sendBtn, &QPushButton::clicked, &dlg, [this, &dlg] {
         if (sendStallLogToAgent())
@@ -3392,11 +4076,24 @@ void MainWindow::showDiagnosticsDialog()
     auto *row = new QHBoxLayout;
     row->addWidget(clearBtn);
     row->addStretch(1);
+    row->addWidget(draftBtn);
     row->addWidget(sendBtn);
     row->addWidget(close);
     v->addLayout(row);
     dlg.exec();
 }
+
+// Column layout of the "High memory usage" table; adhoc #98 added the trend
+// square and the command line and adhoc #96 the agent attribution, so the
+// indexes are worth naming.
+static constexpr int kHighMemoryTrendColumn = 1;
+static constexpr int kHighMemoryAgentColumn = 6;
+static constexpr int kHighMemoryCommandColumn = 7;
+static constexpr int kHighMemoryActionColumn = 8;
+static constexpr int kHighMemoryColumnCount = 9;
+// How many rows carry a trend square. One per row for all 30 would be mostly
+// noise; the top ten are the ones worth watching grow.
+static constexpr int kHighMemoryTrendRows = 10;
 
 void MainWindow::showHighMemoryProcessPanel()
 {
@@ -3414,14 +4111,25 @@ void MainWindow::showHighMemoryProcessPanel()
     dialog->setWindowModality(Qt::NonModal);
     dialog->setModal(false);
     dialog->setWindowTitle(QStringLiteral("High memory usage"));
-    dialog->resize(820, 560);
+    // Wide enough for the command-line column to be worth reading (adhoc #98)
+    // beside the agent column (adhoc #96), clamped to the screen so it still
+    // fits on smaller displays.
+    QSize preferred(1420, 620);
+    if (QScreen *screen = QGuiApplication::primaryScreen())
+        preferred =
+            preferred.boundedTo(screen->availableGeometry().size() * 0.92);
+    dialog->resize(preferred);
     auto *layout = new QVBoxLayout(dialog);
 
     auto *heading = new QLabel(QStringLiteral(
         "<b>Host memory is above 85%</b><br>"
-        "Processes are sorted by resident memory. “Kill” requests a normal "
-        "termination and “Kill all” does the same for every listed process "
-        "sharing that name; ForkMesh and PID 1 are protected."));
+        "Processes are sorted by resident memory, and the top ten carry a "
+        "trend square showing how their memory has moved since this panel "
+        "opened. Anything an agent run started — the agent itself and every "
+        "build, test or tool below it — names that run in the Agent column. "
+        "“Kill” requests a normal termination and “Kill all” does the "
+        "same for every listed process sharing that name; ForkMesh and PID 1 "
+        "are protected."));
     heading->setTextFormat(Qt::RichText);
     heading->setWordWrap(true);
     layout->addWidget(heading);
@@ -3431,11 +4139,13 @@ void MainWindow::showHighMemoryProcessPanel()
     m_highMemoryProcessStatus->setObjectName(QStringLiteral("statusLine"));
     layout->addWidget(m_highMemoryProcessStatus);
 
-    m_highMemoryProcessTable = new QTableWidget(0, 6);
+    m_highMemoryProcessTable = new QTableWidget(0, kHighMemoryColumnCount);
     m_highMemoryProcessTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Process"), QStringLiteral("PID"),
-         QStringLiteral("Owner"), QStringLiteral("Memory"),
-         QStringLiteral("Host %"), QStringLiteral("Action")});
+        {QStringLiteral("Process"), QStringLiteral("Trend"),
+         QStringLiteral("PID"), QStringLiteral("Owner"),
+         QStringLiteral("Memory"), QStringLiteral("Host %"),
+         QStringLiteral("Agent"), QStringLiteral("Command line"),
+         QStringLiteral("Action")});
     m_highMemoryProcessTable->verticalHeader()->setVisible(false);
     m_highMemoryProcessTable->setSelectionBehavior(
         QAbstractItemView::SelectRows);
@@ -3443,16 +4153,25 @@ void MainWindow::showHighMemoryProcessPanel()
         QAbstractItemView::NoEditTriggers);
     m_highMemoryProcessTable->setSortingEnabled(false);
     m_highMemoryProcessTable->setAlternatingRowColors(true);
-    m_highMemoryProcessTable->horizontalHeader()->setSectionResizeMode(
-        0, QHeaderView::Stretch);
-    for (int column = 1; column < 6; ++column)
+    m_highMemoryProcessTable->setWordWrap(false);
+    m_highMemoryProcessTable->setTextElideMode(Qt::ElideRight);
+    // The command line takes every spare pixel now that it is the widest cell;
+    // the rest stay at fixed, content-sized widths.
+    for (int column = 0; column < kHighMemoryColumnCount; ++column)
         m_highMemoryProcessTable->horizontalHeader()->setSectionResizeMode(
-            column, QHeaderView::Fixed);
-    m_highMemoryProcessTable->setColumnWidth(1, 72);
-    m_highMemoryProcessTable->setColumnWidth(2, 110);
-    m_highMemoryProcessTable->setColumnWidth(3, 105);
-    m_highMemoryProcessTable->setColumnWidth(4, 72);
-    m_highMemoryProcessTable->setColumnWidth(5, 160); // Kill + Kill all
+            column, column == kHighMemoryCommandColumn ? QHeaderView::Stretch
+                                                       : QHeaderView::Fixed);
+    m_highMemoryProcessTable->setColumnWidth(0, 180);
+    m_highMemoryProcessTable->setColumnWidth(kHighMemoryTrendColumn, 46);
+    m_highMemoryProcessTable->setColumnWidth(2, 72);
+    m_highMemoryProcessTable->setColumnWidth(3, 110);
+    m_highMemoryProcessTable->setColumnWidth(4, 105);
+    m_highMemoryProcessTable->setColumnWidth(5, 72);
+    m_highMemoryProcessTable->setColumnWidth(kHighMemoryAgentColumn, 190);
+    m_highMemoryProcessTable->setColumnWidth(kHighMemoryActionColumn,
+                                            160); // Kill + Kill all
+    // Tall enough for a trend square to sit inside a row.
+    m_highMemoryProcessTable->verticalHeader()->setDefaultSectionSize(38);
     layout->addWidget(m_highMemoryProcessTable, 1);
 
     auto *refresh = new QPushButton(QStringLiteral("Refresh"));
@@ -3472,6 +4191,7 @@ void MainWindow::showHighMemoryProcessPanel()
         m_highMemoryProcessTable = nullptr;
         m_highMemoryProcessStatus = nullptr;
         m_highMemoryProcessQuery = nullptr;
+        m_highMemoryRssHistory.clear();
     });
     auto *autoRefresh = new QTimer(dialog);
     autoRefresh->setInterval(5000);
@@ -3495,8 +4215,24 @@ void MainWindow::refreshHighMemoryProcessTable()
         m_highMemoryProcessTable->rowCount() == 0
             ? QStringLiteral("Scanning for the largest memory users…")
             : QStringLiteral("Refreshing memory culprits in the background…"));
-    auto *query = new QProcess(m_highMemoryDialog);
+    // Parented to the window, not the panel it fills. ~QWidget deletes a
+    // widget's QProcess children from deleteChildren(), and ~QProcess kills the
+    // child and waits for it, emitting finished() while the same pass has
+    // already deleted the table and status label this handler writes to — the
+    // panel is WA_DeleteOnClose, so closing it mid-scan hits exactly that order
+    // (same shape as the MainWindow teardown crash, adhoc #51). MainWindow's own
+    // teardown sweep disconnects the query when the window goes away.
+    auto *query = new QProcess(this);
     m_highMemoryProcessQuery = query;
+    // The scan must still die with the panel that asked for it. destroyed()
+    // fires from ~QObject, after the dialog's widgets are gone, so this touches
+    // nothing but the process.
+    connect(m_highMemoryDialog.data(), &QObject::destroyed, query, [query] {
+        query->disconnect();
+        if (query->state() != QProcess::NotRunning)
+            query->kill();
+        query->deleteLater();
+    });
     connect(query, &QProcess::finished, this,
             [this, query](int exitCode, QProcess::ExitStatus status) {
                 const QByteArray output = query->readAllStandardOutput();
@@ -3522,36 +4258,73 @@ void MainWindow::refreshHighMemoryProcessTable()
                     qint64 rssKb = 0;
                     double percent = 0.0;
                     QString name;
+                    QString commandLine;
                 };
                 QVector<ProcessRow> rows;
                 rows.reserve(30);
+                // Parent of every process on the host, so a listed row can be
+                // walked back to the agent run that spawned it (adhoc #96).
+                // `ps` already reports it, which keeps the attribution free of
+                // a second /proc pass.
+                QHash<qint64, qint64> parentOf;
                 const QList<QByteArray> lines = output.split('\n');
                 int validProcesses = 0;
                 for (const QByteArray &raw : lines) {
                     const QList<QByteArray> fields =
                         raw.simplified().split(' ');
-                    if (fields.size() < 5)
+                    if (fields.size() < 6)
                         continue;
                     bool pidOk = false;
                     bool rssOk = false;
                     const qint64 pid = fields.at(0).toLongLong(&pidOk);
-                    const QString owner = QString::fromLocal8Bit(fields.at(1));
-                    const qint64 rssKb = fields.at(2).toLongLong(&rssOk);
+                    const qint64 ppid = fields.at(1).toLongLong();
+                    const QString owner = QString::fromLocal8Bit(fields.at(2));
+                    const qint64 rssKb = fields.at(3).toLongLong(&rssOk);
                     const QString percent =
-                        QString::fromLocal8Bit(fields.at(3));
-                    const QString name =
+                        QString::fromLocal8Bit(fields.at(4));
+                    // `args` (not `comm`) so the arguments have something to
+                    // show (adhoc #98); the Process column keeps reading like
+                    // the old command name by taking argv[0]'s basename.
+                    const QString commandLine =
                         QString::fromLocal8Bit(
-                            QByteArrayList(fields.mid(4)).join(' '));
-                    if (!pidOk || !rssOk || pid <= 0 || name.isEmpty())
+                            QByteArrayList(fields.mid(5)).join(' '));
+                    if (!pidOk || !rssOk || pid <= 0 || commandLine.isEmpty())
                         continue;
+                    if (ppid > 0)
+                        parentOf.insert(pid, ppid);
+                    QString name = commandLine.section(QLatin1Char(' '), 0, 0);
+                    const int slash = name.lastIndexOf(QLatin1Char('/'));
+                    if (slash >= 0)
+                        name = name.mid(slash + 1);
+                    if (name.isEmpty())
+                        name = commandLine;
                     ++validProcesses;
                     // `ps` is already RSS-sorted. Only materialize the top
                     // culprits: hundreds of cell widgets and repeated
                     // ResizeToContents passes were what made the old alert
                     // appear frozen under memory pressure.
                     if (rows.size() < 30)
-                        rows.append({pid, owner, rssKb, percent.toDouble(), name});
+                        rows.append({pid, owner, rssKb, percent.toDouble(),
+                                     name, commandLine});
                 }
+
+                // Per-PID resident history, so the top rows can each carry a
+                // trend square. Only PIDs still on the list are kept, which
+                // bounds the map to the table's own size.
+                QHash<qint64, QVector<double>> history;
+                history.reserve(rows.size());
+                double historyMaxKb = 1.0;
+                for (const ProcessRow &process : rows) {
+                    QVector<double> samples =
+                        m_highMemoryRssHistory.value(process.pid);
+                    samples.append(double(process.rssKb));
+                    while (samples.size() > ProcessMemorySparkline::kMaxPoints)
+                        samples.removeFirst();
+                    for (double sample : samples)
+                        historyMaxKb = qMax(historyMaxKb, sample);
+                    history.insert(process.pid, samples);
+                }
+                m_highMemoryRssHistory = history;
 
                 // Which listed PIDs share each command name, so a row's "Kill
                 // all" can act on the whole family (the `killall` shape) without
@@ -3560,10 +4333,68 @@ void MainWindow::refreshHighMemoryProcessTable()
                 for (const ProcessRow &process : rows)
                     pidsByName[process.name].append(process.pid);
 
+                // Agent attribution (adhoc #96): the process driving each live
+                // session, keyed by PID. A row is that session's if it is the
+                // process itself or sits anywhere below it, so the pytest run
+                // and the cc1plus swarm an agent kicked off say whose they are.
+                struct AgentOwner {
+                    qint64 rootPid = 0;
+                    QString label;
+                    QString detail;
+                };
+                QHash<qint64, AgentOwner> agentRoots;
+                for (const AgentSession &session : std::as_const(m_agentSessions)) {
+                    const qint64 rootPid = agentSessionProcessId(session.id);
+                    if (rootPid <= 0)
+                        continue;
+                    QString title = session.issueTitle.trimmed();
+                    if (title.isEmpty())
+                        title = session.prompt.section(QLatin1Char('\n'), 0, 0)
+                                    .trimmed();
+                    if (title.isEmpty())
+                        title = QStringLiteral("Agent run #%1").arg(session.id);
+                    AgentOwner owner;
+                    owner.rootPid = rootPid;
+                    owner.label =
+                        session.issueNumber > 0
+                            ? QStringLiteral("#%1 %2").arg(session.issueNumber).arg(title)
+                            : title;
+                    QStringList detail{owner.label};
+                    if (!session.owner.isEmpty() && !session.name.isEmpty())
+                        detail << QStringLiteral("Repository: %1/%2")
+                                      .arg(session.owner, session.name);
+                    if (!session.branchName.isEmpty())
+                        detail << QStringLiteral("Branch: %1").arg(session.branchName);
+                    QString provider = agentProviderName(session.provider);
+                    if (!session.model.isEmpty())
+                        provider += QStringLiteral(" · %1").arg(session.model);
+                    detail << QStringLiteral("Agent: %1").arg(provider)
+                           << QStringLiteral("Status: %1").arg(session.status);
+                    owner.detail = detail.join(QLatin1Char('\n'));
+                    agentRoots.insert(rootPid, owner);
+                }
+                // Walk a listed PID up to init looking for one of those roots.
+                // The hop cap is belt and braces: a `ps` snapshot taken while
+                // processes exit can hand back an inconsistent parent chain.
+                auto agentOwnerFor =
+                    [&agentRoots, &parentOf](qint64 pid) -> const AgentOwner * {
+                    for (int hops = 0; pid > 1 && hops < 64; ++hops) {
+                        const auto found = agentRoots.constFind(pid);
+                        if (found != agentRoots.constEnd())
+                            return &found.value();
+                        const qint64 parent = parentOf.value(pid, 0);
+                        if (parent <= 0 || parent == pid)
+                            break;
+                        pid = parent;
+                    }
+                    return nullptr;
+                };
+
                 m_highMemoryProcessTable->setUpdatesEnabled(false);
                 m_highMemoryProcessTable->clearContents();
                 m_highMemoryProcessTable->setRowCount(rows.size());
                 qint64 shownRssKb = 0;
+                int agentRows = 0;
                 for (int row = 0; row < rows.size(); ++row) {
                     const ProcessRow &process = rows.at(row);
                     shownRssKb += process.rssKb;
@@ -3575,21 +4406,79 @@ void MainWindow::refreshHighMemoryProcessTable()
                         m_highMemoryProcessTable->setItem(row, column, item);
                     };
                     put(0, process.name);
-                    put(1, QString::number(process.pid), process.pid);
-                    put(2, process.owner);
-                    put(3, SystemStats::formatBytes(process.rssKb * 1024),
+                    put(2, QString::number(process.pid), process.pid);
+                    put(3, process.owner);
+                    put(4, SystemStats::formatBytes(process.rssKb * 1024),
                         process.rssKb);
-                    put(4, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
+                    put(5, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
                         process.percent);
+                    // Whose run this is, if any (adhoc #96). The agent's own
+                    // process names the session outright; anything it started
+                    // is marked with "↳" so the tree reads at a glance.
+                    const AgentOwner *agent = agentOwnerFor(process.pid);
+                    if (agent) {
+                        ++agentRows;
+                        const bool isAgentItself = process.pid == agent->rootPid;
+                        put(kHighMemoryAgentColumn,
+                            isAgentItself
+                                ? agent->label
+                                : QStringLiteral("↳ %1").arg(agent->label));
+                        if (QTableWidgetItem *cell =
+                                m_highMemoryProcessTable->item(
+                                    row, kHighMemoryAgentColumn))
+                            cell->setToolTip(
+                                isAgentItself
+                                    ? QStringLiteral("%1\n\nThis is the agent's "
+                                                     "own process.")
+                                          .arg(agent->detail)
+                                    : QStringLiteral("%1\n\nStarted by that "
+                                                     "agent run (PID %2).")
+                                          .arg(agent->detail)
+                                          .arg(agent->rootPid));
+                    }
+                    // The full command line outgrows any sane column, so the
+                    // cell elides and the tooltip carries the whole thing.
+                    put(kHighMemoryCommandColumn, process.commandLine);
+                    if (QTableWidgetItem *command =
+                            m_highMemoryProcessTable->item(
+                                row, kHighMemoryCommandColumn))
+                        command->setToolTip(process.commandLine);
                     if (row < 5) {
-                        for (int column = 0; column < 5; ++column) {
+                        for (int column = 0; column <= kHighMemoryCommandColumn;
+                             ++column) {
                             QTableWidgetItem *item =
                                 m_highMemoryProcessTable->item(row, column);
+                            if (!item) // the trend column holds a widget, not an item
+                                continue;
                             QFont font = item->font();
                             font.setBold(true);
                             item->setFont(font);
                             item->setForeground(QColor(QStringLiteral("#cf222e")));
                         }
+                    }
+
+                    // Trend square for the top ten: the footer sparkline shape,
+                    // on a scale shared by every row so the squares compare
+                    // against each other.
+                    if (row < kHighMemoryTrendRows) {
+                        const QVector<double> samples =
+                            history.value(process.pid);
+                        auto *chart = new ProcessMemorySparkline;
+                        chart->setHistory(samples, historyMaxKb);
+                        auto *cell = new QWidget;
+                        // The square ignores mouse events, so its tooltip has
+                        // to live on the cell around it.
+                        cell->setToolTip(
+                            QStringLiteral("Resident memory for %1 (PID %2) "
+                                           "over the last %3 refreshes")
+                                .arg(process.name)
+                                .arg(process.pid)
+                                .arg(samples.size()));
+                        auto *cellRow = new QHBoxLayout(cell);
+                        cellRow->setContentsMargins(0, 0, 0, 0);
+                        cellRow->addWidget(chart, 0, Qt::AlignCenter);
+                        m_highMemoryProcessTable->setCellWidget(
+                            row, kHighMemoryTrendColumn, cell);
                     }
 
                     auto *kill = new QPushButton(QStringLiteral("Kill"));
@@ -3643,16 +4532,21 @@ void MainWindow::refreshHighMemoryProcessTable()
                     actionRow->setSpacing(4);
                     actionRow->addWidget(kill);
                     actionRow->addWidget(killAll);
-                    m_highMemoryProcessTable->setCellWidget(row, 5, actions);
+                    m_highMemoryProcessTable->setCellWidget(
+                        row, kHighMemoryActionColumn, actions);
                 }
                 m_highMemoryProcessTable->setUpdatesEnabled(true);
                 m_highMemoryProcessTable->viewport()->update();
                 m_highMemoryProcessStatus->setText(
                     QStringLiteral(
-                        "Top %1 of %2 processes · %3 resident · refreshed %4")
+                        "Top %1 of %2 processes · %3 resident%4 · refreshed %5")
                         .arg(rows.size())
                         .arg(validProcesses)
                         .arg(SystemStats::formatBytes(shownRssKb * 1024))
+                        .arg(agentRows > 0
+                                 ? QStringLiteral(" · %1 from agent runs")
+                                       .arg(agentRows)
+                                 : QString())
                         .arg(QTime::currentTime().toString(
                             QStringLiteral("h:mm:ss AP"))));
             });
@@ -3671,7 +4565,7 @@ void MainWindow::refreshHighMemoryProcessTable()
             });
     query->start(QStringLiteral("ps"),
                  {QStringLiteral("-eo"),
-                  QStringLiteral("pid=,user=,rss=,%mem=,comm="),
+                  QStringLiteral("pid=,ppid=,user=,rss=,%mem=,args="),
                   QStringLiteral("--sort=-rss")});
     // A broken or heavily starved `ps` must not leave the panel looking busy
     // forever. Killing this helper is safe and does not affect listed processes.
@@ -3741,15 +4635,8 @@ void MainWindow::killAllHighMemoryProcesses(const QString &name,
     auto *parent = m_highMemoryDialog
                        ? static_cast<QWidget *>(m_highMemoryDialog.data())
                        : this;
-    const auto answer = QMessageBox::warning(
-        parent, QStringLiteral("Kill all processes"),
-        QStringLiteral("Request that all %1 listed “%2” processes terminate?\n\n"
-                       "Unsaved work in those processes may be lost.")
-            .arg(targets.size())
-            .arg(name),
-        QMessageBox::Cancel | QMessageBox::Yes, QMessageBox::Cancel);
-    if (answer != QMessageBox::Yes)
-        return;
+    // No confirmation here (adhoc #58): "Kill all" is an explicit, already
+    // deliberate click, and the tooltip spells out how many processes it hits.
 
 #if defined(Q_OS_UNIX)
     int sent = 0;
@@ -3809,40 +4696,44 @@ void MainWindow::showTreasuryDonateDialog()
                          QNetworkRequest::SameOriginRedirectPolicy);
     request.setTransferTimeout(15000);
     QNetworkReply *reply = m_networkAccess->get(request);
-    QEventLoop loop;
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        constexpr qsizetype kMaximumPoolResponse = 1024 * 1024;
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QNetworkReply::NetworkError networkError = reply->error();
+        const QByteArray body = reply->read(kMaximumPoolResponse + 1);
+        reply->deleteLater();
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
+        const QJsonObject pool =
+            parseError.error == QJsonParseError::NoError && document.isObject()
+                ? document.object()
+                : QJsonObject();
+        const QString address = pool.value("address").toString().trimmed();
+        const bool validAddress =
+            forkmesh::rewards::decodeBase58(address, 32).size() == 32;
+        const bool externalSigner =
+            pool.value("custody").toString() ==
+                QLatin1String("external-local-signer") &&
+            pool.value("privateKeyStoredByWorker").isBool() &&
+            !pool.value("privateKeyStoredByWorker").toBool(true);
+        if (networkError != QNetworkReply::NoError || httpStatus != 200 ||
+            body.size() > kMaximumPoolResponse || !validAddress ||
+            !externalSigner) {
+            QMessageBox::information(
+                this, QStringLiteral("Community reward pool"),
+                QStringLiteral(
+                    "ForkMesh could not verify a non-custodial community-pool "
+                    "address from this server. No transfer has been requested."));
+            return;
+        }
+        showTreasuryDonateDialogForPool(pool);
+    });
+}
 
-    constexpr qsizetype kMaximumPoolResponse = 1024 * 1024;
-    const int httpStatus =
-        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    const QNetworkReply::NetworkError networkError = reply->error();
-    QByteArray body = reply->read(kMaximumPoolResponse + 1);
-    reply->deleteLater();
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
-    const QJsonObject resp =
-        parseError.error == QJsonParseError::NoError && document.isObject()
-            ? document.object()
-            : QJsonObject();
+void MainWindow::showTreasuryDonateDialogForPool(const QJsonObject &resp)
+{
     const QString address = resp.value("address").toString().trimmed();
-    const bool validAddress =
-        forkmesh::rewards::decodeBase58(address, 32).size() == 32;
-    const bool externalSigner =
-        resp.value("custody").toString() ==
-            QLatin1String("external-local-signer") &&
-        resp.value("privateKeyStoredByWorker").isBool() &&
-        !resp.value("privateKeyStoredByWorker").toBool(true);
-    if (networkError != QNetworkReply::NoError || httpStatus != 200 ||
-        body.size() > kMaximumPoolResponse || !validAddress ||
-        !externalSigner) {
-        QMessageBox::information(
-            this, QStringLiteral("Community reward pool"),
-            QStringLiteral(
-                "ForkMesh could not verify a non-custodial community-pool "
-                "address from this server. No transfer has been requested."));
-        return;
-    }
 
     // Only accept a Solana URI that visibly targets the verified public pool.
     // A bare URI is safer than following an unverified server-supplied target.
@@ -3917,6 +4808,11 @@ void MainWindow::showTreasuryDonateDialog()
     dialog.exec();
 }
 
+// The ping feed above the network log: how many lines it shows, and how tall
+// it is (adhoc #77). Deliberately small — it is a glance, not a second page.
+static constexpr int kLogEventStripLimit = 8;
+static constexpr int kLogEventStripRows = 5;
+
 QWidget *MainWindow::buildLogSection()
 {
     auto *page = new QWidget;
@@ -3949,6 +4845,10 @@ QWidget *MainWindow::buildLogSection()
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
     m_settingsLog->setOpenExternalLinks(true);
+    // Clicks on the leading "add to prompt" plus of an entry are handled in
+    // MainWindow::eventFilter before the browser's own anchor activation sees
+    // them (adhoc #114); http(s) links in the message body still open normally.
+    m_settingsLog->viewport()->installEventFilter(this);
     // No setMaximumBlockCount here: that trims blocks from the *top* of the
     // document, which would silently discard the older segments this view now
     // loads on demand when the user scrolls up (adhoc #15). m_networkLog
@@ -3994,9 +4894,9 @@ QWidget *MainWindow::buildLogSection()
     // view most launches never open. Live logSystem() lines still append to
     // the (empty) view immediately; the first visit's rebuild re-renders the
     // latest segment in order, history included.
-    m_logFilterCategories.clear();
+    m_logFilterCounts.clear();
     for (const QString &line : std::as_const(m_networkLog))
-        m_logFilterCategories.insert(logBadgeFor(line));
+        ++m_logFilterCounts[logBadgeFor(line)];
     rebuildLogFilterButtons();
     m_networkLogViewStale = !m_networkLog.isEmpty();
 
@@ -4004,7 +4904,7 @@ QWidget *MainWindow::buildLogSection()
         m_networkLog.clear();
         m_lastLogRenderDate.clear();
         m_logFilter.clear();
-        m_logFilterCategories.clear();
+        m_logFilterCounts.clear();
         m_logRenderFrom = 0; // nothing left to page back into once cleared
         m_logFilterEmptyNotice = false;
         if (m_settingsLog)
@@ -4021,13 +4921,68 @@ QWidget *MainWindow::buildLogSection()
     headerRow->addWidget(cloudflareButton);
     headerRow->addWidget(clearButton);
 
+    // Every ping this window raises also lands in a compact feed directly
+    // above the log, so "what just happened?" is answered without leaving the
+    // page or waiting for the toast to reappear (adhoc #77). Double-clicking a
+    // line opens the full Pings page.
+    auto *eventsLabel = new QLabel(QStringLiteral("RECENT PINGS"));
+    eventsLabel->setObjectName("sectionLabel");
+    m_logEventList = new QListWidget;
+    m_logEventList->setObjectName("logEventList");
+    m_logEventList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_logEventList->setUniformItemSizes(true);
+    m_logEventList->setFixedHeight(kLogEventStripRows *
+                                       m_logEventList->fontMetrics().height() +
+                                   12);
+    m_logEventList->setToolTip(
+        QStringLiteral("The newest pings. Double-click to open the Pings "
+                       "page."));
+    connect(m_logEventList, &QListWidget::itemDoubleClicked, this,
+            [this](QListWidgetItem *) { showNotifications(); });
+
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(18, 14, 18, 14);
     layout->setSpacing(8);
     layout->addLayout(headerRow);
+    layout->addWidget(eventsLabel);
+    layout->addWidget(m_logEventList);
     layout->addWidget(filterScroll);
     layout->addWidget(m_settingsLog, 1);
+    refreshLogEventList();
     return page;
+}
+
+// Repaint the compact ping feed above the network log from the same list the
+// Pings page shows, newest first (adhoc #77).
+void MainWindow::refreshLogEventList()
+{
+    if (!m_logEventList)
+        return;
+    m_logEventList->clear();
+    if (m_notifications.isEmpty()) {
+        auto *empty = new QListWidgetItem(
+            QStringLiteral("No pings yet in this session."));
+        empty->setForeground(QColor("#6e7681"));
+        empty->setFlags(Qt::NoItemFlags);
+        m_logEventList->addItem(empty);
+        return;
+    }
+    const int shown = qMin(int(m_notifications.size()), kLogEventStripLimit);
+    for (int index = 0; index < shown; ++index) {
+        const AppNotification &notice = m_notifications.at(index);
+        QString text =
+            QDateTime::fromMSecsSinceEpoch(notice.timestampMs)
+                .toString(QStringLiteral("HH:mm:ss")) +
+            QStringLiteral("  ") + notice.title.simplified();
+        const QString detail = notice.body.simplified();
+        if (!detail.isEmpty())
+            text += QString::fromUtf8(" \xE2\x80\x94 ") + detail;
+        auto *item = new QListWidgetItem(text);
+        item->setToolTip(text);
+        if (notice.warning)
+            item->setForeground(QColor("#f85149"));
+        m_logEventList->addItem(item);
+    }
 }
 
 void MainWindow::showCloudflareWorkerLogs()
@@ -4228,28 +5183,46 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *bar = new QWidget;
     bar->setObjectName("breadcrumbBar");
 
-    // --- Relay switcher: a "favicon  domain ▾ count" dropdown (search / switch
-    // / add). -----------------------------------------------------------------
+    // --- Relay switcher: just the active relay's favicon (adhoc #91) — the
+    // domain and relay count moved into the dropdown it opens (search / switch
+    // / add). ----------------------------------------------------------------
     m_relayMenuButton = new QPushButton;
     m_relayMenuButton->setObjectName("relayMenuButton");
     m_relayMenuButton->setCursor(Qt::PointingHandCursor);
-    m_relayMenuButton->setIconSize(QSize(18, 18));
+    // A 25px favicon (a tenth smaller than the old 28) in a button exactly as
+    // wide as an activity-rail item, so the logo paints on the same vertical
+    // axis as every rail octicon underneath it. The chrome row drops its left
+    // margin to match; see chromeRow in this same function.
+    m_relayMenuButton->setIconSize(QSize(25, 25));
+    m_relayMenuButton->setFixedWidth(railItemWidth());
     m_relayMenuButton->setToolTip("Switch, search, or add relays");
     connect(m_relayMenuButton, &QPushButton::clicked, this,
             &MainWindow::showRelayMenu);
 
-    // Spinning radar + once-a-minute latency readout, sitting just left of the
-    // relay name (issue #144). The probe itself is driven by m_relayLatencyTimer.
-    m_relayRadar = new RelayRadarWidget;
-    static_cast<RelayRadarWidget *>(m_relayRadar)->onClicked = [this] {
-        if (!m_repoDetailStack || m_mirrorNodesTabIndex < 0 ||
-            !m_repoDetailTabs)
-            return;
-        showSection(0);
-        if (QAbstractButton *button =
-                m_repoDetailTabs->button(m_mirrorNodesTabIndex))
-            button->click();
-    };
+    // Red dot pinned over the favicon while a freshly launched instance waits
+    // to be linked (adhoc #97), with the Approve button that opens the join
+    // dialog right beside it. Both stay hidden until the signed heartbeat
+    // reply reports a pending join request for this admin.
+    m_relayJoinDot = new QLabel(m_relayMenuButton);
+    m_relayJoinDot->setObjectName(QStringLiteral("relayJoinDot"));
+    m_relayJoinDot->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_relayJoinDot->setFixedSize(10, 10);
+    m_relayJoinDot->hide();
+    m_relayJoinApproveButton = new QPushButton(QStringLiteral("Approve"));
+    m_relayJoinApproveButton->setObjectName(
+        QStringLiteral("relayJoinApproveButton"));
+    m_relayJoinApproveButton->setCursor(Qt::PointingHandCursor);
+    m_relayJoinApproveButton->hide();
+    connect(m_relayJoinApproveButton, &QPushButton::clicked, this,
+            &MainWindow::showRelayJoinApprovalDialog);
+
+    // Connection speed as the colour of the dropdown caret on the instance
+    // logo's corner (adhoc #124, adhoc #224): the radar dish that used to carry
+    // this on the right of the chrome line is gone, so the link's health rides
+    // the instance it belongs to — and rides the mark that says this logo opens
+    // a menu, rather than a separate dot that only looked like a status light.
+    // The probe itself is still driven by m_relayLatencyTimer.
+    m_relaySpeedDot = new RelaySpeedDot(m_relayMenuButton);
 
     // Node switcher, to the right of the relay switcher: "node ▾ count".
     m_nodeMenuButton = new QPushButton;
@@ -4258,23 +5231,33 @@ QWidget *MainWindow::buildBreadcrumb()
     m_nodeMenuButton->setToolTip("Pick a node to view its repositories");
     connect(m_nodeMenuButton, &QPushButton::clicked, this, &MainWindow::showNodeMenu);
 
-    // The public wallet balance heads the top-chrome line right after the relay
-    // switcher. The "user/node" caption that used to precede it was dropped
-    // (adhoc #42) — the avatar already says who is signed in.
-    m_navSolanaBalance = new QLabel(QStringLiteral("0.000000000 SOL"));
+    // The public wallet balance no longer heads the top-chrome line (adhoc #96):
+    // it rides under the account avatar at the foot of the activity rail, with
+    // the identity it belongs to, as a tiny always-SOL figure. Only the tooltip
+    // carries the full nine-decimal amount now.
+    m_navSolanaBalance = new QLabel(QString::fromUtf8("\xE2\x80\x94 SOL"));
     m_navSolanaBalance->setObjectName("navSolanaBalance");
-    m_navSolanaBalance->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_navSolanaBalance->setAlignment(Qt::AlignHCenter | Qt::AlignVCenter);
     m_navSolanaBalance->setTextFormat(Qt::RichText);
     m_navSolanaBalance->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
     m_navSolanaBalance->setOpenExternalLinks(false);
     m_navSolanaBalance->setCursor(Qt::PointingHandCursor);
+    // The rail item cannot widen, so the label is pinned to it and drawn in the
+    // largest tiny size whose widest figure still fits (navBalanceFont()). That
+    // size has to be declared on the widget itself: Theme.h's QWidget rule sets
+    // a 14px base font, and a stylesheet font beats setFont() — the label would
+    // paint at 14px and run out of its slot. Colour still comes from the theme's
+    // #navSolanaBalance rule, which this doesn't override.
+    m_navSolanaBalance->setFixedWidth(railItemWidth());
+    m_navSolanaBalance->setFont(navBalanceFont());
+    m_navSolanaBalance->setStyleSheet(
+        QStringLiteral("font-size:%1px;").arg(navBalanceFont().pixelSize()));
     m_navSolanaBalance->setToolTip(
-        "Your Solana wallet balance \xE2\x80\x94 click to switch "
-        "currency (SOL / USD / INR).\n"
+        "Your Solana wallet balance.\n"
         "Non-custodial payout address: this client only shares its public "
         "address; its private key stays in the wallet you control.");
-    // Clicking the balance itself cycles its display currency, so the control
-    // sits right on the value instead of needing a separate swap icon.
+    // Pointing at the balance is what spends the getBalance call (see
+    // eventFilter) — everything else renders the cached figure.
     m_navSolanaBalance->installEventFilter(this);
     connect(m_navSolanaBalance, &QLabel::linkActivated, this,
             [this](const QString &) {
@@ -4295,13 +5278,18 @@ QWidget *MainWindow::buildBreadcrumb()
     // utilisation so it renders immediately; from there it only updates when the
     // user hovers the chart to check it (adhoc #20) — no background poll and no
     // other trigger keeps it current between those.
-    auto *tokenUsage = new TokenUsageMiniChart;
+    // Three bars: 5-hour, weekly, and the account's Fable weekly window
+    // (adhoc #96).
+    auto *tokenUsage = new TokenUsageMiniChart(
+        QStringLiteral("Claude Code usage"), /*remainingMode=*/false,
+        /*windows=*/3);
     m_navTokenUsage = tokenUsage;
     // This hover is also the only place that re-fetches the live claude-code
     // model list (GET /v1/models, adhoc #41) — everywhere else that touches a
-    // model combo just applies whatever's already cached.
+    // model combo just applies whatever's already cached. The refresh flashes a
+    // green/red box around the chart when it lands (adhoc #96).
     tokenUsage->onHover = [this] {
-        refreshClaudeCodeUsage();
+        refreshClaudeCodeUsage(/*fromHover=*/true);
         refreshClaudeModelCombo();
     };
     {
@@ -4312,27 +5300,43 @@ QWidget *MainWindow::buildBreadcrumb()
         };
         restore(false, kClaudeUsage5hPctSetting);
         restore(true, kClaudeUsageWeekPctSetting);
+        if (settings.contains(kClaudeUsageFablePctSetting))
+            tokenUsage->setUsage(TokenUsageMiniChart::Fable,
+                                 settings.value(kClaudeUsageFablePctSetting).toInt());
         // Reset countdown (issue #50): the cached instant is wall-clock, so derive
         // the remaining time relative to now; a window that already elapsed shows
         // no countdown until the next poll refreshes it.
-        auto restoreReset = [&](bool weekly, const QString &key) {
+        auto restoreReset = [&](TokenUsageMiniChart::Window window,
+                                const QString &key) {
             if (!settings.contains(key))
                 return;
             const qint64 remaining = settings.value(key).toLongLong() -
                                      QDateTime::currentMSecsSinceEpoch();
             if (remaining > 0)
-                tokenUsage->setReset(weekly, humanizeRemaining(remaining));
+                tokenUsage->setReset(window, humanizeRemaining(remaining));
         };
-        restoreReset(false, kClaudeUsage5hResetSetting);
-        restoreReset(true, kClaudeUsageWeekResetSetting);
+        restoreReset(TokenUsageMiniChart::FiveHour, kClaudeUsage5hResetSetting);
+        restoreReset(TokenUsageMiniChart::Weekly, kClaudeUsageWeekResetSetting);
+        restoreReset(TokenUsageMiniChart::Fable, kClaudeUsageFableResetSetting);
     }
     // Codex rides beside Claude Code. App-server updates replace the local
     // countdown estimate with the account's live utilization and reset time.
+    // Two bars only — Codex has no per-model weekly window.
     auto *codexUsage = new TokenUsageMiniChart(
-        QStringLiteral("Codex usage remaining"), /*remainingMode=*/true);
+        QStringLiteral("Codex usage remaining"), /*remainingMode=*/true,
+        /*windows=*/2);
     m_navCodexUsage = codexUsage;
-    codexUsage->onHover = [this] { refreshCodexUsageRemaining(); };
+    // The Codex figures are computed locally, so the hover always "succeeds";
+    // the green box still confirms the reading is fresh (adhoc #96).
+    codexUsage->onHover = [this] {
+        refreshCodexUsageRemaining();
+        flashUsageChart(m_navCodexUsage, true);
+    };
     refreshCodexUsageRemaining();
+    // Re-arm any persisted exhausted-window reminders after the shell exists.
+    // The calendar owns the alert while the app is closed; this covers a desktop
+    // kept open across the known reset time.
+    QTimer::singleShot(0, this, &MainWindow::restoreUsageLimitReminders);
 
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
     m_repoMenuButton = new QPushButton;
@@ -4409,46 +5413,38 @@ QWidget *MainWindow::buildBreadcrumb()
     // The live connection indicator is now a small status dot painted over the
     // top-right avatar (created with the avatar below), not a separate text pill.
 
-    // Icon-only bell (adhoc #137): sits beside the user avatar in the top-right
-    // account cluster rather than as a labelled tab in the section nav.
-    m_notificationButton = new QPushButton;
+    // Pings bell: a regular rail destination (adhoc #117 made it the same
+    // icon-over-caption item as the rest). The pending count rides the bell's
+    // corner as a red "needs you" badge and the glyph tints amber while
+    // anything waits — both painted by ActivityRailButton, driven from
+    // updateNotificationButton().
+    auto *notificationRailButton =
+        new ActivityRailButton(QStringLiteral("bell"), QStringLiteral("Pings"));
+    notificationRailButton->setBadgeUrgent(true);
+    m_notificationButton = notificationRailButton;
     m_notificationButton->setObjectName("topNavButton");
-    m_notificationButton->setCheckable(true);
-    m_notificationButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_notificationButton, "bell", kNotificationBellIconPx);
-    m_notificationButton->setToolTip("Notifications");
+    m_notificationButton->setToolTip("Pings");
     m_navGroup->addButton(m_notificationButton, 3); // section 3: Notifications
     connect(m_notificationButton, &QPushButton::clicked, this,
             &MainWindow::showNotifications);
 
-    // Compact success/failure toast. Built here with the rest of the chrome, but
-    // it is docked into the footer's mini-log panel (see buildNetworkLogDock),
-    // pinned to the top of that panel: messages belong with the log they explain,
-    // not in the crowded window-chrome line (adhoc #14).
+    // Compact success/failure bubble. It is parented to the window rather than a
+    // layout, allowing notifications to float just above the composer without
+    // shifting the prompt or the live-log footer.
     m_topMessage = new QLabel;
     m_topMessage->setObjectName("topMessageText");
     m_topMessage->setTextFormat(Qt::RichText);
-    // Left-align the text itself: the toast as a whole still sits centered in the
-    // bar (via the stretches around it below), but when the window is too narrow
-    // to fit the full one-liner, Qt clips the label rather than eliding it, and a
-    // centered label clips from both ends — hiding the start of the message where
-    // the useful detail is. Left alignment keeps that start visible.
-    m_topMessage->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    // The pill's overall width is capped on m_topMessageContainer below (which
-    // also holds the Expand/Copy/✕ buttons); the label itself just fills it. The
-    // text is elided to one line in flashMessage regardless.
-    // Selectable like before, plus clickable links (e.g. the "jump to agent" toast).
+    // The message is never truncated: it wraps across the bubble's full width and
+    // the countdown/actions sit on their own row underneath it, so no part of a
+    // notification is ever hidden behind an ellipsis.
+    m_topMessage->setWordWrap(true);
+    m_topMessage->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    // Selectable, plus clickable links (e.g. the "jump to agent" notification).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                           Qt::LinksAccessibleByMouse);
-    // ...but never at the cost of the caret: setTextInteractionFlags() bumps a
-    // QLabel to ClickFocus, and the toast now sits right beside the agent prompt,
-    // so selecting an error would silently steal the keyboard from whatever the
-    // user was typing. Mouse selection and link clicks still work without focus.
+    // A bubble must never steal the caret from the prompt beneath it.
     m_topMessage->setFocusPolicy(Qt::NoFocus);
-    // A one-line QLabel reports its whole text width as its minimum, which would
-    // let a long error force the mini-log panel — and with it the window — wider.
-    // An explicit minimum overrides that hint, so the pill shrinks with the panel
-    // and clips (from the right, per the alignment above) instead.
+    // A one-line QLabel otherwise reports its entire text width as its minimum.
     m_topMessage->setMinimumWidth(1);
     connect(m_topMessage, &QLabel::linkActivated, this, [this](const QString &href) {
         if (href.startsWith(QLatin1String("fm:agent:"))) {
@@ -4463,25 +5459,61 @@ QWidget *MainWindow::buildBreadcrumb()
     });
     m_topMessage->hide();
 
-    // Copy button shown beside the toast for errors only. An error toast counts
-    // down for a long window (kToastErrorSeconds) and keeps this Copy / ✕ pair the
-    // whole time, so a failure can be read and grabbed for a bug report before it
-    // fades on its own.
+    // Every bubble can be copied. A notification is often the quickest useful
+    // context to paste into the next agent prompt, whether it is a failure or a
+    // successful result.
     m_topMessageCopy = new QPushButton(QStringLiteral("Copy"));
     m_topMessageCopy->setObjectName("ghostButton");
     m_topMessageCopy->setCursor(Qt::PointingHandCursor);
-    m_topMessageCopy->setToolTip(QStringLiteral("Copy this message and dismiss it"));
-    m_topMessageCopy->setFocusPolicy(Qt::NoFocus); // a toast never grabs the keyboard
+    m_topMessageCopy->setToolTip(QStringLiteral("Copy this bubble's text"));
+    m_topMessageCopy->setFocusPolicy(Qt::NoFocus);
     setOcticon(m_topMessageCopy, "copy", 14);
     m_topMessageCopy->hide();
     connect(m_topMessageCopy, &QPushButton::clicked, this, [this] {
         if (!m_topMessageRaw.isEmpty())
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
-        advanceTopMessageQueue(); // move on to the next queued error, if any
     });
-    // A plain "x" to dismiss an error toast without copying it.
-    m_topMessageClose = new QPushButton(QString::fromUtf8("\xE2\x9C\x95")); // ✕
+
+    m_topMessageSendToPrompt = new QPushButton(QStringLiteral("Send to prompt"));
+    m_topMessageSendToPrompt->setObjectName("topMessageAction");
+    m_topMessageSendToPrompt->setCursor(Qt::PointingHandCursor);
+    m_topMessageSendToPrompt->setToolTip(
+        QStringLiteral("Add this notification to the footer prompt"));
+    m_topMessageSendToPrompt->setFocusPolicy(Qt::NoFocus);
+    setOcticon(m_topMessageSendToPrompt, "paper-airplane", 13);
+    m_topMessageSendToPrompt->hide();
+    connect(m_topMessageSendToPrompt, &QPushButton::clicked, this, [this] {
+        if (!m_issueQuickAdd || m_topMessageRaw.isEmpty())
+            return;
+        QString draft = m_issueQuickAdd->toPlainText();
+        if (!draft.trimmed().isEmpty()) {
+            if (!draft.endsWith(QStringLiteral("\n\n"))) {
+                if (draft.endsWith(QLatin1Char('\n')))
+                    draft += QLatin1Char('\n');
+                else
+                    draft += QStringLiteral("\n\n");
+            }
+        } else {
+            draft.clear();
+        }
+        draft += m_topMessageRaw;
+        m_issueQuickAdd->setPlainText(draft);
+        m_issueQuickAdd->moveCursor(QTextCursor::End);
+        m_issueQuickAdd->setFocus();
+    });
+
+    // Dim countdown / queue / paused text. It used to be appended to the message
+    // itself; on its own row it can never push the message into an ellipsis.
+    m_topMessageMeta = new QLabel;
+    m_topMessageMeta->setObjectName("topMessageMeta");
+    m_topMessageMeta->setTextFormat(Qt::PlainText);
+    m_topMessageMeta->setFocusPolicy(Qt::NoFocus);
+    m_topMessageMeta->setMinimumWidth(1);
+
+    // A plain "x" to dismiss a bubble without copying it.
+    m_topMessageClose = new QPushButton;
     m_topMessageClose->setObjectName("ghostButton");
+    setOcticon(m_topMessageClose, "x", 14);
     m_topMessageClose->setCursor(Qt::PointingHandCursor);
     m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
     m_topMessageClose->setFocusPolicy(Qt::NoFocus);
@@ -4489,73 +5521,103 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageClose, &QPushButton::clicked, this,
             [this] { dismissTopMessage(); }); // always fully close, even if another error is queued
 
-    // Shown beside the toast when a message is too long to fit on one line.
-    // Clicking it expands the full message in place (wrapped, growing the toast)
-    // and toggles back to the elided one-liner — no modal pops up.
-    m_topMessageExpand = new QPushButton;
-    m_topMessageExpand->setObjectName("ghostButton");
-    m_topMessageExpand->setCursor(Qt::PointingHandCursor);
-    m_topMessageExpand->setToolTip(QStringLiteral("Show the full message"));
-    m_topMessageExpand->setFocusPolicy(Qt::NoFocus);
-    setOcticon(m_topMessageExpand, "chevron-down", 14);
-    m_topMessageExpand->hide();
-    connect(m_topMessageExpand, &QPushButton::clicked, this, [this] {
-        m_topMessageExpanded = !m_topMessageExpanded;
-        renderTopMessage();
-        // Keep the live countdown suffix if a success toast is still ticking.
-        if (m_topMessageTimer && m_topMessageTimer->isActive())
-            renderTopMessageCountdown();
-    });
-
-    // Wrap the text and its Expand/Copy/✕ affordances in one bordered pill so
-    // they render (and hit-test) as a single contained unit instead of the
-    // buttons floating loose beside the box, which could leave them squeezed
-    // to almost nothing — and effectively unclickable — once the rest of the
-    // crowded top bar ran short on room (adhoc #16).
-    m_topMessageContainer = new QFrame;
+    // A single floating unit keeps its text and actions together while it fades.
+    // The bubble stacks vertically: the whole message across the full width, then
+    // a full-width row carrying the countdown and the action buttons. Nothing
+    // competes with the text for horizontal room, so it never has to be elided.
+    m_topMessageContainer = new QFrame(this);
     m_topMessageContainer->setObjectName("topMessage");
     m_topMessageContainer->setFocusPolicy(Qt::NoFocus);
-    // The pill fills the mini-log panel it now lives in, so a long error gets
-    // every pixel the log has; the cap only stops it sprawling on a very wide
-    // window. It can never widen the window itself — see the label's minimum above.
-    m_topMessageContainer->setMaximumWidth(900);
-    m_topMessageContainer->setSizePolicy(QSizePolicy::Preferred,
-                                         QSizePolicy::Fixed);
-    auto *topMessageRow = new QHBoxLayout(m_topMessageContainer);
-    topMessageRow->setContentsMargins(12, 2, 6, 2);
-    topMessageRow->setSpacing(4);
-    topMessageRow->addWidget(m_topMessage, 1);
-    topMessageRow->addWidget(m_topMessageExpand);
-    topMessageRow->addWidget(m_topMessageCopy);
-    topMessageRow->addWidget(m_topMessageClose);
+    m_topMessageContainer->setAttribute(Qt::WA_StyledBackground, true);
+    m_topMessageContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    m_topMessageContainer->setMouseTracking(true);
+    m_topMessageContainer->installEventFilter(this);
+
+    // Pending notifications remain visible as a compact stack below the active
+    // toast. The scroll area means a large burst remains reachable without
+    // covering the entire window; the newest queued notification stays at the
+    // bottom, nearest to the composer.
+    m_topMessageQueueScroll = new QScrollArea(this);
+    m_topMessageQueueScroll->setObjectName("topMessageQueue");
+    m_topMessageQueueScroll->setFrameShape(QFrame::NoFrame);
+    m_topMessageQueueScroll->setWidgetResizable(false);
+    m_topMessageQueueScroll->setFocusPolicy(Qt::NoFocus);
+    m_topMessageQueueScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_topMessageQueueScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_topMessageQueueContent = new QWidget;
+    m_topMessageQueueContent->setObjectName("topMessageQueueContent");
+    m_topMessageQueueLayout = new QVBoxLayout(m_topMessageQueueContent);
+    m_topMessageQueueLayout->setContentsMargins(0, 0, 0, 0);
+    m_topMessageQueueLayout->setSpacing(8);
+    m_topMessageQueueScroll->setWidget(m_topMessageQueueContent);
+    m_topMessageQueueScroll->hide();
+
+    // Only a message taller than the room above the composer ever scrolls; the
+    // usual few-line toast shows entirely, with no scrollbar (topMessageBubbleRect
+    // sizes this to the text).
+    m_topMessageScroll = new QScrollArea;
+    m_topMessageScroll->setObjectName("topMessageScroll");
+    m_topMessageScroll->setFrameShape(QFrame::NoFrame);
+    m_topMessageScroll->setWidgetResizable(true);
+    m_topMessageScroll->setFocusPolicy(Qt::NoFocus);
+    m_topMessageScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_topMessageScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_topMessageScroll->setWidget(m_topMessage);
+    // setWidget turns on the label's own background fill, which would paint a
+    // grey slab over the bubble's rounded, themed one.
+    m_topMessage->setAutoFillBackground(false);
+    m_topMessageScroll->viewport()->setAutoFillBackground(false);
+    m_topMessageScroll->viewport()->setObjectName("topMessageViewport");
+
+    m_topMessageActions = new QWidget;
+    m_topMessageActions->setObjectName("topMessageActions");
+    m_topMessageActions->setFocusPolicy(Qt::NoFocus);
+    auto *topMessageActionRow = new QHBoxLayout(m_topMessageActions);
+    topMessageActionRow->setContentsMargins(0, 0, 0, 0);
+    topMessageActionRow->setSpacing(4);
+    topMessageActionRow->addWidget(m_topMessageMeta);
+    topMessageActionRow->addStretch(1);
+    topMessageActionRow->addWidget(m_topMessageCopy);
+    topMessageActionRow->addWidget(m_topMessageSendToPrompt);
+    topMessageActionRow->addWidget(m_topMessageClose);
+
+    auto *topMessageColumn = new QVBoxLayout(m_topMessageContainer);
+    topMessageColumn->setContentsMargins(12, 8, 10, 8);
+    topMessageColumn->setSpacing(6);
+    topMessageColumn->addWidget(m_topMessageScroll, 1);
+    topMessageColumn->addWidget(m_topMessageActions);
+    for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
+                            static_cast<QWidget *>(m_topMessageScroll),
+                            static_cast<QWidget *>(m_topMessageScroll->viewport()),
+                            static_cast<QWidget *>(m_topMessageActions),
+                            static_cast<QWidget *>(m_topMessageMeta),
+                            static_cast<QWidget *>(m_topMessageCopy),
+                            static_cast<QWidget *>(m_topMessageSendToPrompt),
+                            static_cast<QWidget *>(m_topMessageClose)})
+        widget->installEventFilter(this);
+
+    // One geometry animation drives both the composer-to-bubble arrival and the
+    // slide-off exit. The bubble never fades: it stays fully readable for the
+    // whole countdown and only then leaves, so nothing dims out mid-read.
+    m_topMessageFlight = new QPropertyAnimation(m_topMessageContainer, "geometry", this);
+    m_topMessageFlight->setDuration(260);
+    m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
+    connect(m_topMessageFlight, &QPropertyAnimation::finished, this, [this] {
+        if (!m_topMessageSlidingOut)
+            return; // an arrival flight just landed; nothing to clean up
+        m_topMessageSlidingOut = false;
+        advanceTopMessageQueue();
+    });
     m_topMessageContainer->hide();
 
-    // The expanded full text lives in this floating panel, parented to the window
-    // (not to any layout) and raised above everything when shown. Revealing it
-    // therefore overlays the UI on top instead of growing the inline toast, so it
-    // never shifts the top bar or the layout below it. See renderTopMessage.
-    m_topMessageOverlay = new QFrame(this);
-    m_topMessageOverlay->setObjectName("topMessageOverlay");
-    m_topMessageOverlay->setFocusPolicy(Qt::NoFocus);
-    auto *overlayLayout = new QVBoxLayout(m_topMessageOverlay);
-    overlayLayout->setContentsMargins(12, 10, 12, 10);
-    m_topMessageOverlayText = new QLabel;
-    m_topMessageOverlayText->setObjectName("topMessageOverlayText");
-    m_topMessageOverlayText->setTextFormat(Qt::RichText);
-    m_topMessageOverlayText->setWordWrap(true);
-    m_topMessageOverlayText->setTextInteractionFlags(Qt::TextSelectableByMouse |
-                                                     Qt::LinksAccessibleByMouse);
-    m_topMessageOverlayText->setFocusPolicy(Qt::NoFocus);
-    overlayLayout->addWidget(m_topMessageOverlayText);
-    m_topMessageOverlay->hide();
-
-    // User avatar, pinned to the top-right-most of the bar. Clicking it opens
-    // Settings for the current user.
+    // User avatar, the rail's bottom-most Account item. Clicking it opens
+    // Settings for the current user. Sized to sit flush with the rail's 20px
+    // octicons (adhoc #117) rather than dwarfing them.
     m_userAvatarNavButton = new QPushButton;
     m_userAvatarNavButton->setObjectName("serverFooterButton");
     m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
-    m_userAvatarNavButton->setFixedSize(40, 40);
-    m_userAvatarNavButton->setIconSize(QSize(34, 34));
+    m_userAvatarNavButton->setFixedSize(26, 26);
+    m_userAvatarNavButton->setIconSize(QSize(24, 24));
     m_userAvatarNavButton->setToolTip("Settings");
     connect(m_userAvatarNavButton, &QPushButton::clicked, this, [this] {
         showSection(1);
@@ -4573,24 +5635,24 @@ QWidget *MainWindow::buildBreadcrumb()
     // live status text lives in the dot's tooltip, set by updateConnectionStatus.
     m_connectionDot = new QLabel(m_userAvatarNavButton);
     m_connectionDot->setObjectName("connectionDot");
-    m_connectionDot->setFixedSize(12, 12);
+    m_connectionDot->setFixedSize(10, 10);
     m_connectionDot->setAttribute(Qt::WA_TransparentForMouseEvents);
-    // Tucked one step further in than a square avatar needed: on the circular
-    // picture the corner is empty, so the dot has to sit on the rim to read as
-    // part of it.
-    m_connectionDot->move(40 - 12 - 3, 40 - 12 - 3);
+    // On the circular picture the corner is empty, so the dot sits on the rim
+    // to read as part of it.
+    m_connectionDot->move(26 - 10, 26 - 10);
     m_connectionDot->raise();
 
     // Admin crown badge, overlaid on the top-left of the same avatar (mirroring
-    // the connection dot's bottom-right corner). Hidden unless this node is an
-    // admin; updateAdminCrownBadge() keeps it in sync with m_isAdmin.
-    m_adminCrownBadge = new QLabel(QString::fromUtf8("\xF0\x9F\x91\x91"),
-                                   m_userAvatarNavButton);
+    // the connection dot's bottom-right corner). A gold-tinted SVG like every
+    // other glyph in the app (adhoc #117 retired the emoji). Hidden unless this
+    // node is an admin; updateAdminCrownBadge() keeps it in sync with m_isAdmin.
+    m_adminCrownBadge = new QLabel(m_userAvatarNavButton);
     m_adminCrownBadge->setObjectName("adminCrownBadge");
-    m_adminCrownBadge->setFixedSize(14, 14);
+    m_adminCrownBadge->setFixedSize(12, 12);
     m_adminCrownBadge->setAlignment(Qt::AlignCenter);
     m_adminCrownBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_adminCrownBadge->setStyleSheet(QStringLiteral("font-size:11px;"));
+    m_adminCrownBadge->setPixmap(tintedOcticonPixmap(
+        QStringLiteral("crown"), QColor(QStringLiteral("#e3b341")), 12));
     m_adminCrownBadge->move(-2, -2);
     m_adminCrownBadge->raise();
     m_adminCrownBadge->hide();
@@ -4607,34 +5669,24 @@ QWidget *MainWindow::buildBreadcrumb()
     // Agents: a shortcut into the current repo's Agents tab (adhoc #194), not a
     // section of its own — it just jumps via openAgentsOverview() the same way
     // the footer "Agents:" label does. Checkable to show when the Agents tab is
-    // active (adhoc #201). Unlike its neighbours it is NOT an ActivityRailButton
-    // and does not live in the app navigation rail: it heads the window-chrome
-    // line's search cluster, immediately left of Back/Forward, so the live agent
-    // matrix can ride beside it along the horizontal top bar.
-    m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
-    // Not a plain #topNavButton any more (adhoc #42): the fleet gets a
-    // "magical" violet-to-cyan gradient pill with a soft glow, so the one
-    // control that opens the running agents stands out from the rest of the
-    // chrome. The glow is a real drop shadow rather than a QSS trick, which
-    // Qt's stylesheets can't render.
-    m_agentsNavButton->setObjectName("agentsMagicButton");
+    // active (adhoc #201). It used to be a "magical" gradient pill on the
+    // window-chrome line; adhoc #70 made it a regular entry heading the app
+    // navigation rail, badged with the number of *running* sessions, so it
+    // reads like every other destination. Its fleet matrix stays on the chrome
+    // line, where the horizontal room for it is.
+    m_agentsNavButton = new ActivityRailButton(QStringLiteral("star"),
+                                               QStringLiteral("Agents"));
+    m_agentsNavButton->setObjectName("topNavButton");
     m_agentsNavButton->setCheckable(true);
     m_agentsNavButton->setCursor(Qt::PointingHandCursor);
     m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
     setOcticon(m_agentsNavButton, "star", 16);
-    {
-        auto *glow = new QGraphicsDropShadowEffect(m_agentsNavButton);
-        glow->setBlurRadius(18);
-        glow->setOffset(0, 0);
-        glow->setColor(QColor(167, 110, 255, 170));
-        m_agentsNavButton->setGraphicsEffect(glow);
-    }
     connect(m_agentsNavButton, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
 
-    // One tiny square per agent session, right of the button: the whole fleet's
-    // status as a matrix, with running sessions sweeping in time with their live
-    // output. Populated (and kept current) by refreshAgentDotMatrix().
+    // One tiny square per agent session: the whole fleet's status as a matrix,
+    // with running sessions sweeping in time with their live output. Populated
+    // (and kept current) by refreshAgentDotMatrix().
     m_agentDotMatrix = new AgentDotMatrix;
     m_agentDotMatrix->onDotClicked = [this](int sessionId) {
         if (sessionId > 0)
@@ -4643,34 +5695,70 @@ QWidget *MainWindow::buildBreadcrumb()
             openAgentsOverview();
     };
 
-    // Chat: its own top-level section (m_sectionStack index 2).
-    m_chatButton = new ActivityRailButton(QStringLiteral("comment"),
-                                          QStringLiteral("Chat"));
+    // Immediately right of the fleet, behind a faint divider: one dot per node
+    // on the network (adhoc #124), so the machines read on the same line as the
+    // agents. Kept current by refreshNodeDotMatrix().
+    auto makeChromeDotDivider = [] {
+        auto *divider = new QWidget;
+        divider->setObjectName(QStringLiteral("chromeDotDivider"));
+        // A bare QWidget ignores a stylesheet background unless it opts in.
+        divider->setAttribute(Qt::WA_StyledBackground, true);
+        divider->setFixedWidth(1);
+        divider->setFixedHeight(15); // a hairline inside the 21px grids
+        divider->hide();
+        return divider;
+    };
+    m_chromeDotDivider = makeChromeDotDivider();
+    m_nodeDotMatrix = new NodeDotMatrix;
+    m_nodeDotMatrix->onDotClicked = [this](const QString &node) {
+        showNetworkTab(kNetworkNodesTab);
+        if (node.isEmpty() || !m_nodesTable)
+            return; // past the last dot: the Nodes list itself is the answer
+        for (int row = 0; row < m_nodesTable->rowCount(); ++row) {
+            const QTableWidgetItem *item = m_nodesTable->item(row, 0);
+            if (!item || item->data(Qt::UserRole).toString() != node)
+                continue;
+            m_nodesTable->selectRow(row);
+            showNodeDetailForRow(row);
+            break;
+        }
+    };
+
+    // Immediately right of the node dots, behind a divider of its own: the most
+    // recent action runs and their status (adhoc #70), so CI reads on the same
+    // line as the agents. Kept current by refreshActionRunStrip().
+    m_chromeActionDivider = makeChromeDotDivider();
+    m_actionRunStrip = new ActionRunStrip;
+    m_actionRunStrip->onCellClicked = [this](int runId) {
+        // Past the last square there is nothing specific to open, so fall back
+        // to the newest run — which is what the strip is about.
+        if (runId <= 0 && !m_actionRuns.isEmpty())
+            runId = m_actionRuns.first().id;
+        if (runId > 0)
+            openActionRunFromNotification(runId);
+    };
+    // Runs are loaded before the chrome exists, so paint the strip once here
+    // rather than waiting for the next run-state change to reach it.
+    refreshActionRunStrip();
+
+    // Chat: its own top-level section (m_sectionStack index 2). The unread
+    // count rides the icon's corner as a red "needs you" badge, painted by
+    // ActivityRailButton itself (updateChatButton feeds it the tally).
+    auto *chatRailButton = new ActivityRailButton(QStringLiteral("comment"),
+                                                  QStringLiteral("Chat"));
+    chatRailButton->setBadgeUrgent(true);
+    m_chatButton = chatRailButton;
     m_chatButton->setObjectName("topNavButton");
-    m_chatButton->setCheckable(true);
-    m_chatButton->setCursor(Qt::PointingHandCursor);
     m_chatButton->setToolTip(QStringLiteral("Chat"));
-    setOcticon(m_chatButton, "comment", 16);
     m_navGroup->addButton(m_chatButton, 2); // section 2: Chat
     connect(m_chatButton, &QPushButton::clicked, this, &MainWindow::showChatView);
-    // Red unread-count badge pinned to the chat button's top-right corner. It's
-    // decorative (clicks fall through to the button); updateChatButton sizes,
-    // positions and shows/hides it from the unread tally.
-    m_chatUnreadBadge = new QLabel(m_chatButton);
-    m_chatUnreadBadge->setObjectName("chatUnreadBadge");
-    m_chatUnreadBadge->setAlignment(Qt::AlignCenter);
-    m_chatUnreadBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_chatUnreadBadge->hide();
 
-    // Settings: its own top-level section (m_sectionStack index 1). Icon-only
-    // (adhoc #137): it lives in the right-hand utility cluster next to the
-    // rebuild/restart button rather than as a labelled tab in the section nav.
-    m_settingsNavButton = new QPushButton;
+    // Settings: its own top-level section (m_sectionStack index 1), a regular
+    // rail destination styled like every other item (adhoc #117).
+    m_settingsNavButton = new ActivityRailButton(QStringLiteral("gear"),
+                                                 QStringLiteral("Settings"));
     m_settingsNavButton->setObjectName("topNavButton");
-    m_settingsNavButton->setCheckable(true);
-    m_settingsNavButton->setCursor(Qt::PointingHandCursor);
     m_settingsNavButton->setToolTip(QStringLiteral("Settings"));
-    setOcticon(m_settingsNavButton, "gear", 16);
     m_navGroup->addButton(m_settingsNavButton, 1); // section 1: Settings
     connect(m_settingsNavButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
@@ -4703,58 +5791,18 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_controlNodeNavButton, &QPushButton::clicked, this,
             [this] { showSection(kControlNodeSectionIndex); });
 
-    // Hosts (adhoc #263): provision a remote machine by SSHing in and running the
-    // ForkMesh installer over ansible, section 7.
-    m_hostsNavButton = new ActivityRailButton(QStringLiteral("server"),
-                                              QStringLiteral("Hosts"));
-    m_hostsNavButton->setObjectName("topNavButton");
-    m_hostsNavButton->setCheckable(true);
-    m_hostsNavButton->setCursor(Qt::PointingHandCursor);
-    m_hostsNavButton->setToolTip(
-        QString::fromUtf8("Hosts \xE2\x80\x94 install ForkMesh on a remote machine"));
-    setOcticon(m_hostsNavButton, "server", 16);
-    m_navGroup->addButton(m_hostsNavButton, 7); // section 7: Hosts
-    connect(m_hostsNavButton, &QPushButton::clicked, this,
-            [this] { showSection(7); });
-
-    // Nodes (adhoc #9): a sortable directory of every node this client knows
-    // about (the same nodes in the top-bar node dropdown). Sits between Hosts
-    // and Relays, section 13.
-    m_nodesNavButton = new ActivityRailButton(QStringLiteral("server"),
-                                              QStringLiteral("Nodes"));
-    m_nodesNavButton->setObjectName("topNavButton");
-    m_nodesNavButton->setCheckable(true);
-    m_nodesNavButton->setCursor(Qt::PointingHandCursor);
-    m_nodesNavButton->setToolTip(
-        QString::fromUtf8("Nodes \xE2\x80\x94 platform, status, version and repo count"));
-    setOcticon(m_nodesNavButton, "server", 16);
-    m_navGroup->addButton(m_nodesNavButton, kNodesSectionIndex); // section 13: Nodes
-    connect(m_nodesNavButton, &QPushButton::clicked, this,
-            [this] { showSection(kNodesSectionIndex); });
-
-    // Relays: a live list of the configured mainnode relays with their online
-    // status, round-trip response time and running version. Sits next to Hosts,
-    // section 8.
-    m_relaysNavButton = new ActivityRailButton(QStringLiteral("broadcast"),
-                                               QStringLiteral("Relays"));
-    m_relaysNavButton->setObjectName("topNavButton");
-    m_relaysNavButton->setCheckable(true);
-    m_relaysNavButton->setCursor(Qt::PointingHandCursor);
-    m_relaysNavButton->setToolTip(
-        QString::fromUtf8("Relays \xE2\x80\x94 online status, response time and version"));
-    setOcticon(m_relaysNavButton, "broadcast", 16);
-    m_navGroup->addButton(m_relaysNavButton, 8); // section 8: Relays
-    connect(m_relaysNavButton, &QPushButton::clicked, this,
-            [this] { showSection(8); });
-
-    // Network: websocket / Durable Object diagnostics plus outbound firewall.
+    // Network: Relays, Nodes and Hosts as tabs (adhoc #54) alongside the
+    // websocket / Durable Object diagnostics and the outbound firewall. The
+    // three used to be rail buttons of their own (sections 7, 8 and 13); those
+    // section indexes still resolve, they just land on the matching tab.
     m_networkNavButton = new ActivityRailButton(QStringLiteral("workflow"),
                                                 QStringLiteral("Network"));
     m_networkNavButton->setObjectName("topNavButton");
     m_networkNavButton->setCheckable(true);
     m_networkNavButton->setCursor(Qt::PointingHandCursor);
     m_networkNavButton->setToolTip(
-        QStringLiteral("Network - websocket and Durable Object diagnostics"));
+        QString::fromUtf8("Network \xE2\x80\x94 relays, nodes, hosts, websocket "
+                          "and Durable Object diagnostics"));
     setOcticon(m_networkNavButton, "workflow", 16);
     m_navGroup->addButton(m_networkNavButton, kNetworkDiagnosticsSectionIndex);
     connect(m_networkNavButton, &QPushButton::clicked, this,
@@ -4774,41 +5822,45 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navRebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_navRebuildButton); quickRebuildRestart(); });
 
-    // Square screenshot button beside the rebuild/restart button: drag a region
-    // anywhere on screen and it lands in the prompt as an attachment.
-    m_navScreenshotButton = new QPushButton;
+    // "Log in / Sign up" pill (adhoc #115). The old first-run screen that asked
+    // for a username and a relay host is gone — the app opens straight into the
+    // shell — so this is what a user who hasn't attached a forkmesh.com account
+    // clicks. updateSignInButton() hides it the moment one is attached.
+    m_navSignInButton = new QPushButton(QStringLiteral("Log in / Sign up"));
+    m_navSignInButton->setObjectName("primaryButton");
+    m_navSignInButton->setCursor(Qt::PointingHandCursor);
+    m_navSignInButton->setToolTip(
+        QStringLiteral("Attach this machine to your ForkMesh account, or create "
+                       "one on forkmesh.com"));
+    setOcticon(m_navSignInButton, "sign-in", 14);
+    m_navSignInButton->hide();
+    connect(m_navSignInButton, &QPushButton::clicked, this,
+            &MainWindow::showSignInMenu);
+
+    // Screenshot rail item: drag a region anywhere on screen and it lands in
+    // the prompt as an attachment. A one-shot action, so it never stays checked.
+    m_navScreenshotButton = new ActivityRailButton(QStringLiteral("screen-full"),
+                                                   QStringLiteral("Capture"));
+    m_navScreenshotButton->setCheckable(false);
     m_navScreenshotButton->setObjectName("topNavButton");
-    m_navScreenshotButton->setCursor(Qt::PointingHandCursor);
     m_navScreenshotButton->setToolTip(
         QString::fromUtf8("Screenshot a region \xE2\x80\x94 drag a square anywhere on "
                           "screen and it's attached to your prompt"));
-    setOcticon(m_navScreenshotButton, "screen-full", 14);
     connect(m_navScreenshotButton, &QPushButton::clicked, this,
             &MainWindow::captureScreenRegion);
 
-    // Pencil button beside the screenshot button: drop a transparent overlay you
-    // can scribble on freehand anywhere on screen — handy for pointing things out.
-    m_navDrawButton = new QPushButton;
-    m_navDrawButton->setObjectName("topNavButton");
-    m_navDrawButton->setCursor(Qt::PointingHandCursor);
-    m_navDrawButton->setToolTip(
-        QString::fromUtf8("Draw on the screen \xE2\x80\x94 scribble freehand "
-                          "anywhere; Esc to clear it away"));
-    setOcticon(m_navDrawButton, "pencil", 14);
-    connect(m_navDrawButton, &QPushButton::clicked, this,
-            &MainWindow::startScreenDraw);
-
-    // Resize button beside the draw/screenshot buttons: snap the window down to
+    // Resize rail item below the screenshot one: snap the window down to
     // a common minimal screen size (1280x720), so it's quick to preview how
-    // ForkMesh looks on a smaller display before filing a UI bug.
-    m_navResizeButton = new QPushButton;
+    // ForkMesh looks on a smaller display before filing a UI bug. Also a
+    // one-shot action, so it never stays checked.
+    m_navResizeButton = new ActivityRailButton(QStringLiteral("device-desktop"),
+                                               QStringLiteral("Resize"));
+    m_navResizeButton->setCheckable(false);
     m_navResizeButton->setObjectName("topNavButton");
-    m_navResizeButton->setCursor(Qt::PointingHandCursor);
     m_navResizeButton->setToolTip(
         QString::fromUtf8("Resize to 1280\xC3\x97" "720 \xE2\x80\x94 a common "
                           "minimal screen size, handy for previewing smaller "
                           "displays"));
-    setOcticon(m_navResizeButton, "device-desktop", 14);
     connect(m_navResizeButton, &QPushButton::clicked, this, [this] {
         if (isMaximized())
             showNormal();
@@ -4816,15 +5868,17 @@ QWidget *MainWindow::buildBreadcrumb()
     });
 
     // UI-stall indicator (adhoc #117/#145): an octicon that sits beside the
-    // CPU/MEM/DISK sparklines on the window-chrome line and shows the count of
-    // detected UI stalls. Click to see the stall details.
+    // CPU/MEM/SWAP/DISK sparklines on the window-chrome line and shows the count of
+    // detected UI stalls. Click drafts a "fix these stalls" prompt in the
+    // composer (adhoc #73); right-click still opens the read-only details.
     m_footerDiagnostics = new QPushButton;
     m_footerDiagnostics->setObjectName("footerDiagnostics");
     m_footerDiagnostics->setFlat(true);
     m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
     m_footerDiagnostics->setToolTip(
         "UI-stall diagnostics: any freezes long enough to trip the Wait/Kill "
-        "prompt land here. Click for the recorded stall details.");
+        "prompt land here. Click to draft a fix-it prompt in the composer; "
+        "right-click for the recorded stall details.");
     m_footerDiagnostics->setStyleSheet(
         "QPushButton#footerDiagnostics{color:#d29922;border:none;background:transparent;"
         "font-size:10px;padding:0 3px;spacing:2px;}"
@@ -4832,24 +5886,34 @@ QWidget *MainWindow::buildBreadcrumb()
     m_footerDiagnostics->setFixedHeight(18);
     setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
     connect(m_footerDiagnostics, &QPushButton::clicked, this,
-            &MainWindow::showDiagnosticsDialog);
+            &MainWindow::sendStallReportToComposer);
+    m_footerDiagnostics->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_footerDiagnostics, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &) { showDiagnosticsDialog(); });
 
-    // Three little button-sized squares on the window-chrome line, each plotting
-    // one resource — this app's CPU, the host's memory and its disk — as a moving
-    // sparkline fed one sample a second by updateFooterDiagnostics. Clicking the
-    // CPU or DISK square opens the same diagnostics dialog as the glyph; MEM
-    // opens the high-memory process panel.
+    // Four little button-sized squares on the window-chrome line, each plotting
+    // one resource — this app's CPU, the host's memory, swap and its disk — as a
+    // moving sparkline fed one sample a second by updateFooterDiagnostics.
+    // Clicking the CPU, SWAP or DISK square opens the same diagnostics dialog as
+    // the glyph; MEM opens the high-memory process panel.
     auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
     auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
+    auto *swapChart = new ResourceSparkline(QStringLiteral("SWAP"));
     auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
-    for (ResourceSparkline *chart : {cpuChart, diskChart})
+    for (ResourceSparkline *chart : {cpuChart, swapChart, diskChart})
         chart->onClicked = [this] { showDiagnosticsDialog(); };
     // The memory square goes straight to the culprit list instead: that panel is
     // what you want when the MEM curve spikes (adhoc #46).
     memChart->onClicked = [this] { showHighMemoryProcessPanel(); };
     m_cpuChart = cpuChart;
     m_memChart = memChart;
+    m_swapChart = swapChart;
     m_diskChart = diskChart;
+
+    // The thirty-day SIZE/LOC/FILES repository trends and the Ratchet mode
+    // toggle no longer live on the chrome line (adhoc #6): they're built into
+    // the Code overview's mode row (buildRepoFilesPanel), beside the toolbar
+    // counts they describe.
 
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -4861,20 +5925,35 @@ QWidget *MainWindow::buildBreadcrumb()
 
     auto *chrome = new WindowChromeBar;
     auto *chromeRow = new QHBoxLayout(chrome);
-    chromeRow->setContentsMargins(14, 0, 8, 0);
+    // No left margin: the relay favicon is a rail-item-wide button, so starting
+    // the row at the window edge lines the logo up with the activity rail's
+    // icons directly below it (this replaces the old 24px inset from adhoc #91).
+    chromeRow->setContentsMargins(0, 0, 8, 0);
     chromeRow->setSpacing(8);
-    // The instance/relay switcher heads the edge-to-edge chrome, with the public
-    // SOL balance immediately to its right. The Agents button and its live fleet
-    // matrix moved out of the centred search cluster to sit in this same
-    // left-hand group (adhoc #42), so the fleet reads on the same left edge as
-    // the balance instead of drifting with the search box.
+    // The instance/relay switcher heads the edge-to-edge chrome. The live fleet
+    // matrix sits in this same left-hand group (adhoc #42) so it reads on the
+    // window's left edge instead of drifting with the search box, and the recent
+    // action runs follow it (adhoc #70). The Agents button that used to head this
+    // group is now a regular rail entry, and the public SOL balance that used to
+    // sit here moved under the account avatar in the rail (adhoc #96).
     chromeRow->addWidget(m_relayMenuButton);
+    // Logged-out only: the sign-in pill sits immediately after the relay switcher
+    // so it is the first thing on the bar that isn't chrome, and it lives in the
+    // left-hand group because that group never scrolls out of a narrow window.
+    chromeRow->addWidget(m_navSignInButton);
+    chromeRow->addWidget(m_relayJoinApproveButton);
+    // The owner/repo switcher follows the instance logo (adhoc #6) — repository
+    // identity now reads on the chrome line instead of heading the repo-detail
+    // page. updateRepoSwitcher still owns its text, icon and visibility.
+    chromeRow->addWidget(m_repoMenuButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);
-    identityBalanceRow->addWidget(m_navSolanaBalance);
-    identityBalanceRow->addWidget(m_agentsNavButton);
     identityBalanceRow->addWidget(m_agentDotMatrix);
+    identityBalanceRow->addWidget(m_chromeDotDivider, 0, Qt::AlignVCenter);
+    identityBalanceRow->addWidget(m_nodeDotMatrix);
+    identityBalanceRow->addWidget(m_chromeActionDivider, 0, Qt::AlignVCenter);
+    identityBalanceRow->addWidget(m_actionRunStrip);
     chromeRow->addLayout(identityBalanceRow);
     chromeRow->addStretch();
 
@@ -4888,14 +5967,14 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeRow->addStretch();
     // The toast used to sit here; it now docks at the top of the footer's
     // mini-log panel (buildNetworkLogDock), beside the lines it explains.
-    // Relay radar, moved up onto the window-chrome line just left of the
-    // CPU/MEM/DISK sparklines so its latency readout reads the same way as
-    // theirs (adhoc #87).
-    chromeRow->addWidget(m_relayRadar);
-    // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
+    // The relay radar used to sit here too (adhoc #87); it is gone (adhoc
+    // #124) — its colour moved to the dot above the instance logo and its
+    // node blips to the node dots beside the agent fleet.
+    // Live CPU/MEM/SWAP/DISK sparklines, moved up onto the window-chrome line next
     // to the minimize/maximize/close buttons (adhoc #33).
     chromeRow->addWidget(cpuChart);
     chromeRow->addWidget(memChart);
+    chromeRow->addWidget(swapChart);
     chromeRow->addWidget(diskChart);
     // Compact diagnostics stack: the stall indicator stays high on the chrome
     // line, its bare version number sits directly beneath it, and the opt-in
@@ -4949,8 +6028,24 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     chromeScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     chromeScroll->setMinimumWidth(0);
-    chromeScroll->setFixedHeight(54);
     chromeScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // The scroll area is exactly as tall as the chrome bar it wraps, and only
+    // grows by the scrollbar's own height on the frames where a narrow window
+    // really does have something to scroll to (adhoc #38). It used to be pinned
+    // at a flat 54 — 42 for the bar plus a permanent 12px reservation for a
+    // scrollbar that is usually absent — which left a dead strip spanning the
+    // whole window under the chrome line, holding the navigation rail (and its
+    // left-hand edge) that far down the window for no reason.
+    const int chromeHeight = chrome->height();
+    QScrollBar *chromeHBar = chromeScroll->horizontalScrollBar();
+    auto syncChromeScrollHeight = [chromeScroll, chromeHBar, chromeHeight] {
+        const bool scrollable = chromeHBar->maximum() > chromeHBar->minimum();
+        chromeScroll->setFixedHeight(
+            chromeHeight + (scrollable ? chromeHBar->sizeHint().height() : 0));
+    };
+    connect(chromeHBar, &QScrollBar::rangeChanged, chromeScroll,
+            [syncChromeScrollHeight](int, int) { syncChromeScrollHeight(); });
+    syncChromeScrollHeight();
     layout->addWidget(chromeScroll);
 
     // The node switcher was retired from the global header. Keep its object
@@ -4976,6 +6071,7 @@ QWidget *MainWindow::buildBreadcrumb()
     refreshRepoSyncIndicators();
     updateNavRebuildButton();
     updateNodeOnlineControls();
+    updateSignInButton();
     return bar;
 }
 
@@ -4985,6 +6081,58 @@ void MainWindow::updateNavRebuildButton()
         QSettings().value(kShowRebuildButtonSetting, false).toBool();
     if (m_navRebuildButton)
         m_navRebuildButton->setVisible(visible);
+}
+
+// The top-bar "Log in / Sign up" pill replaces the retired first-run screen
+// (adhoc #115), so it must be honest about state rather than eager: it stays
+// hidden until silent auth has actually resolved who this machine is.
+// Silent auth runs a few seconds after launch and is what fills
+// nodeOwnerDisplayName() on a signed-in machine — offering "Log in" before then
+// would flash the pill on every start for a user who is already logged in. A
+// headless mirror authenticates with its node key and has nobody at the
+// keyboard, so it never gets the pill at all.
+void MainWindow::updateSignInButton()
+{
+    if (!m_navSignInButton)
+        return;
+    const bool signedIn = !nodeOwnerDisplayName().trimmed().isEmpty();
+    m_navSignInButton->setVisible(!m_headless && m_startupAuthResolved && !signedIn);
+}
+
+void MainWindow::showSignInMenu()
+{
+    QMenu menu(this);
+    // In-app email/password login: this is the path that attaches this machine
+    // to an existing forkmesh.com account (runLoginFlow registers the desktop
+    // key with the relay and hands back a real website session).
+    QAction *login = menu.addAction(QStringLiteral("Log in to your account\xE2\x80\xA6"));
+    // Linking through the browser needs a registered, key-bound node — the relay
+    // links by node name + this node's key — so only offer it once that holds.
+    QAction *browser = nullptr;
+    if (!accountOwner().isEmpty() && hasOwnerSigningCapability(accountOwner()))
+        browser = menu.addAction(
+            QStringLiteral("Link this node in your browser\xE2\x80\xA6"));
+    QAction *signup = menu.addAction(QStringLiteral("Create an account\xE2\x80\xA6"));
+
+    QAction *chosen = menu.exec(m_navSignInButton->mapToGlobal(
+        QPoint(0, m_navSignInButton->height())));
+    if (!chosen)
+        return;
+    if (chosen == login) {
+        loginToUserAccount();
+        updateUserSwitcher();
+        return;
+    }
+    if (browser && chosen == browser) {
+        openLinkNodeInBrowser();
+        return;
+    }
+    if (chosen == signup) {
+        QUrl url = catalogApiUrl(); // http(s) on the mainnode host
+        url.setPath(QStringLiteral("/signup"));
+        QDesktopServices::openUrl(url);
+        logSystem("Account: opened the browser to create a ForkMesh account.");
+    }
 }
 
 // Pin the floating "Log" button to the bottom-right corner of the live-log
@@ -5006,6 +6154,44 @@ void MainWindow::positionFloatingLogButton()
     m_floatingLogButton->raise();
 }
 
+// Park the pause-scroll toggle in the live-log strip's bottom-right corner, just
+// clear of the scrollbar so it never sits under the handle. Called on creation
+// and on every strip resize (see eventFilter).
+void MainWindow::positionFooterLogPauseButton()
+{
+    if (!m_footerLogPauseButton || !m_footerUpdateLog)
+        return;
+    constexpr int kMargin = 3;
+    const QSize sz = m_footerLogPauseButton->size();
+    int scrollbarW = 0;
+    if (QScrollBar *sb = m_footerUpdateLog->verticalScrollBar(); sb && sb->isVisible())
+        scrollbarW = sb->width();
+    m_footerLogPauseButton->move(
+        qMax(0, m_footerUpdateLog->width() - sz.width() - kMargin - scrollbarW),
+        qMax(0, m_footerUpdateLog->height() - sz.height() - kMargin));
+    m_footerLogPauseButton->raise();
+}
+
+// Two states, two icons: pause bars while the strip is following the newest
+// line, a down-arrow while it's parked (click to catch back up). Both come from
+// the style's own icon set rather than Unicode glyphs, which render as tofu in
+// the strip's monospace font.
+void MainWindow::updateFooterLogPauseButton()
+{
+    if (!m_footerLogPauseButton)
+        return;
+    const bool paused = m_footerLogScrollPaused;
+    m_footerLogPauseButton->setIcon(style()->standardIcon(
+        paused ? QStyle::SP_ArrowDown : QStyle::SP_MediaPause));
+    m_footerLogPauseButton->setToolTip(
+        paused ? QStringLiteral(
+                     "Auto-scroll paused \xE2\x80\x94 click to follow new log "
+                     "lines again")
+               : QStringLiteral(
+                     "Following new log lines \xE2\x80\x94 click to pause "
+                     "auto-scroll"));
+}
+
 // Screenshot button: drop a transparent overlay (the live desktop stays visible),
 // let the user drag a dotted rectangle anywhere on the computer, then grab that
 // region on release and save it to a temp PNG queued as the next attachment.
@@ -5017,44 +6203,6 @@ void MainWindow::captureScreenRegion()
         return;
     }
     connect(overlay, &ScreenCaptureOverlay::captured, this,
-            [this](const QImage &image) {
-                auto *markup = new ScreenshotMarkupWindow(image, this);
-                connect(markup, &ScreenshotMarkupWindow::imageAccepted, this,
-                        [this](const QImage &annotated) {
-                            const QString path = saveNewAgentPromptImage(annotated);
-                            if (path.isEmpty()) {
-                                logSystem("Couldn't save the screenshot.");
-                                return;
-                            }
-                            queueQuickAddImage(path);
-                            if (m_issueQuickAdd)
-                                m_issueQuickAdd->setFocus();
-                        });
-                markup->show();
-                markup->raise();
-                markup->activateWindow();
-            });
-}
-
-// Pencil button: drop a transparent overlay over the whole desktop (the live
-// screen stays visible) that you can scribble on freehand with the pointer, to
-// point things out on screen. Esc / right-click clears the ink and dismisses it.
-// The overlay also carries a "Screenshot" button: clicking it grabs a region with
-// the drawn ink baked in and queues it as the next attachment.
-void MainWindow::startScreenDraw()
-{
-    ScreenDrawOverlay *overlay = ScreenDrawOverlay::begin();
-    if (!overlay) {
-        logSystem("Couldn't open the on-screen drawing overlay.");
-        return;
-    }
-    // Let clicks on the nav screenshot button open the capture selector rather than draw.
-    if (m_navScreenshotButton) {
-        const QRect globalRect(m_navScreenshotButton->mapToGlobal(QPoint(0, 0)),
-                               m_navScreenshotButton->size());
-        overlay->setScreenshotHotzone(globalRect);
-    }
-    connect(overlay, &ScreenDrawOverlay::captured, this,
             [this](const QImage &image) {
                 auto *markup = new ScreenshotMarkupWindow(image, this);
                 connect(markup, &ScreenshotMarkupWindow::imageAccepted, this,
@@ -5113,9 +6261,10 @@ void MainWindow::updateConnectionStatus()
         return;
     m_connectionStatusColor = color;
     // Only the fill + radius are set inline; the background-matching ring is
-    // themed via the #connectionDot rule in Theme.h so it works in light mode too.
+    // themed via the #connectionDot rule in Theme.h so it works in light mode
+    // too. Radius = half the dot's 10px fixed size.
     m_connectionDot->setStyleSheet(
-        QStringLiteral("background:%1; border-radius:6px;").arg(color));
+        QStringLiteral("background:%1; border-radius:5px;").arg(color));
 }
 
 void MainWindow::updateAdminCrownBadge()
@@ -5246,9 +6395,7 @@ void MainWindow::updateRelaySwitcher()
 {
     if (!m_relayMenuButton)
         return;
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_relaysNavButton))
-        railButton->setBadgeCount(m_servers.size());
+    updateNetworkCounts(m_servers.size(), -1, -1);
     QString host;
     if (m_activeServer >= 0 && m_activeServer < m_servers.size())
         host = serverHost(m_servers.at(m_activeServer).url);
@@ -5260,42 +6407,246 @@ void MainWindow::updateRelaySwitcher()
                                                  : host)));
     if (host.isEmpty())
         host = QStringLiteral("ForkMesh");
-    // "domain ▾ count": the caret signals it drops down; the count is the
-    // number of configured relays.
-    const QString caret = QString::fromUtf8("\xE2\x96\xBE");
-    m_relayMenuButton->setText(host + "  " + caret + "  " +
-                               QString::number(m_servers.size()));
+    // The button is favicon-only (adhoc #91): the domain and relay count moved
+    // into the dropdown itself, so here they only ride the hover tooltip —
+    // together with the link speed the dot above the logo is showing.
+    refreshRelayMenuTooltip();
+}
+
+// The instance button's hover text: which relay is active, how many are
+// configured, and what the speed dot above the logo currently means.
+void MainWindow::refreshRelayMenuTooltip()
+{
+    if (!m_relayMenuButton)
+        return;
+    QString host;
+    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
+        host = serverHost(m_servers.at(m_activeServer).url);
+    if (host.isEmpty())
+        host = QStringLiteral("ForkMesh");
+    m_relayMenuButton->setToolTip(
+        QStringLiteral("%1 — %2 %3 configured. Switch, search, or add relays.\n"
+                       "Connection speed: %4")
+            .arg(host)
+            .arg(m_servers.size())
+            .arg(m_servers.size() == 1 ? QStringLiteral("relay")
+                                       : QStringLiteral("relays"),
+                 relaySpeedText(host)));
+}
+
+// Apply one round-trip measurement (ms < 0 = the relay didn't answer) to the
+// per-relay speed cache, and — when it is the relay we are actually connected
+// to — to the dot above the instance logo and that button's tooltip.
+void MainWindow::setRelayLinkSpeed(const QString &host, int ms)
+{
+    const QString key = host.trimmed().toLower();
+    if (!key.isEmpty()) {
+        m_relayHostLatency.insert(
+            key, RelayLatencySample{ms, QDateTime::currentMSecsSinceEpoch()});
+    }
+    QString activeHost;
+    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
+        activeHost = serverHost(m_servers.at(m_activeServer).url).toLower();
+    if (!key.isEmpty() && !activeHost.isEmpty() && key != activeHost)
+        return; // another relay's sample: the cache is all it feeds
+    if (m_relaySpeedDot) {
+        if (ms < 0)
+            m_relaySpeedDot->setUnreachable();
+        else
+            m_relaySpeedDot->setLatency(ms);
+    }
+    refreshRelayMenuTooltip();
+}
+
+// "30 ms" / "no answer" / "measuring…" for one relay host, as shown in the
+// relay dropdown and the instance tooltip (adhoc #124).
+QString MainWindow::relaySpeedText(const QString &host) const
+{
+    const RelayLatencySample sample =
+        m_relayHostLatency.value(host.trimmed().toLower());
+    if (sample.stampMs <= 0)
+        return QString::fromUtf8("measuring\xE2\x80\xA6");
+    if (sample.ms < 0)
+        return QStringLiteral("no answer");
+    return QStringLiteral("%1 ms").arg(sample.ms);
+}
+
+// One line of the relay dropdown: "forkmesh.com  ·  30 ms".
+QString MainWindow::relayMenuEntryText(const QString &host) const
+{
+    return QString::fromUtf8("%1  \xC2\xB7  %2").arg(host, relaySpeedText(host));
 }
 
 // The room socket's keepalive pong carries the relay round trip for free every
-// ~25s; feed it straight to the radar so no HTTP probe is needed while the
+// ~25s; feed it straight to the speed dot so no HTTP probe is needed while the
 // socket is up (probeRelayLatency below skips itself when this is fresh).
 void MainWindow::onRelayLatencySampled(int ms)
 {
     m_lastWsLatencySampleMs = QDateTime::currentMSecsSinceEpoch();
     m_relayProbeFailures = 0;
-    if (m_relayRadar)
-        static_cast<RelayRadarWidget *>(m_relayRadar)->setLatency(ms);
+    QString host;
+    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
+        host = serverHost(m_servers.at(m_activeServer).url);
+    setRelayLinkSpeed(host, ms);
 }
 
-// Measure the round-trip latency to the active relay and feed it to the radar
-// readout. We GET the relay's lightweight /api/version endpoint (small JSON, no
-// Durable-Object fan-out) and time the request; a transport error or timeout
-// flips the radar to its red "offline" alert. Only one probe runs at a time.
-// While the room socket is connected its keepalive pong updates the radar
+// Measure one relay's round-trip the same way probeRelayLatency measures the
+// active one (GET /api/version), cache it, and hand the milliseconds (-1 when
+// it didn't answer) to `done`. Feeds the per-instance speed in the relay
+// dropdown; one probe per host at a time, so re-opening the menu while a probe
+// is out doesn't stack a second one.
+void MainWindow::probeRelayHostSpeed(const QString &serverUrl,
+                                     std::function<void(int)> done)
+{
+    QUrl url(serverUrl);
+    if (url.scheme() == "ws")
+        url.setScheme(QStringLiteral("http"));
+    else if (url.scheme() == "wss")
+        url.setScheme(QStringLiteral("https"));
+    url.setPath(QStringLiteral("/api/version"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+
+    const QString host = serverHost(serverUrl);
+    if (!m_networkAccess || !url.isValid() || url.host().isEmpty()) {
+        setRelayLinkSpeed(host, -1);
+        if (done)
+            done(-1);
+        return;
+    }
+    if (m_relaySpeedProbes.contains(host))
+        return;
+    m_relaySpeedProbes.insert(host);
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader("accept", "application/json");
+    request.setTransferTimeout(10000); // no answer within 10s counts as down
+
+    auto *clock = new QElapsedTimer;
+    clock->start();
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, clock, host, done = std::move(done)] {
+                const qint64 elapsed = clock->elapsed();
+                delete clock;
+                reply->deleteLater();
+                m_relaySpeedProbes.remove(host);
+                const int ms = reply->error() == QNetworkReply::NoError
+                                   ? static_cast<int>(elapsed)
+                                   : -1;
+                setRelayLinkSpeed(host, ms);
+                if (done)
+                    done(ms);
+            });
+}
+
+// One dot per node on the network, three rows deep beside the agent fleet
+// (adhoc #124). This is where the retired radar dish's blips went, and it keeps
+// that widget's roster: refreshNodesTable's filtered list, so the mesh shows
+// from launch rather than only while a repo's Mirror-nodes tab is open (adhoc
+// #79). Unlike the dish, the dots are always the whole network — the open
+// repo's per-node sync/integrity state only tints them (m_nodeDotRepoStates).
+// The grid is bounded, so online nodes go in first and a bigger mesh loses its
+// offline tail to the tooltip rather than its live nodes.
+void MainWindow::refreshNodeDotMatrix()
+{
+    if (!m_nodeDotMatrix)
+        return;
+    QVector<NodeDotMatrix::Dot> dots;
+    dots.reserve(m_nodeDotEntries.size());
+    int online = 0;
+    int caution = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (const NodeMenuEntry &e : std::as_const(m_nodeDotEntries)) {
+            if (e.online != (pass == 0))
+                continue;
+            const NodeDotRepoState repo =
+                m_nodeDotRepoStates.value(e.name.trimmed().toLower());
+            NodeDotMatrix::Dot dot;
+            dot.name = e.name;
+            dot.self = e.self;
+            if (repo.integrityFailing || (e.online && repo.behind)) {
+                dot.color = QColor("#d29922"); // amber caution, as on the strip
+                ++caution;
+            } else if (e.online) {
+                dot.color = QColor("#3fb950"); // green: serving
+            } else {
+                dot.color = QColor("#484f58"); // grey: offline
+            }
+            if (e.online)
+                ++online;
+            dots.append(dot);
+        }
+    }
+    m_nodeDotMatrix->setDots(dots);
+    m_nodeDotMatrix->setVisible(!dots.isEmpty());
+    updateChromeDotDivider();
+    if (dots.isEmpty())
+        return;
+
+    QString tip = QStringLiteral("%1 node%2 on the network \xE2\x80\x94 "
+                                 "%3 online, %4 offline")
+                      .arg(dots.size())
+                      .arg(dots.size() == 1 ? QString() : QStringLiteral("s"))
+                      .arg(online)
+                      .arg(dots.size() - online);
+    if (caution > 0)
+        tip += QStringLiteral(", %1 out of sync").arg(caution);
+    const int shown = m_nodeDotMatrix->shownCount();
+    if (shown < dots.size())
+        tip += QStringLiteral("\n(showing the first %1)").arg(shown);
+    tip += QStringLiteral("\nClick a dot to open that node.");
+    m_nodeDotMatrix->setToolTip(tip);
+}
+
+// Each hairline on the chrome line — agents | nodes | actions — only earns its
+// place when there are dots on both sides of it (adhoc #124).
+void MainWindow::updateChromeDotDivider()
+{
+    // isHidden(), not isVisible(): the window itself may not be up yet when the
+    // first roster lands, and the dividers still need to be laid out.
+    const bool agents = m_agentDotMatrix && !m_agentDotMatrix->isHidden();
+    const bool nodes = m_nodeDotMatrix && !m_nodeDotMatrix->isHidden();
+    const bool actions = m_actionRunStrip && !m_actionRunStrip->isHidden();
+    if (m_chromeDotDivider)
+        m_chromeDotDivider->setVisible(agents && nodes);
+    // The runs' divider stands in for whichever group actually precedes them, so
+    // it still separates the agents from CI on a machine with no node roster.
+    if (m_chromeActionDivider)
+        m_chromeActionDivider->setVisible((agents || nodes) && actions);
+}
+
+// Repo-scoped sync/integrity state for the node dots, published by the
+// Mirror-nodes panel (empty when it has no repo to show).
+void MainWindow::setNodeDotRepoStates(
+    const QHash<QString, NodeDotRepoState> &states)
+{
+    if (states.isEmpty() && m_nodeDotRepoStates.isEmpty())
+        return;
+    m_nodeDotRepoStates = states;
+    refreshNodeDotMatrix();
+}
+
+// Measure the round-trip latency to the active relay and feed it to the speed
+// dot above the instance logo. We GET the relay's lightweight /api/version
+// endpoint (small JSON, no Durable-Object fan-out) and time the request; a
+// transport error or timeout turns the dot red. Only one probe runs at a time.
+// While the room socket is connected its keepalive pong updates the dot
 // every ~25s (onRelayLatencySampled), so this HTTP probe only fires when that
 // signal has gone quiet — i.e. the socket is down or reconnecting.
 void MainWindow::probeRelayLatency()
 {
-    if (!m_relayRadar || !m_networkAccess || m_relayProbeInFlight)
+    if (!m_relaySpeedDot || !m_networkAccess || m_relayProbeInFlight)
         return;
     if (QDateTime::currentMSecsSinceEpoch() - m_lastWsLatencySampleMs < 90 * 1000)
         return;
-    auto *radar = static_cast<RelayRadarWidget *>(m_relayRadar);
 
     QUrl url = catalogApiUrl(); // same relay host, http(s) scheme
-    if (!url.isValid() || url.host().isEmpty()) {
-        radar->setUnreachable();
+    const QString host = url.host();
+    if (!url.isValid() || host.isEmpty()) {
+        setRelayLinkSpeed(host, -1);
         return;
     }
     url.setPath(QStringLiteral("/api/version"));
@@ -5310,27 +6661,23 @@ void MainWindow::probeRelayLatency()
     auto *clock = new QElapsedTimer;
     clock->start();
     QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, clock, radar] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, clock, host] {
         const qint64 elapsed = clock->elapsed();
         delete clock;
         m_relayProbeInFlight = false;
         reply->deleteLater();
         if (reply->error() == QNetworkReply::NoError) {
             m_relayProbeFailures = 0;
-            radar->setLatency(static_cast<int>(elapsed));
-            // A one-off slow sample (first request on a cold connection, a
-            // momentary hiccup) paints the dish amber/red and then sits there
-            // unchanged for up to a minute — not "live" at all. Once the
-            // reading is elevated, keep re-probing on a short leash (same
-            // idea as the offline fast-retry below) so the indicator either
-            // confirms the slowdown or snaps back to green within a second or
-            // two instead of lagging reality. But a link that's simply *far*
-            // from the relay (a 300ms+ round-trip is normal from across an
-            // ocean) would otherwise get re-probed every single second
-            // forever — that's the "too many network requests" flood. So back
-            // the confirm loop off exponentially (1s, 2s, 4s, ...) up to the
-            // normal once-a-minute cadence, and reset the moment latency drops
-            // back to healthy (adhoc #74).
+            setRelayLinkSpeed(host, static_cast<int>(elapsed));
+            // A one-off slow sample (cold connection, momentary hiccup) would
+            // otherwise leave the dot amber/red, unchanged, for a minute. Once
+            // a reading is elevated, re-probe on a short leash so the indicator
+            // confirms or clears within a second or two. But a link that is
+            // simply far from the relay (300ms+ across an ocean) would then be
+            // re-probed every second forever — the "too many network requests"
+            // flood — so back the confirm loop off exponentially (1s, 2s, 4s,
+            // …) to the normal minute, resetting once latency is healthy
+            // (adhoc #74).
             if (elapsed >= 300) {
                 const int steps = qMin(m_relayProbeElevated++, 6);
                 const qint64 delayMs = qMin<qint64>(1000LL << steps, 60 * 1000);
@@ -5342,28 +6689,24 @@ void MainWindow::probeRelayLatency()
         } else {
             // Drop any pooled keep-alive connection so the next probe dials a
             // fresh socket: otherwise QNetworkAccessManager can keep reusing a
-            // now-dead connection and the radar never clears even after we're
+            // now-dead connection and the dot never clears even after we're
             // back online.
             if (m_networkAccess)
                 m_networkAccess->clearConnectionCache();
-            // A single miss is usually just a stale keep-alive socket or a
-            // momentary blip (very common for the first probe right after
-            // launch, before the connection is warm) — not a real outage. Don't
-            // flip the radar to red on the strength of one failure; re-probe
-            // shortly on the now-clean connection and only declare "offline"
-            // once a second consecutive probe also fails. This stops the dish
-            // getting stranded on "offline" while we're genuinely online.
-            // Exception: when the OS itself reports the machine has no network
-            // at all, the outage is real — skip the grace period and show it
-            // immediately (adhoc #41).
+            // A single miss is usually a stale keep-alive socket or a blip (very
+            // common on the first probe after launch), not an outage, and would
+            // strand the dot on red while we are genuinely online. Re-probe on
+            // the now-clean connection and only declare "offline" once a second
+            // consecutive probe fails. Exception: when the OS reports no network
+            // at all the outage is real, so show it at once (adhoc #41).
             const auto *netInfo = QNetworkInformation::instance();
             const bool osOffline =
                 netInfo && netInfo->reachability() ==
                                QNetworkInformation::Reachability::Disconnected;
             if (++m_relayProbeFailures >= 2 || osOffline) {
-                radar->setUnreachable();
+                setRelayLinkSpeed(host, -1);
                 // While offline, re-probe on a short leash instead of waiting
-                // out the minute timer, so the dish flips back within seconds
+                // out the minute timer, so the dot flips back within seconds
                 // of the relay answering again (adhoc #41). But a relay that's
                 // down for minutes/hours shouldn't get hammered every 3s the
                 // whole time: back off exponentially (3s, 6s, 12s, ...) capped
@@ -5402,14 +6745,13 @@ void MainWindow::initRelayReachabilityWatch()
                     // mark the outage as established so a later probe failure
                     // doesn't get the one-blip grace period.
                     m_relayProbeFailures = 2;
-                    if (m_relayRadar)
-                        static_cast<RelayRadarWidget *>(m_relayRadar)
-                            ->setUnreachable();
+                    if (m_relaySpeedDot)
+                        setRelayLinkSpeed(catalogApiUrl().host(), -1);
                     if (m_backend)
                         m_backend->setNetworkAvailable(false);
                 } else {
                     // Link is (possibly) back: confirm with a real probe right
-                    // away. The radar stays red until the probe succeeds, so a
+                    // away. The dot stays red until the probe succeeds, so a
                     // half-up link never shows a false green.
                     probeRelayLatency();
                     if (m_backend)
@@ -5449,11 +6791,22 @@ void MainWindow::showRelayMenu()
 {
     if (!m_relayMenuButton)
         return;
+    // How long a measured speed stays good enough to show without re-probing.
+    // Wide enough that the active relay's ~25s keepalive pong normally covers
+    // it, so opening the menu doesn't re-probe the relay we're talking to.
+    constexpr qint64 kRelaySpeedFreshMs = 30 * 1000;
     QMenu menu(this);
 
-    // Header showing the relay count.
-    QAction *header =
-        menu.addAction(QStringLiteral("Relays (%1)").arg(formatCount(m_servers.size())));
+    // Header: the active relay's domain plus the relay count — the readout
+    // that used to sit on the chrome-line button label itself (adhoc #91).
+    QString activeHost;
+    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
+        activeHost = serverHost(m_servers.at(m_activeServer).url);
+    QAction *header = menu.addAction(
+        activeHost.isEmpty()
+            ? QStringLiteral("Relays (%1)").arg(formatCount(m_servers.size()))
+            : QStringLiteral("%1 — Relays (%2)")
+                  .arg(activeHost, formatCount(m_servers.size())));
     header->setEnabled(false);
 
     // Search box at the top; filters the relay list live.
@@ -5467,16 +6820,78 @@ void MainWindow::showRelayMenu()
     menu.addAction(searchAction);
     menu.addSeparator();
 
-    // One checkable action per relay (active one checked).
+    // One row per relay, each labelled with that instance's connection speed
+    // (adhoc #124) — the readout the radar dish used to carry for the active
+    // relay only. Cached samples show instantly; anything stale is re-probed and
+    // the label updates in place while the menu is open.
+    //
+    // Each row is a widget rather than a plain QAction because the name now
+    // carries a link that opens that instance's website in the browser (adhoc
+    // #224) — the "server" link the breadcrumb used to hold before adhoc #91
+    // folded the domain into this menu, back where the domain went. Clicking
+    // anywhere else on the row still switches to the relay, and the active one
+    // is marked with a check the way the checkable action was.
     QList<QAction *> relayActions;
     for (int i = 0; i < m_servers.size(); ++i) {
         const ServerConfig &server = m_servers.at(i);
-        QAction *act =
-            menu.addAction(QIcon(faviconFor(server)), serverHost(server.url));
-        act->setCheckable(true);
-        act->setChecked(i == m_activeServer);
-        connect(act, &QAction::triggered, this, [this, i] { switchToServer(i); });
+        const QString host = serverHost(server.url);
+        const bool active = i == m_activeServer;
+
+        auto *row = new QWidget(&menu);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(4, 0, 4, 0);
+        rowLayout->setSpacing(2);
+
+        // The check the checkable QAction used to draw, as a leading glyph so
+        // every row's text starts on the same column whether or not it is the
+        // live relay.
+        auto rowText = [active](const QString &entry) {
+            return (active ? QString::fromUtf8("\xE2\x9C\x93  ")
+                           : QStringLiteral("     ")) + entry;
+        };
+        auto *pick = new QPushButton(QIcon(faviconFor(server)),
+                                     rowText(relayMenuEntryText(host)), row);
+        pick->setFlat(true);
+        pick->setCursor(Qt::PointingHandCursor);
+        pick->setStyleSheet(QStringLiteral("text-align:left; padding:4px 6px;"));
+        pick->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        connect(pick, &QPushButton::clicked, &menu, [this, i, &menu] {
+            menu.close();
+            switchToServer(i);
+        });
+
+        auto *open = new QPushButton(row);
+        open->setObjectName(QStringLiteral("issueIconButton"));
+        open->setFlat(true);
+        open->setCursor(Qt::PointingHandCursor);
+        open->setFixedSize(26, 26);
+        open->setToolTip(QStringLiteral("Open %1 in your browser")
+                             .arg(host.isEmpty() ? server.url : host));
+        setOcticon(open, QStringLiteral("link"), 14);
+        connect(open, &QPushButton::clicked, &menu, [this, i, &menu] {
+            menu.close();
+            openServerWebsite(i);
+        });
+
+        rowLayout->addWidget(pick, 1);
+        rowLayout->addWidget(open, 0);
+
+        auto *act = new QWidgetAction(&menu);
+        act->setDefaultWidget(row);
+        menu.addAction(act);
         relayActions.append(act);
+
+        const RelayLatencySample sample =
+            m_relayHostLatency.value(host.trimmed().toLower());
+        if (QDateTime::currentMSecsSinceEpoch() - sample.stampMs <
+            kRelaySpeedFreshMs)
+            continue;
+        // The row dies with the menu, which the probe can easily outlive.
+        QPointer<QPushButton> guarded(pick);
+        probeRelayHostSpeed(server.url, [this, guarded, host, rowText](int) {
+            if (guarded)
+                guarded->setText(rowText(relayMenuEntryText(host)));
+        });
     }
 
     menu.addSeparator();
@@ -5525,22 +6940,25 @@ QString formatSolanaBalance(qint64 lamports)
     return QStringLiteral("%1 SOL").arg(lamports / 1000000000.0, 0, 'f', 9);
 }
 
-// solanaDisplayCurrency() ("sol" | "usd" | "inr") is a shared helper declared in
-// MainWindowInternal.h (used by both this view and the settings panel).
-
-QString fiatCurrencySymbol(const QString &cur)
+// The rail slot under the avatar is one rail item wide, so the nine-decimal
+// figure the chrome line used to carry no longer fits. Print the most precision
+// that stays inside the item and let the tooltip keep the exact amount. Always
+// SOL: the fiat conversion (and its click-to-cycle currency) went away with the
+// move (adhoc #96).
+QString compactSolanaBalance(qint64 lamports)
 {
-    return cur == QLatin1String("inr") ? QString::fromUtf8("\xE2\x82\xB9")
-                                       : QStringLiteral("$");
-}
-
-QString formatFiatBalance(qint64 lamports, double rate, const QString &cur)
-{
-    const double value = (lamports / 1000000000.0) * rate;
-    return QStringLiteral("%1%2 %3")
-        .arg(fiatCurrencySymbol(cur))
-        .arg(value, 0, 'f', 2)
-        .arg(cur.toUpper());
+    const double sol = lamports / 1000000000.0;
+    if (lamports <= 0)
+        return QStringLiteral("0 SOL");
+    if (sol >= 1000.0)
+        return QStringLiteral("%1k SOL").arg(sol / 1000.0, 0, 'f', 1);
+    if (sol >= 100.0)
+        return QStringLiteral("%1 SOL").arg(sol, 0, 'f', 1);
+    if (sol >= 1.0)
+        return QStringLiteral("%1 SOL").arg(sol, 0, 'f', 2);
+    // Dust rounds to "0.0000 SOL", which still reads differently from the
+    // "0 SOL" an empty wallet prints above.
+    return QStringLiteral("%1 SOL").arg(sol, 0, 'f', 4);
 }
 
 QString lastSolanaBalanceSetting(const QString &address)
@@ -5585,23 +7003,35 @@ void MainWindow::updateUserSwitcher()
 {
     // Every profile-hydration path lands here after updating the user/node
     // flags, so this is also where the chat backend learns which account kind
-    // to stamp on outgoing frames (web surfaces only display "user" frames —
-    // same user-vs-node rule as welcomeChannelForIdentity()).
+    // to stamp on outgoing frames (web surfaces only display user/guest frames
+    // — same user-vs-node rule as welcomeChannelForIdentity()).
     if (m_backend) {
         const bool userLike =
             m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
+        // No username yet (fresh install on its generated name): speak as
+        // "guest" like the web's anonymous visitors, so the person's messages
+        // render on web surfaces instead of being dropped as node frames.
         m_backend->setAccountKind(userLike ? QStringLiteral("user")
-                                           : QStringLiteral("node"));
+                                  : chatIdentityIsGuest()
+                                      ? QStringLiteral("guest")
+                                      : QStringLiteral("node"));
     }
     const QString user = topBarUserName();
     if (m_userAvatarNavButton) {
         m_userAvatarNavButton->setToolTip(
-            user.isEmpty()
-                ? QStringLiteral("Your user account")
-                : QStringLiteral("%1 user account").arg(user));
+            chatIdentityIsGuest()
+                ? QStringLiteral("Chatting as %1 — pick a username in "
+                                 "Settings or log in to claim one")
+                      .arg(guestChatName())
+                : user.isEmpty()
+                      ? QStringLiteral("Your user account")
+                      : QStringLiteral("%1 user account").arg(user));
     }
     updateUserAvatarButton();
     updateChatIdentity();
+    // Every profile-hydration path lands here, so this is also where the top-bar
+    // "Log in / Sign up" pill learns that an account just arrived (or went away).
+    updateSignInButton();
     // The top-right node-name label folds in the user account name
     // ("user/node"), so keep it in step with the user identity too.
     refreshWebUserSolanaAddress();
@@ -5690,24 +7120,6 @@ void MainWindow::refreshWebUserSolanaAddress()
             });
 }
 
-void MainWindow::cycleNavSolanaCurrency()
-{
-    QSettings s;
-    QString cur = s.value(kSolanaDisplayCurrencySetting).toString().toLower();
-    if (cur.isEmpty())
-        cur = s.value(kSolanaDisplayUsdSetting, false).toBool()
-                  ? QStringLiteral("usd")
-                  : QStringLiteral("sol");
-    const QString next = cur == QLatin1String("sol")   ? QStringLiteral("usd")
-                         : cur == QLatin1String("usd") ? QStringLiteral("inr")
-                                                       : QStringLiteral("sol");
-    s.setValue(kSolanaDisplayCurrencySetting, next);
-    // Re-render from the cached balance/rate rather than re-querying the chain +
-    // price API on every click — that re-querying is what made the figure stall
-    // (rate-limited) after a few quick switches.
-    renderNavSolanaBalance();
-}
-
 void MainWindow::updateNavSolanaBalance()
 {
     // The top bar no longer prints "user/node" beside the balance (adhoc #42),
@@ -5738,9 +7150,10 @@ void MainWindow::updateNavSolanaBalance()
     m_navSolanaBalanceAddress = addr;
     if (addr.isEmpty()) {
         m_navSolanaLamports = -1;
+        // One rail item wide: the prompt is the link itself, and the tooltip
+        // says what it does.
         m_navSolanaBalance->setText(
-            QStringLiteral("0.000000000 SOL &nbsp;&middot;&nbsp; "
-                           "<a href=\"settings\">Add address online</a>"));
+            QStringLiteral("<a href=\"settings\">Add SOL</a>"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral(
                 "Add a public self-custodial Solana address to show its balance.")));
@@ -5748,7 +7161,7 @@ void MainWindow::updateNavSolanaBalance()
     }
     if (!isLikelySolanaAddress(addr)) {
         m_navSolanaLamports = -1;
-        m_navSolanaBalance->setText(QStringLiteral("SOL invalid"));
+        m_navSolanaBalance->setText(QStringLiteral("bad addr"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral("Saved public Solana address is invalid.")));
         return;
@@ -5761,9 +7174,10 @@ void MainWindow::updateNavSolanaBalance()
     renderNavSolanaBalance();
 }
 
-// Re-render the balance label from the cached lamports + fiat rate, without
-// touching Solana. Shows a "hover to load" placeholder when nothing is cached
-// yet, and fetches a single price when the fiat rate is stale.
+// Re-render the balance label from the cached lamports, without touching
+// Solana. Shows a "hover to load" placeholder when nothing is cached yet. The
+// figure is always SOL — the tiny rail line has no room for a fiat conversion,
+// and the exact nine-decimal amount lives in the tooltip.
 void MainWindow::renderNavSolanaBalance()
 {
     if (!m_navSolanaBalance)
@@ -5772,55 +7186,17 @@ void MainWindow::renderNavSolanaBalance()
         return; // updateNavSolanaBalance() already painted the empty state
     if (m_navSolanaLamports < 0) {
         if (m_navSolanaFetchInFlight)
-            return; // a hover-triggered query is already painting "SOL ..."
-        m_navSolanaBalance->setText(QString::fromUtf8("SOL \xE2\x80\x94"));
+            return; // a hover-triggered query is already painting "... SOL"
+        m_navSolanaBalance->setText(QString::fromUtf8("\xE2\x80\x94 SOL"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral("Hover to check your public Solana balance.")));
         return;
     }
-    const QString cur = solanaDisplayCurrency();
-    const QString solBalance = formatSolanaBalance(m_navSolanaLamports);
-    if (cur == QLatin1String("sol")) {
-        m_navSolanaBalance->setText(solBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("Your public Solana balance: %1")
-                    .arg(solBalance)));
-        return;
-    }
-    const auto it = m_navFiatRates.constFind(cur);
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const bool fresh = it != m_navFiatRates.constEnd() && it->first > 0.0 &&
-                       now - it->second < 5 * 60 * 1000; // 5-minute rate cache
-    if (fresh) {
-        const QString fiatBalance =
-            formatFiatBalance(m_navSolanaLamports, it->first, cur);
-        m_navSolanaBalance->setText(fiatBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("Your public wallet balance: %1 (%2)")
-                    .arg(fiatBalance, solBalance)));
-        return;
-    }
-    // No fresh rate cached. This function now runs on every profile-hydration
-    // pass, so back off after a recent attempt (successful or not) instead of
-    // re-asking the price API each time; show the SOL figure meanwhile.
-    const bool attemptedRecently =
-        it != m_navFiatRates.constEnd() && now - it->second < 60 * 1000;
-    if (attemptedRecently || m_navFiatFetchInFlight) {
-        m_navSolanaBalance->setText(solBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("SOL/%1 price unavailable. Public balance: %2")
-                    .arg(cur.toUpper(), solBalance)));
-        return;
-    }
-    m_navSolanaBalance->setText(QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
+    m_navSolanaBalance->setText(compactSolanaBalance(m_navSolanaLamports));
     m_navSolanaBalance->setToolTip(
         externalWalletBalanceTooltip(
-            QStringLiteral("Checking SOL/%1 price for %2")
-                .arg(cur.toUpper(), solBalance)));
-    queryNavSolanaUsdPrice(m_navSolanaBalanceAddress, m_navSolanaLamports);
+            QStringLiteral("Your public Solana balance: %1")
+                .arg(formatSolanaBalance(m_navSolanaLamports))));
 }
 
 // Hovering the top-bar balance is the only thing that spends a Solana RPC
@@ -5840,7 +7216,7 @@ void MainWindow::refreshNavSolanaBalance(bool force)
         now - m_navSolanaFetchedMs < kNavSolanaBalanceTtlMs)
         return;
     if (m_navSolanaLamports < 0) {
-        m_navSolanaBalance->setText(QStringLiteral("SOL ..."));
+        m_navSolanaBalance->setText(QStringLiteral("... SOL"));
         m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
             QStringLiteral("Checking your public Solana balance.")));
     }
@@ -5858,7 +7234,7 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
         m_navSolanaFetchedMs = QDateTime::currentMSecsSinceEpoch();
         if (m_navSolanaBalance && m_navSolanaBalanceAddress == addr &&
             m_navSolanaLamports < 0) {
-            m_navSolanaBalance->setText(QStringLiteral("SOL unavailable"));
+            m_navSolanaBalance->setText(QStringLiteral("n/a SOL"));
             m_navSolanaBalance->setToolTip(externalWalletBalanceTooltip(
                 QStringLiteral("Public Solana balance is temporarily unavailable.")));
         }
@@ -5894,7 +7270,7 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
         m_navSolanaFetchInFlight = false;
         m_navSolanaFetchedMs = QDateTime::currentMSecsSinceEpoch();
         const qint64 lamports = result.value("value").toVariant().toLongLong();
-        m_navSolanaLamports = lamports; // cache so currency switches don't re-query
+        m_navSolanaLamports = lamports; // cache so re-renders don't re-query
         QSettings settings;
         const QString lastBalanceKey = lastSolanaBalanceSetting(addr);
         const QVariant previousValue = settings.value(lastBalanceKey);
@@ -5912,74 +7288,11 @@ void MainWindow::queryNavSolanaBalance(const QString &addr, int endpointIndex)
                              false, QStringLiteral("emblem-default"));
         }
         settings.setValue(lastBalanceKey, QString::number(lamports));
-        const QString cur = solanaDisplayCurrency();
-        if (cur != QLatin1String("sol")) {
-            m_navSolanaBalance->setText(
-                QStringLiteral("%1 ...").arg(fiatCurrencySymbol(cur)));
-            m_navSolanaBalance->setToolTip(
-                externalWalletBalanceTooltip(
-                    QStringLiteral("Checking SOL/%1 price for %2")
-                        .arg(cur.toUpper(), balance)));
-            queryNavSolanaUsdPrice(addr, lamports);
-            return;
-        }
-        m_navSolanaBalance->setText(balance);
+        m_navSolanaBalance->setText(compactSolanaBalance(lamports));
         m_navSolanaBalance->setToolTip(
             externalWalletBalanceTooltip(
                 QStringLiteral("Your public Solana balance: %1")
                     .arg(balance)));
-    });
-}
-
-void MainWindow::queryNavSolanaUsdPrice(const QString &addr, qint64 lamports)
-{
-    const QString cur = solanaDisplayCurrency();
-    if (cur == QLatin1String("sol"))
-        return;
-    if (m_navFiatFetchInFlight)
-        return;
-    m_navFiatFetchInFlight = true;
-    QNetworkRequest request(QUrl(
-        QStringLiteral("https://api.coingecko.com/api/v3/simple/price"
-                       "?ids=solana&vs_currencies=%1").arg(cur)));
-    QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, addr, lamports, cur]() {
-        const QByteArray raw = reply->readAll();
-        const QNetworkReply::NetworkError netError = reply->error();
-        reply->deleteLater();
-        m_navFiatFetchInFlight = false;
-        const double rate =
-            QJsonDocument::fromJson(raw).object()
-                .value(QStringLiteral("solana")).toObject()
-                .value(cur).toDouble();
-        // Stamp the attempt either way: a 0 rate marks "tried and failed" so
-        // renderNavSolanaBalance backs off instead of retrying on every pass.
-        if (netError != QNetworkReply::NoError || rate <= 0.0)
-            m_navFiatRates[cur] = {0.0, QDateTime::currentMSecsSinceEpoch()};
-        if (!m_navSolanaBalance || m_navSolanaBalanceAddress != addr ||
-            solanaDisplayCurrency() != cur)
-            return;
-
-        const QString solBalance = formatSolanaBalance(lamports);
-        if (netError != QNetworkReply::NoError || rate <= 0.0) {
-            m_navSolanaBalance->setText(solBalance);
-            m_navSolanaBalance->setToolTip(
-                externalWalletBalanceTooltip(
-                    QStringLiteral("SOL/%1 price unavailable. Public balance: %2")
-                        .arg(cur.toUpper(), solBalance)));
-            return;
-        }
-
-        m_navFiatRates[cur] = {rate, QDateTime::currentMSecsSinceEpoch()};
-        const QString fiatBalance = formatFiatBalance(lamports, rate, cur);
-        m_navSolanaBalance->setText(fiatBalance);
-        m_navSolanaBalance->setToolTip(
-            externalWalletBalanceTooltip(
-                QStringLiteral("Your public wallet balance: %1 "
-                               "(%2 at %3%4/SOL)")
-                    .arg(fiatBalance, solBalance, fiatCurrencySymbol(cur),
-                         QString::number(rate, 'f', 2))));
     });
 }
 
@@ -6235,13 +7548,25 @@ void MainWindow::showNodesWindow()
     dialog->show();
 }
 
+// The Repos rail opens the network-wide repository list, so its badge counts
+// the rows that page shows — every repository on the relay — rather than this
+// machine's own copies, which read as a wrong number next to that table
+// (adhoc #118). Until the catalog has been rendered once the local repo menu is
+// the only count we have, so it stands in.
+void MainWindow::updateReposNavBadge()
+{
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_reposNavButton))
+        railButton->setBadgeCount(m_networkRepoRowCount >= 0
+                                      ? m_networkRepoRowCount
+                                      : m_repoMenuEntries.size());
+}
+
 void MainWindow::updateRepoSwitcher()
 {
     if (!m_repoMenuButton)
         return;
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_reposNavButton))
-        railButton->setBadgeCount(m_repoMenuEntries.size());
+    updateReposNavBadge();
     // Mid node-switch: the repo list belongs to the node being loaded, so keep
     // the button visible with a "Loading…" label (the spinner icon is driven by
     // startRepoSwitchSpin) instead of revealing a count or repo name until the
@@ -6361,22 +7686,35 @@ bool MainWindow::relayPublishRepo(const RepositoryRecord &repo,
 
 // Keep the open repo's sync-derived indicators in step after anything that may
 // have changed the push state (a new local commit, a completed publish/sync).
-// The floating "Sync (N)" pill this used to paint above the Code tab is gone
-// (adhoc #374), and with it the off-thread ahead/behind walks that fed only its
-// label and tooltip — what's left is the activity rail's spinning Git glyph and
-// the commit list's "waiting to sync" markers.
+// The old floating "Sync (N)" pill above Code remains gone (adhoc #374). Its
+// replacement is scoped to Source Control's Outgoing Changes group, alongside
+// the activity rail's spinning Git glyph and commit pending-sync markers.
 void MainWindow::refreshRepoSyncIndicators()
 {
+    // The Source Control pane owns the user-facing outgoing count and Sync
+    // Changes action. Refresh it on every push/publish transition so the button
+    // enters its busy state immediately and disappears once the mirror catches
+    // up.
+    // Also refresh while Git is closed: the activity-rail upload marker is the
+    // affordance that tells the user there is something waiting inside it.
+    if (m_scmPanel)
+        refreshSourceControlOutgoing();
+    else if (m_railGitButton)
+        m_railGitButton->setPendingSyncCount(0);
+
     // Only while the commit list is on screen; a cheap no-op otherwise.
     refreshCommitMarkersIfStale();
 
     // The activity rail's Git icon spins while the open repo is pushing or
-    // publishing (adhoc #357).
+    // publishing (adhoc #357). A quiet background auto-sync (the periodic
+    // mirror refresh) must not light this up — it isn't something the user
+    // did, so a spinner tied to it reads as unexplained (adhoc #81).
     const int index = m_repoDetailIndex;
     if (m_railGitButton)
-        m_railGitButton->setSyncing(index >= 0 &&
-                                    (m_pushingRepos.contains(index) ||
-                                     m_syncingRepos.contains(index)));
+        m_railGitButton->setSyncing(
+            index >= 0 &&
+            (m_pushingRepos.contains(index) ||
+             (m_syncingRepos.contains(index) && !m_syncingRepos.value(index))));
 }
 
 // Canonicalize and hash the stdout of `git for-each-ref
@@ -6412,14 +7750,11 @@ QString MainWindow::mirrorStateHash(const QString &mirrorPath) const
 // warning only surfaces there — as a caution triangle on the self row/dot in the
 // Mirror nodes panel (m_repoPinMismatch, see loadMirrorNodesPanel), not a
 // top-bar toast; the "Reset integrity pin" action lives in that panel's header.
-//
-// And because the gates below only let the check run on the node that CAN fix
-// the pin (owner key + working copy — the source of truth), a detected mismatch
-// also re-attests immediately instead of leaving clones rejected until the
-// 15-minute reattestStalePins tick or a manual "Reset integrity pin" click: the
-// source of truth defines the correct state, so it should never sit failing its
-// own pin. Rate-limited per repo so a re-publish the relay keeps refusing can't
-// loop into a write storm.
+// Because the gates below only run on the node that CAN fix the pin (owner key
+// + working copy), a mismatch also re-attests immediately rather than leaving
+// clones rejected until the 15-minute reattestStalePins tick: the source of
+// truth should never sit failing its own pin. Rate-limited per repo so a
+// re-publish the relay keeps refusing can't loop into a write storm.
 void MainWindow::refreshRepoPinBanner()
 {
     if (!m_topMessage)
@@ -6761,6 +8096,11 @@ void MainWindow::pushCurrentRepoUpstream()
     // (possibly modal) result. Mark the repo "pushing" now so the button flips to
     // its busy state and the entry guard blocks a second click during the scan.
     m_pushingRepos.insert(index);
+    setRepoSyncActivity(index,
+                        repo.secretScanningEnabled
+                            ? QStringLiteral("Scanning the outgoing commits for "
+                                             "secrets…")
+                            : QStringLiteral("Counting the outgoing commits…"));
     refreshRepoSyncIndicators();
 
     struct PushScan {
@@ -6790,6 +8130,7 @@ void MainWindow::pushCurrentRepoUpstream()
             if (index < 0 || index >= m_repositories.size() ||
                 m_repositories.at(index).localPath != repo.localPath) {
                 m_pushingRepos.remove(index);
+                clearRepoSyncActivity(index);
                 refreshRepoSyncIndicators();
                 return;
             }
@@ -6833,6 +8174,7 @@ void MainWindow::pushCurrentRepoUpstream()
                     const QString path = scan.findings.first().path;
                     const int line = scan.findings.first().line;
                     m_pushingRepos.remove(index);
+                    clearRepoSyncActivity(index);
                     refreshRepoSyncIndicators();
                     openRepoDetail(index);
                     // Switch to the Code tab (index 0) so the highlighted line is
@@ -6847,6 +8189,7 @@ void MainWindow::pushCurrentRepoUpstream()
                 }
                 if (box.clickedButton() != bypassBtn) {
                     m_pushingRepos.remove(index);
+                    clearRepoSyncActivity(index);
                     refreshRepoSyncIndicators();
                     return;
                 }
@@ -6860,6 +8203,9 @@ void MainWindow::pushCurrentRepoUpstream()
 
             if (isRelay) {
                 m_pushingRepos.remove(index);
+                setRepoSyncActivity(
+                    index, QStringLiteral("Publishing local commits to the "
+                                          "served mirror…"));
                 logSystem(QStringLiteral("Git: publishing local commits for %1/%2 to "
                                          "the served mirror.")
                               .arg(repo.owner, repo.name));
@@ -6883,16 +8229,22 @@ void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                   .arg(repo.owner, repo.name, upstream));
 
     auto *process = new QProcess(this);
+    setRepoSyncActivity(index, QStringLiteral("Pushing to %1…").arg(upstream));
+    // --progress: git only writes its counters when stderr is a terminal, and a
+    // QProcess pipe is not one. With it, the label follows the real transfer.
+    auto pushErrors = streamGitProgressActivity(process, index, QString());
     connect(process, &QProcess::finished, this,
-            [this, process, index, repo, upstream, ahead](int exitCode,
-                                                          QProcess::ExitStatus status) {
+            [this, process, index, repo, upstream, ahead, pushErrors](
+                int exitCode, QProcess::ExitStatus status) {
                 if (process->property("handled").toBool())
                     return;
                 process->setProperty("handled", true);
-                const QString errors =
-                    QString::fromUtf8(process->readAllStandardError()).trimmed();
+                pushErrors->append(
+                    QString::fromUtf8(process->readAllStandardError()));
+                const QString errors = gitErrorsWithoutProgress(*pushErrors);
                 process->deleteLater();
                 m_pushingRepos.remove(index);
+                clearRepoSyncActivity(index);
 
                 if (status == QProcess::NormalExit && exitCode == 0) {
                     const QString count =
@@ -6928,6 +8280,7 @@ void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                 process->setProperty("handled", true);
                 process->deleteLater();
                 m_pushingRepos.remove(index);
+                clearRepoSyncActivity(index);
                 logSystem(QStringLiteral("Git: could not start push for %1/%2.")
                               .arg(repo.owner, repo.name));
                 flashMessage(QStringLiteral("Could not run git push for %1/%2.")
@@ -6936,7 +8289,8 @@ void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                 refreshRepoSyncIndicators();
             });
     process->start(QStringLiteral("git"),
-                   {QStringLiteral("-C"), repo.localPath, QStringLiteral("push")});
+                   {QStringLiteral("-C"), repo.localPath, QStringLiteral("push"),
+                    QStringLiteral("--progress")});
 }
 
 void MainWindow::showRepoMenu()
@@ -7057,33 +8411,15 @@ void MainWindow::updateChatButton()
 {
     if (!m_chatButton)
         return;
-    // The glyph stays the themed default now; unread is shown by a red count
-    // badge instead of tinting the icon green.
-    setOcticon(m_chatButton, "comment", 16);
 
     int total = 0;
     for (const int n : std::as_const(m_unreadCounts))
         total += n;
 
-    if (m_chatUnreadBadge) {
-        if (total > 0) {
-            const QString text =
-                total > 99 ? QStringLiteral("99+") : QString::number(total);
-            m_chatUnreadBadge->setText(text);
-            // Size to the text (a circle for one digit, a pill for more) and pin
-            // to the button's top-right corner. The padding has to clear the 1px
-            // border on each side and leave a little slack so the centred digits
-            // aren't clipped on the sides.
-            const int w = qMax(15, m_chatUnreadBadge->fontMetrics()
-                                       .horizontalAdvance(text) + 12);
-            m_chatUnreadBadge->resize(w, 15);
-            m_chatUnreadBadge->move(qMax(0, m_chatButton->width() - w), 0);
-            m_chatUnreadBadge->show();
-            m_chatUnreadBadge->raise();
-        } else {
-            m_chatUnreadBadge->hide();
-        }
-    }
+    // The red unread count rides the icon's corner, painted by the rail item
+    // itself (setBadgeUrgent(true) at construction picks the red style).
+    if (auto *railButton = dynamic_cast<ActivityRailButton *>(m_chatButton))
+        railButton->setBadgeCount(total);
 
     m_chatButton->setToolTip(
         total > 0 ? QString::fromUtf8("Chat \xE2\x80\x94 %1 unread message%2")
@@ -7373,12 +8709,12 @@ void MainWindow::ensureSectionBuilt(int index)
     case 3: section = buildNotificationsSection(); break;
     case 4: section = buildLogSection(); break;
     case 6: section = buildSearchResultsSection(); break;
-    case 7: section = buildHostsSection(); break;
-    case 8: section = buildRelaysSection(); break;
+    // 7 (Hosts), 8 (Relays) and 13 (Nodes) are tabs of the Network section now
+    // (adhoc #54); showSection() redirects them there, so their placeholders
+    // stay unbuilt and the fixed stack indexes below keep their meaning.
     case 10: section = buildNodeProfileSection(); break;
     case 11: section = buildNetworkReposSection(); break;
     case 12: section = buildNetworkDiagnosticsSection(); break;
-    case 13: section = buildNodesSection(); break;
     case 14: section = buildControlNodeSection(); break;
     case 15: section = buildOrganizationTasksSection(); break;
     default: break;
@@ -7394,6 +8730,16 @@ void MainWindow::showSection(int index)
 {
     if (index == 9)
         index = kNetworkDiagnosticsSectionIndex;
+    // Hosts (7), Relays (8) and Nodes (13) are tabs of the Network section now
+    // (adhoc #54). Their section indexes still work — saved navigation state,
+    // the command palette and the control node all still ask for them — they
+    // just open Network with the matching tab in front.
+    if (index == 7)
+        return showNetworkTab(kNetworkHostsTab);
+    if (index == 8)
+        return showNetworkTab(kNetworkRelaysTab);
+    if (index == kNodesSectionIndex)
+        return showNetworkTab(kNetworkNodesTab);
     // Section 5 was a retired desktop rankings page. Preserve fixed stack
     // indexes for saved navigation state, but land stale history safely at Home.
     if (index == 5)
@@ -7422,6 +8768,9 @@ void MainWindow::showSection(int index)
         // Entering Chat clears the unread marker for the open conversation.
         clearActiveConversationUnread();
     } else if (index == 3) {
+        // Opening Pings is the moment the website inbox has to be current
+        // (adhoc #59); refreshWebAlerts() repaints the table when it lands.
+        refreshWebAlerts();
         refreshNotificationsTable();
     } else if (index == 4 && m_settingsLog) {
         // First visit renders the persisted history that buildLogSection()
@@ -7434,19 +8783,10 @@ void MainWindow::showSection(int index)
         }
         // Jump to the newest log line whenever the Log section opens.
         m_settingsLog->moveCursor(QTextCursor::End);
-    } else if (index == 7) {
-        // Re-read the saved host list whenever the Hosts section opens.
-        refreshHostsTable();
-    } else if (index == 8) {
-        // Re-list and re-probe the relays each time the Relays section opens.
-        refreshRelaysTable();
     } else if (index == 10) {
         // Back/Forward can land here directly while the panel is on loan to the
         // Settings > Profile tab; bring it home so the page isn't blank.
         hostNodeProfilePanel(false);
-    } else if (index == kNodesSectionIndex) {
-        // Re-list the known nodes each time the Nodes section opens.
-        refreshNodesTable();
     } else if (index == kNetworkReposSectionIndex) {
         refreshNetworkReposPage();
     } else if (index == kNetworkDiagnosticsSectionIndex) {
@@ -7459,7 +8799,134 @@ void MainWindow::showSection(int index)
     }
 }
 
+void MainWindow::showNetworkTab(int tabIndex)
+{
+    showSection(kNetworkDiagnosticsSectionIndex);
+    if (!m_networkTabs || tabIndex < 0 || tabIndex >= m_networkTabs->count())
+        return;
+    const bool alreadyOpen = m_networkTabs->currentIndex() == tabIndex;
+    m_networkTabs->setCurrentIndex(tabIndex);
+    // A real tab change refreshes through currentChanged; re-opening the tab
+    // that is already in front does not, so do it here instead of twice.
+    if (alreadyOpen)
+        refreshNetworkTab(tabIndex);
+}
+
+void MainWindow::refreshNetworkTab(int tabIndex)
+{
+    switch (tabIndex) {
+    case kNetworkRelaysTab:
+        // Re-list and re-probe the relays each time the Relays tab opens.
+        refreshRelaysTable();
+        break;
+    case kNetworkNodesTab:
+        refreshNodesTable();
+        break;
+    case kNetworkHostsTab:
+        // Re-read the saved host list whenever the Hosts tab opens.
+        refreshHostsTable();
+        break;
+    default:
+        // The diagnostics/firewall tabs all read the same two refreshes, which
+        // showSection() already runs when the section itself opens.
+        refreshFirewallTables();
+        refreshNetworkDiagnostics();
+        break;
+    }
+}
+
 // --- Network repositories ---------------------------------------------------
+
+namespace {
+// Repos table columns (adhoc #118). The four interactive columns stay first so
+// a row's buttons remain reachable without scrolling sideways; every other fact
+// the catalog publishes about a repository follows, so this page shows all the
+// data we hold for all repos in one compact grid. Two things are deliberately
+// left out: the description (prose for the repository's own page, not a grid
+// cell) and raw signatures / private-archive locators (proof material rather
+// than repository facts — their digests are shown instead).
+enum NetworkRepoCol {
+    kRepoColName = 0,
+    kRepoColLocalFork,
+    kRepoColMirrors,
+    kRepoColActions,
+    kRepoColVisibility,
+    kRepoColTerms,
+    kRepoColLive,
+    kRepoColBranch,
+    kRepoColCommit,
+    kRepoColCommitSubject,
+    kRepoColCommitAuthor,
+    kRepoColCommitAt,
+    kRepoColIssues,
+    kRepoColIssueMax,
+    kRepoColCommits,
+    kRepoColBranches,
+    kRepoColPulls,
+    kRepoColDiscussions,
+    kRepoColWorktrees,
+    kRepoColArtifacts,
+    kRepoColActivity,
+    kRepoColChangedFiles,
+    kRepoColSize,
+    kRepoColSource,
+    kRepoColHosts,
+    kRepoColMachine,
+    kRepoColRuntime,
+    kRepoColPlatform,
+    kRepoColVersion,
+    kRepoColAgents,
+    kRepoColCi,
+    kRepoColCpu,
+    kRepoColMemory,
+    kRepoColDisk,
+    kRepoColClonesServed,
+    kRepoColWebsiteServed,
+    kRepoColEncryption,
+    kRepoColChannel,
+    kRepoColSolana,
+    kRepoColHostedSince,
+    kRepoColLastSync,
+    kRepoColUpdated,
+    kRepoColRootCommit,
+    kRepoColStateHash,
+    kRepoColMaintainer,
+    kRepoColNodeId,
+    kRepoColCloneUrl,
+    kRepoColSshUrl,
+    kRepoColCount,
+};
+
+// Header labels, index-aligned with NetworkRepoCol.
+QStringList networkRepoHeaders()
+{
+    return {QStringLiteral("Repository"),   QStringLiteral("Local fork"),
+            QStringLiteral("Mirrors"),      QStringLiteral("Actions"),
+            QStringLiteral("Visibility"),   QStringLiteral("Terms"),
+            QStringLiteral("Live host"),    QStringLiteral("Branch"),
+            QStringLiteral("Commit"),       QStringLiteral("Subject"),
+            QStringLiteral("Author"),       QStringLiteral("Last commit"),
+            QStringLiteral("Issues"),       QStringLiteral("Max issue"),
+            QStringLiteral("Commits"),      QStringLiteral("Branches"),
+            QStringLiteral("Pulls"),        QStringLiteral("Discussions"),
+            QStringLiteral("Worktrees"),    QStringLiteral("Artifacts"),
+            QStringLiteral("Activity 52w"), QStringLiteral("Changed files"),
+            QStringLiteral("Size"),         QStringLiteral("Source"),
+            QStringLiteral("Hosts"),        QStringLiteral("Machine"),
+            QStringLiteral("Runtime"),      QStringLiteral("Platform"),
+            QStringLiteral("Version"),      QStringLiteral("Agents"),
+            QStringLiteral("Actions (CI)"), QStringLiteral("CPU"),
+            QStringLiteral("RAM"),          QStringLiteral("Disk"),
+            QStringLiteral("Clones served"),
+            QStringLiteral("Website served"),
+            QStringLiteral("Encryption"),   QStringLiteral("Channel"),
+            QStringLiteral("Solana"),       QStringLiteral("Hosted since"),
+            QStringLiteral("Last sync"),    QStringLiteral("Updated"),
+            QStringLiteral("Root commit"),  QStringLiteral("State hash"),
+            QStringLiteral("Maintainer"),   QStringLiteral("Node id"),
+            QStringLiteral("Clone URL"),    QStringLiteral("SSH URL")};
+}
+} // namespace
 
 QWidget *MainWindow::buildNetworkReposSection()
 {
@@ -7511,17 +8978,17 @@ QWidget *MainWindow::buildNetworkReposSection()
 
     auto *subtitle = new QLabel(QStringLiteral(
         "Repositories grouped by user or organization across the active relay. "
-        "Mirror hosts are combined into one repository row."));
+        "Mirror hosts are combined into one repository row, and every field the "
+        "catalog publishes about a repository has its own column \xE2\x80\x94 "
+        "use a column's \xE2\x8B\xAF menu to hide, move or sort by it."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
 
-    m_networkReposTable = new QTableWidget(0, 4);
+    m_networkReposTable = new QTableWidget(0, kRepoColCount);
     installColumnHeaderMenu(m_networkReposTable);
     m_networkReposTable->setObjectName("issueTable");
-    m_networkReposTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Repository"), QStringLiteral("Local fork"),
-         QStringLiteral("Mirrors"), QStringLiteral("Actions")});
+    m_networkReposTable->setHorizontalHeaderLabels(networkRepoHeaders());
     m_networkReposTable->verticalHeader()->setVisible(false);
     m_networkReposTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_networkReposTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -7529,23 +8996,27 @@ QWidget *MainWindow::buildNetworkReposSection()
     m_networkReposTable->setWordWrap(false);
     m_networkReposTable->setAlternatingRowColors(true);
     m_networkReposTable->setSortingEnabled(false);
+    m_networkReposTable->setHorizontalScrollMode(
+        QAbstractItemView::ScrollPerPixel);
     m_networkReposTable->horizontalHeader()->setStretchLastSection(false);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        0, QHeaderView::Stretch);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        1, QHeaderView::ResizeToContents);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        2, QHeaderView::ResizeToContents);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        3, QHeaderView::ResizeToContents);
-    m_networkReposTable->verticalHeader()->setDefaultSectionSize(52);
-    m_networkReposTable->verticalHeader()->setMinimumSectionSize(44);
+    // Every column sizes to its own content: with the full field set in play a
+    // stretched first column would just push the data columns off-screen, and
+    // makeColumnsResizable() turns these into draggable Interactive ones as
+    // soon as the first rows land.
+    for (int c = 0; c < kRepoColCount; ++c)
+        m_networkReposTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    // One line per repository now that the commit/branch/state details each
+    // have a column, so a wide grid still reads as a compact list.
+    m_networkReposTable->verticalHeader()->setDefaultSectionSize(34);
+    m_networkReposTable->verticalHeader()->setMinimumSectionSize(28);
     makeColumnsResizable(m_networkReposTable);
     connect(m_networkReposTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int column) {
-                if (column == 3 || !m_networkReposTable)
+                if (column == kRepoColActions || !m_networkReposTable)
                     return;
-                QTableWidgetItem *item = m_networkReposTable->item(row, 0);
+                QTableWidgetItem *item =
+                    m_networkReposTable->item(row, kRepoColName);
                 if (!item)
                     return;
                 const QString key = item->data(Qt::UserRole).toString();
@@ -7964,7 +9435,6 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         const QString cloneUrl = repo.value("cloneUrl").toString().trimmed();
         const bool isPrivate = repo.value("private").toBool(false) ||
                                repo.value("isPrivate").toBool(false);
-        const bool liveHost = repo.value("liveHost").toBool(false);
         const QString commit = repo.value("commit").toString().trimmed();
         const QString branch = repo.value("branch").toString().trimmed();
         // The catalog publishes the HEAD commit date as epoch milliseconds, as
@@ -7975,27 +9445,10 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
                 ? qint64(commitAtValue.toDouble())
                 : commitAtValue.toString().trimmed().toLongLong();
 
-        // No "about" blurb on the row: what matters here is where the
-        // repository stands (commit, branch, when it last moved), and the
-        // description only ever pushed that off the end of the line. It still
-        // shows on the repository's own page.
-        QStringList details;
-        if (!commit.isEmpty()) {
-            QString commitLine = QStringLiteral("commit %1").arg(commit.left(12));
-            if (!branch.isEmpty())
-                commitLine += QStringLiteral(" on %1").arg(branch);
-            if (commitAtMs > 0)
-                commitLine += QStringLiteral(" \xC2\xB7 %1")
-                                  .arg(formatIssueRelativeTime(commitAtMs));
-            details << commitLine;
-        }
-        if (isPrivate)
-            details << QStringLiteral("private");
-        if (liveHost)
-            details << QStringLiteral("live");
-
-        auto *repoItem = new QTableWidgetItem(
-            details.isEmpty() ? key : key + "\n" + details.join(QStringLiteral(" | ")));
+        // Commit / branch / privacy each have their own column now, so the row
+        // itself is one line: the repository name. No "about" blurb either —
+        // the description is prose that belongs on the repository's own page.
+        auto *repoItem = new QTableWidgetItem(key);
         repoItem->setData(Qt::UserRole, key);
         repoItem->setData(Qt::UserRole + 1, cloneUrl);
         repoItem->setData(Qt::UserRole + 2, isPrivate);
@@ -8013,7 +9466,7 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         if (!cloneUrl.isEmpty())
             repoToolTip << cloneUrl;
         repoItem->setToolTip(repoToolTip.join('\n'));
-        m_networkReposTable->setItem(row, 0, repoItem);
+        m_networkReposTable->setItem(row, kRepoColName, repoItem);
 
         int localFork = -1;
         int mirroredIndex = -1;
@@ -8038,18 +9491,20 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
             auto *forkItem = new QTableWidgetItem(QStringLiteral("Available"));
             forkItem->setToolTip(
                 QStringLiteral("%1/%2\n%3").arg(fork.owner, fork.name, path));
-            m_networkReposTable->setItem(row, 1, forkItem);
+            m_networkReposTable->setItem(row, kRepoColLocalFork, forkItem);
         } else {
             auto *forkItem = new QTableWidgetItem(QStringLiteral("Not local"));
             forkItem->setForeground(QColor("#8b949e"));
-            m_networkReposTable->setItem(row, 1, forkItem);
+            m_networkReposTable->setItem(row, kRepoColLocalFork, forkItem);
         }
 
         auto *mirrorsItem = new QTableWidgetItem(
             QString::fromUtf8("\xE2\x80\xA6"));
         mirrorsItem->setForeground(QColor("#8b949e"));
         mirrorsItem->setTextAlignment(Qt::AlignCenter);
-        m_networkReposTable->setItem(row, 2, mirrorsItem);
+        m_networkReposTable->setItem(row, kRepoColMirrors, mirrorsItem);
+
+        fillNetworkRepoDataCells(row, repo);
 
         auto *actions = new QWidget;
         auto *actionRow = new QHBoxLayout(actions);
@@ -8114,6 +9569,24 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         }
         actionRow->addWidget(mirrorButton);
 
+        // Same repository on the public website — useful for sharing a link or
+        // browsing it without a local copy. Routed by the repo's own owner, so
+        // mirrored rows still open the hosting node's page.
+        auto *webButton = new QPushButton(QStringLiteral("Web"));
+        webButton->setObjectName("ghostButton");
+        webButton->setCursor(Qt::PointingHandCursor);
+        webButton->setToolTip(
+            QStringLiteral("View %1/%2 on the website")
+                .arg(routeOwner, routeName));
+        setOcticon(webButton, "link", 13);
+        connect(webButton, &QPushButton::clicked, this,
+                [this, routeOwner, routeName] {
+                    const QUrl url(repositoryWebUrl(routeOwner, routeName));
+                    if (url.isValid() && !url.host().isEmpty())
+                        QDesktopServices::openUrl(url);
+                });
+        actionRow->addWidget(webButton);
+
         // Delete this machine's copy without first opening the repository and
         // digging into its Settings tab. The row already resolved which record
         // is local across every owner it groups — mirror first, then fork; with
@@ -8154,7 +9627,7 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         actionRow->addSpacing(10);
         actionRow->addWidget(deleteButton);
         actionRow->addStretch();
-        m_networkReposTable->setCellWidget(row, 3, actions);
+        m_networkReposTable->setCellWidget(row, kRepoColActions, actions);
 
         fetchNetworkRepoMirrors(routeOwner, routeName, row, generation);
     }
@@ -8162,6 +9635,242 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
     m_networkReposStatus->setText(
         rows.isEmpty() ? QStringLiteral("No repositories advertised.")
                        : QStringLiteral("%1 repositories").arg(formatCount(rows.size())));
+    // The Repos rail badge counts what this page lists, not this machine's own
+    // copies (adhoc #118).
+    m_networkRepoRowCount = rows.size();
+    updateReposNavBadge();
+}
+
+// Fills every catalog-data column of one Repos row: the repository's own facts
+// (visibility, HEAD, counts, size) plus the publishing node's advertised state
+// (machine, platform, telemetry, serve counters). Values the node never
+// reported render as an em dash rather than a misleading zero.
+void MainWindow::fillNetworkRepoDataCells(int row, const QJsonObject &repo)
+{
+    if (!m_networkReposTable)
+        return;
+    const QString dash = QString::fromUtf8("\xE2\x80\x94");
+
+    // Numbers reach us as JSON numbers on some fields and as strings on others
+    // (the catalog stores the node-reported counters as text); an invalid
+    // QVariant means "never reported", which is not the same as zero.
+    auto number = [&repo](const QString &key) {
+        const QJsonValue value = repo.value(key);
+        if (value.isDouble())
+            return QVariant(qint64(value.toDouble()));
+        bool ok = false;
+        const qint64 parsed = value.toString().trimmed().toLongLong(&ok);
+        return ok ? QVariant(parsed) : QVariant();
+    };
+    auto text = [&repo](const QString &key) {
+        return repo.value(key).toString().trimmed();
+    };
+    auto textCell = [&](int column, const QString &value,
+                        const QString &tip = QString()) {
+        auto *item = new QTableWidgetItem(value.isEmpty() ? dash : value);
+        if (value.isEmpty())
+            item->setForeground(QColor("#8b949e"));
+        else if (!tip.isEmpty())
+            item->setToolTip(tip);
+        m_networkReposTable->setItem(row, column, item);
+    };
+    // Hashes, keys and addresses are shown by their leading characters with the
+    // full value on hover, so one long field can't blow out the grid.
+    auto digestCell = [&](int column, const QString &value,
+                          const QString &extraTip = QString()) {
+        QString tip = value;
+        if (!extraTip.isEmpty())
+            tip += QLatin1Char('\n') + extraTip;
+        textCell(column, value.left(12), tip);
+    };
+    auto countCell = [&](int column, const QString &key,
+                         const QString &tip = QString()) {
+        const QVariant value = number(key);
+        auto *item = new QTableWidgetItem;
+        if (value.isValid()) {
+            item->setData(Qt::DisplayRole, value.toLongLong());
+            if (!tip.isEmpty())
+                item->setToolTip(tip);
+        } else {
+            item->setText(dash);
+            item->setForeground(QColor("#8b949e"));
+        }
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_networkReposTable->setItem(row, column, item);
+    };
+    // Timestamps are epoch milliseconds (as text on the fields the node signs);
+    // the column reads relatively, the exact stamp is on hover.
+    auto timeCell = [&](int column, const QString &key) {
+        const QVariant value = number(key);
+        const qint64 ms = value.toLongLong();
+        if (!value.isValid() || ms <= 0) {
+            textCell(column, QString());
+            return;
+        }
+        textCell(column, formatIssueRelativeTime(ms), formatRepoDate(ms));
+    };
+    auto usageText = [&](const QString &usedKey, const QString &totalKey) {
+        const QVariant used = number(usedKey);
+        const QVariant total = number(totalKey);
+        if (!used.isValid() || !total.isValid() || total.toLongLong() <= 0)
+            return QString();
+        return QStringLiteral("%1 / %2")
+            .arg(SystemStats::formatBytes(used.toLongLong()),
+                 SystemStats::formatBytes(total.toLongLong()));
+    };
+    auto servedTip = [&](const QString &atKey, const QString &agentKey) {
+        QStringList tip;
+        const QVariant at = number(atKey);
+        if (at.isValid() && at.toLongLong() > 0)
+            tip << QStringLiteral("Last: %1").arg(formatRepoDate(at.toLongLong()));
+        const QString agent = text(agentKey);
+        if (!agent.isEmpty())
+            tip << QStringLiteral("Client: %1").arg(agent);
+        return tip.join(QLatin1Char('\n'));
+    };
+    auto joinArray = [&repo](const QString &key) {
+        QStringList values;
+        for (const QJsonValue &value : repo.value(key).toArray()) {
+            const QString entry = value.toString().trimmed();
+            if (!entry.isEmpty())
+                values << entry;
+        }
+        return values;
+    };
+
+    const bool isPrivate = repo.value("private").toBool(false) ||
+                           repo.value("isPrivate").toBool(false);
+    const bool sharedWithMe = repo.value("sharedWithMe").toBool(false);
+    textCell(kRepoColVisibility,
+             isPrivate ? (sharedWithMe ? QStringLiteral("Private (shared)")
+                                       : QStringLiteral("Private"))
+                       : QStringLiteral("Public"));
+    textCell(kRepoColTerms,
+             repo.value("termsFlagged").toBool(false)
+                 ? (text(QStringLiteral("termsCategory")).isEmpty()
+                        ? QStringLiteral("flagged")
+                        : text(QStringLiteral("termsCategory")))
+                 : QString());
+    textCell(kRepoColLive, repo.value("liveHost").toBool(false)
+                               ? QStringLiteral("Live")
+                               : QString());
+
+    textCell(kRepoColBranch, text(QStringLiteral("branch")));
+    digestCell(kRepoColCommit, text(QStringLiteral("commit")));
+    const QString subject = text(QStringLiteral("commitSubject"));
+    textCell(kRepoColCommitSubject, subject, subject);
+    textCell(kRepoColCommitAuthor, text(QStringLiteral("commitAuthorName")));
+    timeCell(kRepoColCommitAt, QStringLiteral("commitAt"));
+
+    countCell(kRepoColIssues, QStringLiteral("issueCount"),
+              QStringLiteral("Open issues"));
+    countCell(kRepoColIssueMax, QStringLiteral("issueMaxNumber"),
+              QStringLiteral("Highest issue number ever assigned"));
+    countCell(kRepoColCommits, QStringLiteral("commitCount"));
+    countCell(kRepoColBranches, QStringLiteral("branchCount"));
+    countCell(kRepoColPulls, QStringLiteral("pullCount"));
+    countCell(kRepoColDiscussions, QStringLiteral("discussionCount"));
+    countCell(kRepoColWorktrees, QStringLiteral("worktreeCount"));
+    countCell(kRepoColArtifacts, QStringLiteral("artifactCount"));
+
+    const QJsonArray activity = repo.value("activityWeeks").toArray();
+    if (activity.isEmpty()) {
+        textCell(kRepoColActivity, QString());
+    } else {
+        qint64 activityTotal = 0;
+        QStringList weeks;
+        for (const QJsonValue &week : activity) {
+            activityTotal += qint64(week.toDouble());
+            weeks << QString::number(qint64(week.toDouble()));
+        }
+        auto *item = new QTableWidgetItem;
+        item->setData(Qt::DisplayRole, activityTotal);
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        item->setToolTip(QStringLiteral("Commits per week (oldest first):\n%1")
+                             .arg(weeks.join(QLatin1Char(' '))));
+        m_networkReposTable->setItem(row, kRepoColActivity, item);
+    }
+
+    const QStringList changedFiles = joinArray(QStringLiteral("changedFiles"));
+    if (changedFiles.isEmpty()) {
+        textCell(kRepoColChangedFiles, QString());
+    } else {
+        auto *item = new QTableWidgetItem;
+        item->setData(Qt::DisplayRole, qint64(changedFiles.size()));
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        item->setToolTip(QStringLiteral("Uncommitted on the host:\n%1")
+                             .arg(changedFiles.join(QLatin1Char('\n'))));
+        m_networkReposTable->setItem(row, kRepoColChangedFiles, item);
+    }
+
+    const QVariant sizeBytes = number(QStringLiteral("sizeBytes"));
+    textCell(kRepoColSize,
+             sizeBytes.isValid() && sizeBytes.toLongLong() > 0
+                 ? SystemStats::formatBytes(sizeBytes.toLongLong())
+                 : QString());
+    textCell(kRepoColSource, text(QStringLiteral("source")));
+    const QStringList hosts = joinArray(QStringLiteral("_memberOwners"));
+    textCell(kRepoColHosts, hosts.join(QStringLiteral(", ")),
+             hosts.join(QLatin1Char('\n')));
+
+    textCell(kRepoColMachine, text(QStringLiteral("machineName")));
+    textCell(kRepoColRuntime, text(QStringLiteral("runtimeMode")));
+    textCell(kRepoColPlatform, text(QStringLiteral("platform")));
+    textCell(kRepoColVersion, text(QStringLiteral("version")));
+    textCell(kRepoColAgents,
+             joinArray(QStringLiteral("agentProviders"))
+                 .join(QStringLiteral(", ")));
+    QString ci = text(QStringLiteral("actionsState"));
+    if (ci.isEmpty() && repo.contains(QStringLiteral("actionsEnabled")))
+        ci = repo.value("actionsEnabled").toBool() ? QStringLiteral("enabled")
+                                                   : QStringLiteral("disabled");
+    textCell(kRepoColCi, ci);
+
+    const QVariant cpuPercent = number(QStringLiteral("cpuPercent"));
+    textCell(kRepoColCpu, cpuPercent.isValid()
+                              ? QStringLiteral("%1%").arg(cpuPercent.toLongLong())
+                              : QString());
+    textCell(kRepoColMemory, usageText(QStringLiteral("memUsedBytes"),
+                                       QStringLiteral("memTotalBytes")));
+    textCell(kRepoColDisk, usageText(QStringLiteral("diskUsedBytes"),
+                                     QStringLiteral("diskTotalBytes")));
+    countCell(kRepoColClonesServed, QStringLiteral("clonesServed"),
+              servedTip(QStringLiteral("cloneServedAt"),
+                        QStringLiteral("cloneServedAgent")));
+    countCell(kRepoColWebsiteServed, QStringLiteral("websiteServed"),
+              servedTip(QStringLiteral("websiteServedAt"),
+                        QStringLiteral("websiteServedAgent")));
+
+    QString encryption = text(QStringLiteral("mirrorEncryption"));
+    const QVariant keyEpoch = number(QStringLiteral("keyEpoch"));
+    if (!encryption.isEmpty() && keyEpoch.isValid())
+        encryption += QStringLiteral(" \xC2\xB7 epoch %1").arg(keyEpoch.toLongLong());
+    QStringList encryptionTip;
+    if (!text(QStringLiteral("opaqueRepoId")).isEmpty())
+        encryptionTip << QStringLiteral("Repo id: %1")
+                             .arg(text(QStringLiteral("opaqueRepoId")));
+    if (!text(QStringLiteral("encryptedManifestHash")).isEmpty())
+        encryptionTip << QStringLiteral("Manifest: %1")
+                             .arg(text(QStringLiteral("encryptedManifestHash")));
+    textCell(kRepoColEncryption, encryption,
+             encryptionTip.join(QLatin1Char('\n')));
+
+    textCell(kRepoColChannel, text(QStringLiteral("channel")));
+    digestCell(kRepoColSolana, text(QStringLiteral("solana")));
+    timeCell(kRepoColHostedSince, QStringLiteral("hostedSince"));
+    timeCell(kRepoColLastSync, QStringLiteral("lastSync"));
+    timeCell(kRepoColUpdated, QStringLiteral("updatedAt"));
+    digestCell(kRepoColRootCommit, text(QStringLiteral("rootCommit")));
+    digestCell(kRepoColStateHash, text(QStringLiteral("stateHash")),
+               text(QStringLiteral("stateSig")).isEmpty()
+                   ? QStringLiteral("Unsigned")
+                   : QStringLiteral("Owner-signed"));
+    digestCell(kRepoColMaintainer, text(QStringLiteral("maintainer")));
+    digestCell(kRepoColNodeId, text(QStringLiteral("nodeId")));
+    const QString cloneUrl = text(QStringLiteral("cloneUrl"));
+    textCell(kRepoColCloneUrl, cloneUrl, cloneUrl);
+    const QString sshUrl = text(QStringLiteral("sshUrl"));
+    textCell(kRepoColSshUrl, sshUrl, sshUrl);
 }
 
 void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &name,
@@ -8189,7 +9898,8 @@ void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &na
                 if (generation != m_networkReposLoadGen || !m_networkReposTable ||
                     row < 0 || row >= m_networkReposTable->rowCount())
                     return;
-                QTableWidgetItem *repoItem = m_networkReposTable->item(row, 0);
+                QTableWidgetItem *repoItem =
+                    m_networkReposTable->item(row, kRepoColName);
                 if (!repoItem ||
                     repoItem->data(Qt::UserRole + 3).toString()
                             .compare(owner, Qt::CaseInsensitive) != 0 ||
@@ -8197,7 +9907,8 @@ void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &na
                             .compare(name, Qt::CaseInsensitive) != 0)
                     return;
 
-                QTableWidgetItem *mirrorsItem = m_networkReposTable->item(row, 2);
+                QTableWidgetItem *mirrorsItem =
+                    m_networkReposTable->item(row, kRepoColMirrors);
                 if (!mirrorsItem)
                     return;
 
@@ -8391,19 +10102,14 @@ QWidget *MainWindow::buildHostsSection()
     auto *outer = new QVBoxLayout(page);
     // Compact page chrome (adhoc #315): tighter margins/spacing everywhere so
     // all areas — install form, Vultr provisioning, live output and the host
-    // list — fit on screen together, while every hint keeps its full text.
-    outer->setContentsMargins(16, 12, 16, 14);
+    // list — fit on screen together, while every hint keeps its full text. It is
+    // a tab of the Network section now (adhoc #54), so the page title is gone
+    // and the horizontal margins belong to the section, not the page.
+    outer->setContentsMargins(0, 8, 0, 0);
     outer->setSpacing(8);
 
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
-    auto *title = new QLabel(QStringLiteral("Hosts"));
-    title->setObjectName("sectionTitle");
-    QFont titleFont = title->font();
-    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    titleRow->addWidget(title);
     titleRow->addStretch(1);
     // Bulk one-click install: make every saved host install the current
     // published, checksum-verified release in parallel. This deliberately does
@@ -8584,9 +10290,12 @@ QWidget *MainWindow::buildHostsSection()
         "creates and manages the SSH key for it automatically, boots the "
         "instance, installs ForkMesh over SSH and links the new node to your "
         "account so it starts mirroring and syncing right away. The API key "
-        "(Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is used from "
-        "memory only and never saved to disk \xE2\x80\x94 store it as a "
-        "VULTR_API_KEY device variable to prefill it. When a "
+        "(Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is saved once "
+        "Vultr accepts it \xE2\x80\x94 into this device's VULTR_API_KEY "
+        "variable (Settings \xE2\x86\x92 Variables / Secrets) and into "
+        "cloudflare_worker/.env.production \xE2\x80\x94 so you never have to "
+        "enter it again; it travels only in the Authorization header of this "
+        "app's HTTPS calls to Vultr, never in a command line. When a "
         "CLOUDFLARE_API_TOKEN device variable and a Cloudflare zone are "
         "configured, the new node also gets a <node>.<zone> DNS record so it "
         "joins the mesh under a stable name like your other mirrors. The "
@@ -8596,13 +10305,69 @@ QWidget *MainWindow::buildHostsSection()
     vultrHint->setWordWrap(true);
     vultrCol->addWidget(vultrHint);
 
+    // A compact, GitHub-Actions-style deployment rail. Every numbered stage is
+    // backed by the durable checkpoint restored below; the last stage becomes
+    // green only after the public mirror catalog says the endpoint is healthy,
+    // fresh, integrity-approved and clone eligible.
+    m_vultrProgressPanel = new QWidget(vultrCard);
+    m_vultrProgressPanel->setObjectName(
+        QStringLiteral("vultrDeployProgress"));
+    auto *stageRow = new QHBoxLayout(m_vultrProgressPanel);
+    stageRow->setContentsMargins(0, 6, 0, 6);
+    stageRow->setSpacing(5);
+    m_vultrStageNumbers.clear();
+    m_vultrStageLabels.clear();
+    const QStringList stageNames = {
+        QStringLiteral("Credentials"), QStringLiteral("Plan + image"),
+        QStringLiteral("Create server"), QStringLiteral("Boot + connect"),
+        QStringLiteral("Install"), QStringLiteral("Live traffic")};
+    for (int i = 0; i < stageNames.size(); ++i) {
+        auto *stage = new QWidget(m_vultrProgressPanel);
+        stage->setObjectName(QStringLiteral("vultrDeployStage%1").arg(i + 1));
+        auto *col = new QVBoxLayout(stage);
+        col->setContentsMargins(2, 0, 2, 0);
+        col->setSpacing(3);
+        auto *number = new QLabel(QString::number(i + 1), stage);
+        number->setAlignment(Qt::AlignCenter);
+        number->setFixedSize(28, 28);
+        number->setAccessibleName(
+            QStringLiteral("Deployment stage %1").arg(i + 1));
+        auto *label = new QLabel(stageNames.at(i), stage);
+        label->setAlignment(Qt::AlignCenter);
+        label->setWordWrap(true);
+        label->setMinimumWidth(72);
+        col->addWidget(number, 0, Qt::AlignHCenter);
+        col->addWidget(label, 0, Qt::AlignHCenter);
+        m_vultrStageNumbers.append(number);
+        m_vultrStageLabels.append(label);
+        stageRow->addWidget(stage, 1);
+        if (i + 1 < stageNames.size()) {
+            auto *connector = new QFrame(m_vultrProgressPanel);
+            connector->setFrameShape(QFrame::HLine);
+            connector->setObjectName(QStringLiteral("vultrStageConnector"));
+            connector->setMaximumWidth(22);
+            stageRow->addWidget(connector);
+        }
+    }
+    vultrCol->addWidget(m_vultrProgressPanel);
+    m_vultrLiveBadge = new QLabel(vultrCard);
+    m_vultrLiveBadge->setObjectName(QStringLiteral("vultrMirrorLiveBadge"));
+    m_vultrLiveBadge->setAlignment(Qt::AlignCenter);
+    m_vultrLiveBadge->setVisible(false);
+    vultrCol->addWidget(m_vultrLiveBadge);
+
     auto *vultrForm = new QFormLayout;
     vultrForm->setLabelAlignment(Qt::AlignRight);
     vultrForm->setSpacing(6);
     m_vultrApiKeyEdit = new QLineEdit;
     m_vultrApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_vultrApiKeyEdit->setPlaceholderText(
-        QStringLiteral("Vultr API key — kept in memory only"));
+        QStringLiteral("Vultr API key — saved after the first successful run"));
+    // Prefill from whatever this device already stores (this page's own saves,
+    // Settings > Quick setup, or a hand-added variable), so a returning
+    // operator only has to press the button (adhoc #127).
+    m_vultrApiKeyEdit->setText(
+        forkmesh::control::vultrApiKeyFromVariables(ActionStore::variables()));
     vultrForm->addRow(QStringLiteral("Vultr API key"), m_vultrApiKeyEdit);
     m_vultrNameEdit = new QLineEdit;
     m_vultrNameEdit->setPlaceholderText(QString::fromUtf8(
@@ -8749,6 +10514,8 @@ QWidget *MainWindow::buildHostsSection()
     outer->addWidget(scroll, 1);
 
     refreshHostsTable();
+    renderVultrProvisionProgress();
+    restoreVultrProvision();
     QTimer::singleShot(0, this, &MainWindow::probeSavedHosts);
     return page;
 }
@@ -9025,13 +10792,7 @@ void MainWindow::refreshHostsTable()
         });
     }
 
-    if (m_hostsNavButton)
-        m_hostsNavButton->setText(hosts.isEmpty()
-            ? QStringLiteral("Hosts")
-            : QStringLiteral("Hosts (%1)").arg(hosts.size()));
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_hostsNavButton))
-        railButton->setBadgeCount(hosts.size());
+    updateNetworkCounts(-1, -1, hosts.size());
 }
 
 forkmesh::control::AgentCliCredentials MainWindow::localAgentCliCredentials()
@@ -10013,19 +11774,17 @@ void MainWindow::runHostActionsConfiguration(
 // A sortable directory of every registered node the relay exposes through its
 // public user directory, merged with live roster and serving-only nodes. Each row
 // carries the node's platform badge, name, online state, owner, advertised
-// ForkMesh version, repo/mirror counts and its CPU/RAM/disk telemetry bars.
-// Selecting a row opens a detail panel with the node's full details, the repos
-// it hosts and the repos it mirrors.
+// ForkMesh version, repo/mirror counts and its CPU/RAM/disk telemetry bars;
+// selecting one opens a detail panel with the repos it hosts and mirrors.
 //
-// Online state trusts the relay's /api/network/stats "onlineNodes" list (a
-// repository update channel or a fresh signed heartbeat) as the canonical set —
-// the same signal the Mirror nodes list and the Network page use. This lets
-// headless mirror nodes that serve via the relay without joining this client's
-// chat room show online (adhoc #27), and, once the relay set is fetched, stops a
-// stale roster entry from painting a node online after it stopped serving
-// (adhoc #43). Our own node is the exception: it trusts the local backend, since
-// it may host only private repos the relay never lists. Before the first relay
-// reply we fall back to the encrypted roster's presence flag.
+// Online state trusts the relay's /api/network/stats "onlineNodes" list as the
+// canonical set — the same signal the Mirror nodes list and the Network page
+// use. That lets headless mirrors serving via the relay without joining this
+// client's chat room show online (adhoc #27) and stops a stale roster entry
+// painting a node online after it stopped serving (adhoc #43). Our own node is
+// the exception: it trusts the local backend, since it may host only private
+// repos the relay never lists. Before the first relay reply we fall back to the
+// encrypted roster's presence flag.
 
 namespace {
 enum NodeCol {
@@ -10036,28 +11795,32 @@ enum NodeCol {
     kNodeColPlatform,
     kNodeColRepos,
     kNodeColMirrors,
+    kNodeColHealth,
     kNodeColCpu,
     kNodeColRam,
     kNodeColDisk,
     kNodeColId,
+    kNodeColActions,
     kNodeColCount,
 };
+// Names the mesh refuses to delete, mirrored from the worker's protected list
+// so the button is never offered for a node the relay would answer 409 for.
+bool isProtectedMeshNode(const QString &node)
+{
+    const QString key = node.trimmed().toLower();
+    return key.isEmpty() || key == QLatin1String("forkmesh") ||
+           key == QLatin1String("forkmesh-mainnode");
+}
 } // namespace
 
 QWidget *MainWindow::buildNodesSection()
 {
+    // A tab of the Network section (adhoc #54) — see buildRelaysSection() on the
+    // missing page title.
     auto *page = new QWidget;
     auto *outer = new QVBoxLayout(page);
-    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setContentsMargins(0, 8, 0, 0);
     outer->setSpacing(12);
-
-    auto *title = new QLabel(QStringLiteral("Nodes"));
-    title->setObjectName("sectionTitle");
-    QFont titleFont = title->font();
-    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    outer->addWidget(title);
 
     auto *subtitle = new QLabel(QString::fromUtf8(
         "All registered nodes from the relay directory, including offline "
@@ -10074,12 +11837,31 @@ QWidget *MainWindow::buildNodesSection()
     m_nodesStatus = new QLabel;
     m_nodesStatus->setObjectName("mutedLabel");
     controls->addWidget(m_nodesStatus, 1);
+    auto *updateAll =
+        new QPushButton(QStringLiteral("Update all from this binary"));
+    updateAll->setObjectName(QStringLiteral("nodesUpdateAllBinaryButton"));
+    updateAll->setCursor(Qt::PointingHandCursor);
+    updateAll->setToolTip(QStringLiteral(
+        "SSH to every saved host in parallel, install the current published "
+        "ForkMesh binary, and show live restart progress for each node."));
+    setOcticon(updateAll, "download", 14);
+    connect(updateAll, &QPushButton::clicked, this, [this] {
+        // Fleet progress is intentionally rendered on Hosts: each SSH target
+        // gets its own spinner/header and live log there. Switching first also
+        // makes failures (missing SSH metadata, checksum, restart) visible
+        // instead of leaving a seemingly idle button on Nodes.
+        showNetworkTab(kNetworkHostsTab);
+        QTimer::singleShot(0, this,
+                           &MainWindow::runHostInstallAllFromBinary);
+    });
+    controls->addWidget(updateAll);
     m_nodesRefreshButton = new QPushButton(QStringLiteral("Refresh"));
     m_nodesRefreshButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_nodesRefreshButton, "sync", 14);
     connect(m_nodesRefreshButton, &QPushButton::clicked, this, [this] {
         refreshChatUserDirectory();
         fetchRelayOnlineNodes(true); // refreshes the table again on reply
+        fetchNodesCatalogInfo(true);
         refreshNodesTable();
     });
     controls->addWidget(m_nodesRefreshButton);
@@ -10098,12 +11880,15 @@ QWidget *MainWindow::buildNodesSection()
         {QStringLiteral("Node"), QStringLiteral("Status"),
          QStringLiteral("Owner"), QStringLiteral("Version"),
          QStringLiteral("Platform"), QStringLiteral("Repos"),
-         QStringLiteral("Mirrors"), QStringLiteral("CPU"),
+         QStringLiteral("Mirrors"), QStringLiteral("Health"),
+         QStringLiteral("CPU"),
          QStringLiteral("RAM"), QStringLiteral("Disk"),
-         QStringLiteral("Node id")});
+         QStringLiteral("Node id"), QStringLiteral("Actions")});
     m_nodesTable->verticalHeader()->setVisible(false);
     m_nodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_nodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    // A node opens in the detail pane on click; keeping a selected table row
+    // adds a distracting green band with no extra state or action.
+    m_nodesTable->setSelectionMode(QAbstractItemView::NoSelection);
     m_nodesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_nodesTable->setShowGrid(false);
     m_nodesTable->setSortingEnabled(true);
@@ -10115,12 +11900,26 @@ QWidget *MainWindow::buildNodesSection()
             c, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_nodesTable); // spreadsheet-style draggable columns (#263)
     // CPU / RAM / disk columns render as little usage bars (details on hover),
-    // the same delegate the repo detail's Mirror nodes table uses.
+    // the same delegate the repo detail's Mirror nodes table uses. This table
+    // styles its selected row as a muted band (the nodesDirectory QSS rule), so
+    // the delegate must paint that same band itself: it strips the selected
+    // state, which otherwise let the app-wide green selection band show through
+    // on just these three columns.
     auto *resourceBars = new ResourceBarDelegate(m_nodesTable);
+    resourceBars->mutedSelectionBand = true;
     for (int col : {kNodeColCpu, kNodeColRam, kNodeColDisk})
         m_nodesTable->setItemDelegateForColumn(col, resourceBars);
     connect(m_nodesTable, &QTableWidget::cellClicked, this,
             [this](int row, int) { showNodeDetailForRow(row); });
+    // Sorting moves the items, so the action column's buttons have to be laid
+    // down again against the new row order — otherwise a re-sort would leave a
+    // Delete button sitting on a different node's row. Deferred so the view has
+    // finished the sort before its cell widgets are replaced.
+    connect(m_nodesTable->horizontalHeader(),
+            &QHeaderView::sortIndicatorChanged, this, [this] {
+                QTimer::singleShot(0, this,
+                                   &MainWindow::refreshNodeActionButtons);
+            });
     split->addWidget(m_nodesTable, 2);
 
     m_nodeDetailScroll = new QScrollArea;
@@ -10133,6 +11932,7 @@ QWidget *MainWindow::buildNodesSection()
 
     refreshChatUserDirectory();
     fetchRelayOnlineNodes();
+    fetchNodesCatalogInfo();
     refreshNodesTable();
     return page;
 }
@@ -10185,6 +11985,154 @@ void MainWindow::fetchRelayOnlineNodes(bool force)
     });
 }
 
+void MainWindow::fetchNodesCatalogInfo(bool force)
+{
+    if (!m_networkAccess)
+        return;
+    // This is a fan-out (one request per repo group), and refreshNodesTable runs
+    // on every roster flicker, so it is throttled harder than the single-request
+    // fetchRelayOnlineNodes: the catalog records only move on a registration
+    // lease renewal, so five minutes is plenty fresh. An explicit Refresh click
+    // forces it at 15s. The per-URL backoff below keeps a failing/rate-limited
+    // relay from being re-queried on each attempt.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 minIntervalMs = force ? 15000 : 5 * 60000;
+    if (m_nodesCatalogFetchedMs > 0 &&
+        now - m_nodesCatalogFetchedMs < minIntervalMs)
+        return;
+    m_nodesCatalogFetchedMs = now;
+
+    // The repo groups whose mirrors we ask about. Our own hosted repos come
+    // first — the fleet mirrors those, so they name the most nodes per request —
+    // and browse-only previews of other nodes' repos fill any slots left. Capped
+    // so a long repo list can't turn one page visit into a request storm.
+    constexpr int kMaxSources = 12;
+    QStringList sources;
+    for (bool previews : {false, true}) {
+        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+            if (repo.isPrivate || repo.previewOnly != previews)
+                continue;
+            const QString owner = repo.owner.trimmed();
+            const QString name = repo.name.trimmed();
+            if (owner.isEmpty() || name.isEmpty())
+                continue;
+            const QString source = owner + QLatin1Char('/') + name;
+            if (!sources.contains(source, Qt::CaseInsensitive))
+                sources.append(source);
+            if (sources.size() >= kMaxSources)
+                break;
+        }
+        if (sources.size() >= kMaxSources)
+            break;
+    }
+    if (sources.isEmpty())
+        return;
+
+    // All requests fan out at once and accumulate into one shared map; the last
+    // reply to land commits it and re-renders the table.
+    struct Sweep {
+        int pending = 0;
+        QHash<QString, QJsonObject> nodes;
+    };
+    auto sweep = std::make_shared<Sweep>();
+    for (const QString &source : std::as_const(sources)) {
+        const int slash = source.indexOf(QLatin1Char('/'));
+        QUrl url = catalogApiUrl();
+        url.setPath(QStringLiteral("/api/repo/%1/%2/mirrors")
+                        .arg(QString::fromUtf8(QUrl::toPercentEncoding(
+                                 source.left(slash))),
+                             QString::fromUtf8(QUrl::toPercentEncoding(
+                                 source.mid(slash + 1)))));
+        const QString backoffKey =
+            QStringLiteral("nodes-catalog|") + url.toString();
+        if (!m_pollBackoff.ready(backoffKey, now))
+            continue;
+        ++sweep->pending;
+        QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+        connect(reply, &QNetworkReply::finished, this,
+                [this, reply, sweep, source, backoffKey] {
+            const QByteArray body = reply->readAll();
+            reply->deleteLater();
+            const QJsonObject resp = QJsonDocument::fromJson(body).object();
+            if (!resp.value("ok").toBool()) {
+                m_pollBackoff.noteFailure(backoffKey,
+                                          QDateTime::currentMSecsSinceEpoch());
+            } else {
+                m_pollBackoff.noteSuccess(backoffKey);
+                for (const QJsonValue &value :
+                     resp.value("mirrors").toArray()) {
+                    const QJsonObject record = value.toObject();
+                    const QString key = record.value("node")
+                                            .toString()
+                                            .trimmed()
+                                            .toLower();
+                    if (key.isEmpty())
+                        continue;
+                    QJsonObject &known = sweep->nodes[key];
+                    // Keep the freshest record as the node's identity/telemetry
+                    // card, but the mirrored-source list spans all of them.
+                    QJsonArray mirrorSources =
+                        known.value("mirrorSources").toArray();
+                    if (!mirrorSources.contains(source))
+                        mirrorSources.append(source);
+                    if (known.isEmpty() ||
+                        record.value("lastSync").toDouble() >=
+                            known.value("lastSync").toDouble())
+                        known = record;
+                    known.insert("mirrorSources", mirrorSources);
+                }
+            }
+            if (--sweep->pending > 0)
+                return;
+            m_nodesCatalogInfo = sweep->nodes;
+            refreshNodesTable();
+        });
+    }
+}
+
+void MainWindow::applyCatalogNodeInfo(MemberInfo &info,
+                                      const QString &node) const
+{
+    const QJsonObject record =
+        m_nodesCatalogInfo.value(node.trimmed().toLower());
+    if (record.isEmpty())
+        return;
+    if (info.ownerUser.trimmed().isEmpty())
+        info.ownerUser = record.value("ownerUser").toString().trimmed();
+    if (info.version.trimmed().isEmpty())
+        info.version = record.value("version").toString().trimmed();
+    if (info.platform.trimmed().isEmpty())
+        info.platform = record.value("platform").toString().trimmed();
+    if (info.id.trimmed().isEmpty())
+        info.id = record.value("id").toString().trimmed();
+    if (info.cpuPercent < 0.0)
+        info.cpuPercent = record.value("cpuPercent").toDouble(-1.0);
+    if (info.memTotalBytes <= 0) {
+        info.memUsedBytes = qint64(record.value("memUsedBytes").toDouble());
+        info.memTotalBytes = qint64(record.value("memTotalBytes").toDouble());
+    }
+    if (info.diskTotalBytes <= 0) {
+        info.diskUsedBytes = qint64(record.value("diskUsedBytes").toDouble());
+        info.diskTotalBytes =
+            qint64(record.value("diskTotalBytes").toDouble());
+    }
+    if (info.mirrors.isEmpty()) {
+        for (const QJsonValue &value :
+             record.value("mirrorSources").toArray()) {
+            const QString source = value.toString().trimmed();
+            if (source.isEmpty())
+                continue;
+            info.mirrors.append(source);
+            // Minimal advert so the detail panel's "Mirrored repositories"
+            // list names the repo; the freshest record's HEAD only describes
+            // one of them, so per-repo commit detail stays with the repo page.
+            MirrorAdvert advert;
+            advert.source = source;
+            info.mirrorDetails.append(advert);
+        }
+    }
+}
+
 void MainWindow::refreshNodesTable()
 {
     // No early return on a missing table: the Nodes page is built lazily, but the
@@ -10195,8 +12143,10 @@ void MainWindow::refreshNodesTable()
     // nodes outside this client's chat room still show online. Only while the
     // Nodes page is actually visible — this also runs on every roster tick, and
     // a hidden page must not keep polling the quota-limited relay.
-    if (m_nodesTable && m_nodesTable->isVisible())
+    if (m_nodesTable && m_nodesTable->isVisible()) {
         fetchRelayOnlineNodes();
+        fetchNodesCatalogInfo();
+    }
 
     // The roster record (version / owner / telemetry / mirrors) for a node.
     // Prefer an online entry when a reinstall left the same name in the roster
@@ -10257,31 +12207,33 @@ void MainWindow::refreshNodesTable()
     // linked node. Missing accountKind (older peers, or a name only known via
     // a locally hosted repo's owner field) still counts as a node.
     //
-    // Our own row is the same story: when this desktop is signed in as a user
-    // account (it owns a node fleet), the account name is a *user*, not a node —
-    // its nodes show as their own rows. The backend stamps this same predicate as
-    // accountKind "user" on the self roster entry, but that self row also carries
-    // live telemetry and can be painted before the "user" kind propagates, which
-    // left the user showing as a node (adhoc #37: "jett" listed as a node). Gate
-    // the self row on the local predicate directly so it never leaks through.
+    // Our own row is the same story: a desktop signed in as a user account is a
+    // *user*, not a node — its nodes show as their own rows. The backend stamps
+    // that as accountKind "user" on the self entry, but the self row carries
+    // live telemetry and can be painted before the kind propagates (adhoc #37:
+    // "jett" listed as a node), so gate it on the local predicate directly.
     const bool selfIsUserAccount =
         m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
-    // A name the public account directory lists as a *user* and that no account
-    // lists as a linked node is a person, not a node. Those reach the switcher
-    // list purely as repository owners (refreshRepositoryList adds an entry for
-    // every repo owner) and never carry a roster identity to be filtered by
-    // accountKind, so every account with a listed repo was being counted and
-    // drawn as a node (adhoc #26). An owner whose machine node shares the account
-    // name stays: the relay's live set still reports it serving.
-    auto isDirectoryUserOnly = [&](const QString &key) {
-        return m_chatDirectoryUsers.contains(key) &&
-               !directoryOwner.contains(key) && !relayOnline(key);
+    const QString localUser = selfIsUserAccount
+                                  ? accountOwner().trimmed().toLower()
+                                  : QString();
+    // The public account directory owns the user/node boundary. A directory
+    // user is never a node, even if a stale relay heartbeat reports that same
+    // name online. Real machines are represented by the linked node names in
+    // directoryOwner, so this cannot hide a user's actual fleet.
+    auto isDirectoryUser = [this, localUser](const QString &key) {
+        const QString normalized = key.trimmed().toLower();
+        return m_chatDirectoryUsers.contains(normalized) ||
+               (!localUser.isEmpty() && normalized == localUser);
     };
     QList<NodeMenuEntry> visible;
     QList<MemberInfo> visibleRoster;
     QSet<QString> visibleNames;
     for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
         MemberInfo mi = rosterInfo(e.name);
+        const QString key = e.name.trimmed().toLower();
+        if (key.isEmpty() || isDirectoryUser(key))
+            continue;
         if (mi.accountKind == QLatin1String("user"))
             continue;
         // Temporary world-chat visitors are filtered before they become menu
@@ -10291,10 +12243,7 @@ void MainWindow::refreshNodesTable()
             continue;
         if (e.self && selfIsUserAccount)
             continue;
-        const QString key = e.name.trimmed().toLower();
-        if (key.isEmpty() || visibleNames.contains(key))
-            continue;
-        if (!e.self && isDirectoryUserOnly(key))
+        if (visibleNames.contains(key))
             continue;
         if (mi.ownerUser.trimmed().isEmpty())
             mi.ownerUser = directoryOwner.value(key);
@@ -10335,7 +12284,8 @@ void MainWindow::refreshNodesTable()
                   return a.compare(b, Qt::CaseInsensitive) < 0;
               });
     for (const QString &key : std::as_const(servingNodes)) {
-        if (key.isEmpty() || visibleNames.contains(key))
+        if (key.isEmpty() || isDirectoryUser(key) ||
+            visibleNames.contains(key))
             continue;
         NodeMenuEntry entry;
         entry.name = key;
@@ -10345,17 +12295,28 @@ void MainWindow::refreshNodesTable()
         visibleRoster.append(info);
         visibleNames.insert(key);
     }
+    // A headless mirror that serves via the relay never joins the chat room, so
+    // its roster record is blank — the whole stats side of the table (version /
+    // platform / CPU / RAM / disk / mirrors) went em-dash for the entire fleet.
+    // Its signed catalog mirror records still carry all of that (renewed every
+    // registration lease), so backfill whatever the roster left empty.
+    for (int i = 0; i < visibleRoster.size(); ++i)
+        applyCatalogNodeInfo(visibleRoster[i], visible.at(i).name);
 
-    // The rail badge counts the rows this page would show — real serving nodes —
+    // The Nodes count is the rows this page would show — real serving nodes —
     // and nothing else. It used to be re-stamped with m_nodeMenuEntries.size()
     // right after this function ran (updateNodeSwitcher), which is the *unfiltered*
     // switcher list: every chat user account, world-chat guest and repo owner in
     // it was counted as a node, so a mesh of four nodes badged "21" (adhoc #26).
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_nodesNavButton))
-        railButton->setBadgeCount(visible.size());
+    updateNetworkCounts(-1, visible.size(), -1);
+    // Same filtered list feeds the chrome line's node dots, so they show the
+    // mesh from launch instead of only while a repo's Mirror-nodes tab is open
+    // (adhoc #79). Also runs before the page is built, for the same reason the
+    // count above does.
+    m_nodeDotEntries = visible;
+    refreshNodeDotMatrix();
     if (!m_nodesTable)
-        return; // page not built yet — the badge above is all that's on screen
+        return; // page not built yet — the count above is all that's on screen
 
     // Which node the detail panel is currently showing, so a rebuild can keep it.
     const QString shown = m_nodesTable->property("shownNode").toString();
@@ -10363,6 +12324,7 @@ void MainWindow::refreshNodesTable()
     // Populate with sorting off so inserted rows don't reshuffle mid-fill.
     m_nodesTable->setSortingEnabled(false);
     m_nodesTable->setRowCount(visible.size());
+    const qint64 tableNowMs = QDateTime::currentMSecsSinceEpoch();
     int online = 0;
     for (int i = 0; i < visible.size(); ++i) {
         const NodeMenuEntry &e = visible.at(i);
@@ -10392,12 +12354,18 @@ void MainWindow::refreshNodesTable()
         QString label = e.name.isEmpty() ? QStringLiteral("(unnamed)") : e.name;
         if (e.self)
             label += QStringLiteral("  (this machine)");
+        // The switcher entry knows the platform only for a chat-room peer; the
+        // catalog-backfilled roster record covers a headless mirror, so the OS
+        // badge stops falling back to the generic icon for the whole fleet.
+        QString platformText = e.platform.trimmed();
+        if (platformText.isEmpty())
+            platformText = mi.platform.trimmed();
         auto *nameItem =
-            new QTableWidgetItem(osBadgeIcon(e.platform, isOnline, 16), label);
+            new QTableWidgetItem(osBadgeIcon(platformText, isOnline, 16), label);
         // Stash the real node name so a row stays identifiable after re-sorting.
         nameItem->setData(Qt::UserRole, e.name);
         nameItem->setData(Qt::UserRole + 1, mi.ownerUser.trimmed());
-        nameItem->setData(Qt::UserRole + 2, e.platform.trimmed());
+        nameItem->setData(Qt::UserRole + 2, platformText);
         nameItem->setData(Qt::UserRole + 3, e.repoCount);
         nameItem->setData(Qt::UserRole + 4, int(mi.mirrors.size()));
         m_nodesTable->setItem(i, kNodeColName, nameItem);
@@ -10422,9 +12390,6 @@ void MainWindow::refreshNodesTable()
 
         // Platform / node id as text columns too, matching the repo detail's
         // Mirror nodes table (the badge on the name only hints the platform).
-        QString platformText = e.platform.trimmed();
-        if (platformText.isEmpty())
-            platformText = mi.platform.trimmed();
         m_nodesTable->setItem(i, kNodeColPlatform, new QTableWidgetItem(
             platformText.isEmpty() ? dash : platformText));
 
@@ -10440,6 +12405,13 @@ void MainWindow::refreshNodesTable()
 
         // CPU / RAM / disk usage bars from the node's advertised telemetry
         // (empty bar cell when the node didn't advertise the metric).
+        // Health: what the node's own periodic self-check found and pushed to
+        // us — the trends and failures the three gauges beside it can't show
+        // (adhoc #27). Hover for the findings themselves.
+        m_nodesTable->setItem(
+            i, kNodeColHealth,
+            makeNodeHealthCell(mi.diagnostics, mi.diagnosticsMs, tableNowMs));
+
         m_nodesTable->setItem(i, kNodeColCpu, makeCpuUsageCell(mi.cpuPercent));
         m_nodesTable->setItem(i, kNodeColRam,
             makeByteUsageCell(QStringLiteral("RAM"), mi.memUsedBytes,
@@ -10460,8 +12432,19 @@ void MainWindow::refreshNodesTable()
         if (!nodeId.isEmpty())
             idItem->setToolTip(nodeId);
         m_nodesTable->setItem(i, kNodeColId, idItem);
+
+        // The action cell's own item carries the node id the Delete button
+        // sends as an alias, so refreshNodeActionButtons() can rebuild the
+        // buttons after a re-sort without re-deriving the roster.
+        auto *actionItem = new QTableWidgetItem;
+        actionItem->setData(Qt::UserRole, e.name);
+        actionItem->setData(Qt::UserRole + 1, nodeId);
+        actionItem->setData(Qt::UserRole + 2, e.self);
+        actionItem->setFlags(Qt::ItemIsEnabled);
+        m_nodesTable->setItem(i, kNodeColActions, actionItem);
     }
     m_nodesTable->setSortingEnabled(true);
+    refreshNodeActionButtons();
 
     if (m_nodesStatus) {
         m_nodesStatus->setText(visible.isEmpty()
@@ -10471,11 +12454,6 @@ void MainWindow::refreshNodesTable()
                   .arg(visible.size() == 1 ? "" : "s")
                   .arg(online));
     }
-    if (m_nodesNavButton)
-        m_nodesNavButton->setText(visible.isEmpty()
-            ? QStringLiteral("Nodes")
-            : QStringLiteral("Nodes (%1)").arg(visible.size()));
-
     // Re-open the previously shown node's detail (find it by name post-sort), or
     // default to the first row.
     if (m_nodesTable->rowCount() > 0) {
@@ -10492,6 +12470,467 @@ void MainWindow::refreshNodesTable()
     } else {
         showNodeDetailForRow(-1);
     }
+}
+
+void MainWindow::refreshNodeActionButtons()
+{
+    if (!m_nodesTable)
+        return;
+    // Deleting a node is a platform-admin action — the relay answers not_admin
+    // to everyone else — so the whole column is hidden rather than offering a
+    // button that could only ever fail.
+    m_nodesTable->setColumnHidden(kNodeColActions, !m_isAdmin);
+    if (!m_isAdmin)
+        return;
+    const QString actor = accountOwner().trimmed();
+    int buttonHeight = 0;
+    for (int row = 0; row < m_nodesTable->rowCount(); ++row) {
+        QTableWidgetItem *item = m_nodesTable->item(row, kNodeColActions);
+        const QString node =
+            item ? item->data(Qt::UserRole).toString().trimmed() : QString();
+        const QString nodeId =
+            item ? item->data(Qt::UserRole + 1).toString() : QString();
+        const bool self =
+            item && (item->data(Qt::UserRole + 2).toBool() ||
+                     (!actor.isEmpty() &&
+                      node.compare(actor, Qt::CaseInsensitive) == 0));
+        // This machine and the mesh's own reserved names are the two things the
+        // relay refuses to delete; offer nothing rather than a 409.
+        if (node.isEmpty() || self || isProtectedMeshNode(node)) {
+            m_nodesTable->removeCellWidget(row, kNodeColActions);
+            continue;
+        }
+        auto *deleteButton = new QPushButton(QStringLiteral("Delete"));
+        deleteButton->setObjectName(QStringLiteral("dangerButton"));
+        deleteButton->setCursor(Qt::PointingHandCursor);
+        // Same "sm" sizing the Hosts action cell needs: a default-padded button
+        // is taller than a table row, and the view then drops its label
+        // (adhoc #376).
+        deleteButton->setProperty("buttonSize", "sm");
+        setOcticon(deleteButton, "trash", 12);
+        deleteButton->setToolTip(QString::fromUtf8(
+            "Delete \"%1\" for good: destroy its Vultr server, remove its DNS "
+            "record, erase it from the relay (account, mirrors, agent jobs and "
+            "the /status history) and forget the saved SSH host here.")
+                                     .arg(node));
+        connect(deleteButton, &QPushButton::clicked, this,
+                [this, node, nodeId] {
+                    // Next tick: the deletion re-lists this table and destroys
+                    // this very button, so let the click signal unwind first.
+                    QTimer::singleShot(0, this, [this, node, nodeId] {
+                        deleteMeshNodeCompletely(node, nodeId);
+                    });
+                });
+        m_nodesTable->setCellWidget(row, kNodeColActions, deleteButton);
+        buttonHeight = qMax(buttonHeight, deleteButton->sizeHint().height());
+    }
+    // Rows still have to be tall enough for the widget the view lays out inside
+    // the item rect minus #issueTable::item's padding (adhoc #376).
+    if (buttonHeight > 0) {
+        for (int row = 0; row < m_nodesTable->rowCount(); ++row) {
+            if (m_nodesTable->rowHeight(row) < buttonHeight + 12)
+                m_nodesTable->setRowHeight(row, buttonHeight + 12);
+        }
+    }
+}
+
+void MainWindow::setNodeDeleteStatus(const QString &text)
+{
+    if (m_nodesStatus)
+        m_nodesStatus->setText(text);
+    logSystem(text);
+}
+
+void MainWindow::deleteMeshNodeCompletely(const QString &node,
+                                          const QString &nodeId)
+{
+    // The relay canonicalizes on the lowercased name and checks the
+    // confirmation string against it byte for byte, so settle on that form here
+    // and use it for the prompt, the proof and the request alike.
+    const QString target = node.trimmed().toLower();
+    if (target.isEmpty() || isProtectedMeshNode(target))
+        return;
+    if (!m_isAdmin) {
+        flashMessage(QStringLiteral(
+            "Only a platform admin can delete a node from the mesh."), true);
+        return;
+    }
+    const bool canSign = m_profileIdentity.isValid() &&
+                         hasOwnerSigningCapability(accountOwner());
+    if (m_accountSessionToken.trimmed().isEmpty() && !canSign) {
+        flashMessage(QStringLiteral(
+            "Sign in to your admin account from Settings first: deleting a "
+            "node needs either an account session or this desktop's account "
+            "key."), true);
+        return;
+    }
+
+    // The same typed confirmation the World panel requires, and the exact
+    // string the relay checks. Nothing is destroyed until it matches.
+    const QString required = QStringLiteral("DELETE ") + target;
+    bool accepted = false;
+    const QString typed = QInputDialog::getText(
+        this, QStringLiteral("Delete node"),
+        QString::fromUtf8(
+            "This permanently deletes \"%1\" everywhere:\n\n"
+            "\xE2\x80\xA2 its Vultr server is destroyed and billing stops\n"
+            "\xE2\x80\xA2 its DNS record is removed\n"
+            "\xE2\x80\xA2 its account, mirrors, agent jobs and status-page "
+            "history are erased from the relay\n"
+            "\xE2\x80\xA2 the saved SSH host is forgotten on this machine\n\n"
+            "This cannot be undone. Type %2 to confirm.")
+            .arg(target, required),
+        QLineEdit::Normal, QString(), &accepted);
+    if (!accepted || typed.trimmed() != required)
+        return;
+
+    setNodeDeleteStatus(
+        QString::fromUtf8("1/3 \xE2\x80\x94 Destroying the server for "
+                          "\"%1\"\xE2\x80\xA6")
+            .arg(target));
+    // Provider teardown first (it is the step that costs money to skip), then
+    // DNS, then the mesh. Both provider steps report what they did and hand
+    // control on regardless: a node this app never provisioned still has to
+    // disappear from the relay.
+    destroyVultrServerForNode(target, [this, target, nodeId](QString outcome) {
+        if (!outcome.isEmpty())
+            setNodeDeleteStatus(outcome);
+        setNodeDeleteStatus(
+            QString::fromUtf8("2/3 \xE2\x80\x94 Removing DNS for "
+                              "\"%1\"\xE2\x80\xA6")
+                .arg(target));
+        removeVultrMirrorDns(target, [this, target, nodeId](QString dnsOutcome) {
+            if (!dnsOutcome.isEmpty())
+                setNodeDeleteStatus(dnsOutcome);
+            setNodeDeleteStatus(
+                QString::fromUtf8("3/3 \xE2\x80\x94 Removing \"%1\" from "
+                                  "the mesh\xE2\x80\xA6")
+                    .arg(target));
+            sendMeshNodeDeleteRequest(target, nodeId);
+        });
+    });
+}
+
+void MainWindow::destroyVultrServerForNode(
+    const QString &node, std::function<void(QString outcome)> onDone)
+{
+    if (!m_networkAccess) {
+        onDone(QStringLiteral("No network access — skipped the Vultr server."));
+        return;
+    }
+    // Same key resolution as the create/destroy flows on Hosts: the field
+    // first, then a device-local Actions variable.
+    QString apiKey =
+        m_vultrApiKeyEdit ? m_vultrApiKeyEdit->text().trimmed() : QString();
+    if (apiKey.isEmpty()) {
+        apiKey = forkmesh::control::vultrApiKeyFromVariables(
+            ActionStore::variables());
+    }
+    if (apiKey.isEmpty()) {
+        onDone(QString::fromUtf8(
+            "No Vultr API key is available (store one as VULTR_API_KEY), so "
+            "no server was destroyed for \"%1\" \xE2\x80\x94 continuing with "
+            "the mesh removal.").arg(node));
+        return;
+    }
+
+    // A host this app provisioned recorded its instance id; anything else is
+    // resolved from Vultr by label/hostname or saved address.
+    QSettings settings;
+    const QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    QString recorded;
+    QString address;
+    for (const QJsonValue &value : hosts) {
+        const QJsonObject host = value.toObject();
+        if (host.value(QStringLiteral("name")).toString().trimmed().compare(
+                node, Qt::CaseInsensitive) != 0)
+            continue;
+        recorded = forkmesh::control::savedHostVultrInstanceId(host);
+        address = host.value(QStringLiteral("ip")).toString().trimmed();
+        break;
+    }
+    if (!recorded.isEmpty()) {
+        sendNodeVultrDestroy(apiKey, recorded, node, std::move(onDone));
+        return;
+    }
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances?per_page=500"),
+        QByteArrayLiteral("GET"), {},
+        [this, apiKey, node, address, onDone](QJsonObject result,
+                                              QString error) mutable {
+            if (!error.isEmpty()) {
+                onDone(QString::fromUtf8(
+                    "Could not reach Vultr to destroy \"%1\" (%2) \xE2\x80\x94 "
+                    "continuing with the mesh removal.").arg(node, error));
+                return;
+            }
+            const QJsonArray instances =
+                result.value(QStringLiteral("instances")).toArray();
+            // The node name is the label and hostname a provisioned mirror
+            // carries; an ambiguous match resolves to nothing rather than
+            // destroying a guess (vultrInstanceIdForAddress fails closed).
+            QString instanceId =
+                forkmesh::control::vultrInstanceIdForAddress(instances, node);
+            if (instanceId.isEmpty() && !address.isEmpty()) {
+                instanceId = forkmesh::control::vultrInstanceIdForAddress(
+                    instances, address);
+            }
+            if (instanceId.isEmpty()) {
+                onDone(QString::fromUtf8(
+                    "No single Vultr instance matches \"%1\", so no server was "
+                    "destroyed \xE2\x80\x94 continuing with the mesh removal.")
+                           .arg(node));
+                return;
+            }
+            sendNodeVultrDestroy(apiKey, instanceId, node, onDone);
+        });
+}
+
+void MainWindow::sendNodeVultrDestroy(
+    const QString &apiKey, const QString &instanceId, const QString &node,
+    std::function<void(QString outcome)> onDone)
+{
+    const QString invalid =
+        forkmesh::control::validateVultrDestroyRequest(apiKey, instanceId);
+    if (!invalid.isEmpty()) {
+        onDone(invalid);
+        return;
+    }
+    setNodeDeleteStatus(
+        QString::fromUtf8("1/3 \xE2\x80\x94 Destroying the Vultr server "
+                          "behind \"%1\"\xE2\x80\xA6")
+            .arg(node));
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances/") + instanceId,
+        QByteArrayLiteral("DELETE"), {},
+        [node, instanceId, onDone](QJsonObject, QString error) mutable {
+            if (!error.isEmpty()) {
+                onDone(QString::fromUtf8(
+                    "Vultr refused to destroy %1 (%2) \xE2\x80\x94 continuing "
+                    "with the mesh removal.").arg(instanceId, error));
+                return;
+            }
+            onDone(QString::fromUtf8("Destroyed Vultr instance %1 (\"%2\").")
+                       .arg(instanceId, node));
+        });
+}
+
+void MainWindow::removeVultrMirrorDns(
+    const QString &node, std::function<void(QString outcome)> onDone)
+{
+    auto skip = [onDone](const QString &reason) {
+        onDone(QStringLiteral("Left the DNS record alone: ") + reason);
+    };
+    if (!m_networkAccess) {
+        skip(QStringLiteral("network access is unavailable"));
+        return;
+    }
+    const QMap<QString, QString> variables = ActionStore::variables();
+    const QString apiToken =
+        forkmesh::control::cloudflareApiTokenFromVariables(variables);
+    if (apiToken.isEmpty()) {
+        skip(QStringLiteral("no CLOUDFLARE_API_TOKEN device variable"));
+        return;
+    }
+    QSettings settings;
+    QString zone = settings.value(QStringLiteral("control/cloudflareZone"))
+                       .toString()
+                       .trimmed();
+    if (zone.isEmpty())
+        zone = forkmesh::control::cloudflareZoneNameFromVariables(variables);
+    const QString hostname =
+        forkmesh::control::vultrMirrorDnsHostname(node, zone);
+    if (hostname.isEmpty()) {
+        skip(zone.isEmpty() ? QStringLiteral("no Cloudflare zone is configured")
+                            : QStringLiteral("\"%1\" and \"%2\" do not form a "
+                                             "valid hostname")
+                                  .arg(node, zone));
+        return;
+    }
+    cloudflareApiCall(
+        apiToken,
+        QStringLiteral("/zones?name=%1")
+            .arg(QString::fromLatin1(QUrl::toPercentEncoding(zone))),
+        QByteArrayLiteral("GET"), {},
+        [this, apiToken, zone, hostname, skip, onDone](QJsonObject result,
+                                                       QString error) mutable {
+            if (!error.isEmpty()) {
+                skip(error);
+                return;
+            }
+            const QString zoneId = forkmesh::control::cloudflareZoneId(
+                result.value(QStringLiteral("result")).toArray(), zone);
+            if (zoneId.isEmpty()) {
+                skip(QStringLiteral(
+                         "this API token does not see exactly one \"%1\" zone")
+                         .arg(zone));
+                return;
+            }
+            cloudflareApiCall(
+                apiToken,
+                QStringLiteral("/zones/%1/dns_records?type=A&name=%2")
+                    .arg(zoneId, QString::fromLatin1(
+                                     QUrl::toPercentEncoding(hostname))),
+                QByteArrayLiteral("GET"), {},
+                [this, apiToken, zoneId, hostname, skip, onDone](
+                    QJsonObject existing, QString listError) mutable {
+                    if (!listError.isEmpty()) {
+                        skip(listError);
+                        return;
+                    }
+                    const QString recordId =
+                        forkmesh::control::cloudflareDnsRecordId(
+                            existing.value(QStringLiteral("result")).toArray(),
+                            hostname, QStringLiteral("A"));
+                    if (recordId.isEmpty()) {
+                        onDone(QStringLiteral("No %1 DNS record to remove.")
+                                   .arg(hostname));
+                        return;
+                    }
+                    cloudflareApiCall(
+                        apiToken,
+                        QStringLiteral("/zones/%1/dns_records/%2")
+                            .arg(zoneId, recordId),
+                        QByteArrayLiteral("DELETE"), {},
+                        [hostname, skip, onDone](QJsonObject,
+                                                 QString deleteError) mutable {
+                            if (!deleteError.isEmpty()) {
+                                skip(deleteError);
+                                return;
+                            }
+                            onDone(QStringLiteral("Removed the %1 DNS record.")
+                                       .arg(hostname));
+                        });
+                });
+        });
+}
+
+void MainWindow::sendMeshNodeDeleteRequest(const QString &node,
+                                           const QString &nodeId)
+{
+    if (!m_networkAccess)
+        return;
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/world/admin/nodes/delete"));
+    url.setQuery(QString());
+    QNetworkRequest request;
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    if (!m_accountSessionToken.trimmed().isEmpty()) {
+        request.setRawHeader(
+            "Authorization",
+            QByteArrayLiteral("Bearer ") + m_accountSessionToken.toUtf8());
+    } else {
+        // The ordinary launch is authenticateSilently(): this install owns the
+        // account's key and holds no session token, so sign the proof the relay
+        // accepts for this one deletion. It names the target node, so it cannot
+        // be replayed to delete a different one. Must match
+        // _world_node_delete_signed_actor's canonical string byte for byte.
+        const QString actor = accountOwner().trimmed().toLower();
+        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+        const QString canonical =
+            QStringLiteral("forkmesh-world-node-delete-v1\n") + actor +
+            QLatin1Char('\n') + node + QLatin1Char('\n') + ts;
+        const QString sig = m_profileIdentity.signData(canonical.toUtf8());
+        if (actor.isEmpty() || sig.isEmpty()) {
+            setNodeDeleteStatus(QString::fromUtf8(
+                "Could not sign the deletion of \"%1\" with this desktop's "
+                "account key.").arg(node));
+            return;
+        }
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("node"), actor);
+        query.addQueryItem(QStringLiteral("ts"), ts);
+        query.addQueryItem(QStringLiteral("sig"), sig);
+        url.setQuery(query);
+    }
+    request.setUrl(url);
+
+    const QJsonObject body{
+        {QStringLiteral("nodeName"), node},
+        {QStringLiteral("nodeId"), nodeId},
+        {QStringLiteral("confirmation"), QStringLiteral("DELETE ") + node},
+    };
+    setNodeDeleteStatus(
+        QString::fromUtf8("3/3 \xE2\x80\x94 Removing \"%1\" from the "
+                          "mesh\xE2\x80\xA6")
+            .arg(node));
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, node] {
+        const QByteArray payload = reply->readAll();
+        const bool ok = reply->error() == QNetworkReply::NoError;
+        const QString transportError = reply->errorString();
+        reply->deleteLater();
+        const QJsonObject response = QJsonDocument::fromJson(payload).object();
+        if (!ok || !response.value(QStringLiteral("ok")).toBool()) {
+            QString detail =
+                response.value(QStringLiteral("error")).toString().trimmed();
+            if (detail.isEmpty())
+                detail = transportError;
+            setNodeDeleteStatus(
+                QString::fromUtf8("Could not delete \"%1\": %2")
+                    .arg(node, detail));
+            flashMessage(QString::fromUtf8("Could not delete \"%1\": %2")
+                             .arg(node, detail), true);
+            return;
+        }
+        forgetSavedHostNamed(node);
+        // Drop the node from this client's caches so the row goes immediately,
+        // instead of lingering until the (throttled, edge-cached) directory and
+        // live-set reads catch up with the relay.
+        m_relayOnlineNodes.remove(node);
+        for (int i = m_nodeMenuEntries.size() - 1; i >= 0; --i) {
+            if (m_nodeMenuEntries.at(i).name.trimmed().compare(
+                    node, Qt::CaseInsensitive) == 0)
+                m_nodeMenuEntries.removeAt(i);
+        }
+        for (MemberInfo &user : m_chatDirectoryUsers) {
+            QStringList nodes = user.nodeName.split(QStringLiteral(", "),
+                                                    Qt::SkipEmptyParts);
+            nodes.removeIf([&node](const QString &name) {
+                return name.trimmed().compare(node, Qt::CaseInsensitive) == 0;
+            });
+            user.nodeName = nodes.join(QStringLiteral(", "));
+        }
+        refreshChatUserDirectory();
+        fetchRelayOnlineNodes(true);
+        refreshNodesTable();
+        // After refreshNodesTable, which re-stamps the summary line.
+        setNodeDeleteStatus(
+            QString::fromUtf8("3/3 complete \xE2\x80\x94 Deleted \"%1\"; no "
+                              "trace of it is left in the mesh, mirrors or "
+                              "status page.")
+                .arg(node));
+        flashMessage(QString::fromUtf8("Deleted node \"%1\".").arg(node));
+    });
+}
+
+void MainWindow::forgetSavedHostNamed(const QString &node)
+{
+    QSettings settings;
+    QJsonArray hosts = forkmesh::control::loadSavedHosts(
+        settings, kHostsSetting, &m_hostSessionPasswords);
+    bool changed = false;
+    for (int i = hosts.size() - 1; i >= 0; --i) {
+        const QJsonObject host = hosts.at(i).toObject();
+        if (host.value(QStringLiteral("name")).toString().trimmed().compare(
+                node, Qt::CaseInsensitive) != 0)
+            continue;
+        const QString credentialKey = forkmesh::control::savedHostCredentialKey(
+            host.value(QStringLiteral("name")).toString(),
+            host.value(QStringLiteral("ip")).toString(),
+            host.value(QStringLiteral("user")).toString());
+        QString oldPassword = m_hostSessionPasswords.take(credentialKey);
+        oldPassword.fill(QChar::Null);
+        hosts.removeAt(i);
+        changed = true;
+    }
+    if (!changed)
+        return;
+    forkmesh::control::saveSavedHosts(settings, kHostsSetting, hosts);
+    refreshHostsTable();
 }
 
 void MainWindow::showNodeDetailForRow(int row)
@@ -10549,10 +12988,15 @@ void MainWindow::showNodeDetailForRow(int row)
         }
         inRoster = true;
     }
+    // Headless mirrors outside the chat room have a blank roster record; their
+    // signed catalog mirror records still carry the identity and telemetry.
+    applyCatalogNodeInfo(mi, node);
     if (mi.ownerUser.trimmed().isEmpty() && nodeItem)
         mi.ownerUser = nodeItem->data(Qt::UserRole + 1).toString();
     if (entry.platform.trimmed().isEmpty() && nodeItem)
         entry.platform = nodeItem->data(Qt::UserRole + 2).toString();
+    if (entry.platform.trimmed().isEmpty())
+        entry.platform = mi.platform.trimmed(); // catalog/roster fallback
     if (entry.repoCount == 0 && nodeItem)
         entry.repoCount = nodeItem->data(Qt::UserRole + 3).toInt();
     // Liveness mirrors refreshNodesTable(): the relay's authoritative live set
@@ -10590,14 +13034,15 @@ void MainWindow::showNodeDetailForRow(int row)
     head->addWidget(nameLbl, 1);
     col->addLayout(head);
 
-    auto addRow = [&](const QString &k, const QString &v) {
+    auto addRow = [&](const QString &k, const QString &v) -> QLabel * {
         if (v.trimmed().isEmpty())
-            return;
+            return nullptr;
         auto *l = new QLabel(
             QStringLiteral("<b>%1:</b> %2").arg(k, v.toHtmlEscaped()));
         l->setTextFormat(Qt::RichText);
         l->setWordWrap(true);
         col->addWidget(l);
+        return l;
     };
 
     addRow(QStringLiteral("Status"),
@@ -10609,6 +13054,11 @@ void MainWindow::showNodeDetailForRow(int row)
                             "tunnel / signed heartbeat), not in this client's "
                             "chat room")
                       : QStringLiteral("Online")));
+    addRow(QStringLiteral("Connection"),
+           !isOnline
+               ? QStringLiteral("Not currently connected")
+               : (serving ? QStringLiteral("Relay only")
+                          : QStringLiteral("Connected to this chat room")));
     if (entry.self)
         addRow(QStringLiteral("This machine"), QStringLiteral("Yes"));
     QString platform = entry.platform.trimmed();
@@ -10619,16 +13069,18 @@ void MainWindow::showNodeDetailForRow(int row)
     addRow(QStringLiteral("Version"), mi.version.trimmed());
     addRow(QStringLiteral("Owner"), mi.ownerUser.trimmed());
     addRow(QStringLiteral("Solana"), mi.solanaAddress.trimmed());
-    // The stable node id (public key) direct messages are addressed to.
-    // Shortened: the full key is long and unbroken, which stretches the panel.
+    addRow(QStringLiteral("SOL balance"), mi.solanaBalance.trimmed());
+    // The stable node id (public key) direct messages are addressed to. Keep
+    // the complete value here so it can be selected and copied from the panel.
     if (!mi.id.trimmed().isEmpty()) {
         const QString id = mi.id.trimmed();
-        addRow(QStringLiteral("Node ID"),
-               id.size() > 20 ? id.left(20) + QString::fromUtf8("\xE2\x80\xA6")
-                              : id);
+        QLabel *idLabel = addRow(QStringLiteral("Node ID"), id);
+        idLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        idLabel->setToolTip(QStringLiteral("Node public key — select to copy"));
     }
     addRow(QStringLiteral("Repositories"), QString::number(entry.repoCount));
-    addRow(QStringLiteral("Mirrors"), QString::number(mi.mirrors.size()));
+    addRow(QStringLiteral("Mirrors"),
+           QString::number(qMax(mi.mirrors.size(), mi.mirrorDetails.size())));
 
     // Host telemetry, when the node advertised it.
     if (mi.cpuPercent >= 0.0)
@@ -10636,14 +13088,67 @@ void MainWindow::showNodeDetailForRow(int row)
                QStringLiteral("%1%").arg(mi.cpuPercent, 0, 'f', 0));
     if (mi.memTotalBytes > 0)
         addRow(QStringLiteral("Memory"),
-               QStringLiteral("%1 / %2").arg(
+               QStringLiteral("%1 / %2 (%3% used, %4 free)").arg(
                    SystemStats::formatBytes(mi.memUsedBytes),
-                   SystemStats::formatBytes(mi.memTotalBytes)));
+                   SystemStats::formatBytes(mi.memTotalBytes))
+                   .arg(qRound(100.0 * double(qBound<qint64>(
+                            0, mi.memUsedBytes, mi.memTotalBytes)) /
+                               double(mi.memTotalBytes)))
+                   .arg(SystemStats::formatBytes(
+                       mi.memTotalBytes - qBound<qint64>(
+                                              0, mi.memUsedBytes,
+                                              mi.memTotalBytes))));
     if (mi.diskTotalBytes > 0)
         addRow(QStringLiteral("Disk"),
-               QStringLiteral("%1 / %2").arg(
+               QStringLiteral("%1 / %2 (%3% used, %4 free)").arg(
                    SystemStats::formatBytes(mi.diskUsedBytes),
-                   SystemStats::formatBytes(mi.diskTotalBytes)));
+                   SystemStats::formatBytes(mi.diskTotalBytes))
+                   .arg(qRound(100.0 * double(qBound<qint64>(
+                            0, mi.diskUsedBytes, mi.diskTotalBytes)) /
+                               double(mi.diskTotalBytes)))
+                   .arg(SystemStats::formatBytes(
+                       mi.diskTotalBytes - qBound<qint64>(
+                                               0, mi.diskUsedBytes,
+                                               mi.diskTotalBytes))));
+
+    // Self-diagnostics: the node's own periodic health check, pushed to us with
+    // its heartbeat (adhoc #27). Always shown — "no problems found" and "never
+    // reported" are different answers and an operator needs to tell them apart.
+    auto *healthLbl = new QLabel(QStringLiteral("Self-diagnostics"));
+    QFont hlf = healthLbl->font();
+    hlf.setBold(true);
+    healthLbl->setFont(hlf);
+    healthLbl->setContentsMargins(0, 8, 0, 0);
+    col->addWidget(healthLbl);
+
+    if (mi.diagnosticsMs <= 0) {
+        auto *none = new QLabel(QStringLiteral(
+            "This node has not reported a self-check yet â an older "
+            "build, or self-diagnostics turned off in its settings."));
+        none->setObjectName("mutedLabel");
+        none->setWordWrap(true);
+        col->addWidget(none);
+    } else if (mi.diagnostics.isEmpty()) {
+        auto *ok = new QLabel(QStringLiteral(
+            "<span style='color:%1'>No problems found.</span>")
+                                  .arg(nodeHealthColor(NodeDiagnostics::Ok)));
+        ok->setTextFormat(Qt::RichText);
+        ok->setWordWrap(true);
+        col->addWidget(ok);
+    } else {
+        for (const NodeDiagnostics::Finding &finding :
+             std::as_const(mi.diagnostics)) {
+            auto *f = new QLabel(
+                QStringLiteral("â¢ <b style='color:%1'>%2</b> %3")
+                    .arg(nodeHealthColor(finding.severity),
+                         NodeDiagnostics::severityName(finding.severity)
+                             .toHtmlEscaped(),
+                         finding.message.toHtmlEscaped()));
+            f->setTextFormat(Qt::RichText);
+            f->setWordWrap(true);
+            col->addWidget(f);
+        }
+    }
 
     // Repositories hosted by this node.
     auto *reposLbl = new QLabel(QStringLiteral("Repositories"));
@@ -10712,6 +13217,19 @@ void MainWindow::showNodeDetailForRow(int row)
         if (advert.updatedMs > 0)
             line += QStringLiteral(" \xC2\xB7 synced %1 ago")
                         .arg(formatShortRelativeTime(advert.updatedMs / 1000));
+        if (!advert.commitIdentity.subject.trimmed().isEmpty()) {
+            line += QStringLiteral("<br><span style='color:#8b949e'>Latest: %1")
+                        .arg(advert.commitIdentity.subject.trimmed().toHtmlEscaped());
+            if (!advert.commitIdentity.author.trimmed().isEmpty())
+                line += QStringLiteral(" \xC2\xB7 %1")
+                            .arg(advert.commitIdentity.author.trimmed()
+                                     .toHtmlEscaped());
+            if (advert.commitIdentity.committedAtMs > 0)
+                line += QStringLiteral(" \xC2\xB7 committed %1 ago")
+                            .arg(formatShortRelativeTime(
+                                advert.commitIdentity.committedAtMs / 1000));
+            line += QStringLiteral("</span>");
+        }
         // The same per-mirror tallies the repo detail's Mirror nodes table
         // shows, when the node advertised them (-1 = older peer / unknown).
         auto appendCount = [&line](int value, const char *noun) {
@@ -10725,6 +13243,7 @@ void MainWindow::showNodeDetailForRow(int row)
         appendCount(advert.issueCount, "issues");
         appendCount(advert.pullCount, "pulls");
         appendCount(advert.discussionCount, "discussions");
+        appendCount(advert.worktreeCount, "worktrees");
         appendCount(advert.artifactCount, "artifacts");
         auto *m = new QLabel(line);
         m->setTextFormat(Qt::RichText);
@@ -10766,18 +13285,12 @@ void MainWindow::showNodeDetailForRow(int row)
 
 QWidget *MainWindow::buildRelaysSection()
 {
+    // A tab of the Network section (adhoc #54), so no page title of its own —
+    // the section header above the tab bar already says "Network".
     auto *page = new QWidget;
     auto *outer = new QVBoxLayout(page);
-    outer->setContentsMargins(24, 20, 24, 24);
+    outer->setContentsMargins(0, 8, 0, 0);
     outer->setSpacing(12);
-
-    auto *title = new QLabel(QStringLiteral("Relays"));
-    title->setObjectName("sectionTitle");
-    QFont titleFont = title->font();
-    titleFont.setPointSizeF(titleFont.pointSizeF() + 4);
-    titleFont.setBold(true);
-    title->setFont(titleFont);
-    outer->addWidget(title);
 
     auto *subtitle = new QLabel(QString::fromUtf8(
         "The mainnode relays this node knows about. Each one is probed live for "
@@ -10860,13 +13373,7 @@ void MainWindow::refreshRelaysTable()
             ? QStringLiteral("No relays configured.")
             : QString::fromUtf8("Probing %1 relay(s)\xE2\x80\xA6")
                   .arg(m_servers.size()));
-    if (m_relaysNavButton)
-        m_relaysNavButton->setText(m_servers.isEmpty()
-            ? QStringLiteral("Relays")
-            : QStringLiteral("Relays (%1)").arg(m_servers.size()));
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_relaysNavButton))
-        railButton->setBadgeCount(m_servers.size());
+    updateNetworkCounts(m_servers.size(), -1, -1);
     for (int i = 0; i < m_servers.size(); ++i)
         probeRelayRow(i);
 }
@@ -10945,6 +13452,11 @@ void MainWindow::probeRelayRow(int row)
         const qint64 elapsed = clock->elapsed();
         delete clock;
         reply->deleteLater();
+        // Same measurement the relay dropdown wants, so keep its cache warm
+        // (adhoc #124) rather than re-probing the host a second time.
+        setRelayLinkSpeed(host, reply->error() == QNetworkReply::NoError
+                                    ? static_cast<int>(elapsed)
+                                    : -1);
         const int r = rowForHost(host);
         if (r >= 0 && m_relaysTable) {
             QTableWidgetItem *status = m_relaysTable->item(r, 1);
@@ -11401,6 +13913,44 @@ QWidget *networkTabPage()
 
 } // namespace
 
+void MainWindow::updateNetworkCounts(int relays, int nodes, int hosts)
+{
+    if (relays >= 0)
+        m_networkRelayCount = relays;
+    if (nodes >= 0)
+        m_networkNodeCount = nodes;
+    if (hosts >= 0)
+        m_networkHostCount = hosts;
+
+    // The tabs only exist once the Network section has been built; the rail
+    // badge below is live from launch either way.
+    if (m_networkTabs) {
+        const auto label = [](const QString &name, int count) {
+            return count > 0 ? QStringLiteral("%1 (%2)").arg(name).arg(count)
+                             : name;
+        };
+        if (m_networkTabs->count() > kNetworkRelaysTab)
+            m_networkTabs->setTabText(
+                kNetworkRelaysTab,
+                label(QStringLiteral("Relays"), m_networkRelayCount));
+        if (m_networkTabs->count() > kNetworkNodesTab)
+            m_networkTabs->setTabText(
+                kNetworkNodesTab,
+                label(QStringLiteral("Nodes"), m_networkNodeCount));
+        if (m_networkTabs->count() > kNetworkHostsTab)
+            m_networkTabs->setTabText(
+                kNetworkHostsTab,
+                label(QStringLiteral("Hosts"), m_networkHostCount));
+    }
+
+    // One badge for the whole mesh: relays + nodes + hosts, the sum of what the
+    // three separate rail buttons used to badge on their own (adhoc #54).
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_networkNavButton))
+        railButton->setBadgeCount(m_networkRelayCount + m_networkNodeCount +
+                                  m_networkHostCount);
+}
+
 QWidget *MainWindow::buildNetworkDiagnosticsSection()
 {
     auto *page = new QWidget;
@@ -11437,17 +13987,36 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
     outer->addLayout(header);
 
     auto *summary = new QLabel(QStringLiteral(
-        "Live endpoint usage, websocket Durable Object details and the outbound "
-        "request firewall in one place."));
+        "The relays, nodes and hosts this client talks to, plus live endpoint "
+        "usage, websocket Durable Object details and the outbound request "
+        "firewall in one place."));
     summary->setObjectName("mutedLabel");
     summary->setWordWrap(true);
     outer->addWidget(summary);
 
     auto *tabs = new QTabWidget;
-    tabs->setObjectName(QStringLiteral("settingsTabs"));
+    // Its own object name, styled alongside #settingsTabs: sharing that name
+    // made this the tab widget a findChild<QTabWidget *>("settingsTabs") walked
+    // into once the Network section had been built (Theme.h styles both).
+    tabs->setObjectName(QStringLiteral("networkTabs"));
     tabs->setDocumentMode(true);
     tabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     outer->addWidget(tabs, 1);
+    m_networkTabs = tabs;
+
+    // The mesh itself comes first (adhoc #54): relays, then the nodes on them,
+    // then the machines this client installs on. Each tab carries its own count;
+    // the total is what the rail's Network badge shows. Their tab order has to
+    // match kNetworkRelaysTab / kNetworkNodesTab / kNetworkHostsTab.
+    tabs->addTab(buildRelaysSection(), QStringLiteral("Relays"));
+    tabs->addTab(buildNodesSection(), QStringLiteral("Nodes"));
+    tabs->addTab(buildHostsSection(), QStringLiteral("Hosts"));
+    connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
+        refreshNetworkTab(index);
+        // Relays / Nodes / Hosts / diagnostics are separate destinations, so the
+        // Back arrow returns to the tab you were on (adhoc #50).
+        scheduleNavRecord();
+    });
 
     auto *endpointsPage = networkTabPage();
     auto *endpointsLayout = qobject_cast<QVBoxLayout *>(endpointsPage->layout());
@@ -11662,6 +14231,13 @@ void MainWindow::refreshNetworkDiagnostics()
                 .arg(networkDiagBytes(rxBytes))
                 .arg(rxFrames));
     }
+
+    // The summary line above sits in the section header and is cheap, so it
+    // stays live. The two tables below are the expensive part, and the Relays /
+    // Nodes / Hosts tabs (adhoc #54) do not show them — same reasoning as the
+    // section-visibility guard, one level down.
+    if (m_networkTabs && m_networkTabs->currentIndex() <= kNetworkHostsTab)
+        return;
 
     if (m_networkEndpointsTable) {
         TableRepaintGuard repaintGuard(m_networkEndpointsTable);
@@ -12545,12 +15121,20 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     layout->addWidget(buttons);
 
+    // The password can change mid-dialog: a host that only accepts password
+    // login rejects the key-only first attempt, and the scan then asks for one
+    // and retries with it (see the finished handler below).
+    const QString identityFile = savedHostIdentityFile(node, ip, user);
+    const QString credentialKey =
+        forkmesh::control::savedHostCredentialKey(node, ip, user);
+    auto sessionPass = std::make_shared<QString>(pass);
+
     auto currentPath = std::make_shared<QString>(QStringLiteral("/"));
     auto loadPath = std::make_shared<std::function<void(const QString &)>>();
     *loadPath = [this, dialog, table, pathEdit, status, totalLabel, upButton,
                  openButton, refreshButton, currentPath, mountCardsLayout,
-                 mountStatus, loadPath, ip, user, pass,
-                 node](const QString &requested) {
+                 mountStatus, loadPath, ip, user, sessionPass, identityFile,
+                 credentialKey, node](const QString &requested) {
         if (m_hostDiskProcess &&
             m_hostDiskProcess->state() != QProcess::NotRunning) {
             status->setText(QStringLiteral(
@@ -12573,8 +15157,8 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         QString sshError;
         const forkmesh::control::HostSshCommand ssh =
             forkmesh::control::buildHostSshCommand(
-                ip, user, pass, remoteCommand, &sshError,
-                savedHostIdentityFile(node, ip, user));
+                ip, user, *sessionPass, remoteCommand, &sshError,
+                identityFile);
         if (ssh.program.isEmpty()) {
             status->setText(sshError);
             return;
@@ -12602,8 +15186,9 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         connect(proc, &QProcess::readyReadStandardOutput, dialog,
                 [proc, output] { output->append(proc->readAllStandardOutput()); });
         connect(proc, &QProcess::finished, dialog,
-                [this, proc, output, table, status, totalLabel, navWidgets,
-                 path, ip, user, mountCardsLayout, mountStatus, loadPath](
+                [this, dialog, proc, output, table, status, totalLabel,
+                 navWidgets, path, ip, user, mountCardsLayout, mountStatus,
+                 loadPath, sessionPass, identityFile, credentialKey](
                     int code, QProcess::ExitStatus exitStatus) {
                     if (m_hostDiskProcess == proc)
                         m_hostDiskProcess = nullptr;
@@ -12714,6 +15299,73 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
                                 tail, ip);
                         if (!sshHint.isEmpty())
                             message += QLatin1Char(' ') + sshHint;
+                        // Without a password ssh runs BatchMode/publickey-only,
+                        // so a password-login host can never finish this scan:
+                        // ask for the one credential that would, then retry the
+                        // same folder. Hosts pinned to a ForkMesh-managed key
+                        // never fall back to a password, so they are left alone.
+                        const int sshExit =
+                            exitStatus == QProcess::NormalExit ? code : 255;
+                        if (identityFile.isEmpty() &&
+                            forkmesh::control::sshFailureNeedsPassword(sshExit,
+                                                                       tail)) {
+                            status->setText(
+                                message +
+                                QString::fromUtf8(
+                                    " Asking for this host's SSH password "
+                                    "\xE2\x80\xA6"));
+                            // Prompting has to leave this finished handler
+                            // first: a modal dialog run inside a QProcess
+                            // signal would pump the event loop under it.
+                            QTimer::singleShot(
+                                0, dialog,
+                                [this, guard = QPointer<QDialog>(dialog),
+                                 status, loadPath, sessionPass, credentialKey,
+                                 path, ip, user] {
+                                    QDialog *dialog = guard.data();
+                                    if (!dialog)
+                                        return;
+                                    bool accepted = false;
+                                    const QString entered =
+                                        QInputDialog::getText(
+                                            dialog,
+                                            QStringLiteral(
+                                                "SSH password needed"),
+                                            QString::fromUtf8(
+                                                "%1@%2 rejected the login "
+                                                "ForkMesh tried. Enter that "
+                                                "host's SSH password to "
+                                                "measure its disk \xE2\x80\x94 "
+                                                "it is kept in memory for this "
+                                                "session only and is never "
+                                                "written to settings.")
+                                                .arg(user, ip),
+                                            QLineEdit::Password, *sessionPass,
+                                            &accepted);
+                                    // getText ran a nested event loop, so the
+                                    // size map (and its status label) may be
+                                    // gone by the time it returns.
+                                    if (!guard)
+                                        return;
+                                    if (!accepted || entered.isEmpty()) {
+                                        status->setText(QString::fromUtf8(
+                                            "The size map needs an SSH "
+                                            "password (or a working key) for "
+                                            "%1@%2. Press Refresh to try "
+                                            "again.")
+                                                            .arg(user, ip));
+                                        return;
+                                    }
+                                    *sessionPass = entered;
+                                    // Remember it for the rest of this session
+                                    // so drilling into folders — and every
+                                    // other host action — stops re-asking.
+                                    m_hostSessionPasswords.insert(credentialKey,
+                                                                  entered);
+                                    (*loadPath)(path);
+                                });
+                            return;
+                        }
                         status->setText(message);
                         return;
                     }
@@ -13107,16 +15759,339 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
 // createVultrMirrorFromForm drives an async chain over the Vultr v2 API:
 // managed keypair → SSH-key registration → cheapest US plan → newest Debian →
 // instance create → boot poll → the normal runHostInstall handoff, which
-// installs ForkMesh over SSH and auto-links the fresh node to this account so
-// it starts mirroring and syncing on its own. Every step streams into the
-// shared Live output pane. The API key is captured by value through the chain
-// and lives only in these closures and the Authorization headers.
+// installs ForkMesh over SSH and auto-links the fresh node to this account.
+// Every step streams into the shared Live output pane; the API key is captured
+// by value and lives only in these closures and the Authorization headers.
+
+QString MainWindow::vultrProvisionLogPath() const
+{
+    const QString appData =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (appData.isEmpty())
+        return {};
+    const QString dir = QDir(appData).filePath(QStringLiteral("deployments"));
+    if (!QDir().mkpath(dir))
+        return {};
+    return QDir(dir).filePath(QStringLiteral("vultr-mirror-latest.log"));
+}
+
+void MainWindow::saveVultrProvisionLog()
+{
+    if (!m_hostInstallLog)
+        return;
+    const QString path = vultrProvisionLogPath();
+    if (path.isEmpty())
+        return;
+    // Bound the persisted transcript so a noisy SSH process cannot grow the
+    // settings directory without limit. The visible widget still retains the
+    // full current-session output; restart restores the newest 1 MiB.
+    QString plain = m_hostInstallLog->toPlainText();
+    constexpr int kMaxPersistedChars = 1024 * 1024;
+    if (plain.size() > kMaxPersistedChars)
+        plain = plain.right(kMaxPersistedChars);
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return;
+    file.write(plain.toUtf8());
+    file.commit();
+}
+
+void MainWindow::scheduleVultrProvisionLogSave()
+{
+    if (m_vultrLogSaveScheduled)
+        return;
+    m_vultrLogSaveScheduled = true;
+    QTimer::singleShot(250, this, [this] {
+        m_vultrLogSaveScheduled = false;
+        saveVultrProvisionLog();
+    });
+}
+
+void MainWindow::renderVultrProvisionProgress(bool failed)
+{
+    const int current = qBound(0, m_vultrProvisionStage,
+                               kVultrProvisionStageCount);
+    for (int i = 0; i < m_vultrStageNumbers.size(); ++i) {
+        const int stage = i + 1;
+        const bool complete =
+            m_vultrProvisionState == QLatin1String("succeeded") ||
+            (current > stage);
+        const bool active = current == stage &&
+                            m_vultrProvisionState == QLatin1String("active");
+        const bool stageFailed = failed && current == stage;
+        QString background = QStringLiteral("#30363d");
+        QString foreground = QStringLiteral("#8b949e");
+        QString border = QStringLiteral("#484f58");
+        if (complete) {
+            background = QStringLiteral("#238636");
+            foreground = QStringLiteral("#ffffff");
+            border = QStringLiteral("#2ea043");
+        } else if (active) {
+            background = QStringLiteral("#1f6feb");
+            foreground = QStringLiteral("#ffffff");
+            border = QStringLiteral("#58a6ff");
+        } else if (stageFailed) {
+            background = QStringLiteral("#da3633");
+            foreground = QStringLiteral("#ffffff");
+            border = QStringLiteral("#f85149");
+        }
+        m_vultrStageNumbers.at(i)->setStyleSheet(
+            QStringLiteral("QLabel { background:%1; color:%2; border:2px solid %3; "
+                           "border-radius:14px; font-weight:700; }")
+                .arg(background, foreground, border));
+        m_vultrStageLabels.at(i)->setStyleSheet(
+            QStringLiteral("QLabel { color:%1; font-size:11px; %2 }")
+                .arg((complete || active || stageFailed)
+                         ? QStringLiteral("#f0f6fc")
+                         : QStringLiteral("#8b949e"),
+                     active ? QStringLiteral("font-weight:700;") : QString()));
+    }
+    if (m_vultrLiveBadge) {
+        const bool live = m_vultrProvisionState == QLatin1String("succeeded");
+        const bool verifying = m_vultrProvisionState == QLatin1String("active") &&
+                               current == kVultrProvisionStageCount;
+        m_vultrLiveBadge->setVisible(live || verifying);
+        m_vultrLiveBadge->setText(
+            live
+                ? QString::fromUtf8("\xE2\x97\x8F LIVE \xE2\x80\x94 mirror is serving repository traffic")
+                : QString::fromUtf8("\xE2\x97\x8F VERIFYING \xE2\x80\x94 waiting for healthy public traffic"));
+        m_vultrLiveBadge->setStyleSheet(
+            live
+                ? QStringLiteral("QLabel { color:#3fb950; background:#0d2818; "
+                                 "border:1px solid #238636; border-radius:6px; "
+                                 "padding:7px; font-weight:700; }")
+                : QStringLiteral("QLabel { color:#d29922; background:#2d2106; "
+                                 "border:1px solid #9e6a03; border-radius:6px; "
+                                 "padding:7px; font-weight:700; }"));
+    }
+}
+
+void MainWindow::persistVultrProvisionState(const QString &state,
+                                             const QString &message)
+{
+    if (!state.isEmpty())
+        m_vultrProvisionState = state;
+    if (!message.isNull())
+        m_vultrProvisionMessage = message;
+    QJsonObject checkpoint{
+        {QStringLiteral("version"), 1},
+        {QStringLiteral("state"), m_vultrProvisionState},
+        {QStringLiteral("stage"), m_vultrProvisionStage},
+        {QStringLiteral("detail"), m_vultrProvisionDetail},
+        {QStringLiteral("message"), m_vultrProvisionMessage},
+        {QStringLiteral("node"), m_vultrProvisionNode},
+        {QStringLiteral("dnsHostname"), m_vultrDnsHostname},
+        {QStringLiteral("instanceId"), m_vultrInstanceId},
+        {QStringLiteral("ip"), m_vultrInstanceIp},
+        {QStringLiteral("identityFile"), m_vultrIdentityFile},
+        {QStringLiteral("installAgentClis"), m_vultrInstallAgentClis},
+        {QStringLiteral("installUseLocalBinary"),
+         m_vultrInstallUseLocalBinary},
+        {QStringLiteral("pollCount"), m_vultrPollCount},
+        {QStringLiteral("installAttempts"), m_vultrInstallAttempts},
+        {QStringLiteral("hostMetadata"), m_vultrHostMetadata},
+        {QStringLiteral("updatedAt"), QDateTime::currentMSecsSinceEpoch()},
+    };
+    QSettings settings;
+    settings.setValue(
+        kVultrProvisionSetting,
+        QString::fromUtf8(
+            QJsonDocument(checkpoint).toJson(QJsonDocument::Compact)));
+    settings.sync();
+    saveVultrProvisionLog();
+}
+
+void MainWindow::setVultrProvisionStage(int stage, const QString &detail,
+                                        bool failed)
+{
+    const int bounded = qBound(1, stage, kVultrProvisionStageCount);
+    m_vultrProvisionStage = m_vultrResumeChain
+                                ? qMax(m_vultrProvisionStage, bounded)
+                                : bounded;
+    if (!detail.isEmpty())
+        m_vultrProvisionDetail = detail;
+    if (m_vultrStatus && !m_vultrProvisionDetail.isEmpty())
+        m_vultrStatus->setText(m_vultrProvisionDetail);
+    renderVultrProvisionProgress(failed);
+    persistVultrProvisionState(failed ? QStringLiteral("failed")
+                                      : QStringLiteral("active"),
+                                 failed ? m_vultrProvisionDetail : QString());
+}
+
+void MainWindow::restoreVultrProvision()
+{
+    const QJsonObject saved = QJsonDocument::fromJson(
+        QSettings().value(kVultrProvisionSetting).toString().toUtf8()).object();
+    if (saved.value(QStringLiteral("version")).toInt() != 1)
+        return;
+    m_vultrProvisionState = saved.value(QStringLiteral("state")).toString();
+    m_vultrProvisionStage = saved.value(QStringLiteral("stage")).toInt();
+    m_vultrProvisionDetail = saved.value(QStringLiteral("detail")).toString();
+    m_vultrProvisionMessage = saved.value(QStringLiteral("message")).toString();
+    m_vultrProvisionNode = saved.value(QStringLiteral("node")).toString();
+    m_vultrDnsHostname =
+        saved.value(QStringLiteral("dnsHostname")).toString();
+    m_vultrInstanceId = saved.value(QStringLiteral("instanceId")).toString();
+    m_vultrInstanceIp = saved.value(QStringLiteral("ip")).toString();
+    m_vultrIdentityFile =
+        saved.value(QStringLiteral("identityFile")).toString();
+    m_vultrInstallAgentClis =
+        saved.value(QStringLiteral("installAgentClis")).toBool();
+    m_vultrInstallUseLocalBinary =
+        saved.value(QStringLiteral("installUseLocalBinary")).toBool();
+    m_vultrPollCount = saved.value(QStringLiteral("pollCount")).toInt();
+    m_vultrInstallAttempts =
+        saved.value(QStringLiteral("installAttempts")).toInt();
+    m_vultrHostMetadata =
+        saved.value(QStringLiteral("hostMetadata")).toObject();
+    if (m_vultrNameEdit && !m_vultrProvisionNode.isEmpty())
+        m_vultrNameEdit->setText(m_vultrProvisionNode);
+    if (m_vultrAgentClisCheck)
+        m_vultrAgentClisCheck->setChecked(m_vultrInstallAgentClis);
+    const QString logPath = vultrProvisionLogPath();
+    QFile log(logPath);
+    if (m_hostInstallLog && log.open(QIODevice::ReadOnly))
+        m_hostInstallLog->setPlainText(
+            QString::fromUtf8(log.read(1024 * 1024)));
+    const bool failed = m_vultrProvisionState == QLatin1String("failed");
+    renderVultrProvisionProgress(failed);
+    if (m_vultrStatus) {
+        const QString restored = !m_vultrProvisionMessage.isEmpty()
+                                     ? m_vultrProvisionMessage
+                                     : m_vultrProvisionDetail;
+        m_vultrStatus->setText(restored);
+    }
+    if (m_vultrCreateButton) {
+        m_vultrCreateButton->setText(
+            failed ? QStringLiteral("Retry deployment")
+                   : m_vultrProvisionState == QLatin1String("active")
+                         ? QStringLiteral("Resuming deployment…")
+                         : QStringLiteral("Create another mirror"));
+    }
+    m_vultrResumeRequested =
+        m_vultrProvisionState == QLatin1String("active") || failed;
+    if (m_vultrProvisionState == QLatin1String("active")) {
+        QTimer::singleShot(0, this, &MainWindow::resumeVultrProvision);
+    }
+}
+
+void MainWindow::resumeVultrProvision()
+{
+    if (!m_vultrResumeRequested || m_vultrProvisionNode.isEmpty())
+        return;
+    QString apiKey = m_vultrApiKeyEdit
+                         ? m_vultrApiKeyEdit->text().trimmed()
+                         : QString();
+    if (apiKey.isEmpty())
+        apiKey = forkmesh::control::vultrApiKeyFromVariables(
+            ActionStore::variables());
+    const QString invalid = forkmesh::control::validateVultrMirrorRequest(
+        apiKey, m_vultrProvisionNode);
+    if (!invalid.isEmpty()) {
+        m_vultrProvisionActive = false;
+        if (m_vultrStatus)
+            m_vultrStatus->setText(
+                QStringLiteral("Deployment is paused. Enter the saved Vultr "
+                               "API key, then click Resume deployment. %1")
+                    .arg(invalid));
+        if (m_vultrCreateButton) {
+            m_vultrCreateButton->setEnabled(true);
+            m_vultrCreateButton->setText(
+                QStringLiteral("Resume deployment"));
+        }
+        return;
+    }
+    const QMap<QString, QString> variables = ActionStore::variables();
+    m_vultrTunnelApiToken =
+        forkmesh::control::cloudflareApiTokenFromVariables(variables);
+    m_vultrProvisionActive = true;
+    if (m_vultrCreateButton) {
+        m_vultrCreateButton->setEnabled(false);
+        m_vultrCreateButton->setText(QStringLiteral("Deployment running…"));
+    }
+    appendHostInstallLog(QString::fromUtf8(
+        "\n\xE2\x86\xBB Desktop restarted \xE2\x80\x94 resuming Vultr deployment at stage %1.\n")
+        .arg(m_vultrProvisionStage));
+    if (m_vultrProvisionStage >= 6 && !m_vultrProvisionNode.isEmpty()) {
+        const QString address = m_vultrDnsHostname.isEmpty()
+                                    ? m_vultrInstanceIp
+                                    : m_vultrDnsHostname;
+        waitForVultrMirrorPublication(
+            m_vultrProvisionNode,
+            QStringLiteral("Vultr mirror \"%1\" (%2) is installed, linked, "
+                           "and serving traffic.")
+                .arg(m_vultrProvisionNode, address));
+        return;
+    }
+    if (m_vultrProvisionStage >= 5 && !m_vultrInstanceIp.isEmpty() &&
+        !m_vultrIdentityFile.isEmpty()) {
+        m_vultrInstallAttempts = 0;
+        persistVultrProvisionState();
+        QTimer::singleShot(1000, this, [this] {
+            startVultrHostInstall(m_vultrProvisionNode, m_vultrInstanceIp,
+                                  m_vultrIdentityFile);
+        });
+        return;
+    }
+    if (!m_vultrInstanceId.isEmpty() && !m_vultrIdentityFile.isEmpty()) {
+        setVultrProvisionStage(4, QStringLiteral("Resuming server boot checks…"));
+        pollVultrInstance(apiKey, m_vultrInstanceId, m_vultrProvisionNode,
+                          m_vultrIdentityFile);
+        return;
+    }
+    // Pre-instance stages are idempotent. Re-run key/plan/image discovery, and
+    // the create step itself first searches Vultr by label before POSTing so a
+    // restart in the request/response window cannot create a duplicate VPS.
+    m_vultrResumeRequested = false;
+    m_vultrResumeChain = true;
+    m_vultrProvisionActive = false;
+    createVultrMirrorFromForm();
+}
+
+void MainWindow::findVultrProvisionInstance(
+    const QString &apiKey, const QString &node,
+    std::function<void(QString, QString)> onDone)
+{
+    vultrApiCall(
+        apiKey, QStringLiteral("/v2/instances?per_page=500"),
+        QByteArrayLiteral("GET"), {},
+        [node, onDone](QJsonObject result, QString error) {
+            if (!error.isEmpty()) {
+                onDone({}, error);
+                return;
+            }
+            for (const QJsonValue &value :
+                 result.value(QStringLiteral("instances")).toArray()) {
+                const QJsonObject instance = value.toObject();
+                const QString label =
+                    instance.value(QStringLiteral("label")).toString();
+                const QString hostname =
+                    instance.value(QStringLiteral("hostname")).toString();
+                if (label.compare(node, Qt::CaseInsensitive) == 0 ||
+                    hostname.compare(node, Qt::CaseInsensitive) == 0) {
+                    onDone(instance.value(QStringLiteral("id")).toString(), {});
+                    return;
+                }
+            }
+            onDone({}, {});
+        });
+}
 
 void MainWindow::finishVultrProvision(bool ok, const QString &message)
 {
     m_vultrProvisionActive = false;
+    // A knock still in flight would otherwise outlive the run it belongs to.
+    if (m_vultrSshProbeProcess) {
+        QProcess *probe = m_vultrSshProbeProcess;
+        m_vultrSshProbeProcess = nullptr;
+        probe->disconnect(this);
+        if (probe->state() != QProcess::NotRunning)
+            probe->kill();
+        probe->deleteLater();
+    }
     if (m_vultrCreateButton)
-        m_vultrCreateButton->setEnabled(true);
+        m_vultrCreateButton->setText(ok ? QStringLiteral("Create another mirror")
+                                        : QStringLiteral("Retry deployment"));
     if (m_vultrStatus)
         m_vultrStatus->setText(
             (ok ? QString::fromUtf8("\xE2\x9C\x94 ")
@@ -13126,22 +16101,34 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
             (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
                 : QString::fromUtf8("\n\xE2\x9C\x98 ")) +
             message + QStringLiteral("\n"));
+    saveVultrProvisionLog();
+    m_vultrProvisionActive = false;
+    m_vultrResumeRequested = !ok;
+    m_vultrResumeChain = false;
+    persistVultrProvisionState(ok ? QStringLiteral("succeeded")
+                                  : QStringLiteral("failed"),
+                                 message);
+    renderVultrProvisionProgress(!ok);
+    m_vultrTunnelApiToken.clear();
+    if (m_vultrCreateButton)
+        m_vultrCreateButton->setEnabled(true);
 }
 
 void MainWindow::waitForVultrMirrorPublication(
     const QString &node, const QString &successMessage, int attempt)
 {
-    constexpr int kMaxPublicationPolls = 30; // five minutes at 10 seconds
+    constexpr int kMaxPublicationPolls = 90; // fifteen minutes at 10 seconds
     if (!m_vultrProvisionActive)
         return;
-    if (m_vultrStatus) {
-        m_vultrStatus->setText(QString::fromUtf8(
-            "ForkMesh is running on %1 \xE2\x80\x94 waiting for its signed "
-            "Mirror nodes / World catalog record (%2/%3)\xE2\x80\xA6")
+    m_vultrProvisionNode = node;
+    m_vultrResumeChain = false;
+    setVultrProvisionStage(
+        6,
+        QString::fromUtf8(
+            "ForkMesh is running on %1 — verifying healthy public traffic (%2/%3)…")
             .arg(node)
             .arg(attempt + 1)
             .arg(kMaxPublicationPolls));
-    }
 
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/repo/forkmesh/forkmesh/mirrors"));
@@ -13170,12 +16157,24 @@ void MainWindow::waitForVultrMirrorPublication(
                     candidate =
                         mirror.value(QStringLiteral("owner")).toString().trimmed();
                 if (candidate.compare(node, Qt::CaseInsensitive) == 0 &&
+                    mirror.value(QStringLiteral("status"))
+                            .toString()
+                            .compare(QStringLiteral("online"),
+                                     Qt::CaseInsensitive) == 0 &&
                     mirror.value(QStringLiteral("integrity"))
                             .toString()
                             .compare(QStringLiteral("ok"),
                                      Qt::CaseInsensitive) == 0 &&
                     mirror.value(QStringLiteral("lastSync")).toVariant()
-                            .toLongLong() > 0) {
+                            .toLongLong() > 0 &&
+                    mirror.value(QStringLiteral("cloneAvailable")).toBool() &&
+                    mirror.value(QStringLiteral("endpointHealthy")).toBool() &&
+                    mirror.value(QStringLiteral("endpointFresh")).toBool() &&
+                    mirror.value(QStringLiteral("endpoint"))
+                            .toString()
+                            .compare(QStringLiteral("https://") +
+                                         m_vultrDnsHostname,
+                                     Qt::CaseInsensitive) == 0) {
                     published = true;
                     break;
                 }
@@ -13184,16 +16183,26 @@ void MainWindow::waitForVultrMirrorPublication(
         if (published) {
             appendHostInstallLog(QString::fromUtf8(
                 "\n\xE2\x9C\x94 Verified %1 in the public Mirror nodes / World "
-                "catalog.\n").arg(node));
+                "catalog: online, fresh, integrity-approved, clone eligible, "
+                "and serving repository traffic.\n").arg(node));
             finishVultrProvision(true, successMessage);
             return;
         }
         if (attempt + 1 >= kMaxPublicationPolls) {
-            finishVultrProvision(false, QString::fromUtf8(
-                "ForkMesh is installed on %1, but its signed repository "
-                "catalog did not appear within five minutes. The host remains "
-                "saved and will keep retrying; check its Logs and account link "
-                "before treating the mirror as ready.").arg(node));
+            appendHostInstallLog(QString::fromUtf8(
+                "Still waiting for %1 to become a healthy public mirror after "
+                "fifteen minutes; the server remains installed and verification "
+                "will continue every minute.\n").arg(node));
+            m_vultrProvisionDetail = QString::fromUtf8(
+                "Installed on %1; still waiting for healthy public traffic. "
+                "Verification continues automatically…").arg(node);
+            persistVultrProvisionState(QStringLiteral("active"));
+            renderVultrProvisionProgress();
+            QTimer::singleShot(
+                60000, this,
+                [this, node, successMessage] {
+                    waitForVultrMirrorPublication(node, successMessage, 0);
+                });
             return;
         }
         QTimer::singleShot(
@@ -13230,7 +16239,8 @@ void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
                 ? QByteArray()
                 : QJsonDocument(body).toJson(QJsonDocument::Compact));
     }
-    connect(reply, &QNetworkReply::finished, this, [reply, onDone] {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, apiKey, onDone] {
         reply->deleteLater();
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
@@ -13247,6 +16257,20 @@ void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
                            .arg(status)
                            .arg(detail));
             return;
+        }
+        // Vultr just authenticated this key, so it is worth keeping: every
+        // flow on this page (create, destroy) then resolves it from the store
+        // instead of asking for it again. Later calls in the same run are a
+        // no-op (adhoc #127).
+        QString rememberError;
+        const QStringList remembered =
+            rememberVultrApiKey(apiKey, &rememberError);
+        if (!remembered.isEmpty()) {
+            appendHostInstallLog(
+                QStringLiteral("Saved your Vultr API key to %1.\n")
+                    .arg(remembered.join(QStringLiteral(" and "))));
+            if (!rememberError.isEmpty())
+                appendHostInstallLog(rememberError + QLatin1Char('\n'));
         }
         onDone(object, QString());
     });
@@ -13555,6 +16579,10 @@ void MainWindow::resolveVultrSshKeyId(
 
 void MainWindow::createVultrMirrorFromForm()
 {
+    if (m_vultrResumeRequested) {
+        resumeVultrProvision();
+        return;
+    }
     if (m_vultrProvisionActive) {
         if (m_vultrStatus)
             m_vultrStatus->setText(
@@ -13623,9 +16651,50 @@ void MainWindow::createVultrMirrorFromForm()
         return;
     }
 
+    // A one-click mirror is only complete when it can serve repository bytes.
+    // Validate the Tunnel prerequisites before creating a billable instance;
+    // the old flow continued without them and left an online-looking node that
+    // could never receive clone or website traffic.
+    const QMap<QString, QString> deviceVariables = ActionStore::variables();
+    QString cloudflareToken =
+        forkmesh::control::cloudflareApiTokenFromVariables(deviceVariables);
+    QSettings tunnelSettings;
+    QString tunnelZone =
+        tunnelSettings.value(QStringLiteral("control/cloudflareZone"))
+            .toString()
+            .trimmed();
+    if (tunnelZone.isEmpty())
+        tunnelZone =
+            forkmesh::control::cloudflareZoneNameFromVariables(deviceVariables);
+    const QString tunnelHostname =
+        forkmesh::control::vultrMirrorDnsHostname(node, tunnelZone);
+    if (cloudflareToken.isEmpty() ||
+        cloudflareToken.contains(QLatin1Char('\n')) ||
+        cloudflareToken.contains(QLatin1Char('\r')) ||
+        tunnelHostname.isEmpty()) {
+        if (m_vultrStatus)
+            m_vultrStatus->setText(QStringLiteral(
+                "A Cloudflare API token and valid zone are required so the "
+                "new mirror can create its Tunnel and serve live. Save "
+                "CLOUDFLARE_API_TOKEN plus CLOUDFLARE_ZONE in Settings first."));
+        return;
+    }
+    QString cloudflareStoreError;
+    const QStringList cloudflareStores =
+        rememberCloudflareApiToken(cloudflareToken, &cloudflareStoreError);
+    if (!cloudflareStores.isEmpty()) {
+        appendHostInstallLog(
+            QStringLiteral("Cloudflare credential kept in %1.\n")
+                .arg(cloudflareStores.join(QStringLiteral(" and "))));
+    }
+    if (!cloudflareStoreError.isEmpty())
+        appendHostInstallLog(cloudflareStoreError + QLatin1Char('\n'));
+
+    const bool resumedPreInstance = m_vultrResumeChain;
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
+    m_vultrSshWaitCount = 0;
     // A brand-new instance is nobody's mirror yet, so the installer's default
     // relay-download path has no online node to clone from and dies with "No
     // online ForkMesh node is currently mirroring 'forkmesh'". Start straight
@@ -13642,19 +16711,25 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrInstallAgentClis =
         m_vultrAgentClisCheck && m_vultrAgentClisCheck->isChecked();
     m_vultrInstallAttemptLog.clear();
-    m_vultrDnsHostname.clear();
-    m_vultrHostMetadata = QJsonObject{
-        {QStringLiteral("provider"), QStringLiteral("Vultr")},
-        {QStringLiteral("displayName"), node},
-    };
+    m_vultrDnsHostname = tunnelHostname;
+    m_vultrTunnelApiToken = cloudflareToken;
+    if (!resumedPreInstance) {
+        m_vultrHostMetadata = QJsonObject{
+            {QStringLiteral("provider"), QStringLiteral("Vultr")},
+            {QStringLiteral("displayName"), node},
+        };
+    }
     m_hostInstallAttemptBanner.clear();
-    if (m_vultrCreateButton)
+    if (m_vultrCreateButton) {
         m_vultrCreateButton->setEnabled(false);
-    if (m_hostInstallLog) {
+        m_vultrCreateButton->setText(QStringLiteral("Deployment running…"));
+    }
+    if (m_hostInstallLog && !resumedPreInstance) {
         m_hostInstallLog->clear();
         m_hostInstallLogCarry.clear();
         m_hostInstallLogFg = -1;
         m_hostInstallLogBold = false;
+        saveVultrProvisionLog();
     }
     appendHostInstallLog(QString::fromUtf8(
         "Creating Vultr mirror \"%1\" \xE2\x80\x94 cheapest supported US plan, latest "
@@ -13679,9 +16754,10 @@ void MainWindow::createVultrMirrorFromForm()
                       "Claude Code and Codex will be installed and signed in "
                       "with this device's access (%1).\n").arg(agentAccess));
     }
-    if (m_vultrStatus)
-        m_vultrStatus->setText(
-            QString::fromUtf8("Preparing the managed SSH key\xE2\x80\xA6"));
+    setVultrProvisionStage(
+        1, resumedPreInstance
+               ? QStringLiteral("Resuming credentials and managed SSH key…")
+               : QStringLiteral("Preparing credentials and managed SSH key…"));
 
     ensureVultrManagedKeypair([this, apiKey, node](
                                   QString keyPath, QString publicKey,
@@ -13690,6 +16766,8 @@ void MainWindow::createVultrMirrorFromForm()
             finishVultrProvision(false, keyError);
             return;
         }
+        m_vultrIdentityFile = keyPath;
+        persistVultrProvisionState();
         appendHostInstallLog(
             QStringLiteral("Managed SSH key: %1\n").arg(keyPath));
         if (m_vultrStatus)
@@ -13702,9 +16780,8 @@ void MainWindow::createVultrMirrorFromForm()
                 finishVultrProvision(false, sshError);
                 return;
             }
-            if (m_vultrStatus)
-                m_vultrStatus->setText(QString::fromUtf8(
-                    "Choosing the cheapest supported US plan\xE2\x80\xA6"));
+            setVultrProvisionStage(
+                2, QStringLiteral("Choosing a supported plan and Debian image…"));
             vultrApiCall(
                 apiKey, QStringLiteral("/v2/plans?per_page=500"),
                 QByteArrayLiteral("GET"), {},
@@ -13774,9 +16851,9 @@ void MainWindow::createVultrMirrorFromForm()
                                 QStringLiteral("Operating system: %1\n")
                                     .arg(debian.value(QStringLiteral("name"))
                                              .toString()));
-                            if (m_vultrStatus)
-                                m_vultrStatus->setText(QString::fromUtf8(
-                                    "Creating the instance\xE2\x80\xA6"));
+                            setVultrProvisionStage(
+                                3, QStringLiteral(
+                                       "Checking for an existing server before creation…"));
                             const QJsonObject payload =
                                 forkmesh::control::vultrInstanceCreatePayload(
                                     node,
@@ -13786,45 +16863,75 @@ void MainWindow::createVultrMirrorFromForm()
                                     debian.value(QStringLiteral("id"))
                                         .toInt(),
                                     sshKeyId);
-                            vultrApiCall(
-                                apiKey, QStringLiteral("/v2/instances"),
-                                QByteArrayLiteral("POST"), payload,
-                                [this, apiKey, node, keyPath](
-                                    QJsonObject createResult,
-                                    QString createError) {
-                                    if (!createError.isEmpty()) {
-                                        finishVultrProvision(false,
-                                                             createError);
+                            findVultrProvisionInstance(
+                                apiKey, node,
+                                [this, apiKey, node, keyPath, payload](
+                                    QString existingId, QString findError) {
+                                    if (!findError.isEmpty()) {
+                                        finishVultrProvision(false, findError);
                                         return;
                                     }
-                                    const QString instanceId =
-                                        createResult
-                                            .value(QStringLiteral("instance"))
-                                            .toObject()
-                                            .value(QStringLiteral("id"))
-                                            .toString();
-                                    if (instanceId.isEmpty()) {
-                                        finishVultrProvision(
-                                            false,
-                                            QStringLiteral(
-                                                "Vultr did not return an "
-                                                "instance id."));
+                                    const auto continueWithInstance =
+                                        [this, apiKey, node, keyPath](
+                                            const QString &instanceId,
+                                            bool reused) {
+                                            if (instanceId.isEmpty()) {
+                                                finishVultrProvision(
+                                                    false,
+                                                    QStringLiteral(
+                                                        "Vultr did not return an "
+                                                        "instance id."));
+                                                return;
+                                            }
+                                            m_vultrInstanceId = instanceId;
+                                            m_vultrIdentityFile = keyPath;
+                                            m_vultrHostMetadata.insert(
+                                                QStringLiteral("instanceId"),
+                                                instanceId);
+                                            appendHostInstallLog(
+                                                reused
+                                                    ? QString::fromUtf8(
+                                                          "Found existing instance %1 for %2; resuming instead of creating a duplicate.\n")
+                                                          .arg(instanceId, node)
+                                                    : QString::fromUtf8(
+                                                          "Instance %1 created \xE2\x80\x94 waiting for it to boot\xE2\x80\xA6\n")
+                                                          .arg(instanceId));
+                                            m_vultrResumeChain = false;
+                                            setVultrProvisionStage(
+                                                4, QStringLiteral(
+                                                       "Waiting for the server to boot and accept SSH…"));
+                                            pollVultrInstance(
+                                                apiKey, instanceId, node,
+                                                keyPath);
+                                        };
+                                    if (!existingId.isEmpty()) {
+                                        continueWithInstance(existingId, true);
                                         return;
                                     }
-                                    m_vultrHostMetadata.insert(
-                                        QStringLiteral("instanceId"),
-                                        instanceId);
-                                    appendHostInstallLog(QString::fromUtf8(
-                                        "Instance %1 created \xE2\x80\x94 "
-                                        "waiting for it to boot\xE2\x80\xA6\n")
-                                        .arg(instanceId));
-                                    if (m_vultrStatus)
-                                        m_vultrStatus->setText(
-                                            QString::fromUtf8(
-                                                "Waiting for the instance to "
-                                                "boot\xE2\x80\xA6"));
-                                    pollVultrInstance(apiKey, instanceId,
-                                                      node, keyPath);
+                                    setVultrProvisionStage(
+                                        3, QStringLiteral("Creating the Vultr server…"));
+                                    vultrApiCall(
+                                        apiKey,
+                                        QStringLiteral("/v2/instances"),
+                                        QByteArrayLiteral("POST"), payload,
+                                        [this, continueWithInstance](
+                                            QJsonObject createResult,
+                                            QString createError) {
+                                            if (!createError.isEmpty()) {
+                                                // The next resume re-lists by
+                                                // label before trying POST again.
+                                                finishVultrProvision(
+                                                    false, createError);
+                                                return;
+                                            }
+                                            continueWithInstance(
+                                                createResult
+                                                    .value(QStringLiteral("instance"))
+                                                    .toObject()
+                                                    .value(QStringLiteral("id"))
+                                                    .toString(),
+                                                false);
+                                        });
                                 });
                         });
                 });
@@ -13848,7 +16955,18 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             if (!m_vultrProvisionActive)
                 return;
             if (!error.isEmpty()) {
-                finishVultrProvision(false, error);
+                appendHostInstallLog(
+                    QStringLiteral("Server status check failed: %1; retrying.\n")
+                        .arg(error));
+                setVultrProvisionStage(
+                    4, QStringLiteral(
+                           "Vultr status check was interrupted; retrying automatically…"));
+                QTimer::singleShot(
+                    10000, this,
+                    [this, apiKey, instanceId, node, identityFile] {
+                        pollVultrInstance(apiKey, instanceId, node,
+                                          identityFile);
+                    });
                 return;
             }
             const QJsonObject instance =
@@ -13873,13 +16991,14 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
                         "ForkMesh manually once it is up."));
                     return;
                 }
-                if (m_vultrStatus)
-                    m_vultrStatus->setText(
-                        QString::fromUtf8(
-                            "Waiting for the instance to boot "
-                            "(status: %1)\xE2\x80\xA6")
-                            .arg(instance.value(QStringLiteral("status"))
-                                     .toString()));
+                setVultrProvisionStage(
+                    4,
+                    QString::fromUtf8(
+                        "Waiting for the server to boot (status: %1, check %2/%3)…")
+                        .arg(instance.value(QStringLiteral("status"))
+                                 .toString())
+                        .arg(m_vultrPollCount + 1)
+                        .arg(kMaxPolls));
                 QTimer::singleShot(
                     10000, this,
                     [this, apiKey, instanceId, node, identityFile] {
@@ -13890,32 +17009,170 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             }
             appendHostInstallLog(
                 QStringLiteral("Instance is up at %1.\n").arg(ip));
+            m_vultrInstanceId = instanceId;
+            m_vultrInstanceIp = ip;
+            m_vultrIdentityFile = identityFile;
             // Persist the host with its managed key path before the install
             // so every later SSH action (install, logs, uninstall, Actions)
             // authenticates with that key. Vultr Debian images boot as root.
             rememberHost(node, ip, QStringLiteral("root"), QString(),
                          QStringLiteral("vultr booting"), identityFile,
                          m_vultrHostMetadata);
-            // Name the node in the operator's Cloudflare zone while SSH is
-            // still coming up, so it joins the mesh the way the other mirrors
-            // do rather than as a bare address (adhoc #331).
-            if (m_vultrStatus)
-                m_vultrStatus->setText(QString::fromUtf8(
-                    "Adding the Cloudflare DNS record\xE2\x80\xA6"));
-            ensureVultrMirrorDns(
-                node, ip, [this, node, ip, identityFile](QString hostname) {
-                    if (!m_vultrProvisionActive)
-                        return;
-                    m_vultrDnsHostname = hostname;
-                    if (m_vultrStatus)
-                        m_vultrStatus->setText(QString::fromUtf8(
-                            "Giving SSH a moment to come up\xE2\x80\xA6"));
-                    QTimer::singleShot(
-                        15000, this, [this, node, ip, identityFile] {
-                            startVultrHostInstall(node, ip, identityFile);
-                        });
-                });
+            // The installer owns DNS creation: its Tunnel bootstrap replaces
+            // the hostname with the required proxied CNAME. Creating a direct
+            // A record here races/conflicts with that record and can leave the
+            // node installed but permanently outside live routing.
+            //
+            // Vultr reports "active" well before sshd answers, so knock with a
+            // trivial command until it does rather than opening the install
+            // (and its whole-binary upload) against a closed port (adhoc #48).
+            m_vultrSshWaitCount = 0;
+            waitForVultrSshReady(node, ip, identityFile);
         });
+}
+
+void MainWindow::waitForVultrSshReady(const QString &node, const QString &ip,
+                                      const QString &identityFile)
+{
+    // One knock a minute for twenty minutes: far longer than a Debian image
+    // takes to open port 22, and each probe costs one short-lived ssh instead
+    // of a multi-megabyte upload.
+    constexpr int kMaxSshProbes = 20;
+    constexpr int kSshProbeIntervalMs = 60000;
+    if (!m_vultrProvisionActive)
+        return;
+    if (m_vultrSshProbeProcess &&
+        m_vultrSshProbeProcess->state() != QProcess::NotRunning)
+        return;
+
+    // An address outside the routable internet will never answer this probe
+    // any more than it would answer the install (adhoc #342).
+    const QString unroutable = forkmesh::control::nonRoutableAddressNote(ip);
+    if (!unroutable.isEmpty()) {
+        finishVultrProvision(false, QString::fromUtf8(
+            "%1 is in %2, so SSH from this machine can never reach it. Give "
+            "the instance a public address (or run the install from the "
+            "network that owns that range); it is saved under Hosts "
+            "\xE2\x80\x94 fix the address there and click Update.")
+            .arg(ip, unroutable));
+        return;
+    }
+
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, QStringLiteral("root"), QString(),
+            forkmesh::control::vultrSshProbeRemoteCommand(), &sshError,
+            identityFile);
+    if (ssh.program.isEmpty()) {
+        finishVultrProvision(false, sshError);
+        return;
+    }
+
+    ++m_vultrSshWaitCount;
+    if (m_vultrStatus)
+        m_vultrStatus->setText(
+            QString::fromUtf8("Waiting for SSH on %1 (knock %2 of %3)"
+                              "\xE2\x80\xA6")
+                .arg(ip)
+                .arg(m_vultrSshWaitCount)
+                .arg(kMaxSshProbes));
+
+    auto *probe = new QProcess(this);
+    m_vultrSshProbeProcess = probe;
+    probe->setProcessChannelMode(QProcess::MergedChannels);
+    probe->setProcessEnvironment(ssh.environment);
+    auto output = std::make_shared<QByteArray>();
+    // A knock that hangs until ssh's ConnectTimeout has already burned part of
+    // the minute, so the next one is scheduled against the elapsed time rather
+    // than a flat sleep — the cadence stays one probe a minute either way.
+    auto started = std::make_shared<QElapsedTimer>();
+    started->start();
+    connect(probe, &QProcess::readyReadStandardOutput, probe,
+            [probe, output] { output->append(probe->readAllStandardOutput()); });
+    // A missing ssh never emits finished(), so the knock loop would wait
+    // forever on a machine without it: fail the run instead.
+    connect(probe, &QProcess::errorOccurred, this,
+            [this, probe, program = ssh.program](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                if (m_vultrSshProbeProcess == probe)
+                    m_vultrSshProbeProcess = nullptr;
+                probe->disconnect(this);
+                probe->deleteLater();
+                if (!m_vultrProvisionActive)
+                    return;
+                finishVultrProvision(false, QStringLiteral(
+                    "\"%1\" could not be started on this machine, so the new "
+                    "instance cannot be reached. Install it and click Update "
+                    "on the host saved under Hosts.").arg(program));
+            });
+    connect(probe, &QProcess::finished, this,
+            [this, probe, output, started, node, ip, identityFile](
+                int code, QProcess::ExitStatus status) {
+                if (m_vultrSshProbeProcess == probe)
+                    m_vultrSshProbeProcess = nullptr;
+                output->append(probe->readAllStandardOutput());
+                probe->deleteLater();
+                if (!m_vultrProvisionActive)
+                    return;
+                const int exitCode =
+                    status == QProcess::NormalExit ? code : 255;
+                const QString tail = forkmesh::control::redactProcessOutput(
+                    QString::fromUtf8(output->right(2048)));
+                if (forkmesh::control::vultrSshProbeReady(exitCode, tail)) {
+                    appendHostInstallLog(
+                        QStringLiteral("SSH answered on %1 after %2 %3.\n")
+                            .arg(ip)
+                            .arg(m_vultrSshWaitCount)
+                            .arg(m_vultrSshWaitCount == 1
+                                     ? QStringLiteral("knock")
+                                     : QStringLiteral("knocks")));
+                    startVultrHostInstall(node, ip, identityFile);
+                    return;
+                }
+                // A key this account cannot use will not start working on the
+                // next minute — say so rather than knocking for twenty of
+                // them. Only after a few knocks, though: sshd can briefly
+                // answer before the image has installed the injected key.
+                if (m_vultrSshWaitCount >= 3 &&
+                    forkmesh::control::sshFailureNeedsPassword(exitCode,
+                                                               tail)) {
+                    appendHostInstallLog(
+                        QStringLiteral("SSH probe: %1\n")
+                            .arg(forkmesh::control::sshFailureSummary(exitCode,
+                                                                      tail)));
+                    finishVultrProvision(false, QString::fromUtf8(
+                        "The new instance refused the managed SSH key. It is "
+                        "saved under Hosts \xE2\x80\x94 fix its credentials "
+                        "there and click Update to finish the install."));
+                    return;
+                }
+                if (m_vultrSshWaitCount >= kMaxSshProbes) {
+                    appendHostInstallLog(
+                        QStringLiteral("SSH probe: %1\n")
+                            .arg(forkmesh::control::sshFailureSummary(exitCode,
+                                                                      tail)));
+                    finishVultrProvision(false, QString::fromUtf8(
+                        "SSH on %1 never answered (%2 attempts over %3 "
+                        "minutes). The instance is saved under Hosts "
+                        "\xE2\x80\x94 click Update there once it is "
+                        "reachable.")
+                        .arg(ip)
+                        .arg(kMaxSshProbes)
+                        .arg(kMaxSshProbes));
+                    return;
+                }
+                const qint64 elapsed = started->elapsed();
+                const int wait = static_cast<int>(qBound<qint64>(
+                    0, qint64(kSshProbeIntervalMs) - elapsed,
+                    qint64(kSshProbeIntervalMs)));
+                QTimer::singleShot(
+                    wait, this, [this, node, ip, identityFile] {
+                        waitForVultrSshReady(node, ip, identityFile);
+                    });
+            });
+    probe->start(ssh.program, ssh.arguments);
 }
 
 void MainWindow::appendVultrAttemptHistory()
@@ -13931,7 +17188,12 @@ void MainWindow::appendVultrAttemptHistory()
 void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                                        const QString &identityFile)
 {
-    constexpr int kMaxInstallAttempts = 6;
+    // Two attempts, not a ladder of them: waitForVultrSshReady has already
+    // proven the host answers, so "not reachable yet" is no longer a reason to
+    // repeat a whole-binary upload (adhoc #48). The one retry left is the
+    // switch to uploading this app's own binary when the relay download turns
+    // out to have nothing to serve.
+    constexpr int kMaxInstallAttempts = 2;
     if (!m_vultrProvisionActive)
         return;
     // Hand off to the shared install path through the form it reads; the
@@ -13947,6 +17209,9 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
     if (m_hostUploadBinaryCheck)
         m_hostUploadBinaryCheck->setChecked(false);
     ++m_vultrInstallAttempts;
+    m_vultrProvisionNode = node;
+    m_vultrInstanceIp = ip;
+    m_vultrIdentityFile = identityFile;
     const QString attemptLabel =
         QStringLiteral("Attempt %1 of %2 at %3")
             .arg(QString::number(m_vultrInstallAttempts),
@@ -13954,8 +17219,8 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                  QDateTime::currentDateTime().toString(
                      QStringLiteral("hh:mm:ss")));
     // Keep every attempt's output in the window rather than clearing the log
-    // on each retry (adhoc #342) — a run that fails six times is exactly when
-    // the earlier transcripts matter.
+    // on each retry (adhoc #342) — a run that fails twice is exactly when the
+    // earlier transcripts matter.
     // The banner is set for the first attempt too, so the provisioning
     // preamble above it (instance id, address, DNS record) survives as well.
     m_hostInstallAttemptBanner = attemptLabel;
@@ -13968,9 +17233,9 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                     : "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
                 .arg(m_vultrInstallAttempts)
                 .arg(kMaxInstallAttempts));
-    // A fresh instance often refuses SSH for a short while after Vultr
-    // reports it active, so an early attempt failing is expected, not a
-    // real failure — only the last attempt should report "Install failed".
+    // A first attempt can still fail its way into the local-binary switch
+    // below, which is a retry with a different plan rather than a real
+    // failure — only the last attempt should report "Install failed".
     const bool isFinalAttempt = m_vultrInstallAttempts >= kMaxInstallAttempts;
     runHostInstall(m_vultrInstallUseLocalBinary, [this, node, ip, identityFile,
                            attemptLabel, isFinalAttempt](bool ok) {
@@ -13990,8 +17255,8 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                     ? ip
                     : QStringLiteral("%1, %2").arg(m_vultrDnsHostname, ip);
             const QString done = QString::fromUtf8(
-                "Vultr mirror \"%1\" (%2) is installed, linked, and published "
-                "to Mirror nodes and the World.").arg(node, address);
+                "Vultr mirror \"%1\" (%2) is installed, linked, healthy, and "
+                "serving repository traffic.").arg(node, address);
             if (!m_vultrInstallAgentClis) {
                 waitForVultrMirrorPublication(node, done);
                 return;
@@ -14004,9 +17269,9 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
             const bool copyLogins =
                 !forkmesh::control::agentCliCredentialsAreEmpty(
                     localAgentCliCredentials());
-            if (m_vultrStatus)
-                m_vultrStatus->setText(QString::fromUtf8(
-                    "Installing Claude Code and Codex\xE2\x80\xA6"));
+            setVultrProvisionStage(
+                5, QStringLiteral(
+                       "ForkMesh installed; setting up Claude Code and Codex…"));
             runAgentCliInstall(
                 node, ip, QStringLiteral("root"), QString(), identityFile,
                 copyLogins,
@@ -14043,8 +17308,7 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
         // Switch this and every later attempt this run to uploading this app's
         // own release binary directly over the SSH session instead — that needs
         // neither an online mirror nor a published release — and retry right
-        // away rather than waiting out the "host not reachable yet" backoff
-        // below, since SSH clearly worked.
+        // away, since SSH clearly worked.
         if (!m_vultrInstallUseLocalBinary && !isFinalAttempt &&
             forkmesh::control::vultrInstallNeedsLocalBinary(
                 m_hostInstallRawTail)) {
@@ -14059,25 +17323,14 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
             });
             return;
         }
-        if (m_vultrInstallAttempts >= kMaxInstallAttempts) {
-            appendVultrAttemptHistory();
-            finishVultrProvision(false, QString::fromUtf8(
-                "Install did not succeed after %1 attempts. The instance is "
-                "saved under Hosts \xE2\x80\x94 click Update there to retry.")
-                .arg(kMaxInstallAttempts));
-            return;
-        }
-        // A fresh instance often refuses SSH for a short while after it
-        // reports active; back off and retry.
-        if (m_vultrStatus)
-            m_vultrStatus->setText(QString::fromUtf8(
-                "Attempt %1 of %2 failed \xE2\x80\x94 host not reachable yet, "
-                "retrying in 30 seconds\xE2\x80\xA6")
-                .arg(m_vultrInstallAttempts)
-                .arg(kMaxInstallAttempts));
-        QTimer::singleShot(30000, this, [this, node, ip, identityFile] {
-            startVultrHostInstall(node, ip, identityFile);
-        });
+        // Nothing is left to retry: SSH was proven reachable before this ran,
+        // so a failure here is the install itself failing, and repeating the
+        // same upload against the same host would only fail the same way.
+        appendVultrAttemptHistory();
+        finishVultrProvision(false, QString::fromUtf8(
+            "Install did not succeed. The instance is saved under Hosts "
+            "\xE2\x80\x94 the transcript above shows why; click Update there "
+            "to retry."));
     }, /*reinstall=*/false, /*fromSource=*/false,
     /*suppressFailureStatus=*/!isFinalAttempt);
 }
@@ -14268,6 +17521,8 @@ void MainWindow::appendHostInstallLog(const QString &text)
 {
     appendAnsiLog(m_hostInstallLog, m_hostInstallLogCarry, m_hostInstallLogFg,
                   m_hostInstallLogBold, currentThemeIsDark(), text);
+    if (m_vultrProvisionActive)
+        scheduleVultrProvisionLogSave();
 }
 
 void MainWindow::appendHostDeployLog(HostDeploySession *session,
@@ -14384,12 +17639,10 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
     // the host over the SSH session's stdin instead of the host downloading it
     // from the relay's release endpoint. Read the bytes up front so a locked or
     // missing binary fails here, before anything touches the remote machine.
-    // A source build compiles on the host itself, so there is no binary to
-    // upload — fromSource forces the direct-upload path off.
-    // A published-binary fleet deploy and a local-executable upload are
-    // mutually exclusive contracts. The former is deliberately resolved on
-    // each target from the release manifest so a development build can never be
-    // mistaken for the release merely because both report the same version.
+    // A source build compiles on the host, so fromSource forces this path off.
+    // A published-binary fleet deploy and a local-executable upload are mutually
+    // exclusive: the former resolves per target from the release manifest so a
+    // development build can never pass for the release on a matching version.
     const bool doUpload =
         uploadBinary && !fromSource && !requirePublishedBinary;
     QByteArray bytes;
@@ -14484,6 +17737,18 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
         if (!reinstall)
             envPrefix += QStringLiteral(" FORKMESH_RESTART=1");
     }
+    const bool provisionTunnel =
+        m_vultrProvisionActive && !m_vultrDnsHostname.isEmpty() &&
+        !m_vultrTunnelApiToken.isEmpty();
+    if (provisionTunnel) {
+        const QString zone = m_vultrDnsHostname.section(QLatin1Char('.'), 1);
+        envPrefix +=
+            QStringLiteral(
+                " FORKMESH_TUNNEL_HOSTNAME=%1 FORKMESH_TUNNEL_ZONE=%2 "
+                "FORKMESH_RELAY_HOSTNAME=%3 FORKMESH_REQUIRE_TUNNEL=1")
+                .arg(shq(m_vultrDnsHostname), shq(zone),
+                     shq(catalogApiUrl().host()));
+    }
 
     QString pipeline;
     if (requirePublishedBinary) {
@@ -14553,14 +17818,12 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
     const bool needSudo = user != QStringLiteral("root");
     if (doUpload) {
         // The binary follows on the SSH session's stdin. Everything before the
-        // marker line is discarded remotely: when sudo -S consumes the password
-        // line the marker arrives first, and under passwordless sudo (or a
-        // future keyed login) the stray password line is skipped instead of
-        // corrupting the upload. `cat` then lands the bytes in a remote temp
-        // file, which the installer consumes as FORKMESH_LOCAL_BINARY together
-        // with this machine's platform — so a cross-platform upload degrades
-        // into the installer's normal relay download instead of installing a
-        // binary the host can't run. The temp file is removed either way.
+        // marker line is discarded remotely, so a stray password line (sudo -S,
+        // or passwordless sudo) is skipped instead of corrupting the upload.
+        // `cat` lands the bytes in a remote temp file, which the installer
+        // consumes as FORKMESH_LOCAL_BINARY together with this machine's
+        // platform — so a cross-platform upload degrades into the installer's
+        // normal relay download rather than installing an unrunnable binary.
         QString os = QSysInfo::kernelType(); // "linux" / "darwin" / "winnt"
         if (os == QStringLiteral("darwin"))
             os = QStringLiteral("macos");
@@ -14583,6 +17846,17 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
                 .arg(shq(kHostUploadMarker), shq(installUrl), envPrefix,
                      shq(os), shq(QSysInfo::currentCpuArchitecture()),
                      shq(localBinarySha256));
+    }
+    if (provisionTunnel) {
+        // The Cloudflare credential is the first SSH stdin line. The command
+        // contains only this fixed reader and non-secret hostname/zone values,
+        // so process listings and the install transcript cannot expose it.
+        pipeline =
+            QStringLiteral(
+                "IFS= read -r fm_cf_token || exit 68; "
+                "CLOUDFLARE_API_TOKEN=\"$fm_cf_token\"; "
+                "export CLOUDFLARE_API_TOKEN; unset fm_cf_token; ") +
+            pipeline;
     }
     const QString cmd =
         needSudo
@@ -14829,6 +18103,9 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     // the remote shell. Closing the channel hands the installer a clean EOF.
     if (needSudo)
         proc->write((pass + QStringLiteral("\n")).toUtf8());
+    if (m_vultrProvisionActive && !m_vultrDnsHostname.isEmpty() &&
+        !m_vultrTunnelApiToken.isEmpty())
+        proc->write((m_vultrTunnelApiToken + QStringLiteral("\n")).toUtf8());
     // Direct-upload mode: the marker line then the release binary follow on the
     // same channel; the remote side skips to the marker and `cat`s the rest
     // into the temp file until the EOF the channel close below produces.
@@ -15736,8 +19013,17 @@ QWidget *MainWindow::buildNodeProfilePanel()
                                                         "Open settings");
     connect(selfSettingsButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
-    auto *selfLogoutButton = makeProfileActionButton("sign-out", "Logout",
-                                                      "Log out on this machine");
+    // Two buttons in the app said only "Logout"/"Log out" while doing very
+    // different things. This one disconnects the mesh session and goes back to
+    // the setup screen; the account stays signed in on this machine. Settings
+    // holds the other one, which signs the account out. Name each for what it
+    // actually does (adhoc #63).
+    auto *selfLogoutButton = makeProfileActionButton(
+        "sign-out", "Disconnect",
+        "Disconnect this machine from the mesh and return to the setup "
+        "screen. Your ForkMesh account stays signed in here \xE2\x80\x94 to "
+        "sign the account out, use Settings \xE2\x80\xBA \"Log out of "
+        "account\".");
     connect(selfLogoutButton, &QPushButton::clicked, this,
             [this] { leaveSession(); });
     auto *actionRow = new QHBoxLayout;
@@ -17017,6 +20303,7 @@ void MainWindow::clearRepoDetail()
     updateRepoCodeSize();
     updateRepoDetailStatus();
     updateFooterGitIdentity();
+    updateFooterCommitInfo();
     reloadIssues();
     reloadAgents();
     updateRepoIssueCount();

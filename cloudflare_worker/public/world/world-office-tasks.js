@@ -5,6 +5,11 @@ const MARKETING_TASKS_PATH = "/api/world/office/marketing-tasks";
 // making three D1-backed requests a minute per visitor. If an assignee leaves
 // the Office with a timer running, only a five-minute reconciliation poll is
 // needed; elapsed time continues locally from the server clock.
+// The whole organization catalog the relay is willing to return (MAX_TASKS in
+// world_office_tasks.py). Rows are rendered a page at a time, TASK_PAGE_SIZE
+// per page, so the board is not capped at its first page.
+const MAX_TASKS = 2000;
+const TASK_PAGE_SIZE = 100;
 const OFFICE_TASKS_POLL_MS = 60_000;
 const OFFICE_TASKS_BACKGROUND_POLL_MS = 5 * 60_000;
 const OFFICE_TASKS_TICK_MS = 1_000;
@@ -156,6 +161,7 @@ function normalizedTask(task) {
     attachments: (Array.isArray(task.attachments) ? task.attachments : [])
       .slice(0, 4)
       .map((attachment) => ({
+        id: text(attachment?.id, 64).toLowerCase(),
         name: text(attachment?.name, 180),
         mime: text(attachment?.mime, 100),
         size: Math.max(0, Math.min(1024 * 1024, Number(attachment?.size) || 0)),
@@ -309,6 +315,9 @@ export function createWorldOfficeTasksController({
   const organizationHeading = root.querySelector(
     "[data-world-organization-task-heading]",
   );
+  const organizationPager = root.querySelector(
+    "[data-world-organization-task-pager]",
+  );
   const taskCounts = Array.from(
     root.querySelectorAll("[data-world-task-count]"),
   );
@@ -384,6 +393,11 @@ export function createWorldOfficeTasksController({
   let workFilter = "all";
   let workSort = "priority";
   let workSortAscending = true;
+  // The board paints one page of rows at a time. The whole catalog stays in
+  // memory (search, sort, stats and the Bot batch still see every task) — only
+  // the DOM is bounded, so an organization with thousands of tasks pages
+  // through them instead of silently losing everything past the first 100.
+  let workPage = 0;
   const avatarCache = new Map();
 
   function ownTasks() {
@@ -1049,10 +1063,22 @@ export function createWorldOfficeTasksController({
                 ? `<ul class="world-office-task-attachments" aria-label="Task attachments">${task.attachments
                     .map(
                       (attachment) =>
-                        `<li title="${escapeHTML(attachment.mime)}">📎 ${escapeHTML(
-                          attachment.name,
-                          180,
-                        )}</li>`,
+                        attachment.url
+                          ? `<li class="world-office-task-image"><a href="${escapeHTML(
+                              attachment.url,
+                            )}" target="_blank" rel="noopener"><img src="${escapeHTML(
+                              attachment.url,
+                            )}" alt="${escapeHTML(
+                              attachment.name,
+                              180,
+                            )}" loading="lazy" decoding="async"><span>${escapeHTML(
+                              attachment.name,
+                              180,
+                            )}</span></a></li>`
+                          : `<li title="${escapeHTML(attachment.mime)}">📎 ${escapeHTML(
+                              attachment.name,
+                              180,
+                            )}</li>`,
                     )
                     .join("")}</ul>`
                 : ""
@@ -1261,16 +1287,63 @@ export function createWorldOfficeTasksController({
     return own;
   }
 
+  // Pages are clamped on read: a filter or a refresh can shrink the visible
+  // set under the page the board was left on, and that must land on the last
+  // real page rather than an empty one.
+  function taskPageCount(visible) {
+    return Math.max(1, Math.ceil(visible / TASK_PAGE_SIZE));
+  }
+
+  function currentTaskPage(visible) {
+    return Math.min(Math.max(0, workPage), taskPageCount(visible) - 1);
+  }
+
+  function taskPagerHTML(visible) {
+    if (visible < 1) return "";
+    const pages = taskPageCount(visible);
+    const page = currentTaskPage(visible);
+    const first = page * TASK_PAGE_SIZE + 1;
+    const last = Math.min(visible, (page + 1) * TASK_PAGE_SIZE);
+    return `
+      <button type="button" data-world-task-page="prev"${
+        page < 1 ? " disabled" : ""
+      } aria-label="Previous task page">‹ Prev</button>
+      <span data-world-task-page-status>${first}–${last} of ${visible} · page ${
+        page + 1
+      } of ${pages}</span>
+      <button type="button" data-world-task-page="next"${
+        page + 1 >= pages ? " disabled" : ""
+      } aria-label="Next task page">Next ›</button>`;
+  }
+
   function renderWorkPane() {
     const own = updateWorkStats();
     const visibleTasks = visibleWorkTasks();
+    const page = currentTaskPage(visibleTasks.length);
+    workPage = page;
+    const pageTasks = visibleTasks.slice(
+      page * TASK_PAGE_SIZE,
+      (page + 1) * TASK_PAGE_SIZE,
+    );
     taskCounts.forEach((taskCount) => {
       taskCount.textContent = String(tasks.length);
       taskCount.hidden = !authorized || tasks.length < 1;
     });
     if (organizationHeading) {
+      // Open/closed over the whole catalog, counted the way the desktop app
+      // and the dashboard count it, so all three surfaces report the same
+      // "84 open" (adhoc #56). The narrowed count only shows when a filter or
+      // a search is actually hiding something.
+      const openCount = tasks.reduce(
+        (sum, task) => sum + (task.status === "done" ? 0 : 1),
+        0,
+      );
+      const narrowed =
+        visibleTasks.length === tasks.length
+          ? ""
+          : ` · ${visibleTasks.length} shown`;
       organizationHeading.textContent =
-        `Tasks · ${visibleTasks.length} of ${tasks.length}`;
+        `Tasks · ${openCount} open · ${tasks.length - openCount} closed${narrowed}`;
     }
     if (workList) {
       workList.innerHTML = loading
@@ -1283,11 +1356,18 @@ export function createWorldOfficeTasksController({
                 : "Sign in to load the work assigned to you."
             }</li>`;
     }
+    if (organizationPager) {
+      organizationPager.innerHTML =
+        loading || visibleTasks.length <= TASK_PAGE_SIZE
+          ? ""
+          : taskPagerHTML(visibleTasks.length);
+      organizationPager.hidden = !organizationPager.innerHTML;
+    }
     if (organizationList) {
       organizationList.innerHTML = loading
         ? `<div class="world-task-loading" role="status"><span class="world-task-loading-spinner" aria-hidden="true"></span><strong>Syncing organization tasks</strong><small>Reading private task state, timers, QA, and routing…</small></div>`
         : visibleTasks.length
-          ? taskTableHeaderHTML() + visibleTasks.map(taskBoardHTML).join("")
+          ? taskTableHeaderHTML() + pageTasks.map(taskBoardHTML).join("")
           : `<div class="world-office-task-empty">${
               authorized && tasks.length
                 ? "No tasks match this search and filter."
@@ -1587,7 +1667,10 @@ export function createWorldOfficeTasksController({
               .slice(0, 250)
           : [];
         tasks = Array.isArray(payload?.tasks)
-          ? payload.tasks.map(normalizedTask).filter(Boolean).slice(0, 100)
+          ? payload.tasks
+              .map(normalizedTask)
+              .filter(Boolean)
+              .slice(0, MAX_TASKS)
           : [];
         announceAgentTasks();
         syncedAt = performance.now();
@@ -1756,6 +1839,17 @@ export function createWorldOfficeTasksController({
       void refresh({ quiet: false, force: true });
       return;
     }
+    const pager = event.target.closest("[data-world-task-page]");
+    if (pager) {
+      const pages = taskPageCount(visibleWorkTasks().length);
+      workPage =
+        pager.dataset.worldTaskPage === "next"
+          ? Math.min(pages - 1, workPage + 1)
+          : Math.max(0, workPage - 1);
+      renderWorkPane();
+      organizationList?.scrollIntoView?.({ block: "nearest" });
+      return;
+    }
     const quickFilter = event.target.closest("[data-world-task-quick-filter]");
     if (quickFilter) {
       workFilter = [
@@ -1766,6 +1860,7 @@ export function createWorldOfficeTasksController({
       ].includes(quickFilter.dataset.worldTaskQuickFilter)
         ? quickFilter.dataset.worldTaskQuickFilter
         : "all";
+      workPage = 0;
       renderWorkPane();
       return;
     }
@@ -1825,6 +1920,7 @@ export function createWorldOfficeTasksController({
         workSort = nextSort;
         workSortAscending = true;
       }
+      workPage = 0;
       renderWorkPane();
       return;
     }
@@ -1943,6 +2039,7 @@ export function createWorldOfficeTasksController({
   function onWorkControl(event) {
     if (event.target === taskSearch) {
       workSearch = text(taskSearch.value, 160);
+      workPage = 0;
       renderWorkPane();
       taskSearch.focus();
       return;
@@ -1959,6 +2056,7 @@ export function createWorldOfficeTasksController({
       ].includes(taskFilter.value)
         ? taskFilter.value
         : "all";
+      workPage = 0;
       renderWorkPane();
       return;
     }
@@ -1974,6 +2072,7 @@ export function createWorldOfficeTasksController({
         ? taskSort.value
         : "priority";
       workSortAscending = workSort !== "updated";
+      workPage = 0;
       renderWorkPane();
       return;
     }

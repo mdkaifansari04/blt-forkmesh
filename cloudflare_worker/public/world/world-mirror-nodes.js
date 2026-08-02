@@ -44,6 +44,31 @@ function timestamp(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
+// Bounded client classes a node may report for the clone / website read it
+// last served. Anything else (including a raw User-Agent a tampered record
+// might carry) stays unknown rather than being echoed into the cabinet.
+const SERVE_AGENT_CLASSES = new Set([
+  "forkmesh-node",
+  "git-client",
+  "bot-tool",
+  "browser",
+  "client",
+]);
+
+function serveAgent(value) {
+  const agent = text(value, "", 16).toLowerCase();
+  return SERVE_AGENT_CLASSES.has(agent) ? agent : null;
+}
+
+function serveMetadata(source) {
+  return omitUnknownValues({
+    cloneServedAt: timestamp(source?.cloneServedAt),
+    cloneServedAgent: serveAgent(source?.cloneServedAgent),
+    websiteServedAt: timestamp(source?.websiteServedAt),
+    websiteServedAgent: serveAgent(source?.websiteServedAgent),
+  });
+}
+
 function commitMetadata(source) {
   const commit = source?.lastCommit || source?.commitDetails || {};
   const message = text(
@@ -149,6 +174,7 @@ function publicRepositoryRecord(mirror, payload) {
     id: text(mirror?.id, "", 120),
     machineName: text(mirror?.machineName, "", 63) || null,
     ...commitMetadata(mirror),
+    ...serveMetadata(mirror),
   });
 }
 
@@ -173,6 +199,7 @@ function nodeAggregateRecord(node) {
     nodeId: text(node?.nodeId || node?.id, "", 120),
     machineName: text(node?.machineName, "", 63) || null,
     ...commitMetadata(node),
+    ...serveMetadata(node),
   });
 }
 
@@ -379,6 +406,21 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         websiteServed: hasPrimary
           ? primary.websiteServed
           : aggregate.websiteServed,
+        // Paired with the two counters above: the stamp has to describe the
+        // same repository the count does, so it follows the same primary /
+        // aggregate choice rather than mixing sources.
+        cloneServedAt: hasPrimary
+          ? (primary.cloneServedAt ?? null)
+          : (aggregate.cloneServedAt ?? null),
+        cloneServedAgent: hasPrimary
+          ? (primary.cloneServedAgent ?? null)
+          : (aggregate.cloneServedAgent ?? null),
+        websiteServedAt: hasPrimary
+          ? (primary.websiteServedAt ?? null)
+          : (aggregate.websiteServedAt ?? null),
+        websiteServedAgent: hasPrimary
+          ? (primary.websiteServedAgent ?? null)
+          : (aggregate.websiteServedAgent ?? null),
         repositories,
         ...resources,
       });

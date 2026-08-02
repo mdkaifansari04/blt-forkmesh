@@ -427,10 +427,21 @@ export function detectClient() {
   return { browser, os, touch: navigator.maxTouchPoints > 0 };
 }
 
+// Derived per directory member on every lounge/badge refresh; the two-letter
+// input space is tiny and the composed string is immutable, so memoize
+// instead of re-running the spread + fromCodePoint on each call.
+const FLAG_EMOJI_MEMO = new Map();
 export function flagEmoji(code) {
   const normalized = String(code || "").trim().toUpperCase();
   if (!/^[A-Z]{2}$/.test(normalized)) return "◌";
-  return String.fromCodePoint(...[...normalized].map((char) => 127397 + char.charCodeAt(0)));
+  let flag = FLAG_EMOJI_MEMO.get(normalized);
+  if (!flag) {
+    flag = String.fromCodePoint(
+      ...[...normalized].map((char) => 127397 + char.charCodeAt(0)),
+    );
+    FLAG_EMOJI_MEMO.set(normalized, flag);
+  }
+  return flag;
 }
 
 export function sanitizePresenceText(value, fallback, max = 28) {

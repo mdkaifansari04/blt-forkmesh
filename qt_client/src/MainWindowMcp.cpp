@@ -829,7 +829,8 @@ void MainWindow::launchGenieRun(int repoIndex, const QString &typedGuidance)
         QStringLiteral("claude-code"),
         /*createPr=*/true,
         QSettings().value(kClaudeCodeModelSetting).toString(),
-        QString::fromUtf8("Genie \xE2\x80\x94 picking a task\xE2\x80\xA6"));
+        QString::fromUtf8("Genie \xE2\x80\x94 picking a task\xE2\x80\xA6"),
+        /*genie=*/true);
     if (sessionId <= 0)
         return;
     if (m_issueQuickAdd)
