@@ -283,6 +283,18 @@ struct NotificationLink {
 };
 Q_DECLARE_METATYPE(NotificationLink)
 
+// One row of the Ctrl+K search overlay. Filled on a worker thread (nothing
+// GUI-owned is touched there) and rendered/activated on the GUI thread.
+struct GlobalSearchHit {
+    QString kind;       // see kSearchCategories in MainWindowSearch.cpp
+    int number = 0;     // issue/PR/discussion/project/agent/run id, or repo index
+    QString path;       // file path, branch, worktree branch, commit/tag ref
+    int line = 0;       // code hit: 1-based line number
+    int repoIndex = -1; // repository the hit belongs to (-1 = the open one)
+    QString primary;    // main row text
+    QString detail;     // dimmer context (where it matched)
+};
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -1903,13 +1915,21 @@ private:
     void openPullReference(int number);
     void openCommitHashReference(const QString &hash);
     void openReferenceLink(const QString &href);
-    // Global search (Ctrl+K, issue #360). A repo-scoped overlay that searches the
-    // open repo's issues and pull requests (titles, bodies and comments — parsed
-    // from the stores) plus its code (`git grep` on the working tree/mirror, run
-    // off the GUI thread). Results are clickable and jump to the matching issue,
-    // PR, or file+line. Repo-scoped only for v1; full-mesh code search is out.
+    // Global search (Ctrl+K, issue #360). One overlay that searches everything
+    // this node holds: repositories and agent sessions across the whole app, and
+    // for the open repository its issues, pull requests, discussions, projects,
+    // milestones, workflow runs, branches, worktrees, tags, commits, file names
+    // and file contents. All of it runs off the GUI thread in two waves — the
+    // cheap metadata first, then the `git grep`/`git log` content scan — so the
+    // list fills immediately and a big repo never freezes the window. Every row
+    // is clickable and jumps to the thing it matched.
     void openGlobalSearch();
     void runGlobalSearch(const QString &query);
+    // Render m_searchHits into the overlay list, grouped by category, and update
+    // the status line. Called once per wave as results land.
+    void rebuildGlobalSearchList(const QString &query);
+    // Close the overlay and navigate to what `hit` matched.
+    void activateGlobalSearchHit(const GlobalSearchHit &hit);
     QDialog *m_searchDialog = nullptr;
     QLineEdit *m_searchInput = nullptr;
     QListWidget *m_searchList = nullptr;
@@ -1917,6 +1937,10 @@ private:
     // Bumped on every keystroke so a stale off-thread `git grep` result is dropped
     // when the query has moved on (mirrors the m_worktreeStatusGen pattern).
     int m_searchGen = 0;
+    // Hits gathered so far for the current query, across both waves, and how many
+    // waves are still running (the status line says "searching" until it's 0).
+    QVector<GlobalSearchHit> m_searchHits;
+    int m_searchWavesPending = 0;
     // Resolve a reference link clicked inside an issue/PR comment body. Handles
     // the private schemes autolinkReferences() emits (forkmesh-ref:N → issue/PR,
     // forkmesh-commit:SHA → commit) and forkmesh:// permalinks (issue/pull/commit);
