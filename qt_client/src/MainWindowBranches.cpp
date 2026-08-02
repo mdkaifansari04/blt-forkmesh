@@ -382,7 +382,7 @@ QWidget *MainWindow::buildWorktreesTab()
         if (!m_worktreeSelectedBranch.isEmpty())
             mergeWorktreeIntoMain(m_worktreeSelectedBranch, m_worktreeSelectedPath);
     });
-    // Same merge, with runtime checkout cleanup while durable Agent provenance stays.
+    // Same merge, with full source cleanup including any Agent record.
     m_worktreeMergeDeleteAgentButton = new QPushButton("Merge & clean up");
     m_worktreeMergeDeleteAgentButton->setObjectName("ghostButton");
     m_worktreeMergeDeleteAgentButton->setProperty("buttonSize", "sm");
@@ -390,7 +390,7 @@ QWidget *MainWindow::buildWorktreesTab()
     setOcticon(m_worktreeMergeDeleteAgentButton, "check-circle", 14);
     m_worktreeMergeDeleteAgentButton->setToolTip(
         "Merge the selected worktree's branch into the default branch, then delete "
-        "the worktree and source branch while retaining its Agent record");
+        "the worktree, source branch, and Agent record");
     m_worktreeMergeDeleteAgentButton->setEnabled(false);
     connect(m_worktreeMergeDeleteAgentButton, &QPushButton::clicked, this, [this] {
         if (!m_worktreeSelectedBranch.isEmpty())
@@ -1633,44 +1633,24 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                 QStringLiteral("Closed by merged branch \"%1\".").arg(branch),
                 QStringLiteral("merged branch \"%1\"").arg(branch));
         }
-        // The branch is now in main, so the worktree has served its purpose — clean
-        // it up (silently; the merge was already confirmed). Delete the branch too:
-        // its work is preserved in the merge commit, so leaving it behind only
-        // clutters the Worktrees/Branches tabs.
-        QList<int> retainedAgents;
-        if (deleteAgent && !branch.isEmpty()
-            && m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
-            // The branch/worktree may be cleaned after landing, but the Agent
-            // session is durable provenance for its branch and any PR it opened.
-            const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
-            for (const AgentSession &s : std::as_const(m_agentSessions)) {
-                if (s.owner == repo.owner && s.name == repo.name
-                    && s.branchName == branch && !isExternalSession(s.id))
-                    retainedAgents.append(s.id);
-            }
-            markAgentSessionsMerged(0, branch, branchInBase);
-        }
+        // The cleanup action removes every source artifact, including any Agent
+        // entry. The ordinary Merge action retains the Agent record as provenance.
         bool removed = false;
-        if (!worktreePath.isEmpty() &&
+        if (deleteAgent) {
+            // Record the landing before deleteStoredAgentSession removes the
+            // session, so its organization task is completed as merged.
+            markAgentSessionsMerged(0, branch, branchInBase);
+            deleteWorktreeBranchAndAgent(worktreePath, branch,
+                                         /*confirm=*/false, /*async=*/false);
+            removed = !worktreePath.isEmpty() && !QDir(worktreePath).exists();
+            branchDeleted = !localBranchExists(dir, branch);
+        } else if (!worktreePath.isEmpty() &&
             QDir(worktreePath).absolutePath() != QDir(dir).absolutePath()) {
             removeWorktree(worktreePath, branch, /*confirm=*/false,
                            /*alsoDeleteBranch=*/true);
             removed = !QDir(worktreePath).exists();
             branchDeleted = removed && !localBranchExists(dir, branch);
-        } else if (deleteAgent && localBranchExists(dir, branch)) {
-            // "Merge & delete all" on a branch with no worktree of its own (adhoc
-            // #428): removeWorktree is what normally drops the branch, so delete it
-            // here instead. Safe by the branchInBase gate above — the commits are in
-            // the base branch, so -D discards nothing.
-            branchDeleted = runGitCapture(dir, {"branch", "-D", branch}, nullptr, nullptr);
         }
-        const QString agentNote =
-            retainedAgents.isEmpty()
-                ? QString()
-                : (retainedAgents.size() == 1
-                       ? QStringLiteral(" and retained its Agent record")
-                       : QStringLiteral(" and retained its %1 Agent records")
-                             .arg(retainedAgents.size()));
         setRepoDetailNotice(
             (removed ? QStringLiteral("Merged %1 into %2, removed its worktree and "
                                       "deleted its branch")
@@ -1679,7 +1659,7 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                            ? QStringLiteral("Merged %1 into %2 and deleted its branch")
                                  .arg(branch, base)
                            : QStringLiteral("Merged %1 into %2").arg(branch, base))
-                + agentNote + QStringLiteral("."),
+                + QStringLiteral("."),
             false);
         // Issue #291: flag any agent session that produced this branch. This is
         // idempotent when the cleanup path marked it above.
@@ -1983,7 +1963,8 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
     // worktree open. If one is mid-stop or we lack permission, bail (it flashed
     // why) before touching the worktree so nothing is half-deleted.
     for (int id : std::as_const(agentIds)) {
-        if (!deleteStoredAgentSession(id)) {
+        if (!deleteStoredAgentSession(id, /*cleanupWorktree=*/true,
+                                      /*allowAssociationOnly=*/true)) {
             if (!deferRefresh)
                 reloadAgents();
             return;
@@ -2961,9 +2942,9 @@ QWidget *MainWindow::buildBranchRangePane()
             closeBranchDiffAfterMerge();
     });
 
-    // Same merge, but nothing of the source checkout survives it: its worktree and
-    // branch go once the work is in the base branch, while its Agent provenance
-    // remains durable. The one-click end of a finished agent run, without
+    // Same merge, but nothing of the source checkout survives it: its worktree,
+    // branch, and Agent entry go once the work is in the base branch. The one-click
+    // end of a finished agent run, without
     // hopping to the Agents/Worktrees tabs to clean up by hand. Runs straight from
     // the click — mergeWorktreeIntoMain no longer confirms (adhoc #441).
     m_branchMergeDeleteButton = new StackedIconButton("Merge & clean up");
