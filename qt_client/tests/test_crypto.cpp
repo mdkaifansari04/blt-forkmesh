@@ -7260,35 +7260,104 @@ int main(int argc, char *argv[])
         // elevated helper on stderr.
         QStringList visited;
         qint64 lastBytes = -1;
+        int firstWorker = -1;
         scanDirectorySizes(tree.path(), options,
-                           [&](const QString &current, qint64 bytes, int) {
-                               visited.append(current);
-                               lastBytes = bytes;
+                           [&](const DirectorySizeScanProgressUpdate &update) {
+                               // Serialized by the scan, so no lock is needed
+                               // here however many threads are walking.
+                               if (visited.isEmpty())
+                                   firstWorker = update.worker;
+                               visited.append(update.path);
+                               lastBytes = update.bytes;
                            });
         check(visited.contains(QDir::cleanPath(tree.path())) && lastBytes >= 0,
               "a scan reports the folder it is walking, root first");
+        check(firstWorker == 0,
+              "worker 0 is the thread that asked for the scan");
 
-        QString progressPath;
-        qint64 progressBytes = 0;
-        int progressFiles = 0;
-        // A newline in a filename would otherwise split one update into two.
-        const QString awkward =
-            tree.path() + QStringLiteral("/od d\nname 100%");
-        check(decodeScanProgress(encodeScanProgress(awkward, 4096, 7),
-                                 &progressPath, &progressBytes,
-                                 &progressFiles) &&
-                  progressPath == awkward && progressBytes == 4096 &&
-                  progressFiles == 7,
-              "a progress line round-trips a path with a newline in it");
-        check(encodeScanProgress(awkward, 4096, 7).count('\n') == 1,
+        // Per-thread lines (adhoc #95): a wide tree is what the walk actually
+        // spreads across the pool, and every update it produces has to name the
+        // thread behind it. The slot a thread holds must be stable — a thread
+        // that finishes one top-level tree and picks up the next keeps its line
+        // rather than opening a second one — and no slot may be shared.
+        {
+            const QDir wide(tree.path());
+            bool built = true;
+            for (int i = 0; i < 24; ++i) {
+                const QString branch = QStringLiteral("wide/b%1").arg(i);
+                built = built && wide.mkpath(branch) &&
+                        writeBytes(branch + QStringLiteral("/f.bin"), 512);
+            }
+            check(built, "the wide tree has a file in each of its 24 branches");
+            QHash<int, quintptr> threadOfSlot;
+            QHash<quintptr, int> slotOfThread;
+            QSet<int> wentIdle;
+            bool stable = true;
+            bool inRange = true;
+            int slotCount = 0; // not "slots": Qt's own keyword macro
+            scanDirectorySizes(
+                wide.absoluteFilePath(QStringLiteral("wide")), {},
+                [&](const DirectorySizeScanProgressUpdate &update) {
+                    // The scan serializes its callback, so these plain maps need
+                    // no lock however many threads are walking.
+                    const auto thread =
+                        reinterpret_cast<quintptr>(QThread::currentThread());
+                    stable = stable &&
+                             threadOfSlot.value(update.worker, thread) == thread &&
+                             slotOfThread.value(thread, update.worker) ==
+                                 update.worker;
+                    threadOfSlot.insert(update.worker, thread);
+                    slotOfThread.insert(thread, update.worker);
+                    inRange = inRange && update.worker >= 0 &&
+                              update.worker < update.workers;
+                    if (update.idle)
+                        wentIdle.insert(update.worker);
+                    slotCount = qMax(slotCount, update.workers);
+                });
+            check(stable,
+                  "one thread holds one worker slot for a whole scan, and no "
+                  "slot is shared");
+            check(inRange && slotCount >= threadOfSlot.size() &&
+                      !threadOfSlot.isEmpty(),
+                  "every update names a slot inside the worker count it reports");
+            // Without this a thread that finished its branch early would leave
+            // its line frozen on a folder it left, reading as a stalled scan.
+            check(wentIdle.size() == threadOfSlot.size(),
+                  "every worker reports going idle when its tree is counted");
+        }
+
+        DirectorySizeScanProgressUpdate progress;
+        // A newline in a filename would otherwise split one update into two, and
+        // a space would be read as another counter.
+        DirectorySizeScanProgressUpdate sent;
+        sent.path = tree.path() + QStringLiteral("/od d\nname 100%");
+        sent.bytes = 4096;
+        sent.files = 7;
+        sent.worker = 3;
+        sent.workers = 5;
+        sent.workerBytes = 1024;
+        sent.workerFiles = 2;
+        sent.idle = true;
+        check(decodeScanProgress(encodeScanProgress(sent), &progress) &&
+                  progress.path == sent.path && progress.bytes == 4096 &&
+                  progress.files == 7 && progress.worker == 3 &&
+                  progress.workers == 5 && progress.workerBytes == 1024 &&
+                  progress.workerFiles == 2 && progress.idle,
+              "a progress line round-trips its worker and a path with a newline");
+        check(encodeScanProgress(sent).count('\n') == 1,
               "one progress update is exactly one line");
         check(!decodeScanProgress(QByteArray("sudo: a password is required"),
-                                  &progressPath, &progressBytes,
-                                  &progressFiles) &&
-                  !decodeScanProgress(QByteArray("FMSZ-PROGRESS 12"),
-                                      &progressPath, &progressBytes,
-                                      &progressFiles),
+                                  &progress) &&
+                  !decodeScanProgress(QByteArray("FMSZ-PROGRESS 12"), &progress),
               "sudo's own chatter and a truncated line are not progress");
+        // An older helper left on disk by a half-applied update still sends the
+        // two-counter line; it reads as a single worker rather than vanishing.
+        check(decodeScanProgress(QByteArray("FMSZ-PROGRESS 4096 7 /tmp/x"),
+                                 &progress) &&
+                  progress.worker == 0 && progress.workers == 1 &&
+                  progress.workerBytes == 4096 && progress.workerFiles == 7 &&
+                  !progress.idle && progress.path == QStringLiteral("/tmp/x"),
+              "a pre-worker progress line still reads as one thread's progress");
 
         // Stop button: a canceled poll must unwind before the walk descends
         // into anything, rather than finishing the tree and throwing it away.
