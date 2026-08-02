@@ -763,6 +763,33 @@ function badgeStatusLabel(identity) {
   return `${emoji} ${note}`.trim().slice(0, 24);
 }
 
+function badgeEmailLabel(identity) {
+  const sentAt = Math.max(0, Number(identity.lastEmailAt) || 0);
+  if (!sentAt) return "";
+  const elapsed = Math.max(0, Date.now() - sentAt);
+  const units = [
+    [365 * 24 * 60 * 60 * 1000, "Y"],
+    [30 * 24 * 60 * 60 * 1000, "MO"],
+    [24 * 60 * 60 * 1000, "D"],
+    [60 * 60 * 1000, "H"],
+    [60 * 1000, "M"],
+  ];
+  let ago = "NOW";
+  for (const [size, label] of units) {
+    const count = Math.floor(elapsed / size);
+    if (count) {
+      ago = `${count}${label} AGO`;
+      break;
+    }
+  }
+  const status = String(identity.lastEmailStatus || "accepted")
+    .replace(/[^a-z ]/gi, "")
+    .trim()
+    .toUpperCase()
+    .slice(0, 16);
+  return `EMAIL ${ago} · ${status || "ACCEPTED"}`;
+}
+
 function badgeTexture(
   THREE,
   identity,
@@ -934,6 +961,7 @@ function badgeTexture(
       [joined, "#77d9ff"],
       [badgeClientLabel(identity), "#f7c96b"],
       [activeRow, "#9ef7c6"],
+      [badgeEmailLabel(identity), "#77d9ff"],
       // A directory figure publishes no live activity, so its "hidden · 0
       // visits" line is the one row worth dropping once the active-time row
       // carries a real reading.
@@ -945,7 +973,7 @@ function badgeTexture(
       ],
     ].filter(([text]) => text);
     // Five rows still have to clear the status pill at y=374.
-    const step = rows.length > 4 ? 25 : 29;
+    const step = rows.length > 5 ? 22 : rows.length > 4 ? 25 : 29;
     context.textAlign = "left";
     context.font = '700 17px "ForkMesh Mono", ui-monospace, monospace';
     rows.forEach(([text, color], index) => {
@@ -27587,6 +27615,12 @@ export function createWorldScene({
         Number(identity.joinedAt) > 0 ? identity.joinedAt : facts.joinedAt,
       emailVerified:
         identity.emailVerified === true || facts.emailVerified === true,
+      lastEmailAt: Math.max(
+        Number(identity.lastEmailAt) || 0,
+        Number(facts.lastEmailAt) || 0,
+      ),
+      lastEmailStatus:
+        String(identity.lastEmailStatus || facts.lastEmailStatus || ""),
       totalActiveMs:
         identity.totalActiveMs == null
           ? facts.totalActiveMs
@@ -28073,6 +28107,8 @@ export function createWorldScene({
           status: "sitting around the campfire",
           accountStatus: "Registered",
           emailVerified: member.emailVerified === true,
+          lastEmailAt: Math.max(0, Number(member.lastEmailAt) || 0),
+          lastEmailStatus: String(member.lastEmailStatus || ""),
           localTime: "",
           activityCategory: "sitting-at-member-fire",
           inputActive: false,
