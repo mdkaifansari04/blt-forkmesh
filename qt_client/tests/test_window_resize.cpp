@@ -1770,18 +1770,18 @@ int main(int argc, char *argv[])
         addAgent(133906, AgentStatus::Stopped);
         addAgent(133907, AgentStatus::Cleared);
         window.testRefreshAgentDotMatrix();
-        check(window.testAgentDotCount() == dotsBefore + 3,
-              QStringLiteral("agent matrix shows only running, queued, and waiting "
-                             "sessions (not terminal history)"));
+        check(window.testAgentDotCount() == dotsBefore + 7,
+              QStringLiteral("agent matrix shows sessions in every lifecycle "
+                             "state, including terminal history"));
 
-        // The chrome matrix is deliberately unbounded: every active agent must
-        // remain visible and clickable, including sessions beyond its former
+        // The chrome matrix is deliberately unbounded: every agent must remain
+        // visible and clickable, including sessions beyond its former
         // 66-dot limit.
         for (int id = 133908; id < 133978; ++id)
             addAgent(id, AgentStatus::Running);
         window.testRefreshAgentDotMatrix();
-        check(window.testAgentDotCount() == dotsBefore + 73,
-              QStringLiteral("agent matrix keeps every active session visible "
+        check(window.testAgentDotCount() == dotsBefore + 77,
+              QStringLiteral("agent matrix keeps every session visible "
                              "beyond 66 dots"));
 
         window.testSetAgentSessionStatus(133901, AgentStatus::Success);
@@ -1789,8 +1789,8 @@ int main(int argc, char *argv[])
         window.testSetAgentSessionStatus(133903, AgentStatus::Success);
         for (int id = 133908; id < 133978; ++id)
             window.testSetAgentSessionStatus(id, AgentStatus::Success);
-        check(window.testAgentDotCount() == dotsBefore,
-              QStringLiteral("agent matrix removes each dot when its session "
+        check(window.testAgentDotCount() == dotsBefore + 77,
+              QStringLiteral("agent matrix retains each dot when its session "
                              "reaches a terminal state"));
 
         for (int id = 133901; id < 133978; ++id)

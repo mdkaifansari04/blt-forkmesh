@@ -5313,10 +5313,10 @@ void MainWindow::updateAgentsNavBadge()
     refreshAgentDotMatrix();
 }
 
-// The fleet matrix beside that button: one tiny square per active session,
-// tinted to the same colour as its status icon in the agents list. Completed
-// history belongs in the Agents page; keeping it out of the chrome means a
-// square always represents work that is running, queued, or waiting for input.
+// The fleet matrix beside that button: one tiny square per session, tinted to
+// the same colour as its status icon in the agents list. It intentionally keeps
+// completed, failed, stopped, cleared, and merged history in the top bar too:
+// the matrix is the complete, at-a-glance roster rather than only live work.
 // Each running session's live-output meter feeds the night-rider sweep so the
 // row shows real activity rather than a decorative animation. Cheap enough to
 // call from the scanner tick — the vector is small and the widget repaints
@@ -5329,13 +5329,6 @@ void MainWindow::refreshAgentDotMatrix()
     dots.reserve(m_agentSessions.size());
     QHash<QString, int> tally; // status label -> count, for the tooltip
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
-        const bool active =
-            !session.merged &&
-            (session.status == AgentStatus::Running ||
-             session.status == AgentStatus::Queued ||
-             session.status == AgentStatus::Waiting);
-        if (!active)
-            continue;
         AgentDotMatrix::Dot dot;
         dot.sessionId = session.id;
         dot.color = agentStatusIconColor(session);
@@ -5375,7 +5368,7 @@ void MainWindow::refreshAgentDotMatrix()
     if (key == m_agentDotTooltipKey)
         return;
     m_agentDotTooltipKey = key;
-    QString tip = QStringLiteral("%1 active agent session%2 \xE2\x80\x94 %3")
+    QString tip = QStringLiteral("%1 agent session%2 \xE2\x80\x94 %3")
                       .arg(dots.size())
                       .arg(dots.size() == 1 ? QString() : QStringLiteral("s"),
                            key);
