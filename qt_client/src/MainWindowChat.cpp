@@ -451,10 +451,15 @@ QWidget *MainWindow::buildChatPage()
     rail->setObjectName(QStringLiteral("appNavigationRailContent"));
     rail->setMinimumWidth(railItemWidth());
     m_appNavigationRailLayout = new QVBoxLayout(rail);
-    m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
+    // No top inset (adhoc #421). The rail and the repo tab row start at the
+    // same y — both begin at the top of the content area below the chrome — and
+    // the tab row's buttons are pinned to its top edge, so a zero margin here
+    // puts the rail's first icon and caption on exactly the two lines the tab
+    // row draws its own on. Any inset re-introduces the skew.
+    m_appNavigationRailLayout->setContentsMargins(0, 0, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
     // Every rail destination is the same item (adhoc #117): one
-    // ActivityRailButton — a 20px octicon SVG over a 10px caption at
+    // ActivityRailButton — a 16px octicon SVG over a 10px caption at
     // railItemWidth() x kRailItemHeight — so icons, words, hover and the
     // checked accent line all read identically down the rail. Agents is badged
     // with the running-session count; only its fleet matrix stayed on the

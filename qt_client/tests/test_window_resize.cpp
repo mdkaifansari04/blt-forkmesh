@@ -1594,6 +1594,13 @@ int main(int argc, char *argv[])
                   .arg(looperGap)
                   .arg(looperAligned)
                   .arg(navTrailingGap));
+        // Adhoc #421: the left rail's first icon sits on the tab row's icon
+        // line, so the two rows of glyphs read as one horizontal band.
+        const int railSkew = window.testRailTabIconLineSkew();
+        check(qAbs(railSkew) <= 1,
+              QString("the activity rail's icons line up with the repo tab "
+                      "row's (skew=%1px)")
+                  .arg(railSkew));
 
     // Issue #207: the commit detail page must expose a restore/revert action
     // beside the destructive delete-history action.
@@ -2982,10 +2989,14 @@ int main(int argc, char *argv[])
         auto *repoLinesChart = seeded.findChild<QWidget *>(QStringLiteral("repoLinesChart"));
         auto *repoFilesChart = seeded.findChild<QWidget *>(QStringLiteral("repoFilesChart"));
         auto *ratchet = seeded.findChild<QToolButton *>(QStringLiteral("repoRatchetButton"));
+        // Adhoc #421: the day trends are drawn at the same 34px side as the
+        // window chrome's CPU/MEM/DISK squares instead of a size larger, and
+        // the Ratchet toggle reads "Ratchet" under an icon.
         check(repoSizeChart && repoLinesChart && repoFilesChart && ratchet &&
-                  repoSizeChart->width() > 34 && repoLinesChart->width() > 34 &&
-                  repoFilesChart->width() > 34 && ratchet->isCheckable(),
-              QStringLiteral("repository trends and Ratchet Mode live in the top bar"));
+                  repoSizeChart->width() == 34 && repoLinesChart->width() == 34 &&
+                  repoFilesChart->width() == 34 && ratchet->isCheckable() &&
+                  ratchet->text() == QStringLiteral("Ratchet"),
+              QStringLiteral("repository trends and Ratchet live in the top bar"));
         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.
