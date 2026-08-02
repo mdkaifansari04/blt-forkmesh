@@ -549,10 +549,11 @@ public:
                                                const QString &description,
                                                const QString &firstPrompt,
                                                bool addReadme,
-                                               bool isPrivate = false)
+                                               bool isPrivate = false,
+                                               bool localOnly = false)
     {
         return provisionNewRepository(dest, name, description, firstPrompt,
-                                      addReadme, isPrivate, nullptr);
+                                      addReadme, isPrivate, localOnly, nullptr);
     }
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
@@ -1370,6 +1371,9 @@ private:
     QWidget *buildOrganizationTasksSection();
     void refreshOrganizationTasks();
     void applyOrganizationTasks(const QJsonObject &payload);
+    // The table paints one page of the catalog at a time (adhoc #24): search
+    // and the summary still run over every task, only the rows are bounded.
+    void renderOrganizationTaskRows(const QString &selectTaskId = QString());
     // Tasks rail badge (adhoc #79). The open count is persisted, painted back
     // onto the rail at launch, and refreshed in the background so it no longer
     // takes a visit to the Tasks page to show a number.
@@ -1757,6 +1761,13 @@ private:
         std::function<void(QString keyId, QString error)> onDone);
     void pollVultrInstance(const QString &apiKey, const QString &instanceId,
                            const QString &node, const QString &identityFile);
+    // Knock on the new instance's SSH port once a minute until it answers, then
+    // start the install (adhoc #48). Vultr calls an instance "active" long
+    // before sshd is listening, and the install uploads this app's entire
+    // binary — so probing first replaces a ladder of failed multi-megabyte
+    // upload attempts with one cheap command that costs nothing to repeat.
+    void waitForVultrSshReady(const QString &node, const QString &ip,
+                              const QString &identityFile);
     void startVultrHostInstall(const QString &node, const QString &ip,
                                const QString &identityFile);
     // Do not report a provisioned mirror as complete merely because SSH and
@@ -4428,10 +4439,12 @@ private:
     // and (when firstPrompt is non-empty) has its first issue filed. Returns the
     // new repository index, or -1 with a message in *error on failure.
     // isPrivate keeps the repo out of the public catalog from the start.
+    // localOnly stops there: the repo is initialized and registered on this
+    // machine but never mirrored, published or announced on a relay channel.
     int provisionNewRepository(const QString &dest, const QString &name,
                                const QString &description,
                                const QString &firstPrompt, bool addReadme,
-                               bool isPrivate, QString *error);
+                               bool isPrivate, bool localOnly, QString *error);
     // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.
@@ -4721,6 +4734,10 @@ private:
     QPushButton *m_organizationTaskQaButton = nullptr;
     QPushButton *m_organizationTaskReturnButton = nullptr;
     QPushButton *m_organizationTaskDeleteButton = nullptr;
+    QPushButton *m_organizationTaskPrevPageButton = nullptr;
+    QPushButton *m_organizationTaskNextPageButton = nullptr;
+    QLabel *m_organizationTaskPageLabel = nullptr;
+    int m_organizationTasksPage = 0;
     QJsonArray m_organizationTasks;
     QStringList m_organizationTaskMembers;
     QStringList m_organizationTaskDepartments;
@@ -5089,6 +5106,10 @@ private:
     bool m_vultrProvisionActive = false;
     int m_vultrPollCount = 0;        // instance boot polls used this run
     int m_vultrInstallAttempts = 0;  // SSH install attempts used this run
+    int m_vultrSshWaitCount = 0;     // SSH reachability probes used this run
+    // Live probe of waitForVultrSshReady, kept so a cancelled/finished
+    // provision can stop knocking instead of leaving an ssh child behind.
+    QProcess *m_vultrSshProbeProcess = nullptr;
     // Flipped once an attempt fails because no online node is mirroring the
     // repo yet (the freshly-created instance has nothing to clone/download
     // from) — every later attempt this run then uploads this app's own

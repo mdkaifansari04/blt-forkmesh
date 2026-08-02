@@ -12,6 +12,7 @@
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -478,6 +479,35 @@ int main(int argc, char **argv)
                   budget.log.contains(QStringLiteral("budget ok")),
               "steps see the sandbox CPU and memory budget they must build "
               "within");
+
+        // /usr/bin/awk, cc, c++ and friends are symlinks into
+        // /etc/alternatives on Debian-family hosts. When that farm is outside
+        // the mount namespace they dangle, and a step using one dies with exit
+        // 127 — which is how the v0.7.10 release publish failed after a full
+        // desktop build.
+        if (QStandardPaths::findExecutable(QStringLiteral("awk")).isEmpty()) {
+            std::printf("  SKIP alternatives resolution: no awk on this host\n");
+        } else {
+            const QString toolWorkflow = QStringLiteral(
+                "name: Toolchain\non: push\nsteps:\n"
+                "  - name: alternatives-managed commands resolve\n"
+                "    run: |\n"
+                "      set -eu\n"
+                "      [ \"$(printf 'x y\\n' | awk '{print $2}')\" = \"y\" ]\n"
+                "      echo \"alternatives ok\"\n");
+            check(writeFile(workflowPath, toolWorkflow.toUtf8()),
+                  "alternatives workflow fixture is written");
+            const QString toolCommit =
+                commitAll(repository, QStringLiteral("alternatives workflow"));
+            const RunResult tools =
+                runWorkflow(repository, toolCommit, toolWorkflow,
+                            &store, 106, limits);
+            check(tools.finished && tools.signalOk &&
+                      tools.persisted.status == ActionStatus::Success &&
+                      tools.log.contains(QStringLiteral("alternatives ok")),
+                  "commands resolved through /etc/alternatives run inside the "
+                  "sandbox");
+        }
     }
 
     if (failures == 0)
