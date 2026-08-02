@@ -10,6 +10,13 @@ using namespace forkmesh::ui;
 
 namespace {
 
+// How long after the first painted frame deferred startup runs when the launch
+// splash is still on screen, instead of showEvent()'s five-second interactive
+// runway (see MainWindow::paintEvent). Long enough for the frame to reach the
+// compositor and the splash to tick over, short enough that the card is never
+// sitting there with nothing to say.
+constexpr int kSplashedDeferredStartupDelayMs = 250;
+
 // ForkMesh is event-driven: every HTTP request fires in response to some
 // action/event (a relay sync frame, a catalog publish, an agent poll…). The
 // finished() choke point only sees the reply, so we recover *what drove it*
@@ -729,7 +736,9 @@ void MainWindow::showEvent(QShowEvent *event)
     // bounded five-second interactive runway so silent authentication and session
     // restoration cannot collide with the user's first repository/tab navigation,
     // then run the idempotent startup regardless of platform. Headless launches
-    // use the same deterministic fallback.
+    // use the same deterministic fallback. A launch with the splash up beats
+    // this timer to it from paintEvent — there, the frame is proven and there
+    // is no interactive runway to protect because the card is over the app.
     QTimer::singleShot(5000, this, &MainWindow::runDeferredStartup);
 }
 
@@ -740,9 +749,31 @@ void MainWindow::paintEvent(QPaintEvent *event)
         return;
     m_firstFramePainted = true;
     // The launch splash has been narrating startup over an empty screen; this
-    // is the first frame with the real window behind it. Hand over and let it
-    // fade (adhoc #39). Idempotent, and a no-op when no splash is up.
-    finishStartupSplash(QStringLiteral("Main window painted"));
+    // is the first frame with the real window behind it. That used to be where
+    // the splash said "Ready" and faded — but the window is only half started
+    // here: runDeferredStartup() still has to sign in, open the last
+    // repository, resume agent sessions and bring up the mesh session, and the
+    // app visibly loads through all of it. So this is one more completed step,
+    // not the end; finish comes from the end of deferred startup. A no-op when
+    // no splash is up (adhoc #39).
+    startupWindowPainted(QStringLiteral("Main window painted"));
+    if (!activeStartupSplash())
+        return;
+    // showEvent() arms deferred startup five seconds out to leave the user an
+    // interactive runway before those blocking calls take the GUI thread. With
+    // the splash still on screen there is nothing to interact with, and that
+    // runway is five seconds of a card narrating nothing — so with a frame now
+    // painted (which is what the runway was really waiting for), get on with
+    // it. runDeferredStartup() is idempotent, so whichever timer lands first
+    // wins and the other returns.
+    QTimer::singleShot(kSplashedDeferredStartupDelayMs, this, [this] {
+        // Unless the user clicked the splash away in the meantime — then they
+        // do have an app in front of them, the runway is worth protecting
+        // again, and showEvent()'s five-second timer runs this instead.
+        if (!activeStartupSplash())
+            return;
+        runDeferredStartup();
+    });
 }
 
 void MainWindow::runDeferredStartup()
@@ -798,11 +829,13 @@ void MainWindow::runDeferredStartup()
                 {
                     forkmesh::StartupTraceStep step(
                         QStringLiteral("deferred startup: silent authentication"));
+                    startupStep(QStringLiteral("Signing in as %1").arg(name));
                     authenticateSilently(name);
                 }
                 {
                     forkmesh::StartupTraceStep step(
                         QStringLiteral("deferred startup: start mesh session"));
+                    startupStep(QStringLiteral("Connecting to the mesh"));
                     startSession();
                 }
                 runHeadlessBootstrap();
@@ -867,6 +900,9 @@ void MainWindow::runDeferredStartup()
         logStartup(QStringLiteral("restoring saved repository index %1")
                        .arg(index));
         m_selectedNode = m_repositories.at(index).owner;
+        startupStep(QStringLiteral("Reopening %1/%2")
+                        .arg(m_repositories.at(index).owner,
+                             m_repositories.at(index).name));
         {
             forkmesh::StartupTraceStep step(QStringLiteral(
                 "deferred startup: refresh repository list before restore"));
@@ -890,6 +926,7 @@ void MainWindow::runDeferredStartup()
             // every other tab — it never lazily builds the real page itself. Build
             // it explicitly here so restoring the Agents tab can't leave it showing
             // its unbuilt placeholder.
+            startupStep(QStringLiteral("Restoring the last open tab"));
             {
                 forkmesh::StartupTraceStep step(QStringLiteral(
                     "deferred startup: build saved repository tab %1")
@@ -924,6 +961,9 @@ void MainWindow::runDeferredStartup()
         if (firstRepo >= 0) {
             forkmesh::StartupTraceStep step(
                 QStringLiteral("deferred startup: open first available repository"));
+            startupStep(QStringLiteral("Opening %1/%2")
+                            .arg(m_repositories.at(firstRepo).owner,
+                                 m_repositories.at(firstRepo).name));
             openRepoDetail(firstRepo);
         } else {
             logStartup(QStringLiteral(
@@ -939,6 +979,7 @@ void MainWindow::runDeferredStartup()
     {
         forkmesh::StartupTraceStep step(QStringLiteral(
             "deferred startup: migrate legacy prompt image attachments"));
+        startupStep(QStringLiteral("Checking prompt attachments"));
         AgentPromptImages::migrateLegacy();
     }
 
@@ -952,6 +993,8 @@ void MainWindow::runDeferredStartup()
         forkmesh::StartupTraceStep step(
             QStringLiteral("deferred startup: resume %1 queued agent session(s)")
                 .arg(m_agentQueue.size()));
+        startupStep(QStringLiteral("Resuming %1 agent session(s)")
+                        .arg(m_agentQueue.size()));
         m_agentQuietResume = true;
         processAgentQueue();
         m_agentQuietResume = false;
@@ -975,6 +1018,7 @@ void MainWindow::runDeferredStartup()
     {
         forkmesh::StartupTraceStep step(
             QStringLiteral("deferred startup: refresh Claude Code usage"));
+        startupStep(QStringLiteral("Refreshing Claude Code usage"));
         refreshClaudeCodeUsage();
     }
 
@@ -985,6 +1029,7 @@ void MainWindow::runDeferredStartup()
     {
         forkmesh::StartupTraceStep step(
             QStringLiteral("deferred startup: arm automatic backups"));
+        startupStep(QStringLiteral("Arming automatic backups"));
         startAutoBackups();
     }
 
@@ -1002,6 +1047,15 @@ void MainWindow::runDeferredStartup()
     });
     logStartup(QStringLiteral(
         "  startup job scheduled: direct mirror service auto-start in 10000ms"));
+
+    // This is the end of startup as a user experiences it: signed in, session
+    // up, last repository open on its last tab, agents resumed. The splash has
+    // narrated the whole way here rather than bowing out at first paint, so
+    // this is where it says Ready and fades. What is left below this line is
+    // long-fuse background work (the ten-second mirror auto-start above, the
+    // sync timers armed in the constructor) that the app is fully usable
+    // without. No-op when no splash is up — headless, or the user turned it off.
+    finishStartupSplash(QStringLiteral("Ready"));
 }
 
 void MainWindow::applyTheme()
