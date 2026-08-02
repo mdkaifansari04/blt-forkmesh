@@ -10315,8 +10315,13 @@ void MainWindow::showLoadStatus(const QString &what)
         QStringLiteral("<span style='color:#58a6ff'>%1 %2</span>")
             .arg(QString::fromUtf8("\xE2\x9F\xB3"), // ⟳
                  what.toHtmlEscaped()));
-    m_topMessage->setWordWrap(false);
     m_topMessage->show();
+    // A progress pill carries no countdown and no actions, so the row under the
+    // text goes away entirely and the pill stays as compact as it ever was.
+    if (m_topMessageMeta)
+        m_topMessageMeta->clear();
+    if (m_topMessageActions)
+        m_topMessageActions->hide();
     if (m_topMessageContainer) {
         // Cancel a slide-out still in flight and re-anchor, so the progress pill
         // never inherits a half-departed position.
@@ -10328,12 +10333,8 @@ void MainWindow::showLoadStatus(const QString &what)
         m_topMessageContainer->raise();
     }
     m_loadStatusShowing = true;
-    m_topMessageElided = false;
-    m_topMessageExpanded = false;
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't let it slide away mid-load
-    if (m_topMessageExpand)
-        m_topMessageExpand->hide();
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
     if (m_topMessageSendToPrompt)
