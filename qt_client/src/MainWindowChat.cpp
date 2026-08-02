@@ -9536,9 +9536,16 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         setOcticon(openButton, localFork >= 0 ? "repo-forked" : "repo", 13);
         connect(openButton, &QPushButton::clicked, this,
                 [this, routeOwner, routeName, cloneUrl, isPrivate, localFork] {
-                    if (localFork >= 0)
+                    if (localFork >= 0) {
+                        // Forks made before split origin remotes were configured
+                        // have no remembered source. Reopening the source row is
+                        // enough to repair their pull route without changing
+                        // where pushes go.
+                        if (localFork < m_repositories.size() &&
+                            m_repositories.at(localFork).owner != routeOwner)
+                            configureForkSource(localFork, cloneUrl, false);
                         openRepoDetail(localFork);
-                    else
+                    } else
                         openNetworkRepo(routeOwner, routeName, cloneUrl,
                                         isPrivate);
                 });
@@ -10042,6 +10049,9 @@ void MainWindow::forkNetworkRepo(const QString &owner, const QString &name,
 {
     const int localFork = findNetworkLocalForkIndex(owner, name);
     if (localFork >= 0) {
+        if (localFork < m_repositories.size() &&
+            m_repositories.at(localFork).owner != owner)
+            configureForkSource(localFork, cloneUrl, false);
         openRepoDetail(localFork);
         return;
     }
