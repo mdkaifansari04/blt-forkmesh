@@ -64,6 +64,10 @@
 #include <mutex>
 #include <thread>
 
+#if defined(Q_OS_UNIX)
+#include <sys/resource.h> // descriptor-cap tests
+#endif
+
 namespace {
 
 int failures = 0;
@@ -7036,6 +7040,53 @@ int main(int argc, char *argv[])
                   "processes outside the subtree are not counted");
             child.kill();
             child.waitForFinished(5000);
+        }
+    }
+#endif
+
+#if defined(Q_OS_LINUX)
+    {
+        // Descriptor accounting and the startup limit raise. The app dies with
+        // a SIGTRAP inside glib (g_wakeup_new -> g_error) when a thread start
+        // finds no descriptors left, so the 1024 soft cap most distributions
+        // ship has to be lifted before Qt starts any thread.
+        const int hard = SystemStats::openFileHardLimit();
+        check(hard > 0 && SystemStats::openFileSoftLimit() > 0,
+              "the descriptor caps are readable");
+        check(SystemStats::threadCount() >= 1, "this process has threads");
+
+        const int before = SystemStats::openFileCount();
+        check(before > 0 && before <= SystemStats::openFileSoftLimit(),
+              "open descriptors are counted and fit under the soft cap");
+        {
+            QFile held(QStringLiteral("/proc/self/status"));
+            check(held.open(QIODevice::ReadOnly), "opened a probe descriptor");
+            check(SystemStats::openFileCount() > before,
+                  "an extra open descriptor shows up in the count");
+        }
+
+        // Drop the soft cap the way a stock login session does, then confirm
+        // the raise takes it back up to the hard cap (bounded by the 64k
+        // target) without ever exceeding what the kernel allows.
+        rlimit narrowed{};
+        check(::getrlimit(RLIMIT_NOFILE, &narrowed) == 0, "read RLIMIT_NOFILE");
+        const rlim_t restore = narrowed.rlim_cur;
+        narrowed.rlim_cur = 256;
+        if (::setrlimit(RLIMIT_NOFILE, &narrowed) == 0) {
+            check(SystemStats::openFileSoftLimit() == 256,
+                  "the lowered soft cap is reported");
+            const int raised = SystemStats::raiseOpenFileLimit();
+            check(raised == qMin(hard, 65536),
+                  "raiseOpenFileLimit lifts the soft cap to the hard cap, "
+                  "capped at 64k");
+            check(raised <= hard && raised == SystemStats::openFileSoftLimit(),
+                  "the raise never exceeds the hard cap and is the live value");
+            // Idempotent: calling it again on an already-raised process is a
+            // no-op rather than a downgrade.
+            check(SystemStats::raiseOpenFileLimit() == raised,
+                  "a second raise leaves the soft cap alone");
+            narrowed.rlim_cur = restore;
+            ::setrlimit(RLIMIT_NOFILE, &narrowed);
         }
     }
 #endif
