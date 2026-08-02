@@ -2973,10 +2973,9 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
 // Hourly local snapshots of the live database (Settings -> Data -> Automatic
-// backups). OFF by default everywhere except control nodes — the installs that
-// hold a Cloudflare API token (see forkmesh::autoBackupDefault) — because a
-// rolling day of ~1GB tarballs filled several small VPS disks. An explicit
-// true turns backups on for any node.
+// backups). OFF by default everywhere because a rolling day of multi-gigabyte
+// tarballs filled control machines and small VPS disks. An explicit true turns
+// backups on for any node.
 const QString kAutoBackupEnabledSetting = QStringLiteral("backup/hourlyEnabled");
 // How many hourly snapshots are kept before the oldest is pruned.
 const QString kAutoBackupKeepSetting = QStringLiteral("backup/keepCount");
