@@ -1,0 +1,13 @@
+diff --git a/qt_client/src/PublicMirrorRuntime.cpp b/qt_client/src/PublicMirrorRuntime.cpp
+index 84f0c7bbb..73d853924 100644
+--- a/qt_client/src/PublicMirrorRuntime.cpp
++++ b/qt_client/src/PublicMirrorRuntime.cpp
+@@ -780,7 +780,7 @@ bool encryptRepository(const QString &repositoryPath,
+     }
+     tarProcess.start(
+         tar,
+-        {QStringLiteral("-C"), repository.absolutePath(),
++        {QStringLiteral("-C"), repository.dir().absolutePath(),
+          QStringLiteral("-cf"), QStringLiteral("-"),
+          QStringLiteral("repository.git")});
+     if (!tarProcess.waitForStarted(10000)) {

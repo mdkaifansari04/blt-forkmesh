@@ -1,0 +1,212 @@
+diff --git a/cloudflare_worker/tests/test_qt_mirror_nodes_identity.py b/cloudflare_worker/tests/test_qt_mirror_nodes_identity.py
+index 0c12f7b2e..4978029d7 100644
+--- a/cloudflare_worker/tests/test_qt_mirror_nodes_identity.py
++++ b/cloudflare_worker/tests/test_qt_mirror_nodes_identity.py
+@@ -132,6 +132,13 @@ def test_mirror_nodes_can_request_live_peer_refresh():
+     assert "m_backend->advertiseMirrorsNow();" in request
+     assert "m_mirrorAdvertSig.clear();" in request
+ 
++    # Keep the expensive catalog re-fetch scoped to the visible operator page,
++    # while still updating the displayed mirror state once per minute.
++    assert "auto *panelRefresh = new QTimer(m_mirrorNodesTable);" in build
++    assert "panelRefresh->setInterval(60 * 1000);" in build
++    assert "if (!m_mirrorNodesTable->isVisible())" in build
++    assert "m_catalogMirrorsFetchedMs = 0;" in build
++
+     assert "virtual void requestMirrorRefresh" in backend
+     assert "virtual void advertiseMirrorsNow()" in backend
+     assert "void mirrorRefreshRequested" in backend
+diff --git a/cloudflare_worker/tests/test_qt_release_artifact_sync.py b/cloudflare_worker/tests/test_qt_release_artifact_sync.py
+index c20b4b428..53d9c160d 100644
+--- a/cloudflare_worker/tests/test_qt_release_artifact_sync.py
++++ b/cloudflare_worker/tests/test_qt_release_artifact_sync.py
+@@ -24,12 +24,12 @@ def test_roster_artifact_adverts_trigger_release_blob_replication():
+     )
+ 
+ 
+-def test_mirror_dropped_event_fallback_is_jittered_three_minutes():
++def test_mirror_dropped_event_fallback_is_jittered_one_minute():
+     main = MAIN.read_text(encoding="utf-8")
+     internal = INTERNAL.read_text(encoding="utf-8")
+     repos = REPOS.read_text(encoding="utf-8")
+ 
+-    assert "constexpr qint64 kMirrorSyncIntervalMs = 3LL * 60 * 1000;" in internal
++    assert "constexpr qint64 kMirrorSyncIntervalMs = 60LL * 1000;" in internal
+     assert "constexpr int kMirrorSyncJitterPercent = 15;" in internal
+     assert (
+         "int(kMirrorSyncIntervalMs * kMirrorSyncJitterPercent / 100)"
+diff --git a/cloudflare_worker/tests/test_qt_ssh_mirror_push_safety.py b/cloudflare_worker/tests/test_qt_ssh_mirror_push_safety.py
+index 52e0dfae3..a6d014394 100644
+--- a/cloudflare_worker/tests/test_qt_ssh_mirror_push_safety.py
++++ b/cloudflare_worker/tests/test_qt_ssh_mirror_push_safety.py
+@@ -7,6 +7,9 @@ ROOT = Path(__file__).resolve().parents[2]
+ REPOS = (ROOT / "qt_client/src/MainWindowRepos.cpp").read_text(
+     encoding="utf-8"
+ )
++ACTIONS = (ROOT / "qt_client/src/MainWindowActions.cpp").read_text(
++    encoding="utf-8"
++)
+ 
+ 
+ def test_automatic_ssh_mirror_push_cannot_rewind_or_prune_remote_refs():
+@@ -40,3 +43,18 @@ def test_automatic_ssh_mirror_push_uses_explicit_fast_forward_policy():
+         'QStringLiteral("refs/heads/*:refs/heads/*")'
+     )
+     assert 'QStringLiteral("+refs/' not in command
++
++
++def test_direct_push_fans_out_to_ssh_mirrors_immediately():
++    spool = ACTIONS.split("void MainWindow::scanActionSpool()", 1)[1].split(
++        "\nvoid MainWindow::syncMirrorActionsConfiguration", 1
++    )[0]
++
++    # A receive-pack that lands directly on the source's served bare mirror
++    # bypasses syncPublicEncryptedRepository(), where normal SSH fanout occurs.
++    # The post-receive spool consumer must therefore fan it out itself.
++    assert "m_backend->notifyMirrorUpdated(" in spool
++    assert "pushToSshMirrorRemotes(idx);" in spool
++    assert spool.index("m_backend->notifyMirrorUpdated(") < spool.index(
++        "pushToSshMirrorRemotes(idx);"
++    )
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index ddb7bd11a..4b53e733e 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -409,7 +409,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
+     // owner's repo as it updates. Push events are the primary signal now —
+     // since bf6323d0 mirror peers are notified the instant a push lands on the
+     // source's bare mirror — so this timer is only a safety net for dropped
+-    // events. Three minutes (kMirrorSyncIntervalMs) with ±15% jitter keeps the
++    // events. One minute (kMirrorSyncIntervalMs) with ±15% jitter keeps the
+     // dropped-event recovery window short without making a fleet fetch in
+     // lockstep. The existing per-repository in-flight guard prevents a timer
+     // tick from duplicating an immediate push/roster-driven sync, and the job
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 50fec8f8b..486966188 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -4191,7 +4191,7 @@ private:
+     QHash<QString, qint64> m_sourceConvergeAttemptMs; // owner/name -> last try
+     // After a local change to a repo (new/updated issue, PR, comment, merge),
+     // push it to the bare mirror and tell peers immediately instead of waiting
+-    // for the three-minute auto-sync, so counts and content converge right away.
++    // for the one-minute auto-sync, so counts and content converge right away.
+     void propagateRepoUpdate(int index);
+     // A peer announced it refreshed "owner/name" from source; notify if we
+     // mirror the same repo. `commit` is the new HEAD it advanced to.
+diff --git a/qt_client/src/MainWindowActions.cpp b/qt_client/src/MainWindowActions.cpp
+index 760f7eeac..7202578ef 100644
+--- a/qt_client/src/MainWindowActions.cpp
++++ b/qt_client/src/MainWindowActions.cpp
+@@ -489,13 +489,19 @@ void MainWindow::scanActionSpool()
+                 // MainWindow::syncRepository/onPeerMirrorUpdated). A push that
+                 // lands directly on this served bare mirror never goes through
+                 // syncRepository, so without this, peers would only notice at
+-                // their next three-minute auto-sync tick instead of
++                // their next one-minute auto-sync tick instead of
+                 // converging in seconds.
+                 if (!r.previewOnly && m_backend)
+                     m_backend->notifyMirrorUpdated(
+                         catalogOwner(r) + "/" +
+                             repoSegment(r.name, QStringLiteral("repository")),
+                         commit);
++                // Relay frames reach the desktop peers immediately, but the
++                // SSH-fed headless fleet is outside that room. Fan the exact
++                // refs that just landed on this source mirror out to its
++                // configured SSH remotes now, rather than leaving those nodes
++                // to discover the push on the periodic safety-net sync.
++                pushToSshMirrorRemotes(idx);
+             }
+         }
+         // Skip events with no branch update or a branch deletion (all-zero SHA).
+diff --git a/qt_client/src/MainWindowInternal.h b/qt_client/src/MainWindowInternal.h
+index 9f1a8df13..448266c36 100644
+--- a/qt_client/src/MainWindowInternal.h
++++ b/qt_client/src/MainWindowInternal.h
+@@ -473,10 +473,10 @@ constexpr int kPacmanAnchorRole = Qt::UserRole + 12;
+ constexpr int kNodeLightRole = Qt::UserRole + 13;
+ // Cadence on which a node re-fetches its mirrors from source (mirrors
+ // m_mirrorSyncTimer, which adds ±15% jitter — the pie is an approximation);
+-// a behind node is expected to catch up within roughly three minutes. This is
++// a behind node is expected to catch up within roughly one minute. This is
+ // only the dropped-event safety net: push events still notify mirror peers the
+ // moment the source moves.
+-constexpr qint64 kMirrorSyncIntervalMs = 3LL * 60 * 1000;
++constexpr qint64 kMirrorSyncIntervalMs = 60LL * 1000;
+ constexpr int kMirrorSyncJitterPercent = 15;
+ 
+ // Extra labels this machine answers to when a workflow declares `runs-on:`
+diff --git a/qt_client/src/MainWindowReleases.cpp b/qt_client/src/MainWindowReleases.cpp
+index ef09ad1a5..68750a597 100644
+--- a/qt_client/src/MainWindowReleases.cpp
++++ b/qt_client/src/MainWindowReleases.cpp
+@@ -1130,6 +1130,20 @@ QWidget *MainWindow::buildMirrorNodesTab()
+         }
+     });
+     pacmanTick->start();
++    // A visible Mirror nodes page is an operator view: refresh its catalog
++    // snapshot once a minute so it never sits on stale commit/sync status. The
++    // timer remains idle while another repository tab is selected.
++    auto *panelRefresh = new QTimer(m_mirrorNodesTable);
++    panelRefresh->setInterval(60 * 1000);
++    connect(panelRefresh, &QTimer::timeout, m_mirrorNodesTable, [this] {
++        if (!m_mirrorNodesTable->isVisible())
++            return;
++        // Bypass the normal five-minute catalog cache only while the operator
++        // is looking at this table; live roster changes still redraw it sooner.
++        m_catalogMirrorsFetchedMs = 0;
++        loadMirrorNodesPanel();
++    });
++    panelRefresh->start();
+     // Double-click a node row to open its profile.
+     // itemActivated (rather than cellDoubleClicked) so Enter opens the selected
+     // node's profile, matching the tab's arrow-key navigation (adhoc #183).
+diff --git a/qt_client/src/MainWindowRepos.cpp b/qt_client/src/MainWindowRepos.cpp
+index 59e2f182d..4fa396842 100644
+--- a/qt_client/src/MainWindowRepos.cpp
++++ b/qt_client/src/MainWindowRepos.cpp
+@@ -4961,7 +4961,7 @@ void MainWindow::syncMirrorsBehindRoster()
+ {
+     // A peer just (re-)advertised its mirror set via hello. For every repo we
+     // mirror, if any online peer advertises a commit our bare mirror does not
+-    // contain, pull it now rather than waiting for the three-minute auto-sync.
++    // contain, pull it now rather than waiting for the one-minute auto-sync.
+     // This backstops notifyMirrorUpdated (which is ephemeral and missed if we
+     // were offline/just connected): the moment the roster shows the source
+     // moved, we converge. syncRepository fetches refs/heads/* + refs/tags/*,
+@@ -5133,7 +5133,7 @@ void MainWindow::propagateRepoUpdate(int index)
+     // just-committed issue/PR lands in the mirror. On a detected change it
+     // refreshes the open detail (updating the Issues/PR counts) and broadcasts
+     // notifyMirrorUpdated, which mirroring peers act on via onPeerMirrorUpdated —
+-    // converging everyone in seconds rather than at the next three-minute tick.
++    // converging everyone in seconds rather than at the next one-minute tick.
+     syncRepository(index, /*quiet=*/true);
+     // The mirror fetch above is asynchronous; until it finishes our working copy
+     // is ahead of the bare mirror we serve. Refresh the Mirror nodes panel now so
+@@ -5202,7 +5202,7 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
+     }
+ 
+     // Converge promptly: pull the peer's advance into our own mirror now instead
+-    // of waiting for the next three-minute auto-sync. This fetches
++    // of waiting for the next one-minute auto-sync. This fetches
+     // refs/heads/* and refs/tags/*, so issues and pull requests (which live on
+     // refs/heads) come along with the code. Quiet so it doesn't spam unless
+     // something changed. The sync's completion broadcasts notifyMirrorSynced,
+@@ -6429,7 +6429,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
+ // only reaches desktop peers in the live room; without this push the SSH-fed
+ // mirrors sat frozen at whatever the owner last pushed by hand (adhoc #272).
+ // Best-effort and fully async; runs after every successful mirror sync, so the
+-// Three-minute auto-sync doubles as the self-heal for a push a gateway missed.
++// one-minute auto-sync doubles as the self-heal for a push a gateway missed.
+ void MainWindow::pushToSshMirrorRemotes(int index)
+ {
+     if (index < 0 || index >= m_repositories.size())
+@@ -6568,7 +6568,7 @@ void MainWindow::pushToSshMirrorRemotes(int index)
+         // and explicitly disables force and prune, even when a machine carries
+         // old push configuration. An intentional rewrite or branch deletion must
+         // go through an explicit, reviewed Git operation; otherwise one stale
+-        // three-minute sync can undo a clean main merge on every headless
++        // one-minute sync can undo a clean main merge on every headless
+         // mirror.
+         trackProcessActivity(process, QStringLiteral("push"),
+                              QStringLiteral("Pushing %1/%2 to %3")

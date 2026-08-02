@@ -1,0 +1,701 @@
+From 76769ac4693c491ce6e7a0ff69e8e9bbb47d2091 Mon Sep 17 00:00:00 2001
+From: ForkMesh Deploy <deploy@forkmesh.local>
+Date: Sat, 1 Aug 2026 03:01:01 -0400
+Subject: [PATCH] feat(agents): add calendar reminders for usage resets
+
+---
+ qt_client/CMakeLists.txt             |   4 +
+ qt_client/src/MainWindow.h           |  20 ++
+ qt_client/src/MainWindowAgents.cpp   | 277 ++++++++++++++++++++++++++-
+ qt_client/src/MainWindowChat.cpp     |   4 +
+ qt_client/src/MainWindowInternal.h   |  11 ++
+ qt_client/src/MainWindowSettings.cpp |  17 ++
+ qt_client/src/UsageLimitCalendar.cpp | 129 +++++++++++++
+ qt_client/src/UsageLimitCalendar.h   |  26 +++
+ qt_client/tests/test_crypto.cpp      |  35 ++++
+ 9 files changed, 518 insertions(+), 5 deletions(-)
+ create mode 100644 qt_client/src/UsageLimitCalendar.cpp
+ create mode 100644 qt_client/src/UsageLimitCalendar.h
+
+diff --git a/qt_client/CMakeLists.txt b/qt_client/CMakeLists.txt
+index 2cb9a2b97..a11dca0fa 100644
+--- a/qt_client/CMakeLists.txt
++++ b/qt_client/CMakeLists.txt
+@@ -233,6 +233,8 @@ set(FORKMESH_APP_SOURCES
+     src/AgentJail.h
+     src/AgentPromptImages.h
+     src/AgentPromptImages.cpp
++    src/UsageLimitCalendar.h
++    src/UsageLimitCalendar.cpp
+     src/AgentRunner.h
+     src/AgentRunner.cpp
+     src/QrCode.h
+@@ -553,6 +555,8 @@ if(FORKMESH_BUILD_TESTS)
+         src/PullAiReview.cpp
+         src/AgentStore.h
+         src/AgentStore.cpp
++        src/UsageLimitCalendar.h
++        src/UsageLimitCalendar.cpp
+         src/ActionStore.h
+         src/ActionStore.cpp
+         src/RepoSecurity.h
+diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
+index 0467bf66e..2c93ef613 100644
+--- a/qt_client/src/MainWindow.h
++++ b/qt_client/src/MainWindow.h
+@@ -2348,6 +2348,22 @@ private:
+     // only useful signal for a headless node that has no one watching its
+     // screen. Opt-in via kEmailOnCreditsRefillSetting; a no-op when off.
+     void maybeEmailCreditsRefilled(bool weekly);
++    // When a provider reports a reset time for an exhausted usage window, make
++    // one local iCalendar reminder and arm the matching desktop ping. The
++    // calendar app owns alerts while ForkMesh is closed; the timer covers a
++    // running desktop.
++    void scheduleUsageLimitReminder(const QString &providerKey,
++                                    const QString &windowKey,
++                                    const QString &providerName,
++                                    const QString &windowName,
++                                    qint64 resetMs);
++    void restoreUsageLimitReminders();
++    void clearUsageLimitReminders();
++    void notifyUsageLimitReady(const QString &providerKey,
++                               const QString &windowKey,
++                               const QString &providerName,
++                               const QString &windowName,
++                               qint64 resetMs);
+     // Issue #115: persist and restore month-to-date spend so the figures are
+     // shown on restart instead of waiting for a fresh API refresh.
+     void cacheSpendLabel(const QString &textKey, const QString &tsKey,
+@@ -5823,6 +5839,10 @@ private:
+     // periodic heartbeat timer if the immediate send fails).
+     bool m_pendingCreditsRefilled5h = false;
+     bool m_pendingCreditsRefilledWeekly = false;
++    // One armed timer per provider/window; calendar reminders persist outside
++    // the process, while these timers make the desktop ping prompt when the
++    // app remains open.
++    QHash<QString, QTimer *> m_usageLimitReminderTimers;
+ 
+     // --- Cove (encrypted vault) UI + session state ----------------------------
+     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
+diff --git a/qt_client/src/MainWindowAgents.cpp b/qt_client/src/MainWindowAgents.cpp
+index 5149a10a3..8ba9f566b 100644
+--- a/qt_client/src/MainWindowAgents.cpp
++++ b/qt_client/src/MainWindowAgents.cpp
+@@ -11,6 +11,7 @@
+ #include "AgentPromptImages.h"
+ #include "KebabHeaderView.h"
+ #include "CodexAppServerSession.h"
++#include "UsageLimitCalendar.h"
+ 
+ #include <QTextLayout>
+ #include <QTextOption>
+@@ -3749,6 +3750,201 @@ void MainWindow::applyCachedSpendLabels()
+     restore(m_agentClaudeCredit, kClaudeCreditTextSetting, kClaudeCreditTsSetting);
+ }
+ 
++namespace {
++
++QString usageReminderId(const QString &providerKey, const QString &windowKey)
++{
++    return providerKey + QLatin1Char('/') + windowKey;
++}
++
++QString usageExhaustedSetting(const QString &providerKey,
++                              const QString &windowKey)
++{
++    if (providerKey == QLatin1String("claude")) {
++        if (windowKey == QLatin1String("5h"))
++            return kClaudeUsage5hExhaustedSetting;
++        if (windowKey == QLatin1String("weekly"))
++            return kClaudeUsageWeekExhaustedSetting;
++        if (windowKey == QLatin1String("fable"))
++            return kClaudeUsageFableExhaustedSetting;
++    } else if (providerKey == QLatin1String("codex")) {
++        if (windowKey == QLatin1String("5h"))
++            return kCodexUsage5hExhaustedSetting;
++        if (windowKey == QLatin1String("weekly"))
++            return kCodexUsageWeekExhaustedSetting;
++    }
++    return QString();
++}
++
++QString usageResetSetting(const QString &providerKey, const QString &windowKey)
++{
++    if (providerKey == QLatin1String("claude")) {
++        if (windowKey == QLatin1String("5h"))
++            return kClaudeUsage5hResetSetting;
++        if (windowKey == QLatin1String("weekly"))
++            return kClaudeUsageWeekResetSetting;
++        if (windowKey == QLatin1String("fable"))
++            return kClaudeUsageFableResetSetting;
++    } else if (providerKey == QLatin1String("codex")) {
++        if (windowKey == QLatin1String("5h"))
++            return kCodexUsage5hResetSetting;
++        if (windowKey == QLatin1String("weekly"))
++            return kCodexUsageWeekResetSetting;
++    }
++    return QString();
++}
++
++} // namespace
++
++void MainWindow::clearUsageLimitReminders()
++{
++    for (QTimer *timer : std::as_const(m_usageLimitReminderTimers)) {
++        timer->stop();
++        timer->deleteLater();
++    }
++    m_usageLimitReminderTimers.clear();
++}
++
++void MainWindow::restoreUsageLimitReminders()
++{
++    clearUsageLimitReminders();
++    QSettings settings;
++    if (!settings.value(kUsageLimitCalendarReminderSetting, false).toBool())
++        return;
++
++    struct Reminder {
++        const char *providerKey;
++        const char *windowKey;
++        const char *providerName;
++        const char *windowName;
++    };
++    static const Reminder reminders[] = {
++        {"claude", "5h", "Claude Code", "5-hour"},
++        {"claude", "weekly", "Claude Code", "weekly"},
++        {"claude", "fable", "Claude Code", "Fable weekly"},
++        {"codex", "5h", "Codex", "5-hour"},
++        {"codex", "weekly", "Codex", "weekly"},
++    };
++    for (const Reminder &reminder : reminders) {
++        const QString providerKey = QString::fromLatin1(reminder.providerKey);
++        const QString windowKey = QString::fromLatin1(reminder.windowKey);
++        const QString exhaustedKey = usageExhaustedSetting(providerKey, windowKey);
++        const QString resetKey = usageResetSetting(providerKey, windowKey);
++        if (exhaustedKey.isEmpty() || resetKey.isEmpty() ||
++            !settings.value(exhaustedKey, false).toBool()) {
++            continue;
++        }
++        scheduleUsageLimitReminder(providerKey, windowKey,
++                                   QString::fromLatin1(reminder.providerName),
++                                   QString::fromLatin1(reminder.windowName),
++                                   settings.value(resetKey).toLongLong());
++    }
++}
++
++void MainWindow::scheduleUsageLimitReminder(const QString &providerKey,
++                                            const QString &windowKey,
++                                            const QString &providerName,
++                                            const QString &windowName,
++                                            qint64 resetMs)
++{
++    if (resetMs <= QDateTime::currentMSecsSinceEpoch())
++        return;
++    const QString exhaustedKey = usageExhaustedSetting(providerKey, windowKey);
++    if (exhaustedKey.isEmpty())
++        return;
++    const QString id = usageReminderId(providerKey, windowKey);
++    QSettings settings;
++    if (!settings.value(kUsageLimitCalendarReminderSetting, false).toBool() ||
++        !settings.value(exhaustedKey, false).toBool()) {
++        return;
++    }
++
++    // A provider can repeat the same rate-limit frame many times. Re-arm the
++    // local timer, but only ask the OS calendar to import a genuinely new reset
++    // instant so one exhausted window does not create duplicate events.
++    const QString scheduledKey = kUsageLimitReminderScheduledPrefix + id;
++    if (settings.value(scheduledKey).toLongLong() != resetMs) {
++        settings.setValue(scheduledKey, resetMs);
++        const QString path = UsageLimitCalendar::writeEvent(
++            providerKey, windowKey, providerName, windowName, resetMs);
++        if (!path.isEmpty())
++            QDesktopServices::openUrl(QUrl::fromLocalFile(path));
++    }
++
++    if (QTimer *old = m_usageLimitReminderTimers.take(id)) {
++        old->stop();
++        old->deleteLater();
++    }
++    auto *timer = new QTimer(this);
++    timer->setSingleShot(true);
++    m_usageLimitReminderTimers.insert(id, timer);
++    connect(timer, &QTimer::timeout, this,
++            [this, timer, id, providerKey, windowKey, providerName, windowName,
++             resetMs] {
++                if (m_usageLimitReminderTimers.value(id) != timer)
++                    return;
++                m_usageLimitReminderTimers.remove(id);
++                timer->deleteLater();
++
++                const qint64 now = QDateTime::currentMSecsSinceEpoch();
++                if (now < resetMs) {
++                    // Defensive re-arm for an unusually long provider window;
++                    // QTimer uses an int millisecond interval.
++                    scheduleUsageLimitReminder(providerKey, windowKey,
++                                               providerName, windowName, resetMs);
++                    return;
++                }
++                QSettings settings;
++                const QString exhaustedKey =
++                    usageExhaustedSetting(providerKey, windowKey);
++                const QString scheduledKey =
++                    kUsageLimitReminderScheduledPrefix + id;
++                if (!settings.value(kUsageLimitCalendarReminderSetting, false)
++                         .toBool() ||
++                    settings.value(scheduledKey).toLongLong() != resetMs ||
++                    exhaustedKey.isEmpty() ||
++                    !settings.value(exhaustedKey, false).toBool()) {
++                    return;
++                }
++                settings.setValue(exhaustedKey, false);
++                notifyUsageLimitReady(providerKey, windowKey, providerName,
++                                      windowName, resetMs);
++            });
++    const qint64 delayMs = qMin(
++        resetMs - QDateTime::currentMSecsSinceEpoch(),
++        qint64(std::numeric_limits<int>::max()));
++    timer->start(static_cast<int>(qMax<qint64>(1, delayMs)));
++}
++
++void MainWindow::notifyUsageLimitReady(const QString &providerKey,
++                                       const QString &windowKey,
++                                       const QString &providerName,
++                                       const QString &windowName,
++                                       qint64 resetMs)
++{
++    QSettings settings;
++    if (!settings.value(kUsageLimitCalendarReminderSetting, false).toBool())
++        return;
++    const QString id = usageReminderId(providerKey, windowKey);
++    const QString resetKey = usageResetSetting(providerKey, windowKey);
++    if (resetMs <= 0 && !resetKey.isEmpty())
++        resetMs = settings.value(resetKey).toLongLong();
++    const QString notifiedKey = kUsageLimitReminderNotifiedPrefix + id;
++    if (resetMs > 0 && settings.value(notifiedKey).toLongLong() == resetMs)
++        return;
++    if (resetMs > 0)
++        settings.setValue(notifiedKey, resetMs);
++
++    const QString title =
++        QStringLiteral("ForkMesh — %1 usage is ready").arg(providerName);
++    const QString body = QStringLiteral(
++                             "Your %1 %2 usage window has reset. You can resume "
++                             "agent work.")
++                             .arg(providerName, windowName);
++    addNotification(title, body);
++    postNotification(title, body, false, QStringLiteral("appointment-soon"));
++}
++
+ void MainWindow::markAgentLimitWindow(const QString &provider)
+ {
+     const bool claude = agentIsClaudeProvider(provider);
+@@ -3891,6 +4087,28 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
+                                   60 * 1000;
+         if (resetMs > 0 && durationMs > 0)
+             settings.setValue(anchorKey, resetMs - durationMs);
++        const QString windowKey = weekly ? QStringLiteral("weekly")
++                                         : QStringLiteral("5h");
++        const QString exhaustedKey =
++            usageExhaustedSetting(QStringLiteral("codex"), windowKey);
++        const qint64 knownReset = resetMs > 0
++                                      ? resetMs
++                                      : settings.value(resetKey).toLongLong();
++        if (used >= 99) {
++            settings.setValue(exhaustedKey, true);
++            scheduleUsageLimitReminder(QStringLiteral("codex"), windowKey,
++                                       QStringLiteral("Codex"),
++                                       weekly ? QStringLiteral("weekly")
++                                              : QStringLiteral("5-hour"),
++                                       knownReset);
++        } else if (used < 90 && settings.value(exhaustedKey, false).toBool()) {
++            settings.setValue(exhaustedKey, false);
++            notifyUsageLimitReady(QStringLiteral("codex"), windowKey,
++                                  QStringLiteral("Codex"),
++                                  weekly ? QStringLiteral("weekly")
++                                         : QStringLiteral("5-hour"),
++                                  knownReset);
++        }
+         if (m_navCodexUsage) {
+             const qint64 remaining = resetMs - now;
+             static_cast<TokenUsageMiniChart *>(m_navCodexUsage)
+@@ -3960,10 +4178,22 @@ void MainWindow::applyClaudeUsage(bool weekly, int percent)
+     // email once when that happens.
+     const QString exhaustedKey = weekly ? kClaudeUsageWeekExhaustedSetting
+                                         : kClaudeUsage5hExhaustedSetting;
++    const QString windowKey = weekly ? QStringLiteral("weekly")
++                                     : QStringLiteral("5h");
++    const QString windowName = weekly ? QStringLiteral("weekly")
++                                      : QStringLiteral("5-hour");
++    const QString resetKey = weekly ? kClaudeUsageWeekResetSetting
++                                    : kClaudeUsage5hResetSetting;
+     if (pct >= 99) {
+         settings.setValue(exhaustedKey, true);
++        scheduleUsageLimitReminder(QStringLiteral("claude"), windowKey,
++                                   QStringLiteral("Claude Code"), windowName,
++                                   settings.value(resetKey).toLongLong());
+     } else if (pct < 90 && settings.value(exhaustedKey, false).toBool()) {
+         settings.setValue(exhaustedKey, false);
++        notifyUsageLimitReady(QStringLiteral("claude"), windowKey,
++                              QStringLiteral("Claude Code"), windowName,
++                              settings.value(resetKey).toLongLong());
+         maybeEmailCreditsRefilled(weekly);
+     }
+ }
+@@ -3988,12 +4218,38 @@ void MainWindow::applyClaudeFableUsage(int percent)
+     if (m_navTokenUsage)
+         static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
+             ->setUsage(TokenUsageMiniChart::Fable, pct);
+-    QSettings().setValue(kClaudeUsageFablePctSetting, pct);
++    QSettings settings;
++    settings.setValue(kClaudeUsageFablePctSetting, pct);
++    if (pct >= 99) {
++        settings.setValue(kClaudeUsageFableExhaustedSetting, true);
++        scheduleUsageLimitReminder(QStringLiteral("claude"),
++                                   QStringLiteral("fable"),
++                                   QStringLiteral("Claude Code"),
++                                   QStringLiteral("Fable weekly"),
++                                   settings.value(kClaudeUsageFableResetSetting)
++                                       .toLongLong());
++    } else if (pct < 90 &&
++               settings.value(kClaudeUsageFableExhaustedSetting, false).toBool()) {
++        settings.setValue(kClaudeUsageFableExhaustedSetting, false);
++        notifyUsageLimitReady(QStringLiteral("claude"),
++                              QStringLiteral("fable"),
++                              QStringLiteral("Claude Code"),
++                              QStringLiteral("Fable weekly"),
++                              settings.value(kClaudeUsageFableResetSetting)
++                                  .toLongLong());
++    }
+ }
+ 
+ void MainWindow::applyClaudeFableReset(qint64 resetMs)
+ {
+-    QSettings().setValue(kClaudeUsageFableResetSetting, resetMs);
++    QSettings settings;
++    settings.setValue(kClaudeUsageFableResetSetting, resetMs);
++    if (settings.value(kClaudeUsageFableExhaustedSetting, false).toBool()) {
++        scheduleUsageLimitReminder(QStringLiteral("claude"),
++                                   QStringLiteral("fable"),
++                                   QStringLiteral("Claude Code"),
++                                   QStringLiteral("Fable weekly"), resetMs);
++    }
+     if (!m_navTokenUsage)
+         return;
+     const qint64 remaining = resetMs - QDateTime::currentMSecsSinceEpoch();
+@@ -4010,9 +4266,20 @@ void MainWindow::flashUsageChart(QWidget *chart, bool ok)
+ 
+ void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
+ {
+-    QSettings().setValue(weekly ? kClaudeUsageWeekResetSetting
+-                                : kClaudeUsage5hResetSetting,
+-                         resetMs);
++    QSettings settings;
++    const QString resetKey = weekly ? kClaudeUsageWeekResetSetting
++                                    : kClaudeUsage5hResetSetting;
++    const QString exhaustedKey = weekly ? kClaudeUsageWeekExhaustedSetting
++                                        : kClaudeUsage5hExhaustedSetting;
++    settings.setValue(resetKey, resetMs);
++    if (settings.value(exhaustedKey, false).toBool()) {
++        scheduleUsageLimitReminder(
++            QStringLiteral("claude"),
++            weekly ? QStringLiteral("weekly") : QStringLiteral("5h"),
++            QStringLiteral("Claude Code"),
++            weekly ? QStringLiteral("weekly") : QStringLiteral("5-hour"),
++            resetMs);
++    }
+     if (!m_navTokenUsage)
+         return;
+     const qint64 remaining = resetMs - QDateTime::currentMSecsSinceEpoch();
+diff --git a/qt_client/src/MainWindowChat.cpp b/qt_client/src/MainWindowChat.cpp
+index b254bb94b..f3481c3cb 100644
+--- a/qt_client/src/MainWindowChat.cpp
++++ b/qt_client/src/MainWindowChat.cpp
+@@ -4945,6 +4945,10 @@ QWidget *MainWindow::buildBreadcrumb()
+         flashUsageChart(m_navCodexUsage, true);
+     };
+     refreshCodexUsageRemaining();
++    // Re-arm any persisted exhausted-window reminders after the shell exists.
++    // The calendar owns the alert while the app is closed; this covers a desktop
++    // kept open across the known reset time.
++    QTimer::singleShot(0, this, &MainWindow::restoreUsageLimitReminders);
+ 
+     // Repo switcher, to the right of the node switcher: "repo ▾ count".
+     m_repoMenuButton = new QPushButton;
+diff --git a/qt_client/src/MainWindowInternal.h b/qt_client/src/MainWindowInternal.h
+index 894365fb5..5ad845937 100644
+--- a/qt_client/src/MainWindowInternal.h
++++ b/qt_client/src/MainWindowInternal.h
+@@ -3031,9 +3031,20 @@ constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
+ // while still low". Cleared the moment the refill notification fires.
+ const QString kClaudeUsage5hExhaustedSetting = QStringLiteral("agents/claudeUsage5hExhausted");
+ const QString kClaudeUsageWeekExhaustedSetting = QStringLiteral("agents/claudeUsageWeekExhausted");
++const QString kClaudeUsageFableExhaustedSetting = QStringLiteral("agents/claudeUsageFableExhausted");
++const QString kCodexUsage5hExhaustedSetting = QStringLiteral("agents/codexUsage5hExhausted");
++const QString kCodexUsageWeekExhaustedSetting = QStringLiteral("agents/codexUsageWeekExhausted");
+ // Opt-in: email the node's account when a previously-maxed-out usage window
+ // refills. Off by default — most nodes are watched interactively.
+ const QString kEmailOnCreditsRefillSetting = QStringLiteral("agents/emailOnCreditsRefill");
++// Opt-in: open a standard calendar reminder when an agent provider's usage
++// window is exhausted, and ping locally when it reaches its known reset time.
++const QString kUsageLimitCalendarReminderSetting =
++    QStringLiteral("agents/usageLimitCalendarReminder");
++const QString kUsageLimitReminderScheduledPrefix =
++    QStringLiteral("agents/usageLimitReminderScheduled/");
++const QString kUsageLimitReminderNotifiedPrefix =
++    QStringLiteral("agents/usageLimitReminderNotified/");
+ 
+ // Compact "3h 12m" / "4d 6h" / "5m" rendering of a remaining duration, rounded
+ // up to the minute. Shared by the agent-limits label and the top-bar usage
+diff --git a/qt_client/src/MainWindowSettings.cpp b/qt_client/src/MainWindowSettings.cpp
+index cbb9851af..940b33bdb 100644
+--- a/qt_client/src/MainWindowSettings.cpp
++++ b/qt_client/src/MainWindowSettings.cpp
+@@ -1282,6 +1282,23 @@ QWidget *MainWindow::buildSettingsSection()
+         QSettings().setValue(kEmailOnCreditsRefillSetting, enabled);
+     });
+     usageText->addWidget(emailOnRefillCheck);
++    auto *usageCalendarReminderCheck = new QCheckBox(
++        "Add a calendar reminder and ping me when agent usage resets");
++    usageCalendarReminderCheck->setChecked(
++        QSettings().value(kUsageLimitCalendarReminderSetting, false).toBool());
++    usageCalendarReminderCheck->setToolTip(
++        "When Claude Code or Codex usage is exhausted, open a standard calendar "
++        "reminder for its reset time and show a ForkMesh system ping when it is "
++        "ready again. The calendar app handles alerts while ForkMesh is closed.");
++    connect(usageCalendarReminderCheck, &QCheckBox::toggled, this,
++            [this](bool enabled) {
++                QSettings().setValue(kUsageLimitCalendarReminderSetting, enabled);
++                if (enabled)
++                    restoreUsageLimitReminders();
++                else
++                    clearUsageLimitReminders();
++            });
++    usageText->addWidget(usageCalendarReminderCheck);
+     // Issue #115: restore the last-known spend figures immediately so they are
+     // visible on restart before any network refresh completes.
+     applyCachedSpendLabels();
+diff --git a/qt_client/src/UsageLimitCalendar.cpp b/qt_client/src/UsageLimitCalendar.cpp
+new file mode 100644
+index 000000000..07dd1b1e0
+--- /dev/null
++++ b/qt_client/src/UsageLimitCalendar.cpp
+@@ -0,0 +1,129 @@
++#include "UsageLimitCalendar.h"
++
++#include <QDateTime>
++#include <QDir>
++#include <QSaveFile>
++#include <QStandardPaths>
++#include <QTimeZone>
++
++namespace {
++
++QString safeKey(QString value)
++{
++    value = value.toLower();
++    for (QChar &c : value) {
++        if (!c.isLetterOrNumber())
++            c = QLatin1Char('-');
++    }
++    return value;
++}
++
++QString escapeIcalendar(QString value)
++{
++    value.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
++    value.replace(QLatin1Char(';'), QStringLiteral("\\;"));
++    value.replace(QLatin1Char(','), QStringLiteral("\\,"));
++    value.replace(QStringLiteral("\r\n"), QStringLiteral("\\n"));
++    value.replace(QLatin1Char('\n'), QStringLiteral("\\n"));
++    value.replace(QLatin1Char('\r'), QStringLiteral("\\n"));
++    return value;
++}
++
++QString utcIcalendarTime(qint64 ms)
++{
++    const QDateTime time =
++        QDateTime::fromMSecsSinceEpoch(ms, QTimeZone(QTimeZone::UTC));
++    return time.isValid()
++               ? time.toString(QStringLiteral("yyyyMMdd'T'HHmmss'Z'"))
++               : QString();
++}
++
++QString reminderDirectory()
++{
++    QString base =
++        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
++    if (base.isEmpty())
++        base = QDir::tempPath();
++    return QDir(base).filePath(QStringLiteral("usage-reminders"));
++}
++
++} // namespace
++
++namespace UsageLimitCalendar {
++
++QString eventText(const QString &providerKey, const QString &windowKey,
++                  const QString &providerName, const QString &windowName,
++                  qint64 resetMs, qint64 createdMs)
++{
++    if (resetMs <= 0)
++        return QString();
++    const QString startsAt = utcIcalendarTime(resetMs);
++    if (startsAt.isEmpty())
++        return QString();
++    if (createdMs <= 0)
++        createdMs = QDateTime::currentMSecsSinceEpoch();
++    const QString createdAt = utcIcalendarTime(createdMs);
++    if (createdAt.isEmpty())
++        return QString();
++
++    const QString provider = safeKey(providerKey);
++    const QString window = safeKey(windowKey);
++    const QString summary = QStringLiteral("ForkMesh: %1 usage is ready")
++                                .arg(providerName);
++    const QString description =
++        QStringLiteral("Your %1 %2 usage window has reset. You can resume "
++                       "agent work.")
++            .arg(providerName, windowName);
++    const QString uid = QStringLiteral("forkmesh-usage-%1-%2-%3@local")
++                            .arg(provider, window, QString::number(resetMs));
++    const QString endsAt = utcIcalendarTime(resetMs + 5 * 60 * 1000);
++
++    return QStringLiteral(
++               "BEGIN:VCALENDAR\r\n"
++               "VERSION:2.0\r\n"
++               "PRODID:-//ForkMesh//Agent usage reminder//EN\r\n"
++               "CALSCALE:GREGORIAN\r\n"
++               "METHOD:PUBLISH\r\n"
++               "BEGIN:VEVENT\r\n"
++               "UID:%1\r\n"
++               "DTSTAMP:%2\r\n"
++               "DTSTART:%3\r\n"
++               "DTEND:%4\r\n"
++               "SUMMARY:%5\r\n"
++               "DESCRIPTION:%6\r\n"
++               "TRANSP:TRANSPARENT\r\n"
++               "BEGIN:VALARM\r\n"
++               "ACTION:DISPLAY\r\n"
++               "TRIGGER:PT0M\r\n"
++               "DESCRIPTION:%5\r\n"
++               "END:VALARM\r\n"
++               "END:VEVENT\r\n"
++               "END:VCALENDAR\r\n")
++        .arg(uid, createdAt, startsAt, endsAt, escapeIcalendar(summary),
++             escapeIcalendar(description));
++}
++
++QString writeEvent(const QString &providerKey, const QString &windowKey,
++                   const QString &providerName, const QString &windowName,
++                   qint64 resetMs)
++{
++    const QString content = eventText(providerKey, windowKey, providerName,
++                                      windowName, resetMs);
++    if (content.isEmpty())
++        return QString();
++    const QString directory = reminderDirectory();
++    if (!QDir().mkpath(directory))
++        return QString();
++    const QString path = QDir(directory).filePath(
++        QStringLiteral("%1-%2.ics").arg(safeKey(providerKey),
++                                         safeKey(windowKey)));
++    QSaveFile file(path);
++    if (!file.open(QIODevice::WriteOnly) ||
++        file.write(content.toUtf8()) != content.toUtf8().size() ||
++        !file.commit()) {
++        return QString();
++    }
++    return path;
++}
++
++} // namespace UsageLimitCalendar
+diff --git a/qt_client/src/UsageLimitCalendar.h b/qt_client/src/UsageLimitCalendar.h
+new file mode 100644
+index 000000000..bc525949d
+--- /dev/null
++++ b/qt_client/src/UsageLimitCalendar.h
+@@ -0,0 +1,26 @@
++#pragma once
++
++#include <QtGlobal>
++
++#include <QString>
++
++// Small local iCalendar export for agent usage-window reset reminders.  It has
++// no calendar-account integration: the desktop opens the standard .ics file in
++// the user's configured calendar application, which owns the actual event and
++// its alert.
++namespace UsageLimitCalendar {
++
++// Build a VEVENT with a display alarm at resetMs (UTC). Empty when resetMs is
++// not a valid wall-clock instant. providerKey/windowKey are stable internal
++// identifiers; their human-readable counterparts are shown in the event.
++QString eventText(const QString &providerKey, const QString &windowKey,
++                  const QString &providerName, const QString &windowName,
++                  qint64 resetMs, qint64 createdMs = 0);
++
++// Atomically write the reminder under the app-data directory and return its
++// absolute path. The same provider/window file is updated for later windows.
++QString writeEvent(const QString &providerKey, const QString &windowKey,
++                   const QString &providerName, const QString &windowName,
++                   qint64 resetMs);
++
++} // namespace UsageLimitCalendar
+diff --git a/qt_client/tests/test_crypto.cpp b/qt_client/tests/test_crypto.cpp
+index e3d71c6a8..d710b98b7 100644
+--- a/qt_client/tests/test_crypto.cpp
++++ b/qt_client/tests/test_crypto.cpp
+@@ -32,6 +32,7 @@
+ #include "../src/RoomCrypto.h"
+ #include "../src/StrictGitReader.h"
+ #include "../src/SystemStats.h"
++#include "../src/UsageLimitCalendar.h"
+ 
+ #include <QByteArray>
+ #include <QCoreApplication>
+@@ -358,6 +359,40 @@ int main(int argc, char *argv[])
+               "reference linker skips existing links, URLs, inline code, and code blocks");
+     }
+ 
++    {
++        const qint64 resetMs = QDateTime::fromString(
++                                   QStringLiteral("2026-08-01T12:30:00Z"),
++                                   Qt::ISODate)
++                                   .toMSecsSinceEpoch();
++        const QString calendar = UsageLimitCalendar::eventText(
++            QStringLiteral("claude"), QStringLiteral("5h"),
++            QStringLiteral("Claude Code"), QStringLiteral("5-hour"), resetMs,
++            resetMs - 60 * 1000);
++        check(calendar.contains(QStringLiteral("BEGIN:VCALENDAR\r\n")) &&
++                  calendar.contains(QStringLiteral("METHOD:PUBLISH\r\n")) &&
++                  calendar.contains(QStringLiteral(
++                      "UID:forkmesh-usage-claude-5h-1785587400000@local\r\n")) &&
++                  calendar.contains(QStringLiteral("DTSTART:20260801T123000Z\r\n")) &&
++                  calendar.contains(QStringLiteral("TRIGGER:PT0M\r\n")) &&
++                  calendar.contains(QStringLiteral(
++                      "SUMMARY:ForkMesh: Claude Code usage is ready\r\n")),
++              "usage-limit calendar export is a timed iCalendar event with an alarm");
++        check(UsageLimitCalendar::eventText(
++                  QStringLiteral("claude"), QStringLiteral("5h"),
++                  QStringLiteral("Claude Code"), QStringLiteral("5-hour"), 0)
++                  .isEmpty(),
++              "usage-limit calendar export rejects a missing reset time");
++
++        const QString path = UsageLimitCalendar::writeEvent(
++            QStringLiteral("codex"), QStringLiteral("weekly"),
++            QStringLiteral("Codex"), QStringLiteral("weekly"), resetMs);
++        QFile file(path);
++        check(!path.isEmpty() && file.open(QIODevice::ReadOnly) &&
++                  QString::fromUtf8(file.readAll()).contains(
++                      QStringLiteral("ForkMesh: Codex usage is ready")),
++              "usage-limit calendar event is written atomically under app data");
++    }
++
+     {
+         // Bounded chat history (issue #428): a mirror node must not retain
+         // unlimited chat frames — or huge file payloads — in RAM.
+-- 
+2.47.3
+

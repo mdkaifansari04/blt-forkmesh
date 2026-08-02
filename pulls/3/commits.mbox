@@ -1,0 +1,3332 @@
+From e79b709683e864c19693f27b530d95c0d84d39cd Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Sun, 12 Jul 2026 00:38:14 +0530
+Subject: [PATCH] feat(worker): add outreach campaign workflow
+
+---
+ cloudflare_worker/src/email_admin.py          |  606 ++++++++-
+ cloudflare_worker/src/entry.py                | 1186 ++++++++++++++++-
+ .../tests/test_email_admin_domain.py          |   82 ++
+ .../tests/test_email_admin_frontend.py        |  307 +++++
+ .../tests/test_email_admin_worker.py          |  960 +++++++++++++
+ 5 files changed, 3116 insertions(+), 25 deletions(-)
+
+diff --git a/cloudflare_worker/src/email_admin.py b/cloudflare_worker/src/email_admin.py
+index 698bcf5b..f0dbbcff 100644
+--- a/cloudflare_worker/src/email_admin.py
++++ b/cloudflare_worker/src/email_admin.py
+@@ -2,6 +2,7 @@ import html
+ import json
+ import re
+ import unicodedata
++from datetime import datetime, timezone
+ 
+ 
+ EMAIL_LOCAL_RE = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+", re.ASCII)
+@@ -217,6 +218,72 @@ def parse_recipient_array(raw):
+     return {"recipients": dedupe_recipients(recipients), "errors": errors}
+ 
+ 
++def normalize_category_name(value):
++    if not isinstance(value, str) or _has_unsafe_text_character(value):
++        raise ValueError("category name contains invalid characters")
++    name = unicodedata.normalize("NFC", value).strip()
++    if not name:
++        raise ValueError("category name is required")
++    if len(name) > 80:
++        raise ValueError("category name must be 80 characters or fewer")
++    return name
++
++
++def normalize_recipient_record(email, name="", company=""):
++    normalized_email = normalize_email(email)
++    if not normalized_email:
++        raise ValueError("valid recipient email is required")
++    if not _valid_metadata(name):
++        raise ValueError("recipient name contains invalid characters")
++    if not _valid_metadata(company):
++        raise ValueError("recipient company contains invalid characters")
++    return {
++        "email": normalized_email,
++        "name": _clean_field(name, 120),
++        "company": _clean_field(company, 160),
++    }
++
++
++def _has_unsafe_multiline_character(value):
++    for character in value:
++        if character in "\r\n\t":
++            continue
++        category = unicodedata.category(character)
++        if category.startswith("C") or category in UNSAFE_SEPARATOR_CATEGORIES:
++            return True
++    return False
++
++
++def normalize_template_values(name, subject, body):
++    if not all(isinstance(value, str) for value in (name, subject, body)):
++        raise ValueError("template name, subject, and body are required")
++    clean_name = unicodedata.normalize("NFC", name).strip()
++    clean_subject = subject.strip()
++    clean_body = body.strip()
++    if not clean_name or not clean_subject or not clean_body:
++        raise ValueError("template name, subject, and body are required")
++    if len(clean_name) > 120:
++        raise ValueError("template name must be 120 characters or fewer")
++    if len(clean_subject) > 240:
++        raise ValueError("template subject must be 240 characters or fewer")
++    if len(clean_body) > 32_000:
++        raise ValueError("template body must be 32000 characters or fewer")
++    if _has_unsafe_text_character(clean_name):
++        raise ValueError("template name contains invalid characters")
++    if _has_unsafe_multiline_character(clean_body):
++        raise ValueError("template body contains invalid characters")
++    render_message(
++        clean_subject,
++        clean_body,
++        {
++            "email": "preview@example.com",
++            "name": "Preview",
++            "company": "ForkMesh",
++        },
++    )
++    return clean_name, clean_subject, clean_body
++
++
+ def _replace_placeholders(value, recipient):
+     text = value or ""
+     values = {
+@@ -291,12 +358,50 @@ label{display:grid;gap:5px;margin:12px 0;color:#c9d1d9;font-weight:600}
+ .content{min-width:0;overflow-x:auto;padding:20px}
+ .panel{min-width:0;overflow:hidden;border:1px solid #30363d;border-radius:8px;background:#0d1117}
+ .panel h2{margin:0;padding:14px 16px;border-bottom:1px solid #30363d;font-size:16px}
++.toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid #30363d}
++.toolbar h2{padding:0;border:0}
++.form-section{padding:16px;border-bottom:1px solid #30363d}
++.form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
++.form-grid label{margin:0}
++.check-list{display:flex;flex-wrap:wrap;gap:8px 16px}
++label.check{display:flex;align-items:center;gap:7px;margin:6px 0;font-weight:500}
++input[type="checkbox"]{width:auto;flex:0 0 auto}
++fieldset{min-width:0;margin:12px 0;padding:10px 12px;border:1px solid #30363d;border-radius:6px}
++legend{padding:0 5px;color:#c9d1d9;font-weight:600}
++.table-wrap{max-width:100%;overflow-x:auto}
++table{width:100%;border-collapse:collapse}
++th,td{padding:10px 12px;border-bottom:1px solid #21262d;text-align:left;vertical-align:top}
++th{color:#8b949e;background:#161b22;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
++tbody tr:last-child td{border-bottom:0}
++.badges{display:flex;flex-wrap:wrap;gap:5px}
++.badge{display:inline-block;border:1px solid #30363d;border-radius:999px;padding:2px 7px;background:#161b22;color:#c9d1d9;font-size:12px}
++.row-actions{display:grid;min-width:220px;gap:8px}
++details{border:1px solid #30363d;border-radius:6px;padding:7px 9px;background:#161b22}
++summary{cursor:pointer;color:#58a6ff;font-weight:600}
++details form{padding-top:6px}
++.secondary{border-color:#30363d;background:#21262d;color:#f0f6fc}
++.secondary:hover{background:#30363d}
++.danger{border-color:#da3633;background:#b62324}
++.danger:hover{background:#da3633}
++.help{margin:8px 0;color:#8b949e;font-size:12px}
++.template-list{display:grid;gap:16px;margin-top:16px}
++.template-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,.7fr);gap:16px;padding:16px}
++.template-card h3{margin:0}
++.template-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
++.preview-frame{width:100%;min-height:300px;border:1px solid #30363d;border-radius:6px;background:#fff;color:#0d1117}
++.actions-inline{display:flex;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-top:10px}
++.actions-inline form{margin:0}
++.review-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,.8fr);gap:16px;padding:16px}
++.stat-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}
++.stat{border:1px solid #30363d;border-radius:6px;padding:10px;background:#161b22}
++.stat strong{display:block;font-size:20px}
++pre{max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:#c9d1d9}
+ .empty{margin:0;padding:28px 16px;color:#8b949e}
+ .banner{margin:0 0 14px;padding:10px 12px;border:1px solid #2ea043;border-radius:6px;background:#11251a;color:#aff5b4}
+ .login{width:min(420px,calc(100% - 32px));margin:10vh auto;padding:22px;border:1px solid #30363d;border-radius:10px;background:#0d1117}
+ .login h1{margin:0 0 4px;font-size:22px}
+ .muted{margin:0;color:#8b949e}
+-@media(max-width:760px){.topbar{align-items:flex-start;flex-direction:column}.layout{grid-template-columns:minmax(0,1fr)}.sidebar{display:flex;overflow-x:auto;border-right:0;border-bottom:1px solid #21262d}.sidebar a{white-space:nowrap}.content{padding:12px}}
++@media(max-width:760px){.topbar{align-items:flex-start;flex-direction:column}.layout{grid-template-columns:minmax(0,1fr)}.sidebar{display:flex;overflow-x:auto;border-right:0;border-bottom:1px solid #21262d}.sidebar a{white-space:nowrap}.content{padding:12px}.form-grid,.template-card,.review-grid,.stat-grid{grid-template-columns:minmax(0,1fr)}}
+ """
+ 
+ 
+@@ -335,6 +440,255 @@ def render_login_page(login_csrf, bucket, error=""):
+     return _document(body)
+ 
+ 
++def _hidden(name, value):
++    return (
++        '<input type="hidden" name="'
++        + html.escape(str(name), quote=True)
++        + '" value="'
++        + html.escape(str(value), quote=True)
++        + '">'
++    )
++
++
++def _hidden_csrf(csrf):
++    return _hidden("csrf", csrf)
++
++
++def _positive_id(value):
++    try:
++        number = int(value)
++    except (TypeError, ValueError):
++        return None
++    return number if number > 0 else None
++
++
++def _model_categories(model):
++    categories = []
++    for raw in model.get("categories", []):
++        if not isinstance(raw, dict):
++            continue
++        category_id = _positive_id(raw.get("id"))
++        name = raw.get("name")
++        if category_id is None or not isinstance(name, str):
++            continue
++        try:
++            count = max(0, int(raw.get("count", 0)))
++        except (TypeError, ValueError):
++            count = 0
++        categories.append({"id": category_id, "name": name, "count": count})
++    return categories
++
++
++def _format_timestamp(value):
++    try:
++        timestamp = int(value)
++        if timestamp < 0:
++            raise ValueError
++        moment = datetime.fromtimestamp(timestamp / 1000, timezone.utc)
++        return moment.strftime("%Y-%m-%d %H:%M UTC")
++    except (OverflowError, TypeError, ValueError):
++        return "Unknown"
++
++
++def _category_checkboxes(categories, selected=()):
++    selected_ids = {
++        category_id
++        for category_id in (_positive_id(value) for value in selected)
++        if category_id is not None
++    }
++    if not categories:
++        return '<p class="help">Create a category to organize recipients.</p>'
++    return '<div class="check-list">' + "".join(
++        '<label class="check"><input type="checkbox" name="category_ids" value="'
++        + str(category["id"])
++        + '"'
++        + (" checked" if category["id"] in selected_ids else "")
++        + "> "
++        + html.escape(category["name"])
++        + "</label>"
++        for category in categories
++    ) + "</div>"
++
++
++def _recipient_row(recipient, categories, csrf):
++    if not isinstance(recipient, dict):
++        return ""
++    recipient_id = _positive_id(recipient.get("id"))
++    email = recipient.get("email")
++    if recipient_id is None or not isinstance(email, str):
++        return ""
++    name = recipient.get("name") if isinstance(recipient.get("name"), str) else ""
++    company = (
++        recipient.get("company")
++        if isinstance(recipient.get("company"), str)
++        else ""
++    )
++    selected = recipient.get("category_ids", [])
++    category_names = [
++        value for value in recipient.get("categories", []) if isinstance(value, str)
++    ]
++    badges = (
++        '<div class="badges">'
++        + "".join(
++            '<span class="badge">' + html.escape(value) + "</span>"
++            for value in category_names
++        )
++        + "</div>"
++        if category_names
++        else '<span class="muted">Uncategorized</span>'
++    )
++    common = _hidden_csrf(csrf) + _hidden("recipient_id", recipient_id)
++    edit = (
++        '<details><summary>Edit recipient</summary>'
++        '<form method="post" action="/admin-email?view=recipients">'
++        + common
++        + _hidden("action", "update_recipient")
++        + '<label>Email<input type="email" name="email" maxlength="254" required value="'
++        + html.escape(email, quote=True)
++        + '"></label><label>Name<input name="name" maxlength="120" value="'
++        + html.escape(name, quote=True)
++        + '"></label><label>Company<input name="company" maxlength="160" value="'
++        + html.escape(company, quote=True)
++        + '"></label><button type="submit">Save recipient</button></form></details>'
++    )
++    memberships = (
++        '<details><summary>Manage categories</summary>'
++        '<form method="post" action="/admin-email?view=recipients">'
++        + common
++        + _hidden("action", "set_memberships")
++        + _category_checkboxes(categories, selected)
++        + '<button type="submit">Save categories</button></form></details>'
++    )
++    deletion = (
++        '<details><summary>Delete recipient</summary>'
++        '<form method="post" action="/admin-email?view=recipients">'
++        + common
++        + _hidden("action", "delete_recipient")
++        + '<label class="check"><input type="checkbox" name="confirm_delete" '
++        'value="1" required> Confirm deletion</label>'
++        '<button class="danger" type="submit">Delete recipient</button>'
++        "</form></details>"
++    )
++    return (
++        "<tr><td>"
++        + html.escape(email)
++        + "</td><td>"
++        + (html.escape(name) if name else '<span class="muted">None</span>')
++        + "</td><td>"
++        + (html.escape(company) if company else '<span class="muted">None</span>')
++        + "</td><td>"
++        + badges
++        + '</td><td class="muted">'
++        + html.escape(_format_timestamp(recipient.get("updated_at")))
++        + '</td><td><div class="row-actions">'
++        + edit
++        + memberships
++        + deletion
++        + "</div></td></tr>"
++    )
++
++
++def _render_recipients_view(model, csrf):
++    categories = _model_categories(model)
++    rows = "".join(
++        _recipient_row(recipient, categories, csrf)
++        for recipient in model.get("recipients", [])
++    )
++    empty = '<p class="empty">No recipients yet.</p>' if not rows else ""
++    import_form = (
++        '<form class="form-section" method="post" '
++        'action="/admin-email?view=recipients">'
++        + _hidden_csrf(csrf)
++        + _hidden("action", "import_recipients")
++        + '<label>Recipient JSON array<textarea name="recipients_json" rows="8" '
++        'required placeholder=\'["person@example.com", '
++        '{"email":"pat@example.com","name":"Pat","company":"Orbit"}]\''
++        "></textarea></label>"
++        '<label class="check"><input type="checkbox" name="allow_partial" '
++        'value="1"> Import valid entries when other array items are invalid</label>'
++        "<fieldset><legend>Add to categories</legend>"
++        + _category_checkboxes(categories)
++        + '</fieldset><button type="submit">Import recipients</button></form>'
++    )
++    table = (
++        '<div class="table-wrap"><table><thead><tr><th>Email</th><th>Name</th>'
++        '<th>Company</th><th>Categories</th><th>Updated</th><th>Manage</th>'
++        "</tr></thead><tbody>"
++        + rows
++        + "</tbody></table></div>"
++        if rows
++        else empty
++    )
++    return (
++        '<section class="panel"><div class="toolbar"><h2>Recipients</h2>'
++        '<span class="muted">Reusable outreach contacts</span></div>'
++        + import_form
++        + table
++        + "</section>"
++    )
++
++
++def _category_row(category, csrf):
++    category_id = category["id"]
++    name = category["name"]
++    common = _hidden_csrf(csrf) + _hidden("category_id", category_id)
++    rename = (
++        '<form method="post" action="/admin-email?view=categories">'
++        + common
++        + _hidden("action", "rename_category")
++        + '<label>New name<input name="name" maxlength="80" required value="'
++        + html.escape(name, quote=True)
++        + '"></label><button class="secondary" type="submit">Rename</button></form>'
++    )
++    deletion = (
++        '<form method="post" action="/admin-email?view=categories">'
++        + common
++        + _hidden("action", "delete_category")
++        + '<label class="check"><input type="checkbox" name="confirm_delete" '
++        'value="1" required> Confirm deletion</label>'
++        '<button class="danger" type="submit">Delete</button></form>'
++    )
++    return (
++        "<tr><td>"
++        + html.escape(name)
++        + "</td><td>"
++        + str(category["count"])
++        + '</td><td><a href="/admin-email?view=recipients&amp;category='
++        + str(category_id)
++        + '">View recipients</a><div class="row-actions">'
++        + rename
++        + deletion
++        + "</div></td></tr>"
++    )
++
++
++def _render_categories_view(model, csrf):
++    categories = _model_categories(model)
++    rows = "".join(_category_row(category, csrf) for category in categories)
++    table = (
++        '<div class="table-wrap"><table><thead><tr><th>Name</th>'
++        '<th>Recipients</th><th>Actions</th></tr></thead><tbody>'
++        + rows
++        + "</tbody></table></div>"
++        if rows
++        else '<p class="empty">No categories yet.</p>'
++    )
++    return (
++        '<section class="panel"><div class="toolbar"><h2>Categories</h2>'
++        '<span class="muted">Recipients can have multiple categories</span></div>'
++        '<form class="form-section" method="post" '
++        'action="/admin-email?view=categories">'
++        + _hidden_csrf(csrf)
++        + _hidden("action", "create_category")
++        + '<div class="form-grid"><label>Category name<input name="name" '
++        'maxlength="80" required></label></div>'
++        '<button type="submit">Create category</button></form>'
++        '<p class="help form-section">Deleting a category keeps its recipients.</p>'
++        + table
++        + "</section>"
++    )
++
++
+ def _empty_view(label):
+     return (
+         '<section class="panel"><h2>'
+@@ -343,20 +697,254 @@ def _empty_view(label):
+     )
+ 
+ 
+-def _render_recipients_view(_model, _csrf):
+-    return _empty_view("Recipients")
++def _template_card(template, csrf):
++    if not isinstance(template, dict):
++        return ""
++    template_id = _positive_id(template.get("id"))
++    values = (template.get("name"), template.get("subject"), template.get("body"))
++    if template_id is None or not all(isinstance(value, str) for value in values):
++        return ""
++    name, subject, body = values
++    try:
++        preview = render_message(
++            subject,
++            body,
++            {
++                "email": "preview@example.com",
++                "name": "Preview",
++                "company": "ForkMesh",
++            },
++        )["html"]
++    except ValueError:
++        preview = "<p>Preview unavailable.</p>"
++    common = _hidden_csrf(csrf) + _hidden("template_id", template_id)
++    seeded = (
++        '<span class="badge">Seeded default</span>'
++        if bool(template.get("is_seeded"))
++        else '<span class="badge">Custom</span>'
++    )
++    editor = (
++        '<div><div class="template-heading"><h3>'
++        + html.escape(name)
++        + "</h3>"
++        + seeded
++        + '</div><form method="post" action="/admin-email?view=templates">'
++        + common
++        + _hidden("action", "save_template")
++        + '<label>Name<input name="name" maxlength="120" required value="'
++        + html.escape(name, quote=True)
++        + '"></label><label>Subject<input name="subject" maxlength="240" '
++        'required value="'
++        + html.escape(subject, quote=True)
++        + '"></label><label>Plain-text body<textarea name="body" rows="14" '
++        'maxlength="32000" required>'
++        + html.escape(body)
++        + '</textarea></label><button type="submit">Save template</button></form>'
++        '<div class="actions-inline"><form method="post" '
++        'action="/admin-email?view=templates">'
++        + common
++        + _hidden("action", "duplicate_template")
++        + '<button class="secondary" type="submit">Duplicate</button></form>'
++        '<details><summary>Delete template</summary><form method="post" '
++        'action="/admin-email?view=templates">'
++        + common
++        + _hidden("action", "delete_template")
++        + '<label class="check"><input type="checkbox" name="confirm_delete" '
++        'value="1" required> Confirm deletion</label>'
++        '<button class="danger" type="submit">Delete template</button>'
++        "</form></details></div></div>"
++    )
++    preview_frame = (
++        '<div><p class="muted">Preview for Preview at ForkMesh</p>'
++        '<iframe sandbox title="Template preview: '
++        + html.escape(name, quote=True)
++        + '" class="preview-frame" srcdoc="'
++        + html.escape(preview, quote=True)
++        + '"></iframe><p class="help">Last updated '
++        + html.escape(_format_timestamp(template.get("updated_at")))
++        + ".</p></div>"
++    )
++    return '<article class="panel template-card">' + editor + preview_frame + "</article>"
+ 
+ 
+-def _render_categories_view(_model, _csrf):
+-    return _empty_view("Categories")
++def _render_templates_view(model, csrf):
++    cards = "".join(
++        _template_card(template, csrf)
++        for template in model.get("templates", [])
++    )
++    create = (
++        '<section class="panel"><div class="toolbar"><h2>Templates</h2>'
++        '<span class="muted">Placeholders: {{name}}, {{company}}, {{email}}</span>'
++        '</div><form class="form-section" method="post" '
++        'action="/admin-email?view=templates">'
++        + _hidden_csrf(csrf)
++        + _hidden("action", "save_template")
++        + '<h3>Create template</h3><div class="form-grid">'
++        '<label>Name<input name="name" maxlength="120" required></label>'
++        '<label>Subject<input name="subject" maxlength="240" required></label>'
++        '</div><label>Plain-text body<textarea name="body" rows="10" '
++        'maxlength="32000" required></textarea></label>'
++        '<button type="submit">Create template</button></form></section>'
++    )
++    empty = '<p class="empty">No saved templates yet.</p>' if not cards else ""
++    return create + empty + ('<div class="template-list">' + cards + "</div>" if cards else "")
++
++
++def _nonnegative_int(value):
++    try:
++        return max(0, int(value))
++    except (TypeError, ValueError):
++        return 0
+ 
+ 
+-def _render_templates_view(_model, _csrf):
+-    return _empty_view("Templates")
++def _render_campaign_review(draft, csrf):
++    if not isinstance(draft, dict):
++        return ""
++    campaign_id = str(draft.get("id", ""))
++    unique_count = _nonnegative_int(draft.get("unique_count"))
++    duplicate_count = _nonnegative_int(draft.get("duplicate_count"))
++    invalid_count = _nonnegative_int(draft.get("invalid_count"))
++    selected_count = _nonnegative_int(draft.get("selected_count"))
++    status = str(draft.get("status") or "draft")
++    subject = str(draft.get("subject", ""))
++    body = str(draft.get("body", ""))
++    category_names = [
++        str(value)
++        for value in draft.get("category_names", [])
++        if isinstance(value, str)
++    ]
++    badges = "".join(
++        '<span class="badge">' + html.escape(value) + "</span>"
++        for value in category_names
++    )
++    preview = draft.get("preview") if isinstance(draft.get("preview"), dict) else {}
++    preview_subject = str(preview.get("subject", subject))
++    preview_html = str(preview.get("html", "<p>Preview unavailable.</p>"))
++    common = _hidden_csrf(csrf) + _hidden("campaign_id", campaign_id)
++    test_form = (
++        '<form method="post" action="/admin-email?view=compose">'
++        + common
++        + _hidden("action", "send_test")
++        + '<label>Test recipient<input type="email" name="test_email" '
++        'maxlength="254" autocomplete="email" required></label>'
++        '<button class="secondary" type="submit">Send test email</button></form>'
++    )
++    test_sent_at = _nonnegative_int(draft.get("test_sent_at"))
++    if status != "draft":
++        test_form = ""
++        test_status = (
++            '<p class="banner">Campaign is already '
++            + html.escape(status)
++            + " and cannot be edited.</p>"
++        )
++        confirm = ""
++    elif test_sent_at:
++        test_email = normalize_email(draft.get("test_email"))
++        test_status = (
++            '<p class="banner">Test sent to '
++            + html.escape(test_email or "the test recipient")
++            + " at "
++            + html.escape(_format_timestamp(test_sent_at))
++            + ".</p>"
++        )
++        confirm = (
++            '<form method="post" action="/admin-email?view=compose">'
++            + common
++            + _hidden("action", "confirm_campaign")
++            + '<label class="check"><input type="checkbox" name="confirm_send" '
++            'value="1" required> I confirm this reviewed audience and message.</label>'
++            '<button class="danger" type="submit">Queue email to '
++            + str(unique_count)
++            + " recipients</button></form>"
++        )
++    else:
++        test_status = (
++            '<p class="help">Send a successful test before final confirmation.</p>'
++        )
++        confirm = ""
++    return (
++        '<section class="panel"><div class="toolbar"><h2>Final review</h2>'
++        '<span class="badge">'
++        + html.escape(status.capitalize())
++        + ' snapshot</span></div><div class="review-grid">'
++        '<div><div class="badges">'
++        + badges
++        + '</div><div class="stat-grid"><div class="stat" aria-label="'
++        + str(unique_count)
++        + ' unique recipients"><strong>'
++        + str(unique_count)
++        + '</strong>unique recipients</div><div class="stat" aria-label="'
++        + str(duplicate_count)
++        + ' duplicates removed"><strong>'
++        + str(duplicate_count)
++        + '</strong>duplicates removed</div><div class="stat" aria-label="'
++        + str(invalid_count)
++        + ' invalid recipients excluded"><strong>'
++        + str(invalid_count)
++        + '</strong>invalid recipients excluded</div></div><p class="help">'
++        + str(selected_count)
++        + ' category memberships were evaluated.</p><h3>'
++        + html.escape(subject)
++        + "</h3><details><summary>Reviewed plain-text body</summary><pre>"
++        + html.escape(body)
++        + "</pre></details>"
++        + test_form
++        + test_status
++        + confirm
++        + '</div><div><p class="muted">Personalized sample: '
++        + html.escape(preview_subject)
++        + '</p><iframe sandbox title="Campaign preview" class="preview-frame" srcdoc="'
++        + html.escape(preview_html, quote=True)
++        + '"></iframe></div></div></section>'
++    )
+ 
+ 
+-def _render_compose_view(_model, _csrf):
+-    return _empty_view("Compose")
++def _render_compose_view(model, csrf):
++    categories = _model_categories(model)
++    category_options = "".join(
++        '<label class="check"><input type="checkbox" name="category_ids" value="'
++        + str(category["id"])
++        + '"> '
++        + html.escape(category["name"])
++        + " ("
++        + str(category["count"])
++        + ")</label>"
++        for category in categories
++    )
++    template_options = []
++    for template in model.get("templates", []):
++        if not isinstance(template, dict):
++            continue
++        template_id = _positive_id(template.get("id"))
++        name = template.get("name")
++        if template_id is None or not isinstance(name, str):
++            continue
++        template_options.append(
++            '<option value="'
++            + str(template_id)
++            + '">'
++            + html.escape(name)
++            + "</option>"
++        )
++    compose = (
++        '<section class="panel"><div class="toolbar"><h2>Compose</h2>'
++        '<span class="muted">Review creates an immutable audience snapshot</span>'
++        '</div><form class="form-section" method="post" '
++        'action="/admin-email?view=compose">'
++        + _hidden_csrf(csrf)
++        + _hidden("action", "review_campaign")
++        + '<fieldset><legend>Recipient categories</legend>'
++        + (category_options or '<p class="help">No categories are available.</p>')
++        + '</fieldset><label>Template<select name="template_id" required>'
++        '<option value="">Choose a template</option>'
++        + "".join(template_options)
++        + '</select></label><label>Subject override <span class="muted">optional</span>'
++        '<input name="subject" maxlength="240"></label>'
++        '<label>Body override <span class="muted">optional</span>'
++        '<textarea name="body" maxlength="32000" rows="14"></textarea></label>'
++        '<button type="submit">Review campaign</button></form></section>'
++    )
++    return compose + _render_campaign_review(model.get("draft"), csrf)
+ 
+ 
+ def _render_jobs_view(_model, _csrf):
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 8902942a..ee985160 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -338,7 +338,18 @@ from catalog import (  # noqa: E402
+ 
+ # The D1 table/index DDL list ensure_schema() runs lives in schema.py.
+ from schema import SCHEMA_STATEMENTS  # noqa: E402
+-from email_admin import render_console_page, render_login_page  # noqa: E402
++from email_admin import (  # noqa: E402
++    DEFAULT_CATEGORIES,
++    DEFAULT_TEMPLATES,
++    normalize_category_name,
++    normalize_email,
++    normalize_recipient_record,
++    normalize_template_values,
++    parse_recipient_array,
++    render_console_page,
++    render_login_page,
++    render_message,
++)
+ 
+ # Signed-event crypto + canonicalization -- the Ed25519/SHA-256 verify
+ # primitives and the per-event canonical-content builders (which must
+@@ -14111,7 +14122,8 @@ def _email_admin_headers(content_type="text/html; charset=utf-8", extra=None):
+         "cache-control": EMAIL_ADMIN_CACHE_CONTROL,
+         "content-security-policy": (
+             "default-src 'none'; style-src 'unsafe-inline'; "
+-            "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
++            "form-action 'self'; frame-src 'self'; "
++            "frame-ancestors 'none'; base-uri 'none'"
+         ),
+         "referrer-policy": "no-referrer",
+         "x-content-type-options": "nosniff",
+@@ -14130,8 +14142,10 @@ def _email_admin_html_response(body, status=200, extra_headers=None):
+     )
+ 
+ 
+-def _email_admin_redirect(extra_headers=None):
+-    headers = {"location": EMAIL_ADMIN_PATH}
++def _email_admin_redirect(extra_headers=None, location=EMAIL_ADMIN_PATH):
++    if not isinstance(location, str) or not location.startswith(EMAIL_ADMIN_PATH):
++        location = EMAIL_ADMIN_PATH
++    headers = {"location": location}
+     if extra_headers:
+         headers.update(extra_headers)
+     return Response(
+@@ -14141,6 +14155,966 @@ def _email_admin_redirect(extra_headers=None):
+     )
+ 
+ 
++def _email_admin_id(value, label):
++    raw = str(value or "").strip()
++    if not raw.isdigit():
++        raise ValueError("invalid " + label)
++    record_id = int(raw)
++    if record_id <= 0 or record_id > 9_223_372_036_854_775_807:
++        raise ValueError("invalid " + label)
++    return record_id
++
++
++async def _email_admin_seed_defaults(env):
++    marker = await d1_first(
++        env,
++        "SELECT v FROM schema_meta WHERE k='email_admin_categories_v1'",
++    )
++    if marker:
++        return
++    now = int(Date.now())
++    for name in DEFAULT_CATEGORIES:
++        await d1_run(
++            env,
++            "INSERT OR IGNORE INTO email_categories "
++            "(name,created_at,updated_at) VALUES (?,?,?)",
++            name,
++            now,
++            now,
++        )
++    await d1_run(
++        env,
++        "INSERT INTO schema_meta (k,v) "
++        "VALUES ('email_admin_categories_v1','1') "
++        "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
++    )
++
++
++async def _email_admin_seed_templates(env):
++    marker = await d1_first(
++        env,
++        "SELECT v FROM schema_meta WHERE k='email_admin_templates_v1'",
++    )
++    if marker:
++        return
++    now = int(Date.now())
++    for template in DEFAULT_TEMPLATES:
++        name, subject, body = normalize_template_values(
++            template["name"], template["subject"], template["body"]
++        )
++        existing = await d1_first(
++            env,
++            "SELECT id FROM email_templates WHERE name=? COLLATE NOCASE",
++            name,
++        )
++        if existing:
++            continue
++        encrypted = await encrypt_row(env, {"subject": subject, "body": body})
++        await d1_run(
++            env,
++            "INSERT OR IGNORE INTO email_templates "
++            "(name,data,is_seeded,created_at,updated_at) VALUES (?,?,1,?,?)",
++            name,
++            encrypted,
++            now,
++            now,
++        )
++    await d1_run(
++        env,
++        "INSERT INTO schema_meta (k,v) "
++        "VALUES ('email_admin_templates_v1','1') "
++        "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
++    )
++
++
++async def _email_admin_validate_category_ids(env, submitted_ids):
++    if submitted_ids is None:
++        return []
++    values = [submitted_ids] if isinstance(submitted_ids, str) else submitted_ids
++    selected = set()
++    for value in values:
++        try:
++            selected.add(_email_admin_id(value, "category"))
++        except ValueError as error:
++            raise ValueError("unknown category") from error
++    ordered = sorted(selected)
++    if not ordered:
++        return []
++    live = await d1_all(env, "SELECT id FROM email_categories")
++    allowed = {
++        int(row["id"])
++        for row in live
++        if row.get("id") is not None
++    }
++    if any(category_id not in allowed for category_id in ordered):
++        raise ValueError("unknown category")
++    return ordered
++
++
++async def _email_admin_import_recipients(
++    env, raw, category_ids, allow_partial=False
++):
++    parsed = parse_recipient_array(raw)
++    if parsed["errors"] and not allow_partial:
++        return 0, parsed["errors"]
++    selected_ids = await _email_admin_validate_category_ids(env, category_ids)
++    now = int(Date.now())
++    imported = 0
++    for recipient in parsed["recipients"]:
++        email_bi = await blind_index(env, recipient["email"])
++        current = await d1_first(
++            env,
++            "SELECT id,data FROM email_recipients WHERE email_bi=?",
++            email_bi,
++        )
++        if not current:
++            initial = await encrypt_row(env, recipient)
++            await d1_run(
++                env,
++                "INSERT INTO email_recipients "
++                "(email_bi,data,created_at,updated_at) VALUES (?,?,?,?) "
++                "ON CONFLICT(email_bi) DO UPDATE SET updated_at=excluded.updated_at",
++                email_bi,
++                initial,
++                now,
++                now,
++            )
++            current = await d1_first(
++                env,
++                "SELECT id,data FROM email_recipients WHERE email_bi=?",
++                email_bi,
++            )
++            if not current:
++                raise RuntimeError("recipient upsert did not return a row")
++
++        previous = await decrypt_row(env, current.get("data"))
++        if not isinstance(previous, dict):
++            previous = {}
++        try:
++            previous = normalize_recipient_record(
++                recipient["email"],
++                previous.get("name", ""),
++                previous.get("company", ""),
++            )
++        except ValueError:
++            previous = {"name": "", "company": ""}
++        merged = normalize_recipient_record(
++            recipient["email"],
++            recipient["name"] or previous.get("name", ""),
++            recipient["company"] or previous.get("company", ""),
++        )
++        encrypted = await encrypt_row(env, merged)
++        recipient_id = _email_admin_id(current.get("id"), "recipient")
++        await d1_run(
++            env,
++            "UPDATE email_recipients SET data=?,updated_at=? WHERE id=?",
++            encrypted,
++            now,
++            recipient_id,
++        )
++        for category_id in selected_ids:
++            await d1_run(
++                env,
++                "INSERT OR IGNORE INTO email_category_memberships "
++                "(category_id,recipient_id,created_at) VALUES (?,?,?)",
++                category_id,
++                recipient_id,
++                now,
++            )
++        imported += 1
++    return imported, parsed["errors"]
++
++
++async def _email_admin_save_template(
++    env, template_id, name, subject, body
++):
++    name, subject, body = normalize_template_values(name, subject, body)
++    record_id = None
++    if str(template_id or "").strip():
++        record_id = _email_admin_id(template_id, "template")
++        current = await d1_first(
++            env, "SELECT id FROM email_templates WHERE id=?", record_id
++        )
++        if not current:
++            raise ValueError("template not found")
++    existing = await d1_first(
++        env,
++        "SELECT id FROM email_templates WHERE name=? COLLATE NOCASE",
++        name,
++    )
++    if existing and (record_id is None or int(existing["id"]) != record_id):
++        raise ValueError("template name already exists")
++    encrypted = await encrypt_row(env, {"subject": subject, "body": body})
++    now = int(Date.now())
++    if record_id is None:
++        await d1_run(
++            env,
++            "INSERT INTO email_templates "
++            "(name,data,is_seeded,created_at,updated_at) VALUES (?,?,0,?,?)",
++            name,
++            encrypted,
++            now,
++            now,
++        )
++    else:
++        await d1_run(
++            env,
++            "UPDATE email_templates SET name=?,data=?,updated_at=? WHERE id=?",
++            name,
++            encrypted,
++            now,
++            record_id,
++        )
++    return "Saved template '" + name + "'."
++
++
++async def _email_admin_duplicate_template(env, template_id):
++    record_id = _email_admin_id(template_id, "template")
++    row = await d1_first(
++        env,
++        "SELECT id,name,data FROM email_templates WHERE id=?",
++        record_id,
++    )
++    if not row:
++        raise ValueError("template not found")
++    content = await decrypt_row(env, row.get("data"))
++    if not isinstance(content, dict):
++        raise ValueError("template content is unavailable")
++    original_name, subject, body = normalize_template_values(
++        row.get("name"), content.get("subject"), content.get("body")
++    )
++    copy_number = 1
++    while copy_number <= 1_000_000:
++        suffix = " copy" if copy_number == 1 else " copy " + str(copy_number)
++        stem = original_name[: 120 - len(suffix)].rstrip()
++        candidate = stem + suffix
++        existing = await d1_first(
++            env,
++            "SELECT id FROM email_templates WHERE name=? COLLATE NOCASE",
++            candidate,
++        )
++        if not existing:
++            return await _email_admin_save_template(
++                env, None, candidate, subject, body
++            )
++        copy_number += 1
++    raise ValueError("could not allocate a template copy name")
++
++
++async def _email_admin_delete_template(env, template_id):
++    record_id = _email_admin_id(template_id, "template")
++    current = await d1_first(
++        env, "SELECT id FROM email_templates WHERE id=?", record_id
++    )
++    if not current:
++        raise ValueError("template not found")
++    await d1_run(env, "DELETE FROM email_templates WHERE id=?", record_id)
++    return "Deleted template."
++
++
++def _email_admin_campaign_id(value):
++    campaign_id = str(value or "").strip()
++    if not re.fullmatch(r"[A-Za-z0-9_-]{24}", campaign_id):
++        raise ValueError("invalid campaign")
++    return campaign_id
++
++
++def _email_admin_random_id():
++    return base64.urlsafe_b64encode(_random_bytes(18)).decode().rstrip("=")
++
++
++def _email_admin_delivery_snapshot(recipient, subject, body):
++    rendered = render_message(subject, body, recipient)
++    return {
++        "email": recipient["email"],
++        "name": recipient.get("name", ""),
++        "company": recipient.get("company", ""),
++        "subject": rendered["subject"],
++        "text": rendered["text"],
++        "html": rendered["html"],
++    }
++
++
++async def _email_admin_batch_run(env, sql, param_rows):
++    if not param_rows:
++        return []
++    base = env.DB.prepare(sql)
++    statements = [base.bind(*params) for params in param_rows]
++    return await env.DB.batch(statements)
++
++
++async def _email_admin_review_campaign(
++    env, category_ids, template_id, subject, body
++):
++    selected = await _email_admin_validate_category_ids(env, category_ids)
++    if not selected:
++        raise ValueError("select at least one category")
++    if len(selected) > 100:
++        raise ValueError("select no more than 100 categories")
++    placeholders = ",".join("?" for _ in selected)
++    live = await d1_all(
++        env,
++        "SELECT id,name FROM email_categories WHERE id IN ("
++        + placeholders
++        + ")",
++        *selected,
++    )
++    category_names = {
++        _email_admin_id(row.get("id"), "category"): normalize_category_name(
++            row.get("name")
++        )
++        for row in live
++    }
++    if any(category_id not in category_names for category_id in selected):
++        raise ValueError("unknown category")
++
++    template_record_id = _email_admin_id(template_id, "template")
++    template = await d1_first(
++        env,
++        "SELECT id,name,data FROM email_templates WHERE id=?",
++        template_record_id,
++    )
++    if not template:
++        raise ValueError("template not found")
++    stored = await decrypt_row(env, template.get("data"))
++    if not isinstance(stored, dict):
++        raise ValueError("template content is unavailable")
++    submitted_subject = str(subject or "").strip()
++    submitted_body = str(body or "").strip()
++    _template_name, final_subject, final_body = normalize_template_values(
++        template.get("name"),
++        submitted_subject or stored.get("subject"),
++        submitted_body or stored.get("body"),
++    )
++
++    selected_row = await d1_first(
++        env,
++        "SELECT COUNT(*) AS n FROM email_category_memberships "
++        "WHERE category_id IN ("
++        + placeholders
++        + ")",
++        *selected,
++    )
++    selected_count = max(0, int((selected_row or {}).get("n", 0) or 0))
++    recipient_rows = await d1_all(
++        env,
++        "SELECT DISTINCT r.id,r.email_bi,r.data FROM email_recipients r "
++        "JOIN email_category_memberships m ON m.recipient_id=r.id "
++        "WHERE m.category_id IN ("
++        + placeholders
++        + ") ORDER BY r.id",
++        *selected,
++    )
++    if not recipient_rows:
++        raise ValueError("selected categories have no recipients")
++
++    recipients = []
++    seen_emails = set()
++    seen_blind_indexes = set()
++    invalid_count = 0
++    normalized_duplicate_count = 0
++    for row in recipient_rows:
++        email_bi = str(row.get("email_bi") or "").strip()
++        if not email_bi:
++            invalid_count += 1
++            continue
++        decrypted = await decrypt_row(env, row.get("data"))
++        if not isinstance(decrypted, dict):
++            invalid_count += 1
++            continue
++        try:
++            recipient = normalize_recipient_record(
++                decrypted.get("email"),
++                decrypted.get("name", ""),
++                decrypted.get("company", ""),
++            )
++            recipient_id = _email_admin_id(row.get("id"), "recipient")
++        except ValueError:
++            invalid_count += 1
++            continue
++        if (
++            email_bi in seen_blind_indexes
++            or recipient["email"] in seen_emails
++        ):
++            normalized_duplicate_count += 1
++            continue
++        seen_blind_indexes.add(email_bi)
++        seen_emails.add(recipient["email"])
++        recipients.append((recipient_id, recipient))
++    if not recipients:
++        raise ValueError("selected categories have no valid recipients")
++
++    overlap_duplicates = max(0, selected_count - len(recipient_rows))
++    campaign_id = _email_admin_random_id()
++    now = int(Date.now())
++    campaign_snapshot = {
++        "category_ids": selected,
++        "category_names": [category_names[item] for item in selected],
++        "template_id": template_record_id,
++        "sender": OUTREACH_SENDER_EMAIL,
++        "subject": final_subject,
++        "body": final_body,
++        "selected_count": selected_count,
++        "unique_count": len(recipients),
++        "duplicate_count": overlap_duplicates + normalized_duplicate_count,
++        "invalid_count": invalid_count,
++        "test_sent_at": 0,
++        "test_email": "",
++    }
++    delivery_sql = (
++        "INSERT INTO email_deliveries "
++        "(id,campaign_id,recipient_id,status,data,attempts,last_error,"
++        "queued_at,sent_at,updated_at) "
++        "VALUES (?,?,?,'draft',?,0,'',0,0,?)"
++    )
++    delivery_params = []
++    for recipient_id, recipient in recipients:
++        snapshot = _email_admin_delivery_snapshot(
++            recipient, final_subject, final_body
++        )
++        delivery_params.append(
++            (
++                _email_admin_random_id(),
++                campaign_id,
++                recipient_id,
++                await encrypt_row(env, snapshot),
++                now,
++            )
++        )
++
++    encrypted_campaign = await encrypt_row(env, campaign_snapshot)
++    await d1_run(
++        env,
++        "INSERT INTO email_campaigns "
++        "(id,status,data,created_at,reviewed_at,queued_at,completed_at) "
++        "VALUES (?,'draft',?,?,?,0,0)",
++        campaign_id,
++        encrypted_campaign,
++        now,
++        now,
++    )
++    try:
++        for start in range(0, len(delivery_params), 100):
++            await _email_admin_batch_run(
++                env, delivery_sql, delivery_params[start:start + 100]
++            )
++    except Exception:
++        await d1_run(
++            env,
++            "DELETE FROM email_deliveries WHERE campaign_id=?",
++            campaign_id,
++        )
++        await d1_run(env, "DELETE FROM email_campaigns WHERE id=?", campaign_id)
++        raise
++    return campaign_id
++
++
++async def _email_admin_send_test(env, campaign_id, destination):
++    record_id = _email_admin_campaign_id(campaign_id)
++    test_email = normalize_email(destination)
++    if not test_email:
++        raise ValueError("valid test recipient email is required")
++    row = await d1_first(
++        env,
++        "SELECT id,status,data FROM email_campaigns WHERE id=?",
++        record_id,
++    )
++    if not row:
++        raise ValueError("campaign not found")
++    if row.get("status") != "draft":
++        raise ValueError("only a draft campaign can send a test")
++    snapshot = await decrypt_row(env, row.get("data"))
++    if not isinstance(snapshot, dict):
++        raise ValueError("campaign content is unavailable")
++    _name, subject, body = normalize_template_values(
++        "Campaign test", snapshot.get("subject"), snapshot.get("body")
++    )
++    rendered = render_message(
++        subject,
++        body,
++        {"email": test_email, "name": "", "company": ""},
++    )
++    result = await _send_email(
++        env,
++        test_email,
++        "[TEST] " + rendered["subject"],
++        rendered["text"],
++        rendered["html"],
++        from_email=OUTREACH_SENDER_EMAIL,
++        from_name=_outreach_sender_name(env),
++        reply_to_email=OUTREACH_SENDER_EMAIL,
++        reply_to_name=_outreach_sender_name(env),
++        custom_variables={"forkmesh_campaign_id": record_id, "test": "true"},
++        detailed=True,
++    )
++    if not isinstance(result, dict) or not result.get("ok"):
++        error = result.get("error", "provider rejected the request") if isinstance(
++            result, dict
++        ) else "provider rejected the request"
++        raise ValueError("Test email failed: " + str(error)[:160])
++    updated = dict(snapshot)
++    updated["test_sent_at"] = int(Date.now())
++    updated["test_email"] = test_email
++    await d1_run(
++        env,
++        "UPDATE email_campaigns SET data=? WHERE id=? AND status='draft'",
++        await encrypt_row(env, updated),
++        record_id,
++    )
++    return "Sent test email to " + test_email + "."
++
++
++async def _email_admin_publish_deliveries(env, campaign_id):
++    record_id = _email_admin_campaign_id(campaign_id)
++    queue = getattr(env, "EMAIL_QUEUE", None)
++    if not queue:
++        raise ValueError("Email queue is not configured.")
++    rows = await d1_all(
++        env,
++        "SELECT id FROM email_deliveries "
++        "WHERE campaign_id=? AND status='queued' ORDER BY id",
++        record_id,
++    )
++    for start in range(0, len(rows), 100):
++        messages = [
++            {"body": {"delivery_id": row["id"]}}
++            for row in rows[start:start + 100]
++        ]
++        await queue.sendBatch(messages)
++    return len(rows)
++
++
++async def _email_admin_confirm_campaign(env, campaign_id):
++    record_id = _email_admin_campaign_id(campaign_id)
++    row = await d1_first(
++        env,
++        "SELECT id,status,data FROM email_campaigns WHERE id=?",
++        record_id,
++    )
++    if not row:
++        raise ValueError("campaign not found")
++    if row.get("status") != "draft":
++        return False
++    snapshot = await decrypt_row(env, row.get("data"))
++    try:
++        test_sent_at = int(snapshot.get("test_sent_at") or 0)
++    except (AttributeError, TypeError, ValueError):
++        test_sent_at = 0
++    if not isinstance(snapshot, dict) or test_sent_at <= 0:
++        raise ValueError("send a successful test before confirming the campaign")
++    if not getattr(env, "EMAIL_QUEUE", None):
++        raise ValueError("Email queue is not configured.")
++    now = int(Date.now())
++    claimed = await d1_first(
++        env,
++        "UPDATE email_campaigns SET status='queued',queued_at=? "
++        "WHERE id=? AND status='draft' RETURNING id",
++        now,
++        record_id,
++    )
++    if not claimed:
++        existing = await d1_first(
++            env, "SELECT id FROM email_campaigns WHERE id=?", record_id
++        )
++        if not existing:
++            raise ValueError("campaign not found")
++        return False
++    await d1_run(
++        env,
++        "UPDATE email_deliveries SET status='queued',queued_at=?,updated_at=? "
++        "WHERE campaign_id=? AND status='draft'",
++        now,
++        now,
++        record_id,
++    )
++    await _email_admin_publish_deliveries(env, record_id)
++    return True
++
++
++async def _email_admin_load_draft(env, campaign_id):
++    record_id = _email_admin_campaign_id(campaign_id)
++    row = await d1_first(
++        env,
++        "SELECT id,status,data,created_at,reviewed_at,queued_at "
++        "FROM email_campaigns WHERE id=?",
++        record_id,
++    )
++    if not row:
++        raise ValueError("campaign not found")
++    snapshot = await decrypt_row(env, row.get("data"))
++    if not isinstance(snapshot, dict):
++        raise ValueError("campaign content is unavailable")
++
++    def safe_count(key):
++        try:
++            return max(0, int(snapshot.get(key) or 0))
++        except (TypeError, ValueError):
++            return 0
++
++    _name, subject, body = normalize_template_values(
++        "Campaign", snapshot.get("subject"), snapshot.get("body")
++    )
++    preview_recipient = {
++        "email": "preview@example.com",
++        "name": "Preview",
++        "company": "ForkMesh",
++    }
++    delivery = await d1_first(
++        env,
++        "SELECT data FROM email_deliveries WHERE campaign_id=? ORDER BY id LIMIT 1",
++        record_id,
++    )
++    if delivery:
++        delivery_snapshot = await decrypt_row(env, delivery.get("data"))
++        if isinstance(delivery_snapshot, dict):
++            try:
++                preview_recipient = normalize_recipient_record(
++                    delivery_snapshot.get("email"),
++                    delivery_snapshot.get("name", ""),
++                    delivery_snapshot.get("company", ""),
++                )
++            except ValueError:
++                pass
++    preview = render_message(subject, body, preview_recipient)
++    category_names = []
++    stored_category_names = snapshot.get("category_names", [])
++    if not isinstance(stored_category_names, list):
++        stored_category_names = []
++    for value in stored_category_names:
++        try:
++            category_names.append(normalize_category_name(value))
++        except ValueError:
++            continue
++    return {
++        "id": record_id,
++        "status": str(row.get("status") or "draft"),
++        "category_names": category_names,
++        "selected_count": safe_count("selected_count"),
++        "unique_count": safe_count("unique_count"),
++        "duplicate_count": safe_count("duplicate_count"),
++        "invalid_count": safe_count("invalid_count"),
++        "subject": subject,
++        "body": body,
++        "test_sent_at": safe_count("test_sent_at"),
++        "test_email": normalize_email(snapshot.get("test_email")),
++        "preview": {"subject": preview["subject"], "html": preview["html"]},
++    }
++
++
++async def _email_admin_load_model(
++    env, category_id=None, campaign_id=None
++):
++    categories_raw = await d1_all(
++        env,
++        "SELECT c.id,c.name,COUNT(m.recipient_id) AS count "
++        "FROM email_categories c "
++        "LEFT JOIN email_category_memberships m ON m.category_id=c.id "
++        "GROUP BY c.id,c.name ORDER BY lower(c.name),c.id",
++    )
++    categories = []
++    category_by_id = {}
++    for raw in categories_raw:
++        try:
++            item = {
++                "id": _email_admin_id(raw.get("id"), "category"),
++                "name": normalize_category_name(raw.get("name")),
++                "count": max(0, int(raw.get("count") or 0)),
++            }
++        except (TypeError, ValueError):
++            continue
++        categories.append(item)
++        category_by_id[item["id"]] = item
++
++    memberships_raw = await d1_all(
++        env,
++        "SELECT recipient_id,category_id "
++        "FROM email_category_memberships "
++        "ORDER BY recipient_id,category_id",
++    )
++    memberships = {}
++    for raw in memberships_raw:
++        try:
++            recipient_id = _email_admin_id(raw.get("recipient_id"), "recipient")
++            membership_id = _email_admin_id(raw.get("category_id"), "category")
++        except ValueError:
++            continue
++        if membership_id in category_by_id:
++            memberships.setdefault(recipient_id, set()).add(membership_id)
++
++    selected_category = None
++    if category_id is not None:
++        selected_category = _email_admin_id(category_id, "category")
++    recipients_raw = await d1_all(
++        env,
++        "SELECT id,data,updated_at FROM email_recipients "
++        "ORDER BY updated_at DESC,id DESC",
++    )
++    recipients = []
++    for raw in recipients_raw:
++        try:
++            recipient_id = _email_admin_id(raw.get("id"), "recipient")
++        except ValueError:
++            continue
++        recipient_categories = memberships.get(recipient_id, set())
++        if (
++            selected_category is not None
++            and selected_category not in recipient_categories
++        ):
++            continue
++        decrypted = await decrypt_row(env, raw.get("data"))
++        if not isinstance(decrypted, dict):
++            continue
++        try:
++            record = normalize_recipient_record(
++                decrypted.get("email"),
++                decrypted.get("name", ""),
++                decrypted.get("company", ""),
++            )
++            updated_at = max(0, int(raw.get("updated_at") or 0))
++        except (TypeError, ValueError):
++            continue
++        ordered_category_ids = [
++            category["id"]
++            for category in categories
++            if category["id"] in recipient_categories
++        ]
++        recipients.append(
++            {
++                "id": recipient_id,
++                "email": record["email"],
++                "name": record["name"],
++                "company": record["company"],
++                "categories": [
++                    category_by_id[item]["name"]
++                    for item in ordered_category_ids
++                ],
++                "category_ids": ordered_category_ids,
++                "updated_at": updated_at,
++            }
++        )
++
++    templates_raw = await d1_all(
++        env,
++        "SELECT id,name,data,is_seeded,updated_at FROM email_templates "
++        "ORDER BY lower(name),id",
++    )
++    templates = []
++    for raw in templates_raw:
++        decrypted = await decrypt_row(env, raw.get("data"))
++        if not isinstance(decrypted, dict):
++            continue
++        try:
++            template_id = _email_admin_id(raw.get("id"), "template")
++            name, subject, body = normalize_template_values(
++                raw.get("name"),
++                decrypted.get("subject"),
++                decrypted.get("body"),
++            )
++            is_seeded = int(raw.get("is_seeded") or 0) == 1
++            updated_at = max(0, int(raw.get("updated_at") or 0))
++        except (TypeError, ValueError):
++            continue
++        templates.append(
++            {
++                "id": template_id,
++                "name": name,
++                "subject": subject,
++                "body": body,
++                "is_seeded": is_seeded,
++                "updated_at": updated_at,
++            }
++        )
++    model = {
++        "recipients": recipients,
++        "categories": categories,
++        "templates": templates,
++        "campaigns": [],
++    }
++    if campaign_id is not None:
++        model["draft"] = await _email_admin_load_draft(env, campaign_id)
++    return model
++
++
++async def _email_admin_create_category(env, value):
++    name = normalize_category_name(value)
++    existing = await d1_first(
++        env,
++        "SELECT id FROM email_categories WHERE name=? COLLATE NOCASE",
++        name,
++    )
++    if existing:
++        raise ValueError("category already exists")
++    now = int(Date.now())
++    await d1_run(
++        env,
++        "INSERT INTO email_categories (name,created_at,updated_at) VALUES (?,?,?)",
++        name,
++        now,
++        now,
++    )
++    return "Created category '" + name + "'."
++
++
++async def _email_admin_rename_category(env, category_id, value):
++    record_id = _email_admin_id(category_id, "category")
++    name = normalize_category_name(value)
++    current = await d1_first(
++        env, "SELECT id FROM email_categories WHERE id=?", record_id
++    )
++    if not current:
++        raise ValueError("category not found")
++    existing = await d1_first(
++        env,
++        "SELECT id FROM email_categories WHERE name=? COLLATE NOCASE",
++        name,
++    )
++    if existing and int(existing["id"]) != record_id:
++        raise ValueError("category already exists")
++    await d1_run(
++        env,
++        "UPDATE email_categories SET name=?,updated_at=? WHERE id=?",
++        name,
++        int(Date.now()),
++        record_id,
++    )
++    return "Renamed category to '" + name + "'."
++
++
++async def _email_admin_delete_category(env, category_id):
++    record_id = _email_admin_id(category_id, "category")
++    current = await d1_first(
++        env, "SELECT id FROM email_categories WHERE id=?", record_id
++    )
++    if not current:
++        raise ValueError("category not found")
++    await d1_run(
++        env,
++        "DELETE FROM email_category_memberships WHERE category_id=?",
++        record_id,
++    )
++    await d1_run(env, "DELETE FROM email_categories WHERE id=?", record_id)
++    return "Deleted category."
++
++
++async def _email_admin_set_memberships(env, recipient_id, submitted_ids):
++    record_id = _email_admin_id(recipient_id, "recipient")
++    current = await d1_first(
++        env, "SELECT id FROM email_recipients WHERE id=?", record_id
++    )
++    if not current:
++        raise ValueError("recipient not found")
++    selected_ids = await _email_admin_validate_category_ids(env, submitted_ids)
++    await d1_run(
++        env,
++        "DELETE FROM email_category_memberships WHERE recipient_id=?",
++        record_id,
++    )
++    now = int(Date.now())
++    for category_id in selected_ids:
++        await d1_run(
++            env,
++            "INSERT OR IGNORE INTO email_category_memberships "
++            "(category_id,recipient_id,created_at) VALUES (?,?,?)",
++            category_id,
++            record_id,
++            now,
++        )
++    return "Updated recipient categories."
++
++
++async def _email_admin_delete_recipient(env, recipient_id):
++    record_id = _email_admin_id(recipient_id, "recipient")
++    current = await d1_first(
++        env, "SELECT id FROM email_recipients WHERE id=?", record_id
++    )
++    if not current:
++        raise ValueError("recipient not found")
++    await d1_run(
++        env,
++        "DELETE FROM email_category_memberships WHERE recipient_id=?",
++        record_id,
++    )
++    await d1_run(env, "DELETE FROM email_recipients WHERE id=?", record_id)
++    return "Deleted recipient."
++
++
++async def _email_admin_update_recipient(
++    env, recipient_id, email, name, company
++):
++    record_id = _email_admin_id(recipient_id, "recipient")
++    record = normalize_recipient_record(email, name, company)
++    current = await d1_first(
++        env, "SELECT id FROM email_recipients WHERE id=?", record_id
++    )
++    if not current:
++        raise ValueError("recipient not found")
++    email_bi = await blind_index(env, record["email"])
++    existing = await d1_first(
++        env,
++        "SELECT id FROM email_recipients WHERE email_bi=?",
++        email_bi,
++    )
++    if existing and int(existing["id"]) != record_id:
++        raise ValueError("recipient email already exists")
++    await d1_run(
++        env,
++        "UPDATE email_recipients SET email_bi=?,data=?,updated_at=? WHERE id=?",
++        email_bi,
++        await encrypt_row(env, record),
++        int(Date.now()),
++        record_id,
++    )
++    return "Updated recipient."
++
++
++def _email_admin_form_value(form, name):
++    return str((form.get(name, [""]) or [""])[0])
++
++
++def _email_admin_import_error_banner(errors):
++    labels = {
++        "invalid_json": "invalid JSON",
++        "array_required": "a JSON array is required",
++        "payload_too_large": "the JSON payload is too large",
++        "recipient_limit_exceeded": "the recipient limit was exceeded",
++        "recipient_must_be_string_or_object": "use an email string or object",
++        "invalid_email": "invalid email",
++        "invalid_name": "invalid name",
++        "invalid_company": "invalid company",
++    }
++    details = []
++    for error in errors[:8]:
++        try:
++            index = int(error.get("index", -1))
++        except (AttributeError, TypeError, ValueError):
++            index = -1
++        code = error.get("error", "invalid recipient") if isinstance(
++            error, dict
++        ) else "invalid recipient"
++        location = "request" if index < 0 else "item " + str(index + 1)
++        details.append(location + ": " + labels.get(code, "invalid recipient"))
++    remaining = max(0, len(errors) - len(details))
++    suffix = (
++        "; plus " + str(remaining) + " more error(s)" if remaining else ""
++    )
++    return "Import blocked. " + "; ".join(details) + suffix + "."
++
++
++def _email_admin_action_location(view, notice, campaign_id=None):
++    allowed = {"recipients", "categories", "templates", "compose", "jobs"}
++    active = view if view in allowed else "recipients"
++    location = (
++        EMAIL_ADMIN_PATH
++        + "?view="
++        + quote(active, safe="")
++        + "&notice="
++        + quote(str(notice)[:240], safe="")
++    )
++    if campaign_id:
++        location += "&campaign=" + quote(str(campaign_id), safe="")
++    return location
++
++
+ def _admin_session_valid(env, request, admin):
+     token = _cookie_value(request, ADMIN_SESSION_COOKIE)
+     parts = token.split(".")
+@@ -15251,11 +16225,35 @@ class Default(WorkerEntrypoint):
+                     _email_admin_login_token(self.env, bucket), bucket)
+                 return _email_admin_html_response(page)
+             view = (params.get("view", ["recipients"]) or ["recipients"])[0]
++            category_value = (
++                params.get("category", [""]) or [""]
++            )[0]
++            campaign_value = (
++                params.get("campaign", [""]) or [""]
++            )[0]
++            category_id = None
++            campaign_id = None
++            banner = str((params.get("notice", [""]) or [""])[0])[:240]
++            if category_value:
++                try:
++                    category_id = _email_admin_id(category_value, "category")
++                except ValueError:
++                    banner = "Invalid category filter."
++            if campaign_value:
++                try:
++                    campaign_id = _email_admin_campaign_id(campaign_value)
++                except ValueError:
++                    banner = "Invalid campaign."
++            await _email_admin_seed_defaults(self.env)
++            await _email_admin_seed_templates(self.env)
++            model = await _email_admin_load_model(
++                self.env, category_id, campaign_id
++            )
+             page = render_console_page(
+                 view,
+                 _email_admin_csrf_token(self.env, request),
+-                {"recipients": [], "categories": [], "templates": [],
+-                 "campaigns": []},
++                model,
++                banner,
+             )
+             return _email_admin_html_response(page)
+ 
+@@ -15280,16 +16278,19 @@ class Default(WorkerEntrypoint):
+             return _email_admin_html_response(
+                 "Request too large.", status=413)
+         form = parse_qs(form_body, keep_blank_values=True)
++        submitted_action = _email_admin_form_value(form, "action")
++        if submitted_action:
++            action = submitted_action
+ 
+         if action == "login":
+-            username = str((form.get("username", [""]) or [""])[0])[:254]
+-            password = str((form.get("password", [""]) or [""])[0])[:256]
+-            login_bucket = (form.get("login_bucket", [""]) or [""])[0]
+-            login_token = (form.get("login_csrf", [""]) or [""])[0]
++            username = _email_admin_form_value(form, "username")[:254]
++            password = _email_admin_form_value(form, "password")[:256]
++            login_bucket = _email_admin_form_value(form, "login_bucket")
++            login_token = _email_admin_form_value(form, "login_csrf")
+             login_key = await _email_admin_login_key(self.env, request)
+             locked = bool(await _login_locked_until(self.env, login_key))
+             expected_username = str(
+-                getattr(self.env, "EMAIL_ADMIN_USERNAME", "") or "")
++                getattr(self.env, "EMAIL_ADMIN_USERNAME", "") or "").strip()
+             salt, digest = _email_admin_password_parts(self.env)
+ 
+             # Always spend the password verification, even when the username,
+@@ -15329,9 +16330,8 @@ class Default(WorkerEntrypoint):
+ 
+         view = (params.get("view", ["recipients"]) or ["recipients"])[0]
+         csrf = _email_admin_csrf_token(self.env, request)
+-        model = {"recipients": [], "categories": [], "templates": [],
+-                 "campaigns": []}
+         if not _email_admin_csrf_ok(self.env, request, form):
++            model = await _email_admin_load_model(self.env)
+             page = render_console_page(
+                 view, csrf, model,
+                 "Action blocked: invalid or missing CSRF token.")
+@@ -15341,9 +16341,163 @@ class Default(WorkerEntrypoint):
+                 "Set-Cookie": _clear_email_admin_session_cookie(),
+             })
+ 
+-        page = render_console_page(
+-            view, csrf, model, "Unknown email admin action.")
+-        return _email_admin_html_response(page, status=400)
++        await _email_admin_seed_defaults(self.env)
++        await _email_admin_seed_templates(self.env)
++        redirect_campaign_id = None
++        try:
++            if action == "review_campaign":
++                redirect_campaign_id = await _email_admin_review_campaign(
++                    self.env,
++                    form.get("category_ids", []),
++                    _email_admin_form_value(form, "template_id"),
++                    _email_admin_form_value(form, "subject"),
++                    _email_admin_form_value(form, "body"),
++                )
++                notice = "Campaign snapshot is ready for final review."
++                view = "compose"
++            elif action == "send_test":
++                redirect_campaign_id = _email_admin_form_value(
++                    form, "campaign_id"
++                )
++                notice = await _email_admin_send_test(
++                    self.env,
++                    redirect_campaign_id,
++                    _email_admin_form_value(form, "test_email"),
++                )
++                view = "compose"
++            elif action == "confirm_campaign":
++                if _email_admin_form_value(form, "confirm_send") != "1":
++                    raise ValueError("Confirm the reviewed send first.")
++                redirect_campaign_id = _email_admin_form_value(
++                    form, "campaign_id"
++                )
++                queued = await _email_admin_confirm_campaign(
++                    self.env, redirect_campaign_id
++                )
++                notice = (
++                    "Campaign queued for delivery."
++                    if queued
++                    else "Campaign was already queued."
++                )
++                view = "jobs"
++            elif action == "import_recipients":
++                allow_partial = _email_admin_form_value(
++                    form, "allow_partial"
++                ) == "1"
++                imported, errors = await _email_admin_import_recipients(
++                    self.env,
++                    _email_admin_form_value(form, "recipients_json"),
++                    form.get("category_ids", []),
++                    allow_partial=allow_partial,
++                )
++                if errors and not allow_partial:
++                    raise ValueError(_email_admin_import_error_banner(errors))
++                if imported < 1:
++                    if errors:
++                        raise ValueError(_email_admin_import_error_banner(errors))
++                    raise ValueError("No valid recipients to import.")
++                notice = (
++                    "Imported "
++                    + str(imported)
++                    + (" recipient." if imported == 1 else " recipients.")
++                )
++                if errors:
++                    notice += " Skipped " + str(len(errors)) + " invalid item(s)."
++                view = "recipients"
++            elif action == "update_recipient":
++                notice = await _email_admin_update_recipient(
++                    self.env,
++                    _email_admin_form_value(form, "recipient_id"),
++                    _email_admin_form_value(form, "email"),
++                    _email_admin_form_value(form, "name"),
++                    _email_admin_form_value(form, "company"),
++                )
++                view = "recipients"
++            elif action == "delete_recipient":
++                if _email_admin_form_value(form, "confirm_delete") != "1":
++                    raise ValueError("Confirm recipient deletion first.")
++                notice = await _email_admin_delete_recipient(
++                    self.env,
++                    _email_admin_form_value(form, "recipient_id"),
++                )
++                view = "recipients"
++            elif action == "set_memberships":
++                notice = await _email_admin_set_memberships(
++                    self.env,
++                    _email_admin_form_value(form, "recipient_id"),
++                    form.get("category_ids", []),
++                )
++                view = "recipients"
++            elif action == "create_category":
++                notice = await _email_admin_create_category(
++                    self.env, _email_admin_form_value(form, "name")
++                )
++                view = "categories"
++            elif action == "rename_category":
++                notice = await _email_admin_rename_category(
++                    self.env,
++                    _email_admin_form_value(form, "category_id"),
++                    _email_admin_form_value(form, "name"),
++                )
++                view = "categories"
++            elif action == "delete_category":
++                if _email_admin_form_value(form, "confirm_delete") != "1":
++                    raise ValueError("Confirm category deletion first.")
++                notice = await _email_admin_delete_category(
++                    self.env,
++                    _email_admin_form_value(form, "category_id"),
++                )
++                view = "categories"
++            elif action == "save_template":
++                notice = await _email_admin_save_template(
++                    self.env,
++                    _email_admin_form_value(form, "template_id"),
++                    _email_admin_form_value(form, "name"),
++                    _email_admin_form_value(form, "subject"),
++                    _email_admin_form_value(form, "body"),
++                )
++                view = "templates"
++            elif action == "duplicate_template":
++                notice = await _email_admin_duplicate_template(
++                    self.env,
++                    _email_admin_form_value(form, "template_id"),
++                )
++                view = "templates"
++            elif action == "delete_template":
++                if _email_admin_form_value(form, "confirm_delete") != "1":
++                    raise ValueError("Confirm template deletion first.")
++                notice = await _email_admin_delete_template(
++                    self.env,
++                    _email_admin_form_value(form, "template_id"),
++                )
++                view = "templates"
++            else:
++                raise ValueError("Unknown email admin action.")
++        except ValueError as error:
++            error_campaign_id = None
++            submitted_campaign = _email_admin_form_value(form, "campaign_id")
++            if submitted_campaign:
++                try:
++                    error_campaign_id = _email_admin_campaign_id(
++                        submitted_campaign
++                    )
++                except ValueError:
++                    pass
++            model = await _email_admin_load_model(
++                self.env, campaign_id=error_campaign_id
++            )
++            page = render_console_page(view, csrf, model, str(error))
++            return _email_admin_html_response(page, status=400)
++
++        if redirect_campaign_id:
++            location = _email_admin_action_location(
++                view, notice, redirect_campaign_id
++            )
++        else:
++            location = _email_admin_action_location(view, notice)
++        return _email_admin_redirect(
++            location=location
++        )
+ 
+     async def _admin(self, request):
+         await ensure_schema(self.env)
+diff --git a/cloudflare_worker/tests/test_email_admin_domain.py b/cloudflare_worker/tests/test_email_admin_domain.py
+index a81a66b2..bfaa4435 100644
+--- a/cloudflare_worker/tests/test_email_admin_domain.py
++++ b/cloudflare_worker/tests/test_email_admin_domain.py
+@@ -9,7 +9,10 @@ from src.email_admin import (
+     DEFAULT_CATEGORIES,
+     DEFAULT_TEMPLATES,
+     dedupe_recipients,
++    normalize_category_name,
+     normalize_email,
++    normalize_recipient_record,
++    normalize_template_values,
+     parse_recipient_array,
+     render_message,
+ )
+@@ -263,6 +266,85 @@ def test_dedupe_recipients_does_not_stringify_invalid_metadata():
+     ]
+ 
+ 
++def test_category_name_trims_and_normalizes_unicode():
++    assert normalize_category_name("  Cafe\N{COMBINING ACUTE ACCENT}  ") == "Café"
++
++
++@pytest.mark.parametrize(
++    "value",
++    (
++        "",
++        "   ",
++        None,
++        42,
++        "line\nbreak",
++        "category\x00name",
++        "x" * 81,
++    ),
++)
++def test_category_name_rejects_invalid_values(value):
++    with pytest.raises(ValueError):
++        normalize_category_name(value)
++
++
++def test_normalize_recipient_record_cleans_all_editable_fields():
++    assert normalize_recipient_record(
++        " PERSON@Example.com ", "  Pat  ", "  Orbit  "
++    ) == {
++        "email": "person@example.com",
++        "name": "Pat",
++        "company": "Orbit",
++    }
++
++
++@pytest.mark.parametrize(
++    ("email", "name", "company"),
++    (
++        ("invalid", "Pat", "Orbit"),
++        ("person@example.com", "Pat\nBcc: target@example.com", "Orbit"),
++        ("person@example.com", "Pat", "Orbit\x00Labs"),
++        ("person@example.com", {"name": "Pat"}, "Orbit"),
++    ),
++)
++def test_normalize_recipient_record_rejects_invalid_fields(email, name, company):
++    with pytest.raises(ValueError):
++        normalize_recipient_record(email, name, company)
++
++
++def test_normalize_template_values_trims_and_validates_placeholders():
++    assert normalize_template_values(
++        "  Sponsor note  ",
++        "  Hello {{name}}  ",
++        "  Talk with {{company}} at {{email}}.\n  ",
++    ) == (
++        "Sponsor note",
++        "Hello {{name}}",
++        "Talk with {{company}} at {{email}}.",
++    )
++
++
++@pytest.mark.parametrize(
++    ("name", "subject", "body", "message"),
++    (
++        ("", "Subject", "Body", "name, subject, and body"),
++        ("Name", "", "Body", "name, subject, and body"),
++        ("Name", "Subject", "", "name, subject, and body"),
++        ("N" * 121, "Subject", "Body", "120 characters"),
++        ("Name", "S" * 241, "Body", "240 characters"),
++        ("Name", "Subject", "B" * 32_001, "32000 characters"),
++        ("Bad\nname", "Subject", "Body", "invalid characters"),
++        ("Name", "Header\nBcc: target@example.com", "Body", "single line"),
++        ("Name", "Subject", "Body\x00data", "invalid characters"),
++        ("Name", "Hello {{role}}", "Body", "unknown placeholder"),
++    ),
++)
++def test_normalize_template_values_rejects_invalid_content(
++    name, subject, body, message
++):
++    with pytest.raises(ValueError, match=message):
++        normalize_template_values(name, subject, body)
++
++
+ def test_render_message_uses_fallbacks_and_generates_safe_html():
+     rendered = render_message(
+         "Hello {{ name }}",
+diff --git a/cloudflare_worker/tests/test_email_admin_frontend.py b/cloudflare_worker/tests/test_email_admin_frontend.py
+index 87601fab..bf6c759b 100644
+--- a/cloudflare_worker/tests/test_email_admin_frontend.py
++++ b/cloudflare_worker/tests/test_email_admin_frontend.py
+@@ -60,3 +60,310 @@ def test_console_css_is_responsive_focus_visible_and_overflow_safe():
+     assert "<header" in page
+     assert "<nav" in page
+     assert "<main" in page
++
++
++RECIPIENT_MODEL = {
++    "recipients": [
++        {
++            "id": 7,
++            "email": "pat@example.com",
++            "name": "Pat",
++            "company": "Orbit",
++            "categories": ["following", "confirmed"],
++            "category_ids": [2, 3],
++            "updated_at": 1_720_000_000_000,
++        }
++    ],
++    "categories": [
++        {"id": 2, "name": "following", "count": 1},
++        {"id": 3, "name": "confirmed", "count": 1},
++        {"id": 4, "name": "not-responding", "count": 0},
++    ],
++    "templates": [],
++    "campaigns": [],
++}
++
++
++def test_recipient_view_exposes_json_import_edit_and_multiple_categories():
++    page = render_console_page("recipients", "csrf-token", RECIPIENT_MODEL)
++
++    assert 'name="recipients_json"' in page
++    assert (
++        '["person@example.com", '
++        '{"email":"pat@example.com","name":"Pat","company":"Orbit"}]'
++        in page
++    )
++    assert 'name="allow_partial"' in page
++    assert 'name="category_ids" value="2" checked' in page
++    assert 'name="category_ids" value="3" checked' in page
++    assert 'name="category_ids" value="4"' in page
++    assert 'name="action" value="import_recipients"' in page
++    assert 'name="action" value="update_recipient"' in page
++    assert 'name="action" value="set_memberships"' in page
++    assert 'name="action" value="delete_recipient"' in page
++    assert 'name="recipient_id" value="7"' in page
++    assert "pat@example.com" in page
++    assert "Pat" in page
++    assert "Orbit" in page
++    assert "2024-07-03" in page
++
++
++def test_recipient_view_escapes_decrypted_values_and_never_renders_ciphertext():
++    model = {
++        **RECIPIENT_MODEL,
++        "recipients": [
++            {
++                **RECIPIENT_MODEL["recipients"][0],
++                "email": "safe@example.com",
++                "name": '<script>alert("x")</script>',
++                "company": 'A&B "Corp"',
++                "data": "encrypted-private-blob",
++            }
++        ],
++    }
++
++    page = render_console_page("recipients", 'csrf"><script>', model)
++
++    assert "<script>" not in page
++    assert "&lt;script&gt;" in page
++    assert "A&amp;B" in page
++    assert "encrypted-private-blob" not in page
++    assert 'csrf&quot;&gt;&lt;script&gt;' in page
++
++
++def test_category_view_has_create_rename_delete_counts_and_filter_links():
++    page = render_console_page("categories", "csrf", RECIPIENT_MODEL)
++
++    assert 'name="action" value="create_category"' in page
++    assert 'name="action" value="rename_category"' in page
++    assert 'name="action" value="delete_category"' in page
++    assert 'name="category_id" value="2"' in page
++    assert "/admin-email?view=recipients&amp;category=2" in page
++    assert "following" in page
++    assert ">1<" in page
++    assert 'name="confirm_delete"' in page
++    assert "Deleting a category keeps its recipients" in page
++
++
++def test_recipient_and_category_empty_tables_have_clear_empty_states():
++    page = render_console_page("recipients", "csrf", EMPTY_MODEL)
++    categories = render_console_page("categories", "csrf", EMPTY_MODEL)
++
++    assert "No recipients yet." in page
++    assert "No categories yet." in categories
++
++
++TEMPLATE_MODEL = {
++    "recipients": [],
++    "categories": [],
++    "templates": [
++        {
++            "id": 7,
++            "name": "Follow-up",
++            "subject": "Hi {{name}}",
++            "body": "Hello {{name}},\n\nTalk with {{company}}.",
++            "is_seeded": True,
++            "updated_at": 1_720_000_000_000,
++        }
++    ],
++    "campaigns": [],
++}
++
++
++def test_template_view_has_create_edit_duplicate_delete_and_preview_controls():
++    page = render_console_page("templates", "csrf-token", TEMPLATE_MODEL)
++
++    assert "Placeholders: {{name}}, {{company}}, {{email}}" in page
++    assert 'name="name"' in page
++    assert 'name="subject"' in page
++    assert 'name="body"' in page
++    assert 'name="action" value="save_template"' in page
++    assert 'name="action" value="duplicate_template"' in page
++    assert 'name="action" value="delete_template"' in page
++    assert 'name="template_id" value="7"' in page
++    assert 'name="confirm_delete"' in page
++    assert "Seeded default" in page
++    assert '<iframe sandbox title="Template preview: Follow-up"' in page
++    assert "Hello Preview" in page
++    assert "Talk with ForkMesh." in page
++
++
++def test_template_editor_escapes_fields_and_sandboxed_preview_srcdoc():
++    model = {
++        **TEMPLATE_MODEL,
++        "templates": [
++            {
++                **TEMPLATE_MODEL["templates"][0],
++                "name": 'Unsafe"><script>alert(1)</script>',
++                "subject": 'Hello "{{name}}"',
++                "body": '</textarea><img src=x onerror="alert(1)">',
++            }
++        ],
++    }
++
++    page = render_console_page("templates", 'csrf"><script>', model)
++
++    assert "<script>" not in page
++    assert "</textarea><img" not in page
++    assert "&lt;/textarea&gt;&lt;img" in page
++    assert "onerror=&quot;alert(1)&quot;" in page
++    assert "sandbox" in page
++    assert 'srcdoc="&lt;p&gt;' in page
++    assert 'csrf&quot;&gt;&lt;script&gt;' in page
++
++
++def test_template_empty_state_still_exposes_create_form():
++    page = render_console_page("templates", "csrf", EMPTY_MODEL)
++
++    assert "Create template" in page
++    assert "No saved templates yet." in page
++
++
++COMPOSE_MODEL = {
++    "recipients": [],
++    "categories": [
++        {"id": 1, "name": "following", "count": 8},
++        {"id": 2, "name": "confirmed", "count": 4},
++    ],
++    "templates": [
++        {
++            "id": 3,
++            "name": "Sponsorship introduction",
++            "subject": "Partner with ForkMesh",
++            "body": "Hi {{name}}",
++            "is_seeded": True,
++            "updated_at": 1,
++        }
++    ],
++    "campaigns": [],
++}
++
++
++def test_compose_view_requires_categories_template_and_review_action():
++    page = render_console_page("compose", "csrf", COMPOSE_MODEL)
++
++    assert 'name="category_ids" value="1"' in page
++    assert 'name="category_ids" value="2"' in page
++    assert "following (8)" in page
++    assert 'select name="template_id" required' in page
++    assert 'option value="3"' in page
++    assert 'name="subject" maxlength="240"' in page
++    assert 'name="body" maxlength="32000"' in page
++    assert 'name="action" value="review_campaign"' in page
++    assert "Review campaign" in page
++
++
++def test_compose_review_shows_exact_counts_preview_and_test_gate():
++    model = {
++        **COMPOSE_MODEL,
++        "draft": {
++            "id": "campaign-id",
++            "status": "draft",
++            "category_names": ["following", "confirmed"],
++            "selected_count": 10,
++            "unique_count": 8,
++            "duplicate_count": 2,
++            "invalid_count": 0,
++            "subject": "Partner with ForkMesh",
++            "body": "Hi {{name}}",
++            "test_sent_at": 0,
++            "preview": {
++                "subject": "Partner with ForkMesh",
++                "html": "<p>Hi Preview</p>",
++            },
++        },
++    }
++
++    page = render_console_page("compose", "csrf", model)
++
++    assert "8 unique recipients" in page
++    assert "2 duplicates removed" in page
++    assert "0 invalid recipients excluded" in page
++    assert 'name="action" value="send_test"' in page
++    assert 'name="test_email"' in page
++    assert '<iframe sandbox title="Campaign preview"' in page
++    assert "Hi Preview" in page
++    assert "Send a successful test before final confirmation." in page
++    assert 'name="action" value="confirm_campaign"' not in page
++
++
++def test_successful_test_unlocks_explicit_final_confirmation():
++    model = {
++        **COMPOSE_MODEL,
++        "draft": {
++            "id": "campaign-id",
++            "status": "draft",
++            "category_names": ["following"],
++            "selected_count": 8,
++            "unique_count": 8,
++            "duplicate_count": 0,
++            "invalid_count": 0,
++            "subject": "Partner",
++            "body": "Hi {{name}}",
++            "test_sent_at": 1_720_000_000_000,
++            "test_email": "operator@example.com",
++            "preview": {"subject": "Partner", "html": "<p>Hi Preview</p>"},
++        },
++    }
++
++    page = render_console_page("compose", "csrf", model)
++
++    assert "Test sent to operator@example.com" in page
++    assert 'name="confirm_send" value="1" required' in page
++    assert 'name="action" value="confirm_campaign"' in page
++    assert "Queue email to 8 recipients" in page
++
++
++def test_compose_review_escapes_campaign_values_and_preview_srcdoc():
++    model = {
++        **COMPOSE_MODEL,
++        "draft": {
++            "id": 'campaign"><script>',
++            "status": "draft",
++            "category_names": ['unsafe<script>', "following"],
++            "selected_count": 1,
++            "unique_count": 1,
++            "duplicate_count": 0,
++            "invalid_count": 0,
++            "subject": '<img src=x onerror="alert(1)">',
++            "body": "Body",
++            "test_sent_at": 0,
++            "preview": {
++                "subject": '<img src=x onerror="alert(1)">',
++                "html": '<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>',
++            },
++        },
++    }
++
++    page = render_console_page("compose", "csrf", model)
++
++    assert "<script>" not in page
++    assert "unsafe&lt;script&gt;" in page
++    assert 'campaign&quot;&gt;&lt;script&gt;' in page
++    assert 'srcdoc="&lt;p&gt;&amp;lt;script&amp;gt;' in page
++
++
++def test_queued_campaign_is_locked_without_test_or_confirmation_controls():
++    model = {
++        **COMPOSE_MODEL,
++        "draft": {
++            "id": "campaign-id",
++            "status": "queued",
++            "category_names": ["following"],
++            "selected_count": 1,
++            "unique_count": 1,
++            "duplicate_count": 0,
++            "invalid_count": 0,
++            "subject": "Partner",
++            "body": "Body",
++            "test_sent_at": 1,
++            "test_email": "operator@example.com",
++            "preview": {"subject": "Partner", "html": "<p>Body</p>"},
++        },
++    }
++
++    page = render_console_page("compose", "csrf", model)
++
++    assert "Campaign is already queued and cannot be edited." in page
++    assert 'name="action" value="send_test"' not in page
++    assert 'name="action" value="confirm_campaign"' not in page
+diff --git a/cloudflare_worker/tests/test_email_admin_worker.py b/cloudflare_worker/tests/test_email_admin_worker.py
+index 9caa81f2..e65ef5b8 100644
+--- a/cloudflare_worker/tests/test_email_admin_worker.py
++++ b/cloudflare_worker/tests/test_email_admin_worker.py
+@@ -2,6 +2,7 @@
+ 
+ import ast
+ import asyncio
++import base64
+ import hashlib
+ import hmac
+ import inspect
+@@ -12,6 +13,8 @@ from types import ModuleType, SimpleNamespace
+ 
+ import pytest
+ 
++from src import email_admin
++
+ 
+ ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
+ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
+@@ -636,6 +639,7 @@ def test_email_admin_headers_block_embedding_sniffing_and_external_content():
+     assert headers["referrer-policy"] == "no-referrer"
+     assert "default-src 'none'" in headers["content-security-policy"]
+     assert "form-action 'self'" in headers["content-security-policy"]
++    assert "frame-src 'self'" in headers["content-security-policy"]
+     assert "frame-ancestors 'none'" in headers["content-security-policy"]
+ 
+ 
+@@ -664,3 +668,959 @@ def test_email_admin_handler_has_generic_failures_csrf_and_no_store():
+     assert "_clear_email_admin_session_cookie" in source
+     assert "render_login_page" in source
+     assert "render_console_page" in source
++
++
++EMAIL_DATA_FUNCTIONS = {
++    "_email_admin_id",
++    "_email_admin_seed_defaults",
++    "_email_admin_validate_category_ids",
++    "_email_admin_import_recipients",
++    "_email_admin_load_model",
++    "_email_admin_create_category",
++    "_email_admin_rename_category",
++    "_email_admin_delete_category",
++    "_email_admin_set_memberships",
++    "_email_admin_delete_recipient",
++    "_email_admin_update_recipient",
++}
++
++
++def _load_email_admin_data(extra_globals):
++    selected = [
++        node
++        for node in ENTRY_TREE.body
++        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
++        and node.name in EMAIL_DATA_FUNCTIONS
++    ]
++    found = {node.name for node in selected}
++    assert found == EMAIL_DATA_FUNCTIONS, (
++        "missing email admin functions: "
++        + ", ".join(sorted(EMAIL_DATA_FUNCTIONS - found))
++    )
++    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
++    namespace = {
++        "Date": _FakeDate,
++        "DEFAULT_CATEGORIES": email_admin.DEFAULT_CATEGORIES,
++        "normalize_category_name": email_admin.normalize_category_name,
++        "normalize_recipient_record": email_admin.normalize_recipient_record,
++        "normalize_template_values": getattr(
++            email_admin, "normalize_template_values", None
++        ),
++        "parse_recipient_array": email_admin.parse_recipient_array,
++    }
++    namespace.update(extra_globals)
++    exec(compile(module, str(ENTRY), "exec"), namespace)
++    return namespace
++
++
++def test_recipient_and_category_actions_are_wired_to_encrypted_storage():
++    for action in (
++        '"import_recipients"',
++        '"update_recipient"',
++        '"delete_recipient"',
++        '"create_category"',
++        '"rename_category"',
++        '"delete_category"',
++        '"set_memberships"',
++    ):
++        assert action in ENTRY_TEXT
++
++    assert "parse_recipient_array" in ENTRY_TEXT
++    assert "await blind_index(env, recipient[\"email\"])" in ENTRY_TEXT
++    assert "await encrypt_row(env, merged)" in ENTRY_TEXT
++    assert "await decrypt_row(env, current.get(\"data\"))" in ENTRY_TEXT
++    assert "INSERT INTO email_recipients" in ENTRY_TEXT
++    assert "ON CONFLICT(email_bi) DO UPDATE" in ENTRY_TEXT
++    assert "INSERT OR IGNORE INTO email_category_memberships" in ENTRY_TEXT
++
++
++def test_invalid_recipient_array_performs_no_writes_without_partial_opt_in():
++    writes = []
++
++    async def unexpected(*args):
++        writes.append(args)
++        raise AssertionError("invalid input must return before database access")
++
++    data = _load_email_admin_data(
++        {
++            "d1_all": unexpected,
++            "d1_first": unexpected,
++            "d1_run": unexpected,
++            "blind_index": unexpected,
++            "encrypt_row": unexpected,
++            "decrypt_row": unexpected,
++        }
++    )
++
++    imported, errors = asyncio.run(
++        data["_email_admin_import_recipients"](
++            SimpleNamespace(),
++            '["valid@example.com", "invalid"]',
++            [1],
++            allow_partial=False,
++        )
++    )
++
++    assert imported == 0
++    assert errors == [{"index": 1, "error": "invalid_email"}]
++    assert writes == []
++
++
++def test_recipient_import_merges_metadata_and_adds_multiple_memberships():
++    writes = []
++    previous = {
++        "email": "person@example.com",
++        "name": "",
++        "company": "Acme",
++    }
++
++    async def d1_all(_env, sql, *_args):
++        assert "SELECT id FROM email_categories" in sql
++        return [{"id": 2}, {"id": 3}]
++
++    async def d1_first(_env, sql, *_args):
++        assert "WHERE email_bi=?" in sql
++        return {"id": 9, "data": previous}
++
++    async def d1_run(_env, sql, *args):
++        writes.append((sql, args))
++
++    async def blind_index(_env, value):
++        return "bi:" + value
++
++    async def encrypt_row(_env, value):
++        return dict(value)
++
++    async def decrypt_row(_env, value):
++        return dict(value)
++
++    data = _load_email_admin_data(
++        {
++            "d1_all": d1_all,
++            "d1_first": d1_first,
++            "d1_run": d1_run,
++            "blind_index": blind_index,
++            "encrypt_row": encrypt_row,
++            "decrypt_row": decrypt_row,
++        }
++    )
++
++    imported, errors = asyncio.run(
++        data["_email_admin_import_recipients"](
++            SimpleNamespace(),
++            '[{"email":"PERSON@example.com","name":"Pat"}]',
++            [3, 2, 3],
++        )
++    )
++
++    assert imported == 1
++    assert errors == []
++    update = next(item for item in writes if "UPDATE email_recipients" in item[0])
++    assert update[1][0] == {
++        "email": "person@example.com",
++        "name": "Pat",
++        "company": "Acme",
++    }
++    memberships = [
++        item[1][0]
++        for item in writes
++        if "INSERT OR IGNORE INTO email_category_memberships" in item[0]
++    ]
++    assert memberships == [2, 3]
++
++
++def test_unknown_import_category_is_rejected_before_recipient_writes():
++    writes = []
++
++    async def d1_all(_env, _sql, *_args):
++        return [{"id": 2}]
++
++    async def d1_run(_env, sql, *args):
++        writes.append((sql, args))
++
++    data = _load_email_admin_data(
++        {
++            "d1_all": d1_all,
++            "d1_first": None,
++            "d1_run": d1_run,
++            "blind_index": None,
++            "encrypt_row": None,
++            "decrypt_row": None,
++        }
++    )
++
++    with pytest.raises(ValueError, match="unknown category"):
++        asyncio.run(
++            data["_email_admin_import_recipients"](
++                SimpleNamespace(), '["valid@example.com"]', [999]
++            )
++        )
++    assert writes == []
++
++
++def test_set_memberships_validates_every_category_before_replacing_rows():
++    writes = []
++
++    async def d1_all(_env, _sql, *_args):
++        return [{"id": 2}, {"id": 3}]
++
++    async def d1_first(_env, _sql, *_args):
++        return {"id": 9}
++
++    async def d1_run(_env, sql, *args):
++        writes.append((sql, args))
++
++    data = _load_email_admin_data(
++        {"d1_all": d1_all, "d1_first": d1_first, "d1_run": d1_run}
++    )
++
++    with pytest.raises(ValueError, match="unknown category"):
++        asyncio.run(
++            data["_email_admin_set_memberships"](
++                SimpleNamespace(), 9, [2, 404]
++            )
++        )
++    assert writes == []
++
++    message = asyncio.run(
++        data["_email_admin_set_memberships"](
++            SimpleNamespace(), 9, [3, 2, 3]
++        )
++    )
++    assert message == "Updated recipient categories."
++    assert "DELETE FROM email_category_memberships" in writes[0][0]
++    assert [item[1][0] for item in writes[1:]] == [2, 3]
++
++
++def test_load_model_decrypts_recipients_filters_membership_and_excludes_data():
++    async def d1_all(_env, sql, *_args):
++        if "FROM email_categories c" in sql:
++            return [
++                {"id": 2, "name": "following", "count": 2},
++                {"id": 3, "name": "confirmed", "count": 1},
++            ]
++        if "FROM email_category_memberships" in sql:
++            return [
++                {"recipient_id": 7, "category_id": 2},
++                {"recipient_id": 7, "category_id": 3},
++                {"recipient_id": 8, "category_id": 3},
++            ]
++        if "FROM email_recipients" in sql:
++            return [
++                {"id": 7, "data": {"email": "a@example.com"}, "updated_at": 20},
++                {"id": 8, "data": {"email": "b@example.com"}, "updated_at": 10},
++                {"id": 9, "data": "corrupt", "updated_at": 5},
++            ]
++        if "FROM email_templates" in sql:
++            return [
++                {
++                    "id": 5,
++                    "name": "Follow-up",
++                    "data": {"subject": "Hi {{name}}", "body": "Hello"},
++                    "is_seeded": 1,
++                    "updated_at": 30,
++                },
++                {
++                    "id": 6,
++                    "name": "Corrupt",
++                    "data": "corrupt",
++                    "is_seeded": 0,
++                    "updated_at": 25,
++                },
++            ]
++        raise AssertionError(sql)
++
++    async def decrypt_row(_env, value):
++        return value if isinstance(value, dict) else None
++
++    data = _load_email_admin_data(
++        {"d1_all": d1_all, "decrypt_row": decrypt_row}
++    )
++    model = asyncio.run(
++        data["_email_admin_load_model"](SimpleNamespace(), category_id=2)
++    )
++
++    assert model["categories"][0] == {
++        "id": 2,
++        "name": "following",
++        "count": 2,
++    }
++    assert model["recipients"] == [
++        {
++            "id": 7,
++            "email": "a@example.com",
++            "name": "",
++            "company": "",
++            "categories": ["following", "confirmed"],
++            "category_ids": [2, 3],
++            "updated_at": 20,
++        }
++    ]
++    assert "data" not in model["recipients"][0]
++    assert model["templates"] == [
++        {
++            "id": 5,
++            "name": "Follow-up",
++            "subject": "Hi {{name}}",
++            "body": "Hello",
++            "is_seeded": True,
++            "updated_at": 30,
++        }
++    ]
++    assert "data" not in model["templates"][0]
++
++
++def test_default_categories_seed_once_with_schema_marker():
++    marker = {"ready": False}
++    inserted = []
++
++    async def d1_first(_env, sql, *_args):
++        assert "email_admin_categories_v1" in sql
++        return {"v": "1"} if marker["ready"] else None
++
++    async def d1_run(_env, sql, *args):
++        if "INSERT OR IGNORE INTO email_categories" in sql:
++            inserted.append(args[0])
++        elif "INSERT INTO schema_meta" in sql:
++            marker["ready"] = True
++        else:
++            raise AssertionError(sql)
++
++    data = _load_email_admin_data({"d1_first": d1_first, "d1_run": d1_run})
++    asyncio.run(data["_email_admin_seed_defaults"](SimpleNamespace()))
++    asyncio.run(data["_email_admin_seed_defaults"](SimpleNamespace()))
++
++    assert inserted == ["following", "confirmed", "not-responding"]
++
++
++def test_partial_import_writes_only_valid_recipients_and_returns_errors():
++    stored = {"row": None}
++    writes = []
++
++    async def d1_first(_env, sql, *_args):
++        assert "WHERE email_bi=?" in sql
++        return stored["row"]
++
++    async def d1_run(_env, sql, *args):
++        writes.append((sql, args))
++        if "INSERT INTO email_recipients" in sql:
++            stored["row"] = {"id": 1, "data": args[1]}
++        elif "UPDATE email_recipients" in sql:
++            stored["row"]["data"] = args[0]
++
++    async def blind_index(_env, value):
++        return "bi:" + value
++
++    async def identity(_env, value):
++        return dict(value)
++
++    data = _load_email_admin_data(
++        {
++            "d1_first": d1_first,
++            "d1_run": d1_run,
++            "blind_index": blind_index,
++            "encrypt_row": identity,
++            "decrypt_row": identity,
++        }
++    )
++    imported, errors = asyncio.run(
++        data["_email_admin_import_recipients"](
++            SimpleNamespace(),
++            '["valid@example.com", "invalid"]',
++            [],
++            allow_partial=True,
++        )
++    )
++
++    assert imported == 1
++    assert errors == [{"index": 1, "error": "invalid_email"}]
++    assert stored["row"]["data"]["email"] == "valid@example.com"
++    assert sum("INSERT INTO email_recipients" in sql for sql, _args in writes) == 1
++
++
++def test_recipient_update_rejects_duplicate_email_before_encryption_or_write():
++    writes = []
++
++    async def d1_first(_env, sql, *_args):
++        if "WHERE id=?" in sql:
++            return {"id": 7}
++        if "WHERE email_bi=?" in sql:
++            return {"id": 8}
++        raise AssertionError(sql)
++
++    async def d1_run(_env, sql, *args):
++        writes.append((sql, args))
++
++    async def blind_index(_env, value):
++        return "bi:" + value
++
++    async def unexpected_encrypt(*_args):
++        raise AssertionError("duplicate update must not encrypt or write")
++
++    data = _load_email_admin_data(
++        {
++            "d1_first": d1_first,
++            "d1_run": d1_run,
++            "blind_index": blind_index,
++            "encrypt_row": unexpected_encrypt,
++        }
++    )
++
++    with pytest.raises(ValueError, match="already exists"):
++        asyncio.run(
++            data["_email_admin_update_recipient"](
++                SimpleNamespace(), 7, "taken@example.com", "Pat", "Orbit"
++            )
++        )
++    assert writes == []
++
++
++@pytest.mark.parametrize(
++    ("function_name", "record_table", "membership_column"),
++    (
++        ("_email_admin_delete_recipient", "email_recipients", "recipient_id"),
++        ("_email_admin_delete_category", "email_categories", "category_id"),
++    ),
++)
++def test_deletes_remove_memberships_before_parent_rows(
++    function_name, record_table, membership_column
++):
++    writes = []
++
++    async def d1_first(_env, _sql, *_args):
++        return {"id": 4}
++
++    async def d1_run(_env, sql, *args):
++        writes.append((sql, args))
++
++    data = _load_email_admin_data({"d1_first": d1_first, "d1_run": d1_run})
++    asyncio.run(data[function_name](SimpleNamespace(), 4))
++
++    assert membership_column + "=?" in writes[0][0]
++    assert "DELETE FROM " + record_table in writes[1][0]
++
++
++def test_authenticated_handler_loads_models_and_gates_mutations_with_csrf():
++    source = ast.get_source_segment(ENTRY_TEXT, _function_node("_email_admin"))
++
++    assert "await _email_admin_load_model(" in source
++    assert "self.env, category_id, campaign_id" in source
++    assert 'params.get("notice"' in source
++    assert "submitted_action = _email_admin_form_value" in source
++    csrf_position = source.index("if not _email_admin_csrf_ok")
++    mutation_seed = source.index(
++        "await _email_admin_seed_defaults(self.env)", csrf_position
++    )
++    first_action = source.index('action == "import_recipients"')
++    assert csrf_position < mutation_seed < first_action
++    assert '_email_admin_form_value(form, "confirm_delete")' in source
++    assert "_email_admin_action_location(view, notice)" in source
++
++
++EMAIL_TEMPLATE_FUNCTIONS = {
++    "_email_admin_id",
++    "_email_admin_seed_templates",
++    "_email_admin_save_template",
++    "_email_admin_duplicate_template",
++    "_email_admin_delete_template",
++}
++
++
++def _load_email_admin_templates(extra_globals):
++    selected = [
++        node
++        for node in ENTRY_TREE.body
++        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
++        and node.name in EMAIL_TEMPLATE_FUNCTIONS
++    ]
++    found = {node.name for node in selected}
++    assert found == EMAIL_TEMPLATE_FUNCTIONS, (
++        "missing template functions: "
++        + ", ".join(sorted(EMAIL_TEMPLATE_FUNCTIONS - found))
++    )
++    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
++    namespace = {
++        "Date": _FakeDate,
++        "DEFAULT_TEMPLATES": email_admin.DEFAULT_TEMPLATES,
++        "normalize_template_values": getattr(
++            email_admin, "normalize_template_values", None
++        ),
++    }
++    namespace.update(extra_globals)
++    exec(compile(module, str(ENTRY), "exec"), namespace)
++    return namespace
++
++
++def test_template_actions_and_encrypted_storage_are_wired():
++    for action in (
++        '"save_template"',
++        '"duplicate_template"',
++        '"delete_template"',
++    ):
++        assert action in ENTRY_TEXT
++    assert "INSERT OR IGNORE INTO email_templates" in ENTRY_TEXT
++    assert (
++        'await encrypt_row(env, {"subject": subject, "body": body})'
++        in ENTRY_TEXT
++    )
++    assert 'await decrypt_row(env, row.get("data"))' in ENTRY_TEXT
++    assert "email_admin_templates_v1" in ENTRY_TEXT
++
++
++def test_default_templates_seed_once_without_overwriting_existing_names():
++    state = {"marked": False}
++    writes = []
++    encrypted = []
++
++    async def d1_first(_env, sql, *args):
++        if "email_admin_templates_v1" in sql:
++            return {"v": "1"} if state["marked"] else None
++        if "WHERE name=?" in sql:
++            return {"id": 9} if args[0] == "Follow-up" else None
++        raise AssertionError(sql)
++
++    async def d1_run(_env, sql, *args):
++        writes.append((sql, args))
++        if "INSERT INTO schema_meta" in sql:
++            state["marked"] = True
++
++    async def encrypt_row(_env, value):
++        encrypted.append(dict(value))
++        return "cipher:" + value["subject"]
++
++    templates = _load_email_admin_templates(
++        {"d1_first": d1_first, "d1_run": d1_run, "encrypt_row": encrypt_row}
++    )
++    asyncio.run(templates["_email_admin_seed_templates"](SimpleNamespace()))
++    asyncio.run(templates["_email_admin_seed_templates"](SimpleNamespace()))
++
++    inserts = [item for item in writes if "INSERT OR IGNORE" in item[0]]
++    assert [item[1][0] for item in inserts] == [
++        "Sponsorship introduction",
++        "Partnership outreach",
++    ]
++    assert encrypted == [
++        {
++            "subject": email_admin.DEFAULT_TEMPLATES[0]["subject"],
++            "body": email_admin.DEFAULT_TEMPLATES[0]["body"],
++        },
++        {
++            "subject": email_admin.DEFAULT_TEMPLATES[1]["subject"],
++            "body": email_admin.DEFAULT_TEMPLATES[1]["body"],
++        },
++    ]
++    assert "INSERT INTO schema_meta" in writes[-1][0]
++
++
++def test_duplicate_template_uses_first_available_copy_name_and_encrypts_content():
++    writes = []
++
++    async def d1_first(_env, sql, *args):
++        if "WHERE id=?" in sql:
++            return {
++                "id": 7,
++                "name": "Follow-up",
++                "data": {"subject": "Hi {{name}}", "body": "Hello"},
++            }
++        if "WHERE name=?" in sql:
++            return {"id": 8} if args[0] == "Follow-up copy" else None
++        raise AssertionError(sql)
++
++    async def d1_run(_env, sql, *args):
++        writes.append((sql, args))
++
++    async def decrypt_row(_env, value):
++        return dict(value)
++
++    async def encrypt_row(_env, value):
++        return dict(value)
++
++    templates = _load_email_admin_templates(
++        {
++            "d1_first": d1_first,
++            "d1_run": d1_run,
++            "decrypt_row": decrypt_row,
++            "encrypt_row": encrypt_row,
++        }
++    )
++    message = asyncio.run(
++        templates["_email_admin_duplicate_template"](SimpleNamespace(), 7)
++    )
++
++    assert message == "Saved template 'Follow-up copy 2'."
++    insert = next(item for item in writes if "INSERT INTO email_templates" in item[0])
++    assert insert[1][0] == "Follow-up copy 2"
++    assert insert[1][1] == {"subject": "Hi {{name}}", "body": "Hello"}
++
++
++def test_template_delete_checks_existence_before_write():
++    writes = []
++
++    async def d1_first(_env, _sql, *_args):
++        return None
++
++    async def d1_run(_env, sql, *args):
++        writes.append((sql, args))
++
++    templates = _load_email_admin_templates(
++        {"d1_first": d1_first, "d1_run": d1_run}
++    )
++    with pytest.raises(ValueError, match="template not found"):
++        asyncio.run(
++            templates["_email_admin_delete_template"](SimpleNamespace(), 404)
++        )
++    assert writes == []
++
++
++EMAIL_CAMPAIGN_FUNCTIONS = {
++    "_email_admin_id",
++    "_email_admin_validate_category_ids",
++    "_email_admin_campaign_id",
++    "_email_admin_random_id",
++    "_email_admin_delivery_snapshot",
++    "_email_admin_batch_run",
++    "_email_admin_review_campaign",
++    "_email_admin_send_test",
++    "_email_admin_publish_deliveries",
++    "_email_admin_confirm_campaign",
++}
++
++
++def _load_email_admin_campaigns(extra_globals):
++    selected = [
++        node
++        for node in ENTRY_TREE.body
++        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
++        and node.name in EMAIL_CAMPAIGN_FUNCTIONS
++    ]
++    found = {node.name for node in selected}
++    assert found == EMAIL_CAMPAIGN_FUNCTIONS, (
++        "missing campaign functions: "
++        + ", ".join(sorted(EMAIL_CAMPAIGN_FUNCTIONS - found))
++    )
++    module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
++    namespace = {
++        "base64": base64,
++        "re": __import__("re"),
++        "Date": _FakeDate,
++        "OUTREACH_SENDER_EMAIL": "founders@forkmesh.com",
++        "normalize_category_name": email_admin.normalize_category_name,
++        "normalize_email": email_admin.normalize_email,
++        "normalize_recipient_record": email_admin.normalize_recipient_record,
++        "normalize_template_values": email_admin.normalize_template_values,
++        "render_message": email_admin.render_message,
++    }
++    exec(compile(module, str(ENTRY), "exec"), namespace)
++    namespace.update(extra_globals)
++    return namespace
++
++
++def test_campaign_review_snapshots_a_deduplicated_encrypted_audience():
++    migration = (
++        ENTRY.parent.parent / "migrations" / "0035_email_admin.sql"
++    ).read_text(encoding="utf-8")
++
++    assert "async def _email_admin_review_campaign" in ENTRY_TEXT
++    assert "SELECT DISTINCT r.id,r.email_bi,r.data" in ENTRY_TEXT
++    assert "render_message(subject, body, recipient)" in ENTRY_TEXT
++    assert "VALUES (?,?,?,'draft',?,0,'',0,0,?)" in ENTRY_TEXT
++    assert "UNIQUE (campaign_id, recipient_id)" in migration
++    assert "_email_admin_batch_run" in ENTRY_TEXT
++    assert "params[start:start + 100]" in ENTRY_TEXT
++    assert "seen_blind_indexes" in ENTRY_TEXT
++
++
++def test_campaign_test_and_confirmation_actions_exist():
++    for action in ('"review_campaign"', '"send_test"', '"confirm_campaign"'):
++        assert action in ENTRY_TEXT
++    assert '"[TEST] "' in ENTRY_TEXT
++    assert "OUTREACH_SENDER_EMAIL" in ENTRY_TEXT
++    assert "test_sent_at" in ENTRY_TEXT
++    assert "confirm_send" in ENTRY_TEXT
++
++
++def test_review_campaign_stores_valid_unique_snapshots_and_review_counts():
++    runs = []
++    batches = []
++    random_value = {"next": 1}
++
++    class Prepared:
++        def __init__(self, sql):
++            self.sql = sql
++
++        def bind(self, *args):
++            return self.sql, args
++
++    class DB:
++        def prepare(self, sql):
++            return Prepared(sql)
++
++        async def batch(self, statements):
++            batches.append(list(statements))
++            return []
++
++    async def d1_all(_env, sql, *_args):
++        if "FROM email_categories" in sql:
++            return [
++                {"id": 1, "name": "following"},
++                {"id": 2, "name": "confirmed"},
++            ]
++        if "SELECT DISTINCT r.id" in sql:
++            return [
++                {
++                    "id": 10,
++                    "email_bi": "bi:a",
++                    "data": {"email": "A@example.com", "name": "A"},
++                },
++                {
++                    "id": 11,
++                    "email_bi": "bi:b",
++                    "data": {"email": "b@example.com", "company": "Orbit"},
++                },
++                {"id": 12, "email_bi": "bi:bad", "data": {"email": "bad"}},
++            ]
++        raise AssertionError(sql)
++
++    async def d1_first(_env, sql, *_args):
++        if "FROM email_templates" in sql:
++            return {
++                "id": 3,
++                "name": "Sponsor",
++                "data": {"subject": "Hi {{name}}", "body": "For {{company}}"},
++            }
++        if "COUNT(*) AS n" in sql:
++            return {"n": 4}
++        raise AssertionError(sql)
++
++    async def d1_run(_env, sql, *args):
++        runs.append((sql, args))
++
++    async def identity(_env, value):
++        return dict(value)
++
++    def random_bytes(length):
++        value = random_value["next"]
++        random_value["next"] += 1
++        return bytes([value]) * length
++
++    campaigns = _load_email_admin_campaigns(
++        {
++            "d1_all": d1_all,
++            "d1_first": d1_first,
++            "d1_run": d1_run,
++            "decrypt_row": identity,
++            "encrypt_row": identity,
++            "_random_bytes": random_bytes,
++        }
++    )
++    campaign_id = asyncio.run(
++        campaigns["_email_admin_review_campaign"](
++            SimpleNamespace(DB=DB()), [2, 1, 2], 3, "", ""
++        )
++    )
++
++    assert len(campaign_id) == 24
++    campaign_insert = next(
++        item for item in runs if "INSERT INTO email_campaigns" in item[0]
++    )
++    snapshot = campaign_insert[1][1]
++    assert snapshot["category_ids"] == [1, 2]
++    assert snapshot["category_names"] == ["following", "confirmed"]
++    assert snapshot["selected_count"] == 4
++    assert snapshot["unique_count"] == 2
++    assert snapshot["duplicate_count"] == 1
++    assert snapshot["invalid_count"] == 1
++    assert snapshot["test_sent_at"] == 0
++    assert len(batches) == 1
++    assert len(batches[0]) == 2
++    delivery_snapshots = [statement[1][3] for statement in batches[0]]
++    assert delivery_snapshots[0]["email"] == "a@example.com"
++    assert delivery_snapshots[0]["subject"] == "Hi A"
++    assert delivery_snapshots[1]["text"] == "For Orbit"
++
++
++def test_review_campaign_cleans_up_campaign_and_deliveries_on_batch_failure():
++    runs = []
++
++    class Prepared:
++        def __init__(self, sql):
++            self.sql = sql
++
++        def bind(self, *args):
++            return self.sql, args
++
++    class DB:
++        def prepare(self, sql):
++            return Prepared(sql)
++
++        async def batch(self, _statements):
++            raise RuntimeError("batch failed")
++
++    async def d1_all(_env, sql, *_args):
++        if "FROM email_categories" in sql:
++            return [{"id": 1, "name": "following"}]
++        if "SELECT DISTINCT r.id" in sql:
++            return [{"id": 10, "email_bi": "bi:a", "data": {"email": "a@example.com"}}]
++        raise AssertionError(sql)
++
++    async def d1_first(_env, sql, *_args):
++        if "FROM email_templates" in sql:
++            return {"id": 3, "name": "Sponsor", "data": {"subject": "Hi", "body": "Body"}}
++        if "COUNT(*) AS n" in sql:
++            return {"n": 1}
++        raise AssertionError(sql)
++
++    async def d1_run(_env, sql, *args):
++        runs.append((sql, args))
++
++    async def identity(_env, value):
++        return dict(value)
++
++    campaigns = _load_email_admin_campaigns(
++        {
++            "d1_all": d1_all,
++            "d1_first": d1_first,
++            "d1_run": d1_run,
++            "decrypt_row": identity,
++            "encrypt_row": identity,
++            "_random_bytes": lambda length: b"x" * length,
++        }
++    )
++    with pytest.raises(RuntimeError, match="batch failed"):
++        asyncio.run(
++            campaigns["_email_admin_review_campaign"](
++                SimpleNamespace(DB=DB()), [1], 3, "", ""
++            )
++        )
++
++    assert "DELETE FROM email_deliveries" in runs[-2][0]
++    assert "DELETE FROM email_campaigns" in runs[-1][0]
++
++
++def test_campaign_test_send_uses_snapshot_without_mutating_deliveries():
++    runs = []
++    sends = []
++    campaign_id = "a" * 24
++    snapshot = {
++        "subject": "Hello {{name}}",
++        "body": "For {{company}}",
++        "test_sent_at": 0,
++    }
++
++    async def d1_first(_env, sql, *_args):
++        assert "FROM email_campaigns" in sql
++        return {"id": campaign_id, "status": "draft", "data": snapshot}
++
++    async def identity(_env, value):
++        return dict(value)
++
++    async def d1_run(_env, sql, *args):
++        runs.append((sql, args))
++
++    async def send_email(*args, **kwargs):
++        sends.append((args, kwargs))
++        return {"ok": True, "retryable": False, "error": "", "status": 200}
++
++    campaigns = _load_email_admin_campaigns(
++        {
++            "d1_first": d1_first,
++            "d1_run": d1_run,
++            "decrypt_row": identity,
++            "encrypt_row": identity,
++            "_send_email": send_email,
++            "_outreach_sender_name": lambda _env: "ForkMesh Founders",
++        }
++    )
++    message = asyncio.run(
++        campaigns["_email_admin_send_test"](
++            SimpleNamespace(), campaign_id, "Operator@Example.com"
++        )
++    )
++
++    assert message == "Sent test email to operator@example.com."
++    assert len(sends) == 1
++    args, kwargs = sends[0]
++    assert args[1:4] == (
++        "operator@example.com",
++        "[TEST] Hello there",
++        "For your team",
++    )
++    assert kwargs["from_email"] == "founders@forkmesh.com"
++    assert kwargs["reply_to_email"] == "founders@forkmesh.com"
++    assert kwargs["detailed"] is True
++    assert len(runs) == 1
++    assert "UPDATE email_campaigns" in runs[0][0]
++    assert "email_deliveries" not in runs[0][0]
++    assert runs[0][1][0]["test_email"] == "operator@example.com"
++
++
++def test_confirmation_requires_test_and_publishes_only_once():
++    campaign_id = "b" * 24
++    runs = []
++    publishes = []
++    state = {"status": "draft", "tested": False}
++
++    async def d1_first(_env, sql, *_args):
++        if sql.startswith("SELECT id,status,data"):
++            return {
++                "id": campaign_id,
++                "status": state["status"],
++                "data": {"test_sent_at": 10 if state["tested"] else 0},
++            }
++        if sql.startswith("UPDATE email_campaigns"):
++            if state["status"] != "draft":
++                return None
++            state["status"] = "queued"
++            return {"id": campaign_id}
++        if sql.startswith("SELECT id FROM email_campaigns"):
++            return {"id": campaign_id}
++        raise AssertionError(sql)
++
++    async def d1_run(_env, sql, *args):
++        runs.append((sql, args))
++
++    async def decrypt_row(_env, value):
++        return dict(value)
++
++    async def publish(_env, value):
++        publishes.append(value)
++        return 2
++
++    campaigns = _load_email_admin_campaigns(
++        {
++            "d1_first": d1_first,
++            "d1_run": d1_run,
++            "decrypt_row": decrypt_row,
++            "_email_admin_publish_deliveries": publish,
++        }
++    )
++    env = SimpleNamespace(EMAIL_QUEUE=object())
++
++    with pytest.raises(ValueError, match="successful test"):
++        asyncio.run(
++            campaigns["_email_admin_confirm_campaign"](env, campaign_id)
++        )
++    assert runs == []
++    assert publishes == []
++
++    state["tested"] = True
++    with pytest.raises(ValueError, match="queue is not configured"):
++        asyncio.run(
++            campaigns["_email_admin_confirm_campaign"](
++                SimpleNamespace(), campaign_id
++            )
++        )
++    assert state["status"] == "draft"
++    assert runs == []
++    assert publishes == []
++
++    assert asyncio.run(
++        campaigns["_email_admin_confirm_campaign"](env, campaign_id)
++    ) is True
++    assert asyncio.run(
++        campaigns["_email_admin_confirm_campaign"](env, campaign_id)
++    ) is False
++    assert len(publishes) == 1
++    assert publishes == [campaign_id]
++    assert len(runs) == 1
++    assert "UPDATE email_deliveries" in runs[0][0]
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,1318 @@
+From ef8d066fe46bfe31d549fc7890e1d58d0aab5066 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Sun, 12 Jul 2026 00:38:13 +0530
+Subject: [PATCH] feat(worker): add outreach admin shell
+
+---
+ cloudflare_worker/src/email_admin.py          | 148 ++++
+ cloudflare_worker/src/entry.py                | 353 +++++++++-
+ .../tests/test_email_admin_frontend.py        |  62 ++
+ .../tests/test_email_admin_worker.py          | 666 ++++++++++++++++++
+ 4 files changed, 1211 insertions(+), 18 deletions(-)
+ create mode 100644 cloudflare_worker/tests/test_email_admin_frontend.py
+ create mode 100644 cloudflare_worker/tests/test_email_admin_worker.py
+
+diff --git a/cloudflare_worker/src/email_admin.py b/cloudflare_worker/src/email_admin.py
+index 6730a643..698bcf5b 100644
+--- a/cloudflare_worker/src/email_admin.py
++++ b/cloudflare_worker/src/email_admin.py
+@@ -266,3 +266,151 @@ def render_message(subject, body, recipient):
+         "text": rendered_text,
+         "html": _text_to_html(rendered_text),
+     }
++
++
++EMAIL_ADMIN_STYLE = """
++*{box-sizing:border-box}
++:root{color-scheme:dark}
++body{margin:0;min-height:100vh;overflow-x:hidden;background:#010409;color:#f0f6fc;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
++a{color:#58a6ff;text-decoration:none}
++a:hover{text-decoration:underline}
++button,input,textarea,select{font:inherit}
++button{border:1px solid #2ea043;border-radius:6px;background:#238636;color:#fff;padding:8px 12px;font-weight:600;cursor:pointer}
++button:hover{background:#2ea043}
++button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:2px solid #58a6ff;outline-offset:2px}
++input,textarea,select{width:100%;border:1px solid #30363d;border-radius:6px;background:#0d1117;color:#f0f6fc;padding:8px}
++label{display:grid;gap:5px;margin:12px 0;color:#c9d1d9;font-weight:600}
++.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;border-bottom:1px solid #21262d;background:#010409}
++.topbar form{margin:0}
++.identity{display:grid;gap:2px}
++.identity span{color:#8b949e;font-size:12px}
++.layout{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:calc(100vh - 66px)}
++.sidebar{min-width:0;border-right:1px solid #21262d;padding:14px 10px;background:#0d1117}
++.sidebar a{display:block;padding:8px 10px;border-radius:6px;color:#c9d1d9}
++.sidebar a.active{background:#21262d;color:#fff;font-weight:700}
++.content{min-width:0;overflow-x:auto;padding:20px}
++.panel{min-width:0;overflow:hidden;border:1px solid #30363d;border-radius:8px;background:#0d1117}
++.panel h2{margin:0;padding:14px 16px;border-bottom:1px solid #30363d;font-size:16px}
++.empty{margin:0;padding:28px 16px;color:#8b949e}
++.banner{margin:0 0 14px;padding:10px 12px;border:1px solid #2ea043;border-radius:6px;background:#11251a;color:#aff5b4}
++.login{width:min(420px,calc(100% - 32px));margin:10vh auto;padding:22px;border:1px solid #30363d;border-radius:10px;background:#0d1117}
++.login h1{margin:0 0 4px;font-size:22px}
++.muted{margin:0;color:#8b949e}
++@media(max-width:760px){.topbar{align-items:flex-start;flex-direction:column}.layout{grid-template-columns:minmax(0,1fr)}.sidebar{display:flex;overflow-x:auto;border-right:0;border-bottom:1px solid #21262d}.sidebar a{white-space:nowrap}.content{padding:12px}}
++"""
++
++
++def _document(body):
++    return (
++        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
++        '<meta name="viewport" content="width=device-width,initial-scale=1">'
++        '<meta name="color-scheme" content="dark">'
++        '<title>ForkMesh email admin</title><style>'
++        + EMAIL_ADMIN_STYLE
++        + "</style></head><body>"
++        + body
++        + "</body></html>"
++    )
++
++
++def render_login_page(login_csrf, bucket, error=""):
++    error_html = (
++        '<p class="banner" role="alert">' + html.escape(str(error)) + "</p>"
++        if error
++        else ""
++    )
++    body = (
++        '<main class="login"><h1>Email admin</h1>'
++        '<p class="muted">Sign in to send from founders@forkmesh.com.</p>'
++        + error_html
++        + '<form method="post" action="/admin-email?action=login">'
++        '<input type="hidden" name="login_csrf" value="'
++        + html.escape(str(login_csrf), quote=True)
++        + '"><input type="hidden" name="login_bucket" value="'
++        + html.escape(str(bucket), quote=True)
++        + '"><label>Username<input name="username" autocomplete="username" required></label>'
++        '<label>Password<input name="password" type="password" autocomplete="current-password" required></label>'
++        '<button type="submit">Sign in</button></form></main>'
++    )
++    return _document(body)
++
++
++def _empty_view(label):
++    return (
++        '<section class="panel"><h2>'
++        + html.escape(label)
++        + '</h2><p class="empty">No records yet.</p></section>'
++    )
++
++
++def _render_recipients_view(_model, _csrf):
++    return _empty_view("Recipients")
++
++
++def _render_categories_view(_model, _csrf):
++    return _empty_view("Categories")
++
++
++def _render_templates_view(_model, _csrf):
++    return _empty_view("Templates")
++
++
++def _render_compose_view(_model, _csrf):
++    return _empty_view("Compose")
++
++
++def _render_jobs_view(_model, _csrf):
++    return _empty_view("Send jobs")
++
++
++def render_console_page(view, csrf, model, banner=""):
++    labels = {
++        "recipients": "Recipients",
++        "categories": "Categories",
++        "templates": "Templates",
++        "compose": "Compose",
++        "jobs": "Send jobs",
++    }
++    renderers = {
++        "recipients": _render_recipients_view,
++        "categories": _render_categories_view,
++        "templates": _render_templates_view,
++        "compose": _render_compose_view,
++        "jobs": _render_jobs_view,
++    }
++    active = view if view in renderers else "recipients"
++    links = "".join(
++        '<a href="/admin-email?view='
++        + key
++        + '" class="'
++        + ("active" if key == active else "")
++        + '">'
++        + label
++        + "</a>"
++        for key, label in labels.items()
++    )
++    banner_html = (
++        '<div class="banner" role="status">'
++        + html.escape(str(banner))
++        + "</div>"
++        if banner
++        else ""
++    )
++    logout = (
++        '<form method="post" action="/admin-email?action=logout">'
++        '<input type="hidden" name="csrf" value="'
++        + html.escape(str(csrf), quote=True)
++        + '"><button type="submit">Sign out</button></form>'
++    )
++    body = (
++        '<header class="topbar"><div class="identity"><strong>ForkMesh email admin</strong>'
++        "<span>founders@forkmesh.com</span></div>"
++        + logout
++        + '</header><div class="layout"><nav class="sidebar" aria-label="Email admin">'
++        + links
++        + '</nav><main class="content">'
++        + banner_html
++        + renderers[active](model or {}, csrf)
++        + "</main></div>"
++    )
++    return _document(body)
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index d616e589..8902942a 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -338,6 +338,7 @@ from catalog import (  # noqa: E402
+ 
+ # The D1 table/index DDL list ensure_schema() runs lives in schema.py.
+ from schema import SCHEMA_STATEMENTS  # noqa: E402
++from email_admin import render_console_page, render_login_page  # noqa: E402
+ 
+ # Signed-event crypto + canonicalization -- the Ed25519/SHA-256 verify
+ # primitives and the per-event canonical-content builders (which must
+@@ -7448,18 +7449,63 @@ async def _admin_verify_email(env, request):
+ # When it's unset the sender is a no-op, so a fork without an email provider
+ # still works — callers fall back to the admin verification queue.
+ MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
++OUTREACH_SENDER_EMAIL = "founders@forkmesh.com"
++OUTREACH_SENDER_NAME = "ForkMesh Founders"
++
++
++def _outreach_sender_name(env):
++    name = (getattr(env, "OUTREACH_SENDER_NAME", "") or "").strip()
++    return name or OUTREACH_SENDER_NAME
++
++
++async def _send_email(
++    env,
++    to_email,
++    subject,
++    text,
++    html=None,
++    *,
++    from_email=None,
++    from_name=None,
++    reply_to_email=None,
++    reply_to_name=None,
++    custom_variables=None,
++    detailed=False,
++):
++    def result(ok, status, retryable, error):
++        if detailed:
++            return {
++                "ok": bool(ok),
++                "status": int(status),
++                "retryable": bool(retryable),
++                "error": error,
++            }
++        return bool(ok)
+ 
+-
+-async def _send_email(env, to_email, subject, text, html=None,
+-                      from_email=None, from_name=None):
+-    from js import fetch as js_fetch
+     token = (getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
+     if not token or not to_email:
+-        return False
+-    sender = (from_email or getattr(env, "MAILTRAP_SENDER", "")
+-              or "no-reply@forkmesh.com").strip()
+-    sender_name = (from_name or getattr(env, "MAILTRAP_SENDER_NAME", "")
+-                   or "ForkMesh").strip()
++        return result(False, 0, False, "email_not_configured")
++    if custom_variables is not None and (
++        not isinstance(custom_variables, dict)
++        or not all(
++            isinstance(key, str) and isinstance(value, str)
++            for key, value in custom_variables.items()
++        )
++    ):
++        return result(False, 0, False, "invalid_custom_variables")
++
++    configured_sender = (
++        getattr(env, "MAILTRAP_SENDER", "") or ""
++    ).strip() or "no-reply@forkmesh.com"
++    configured_sender_name = (
++        getattr(env, "MAILTRAP_SENDER_NAME", "") or ""
++    ).strip() or "ForkMesh"
++    sender = (
++        (from_email or "").strip() if from_email is not None else configured_sender
++    ) or configured_sender
++    sender_name = (
++        (from_name or "").strip() if from_name is not None else configured_sender_name
++    ) or configured_sender_name
+     url = (getattr(env, "MAILTRAP_API_URL", "") or MAILTRAP_SEND_URL).strip()
+     payload = {
+         "from": {"email": sender, "name": sender_name},
+@@ -7467,18 +7513,42 @@ async def _send_email(env, to_email, subject, text, html=None,
+         "subject": subject,
+         "text": text,
+     }
+-    if html:
++    if html is not None:
+         payload["html"] = html
++    if reply_to_email is not None:
++        reply_name = (
++            (reply_to_name or "").strip() if reply_to_name is not None else sender_name
++        ) or sender_name
++        payload["reply_to"] = {
++            "email": (reply_to_email or "").strip(),
++            "name": reply_name,
++        }
++    if custom_variables is not None:
++        payload["custom_variables"] = custom_variables
+     try:
+-        resp = await js_fetch(url, to_js({
+-            "method": "POST",
+-            "headers": {"content-type": "application/json",
+-                        "authorization": "Bearer " + token},
+-            "body": json.dumps(payload),
+-        }))
+-        return 200 <= int(getattr(resp, "status", 0)) < 300
++        from js import fetch as js_fetch
++
++        resp = await js_fetch(
++            url,
++            to_js(
++                {
++                    "method": "POST",
++                    "headers": {
++                        "content-type": "application/json",
++                        "authorization": "Bearer " + token,
++                    },
++                    "body": json.dumps(payload),
++                }
++            ),
++        )
++        status = int(getattr(resp, "status", 0))
+     except Exception:
+-        return False
++        return result(False, 0, True, "mail_transport_failed")
++
++    if 200 <= status < 300:
++        return result(True, status, False, "")
++    retryable = status == 429 or status >= 500
++    return result(False, status, retryable, "mail_provider_rejected")
+ 
+ 
+ async def _email_verify_token(env, name, email):
+@@ -13936,6 +14006,141 @@ def _cookie_value(request, name):
+     return ""
+ 
+ 
++EMAIL_ADMIN_PATH = "/admin-email"
++EMAIL_ADMIN_COOKIE = "forkmesh_email_admin"
++EMAIL_ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000
++EMAIL_ADMIN_LOGIN_BUCKET_MS = 15 * 60 * 1000
++EMAIL_ADMIN_MAX_FORM_BYTES = 128 * 1024
++EMAIL_ADMIN_CACHE_CONTROL = "no-store, max-age=0, must-revalidate"
++
++
++def _email_admin_secret(env):
++    value = str(getattr(env, "EMAIL_ADMIN_SESSION_SECRET", "") or "").strip()
++    return value.encode()
++
++
++def _email_admin_sign(env, purpose, value):
++    canonical = ("forkmesh-email-admin-" + purpose + "-v1\n" + value).encode()
++    return hmac.new(_email_admin_secret(env), canonical, "sha256").hexdigest()
++
++
++def _email_admin_login_bucket():
++    return int(Date.now()) // EMAIL_ADMIN_LOGIN_BUCKET_MS
++
++
++def _email_admin_login_token(env, bucket):
++    return _email_admin_sign(env, "login", str(bucket))
++
++
++def _email_admin_login_token_ok(env, bucket_value, token):
++    if not _email_admin_secret(env) or not token:
++        return False
++    try:
++        bucket = int(bucket_value)
++    except (TypeError, ValueError):
++        return False
++    current = _email_admin_login_bucket()
++    if bucket not in (current, current - 1):
++        return False
++    expected = _email_admin_login_token(env, bucket)
++    return hmac.compare_digest(str(token), expected)
++
++
++def _email_admin_password_parts(env):
++    value = str(getattr(env, "EMAIL_ADMIN_PASSWORD_HASH", "") or "").strip()
++    salt, separator, digest = value.partition(":")
++    if not separator or not salt or not digest:
++        return "", ""
++    return salt, digest
++
++
++def _email_admin_session_cookie(env):
++    expires = int(Date.now()) + EMAIL_ADMIN_SESSION_TTL_MS
++    signature = _email_admin_sign(env, "session", str(expires))
++    return (
++        EMAIL_ADMIN_COOKIE + "=" + str(expires) + "." + signature
++        + "; Path=/admin-email; Max-Age=43200; HttpOnly; Secure; SameSite=Strict"
++    )
++
++
++def _clear_email_admin_session_cookie():
++    return (
++        EMAIL_ADMIN_COOKIE
++        + "=; Path=/admin-email; Max-Age=0; HttpOnly; Secure; SameSite=Strict"
++    )
++
++
++def _email_admin_session_valid(env, request):
++    if not _email_admin_secret(env):
++        return False
++    token = _cookie_value(request, EMAIL_ADMIN_COOKIE)
++    expires_value, separator, signature = token.partition(".")
++    if not separator or not expires_value.isdigit() or not signature:
++        return False
++    expires = int(expires_value)
++    now = int(Date.now())
++    if expires <= now or expires > now + EMAIL_ADMIN_SESSION_TTL_MS:
++        return False
++    expected = _email_admin_sign(env, "session", expires_value)
++    return hmac.compare_digest(signature, expected)
++
++
++def _email_admin_csrf_token(env, request):
++    if not _email_admin_session_valid(env, request):
++        return ""
++    session = _cookie_value(request, EMAIL_ADMIN_COOKIE)
++    return _email_admin_sign(env, "csrf", session)
++
++
++def _email_admin_csrf_ok(env, request, form):
++    expected = _email_admin_csrf_token(env, request)
++    supplied = (form.get("csrf", [""]) or [""])[0]
++    return bool(expected and supplied) and hmac.compare_digest(
++        str(supplied), expected
++    )
++
++
++async def _email_admin_login_key(env, request):
++    ip = str(request.headers.get("cf-connecting-ip") or "unknown")
++    return await blind_index(env, "email-admin-login:" + ip)
++
++
++def _email_admin_headers(content_type="text/html; charset=utf-8", extra=None):
++    headers = {
++        "content-type": content_type,
++        "cache-control": EMAIL_ADMIN_CACHE_CONTROL,
++        "content-security-policy": (
++            "default-src 'none'; style-src 'unsafe-inline'; "
++            "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
++        ),
++        "referrer-policy": "no-referrer",
++        "x-content-type-options": "nosniff",
++        "x-frame-options": "DENY",
++    }
++    if extra:
++        headers.update(extra)
++    return headers
++
++
++def _email_admin_html_response(body, status=200, extra_headers=None):
++    return Response(
++        body,
++        status=status,
++        headers=_email_admin_headers(extra=extra_headers),
++    )
++
++
++def _email_admin_redirect(extra_headers=None):
++    headers = {"location": EMAIL_ADMIN_PATH}
++    if extra_headers:
++        headers.update(extra_headers)
++    return Response(
++        "See other.",
++        status=303,
++        headers=_email_admin_headers("text/plain; charset=utf-8", headers),
++    )
++
++
+ def _admin_session_valid(env, request, admin):
+     token = _cookie_value(request, ADMIN_SESSION_COOKIE)
+     parts = token.split(".")
+@@ -14992,6 +15197,9 @@ class Default(WorkerEntrypoint):
+         try:
+             url = urlparse(request.url)
+ 
++            if url.path.rstrip("/") == EMAIL_ADMIN_PATH:
++                return await self._email_admin(request)
++
+             # Admin error dashboard at a secret, env-configured path. Its 401/403
+             # responses are not logged, but unexpected exceptions are captured.
+             admin_path = _admin_path(self.env)
+@@ -15028,6 +15236,115 @@ class Default(WorkerEntrypoint):
+             )
+         return response
+ 
++    async def _email_admin(self, request):
++        await ensure_schema(self.env)
++        url = urlparse(request.url)
++        params = parse_qs(url.query)
++        action = (params.get("action", [""]) or [""])[0]
++        method = method_name(request)
++        session_valid = _email_admin_session_valid(self.env, request)
++
++        if method == "GET":
++            if not session_valid:
++                bucket = _email_admin_login_bucket()
++                page = render_login_page(
++                    _email_admin_login_token(self.env, bucket), bucket)
++                return _email_admin_html_response(page)
++            view = (params.get("view", ["recipients"]) or ["recipients"])[0]
++            page = render_console_page(
++                view,
++                _email_admin_csrf_token(self.env, request),
++                {"recipients": [], "categories": [], "templates": [],
++                 "campaigns": []},
++            )
++            return _email_admin_html_response(page)
++
++        if method != "POST":
++            return _email_admin_html_response(
++                "Method not allowed.", status=405,
++                extra_headers={"Allow": "GET, POST"})
++
++        content_length = request.headers.get("content-length")
++        try:
++            declared_length = int(content_length or 0)
++        except (TypeError, ValueError):
++            declared_length = 0
++        if declared_length > EMAIL_ADMIN_MAX_FORM_BYTES:
++            return _email_admin_html_response(
++                "Request too large.", status=413)
++        try:
++            form_body = await request.text()
++        except Exception:
++            form_body = ""
++        if len(form_body.encode("utf-8")) > EMAIL_ADMIN_MAX_FORM_BYTES:
++            return _email_admin_html_response(
++                "Request too large.", status=413)
++        form = parse_qs(form_body, keep_blank_values=True)
++
++        if action == "login":
++            username = str((form.get("username", [""]) or [""])[0])[:254]
++            password = str((form.get("password", [""]) or [""])[0])[:256]
++            login_bucket = (form.get("login_bucket", [""]) or [""])[0]
++            login_token = (form.get("login_csrf", [""]) or [""])[0]
++            login_key = await _email_admin_login_key(self.env, request)
++            locked = bool(await _login_locked_until(self.env, login_key))
++            expected_username = str(
++                getattr(self.env, "EMAIL_ADMIN_USERNAME", "") or "")
++            salt, digest = _email_admin_password_parts(self.env)
++
++            # Always spend the password verification, even when the username,
++            # session secret, or login token is wrong, to keep failures uniform.
++            password_ok = await verify_password(password, salt, digest)
++            username_ok = bool(expected_username) and hmac.compare_digest(
++                username, expected_username)
++            token_ok = _email_admin_login_token_ok(
++                self.env, login_bucket, login_token)
++            configured = bool(
++                expected_username and salt and digest and
++                _email_admin_secret(self.env))
++            if not (configured and token_ok and not locked and
++                    username_ok and password_ok):
++                await _login_record_fail(self.env, login_key)
++                bucket = _email_admin_login_bucket()
++                page = render_login_page(
++                    _email_admin_login_token(self.env, bucket),
++                    bucket,
++                    "Invalid username or password.",
++                )
++                return _email_admin_html_response(page, status=401)
++
++            await _login_clear(self.env, login_key)
++            return _email_admin_redirect({
++                "Set-Cookie": _email_admin_session_cookie(self.env),
++            })
++
++        if not session_valid:
++            bucket = _email_admin_login_bucket()
++            page = render_login_page(
++                _email_admin_login_token(self.env, bucket),
++                bucket,
++                "Invalid username or password.",
++            )
++            return _email_admin_html_response(page, status=403)
++
++        view = (params.get("view", ["recipients"]) or ["recipients"])[0]
++        csrf = _email_admin_csrf_token(self.env, request)
++        model = {"recipients": [], "categories": [], "templates": [],
++                 "campaigns": []}
++        if not _email_admin_csrf_ok(self.env, request, form):
++            page = render_console_page(
++                view, csrf, model,
++                "Action blocked: invalid or missing CSRF token.")
++            return _email_admin_html_response(page, status=403)
++        if action == "logout":
++            return _email_admin_redirect({
++                "Set-Cookie": _clear_email_admin_session_cookie(),
++            })
++
++        page = render_console_page(
++            view, csrf, model, "Unknown email admin action.")
++        return _email_admin_html_response(page, status=400)
++
+     async def _admin(self, request):
+         await ensure_schema(self.env)
+         if not await _check_admin_page_auth(self.env, request):
+diff --git a/cloudflare_worker/tests/test_email_admin_frontend.py b/cloudflare_worker/tests/test_email_admin_frontend.py
+new file mode 100644
+index 00000000..87601fab
+--- /dev/null
++++ b/cloudflare_worker/tests/test_email_admin_frontend.py
+@@ -0,0 +1,62 @@
++from src.email_admin import render_console_page, render_login_page
++
++
++EMPTY_MODEL = {
++    "recipients": [],
++    "categories": [],
++    "templates": [],
++    "campaigns": [],
++}
++
++
++def test_login_page_has_dedicated_credentials_and_escaped_feedback():
++    page = render_login_page('token"><script>', 123, '<b>Invalid</b>')
++
++    assert "<!doctype html>" in page.lower()
++    assert '<meta name="viewport"' in page
++    assert 'action="/admin-email?action=login"' in page
++    assert 'name="login_csrf"' in page
++    assert 'name="login_bucket" value="123"' in page
++    assert 'name="username"' in page
++    assert 'autocomplete="username"' in page
++    assert 'name="password"' in page
++    assert 'autocomplete="current-password"' in page
++    assert "founders@forkmesh.com" in page
++    assert "<script>" not in page
++    assert "&lt;b&gt;Invalid&lt;/b&gt;" in page
++
++
++def test_console_page_renders_operations_navigation_and_logout():
++    page = render_console_page("templates", "csrf-token", EMPTY_MODEL, "Saved")
++
++    for label in ("Recipients", "Categories", "Templates", "Compose", "Send jobs"):
++        assert label in page
++    assert 'aria-label="Email admin"' in page
++    assert 'href="/admin-email?view=templates" class="active"' in page
++    assert "founders@forkmesh.com" in page
++    assert 'action="/admin-email?action=logout"' in page
++    assert 'name="csrf" value="csrf-token"' in page
++    assert "Saved" in page
++
++
++def test_console_unknown_view_falls_back_to_recipients_and_escapes_banner():
++    page = render_console_page("unknown", "csrf", EMPTY_MODEL, '<img src=x>')
++
++    assert 'href="/admin-email?view=recipients" class="active"' in page
++    assert "<h2>Recipients</h2>" in page
++    assert "<img src=x>" not in page
++    assert "&lt;img src=x&gt;" in page
++
++
++def test_console_css_is_responsive_focus_visible_and_overflow_safe():
++    page = render_console_page("recipients", "csrf", EMPTY_MODEL)
++
++    compact = page.replace(" ", "")
++    assert "@media(max-width:760px)" in compact
++    assert "minmax(0,1fr)" in compact
++    assert "min-width:0" in compact
++    assert "overflow-x:auto" in compact
++    assert ":focus-visible" in page
++    assert "<header" in page
++    assert "<nav" in page
++    assert "<main" in page
+diff --git a/cloudflare_worker/tests/test_email_admin_worker.py b/cloudflare_worker/tests/test_email_admin_worker.py
+new file mode 100644
+index 00000000..9caa81f2
+--- /dev/null
++++ b/cloudflare_worker/tests/test_email_admin_worker.py
+@@ -0,0 +1,666 @@
++"""Mailtrap sender contracts for worker email administration."""
++
++import ast
++import asyncio
++import hashlib
++import hmac
++import inspect
++import json
++import sys
++from pathlib import Path
++from types import ModuleType, SimpleNamespace
++
++import pytest
++
++
++ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
++ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
++ENTRY_TREE = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
++
++
++def _function_node(name):
++    return next(
++        node
++        for node in ast.walk(ENTRY_TREE)
++        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
++        and node.name == name
++    )
++
++
++def _load_email_sender():
++    wanted_functions = {"_outreach_sender_name", "_send_email"}
++    wanted_constants = {
++        "MAILTRAP_SEND_URL",
++        "OUTREACH_SENDER_EMAIL",
++        "OUTREACH_SENDER_NAME",
++    }
++    body = []
++    for node in ENTRY_TREE.body:
++        if (
++            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
++            and node.name in wanted_functions
++        ):
++            body.append(node)
++        elif isinstance(node, ast.Assign) and any(
++            isinstance(target, ast.Name) and target.id in wanted_constants
++            for target in node.targets
++        ):
++            body.append(node)
++
++    module = ast.fix_missing_locations(ast.Module(body=body, type_ignores=[]))
++    namespace = {"json": json, "to_js": lambda value: value}
++    exec(compile(module, str(ENTRY), "exec"), namespace)
++    return namespace
++
++
++def _run_send(
++    monkeypatch,
++    *,
++    env=None,
++    to_email="recipient@example.com",
++    status=200,
++    transport_error=None,
++    **kwargs,
++):
++    calls = []
++
++    async def fetch(url, options):
++        calls.append((url, options))
++        if transport_error is not None:
++            raise transport_error
++        return SimpleNamespace(
++            status=status,
++            body="provider body containing bearer-token-secret",
++        )
++
++    js_module = ModuleType("js")
++    js_module.fetch = fetch
++    monkeypatch.setitem(sys.modules, "js", js_module)
++    sender = _load_email_sender()["_send_email"]
++    env = env or SimpleNamespace(MAILTRAP_API_TOKEN="test-token")
++    result = asyncio.run(sender(env, to_email, "Subject", "Plain text", **kwargs))
++    return result, calls
++
++
++def _payload(calls):
++    assert len(calls) == 1
++    return json.loads(calls[0][1]["body"])
++
++
++def test_send_email_signature_preserves_positional_and_keyword_only_contract():
++    node = _function_node("_send_email")
++    arguments = node.args
++
++    assert arguments.posonlyargs == []
++    assert [argument.arg for argument in arguments.args] == [
++        "env",
++        "to_email",
++        "subject",
++        "text",
++        "html",
++    ]
++    assert [ast.literal_eval(default) for default in arguments.defaults] == [None]
++    assert arguments.vararg is None
++    assert [argument.arg for argument in arguments.kwonlyargs] == [
++        "from_email",
++        "from_name",
++        "reply_to_email",
++        "reply_to_name",
++        "custom_variables",
++        "detailed",
++    ]
++    assert [ast.literal_eval(default) for default in arguments.kw_defaults] == [
++        None,
++        None,
++        None,
++        None,
++        None,
++        False,
++    ]
++    assert arguments.kwarg is None
++
++
++def test_founders_sender_constants_and_configurable_display_name():
++    namespace = _load_email_sender()
++    sender_name = namespace["_outreach_sender_name"]
++
++    assert namespace["OUTREACH_SENDER_EMAIL"] == "founders@forkmesh.com"
++    assert namespace["OUTREACH_SENDER_NAME"] == "ForkMesh Founders"
++    assert sender_name(SimpleNamespace()) == "ForkMesh Founders"
++    assert sender_name(SimpleNamespace(OUTREACH_SENDER_NAME=None)) == (
++        "ForkMesh Founders"
++    )
++    assert sender_name(SimpleNamespace(OUTREACH_SENDER_NAME="   ")) == (
++        "ForkMesh Founders"
++    )
++    assert (
++        sender_name(
++            SimpleNamespace(OUTREACH_SENDER_NAME="  Kun and the ForkMesh team  ")
++        )
++        == "Kun and the ForkMesh team"
++    )
++
++
++def test_default_sender_payload_and_boolean_result_contract(monkeypatch):
++    result, calls = _run_send(monkeypatch)
++
++    assert result is True
++    assert calls[0][0] == "https://send.api.mailtrap.io/api/send"
++    assert calls[0][1]["method"] == "POST"
++    assert _payload(calls) == {
++        "from": {"email": "no-reply@forkmesh.com", "name": "ForkMesh"},
++        "to": [{"email": "recipient@example.com"}],
++        "subject": "Subject",
++        "text": "Plain text",
++    }
++
++
++def test_environment_sender_defaults_are_trimmed(monkeypatch):
++    env = SimpleNamespace(
++        MAILTRAP_API_TOKEN="test-token",
++        MAILTRAP_SENDER="  configured@example.com  ",
++        MAILTRAP_SENDER_NAME="  Configured Sender  ",
++    )
++
++    _, calls = _run_send(monkeypatch, env=env)
++
++    assert _payload(calls)["from"] == {
++        "email": "configured@example.com",
++        "name": "Configured Sender",
++    }
++
++
++def test_per_message_sender_overrides_only_the_selected_call(monkeypatch):
++    env = SimpleNamespace(
++        MAILTRAP_API_TOKEN="test-token",
++        MAILTRAP_SENDER="configured@example.com",
++        MAILTRAP_SENDER_NAME="Configured Sender",
++    )
++
++    _, override_calls = _run_send(
++        monkeypatch,
++        env=env,
++        from_email="  founders@forkmesh.com  ",
++        from_name="  ForkMesh Founders  ",
++    )
++    _, default_calls = _run_send(monkeypatch, env=env)
++
++    assert _payload(override_calls)["from"] == {
++        "email": "founders@forkmesh.com",
++        "name": "ForkMesh Founders",
++    }
++    assert _payload(default_calls)["from"] == {
++        "email": "configured@example.com",
++        "name": "Configured Sender",
++    }
++
++
++def test_optional_html_reply_to_and_custom_variables_payload(monkeypatch):
++    _, calls = _run_send(
++        monkeypatch,
++        html="<p>HTML text</p>",
++        from_name="Campaign Sender",
++        reply_to_email="replies@example.com",
++        custom_variables={"campaign_id": "campaign-123", "delivery_id": "42"},
++    )
++
++    payload = _payload(calls)
++    assert payload["html"] == "<p>HTML text</p>"
++    assert payload["reply_to"] == {
++        "email": "replies@example.com",
++        "name": "Campaign Sender",
++    }
++    assert payload["custom_variables"] == {
++        "campaign_id": "campaign-123",
++        "delivery_id": "42",
++    }
++
++
++def test_optional_payload_fields_are_included_only_when_supplied(monkeypatch):
++    _, absent_calls = _run_send(monkeypatch, reply_to_name="Ignored")
++    _, empty_html_calls = _run_send(monkeypatch, html="")
++
++    assert "html" not in _payload(absent_calls)
++    assert "reply_to" not in _payload(absent_calls)
++    assert "custom_variables" not in _payload(absent_calls)
++    assert _payload(empty_html_calls)["html"] == ""
++
++
++def test_reply_to_name_can_override_the_selected_sender_name(monkeypatch):
++    _, calls = _run_send(
++        monkeypatch,
++        from_name="Campaign Sender",
++        reply_to_email="replies@example.com",
++        reply_to_name="  Campaign Replies  ",
++    )
++
++    assert _payload(calls)["reply_to"] == {
++        "email": "replies@example.com",
++        "name": "Campaign Replies",
++    }
++
++
++@pytest.mark.parametrize(
++    "custom_variables",
++    (
++        [],
++        {1: "value"},
++        {"key": 1},
++        {"key": None},
++    ),
++)
++def test_invalid_custom_variables_are_permanent_and_never_sent(
++    monkeypatch, custom_variables
++):
++    detailed, detailed_calls = _run_send(
++        monkeypatch,
++        custom_variables=custom_variables,
++        detailed=True,
++    )
++    boolean, boolean_calls = _run_send(
++        monkeypatch,
++        custom_variables=custom_variables,
++    )
++
++    assert detailed == {
++        "ok": False,
++        "status": 0,
++        "retryable": False,
++        "error": "invalid_custom_variables",
++    }
++    assert boolean is False
++    assert detailed_calls == []
++    assert boolean_calls == []
++
++
++def test_empty_custom_variables_mapping_is_valid_and_included(monkeypatch):
++    result, calls = _run_send(monkeypatch, custom_variables={}, detailed=True)
++
++    assert result == {"ok": True, "status": 200, "retryable": False, "error": ""}
++    assert _payload(calls)["custom_variables"] == {}
++
++
++@pytest.mark.parametrize(
++    ("status", "expected"),
++    (
++        (200, {"ok": True, "status": 200, "retryable": False, "error": ""}),
++        (299, {"ok": True, "status": 299, "retryable": False, "error": ""}),
++        (
++            400,
++            {
++                "ok": False,
++                "status": 400,
++                "retryable": False,
++                "error": "mail_provider_rejected",
++            },
++        ),
++        (
++            429,
++            {
++                "ok": False,
++                "status": 429,
++                "retryable": True,
++                "error": "mail_provider_rejected",
++            },
++        ),
++        (
++            500,
++            {
++                "ok": False,
++                "status": 500,
++                "retryable": True,
++                "error": "mail_provider_rejected",
++            },
++        ),
++        (
++            503,
++            {
++                "ok": False,
++                "status": 503,
++                "retryable": True,
++                "error": "mail_provider_rejected",
++            },
++        ),
++    ),
++)
++def test_detailed_results_classify_provider_statuses(monkeypatch, status, expected):
++    result, _ = _run_send(monkeypatch, status=status, detailed=True)
++
++    assert result == expected
++    assert isinstance(result["status"], int)
++
++
++@pytest.mark.parametrize(
++    ("status", "expected"),
++    ((200, True), (299, True), (400, False), (429, False), (500, False)),
++)
++def test_default_mode_remains_boolean_for_provider_statuses(
++    monkeypatch, status, expected
++):
++    result, _ = _run_send(monkeypatch, status=status)
++
++    assert result is expected
++
++
++@pytest.mark.parametrize(
++    ("env", "to_email"),
++    (
++        (SimpleNamespace(), "recipient@example.com"),
++        (SimpleNamespace(MAILTRAP_API_TOKEN=""), "recipient@example.com"),
++        (SimpleNamespace(MAILTRAP_API_TOKEN="test-token"), ""),
++        (SimpleNamespace(MAILTRAP_API_TOKEN="test-token"), None),
++    ),
++)
++def test_missing_email_configuration_is_not_retryable(monkeypatch, env, to_email):
++    detailed, detailed_calls = _run_send(
++        monkeypatch,
++        env=env,
++        to_email=to_email,
++        detailed=True,
++    )
++    boolean, boolean_calls = _run_send(
++        monkeypatch,
++        env=env,
++        to_email=to_email,
++    )
++
++    assert detailed == {
++        "ok": False,
++        "status": 0,
++        "retryable": False,
++        "error": "email_not_configured",
++    }
++    assert boolean is False
++    assert detailed_calls == []
++    assert boolean_calls == []
++
++
++def test_transport_errors_are_retryable_and_scrubbed(monkeypatch):
++    transport_error = RuntimeError(
++        "Bearer real-secret and provider response body must never escape"
++    )
++
++    detailed, _ = _run_send(
++        monkeypatch,
++        transport_error=transport_error,
++        detailed=True,
++    )
++    boolean, _ = _run_send(monkeypatch, transport_error=transport_error)
++
++    assert detailed == {
++        "ok": False,
++        "status": 0,
++        "retryable": True,
++        "error": "mail_transport_failed",
++    }
++    assert "secret" not in detailed["error"]
++    assert "provider response" not in detailed["error"]
++    assert boolean is False
++
++
++def test_existing_send_email_calls_bind_to_the_extended_signature():
++    signature = inspect.signature(_load_email_sender()["_send_email"])
++    calls = [
++        node
++        for node in ast.walk(ENTRY_TREE)
++        if isinstance(node, ast.Call)
++        and isinstance(node.func, ast.Name)
++        and node.func.id == "_send_email"
++    ]
++
++    assert calls
++    for call in calls:
++        assert not any(isinstance(argument, ast.Starred) for argument in call.args)
++        assert all(keyword.arg is not None for keyword in call.keywords)
++        signature.bind(
++            *([object()] * len(call.args)),
++            **{keyword.arg: object() for keyword in call.keywords},
++        )
++
++
++@pytest.mark.parametrize(
++    "function_name",
++    ("_send_verification_email", "_send_password_reset_email"),
++)
++def test_signup_and_password_reset_keep_five_positional_sender_calls(function_name):
++    function = _function_node(function_name)
++    calls = [
++        node
++        for node in ast.walk(function)
++        if isinstance(node, ast.Call)
++        and isinstance(node.func, ast.Name)
++        and node.func.id == "_send_email"
++    ]
++
++    assert len(calls) == 1
++    assert len(calls[0].args) == 5
++    assert calls[0].keywords == []
++    compile(ENTRY_TEXT, str(ENTRY), "exec")
++
++
++EMAIL_AUTH_FUNCTIONS = {
++    "_cookie_value",
++    "_email_admin_secret",
++    "_email_admin_sign",
++    "_email_admin_login_bucket",
++    "_email_admin_login_token",
++    "_email_admin_login_token_ok",
++    "_email_admin_password_parts",
++    "_email_admin_session_cookie",
++    "_clear_email_admin_session_cookie",
++    "_email_admin_session_valid",
++    "_email_admin_csrf_token",
++    "_email_admin_csrf_ok",
++    "_email_admin_headers",
++}
++EMAIL_AUTH_CONSTANTS = {
++    "EMAIL_ADMIN_PATH",
++    "EMAIL_ADMIN_COOKIE",
++    "EMAIL_ADMIN_SESSION_TTL_MS",
++    "EMAIL_ADMIN_LOGIN_BUCKET_MS",
++    "EMAIL_ADMIN_CACHE_CONTROL",
++    "EMAIL_ADMIN_MAX_FORM_BYTES",
++}
++
++
++class _FakeDate:
++    current = 1_800_000
++
++    @classmethod
++    def now(cls):
++        return cls.current
++
++
++def _load_email_admin_auth():
++    body = []
++    for node in ENTRY_TREE.body:
++        if isinstance(node, ast.FunctionDef) and node.name in EMAIL_AUTH_FUNCTIONS:
++            body.append(node)
++        elif isinstance(node, ast.Assign) and any(
++            isinstance(target, ast.Name) and target.id in EMAIL_AUTH_CONSTANTS
++            for target in node.targets
++        ):
++            body.append(node)
++    module = ast.fix_missing_locations(ast.Module(body=body, type_ignores=[]))
++    namespace = {"Date": _FakeDate, "hmac": hmac, "hashlib": hashlib}
++    exec(compile(module, str(ENTRY), "exec"), namespace)
++    return namespace
++
++
++def _request(cookie=""):
++    return SimpleNamespace(headers={"cookie": cookie})
++
++
++def _cookie_pair(set_cookie):
++    return set_cookie.split(";", 1)[0]
++
++
++def test_email_admin_route_precedes_static_and_api_routing():
++    fetch_start = ENTRY_TEXT.index("    async def fetch(self, request):")
++    fetch_end = ENTRY_TEXT.index("    async def _admin(self, request):", fetch_start)
++    fetch_body = ENTRY_TEXT[fetch_start:fetch_end]
++
++    route = 'url.path.rstrip("/") == EMAIL_ADMIN_PATH'
++    assert route in fetch_body
++    assert fetch_body.index(route) < fetch_body.index(
++        "response = await self._route(request, url)"
++    )
++
++
++def test_email_admin_auth_uses_dedicated_secrets_and_existing_password_verifier():
++    required = (
++        'getattr(self.env, "EMAIL_ADMIN_USERNAME", "")',
++        'getattr(env, "EMAIL_ADMIN_PASSWORD_HASH", "")',
++        'getattr(env, "EMAIL_ADMIN_SESSION_SECRET", "")',
++        "verify_password(",
++        "_login_locked_until(",
++        "_login_record_fail(",
++        "_login_clear(",
++        'blind_index(env, "email-admin-login:" + ip)',
++        "hmac.compare_digest",
++    )
++    for source in required:
++        assert source in ENTRY_TEXT
++
++
++def test_login_tokens_accept_only_current_and_previous_bucket():
++    auth = _load_email_admin_auth()
++    env = SimpleNamespace(EMAIL_ADMIN_SESSION_SECRET="session-secret")
++    bucket = auth["_email_admin_login_bucket"]()
++
++    current = auth["_email_admin_login_token"](env, bucket)
++    previous = auth["_email_admin_login_token"](env, bucket - 1)
++    old = auth["_email_admin_login_token"](env, bucket - 2)
++    future = auth["_email_admin_login_token"](env, bucket + 1)
++
++    assert auth["_email_admin_login_token_ok"](env, str(bucket), current)
++    assert auth["_email_admin_login_token_ok"](env, str(bucket - 1), previous)
++    assert not auth["_email_admin_login_token_ok"](env, str(bucket - 2), old)
++    assert not auth["_email_admin_login_token_ok"](env, str(bucket + 1), future)
++    assert not auth["_email_admin_login_token_ok"](env, "not-a-number", current)
++
++
++def test_email_admin_password_hash_requires_combined_salt_and_digest():
++    auth = _load_email_admin_auth()
++
++    assert auth["_email_admin_password_parts"](
++        SimpleNamespace(EMAIL_ADMIN_PASSWORD_HASH="salt:digest")
++    ) == ("salt", "digest")
++    assert auth["_email_admin_password_parts"](
++        SimpleNamespace(EMAIL_ADMIN_PASSWORD_HASH="missing-separator")
++    ) == ("", "")
++    assert auth["_email_admin_password_parts"](
++        SimpleNamespace(EMAIL_ADMIN_PASSWORD_HASH=":digest")
++    ) == ("", "")
++
++
++def test_email_admin_session_secret_is_trimmed_and_whitespace_fails_closed():
++    auth = _load_email_admin_auth()
++
++    assert auth["_email_admin_secret"](
++        SimpleNamespace(EMAIL_ADMIN_SESSION_SECRET="  session-secret  ")
++    ) == b"session-secret"
++    assert auth["_email_admin_secret"](
++        SimpleNamespace(EMAIL_ADMIN_SESSION_SECRET="   ")
++    ) == b""
++
++
++def test_email_admin_session_cookie_flags_expiry_and_csrf_binding():
++    auth = _load_email_admin_auth()
++    env = SimpleNamespace(EMAIL_ADMIN_SESSION_SECRET="session-secret")
++    set_cookie = auth["_email_admin_session_cookie"](env)
++    cookie = _cookie_pair(set_cookie)
++    request = _request(cookie)
++
++    assert "Path=/admin-email" in set_cookie
++    assert "Max-Age=43200" in set_cookie
++    assert "HttpOnly" in set_cookie
++    assert "Secure" in set_cookie
++    assert "SameSite=Strict" in set_cookie
++    assert auth["_email_admin_session_valid"](env, request)
++
++    csrf = auth["_email_admin_csrf_token"](env, request)
++    assert auth["_email_admin_csrf_ok"](env, request, {"csrf": [csrf]})
++    assert not auth["_email_admin_csrf_ok"](
++        env, request, {"csrf": [csrf + "tampered"]}
++    )
++    assert not auth["_email_admin_csrf_ok"](env, _request(), {"csrf": [csrf]})
++
++
++def test_email_admin_session_rejects_expired_tampered_and_far_future_tokens():
++    auth = _load_email_admin_auth()
++    env = SimpleNamespace(EMAIL_ADMIN_SESSION_SECRET="session-secret")
++
++    expired = str(_FakeDate.current - 1)
++    expired_sig = auth["_email_admin_sign"](env, "session", expired)
++    assert not auth["_email_admin_session_valid"](
++        env, _request(f"forkmesh_email_admin={expired}.{expired_sig}")
++    )
++
++    far_future = str(
++        _FakeDate.current + auth["EMAIL_ADMIN_SESSION_TTL_MS"] + 60_000
++    )
++    future_sig = auth["_email_admin_sign"](env, "session", far_future)
++    assert not auth["_email_admin_session_valid"](
++        env, _request(f"forkmesh_email_admin={far_future}.{future_sig}")
++    )
++
++    valid_cookie = _cookie_pair(auth["_email_admin_session_cookie"](env))
++    assert not auth["_email_admin_session_valid"](
++        env, _request(valid_cookie + "tampered")
++    )
++    assert not auth["_email_admin_session_valid"](
++        SimpleNamespace(EMAIL_ADMIN_SESSION_SECRET=""), _request(valid_cookie)
++    )
++
++
++def test_email_admin_cookie_clear_matches_security_and_path():
++    auth = _load_email_admin_auth()
++    cleared = auth["_clear_email_admin_session_cookie"]()
++
++    assert "forkmesh_email_admin=" in cleared
++    assert "Path=/admin-email" in cleared
++    assert "Max-Age=0" in cleared
++    assert "HttpOnly" in cleared
++    assert "Secure" in cleared
++    assert "SameSite=Strict" in cleared
++
++
++def test_email_admin_headers_block_embedding_sniffing_and_external_content():
++    auth = _load_email_admin_auth()
++    headers = auth["_email_admin_headers"]()
++
++    assert headers["cache-control"] == "no-store, max-age=0, must-revalidate"
++    assert headers["x-content-type-options"] == "nosniff"
++    assert headers["x-frame-options"] == "DENY"
++    assert headers["referrer-policy"] == "no-referrer"
++    assert "default-src 'none'" in headers["content-security-policy"]
++    assert "form-action 'self'" in headers["content-security-policy"]
++    assert "frame-ancestors 'none'" in headers["content-security-policy"]
++
++
++def test_email_admin_post_body_is_bounded_before_form_parsing():
++    handler = _function_node("_email_admin")
++    source = ast.get_source_segment(ENTRY_TEXT, handler)
++
++    assert "EMAIL_ADMIN_MAX_FORM_BYTES" in source
++    assert 'request.headers.get("content-length")' in source
++    assert 'len(form_body.encode("utf-8"))' in source
++    assert "status=413" in source
++
++
++def test_email_admin_handler_has_generic_failures_csrf_and_no_store():
++    handler = _function_node("_email_admin")
++    source = ast.get_source_segment(ENTRY_TEXT, handler)
++
++    assert "Invalid username or password." in source
++    assert "_email_admin_html_response" in source
++    assert 'EMAIL_ADMIN_CACHE_CONTROL = "no-store, max-age=0, must-revalidate"' in ENTRY_TEXT
++    assert "_email_admin_redirect" in source
++    assert "status=303" in ENTRY_TEXT
++    assert '"Set-Cookie"' in source
++    assert "_email_admin_csrf_ok" in source
++    assert 'action == "logout"' in source
++    assert "_clear_email_admin_session_cookie" in source
++    assert "render_login_page" in source
++    assert "render_console_page" in source
+-- 
+2.50.1 (Apple Git-155)
+
