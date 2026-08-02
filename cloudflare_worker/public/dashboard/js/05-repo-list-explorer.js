@@ -16,6 +16,35 @@
     return haystack.includes(query);
   }
 
+  // --- Header search as a live page filter (adhoc #37) -------------------
+  //
+  // Typing in the header search box opens its repository dropdown *and*
+  // narrows the list you are already looking at, with no Enter and no round
+  // trip. The two are independent: the dropdown always searches the whole
+  // catalog, while the page filter only ever hides rows the page had already
+  // rendered. Clearing the box (including the native type="search" ✕) restores
+  // everything.
+  //
+  // A page keeps its own filter box where it has one (#repoSearch, the issue
+  // search, ...); the global query is ANDed on top of it rather than replacing
+  // it, so neither control silently overrides the other.
+  function globalSearchPageQuery() {
+    return state.globalSearch.pageQuery || "";
+  }
+
+  // The lowercase terms a page list must match: its own filter box, then the
+  // header search box. Empty terms drop out, so an untouched box filters
+  // nothing.
+  function pageFilterQueries(ownQuery) {
+    return [String(ownQuery || "").trim().toLowerCase(), globalSearchPageQuery()]
+      .filter(Boolean);
+  }
+
+  function repositoryMatchesPageFilter(repo, ownQuery) {
+    return pageFilterQueries(ownQuery)
+      .every((query) => repositoryMatchesQuery(repo, query));
+  }
+
   function repositoryTermsBadge(repo, compact = false) {
     if (repo?.termsFlagged !== true) return "";
     const category = String(repo.termsCategory || "policy").replace(
@@ -51,6 +80,75 @@
     state.globalSearch.open = false;
     state.globalSearch.selectedIndex = 0;
     renderGlobalSearchResults();
+    // Clearing the box must un-filter the page too, not just close the panel.
+    if (options.clear) applyGlobalSearchPageFilter();
+  }
+
+  // Pull the header box's current text into state.globalSearch.pageQuery and
+  // re-render this page's lists through it. Cheap enough to run per keystroke:
+  // every list it drives filters an already-loaded array in memory, so nothing
+  // here refetches.
+  function applyGlobalSearchPageFilter() {
+    const shell = $("[data-global-search-shell]");
+    const input = $("[data-global-search]");
+    // The box is lg-only chrome; when it is not on screen it must not be
+    // holding a stale filter over the page.
+    const visible = Boolean(input) && (!shell || shell.getClientRects().length > 0);
+    const next = visible ? (input.value || "").trim().toLowerCase() : "";
+    if (next === state.globalSearch.pageQuery) return;
+    state.globalSearch.pageQuery = next;
+    renderGlobalSearchPageFilter();
+  }
+
+  // Re-render whichever lists this page shows. Each branch reuses the page's
+  // normal render path, so the filtered view is the same markup (empty states,
+  // pagination, counts) the page would draw for a hand-typed filter.
+  function renderGlobalSearchPageFilter() {
+    const page = currentPage();
+    if (["home", "repos", "profile-overview", "profile-repositories"].includes(page)) {
+      // Filtering to a shorter list can strand you past the last page.
+      state.page = 1;
+      applyRepositoryFilter();
+    } else if (page === "network") {
+      renderNetworkRows(Array.isArray(state.networkNodeRows) ? state.networkNodeRows : []);
+      window.lucide?.createIcons();
+    } else if (page === "repo") {
+      renderRepoPageFilter();
+    }
+    renderGlobalSearchPageFilterNotice();
+  }
+
+  // How many rows the page filter is currently showing, or null when this page
+  // has nothing the header box filters (settings, chat).
+  function globalSearchPageFilterCount() {
+    const page = currentPage();
+    if (["home", "repos", "profile-overview", "profile-repositories"].includes(page)) {
+      return (state.filteredGroups || []).length;
+    }
+    if (page === "network") {
+      return networkRowsMatchingPageFilter(
+        Array.isArray(state.networkNodeRows) ? state.networkNodeRows : []).length;
+    }
+    if (page === "repo") return repoPageFilterCount();
+    return null;
+  }
+
+  // A one-line footer under the dropdown, so it is obvious the page behind the
+  // panel narrowed on purpose rather than losing its rows.
+  function renderGlobalSearchPageFilterNotice() {
+    const notice = $("[data-global-search-page-filter]");
+    if (!notice) return;
+    const query = globalSearchPageQuery();
+    const count = query ? globalSearchPageFilterCount() : null;
+    const show = Boolean(query) && count !== null;
+    notice.classList.toggle("hidden", !show);
+    notice.classList.toggle("flex", show);
+    if (!show) {
+      notice.innerHTML = "";
+      return;
+    }
+    notice.innerHTML = `<i data-lucide="list-filter" class="h-3 w-3 shrink-0"></i><span class="min-w-0 truncate">Filtering this page: ${formatCount(count)} match${count === 1 ? "" : "es"}</span>`;
+    window.lucide?.createIcons();
   }
 
   function renderGlobalSearchResults() {
@@ -71,6 +169,9 @@
 
     input.setAttribute("aria-expanded", state.globalSearch.open ? "true" : "false");
     panel.classList.toggle("hidden", !state.globalSearch.open);
+    // Keep the "filtering this page" footer honest when the list behind it is
+    // re-rendered (catalog arriving, page change) rather than only on keystroke.
+    renderGlobalSearchPageFilterNotice();
     if (!state.globalSearch.open) return;
 
     if (state.repositoriesLoading) {
@@ -613,7 +714,7 @@
         const repo = sourceOfTruth(group);
         return { repo, href: groupLinkUrl(group), organization: false };
       }),
-    ].filter((entry) => repositoryMatchesQuery(entry.repo, query))
+    ].filter((entry) => repositoryMatchesPageFilter(entry.repo, query))
       .filter((entry, index, values) =>
         values.findIndex((candidate) =>
           repoDisplayKey(candidate.repo).toLowerCase() ===
@@ -886,7 +987,7 @@
     if (!container) return;
     const query = ($("[data-profile-repo-search]")?.value || "").trim().toLowerCase();
     const groups = profileRepositoryGroups().filter((group) => {
-      return repositoryMatchesQuery(sourceOfTruth(group), query);
+      return repositoryMatchesPageFilter(sourceOfTruth(group), query);
     });
     container.innerHTML = groups.length
       ? groups.map((group) => profileRepositoryRow(group)).join("")
@@ -905,7 +1006,7 @@
   function applyRepositoryFilter() {
     const query = ($("#repoSearch")?.value || "").trim().toLowerCase();
     state.filteredRepositories = state.repositories.filter((repo) =>
-      repositoryMatchesQuery(repo, query));
+      repositoryMatchesPageFilter(repo, query));
     state.filteredGroups = groupRepositories(state.filteredRepositories);
     updateRepositoryPagination();
     renderSidebarRepositories();
