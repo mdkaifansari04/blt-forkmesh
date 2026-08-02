@@ -19648,6 +19648,13 @@ export function createWorldScene({
   aquariumControlActions.id = "world-aquarium-control-actions";
   aquariumControlActions.className = "world-aquarium-control-actions";
   aquariumControlActions.hidden = true;
+  const aquariumSchoolStatus = document.createElement("div");
+  aquariumSchoolStatus.className = "world-aquarium-school-status";
+  aquariumSchoolStatus.dataset.worldAquariumSchoolStatus = "";
+  aquariumSchoolStatus.dataset.active = "false";
+  aquariumSchoolStatus.setAttribute("role", "status");
+  aquariumSchoolStatus.setAttribute("aria-live", "polite");
+  aquariumSchoolStatus.textContent = "SCHOOL MODE · STANDBY";
   const aquariumFeedAction = document.createElement("button");
   aquariumFeedAction.type = "button";
   aquariumFeedAction.className = "world-aquarium-control-button";
@@ -19673,6 +19680,7 @@ export function createWorldScene({
   aquariumLightAction.className = "world-aquarium-control-button";
   aquariumLightAction.dataset.worldAquariumLight = "";
   aquariumControlActions.append(
+    aquariumSchoolStatus,
     aquariumFeedAction,
     aquariumTapAction,
     aquariumBackdropAction,
