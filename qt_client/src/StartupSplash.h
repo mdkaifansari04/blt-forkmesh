@@ -3,6 +3,7 @@
 #include <QColor>
 #include <QElapsedTimer>
 #include <QPixmap>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -38,10 +39,24 @@ namespace forkmesh::ui {
 //  * No child widgets. The whole card is painted in one paintEvent, so a
 //    repaint() is one pass with no layout, and the global stylesheet (which
 //    matches plain QWidget) cannot paint over the translucent background.
+//
+// The splash has two lives. Before MainWindow exists there is no window to be
+// part of, so it is a frameless always-on-top window centred on screen. The
+// moment the window object exists, attachTo() reparents it into that window: it
+// becomes an ordinary child widget filling the window, dimming the app behind a
+// scrim and hovering the card in the middle of it. Always-on-top is a request a
+// compositor may ignore — several put the main window over the splash the
+// instant it maps — whereas a child widget is simply part of the window and can
+// never be shuffled behind it.
 class StartupSplash : public QWidget
 {
 public:
     StartupSplash(bool dark, const QString &version, const QString &commit);
+
+    // Move the splash inside `host` as a full-window overlay: scrim over the
+    // app, card centred, tracking the window as it is resized or moved. Safe to
+    // call at any point in the splash's life, once.
+    void attachTo(QWidget *host);
 
     // Announce work that is about to happen. Closes whichever step is running
     // and starts a new one, which then shows a live elapsed counter.
@@ -76,6 +91,9 @@ protected:
     // Click anywhere to dismiss, so a wedged startup can never trap the splash
     // on top of the user's screen.
     void mousePressEvent(QMouseEvent *event) override;
+    // Attached only: keep the overlay the size of the host window and above its
+    // siblings.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     enum class RowState { Running, Done, Failed, Detail };
@@ -103,6 +121,17 @@ private:
     // on every step, and re-running that stack each time was the only part of
     // the paint with a cost worth caring about.
     void ensureShadow();
+    // The card, centred in whatever the widget currently is: exactly the card
+    // plus its shadow margin when free-standing, the whole main window when
+    // attached.
+    QRectF cardRect() const;
+    // Card plus shadow margin, as an integer rect — the only part of an
+    // attached overlay that changes between animation frames, and so the only
+    // part worth repainting (a full-overlay update() would drag the whole main
+    // window through a repaint 60 times a second).
+    QRect damageRect() const;
+    // Match the host window's size. Attached only.
+    void followHost();
     void paintShadow(QPainter &p, const QRectF &card) const;
     void paintHeader(QPainter &p, const QRectF &card, qint64 now) const;
     void paintMeshOrbit(QPainter &p, const QPointF &centre, qint64 now) const;
@@ -119,6 +148,9 @@ private:
     QString elapsedText(qint64 ms) const;
 
     Palette m_palette;
+    bool m_dark = true;
+    // The window we are an overlay inside, or null while free-standing.
+    QPointer<QWidget> m_host;
     QString m_version;
     QString m_commit;
     QPixmap m_logo;
@@ -136,6 +168,9 @@ private:
     QElapsedTimer m_clock;
     qint64 m_finishAtMs = -1;   // when finish() was called, else -1
     qint64 m_lastPaintMs = 0;   // for time-based progress easing
+    // Fade-out, applied by the painter rather than setWindowOpacity(): once
+    // attached there is no window of our own to make transparent.
+    qreal m_opacity = 1.0;
     qreal m_shownProgress = 0.0;
     QTimer *m_animation = nullptr;
     QTimer *m_deadline = nullptr;
@@ -153,6 +188,10 @@ private:
 StartupSplash *showStartupSplash(bool headless, const QString &version,
                                  const QString &commit);
 StartupSplash *activeStartupSplash();
+
+// Move the live splash inside the main window (see StartupSplash::attachTo).
+// No-op when no splash is up.
+void attachStartupSplashTo(QWidget *host);
 
 void startupStep(const QString &label);
 void startupDetail(const QString &text);
