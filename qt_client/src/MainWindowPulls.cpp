@@ -1959,6 +1959,11 @@ void MainWindow::registerDiffView(QTextEdit *view)
     // (including side-by-side) stays inside the visible window instead of
     // running past the right edge behind a horizontal scrollbar.
     view->setLineWrapMode(QTextEdit::WidgetWidth);
+    // No frame and no document inset: the file blocks already draw their own
+    // outlines, so a border plus the default 4px document margin only fenced the
+    // diff in and stole review width down its right edge (adhoc #223).
+    view->setFrameShape(QFrame::NoFrame);
+    view->document()->setDocumentMargin(0);
     view->viewport()->installEventFilter(this); // Ctrl+wheel, see eventFilter
     if (auto *browser = qobject_cast<QTextBrowser *>(view))
         browser->setOpenLinks(false);

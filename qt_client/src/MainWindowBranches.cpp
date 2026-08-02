@@ -2744,13 +2744,18 @@ QWidget *MainWindow::buildBranchRangePane()
     // Diff tools (brought over from the PR viewer): text-size zoom, unified <->
     // side-by-side, and prev/next change. They sit on the pane's top bar beside
     // the branch actions (adhoc #110).
-    auto *diffZoomOut = new QPushButton(QString::fromUtf8("\xE2\x88\x92")); // −
+    // Every button on this bar is a StackedIconButton: glyph on top, small
+    // caption underneath (adhoc #223), so a dozen actions read as a toolbar
+    // instead of a paragraph of buttons running off the right edge.
+    auto *diffZoomOut = new StackedIconButton(QStringLiteral("Smaller"));
+    diffZoomOut->setGlyph(QString::fromUtf8("\xE2\x88\x92")); // −
     diffZoomOut->setToolTip("Smaller diff text");
     connect(diffZoomOut, &QPushButton::clicked, this, [this] { adjustDiffFont(-1); });
-    auto *diffZoomIn = new QPushButton(QStringLiteral("+"));
+    auto *diffZoomIn = new StackedIconButton(QStringLiteral("Larger"));
+    diffZoomIn->setGlyph(QStringLiteral("+"));
     diffZoomIn->setToolTip("Larger diff text");
     connect(diffZoomIn, &QPushButton::clicked, this, [this] { adjustDiffFont(1); });
-    m_branchSplitButton = new QPushButton;
+    m_branchSplitButton = new StackedIconButton;
     m_branchSplitButton->setCheckable(true);
     m_branchSplitButton->setChecked(diffSplitPref());
     setOcticon(m_branchSplitButton, "diff", 14);
@@ -2771,18 +2776,18 @@ QWidget *MainWindow::buildBranchRangePane()
         else
             renderBranchScopeDiff();
     });
-    auto *prevChange = new QPushButton;
+    auto *prevChange = new StackedIconButton(QStringLiteral("Prev"));
     prevChange->setToolTip("Previous change");
     setOcticon(prevChange, "chevron-up", 14);
     connect(prevChange, &QPushButton::clicked, this,
             [this] { branchScrollToAdjacentHunk(-1); });
-    auto *nextChange = new QPushButton;
+    auto *nextChange = new StackedIconButton(QStringLiteral("Next"));
     nextChange->setToolTip("Next change");
     setOcticon(nextChange, "chevron-down", 14);
     connect(nextChange, &QPushButton::clicked, this,
             [this] { branchScrollToAdjacentHunk(1); });
-    for (QPushButton *b :
-         {diffZoomOut, diffZoomIn, m_branchSplitButton, prevChange, nextChange}) {
+    for (QPushButton *b : std::initializer_list<QPushButton *>{
+             diffZoomOut, diffZoomIn, m_branchSplitButton, prevChange, nextChange}) {
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -2810,7 +2815,7 @@ QWidget *MainWindow::buildBranchRangePane()
 
     // "PR #N": shown while the pane reviews a pull request (adhoc #107) — jumps
     // to the full PR page (conversation, checks, merge controls).
-    m_branchOpenPullButton = new QPushButton;
+    m_branchOpenPullButton = new StackedIconButton;
     m_branchOpenPullButton->setObjectName("ghostButton");
     m_branchOpenPullButton->setProperty("buttonSize", "sm");
     m_branchOpenPullButton->setCursor(Qt::PointingHandCursor);
@@ -2824,7 +2829,7 @@ QWidget *MainWindow::buildBranchRangePane()
     // Open in Codium: launch VSCodium on the selected branch's working directory
     // (its worktree, or the main checkout) so the branch can be edited in the IDE
     // without dropping to a terminal. Disabled when no local checkout exists.
-    m_branchOpenCodiumButton = new QPushButton("Open in Codium");
+    m_branchOpenCodiumButton = new StackedIconButton("Codium");
     m_branchOpenCodiumButton->setObjectName("ghostButton");
     m_branchOpenCodiumButton->setProperty("buttonSize", "sm");
     m_branchOpenCodiumButton->setCursor(Qt::PointingHandCursor);
@@ -2839,7 +2844,7 @@ QWidget *MainWindow::buildBranchRangePane()
     // opening the interactive conflict editor so conflicts can be resolved by
     // hand (the manual counterpart to "Fix with agent"). Sits left of "Pull
     // main", which one-clicks the merge and only surfaces the editor on conflict.
-    m_branchMergeEditorButton = new QPushButton("Merge editor");
+    m_branchMergeEditorButton = new StackedIconButton("Merge editor");
     m_branchMergeEditorButton->setObjectName("ghostButton");
     m_branchMergeEditorButton->setProperty("buttonSize", "sm");
     m_branchMergeEditorButton->setCursor(Qt::PointingHandCursor);
@@ -2850,7 +2855,7 @@ QWidget *MainWindow::buildBranchRangePane()
             openBranchMergeEditor(m_branchDiffBranch);
     });
 
-    m_branchPullButton = new QPushButton("Pull main");
+    m_branchPullButton = new StackedIconButton("Pull main");
     m_branchPullButton->setObjectName("ghostButton");
     m_branchPullButton->setProperty("buttonSize", "sm");
     m_branchPullButton->setCursor(Qt::PointingHandCursor);
@@ -2869,7 +2874,7 @@ QWidget *MainWindow::buildBranchRangePane()
     // so updateBranchDetailActions() hides it otherwise. The button now resolves
     // straight away (no menu); the agent and model are chosen in the two dropdowns
     // beside it (adhoc #56).
-    m_branchFixButton = new QPushButton("Fix with agent");
+    m_branchFixButton = new StackedIconButton("Fix with agent");
     m_branchFixButton->setObjectName("ghostButton");
     m_branchFixButton->setProperty("buttonSize", "sm");
     m_branchFixButton->setCursor(Qt::PointingHandCursor);
@@ -2931,7 +2936,7 @@ QWidget *MainWindow::buildBranchRangePane()
                 }
             });
 
-    m_branchPrButton = new QPushButton("Create PR");
+    m_branchPrButton = new StackedIconButton("Create PR");
     m_branchPrButton->setObjectName("ghostButton");
     m_branchPrButton->setProperty("buttonSize", "sm");
     m_branchPrButton->setCursor(Qt::PointingHandCursor);
@@ -2944,7 +2949,7 @@ QWidget *MainWindow::buildBranchRangePane()
 
     // Merge the selected branch straight into the default branch (an empty
     // worktree path tells mergeWorktreeIntoMain not to prune any worktree).
-    m_branchMergeButton = new QPushButton("Merge to main");
+    m_branchMergeButton = new StackedIconButton("Merge to main");
     m_branchMergeButton->setObjectName("primaryButton");
     m_branchMergeButton->setProperty("buttonSize", "sm");
     m_branchMergeButton->setCursor(Qt::PointingHandCursor);
@@ -2961,7 +2966,7 @@ QWidget *MainWindow::buildBranchRangePane()
     // remains durable. The one-click end of a finished agent run, without
     // hopping to the Agents/Worktrees tabs to clean up by hand. Runs straight from
     // the click — mergeWorktreeIntoMain no longer confirms (adhoc #441).
-    m_branchMergeDeleteButton = new QPushButton("Merge & clean up");
+    m_branchMergeDeleteButton = new StackedIconButton("Merge & clean up");
     m_branchMergeDeleteButton->setObjectName("primaryButton");
     m_branchMergeDeleteButton->setProperty("buttonSize", "sm");
     m_branchMergeDeleteButton->setCursor(Qt::PointingHandCursor);
@@ -2980,7 +2985,7 @@ QWidget *MainWindow::buildBranchRangePane()
     });
 
     auto *detailBar = new QHBoxLayout;
-    detailBar->setContentsMargins(0, 0, 0, 0);
+    detailBar->setContentsMargins(0, 0, 12, 0);
     detailBar->addWidget(m_branchCloseButton);
     detailBar->addWidget(m_branchDetailLabel);
     detailBar->addStretch();
@@ -3040,7 +3045,7 @@ QWidget *MainWindow::buildBranchRangePane()
     }
     m_branchDiffSearchBar = new QWidget;
     auto *searchBarLayout = new QHBoxLayout(m_branchDiffSearchBar);
-    searchBarLayout->setContentsMargins(0, 0, 0, 6);
+    searchBarLayout->setContentsMargins(0, 0, 12, 6);
     searchBarLayout->addWidget(m_branchDiffSearchInput, 1);
     searchBarLayout->addWidget(m_branchDiffSearchCount);
     searchBarLayout->addWidget(searchPrev);
@@ -3053,8 +3058,11 @@ QWidget *MainWindow::buildBranchRangePane()
     // the diff gets the full width here.
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
-    // Match the sibling workspace pages (working-tree changes / commit detail).
-    layout->setContentsMargins(16, 12, 16, 16);
+    // The diff runs to the right and bottom edges of the pane: the inset that
+    // used to frame it only cost review width and left a dead band under the
+    // last hunk (adhoc #223). The toolbar keeps its own right margin so the
+    // merge buttons don't sit flush against the window edge.
+    layout->setContentsMargins(12, 10, 0, 0);
     layout->setSpacing(8);
     layout->addLayout(detailBar);
     layout->addWidget(m_branchDiffSearchBar);
