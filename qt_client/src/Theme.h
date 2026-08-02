@@ -283,9 +283,9 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #commitBar QLabel { background: transparent; }
 #commitBarText { color: #e6edf3; }
 #overviewList { background: transparent; border: none; }
-#overviewList::item { padding: 2px 4px; color: #c9d1d9; }
+#overviewList::item { padding: 5px 4px; color: #c9d1d9; }
 /* Hover fill is painted by HoverRowDelegate so the row never shifts. */
-#overviewList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 2px 4px; }
+#overviewList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 5px 4px; }
 #overviewList QHeaderView::section {
     background-color: #0d1117; color: #8b949e; padding: 4px 8px;
     border: none; border-bottom: 1px solid #21262d;
@@ -294,8 +294,6 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 /* Per-row size bar in the Code overview. */
 #sizeBarTrack { background-color: #21262d; border-radius: 3px; }
 #sizeBarFill { background-color: #3fb950; border-radius: 3px; }
-#overviewMetricTrack { background-color: #21262d; border-radius: 2px; }
-#overviewMetricFill { background-color: #3fb950; border-radius: 2px; }
 #readmeView {
     background: transparent; border: none; padding: 0; color: #e6edf3;
 }
@@ -1643,9 +1641,9 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #commitBar QLabel { background: transparent; }
 #commitBarText { color: #1f2328; }
 #overviewList { background: transparent; border: none; }
-#overviewList::item { padding: 2px 4px; color: #1f2328; }
+#overviewList::item { padding: 5px 4px; color: #1f2328; }
 /* Hover fill is painted by HoverRowDelegate so the row never shifts. */
-#overviewList::item:selected { background-color: #0969da; color: #ffffff; padding: 2px 4px; }
+#overviewList::item:selected { background-color: #0969da; color: #ffffff; padding: 5px 4px; }
 #overviewList QHeaderView::section {
     background-color: #ffffff; color: #656d76; padding: 4px 8px;
     border: none; border-bottom: 1px solid #d8dee4;
@@ -1654,8 +1652,6 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 /* Per-row size bar in the Code overview. */
 #sizeBarTrack { background-color: #eaeef2; border-radius: 3px; }
 #sizeBarFill { background-color: #2da44e; border-radius: 3px; }
-#overviewMetricTrack { background-color: #eaeef2; border-radius: 2px; }
-#overviewMetricFill { background-color: #2da44e; border-radius: 2px; }
 #readmeView {
     background: transparent; border: none; padding: 0; color: #1f2328;
 }
