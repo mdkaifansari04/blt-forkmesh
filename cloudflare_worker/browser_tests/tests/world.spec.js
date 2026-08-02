@@ -4500,12 +4500,7 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
     const teamLayers = [
       "marketing",
       "engineering",
-      "product-design",
-      "security",
       "infrastructure",
-      "community",
-      "partnerships",
-      "operations",
     ].flatMap((floorId) => transparentMeshes(
       scene.getObjectByName(`forkmesh-office-floor-${floorId}`)
     ));
@@ -4565,7 +4560,7 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
   expect(glass.doors).toEqual({ count: 2, stable: true });
 });
 
-test("Office elevator exposes ten floors while enforcing team access", async ({
+test("Office elevator exposes five floors while enforcing team access", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -4644,29 +4639,24 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
         : null,
     };
   });
-  expect(access.destinations).toHaveLength(10);
+  expect(access.destinations).toHaveLength(5);
   expect(access.destinations.map((floor) => floor.id)).toEqual([
     "lobby",
     "marketing",
     "engineering",
-    "product-design",
-    "security",
     "infrastructure",
-    "community",
-    "partnerships",
-    "operations",
     "rooftop",
   ]);
-  expect(access.buttonCount).toBe(10);
+  expect(access.buttonCount).toBe(5);
   expect(access.destinations.map((floor) => floor.number)).toEqual([
-    1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    1, 2, 3, 4, 5,
   ]);
   expect(access.destinations[0].teamLabel).toBe("LOBBY");
   expect(access.destinations[2].teamLabel).toBe("ENGINEERING");
-  expect(access.destinations[9].teamLabel).toBe("ROOF");
+  expect(access.destinations[4].teamLabel).toBe("ROOF");
   expect(access.destinations[0].y).toBe(access.destinations[1].y);
   expect(access.destinations[1].y).toBeLessThan(access.destinations[2].y);
-  expect(access.destinations[2].y).toBeLessThan(access.destinations[9].y);
+  expect(access.destinations[2].y).toBeLessThan(access.destinations[4].y);
   expect(access.buttonsMoveWithCar).toBe(true);
   expect(access.panelParent).toBe("forkmesh-office-glass-elevator-car");
   expect(access.carPosition).toMatchObject({ x: 70, y: 0 });
@@ -4681,7 +4671,7 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
     lobby: true,
     marketing: true,
     engineering: true,
-    security: false,
+    infrastructure: false,
     rooftop: true,
   });
 
@@ -4705,7 +4695,7 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
       return { x: avatar.position.x, z: avatar.position.z };
     });
   const locked = await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.world.travelToOfficeFloor("security")
+    shell.world.travelToOfficeFloor("infrastructure")
   );
   expect(locked).toBe(false);
   const travelled = await page.locator("forkmesh-world").evaluate((shell) =>
@@ -6181,6 +6171,61 @@ test("local diagnostics report renderer and existing socket state without new te
   expect(JSON.stringify(snapshot)).not.toContain("127.0.0.1");
   expect(JSON.stringify(snapshot)).not.toContain("/world/");
   expect(socketCount).toBe(1);
+});
+
+test("the Debug tab lists every individual object drawing triangles and sorts by any column", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-debug-objects");
+  await waitForWorld(page);
+
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="debug"]').click();
+
+  const rows = page.locator("[data-world-object-list] .world-object-row");
+  await expect(rows.first()).toBeVisible();
+  const status = page.locator("[data-world-object-status]");
+  await expect(status).toContainText("objects");
+  await expect(status).toContainText("triangles");
+
+  // Every row is one real mesh, and the scene walk agrees with the table.
+  const objects = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.listSceneObjects(),
+  );
+  expect(objects.length).toBeGreaterThan(10);
+  expect(objects.every((object) => object.triangles > 0)).toBe(true);
+  expect(objects.every((object) => typeof object.label === "string")).toBe(true);
+  expect(new Set(objects.map((object) => object.element)).size).toBeGreaterThan(
+    1,
+  );
+
+  const readLabels = async () =>
+    page
+      .locator("[data-world-object-list] .world-object-row strong")
+      .allInnerTexts();
+
+  // Default order is heaviest triangle count first.
+  const labelsByTriangles = await readLabels();
+  expect(labelsByTriangles.length).toBeGreaterThan(1);
+
+  // Clicking the active column reverses it; clicking another sorts by it.
+  await page.locator('[data-world-object-sort="triangles"]').click();
+  await expect(
+    page.locator('[data-world-object-sort="triangles"]'),
+  ).toHaveAttribute("aria-sort", "ascending");
+  expect(await readLabels()).not.toEqual(labelsByTriangles);
+
+  await page.locator('[data-world-object-sort="label"]').click();
+  await expect(page.locator('[data-world-object-sort="label"]')).toHaveAttribute(
+    "aria-sort",
+    "ascending",
+  );
+  const byLabel = await readLabels();
+  expect(byLabel).toEqual([...byLabel].sort((a, b) => a.localeCompare(b)));
+
+  // Re-walking keeps the panel populated.
+  await page.locator("[data-world-object-refresh]").click();
+  await expect(rows.first()).toBeVisible();
 });
 
 test("the topbar has no clock or emote actions and local light level survives movement without becoming presence data", async ({

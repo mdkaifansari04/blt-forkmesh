@@ -115,7 +115,7 @@ const GYM_MAX_WEIGHT_LB = 1200;
 // without teleporting the avatar out from under the camera.
 const PLAYER_DASH_SPEED = 48;
 const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
-// Clears the complete eleven-storey Office tower (176 units) and gives normal
+// Clears the complete five-storey Office tower (80 units) and gives normal
 // walking input enough air time to cross its 170-unit width.
 const PLAYER_SUPER_JUMP_VELOCITY = 82;
 const PLAYER_SUPER_JUMP_MOVE_MULTIPLIER = 3.5;
@@ -144,6 +144,9 @@ const SHADOW_MAP_BUSY_RETRY_MS = 1_000;
 const SHADOW_MAP_STALL_COOLDOWN_MS = 10_000;
 const SCENE_LOD_SAMPLE_MS = 500;
 const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
+// Backstop for the Debug tab's per-object walk so a pathological scene can
+// never build a million-entry array on the main thread.
+const SCENE_OBJECT_WALK_LIMIT = 5_000;
 // Movement, camera controls, and rendering retain display cadence. Decorative
 // callbacks have their own budget: compact GPUs update them at 30 Hz and a
 // zoomed-out overview at 20 Hz, where sub-pixel fire/foliage changes cannot
@@ -3318,7 +3321,6 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:avatar-team-badges", task: "Team badges on each avatar's left arm", estimate: "deployed", done: true },
   { key: "task:marketing-proof", task: "Private Marketing proof-of-work links", estimate: "ready for deploy · in QA", done: true },
   { key: "done:marketing-initiatives", task: "Issue → private Marketing initiatives wall", estimate: "ready for deploy · in QA", done: true },
-  { key: "done:executive-floor", task: "Executive strategy floor + elevator access", estimate: "ready for deploy · in QA", done: true },
   { key: "done:general-chat-board", task: "Recent #general chat beside events", estimate: "ready for deploy · in QA", done: true },
   { key: "task:deploy-lifecycle", task: "Live deploy spinner + ready refresh button", estimate: "deployed", done: true },
   { key: "task:elevator-camera-lock", task: "Elevator button camera lock + release", estimate: "deployed", done: true },
@@ -15964,6 +15966,67 @@ export function createWorldScene({
     });
   }
 
+  // Unnamed meshes are the norm, so fall back to the nearest named ancestor
+  // plus the geometry type: "forkmesh-operator-belt › BoxGeometry" locates a
+  // row in the scene graph far better than a bare "Mesh".
+  function sceneObjectLabel(object) {
+    if (object.name) return object.name;
+    let ancestor = object.parent;
+    while (ancestor && !ancestor.name) ancestor = ancestor.parent;
+    const geometryType = object.geometry?.type || "Mesh";
+    return ancestor?.name ? `${ancestor.name} › ${geometryType}` : geometryType;
+  }
+
+  // Every individual mesh currently drawing triangles, tagged with the world
+  // element that owns it. listWorldElements answers "which feature costs the
+  // most"; this answers "which single object inside it does". Walked on
+  // demand from the Debug tab, never per frame.
+  function listSceneObjects() {
+    const owners = new Map();
+    worldElements.forEach((element) => {
+      pruneDeadElementRoots(element);
+      element.roots.forEach((root) => {
+        root.traverse?.((child) => {
+          if (!owners.has(child)) owners.set(child, element);
+        });
+      });
+    });
+    const interactiveSet = new Set(interactive);
+    const objects = [];
+    scene.traverse((child) => {
+      if (!child.isMesh || objects.length >= SCENE_OBJECT_WALK_LIMIT) return;
+      if (child.userData?.raycastProxy === true) return;
+      const geometry = child.geometry;
+      const vertices =
+        geometry?.index?.count ?? geometry?.attributes?.position?.count ?? 0;
+      const perInstance = Math.floor(vertices / 3);
+      if (perInstance <= 0) return;
+      const instances = child.isInstancedMesh
+        ? Math.max(0, Number(child.count) || 0)
+        : 1;
+      // An instanced mesh parked at count 0 submits nothing this frame.
+      const triangles = perInstance * instances;
+      if (triangles <= 0) return;
+      const owner = owners.get(child);
+      objects.push({
+        label: sceneObjectLabel(child),
+        element: owner ? owner.label : "Unregistered",
+        elementId: owner ? owner.id : "",
+        type: child.isInstancedMesh
+          ? "Instanced"
+          : child.isSkinnedMesh
+            ? "Skinned"
+            : "Mesh",
+        geometry: geometry?.type || "Geometry",
+        triangles,
+        instances,
+        visible: objectIsEffectivelyVisible(child),
+        interactive: interactiveSet.has(child),
+      });
+    });
+    return objects;
+  }
+
   // Whole-scene systems and the fixtures that exist before the static town
   // builds below. Everything else registers inline where it is constructed.
   registerWorldElement(
@@ -19579,51 +19642,6 @@ export function createWorldScene({
       engineering.add(station);
     }
 
-    const design = officeFloorGroups.get("product-design");
-    const designColors = ["#ff7aa8", "#77d9ff", "#f7c96b", "#9ef7c6"];
-    designColors.forEach((color, index) => {
-      const prototype = new THREE.Mesh(
-        index % 2
-          ? new THREE.TorusKnotGeometry(2.8, 0.72, 48, 8)
-          : new THREE.IcosahedronGeometry(3.2, 1),
-        makeMaterial(THREE, color, {
-          emissive: color,
-          emissiveIntensity: 0.34,
-          metalness: 0.38,
-          roughness: 0.28,
-        }),
-      );
-      prototype.name =
-        `forkmesh-office-feature-product-design-${index + 1}`;
-      prototype.position.set(
-        -36 + index * 24,
-        OFFICE_FLOOR_HEIGHT / 2,
-        0,
-      );
-      design.add(prototype);
-      animated.push((time) => {
-        prototype.rotation.y = time * (0.00018 + index * 0.00003);
-      });
-    });
-
-    const security = officeFloorGroups.get("security");
-    const shield = new THREE.Mesh(
-      new THREE.TorusKnotGeometry(3.8, 0.6, 72, 10, 2, 3),
-      makeMaterial(THREE, "#ff7189", {
-        emissive: "#a92945",
-        emissiveIntensity: 0.78,
-        metalness: 0.65,
-        roughness: 0.2,
-      }),
-    );
-    shield.name = "forkmesh-office-feature-security-shield";
-    shield.position.set(0, OFFICE_FLOOR_HEIGHT / 2, -4);
-    security.add(shield);
-    animated.push((time) => {
-      shield.rotation.y = time * 0.00024;
-      shield.rotation.x = Math.sin(time * 0.0003) * 0.18;
-    });
-
     const infrastructure = officeFloorGroups.get("infrastructure");
     for (const side of [-1, 1]) {
       for (let z = -27; z <= 27; z += 9) {
@@ -19640,140 +19658,6 @@ export function createWorldScene({
         infrastructure.add(rack);
       }
     }
-
-    const community = officeFloorGroups.get("community");
-    const gameTable = new THREE.Mesh(
-      new THREE.BoxGeometry(16, 0.5, 8),
-      makeMaterial(THREE, "#4c8a73", { roughness: 0.62 }),
-    );
-    gameTable.position.set(0, 1.45, -3);
-    community.add(gameTable);
-    const gameNet = new THREE.Mesh(
-      new THREE.BoxGeometry(0.15, 1.2, 8),
-      officeFloorAccent,
-    );
-    gameNet.position.set(0, 2.1, -3);
-    community.add(gameNet);
-
-    const partnerships = officeFloorGroups.get("partnerships");
-    for (let radius = 4; radius <= 10; radius += 3) {
-      const orbitPivot = new THREE.Group();
-      orbitPivot.name = `forkmesh-office-feature-partnerships-orbit-${radius}`;
-      orbitPivot.position.y = OFFICE_FLOOR_HEIGHT / 2;
-      const orbit = new THREE.Mesh(
-        new THREE.TorusGeometry(radius, 0.12, 8, 64),
-        glow,
-      );
-      orbit.rotation.x = Math.PI / 2 + (radius - 7) * 0.015;
-      orbitPivot.add(orbit);
-      partnerships.add(orbitPivot);
-      animated.push((time) => {
-        orbitPivot.rotation.y = time * (0.00016 + radius * 0.000006);
-      });
-    }
-
-    const operations = officeFloorGroups.get("operations");
-    for (let x = -30; x <= 30; x += 12) {
-      const consoleDesk = new THREE.Mesh(
-        new THREE.BoxGeometry(9, 2.2, 6),
-        makeMaterial(THREE, "#253e46", {
-          emissive: "#22536b",
-          emissiveIntensity: 0.42,
-          metalness: 0.48,
-          roughness: 0.35,
-        }),
-      );
-      consoleDesk.position.set(x, 1.5, 0);
-      operations.add(consoleDesk);
-    }
-
-    const executive = officeFloorGroups.get("executive");
-    const executiveWood = makeMaterial(THREE, "#6f4d34", {
-      metalness: 0.08,
-      roughness: 0.56,
-    });
-    const executiveTrim = makeMaterial(THREE, "#d2af63", {
-      emissive: "#624a1c",
-      emissiveIntensity: 0.28,
-      metalness: 0.72,
-      roughness: 0.24,
-    });
-    const strategyTable = new THREE.Mesh(
-      new THREE.BoxGeometry(52, 0.55, 15),
-      executiveWood,
-    );
-    strategyTable.name = "forkmesh-office-executive-strategy-table";
-    strategyTable.position.set(0, 2.75, 0);
-    executive.add(strategyTable);
-    for (const x of [-22, -11, 0, 11, 22]) {
-      for (const z of [-10, 10]) {
-        const chairId = `executive-chair-${x}-${z}`;
-        const chair = new THREE.Group();
-        chair.name = `forkmesh-office-executive-chair-${x}-${z}`;
-        const seat = new THREE.Mesh(
-          new THREE.BoxGeometry(4.2, 0.35, 3.6),
-          executiveWood,
-        );
-        seat.position.y = 1.8;
-        chair.add(seat);
-        const back = new THREE.Mesh(
-          new THREE.BoxGeometry(4.2, 3.7, 0.35),
-          executiveWood,
-        );
-        back.position.set(0, 3.35, z < 0 ? -1.65 : 1.65);
-        chair.add(back);
-        chair.position.set(x, 0, z);
-        chair.rotation.y = z < 0 ? 0 : Math.PI;
-        chair.userData.officeChairId = chairId;
-        chair.userData.officeFloorId = "executive";
-        chair.userData.officeSeatTopY = 1.975;
-        chair.traverse((child) => {
-          if (!child.isMesh) return;
-          child.userData.officeChairId = chairId;
-          child.userData.officeFloorId = "executive";
-          child.userData.interactive = "office-chair";
-          interactive.push(child);
-        });
-        officeChairs.set(chairId, chair);
-        executive.add(chair);
-      }
-    }
-    const strategyMap = new THREE.Mesh(
-      new THREE.PlaneGeometry(42, 8),
-      new THREE.MeshBasicMaterial({
-        map: canvasTexture(THREE, 1260, 240, (context) => {
-          context.fillStyle = "#071713";
-          context.fillRect(0, 0, 1260, 240);
-          context.strokeStyle = "#d2af63";
-          context.lineWidth = 10;
-          context.strokeRect(8, 8, 1244, 224);
-          context.fillStyle = "#eafff6";
-          context.font =
-            '800 56px "ForkMesh Mono", ui-monospace, monospace';
-          context.textAlign = "center";
-          context.fillText("ORGANIZATION STRATEGY", 630, 92);
-          context.fillStyle = "#9ef7c6";
-          context.font =
-            '600 31px "ForkMesh Mono", ui-monospace, monospace';
-          context.fillText(
-            "RESILIENT HOSTING · HEALTHY COMMUNITY · OPEN SOURCE",
-            630,
-            160,
-          );
-        }),
-        toneMapped: false,
-      }),
-    );
-    strategyMap.name = "forkmesh-office-executive-strategy-map";
-    strategyMap.position.set(0, 8, -OFFICE_DEPTH / 2 + 0.62);
-    executive.add(strategyMap);
-    const strategyCenter = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.35, 1.35, 0.12, 32),
-      executiveTrim,
-    );
-    strategyCenter.name = "forkmesh-office-executive-table-seal";
-    strategyCenter.position.set(0, 3.06, 0);
-    executive.add(strategyCenter);
 
     const rooftop = officeFloorGroups.get("rooftop");
     const roofGlass = makeMaterial(THREE, "#d8ffff", {
@@ -22602,7 +22486,7 @@ export function createWorldScene({
     // The Office is intentionally a transparent cutaway tower. Keep its walls,
     // floor slabs, lighting, and furniture visible from the outdoor World at
     // every camera distance. Once a visitor enters, isolate the active floor
-    // to avoid drawing ten floors through the one they are using.
+    // to avoid drawing every other floor through the one they are using.
     syncOfficeFloorVisibility();
 
     // A purely visual LOD helper must never be able to interrupt movement.
@@ -27615,6 +27499,17 @@ export function createWorldScene({
         identity.totalActiveMs == null
           ? facts.totalActiveMs
           : identity.totalActiveMs,
+      // A presence frame carries no mail stamp; the owner's own authenticated
+      // read (which knows the exact minute) still wins on their avatar.
+      lastEmailAt: Math.max(
+        Number(identity.lastEmailAt) || 0,
+        Number(facts.lastEmailAt) || 0,
+      ),
+      lastEmailStatus:
+        Number(identity.lastEmailAt) >= Number(facts.lastEmailAt || 0)
+          ? identity.lastEmailStatus || facts.lastEmailStatus
+          : facts.lastEmailStatus,
+      lastEmailPrivate: false,
     };
   }
 
@@ -27974,6 +27869,12 @@ export function createWorldScene({
         totalActiveMs:
           Number.isFinite(activeMs) && activeMs >= 0 ? activeMs : null,
         emailVerified: member?.emailVerified === true,
+        // The directory is authoritative for a registered account's mail
+        // stamp, so a member listed here never reads as "NOT SHARED": no
+        // stamp means the account has simply never been emailed.
+        lastEmailAt: Math.max(0, Number(member?.lastEmailAt) || 0),
+        lastEmailStatus: String(member?.lastEmailStatus || ""),
+        lastEmailPrivate: false,
       });
     });
     // A live presence frame can arrive before the public directory catches up.
@@ -28100,6 +28001,9 @@ export function createWorldScene({
           statusEmoji: "",
           statusNote: String(member.status || ""),
           activityBucket: member.activityBucket || "",
+          lastEmailAt: Math.max(0, Number(member.lastEmailAt) || 0),
+          lastEmailStatus: String(member.lastEmailStatus || ""),
+          lastEmailPrivate: false,
         };
         let figure = loungeMembers.get(id);
         if (!figure) {
@@ -34560,6 +34464,7 @@ export function createWorldScene({
     getDiagnostics,
     listWorldElements,
     setWorldElementEnabled,
+    listSceneObjects,
     getEnvironmentState: () => ({
       theme: currentTheme,
       lightLevel,

@@ -7567,13 +7567,7 @@ OFFICE_ATTENDANCE_FLOOR_LABELS = {
     "lobby": "Lobby",
     "marketing": "Marketing",
     "engineering": "Engineering",
-    "product-design": "Product & Design",
-    "security": "Security",
     "infrastructure": "Infrastructure",
-    "community": "Community",
-    "partnerships": "Partnerships",
-    "operations": "Operations",
-    "executive": "Executive",
     "rooftop": "Rooftop",
 }
 
@@ -8139,27 +8133,8 @@ OFFICE_FLOOR_TEAM_ALIASES = {
         "engineering", "engineers", "development", "developers",
         "platform", "frontend", "backend",
     },
-    "product-design": {
-        "product-design", "product", "design", "ux", "ui-ux",
-    },
-    "security": {
-        "security", "security-team", "trust-safety", "trust-and-safety",
-    },
     "infrastructure": {
         "infrastructure", "infra", "devops", "site-reliability", "sre",
-    },
-    "community": {
-        "community", "community-team", "developer-relations", "devrel",
-    },
-    "partnerships": {
-        "partnerships", "partnership", "business-development", "bizdev",
-    },
-    "operations": {
-        "operations", "ops", "people-operations", "finance-operations",
-    },
-    "executive": {
-        "executive", "executives", "leadership", "organization-leadership",
-        "org-leadership",
     },
 }
 
@@ -9958,11 +9933,6 @@ WORLD_QA_CARDS = (
      "done, or error plus a bounded redacted log tail. Click the Actions face "
      "and confirm the full authorized run list opens. Repeat without write "
      "access and confirm no private run or log data appears."),
-    ("executive-office-floor", "Executive Office floor",
-     "Sign in as an Executive-team member and ride the elevator to Executive. "
-     "Confirm the strategy table, ten chairs, organization map and floor label "
-     "render without intersecting adjacent stories. Confirm a non-Executive "
-     "member cannot select the floor and attendance reports Executive."),
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
      "appears immediately, animates while work is active, and ends with a "
@@ -16332,6 +16302,36 @@ def _account_world_client_fields(rec):
     )
 
 
+WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS = 60 * 60 * 1000
+
+
+def _account_public_last_email(rec):
+    """The last account email's coarse age and delivery outcome.
+
+    World paints "LAST EMAIL 2D AGO · DELIVERED" on every member badge, so the
+    stamp rides the public directory rather than only the owner's own
+    authenticated read. The send time is rounded down to the hour, and the
+    address, the email kind and the running send count stay behind
+    /api/accounts/sessions.
+    """
+    try:
+        ts = int((rec or {}).get("last_email_ts") or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    if ts <= 0:
+        return {"lastEmailAt": 0, "lastEmailStatus": ""}
+    return {
+        "lastEmailAt": (
+            (ts // WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS)
+            * WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS
+        ),
+        "lastEmailStatus": (
+            ACCOUNT_EMAIL_STATUS_DELIVERED if (rec or {}).get("last_email_ok")
+            else ACCOUNT_EMAIL_STATUS_FAILED
+        ),
+    }
+
+
 def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     return {
@@ -16353,6 +16353,7 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         # bucket the caller already derived from the raw touch timestamp, so
         # this function never sees (or could leak) that timestamp itself.
         "activityBucket": activity_bucket,
+        **_account_public_last_email(rec),
         **_account_world_client_fields(rec),
     }
 
