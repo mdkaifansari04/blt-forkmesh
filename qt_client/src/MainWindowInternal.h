@@ -1497,12 +1497,12 @@ public:
         });
     }
 
-    // Replace the fleet. Anything past the visible grid is dropped from the
-    // paint (the caller folds the remainder into the tooltip), so the matrix
-    // can never grow the chrome line without bound.
+    // Replace the fleet. Every active session gets a square: the top-nav fleet
+    // indicator must stay a complete, directly clickable view of the work in
+    // progress rather than silently dropping older sessions.
     void setDots(const QVector<Dot> &dots)
     {
-        m_dots = dots.mid(0, kRows * kMaxColumns);
+        m_dots = dots;
         const int columns = (m_dots.size() + kRows - 1) / kRows;
         setFixedWidth(columns * kPitch);
         bool anyRunning = false;
@@ -1515,8 +1515,7 @@ public:
         update();
     }
 
-    // How many of the dots handed to setDots() actually fit in the grid, so the
-    // caller can say "showing the first N" instead of silently truncating.
+    // Number of active-session dots currently displayed.
     int shownCount() const { return m_dots.size(); }
 
     // Clicking a square opens that session; clicking the empty space around
@@ -1602,7 +1601,6 @@ private:
     static constexpr int kRows = 3;        // squares stacked per column
     static constexpr int kPitch = 7;       // cell size, including its gap
     static constexpr double kSide = 4.5;   // painted square
-    static constexpr int kMaxColumns = 22; // ~66 agents before the tooltip takes over
     static constexpr double kSweepStep = 0.06; // per-square offset of the sweep
 
     QVector<Dot> m_dots;
