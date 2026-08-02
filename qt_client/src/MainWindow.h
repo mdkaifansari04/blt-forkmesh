@@ -2841,6 +2841,9 @@ private:
     void removePushHook(const RepositoryRecord &repo) const;
     void installAllPushHooks() const;
     void scanActionSpool();              // read *.push/*.commit events, enqueue runs
+    // Set while a spool sweep that fired inside a keep-alive pump is waiting for
+    // a clean top-level stack (see deferredOutOfKeepAlivePump).
+    bool m_actionSpoolSweepPending = false;
     // Queue push-triggered workflows when the served mirror's own default branch
     // advances, whatever moved it. The post-receive hook only fires for a real
     // `git push` into that mirror, but everything this app does lands in the
@@ -3265,6 +3268,37 @@ private:
             return;
         }
         apply(std::move(result));
+    }
+    // The same protection for a heavy *timer* slot, which has no result to
+    // carry: returns true (and re-posts `work` for the next top-level turn of
+    // the event loop) when the GUI thread is currently inside a keep-alive pump,
+    // i.e. servicing events from within a blocking git wait rather than from the
+    // main event loop.
+    //
+    // A periodic sweep that happens to fire mid-wait otherwise runs its whole
+    // pass nested inside whatever render was already in flight, and the two
+    // durations add up into one freeze. That is the single most common shape in
+    // the stall log: 84 of 349 reports are an action-spool sweep (and the
+    // propagateRepoUpdate -> loadCommits rebuild hanging off it) landing inside
+    // someone else's git wait, the worst at 10s.
+    //
+    // `pending` collapses repeated deferrals of the same slot into one re-post,
+    // so a pump that keeps redelivering the timer can't queue a burst of them.
+    // It must be a member of this window: the lambda binds it by reference and
+    // is bound to `this`, so it is never touched after the window dies.
+    bool deferredOutOfKeepAlivePump(bool &pending, std::function<void()> work)
+    {
+        if (!forkmesh::ui::inKeepAlivePump())
+            return false;
+        if (pending)
+            return true; // already queued for the next clean turn
+        pending = true;
+        QTimer::singleShot(0, this,
+                           [&pending, work = std::move(work)]() mutable {
+                               pending = false;
+                               work();
+                           });
+        return true;
     }
     // Bumped on every loadWorktreesPanel() rebuild so the async per-row `git
     // status` callbacks can drop their result if the table was rebuilt meanwhile.
@@ -3807,7 +3841,27 @@ private:
     // If the commit list is on screen but stale (local tip or mirror tip moved),
     // rebuild it so the "waiting to sync" markers stay correct without a manual
     // tab switch. Cheap no-op when the list isn't visible or is already current.
+    //
+    // This runs off a background sweep, so the staleness *check* itself must not
+    // cost anything on the GUI thread: commitsListIsCurrent() shells a rev-parse
+    // and currentMirrorTip() adds mirrorHeadBranch()'s for-each-ref walk on top,
+    // and the stall log caught that probe alone at 4.6s. Instead this compares a
+    // filesystem-only fingerprint of both ref stores and, only when that moved,
+    // reads the two tips on a worker thread.
     void refreshCommitMarkersIfStale();
+    // The two tips refreshCommitMarkersIfStale() compares, read off-thread.
+    struct CommitMarkerProbe {
+        QString localTip;
+        QString mirrorTip;
+    };
+    // mtime+size fingerprint of the working copy's and the served mirror's ref
+    // storage. Empty when no repo is open. Same trick as refreshMirrorAdverts()'s
+    // input signature: asking git whether git has moved costs exactly what the
+    // probe is trying to avoid.
+    QString commitMarkerProbeSignature() const;
+    QString m_commitMarkerProbeSig;
+    qint64 m_commitMarkerProbedAtMs = 0;
+    bool m_commitMarkerProbeInFlight = false;
     // Full hashes of commits in the local working copy that the network mirror
     // doesn't have yet (i.e. ahead of the mirror, not yet synced). Empty for a
     // browse-only mirror, which only ever pulls.
@@ -4918,6 +4972,9 @@ private:
     void refreshNodeDotMatrix();
     void updateChromeDotDivider();
     ActionRunStrip *m_actionRunStrip = nullptr;
+    // The matching hairline between the node dots and the action runs, so the
+    // three groups on the chrome line are separated the same way.
+    QWidget *m_chromeActionDivider = nullptr;
     // Last status tally rendered into the matrix's tooltip, so the scanner tick
     // can skip rebuilding an unchanged string ~20x a second.
     QString m_agentDotTooltipKey;

@@ -309,6 +309,10 @@ private:
     // throwaway detached worktree. Best-effort — callers retain their legacy
     // patch/branch-name fallbacks when content cannot be materialized.
     bool materializePullRef(const PullRequest &pr, QString *error) const;
+    // Tie the signed metadata ledger state to the PR it describes. The shared
+    // forkmesh/pulls branch remains the transport/index for older peers, while
+    // refs/pr/<n>/metadata gives each PR its own stable metadata pointer.
+    bool materializePullMetadataRef(int number, QString *error) const;
     int nextNumber() const;
     bool writePull(const PullRequest &pr, QString *error) const;
     bool readPull(int number, PullRequest &out) const;

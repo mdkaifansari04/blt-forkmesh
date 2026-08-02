@@ -137,6 +137,12 @@ QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::do
     width: 16px;
     height: 16px;
 }
+/* These two are icon-only and fixed at 30px wide, so the 8px left padding the
+   shared rule above gives the labelled pickers left only 18px for a 22px icon
+   and chopped its right edge (adhoc #1204). 4px a side fits it exactly. */
+QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
+    padding: 0px 4px;
+}
 QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
     border: none; width: 0px;
 }
@@ -387,7 +393,8 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 #relayJoinDot {
     background-color: #da3633; border: 1px solid #0d1117; border-radius: 5px;
 }
-/* Faint hairline separating the agent squares from the node dots (adhoc #124). */
+/* Faint hairlines separating the agent squares, node dots and action runs
+   from each other on the chrome line (adhoc #124). */
 #chromeDotDivider { background-color: #30363d; }
 QPushButton#relayJoinApproveButton {
     background-color: #da3633; color: #ffffff; border: none;
@@ -1464,6 +1471,12 @@ QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::do
     width: 16px;
     height: 16px;
 }
+/* These two are icon-only and fixed at 30px wide, so the 8px left padding the
+   shared rule above gives the labelled pickers left only 18px for a 22px icon
+   and chopped its right edge (adhoc #1204). 4px a side fits it exactly. */
+QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
+    padding: 0px 4px;
+}
 QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
     border: none; width: 0px;
 }
@@ -1706,7 +1719,8 @@ QPushButton#windowChromeCloseButton:hover {
 #relayJoinDot {
     background-color: #cf222e; border: 1px solid #ffffff; border-radius: 5px;
 }
-/* Faint hairline separating the agent squares from the node dots (adhoc #124). */
+/* Faint hairlines separating the agent squares, node dots and action runs
+   from each other on the chrome line (adhoc #124). */
 #chromeDotDivider { background-color: #d0d7de; }
 QPushButton#relayJoinApproveButton {
     background-color: #cf222e; color: #ffffff; border: none;

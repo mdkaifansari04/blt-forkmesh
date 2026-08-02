@@ -128,7 +128,12 @@
     if (!rows.length) {
       const empty = document.createElement("p");
       empty.className = "leaderboard-empty";
-      empty.textContent = "No public data yet.";
+      // A board whose source could not be read this rebuild is empty for a
+      // reason the visitor should not have to guess at: the endpoint marks
+      // it, so say "unavailable" rather than "nobody has entered yet".
+      empty.textContent = board.degraded
+        ? "Temporarily unavailable."
+        : "No public data yet.";
       card.appendChild(empty);
       return card;
     }

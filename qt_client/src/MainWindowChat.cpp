@@ -454,12 +454,13 @@ QWidget *MainWindow::buildChatPage()
     rail->setObjectName(QStringLiteral("appNavigationRailContent"));
     rail->setMinimumWidth(railItemWidth());
     m_appNavigationRailLayout = new QVBoxLayout(rail);
-    // No top inset (adhoc #421). The rail and the repo tab row start at the
-    // same y — both begin at the top of the content area below the chrome — and
-    // the tab row's buttons are pinned to its top edge, so a zero margin here
-    // puts the rail's first icon and caption on exactly the two lines the tab
-    // row draws its own on. Any inset re-introduces the skew.
-    m_appNavigationRailLayout->setContentsMargins(0, 0, 0, 4);
+    // The rail and the repo tab row start at the same y — both begin at the top
+    // of the content area below the chrome — and the tab row's buttons are
+    // pinned to its top edge, so the rail's top inset has to be exactly the tab
+    // row's (kRepoTabRowTopInset) for the rail's first icon and caption to land
+    // on the two lines the tab row draws its own on (adhoc #421). Any other
+    // value re-introduces the skew.
+    m_appNavigationRailLayout->setContentsMargins(0, kRepoTabRowTopInset, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
     // Every rail destination is the same item (adhoc #117): one
     // ActivityRailButton — a 16px octicon SVG over a 10px caption at
@@ -796,6 +797,29 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddModeSelector->addItem(agentControlIcon(8), kAgentAskModeLabel, false);
     m_quickAddModeSelector->addItem(agentControlIcon(9), QStringLiteral("Plan"), false);
     m_quickAddModeSelector->addItem(agentControlIcon(10), QStringLiteral("Edit"), false);
+    // The four labels name the mode but not what it permits, and the closed
+    // control shows only an icon — so the permission each one grants is spelled
+    // out beside its label once the popup is open (adhoc #1204). The item text
+    // itself stays as-is: it is what kAgentModeSetting persists and what the
+    // launch paths compare against.
+    {
+        const QStringList permissions = {
+            QStringLiteral("run without asking"),
+            QStringLiteral("confirm every change"),
+            QStringLiteral("read-only, propose a plan"),
+            QStringLiteral("edit files, ask before commands"),
+        };
+        for (int i = 0; i < permissions.size() && i < m_quickAddModeSelector->count();
+             ++i) {
+            m_quickAddModeSelector->setItemData(i, permissions.at(i),
+                                                kAgentChoiceDescriptionRole);
+            m_quickAddModeSelector->setItemData(
+                i,
+                QStringLiteral("%1 — %2")
+                    .arg(m_quickAddModeSelector->itemText(i), permissions.at(i)),
+                Qt::ToolTipRole);
+        }
+    }
     m_quickAddModeSelector->view()->setIconSize(QSize(26, 26));
     m_quickAddModeSelector->setMaxVisibleItems(30);
     m_quickAddModeSelector->setToolTip(
@@ -2143,6 +2167,14 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // Build the one visible agent/model menu from the canonical hidden provider and
 // model controls. Each row stores provider in UserRole and model in UserRole+1,
 // allowing a single click to update both without changing the launch contract.
+//
+// Rows read as the bare model name (adhoc #1204): "Opus 5", not "Opus 5 · Claude
+// Code". Which CLI runs a model follows from the model, so the suffix was the
+// same handful of words repeated down the whole menu; the tooltip still carries
+// it. Models are ordered strongest-first by agentModelPowerRank(), and the
+// superseded/small-sibling ones agentModelIsMinorTier() flags are left out
+// entirely — except when one of them is the live selection, which must stay
+// visible or picking it once would make it unpickable again.
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -2158,14 +2190,27 @@ void MainWindow::refreshQuickAddAgentModelSelector()
     const QSignalBlocker blocker(m_quickAddAgentModelSelector);
     m_quickAddAgentModelSelector->clear();
 
-    auto addChoice = [this](const QIcon &icon, const QString &label,
-                            const QString &provider, const QString &model) {
-        const int row = m_quickAddAgentModelSelector->count();
-        m_quickAddAgentModelSelector->addItem(icon, label, provider);
-        m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
+    struct Choice {
+        QIcon icon;
+        QString label;
+        QString provider;
+        QString model;
+        QString agentName; // which CLI/API runs it, for the tooltip
+        int rank = 0;      // higher sorts nearer the top
+        bool minor = false;
     };
-    addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
-              QStringLiteral("manual"), QString());
+    QList<Choice> models;
+    auto addModel = [&models, selectedProvider, selectedModel](
+                        const QIcon &icon, const QString &label,
+                        const QString &provider, const QString &model,
+                        const QString &agentName) {
+        const bool isSelection =
+            provider == selectedProvider &&
+            (selectedModel.isEmpty() || model == selectedModel);
+        models.append(Choice{icon, label, provider, model, agentName,
+                             agentModelPowerRank(model, label),
+                             !isSelection && agentModelIsMinorTier(model, label)});
+    };
 
     QComboBox claudeModels;
     populateClaudeModelCombo(&claudeModels);
@@ -2183,26 +2228,57 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             icon = 2;
         else if (lower.contains(QLatin1String("haiku")))
             icon = 3;
-        addChoice(agentControlIcon(icon),
-                  QStringLiteral("%1 · Claude Code")
-                      .arg(compactModelName(claudeModels.itemText(i))),
-                  QStringLiteral("claude-code"), id);
+        addModel(agentControlIcon(icon),
+                 compactModelName(claudeModels.itemText(i)),
+                 QStringLiteral("claude-code"), id,
+                 QStringLiteral("Claude Code"));
     }
 
     QComboBox codexModels;
     populateCodexModelCombo(&codexModels);
     for (int i = 0; i < codexModels.count(); ++i) {
-        addChoice(agentControlIcon(4 + (i % 3)),
-                  QStringLiteral("%1 · Codex").arg(codexModels.itemText(i)),
-                  kCodexProvider, codexModels.itemData(i).toString());
+        addModel(agentControlIcon(4 + (i % 3)), codexModels.itemText(i),
+                 kCodexProvider, codexModels.itemData(i).toString(),
+                 QStringLiteral("Codex"));
+    }
+
+    // Strongest first. Rank ties (Opus 4.8 and Sonnet 5 score the same) keep the
+    // order the provider catalog listed them in, so the menu never reshuffles
+    // between two equally-ranked models from one refresh to the next.
+    std::stable_sort(models.begin(), models.end(),
+                     [](const Choice &a, const Choice &b) {
+                         return a.rank > b.rank;
+                     });
+
+    auto addChoice = [this](const QIcon &icon, const QString &label,
+                            const QString &provider, const QString &model,
+                            const QString &tooltip) {
+        const int row = m_quickAddAgentModelSelector->count();
+        m_quickAddAgentModelSelector->addItem(icon, label, provider);
+        m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
+        if (!tooltip.isEmpty())
+            m_quickAddAgentModelSelector->setItemData(row, tooltip,
+                                                      Qt::ToolTipRole);
+    };
+    addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
+              QStringLiteral("manual"), QString(),
+              QStringLiteral("File an issue from this prompt instead of "
+                             "starting an agent"));
+    for (const Choice &choice : models) {
+        if (choice.minor)
+            continue;
+        addChoice(choice.icon, choice.label, choice.provider, choice.model,
+                  QStringLiteral("%1 · %2").arg(choice.label, choice.agentName));
     }
 
     // These API agents do not expose a per-run model chooser in this composer,
     // but remain first-class choices in the combined menu.
     addChoice(agentControlIcon(4), QStringLiteral("OpenAI API"),
-              QStringLiteral("openai"), QString());
+              QStringLiteral("openai"), QString(),
+              QStringLiteral("Headless OpenAI API agent"));
     addChoice(agentControlIcon(2), QStringLiteral("Claude API"),
-              QStringLiteral("claude-api"), QString());
+              QStringLiteral("claude-api"), QString(),
+              QStringLiteral("Headless Claude API agent"));
 
     int selected = -1;
     for (int i = 0; i < m_quickAddAgentModelSelector->count(); ++i) {
@@ -2218,9 +2294,26 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         }
     }
     m_quickAddAgentModelSelector->setCurrentIndex(selected >= 0 ? selected : 0);
+    // The visible label is the bare model name now, so the accessible name and
+    // the control's tooltip carry the "which agent runs it" half that the row
+    // labels dropped.
+    const int current = m_quickAddAgentModelSelector->currentIndex();
+    const QString currentTip =
+        current >= 0
+            ? m_quickAddAgentModelSelector->itemData(current, Qt::ToolTipRole)
+                  .toString()
+            : QString();
     m_quickAddAgentModelSelector->setAccessibleName(
         QStringLiteral("Agent and model: %1")
-            .arg(m_quickAddAgentModelSelector->currentText()));
+            .arg(currentTip.isEmpty()
+                     ? m_quickAddAgentModelSelector->currentText()
+                     : currentTip));
+    m_quickAddAgentModelSelector->setToolTip(
+        currentTip.isEmpty()
+            ? QStringLiteral("Choose the agent and model that will handle this "
+                             "prompt.")
+            : QStringLiteral("%1. Click to choose a different agent or model.")
+                  .arg(currentTip));
 }
 
 // Ask the installed `claude` CLI which --effort values it accepts (adhoc #38)
@@ -5565,13 +5658,17 @@ QWidget *MainWindow::buildBreadcrumb()
     // Immediately right of the fleet, behind a faint divider: one dot per node
     // on the network (adhoc #124), so the machines read on the same line as the
     // agents. Kept current by refreshNodeDotMatrix().
-    m_chromeDotDivider = new QWidget;
-    m_chromeDotDivider->setObjectName(QStringLiteral("chromeDotDivider"));
-    // A bare QWidget ignores a stylesheet background unless it opts in.
-    m_chromeDotDivider->setAttribute(Qt::WA_StyledBackground, true);
-    m_chromeDotDivider->setFixedWidth(1);
-    m_chromeDotDivider->setFixedHeight(15); // a hairline inside the 21px grids
-    m_chromeDotDivider->hide();
+    auto makeChromeDotDivider = [] {
+        auto *divider = new QWidget;
+        divider->setObjectName(QStringLiteral("chromeDotDivider"));
+        // A bare QWidget ignores a stylesheet background unless it opts in.
+        divider->setAttribute(Qt::WA_StyledBackground, true);
+        divider->setFixedWidth(1);
+        divider->setFixedHeight(15); // a hairline inside the 21px grids
+        divider->hide();
+        return divider;
+    };
+    m_chromeDotDivider = makeChromeDotDivider();
     m_nodeDotMatrix = new NodeDotMatrix;
     m_nodeDotMatrix->onDotClicked = [this](const QString &node) {
         showNetworkTab(kNetworkNodesTab);
@@ -5587,9 +5684,10 @@ QWidget *MainWindow::buildBreadcrumb()
         }
     };
 
-    // Immediately right of the node dots: the most recent action runs and their
-    // status (adhoc #70), so CI reads on the same line as the agents. Kept
-    // current by refreshActionRunStrip().
+    // Immediately right of the node dots, behind a divider of its own: the most
+    // recent action runs and their status (adhoc #70), so CI reads on the same
+    // line as the agents. Kept current by refreshActionRunStrip().
+    m_chromeActionDivider = makeChromeDotDivider();
     m_actionRunStrip = new ActionRunStrip;
     m_actionRunStrip->onCellClicked = [this](int runId) {
         // Past the last square there is nothing specific to open, so fall back
@@ -5812,6 +5910,7 @@ QWidget *MainWindow::buildBreadcrumb()
     identityBalanceRow->addWidget(m_agentDotMatrix);
     identityBalanceRow->addWidget(m_chromeDotDivider, 0, Qt::AlignVCenter);
     identityBalanceRow->addWidget(m_nodeDotMatrix);
+    identityBalanceRow->addWidget(m_chromeActionDivider, 0, Qt::AlignVCenter);
     identityBalanceRow->addWidget(m_actionRunStrip);
     chromeRow->addLayout(identityBalanceRow);
     chromeRow->addStretch();
@@ -6459,18 +6558,21 @@ void MainWindow::refreshNodeDotMatrix()
     m_nodeDotMatrix->setToolTip(tip);
 }
 
-// The hairline between the agent squares and the node dots only earns its place
-// when there are dots on both sides of it (adhoc #124).
+// Each hairline on the chrome line — agents | nodes | actions — only earns its
+// place when there are dots on both sides of it (adhoc #124).
 void MainWindow::updateChromeDotDivider()
 {
-    if (!m_chromeDotDivider)
-        return;
     // isHidden(), not isVisible(): the window itself may not be up yet when the
-    // first roster lands, and the divider still needs to be laid out.
-    m_chromeDotDivider->setVisible(m_agentDotMatrix &&
-                                   !m_agentDotMatrix->isHidden() &&
-                                   m_nodeDotMatrix &&
-                                   !m_nodeDotMatrix->isHidden());
+    // first roster lands, and the dividers still need to be laid out.
+    const bool agents = m_agentDotMatrix && !m_agentDotMatrix->isHidden();
+    const bool nodes = m_nodeDotMatrix && !m_nodeDotMatrix->isHidden();
+    const bool actions = m_actionRunStrip && !m_actionRunStrip->isHidden();
+    if (m_chromeDotDivider)
+        m_chromeDotDivider->setVisible(agents && nodes);
+    // The runs' divider stands in for whichever group actually precedes them, so
+    // it still separates the agents from CI on a machine with no node roster.
+    if (m_chromeActionDivider)
+        m_chromeActionDivider->setVisible((agents || nodes) && actions);
 }
 
 // Repo-scoped sync/integrity state for the node dots, published by the

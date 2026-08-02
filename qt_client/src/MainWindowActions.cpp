@@ -422,6 +422,14 @@ void MainWindow::scanActionSpool()
 {
     if (!m_actionStore)
         return;
+    // Never sweep from inside someone else's blocking git wait. This pass syncs
+    // mirrors, re-attests pins and (through propagateRepoUpdate) rebuilds the
+    // whole commit list; delivered mid-pump it stacks all of that on top of the
+    // render already in flight and the two freeze as one. Re-post instead — the
+    // dominant shape in the stall log (see deferredOutOfKeepAlivePump).
+    if (deferredOutOfKeepAlivePump(m_actionSpoolSweepPending,
+                                   [this] { scanActionSpool(); }))
+        return;
     syncMirrorActionsConfiguration();
     scanExternalActionsSources();
     QDir dir(m_actionStore->spoolDir());
@@ -1821,8 +1829,9 @@ int MainWindow::pendingActionCount() const
 }
 
 // The recent-runs strip beside the agent fleet matrix on the window-chrome line
-// (adhoc #70): the newest ActionRunStrip::kMaxCells runs, newest on the left,
-// each square tinted with the same colour the Actions table gives that status.
+// (adhoc #70): the newest ActionRunStrip::kMaxCells runs, newest top-left in the
+// same three-deep grid the agent and node dots use, each square tinted with the
+// same colour the Actions table gives that status.
 // Driven from updateNotificationButton(), which every run-state change already
 // reaches.
 void MainWindow::refreshActionRunStrip()
@@ -1846,6 +1855,7 @@ void MainWindow::refreshActionRunStrip()
     }
     m_actionRunStrip->setCells(cells);
     m_actionRunStrip->setVisible(!cells.isEmpty());
+    updateChromeDotDivider(); // the runs' hairline follows the strip itself
     if (cells.isEmpty()) {
         m_actionRunStripTooltipKey.clear();
         return;
