@@ -2799,6 +2799,30 @@ async def _status_alert_pings_enabled(env):
     return bool(settings["statusPings"])
 
 
+def _status_recovery_ping_body(alert, now):
+    """Recovery copy that still names the outage it closes.
+
+    A bare "green again" line reads the same whether the system blinked for a
+    minute or was down for an hour, and it is the only ping an administrator
+    sees when the outage ping could not be delivered.
+    """
+    # Only the sample that actually flipped green knows an outage window. A
+    # re-send of an undelivered recovery ping must not describe the time since
+    # the recovery as downtime.
+    started = int(alert.get("recovered_outage_started_at") or 0)
+    minutes = int((int(now) - started) // 60000) if started else 0
+    if started and minutes >= 0:
+        duration = (
+            "under a minute" if minutes < 1 else
+            "1 minute" if minutes == 1 else
+            "%d minutes" % minutes)
+        reason = clean_string(alert.get("prior_reason", ""), 200)
+        return (
+            "Down for %s. The current /status probe is green again.%s" % (
+                duration, (" Last failure: " + reason) if reason else ""))
+    return "The current /status probe is green again."
+
+
 async def _enqueue_operational_alert_pings(env, alerts, now):
     """Best-effort, deduplicated operational alerts for every platform admin."""
     if not alerts or not await _status_alert_pings_enabled(env):
@@ -2826,11 +2850,30 @@ async def _enqueue_operational_alert_pings(env, alerts, now):
                 alert.get("changed_at")
                 or alert.get("outage_started_at")
                 or now)
+            # An outage the administrators were never pinged about, closed by a
+            # recovery that reaches them: the enqueue rides the same platform
+            # the probe just found broken, so the failure ping is exactly the
+            # one most likely to have been lost. Backfill it, stamped at the
+            # start of the outage, so the pair is never a recovery on its own.
+            missed = int(alert.get("missed_outage_started_at") or 0)
+            if recovered and missed:
+                await enqueue_notification(
+                    env, admin, "operational_alert",
+                    label + " needs attention",
+                    body=(clean_string(alert.get("prior_reason", ""), 240)
+                          or "The /status health check for this system "
+                             "failed."),
+                    href="/status", source="operational-status",
+                    dedupe="operational-status:%s:down:%s" % (
+                        system_id, missed),
+                    ts=missed,
+                    meta={"system": system_id, "state": "down"},
+                )
             title = (
                 label + " recovered" if recovered else
                 label + " needs attention")
             body = (
-                "The current /status probe is green again." if recovered else
+                _status_recovery_ping_body(alert, now) if recovered else
                 clean_string(alert.get("reason", ""), 240)
                 or "The current /status health check failed.")
             await enqueue_notification(
@@ -3203,7 +3246,7 @@ async def _record_status_monitor_transitions(
     rows = await d1_all(
         env,
         "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state,"
-        "pinged_state FROM repository_monitor_state "
+        "pinged_state,reason FROM repository_monitor_state "
         "WHERE monitor_id LIKE 'status:%'",
     )
     prior = {str(row.get("monitor_id") or ""): row for row in (rows or [])}
@@ -3270,6 +3313,23 @@ async def _record_status_monitor_transitions(
                 "outage_started_at": outage_started_at,
                 "previous_changed_at": previous_changed_at,
                 "changed_at": changed_at,
+                # The last failure this system recorded. On a recovery the
+                # current sample has no reason of its own, so this is the only
+                # description of what actually went wrong.
+                "prior_reason": clean_string(
+                    (str(row.get("reason") or "") if row else ""), 240),
+                # The outage this sample closed, on the flip itself and never
+                # on a later re-send of an undelivered recovery.
+                "recovered_outage_started_at": (
+                    (prior_outage or previous_changed_at)
+                    if is_up and row and not previous_up else 0),
+                # Set only when a sampled outage closes without its own ping
+                # having been delivered (a failed enqueue during the incident,
+                # or Pings switched on mid-outage).
+                "missed_outage_started_at": (
+                    prior_outage
+                    if is_up and prior_pinged != "down" and prior_outage
+                    else 0),
             }
             if should_notify:
                 pending.append(alert)
@@ -37142,14 +37202,26 @@ async def world_admin_errors_handler(env, request):
         after = 0
     await ensure_schema(env)
     latest = await d1_first(
-        env, "SELECT id,ts FROM error_log ORDER BY id DESC LIMIT 1")
+        env,
+        "SELECT id,ts,status,method,path FROM error_log ORDER BY id DESC "
+        "LIMIT 1")
     count = await d1_first(
         env, "SELECT COUNT(*) AS n FROM error_log WHERE id>?", after)
+    try:
+        latest_status = max(0, int((latest or {}).get("status") or 0))
+    except (TypeError, ValueError):
+        latest_status = 0
     payload = {
         "ok": True,
         "latestId": max(0, int((latest or {}).get("id") or 0)),
         "latestAt": max(0, int((latest or {}).get("ts") or 0)),
         "newCount": min(9999, max(0, int((count or {}).get("n") or 0))),
+        # Enough for the World HUD to say what just broke without putting a
+        # route, a message, or an actor into the notice: the same coarse
+        # (status, source) pair the new-error-group Ping carries.
+        "latestStatus": latest_status,
+        "latestSource": _admin_error_source(
+            (latest or {}).get("method"), (latest or {}).get("path")),
     }
     if query.get("include", ["0"])[0] == "1":
         rows = await d1_all(
