@@ -14,6 +14,7 @@
 #include <QAbstractTextDocumentLayout>
 #include <QCheckBox>
 #include <QFileDialog>
+#include <QFontDatabase>
 #include <QFontMetrics>
 #include <QLayout>
 #include <QFutureWatcher>
@@ -3792,6 +3793,11 @@ using forkmesh::DirectorySizeScanCancel;
 using forkmesh::DirectorySizeScanOptions;
 using forkmesh::DirectorySizeScanResult;
 
+// How many scanning threads get a live line of their own before the rest are
+// summarised on one (adhoc #95). The pool is sized to the machine's cores, and
+// a 32-line block above the sunburst would leave nothing to look at.
+constexpr int kSizeMapWorkerLineLimit = 8;
+
 // Mount points offered as size-map shortcuts (adhoc #21) — everything `df`
 // lists, minus the read-only squashfs images snap piles up by the dozen,
 // biggest filesystem first so the real disks lead the column.
@@ -3944,6 +3950,19 @@ QWidget *MainWindow::buildSizeMapTab()
     statusRow->addWidget(m_sizeMapStatus, 1);
     statusRow->addWidget(elevate, 0, Qt::AlignTop);
     layout->addLayout(statusRow);
+
+    // Per-thread lines (adhoc #95): the walk spreads the scanned folder's
+    // top-level children across the thread pool, so one status line could only
+    // ever name one of the trees being read — and jumped between unrelated ones
+    // as whichever thread reported last won the label. Each thread gets its own
+    // line here instead, and the summary above keeps the totals.
+    auto *workers = new QWidget;
+    workers->setVisible(false);
+    auto *workersCol = new QVBoxLayout(workers);
+    workersCol->setContentsMargins(0, 0, 0, 0);
+    workersCol->setSpacing(1);
+    m_sizeMapWorkersBox = workers;
+    layout->addWidget(workers);
 
     auto *chart = new RepoSunburstChart;
     m_sizeMapChart = chart;
@@ -4143,24 +4162,26 @@ void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
     m_sizeMapScanning = true;
     if (m_sizeMapStop)
         m_sizeMapStop->setVisible(true);
+    clearSizeMapWorkerLines();
     const int epoch = ++m_sizeMapScanEpoch;
     m_sizeMapStatus->setText(
         QStringLiteral("Scanning %1 …").arg(QDir::toNativeSeparators(path)));
-    // The walk reports the folder it is in from the worker thread; the hop
-    // through invokeMethod() is what keeps the label on the GUI thread. The
+    // Each walking thread reports the folder it is in from that thread; the hop
+    // through invokeMethod() is what keeps the lines on the GUI thread. The
     // QPointer matters because the pool thread outlives a window closed
     // mid-scan.
     const QPointer<MainWindow> guard(this);
     const forkmesh::DirectorySizeScanProgress progress =
-        [this, guard, epoch](const QString &current, qint64 bytes, int files) {
+        [this, guard, epoch,
+         path](const forkmesh::DirectorySizeScanProgressUpdate &update) {
             if (!guard)
                 return;
             QMetaObject::invokeMethod(
                 this,
-                [this, epoch, current, bytes, files] {
+                [this, epoch, path, update] {
                     if (epoch != m_sizeMapScanEpoch)
-                        return; // a newer scan owns the label now
-                    showSizeMapScanProgress(current, bytes, files, false);
+                        return; // a newer scan owns the lines now
+                    showSizeMapScanProgress(path, update, false);
                 },
                 Qt::QueuedConnection);
         };
@@ -4174,6 +4195,7 @@ void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
                 m_sizeMapScanning = false;
                 if (m_sizeMapStop)
                     m_sizeMapStop->setVisible(false);
+                clearSizeMapWorkerLines();
                 if (epoch != m_sizeMapScanEpoch)
                     return; // a newer scan superseded this one
                 DirectorySizeScanResult result = watcher->result();
@@ -4202,18 +4224,22 @@ void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
         }));
 }
 
-// Live status line while a scan runs: the folder being walked right now, with
-// the totals counted so far (adhoc #112). The path is elided rather than
-// wrapped, so a deep tree cannot rewrap the row on every update.
-void MainWindow::showSizeMapScanProgress(const QString &current, qint64 bytes,
-                                         int files, bool elevated)
+// Live status while a scan runs (adhoc #112/#95): the folder being scanned and
+// the totals counted so far on the summary line, then the folder each scanning
+// thread is inside right now on a line of its own. Paths are elided rather than
+// wrapped, so a deep tree cannot rewrap a row on every update.
+void MainWindow::showSizeMapScanProgress(
+    const QString &root, const forkmesh::DirectorySizeScanProgressUpdate &update,
+    bool elevated)
 {
     if (!m_sizeMapStatus)
         return;
     const QString suffix =
-        QStringLiteral("  ·  %1 files · %2 so far")
-            .arg(QLocale().toString(files),
-                 QLocale().formattedDataSize(bytes));
+        QStringLiteral("  ·  %1 files · %2 so far · %3 thread%4")
+            .arg(QLocale().toString(update.files),
+                 QLocale().formattedDataSize(update.bytes),
+                 QLocale().toString(qMax(1, update.workers)),
+                 update.workers == 1 ? QString() : QStringLiteral("s"));
     const QString prefix = elevated
                                ? QStringLiteral("Scanning as administrator: ")
                                : QStringLiteral("Scanning: ");
@@ -4223,9 +4249,82 @@ void MainWindow::showSizeMapScanProgress(const QString &current, qint64 bytes,
                                     16);
     m_sizeMapStatus->setText(
         prefix +
-        metrics.elidedText(QDir::toNativeSeparators(current), Qt::ElideMiddle,
+        metrics.elidedText(QDir::toNativeSeparators(root), Qt::ElideMiddle,
                            budget) +
         suffix);
+
+    auto *col = m_sizeMapWorkersBox
+                    ? qobject_cast<QVBoxLayout *>(m_sizeMapWorkersBox->layout())
+                    : nullptr;
+    if (!col || update.worker < 0)
+        return;
+    // A line is added the first time a thread reports and then kept for the rest
+    // of the scan: a thread that finishes one top-level tree and picks up the
+    // next keeps its own row rather than shuffling everything below it.
+    const int wanted = qMin(update.worker, kSizeMapWorkerLineLimit - 1);
+    while (m_sizeMapWorkerLines.size() <= wanted) {
+        auto *line = new QLabel(QStringLiteral("…"), m_sizeMapWorkersBox);
+        line->setObjectName("statusLine");
+        line->setTextFormat(Qt::PlainText);
+        // A fixed pitch keeps the counters at the end of each line in a column
+        // instead of shifting as the paths change width.
+        QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        mono.setPointSizeF(m_sizeMapStatus->font().pointSizeF());
+        line->setFont(mono);
+        // Ignored width: these labels take new elided text a dozen times a
+        // second, and the longest one must never widen the page around them.
+        line->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        col->addWidget(line);
+        m_sizeMapWorkerLines.append(line);
+    }
+    m_sizeMapWorkersBox->setVisible(true);
+    if (update.worker >= kSizeMapWorkerLineLimit) {
+        // Past the cap the threads are counted rather than listed — on a
+        // many-core machine one line each would crowd out the chart itself.
+        if (!m_sizeMapWorkerOverflow) {
+            m_sizeMapWorkerOverflow = new QLabel(m_sizeMapWorkersBox);
+            m_sizeMapWorkerOverflow->setObjectName("statusLine");
+            m_sizeMapWorkerOverflow->setFont(m_sizeMapWorkerLines.last()->font());
+            col->addWidget(m_sizeMapWorkerOverflow);
+        }
+        m_sizeMapWorkerOverflow->setText(
+            QStringLiteral("… and %1 more thread%2 scanning")
+                .arg(QLocale().toString(update.workers -
+                                        kSizeMapWorkerLineLimit))
+                .arg(update.workers - kSizeMapWorkerLineLimit == 1
+                         ? QString()
+                         : QStringLiteral("s")));
+        return;
+    }
+    QLabel *line = m_sizeMapWorkerLines.at(update.worker);
+    const QString lead = QStringLiteral("%1  ").arg(update.worker + 1, 2);
+    const QString tail = QStringLiteral("  ·  %1 files · %2")
+                             .arg(QLocale().toString(update.workerFiles),
+                                  QLocale().formattedDataSize(update.workerBytes));
+    // A thread that finished its tree says so rather than leaving the folder it
+    // left behind on screen looking like a stall — the counters are what it
+    // measured, and they stay.
+    if (update.idle) {
+        line->setText(lead + QStringLiteral("waiting for the next folder") + tail);
+        return;
+    }
+    const QFontMetrics lineMetrics(line->font());
+    const int lineBudget =
+        qMax(160, line->width() - lineMetrics.horizontalAdvance(lead + tail) - 16);
+    line->setText(lead +
+                  lineMetrics.elidedText(QDir::toNativeSeparators(update.path),
+                                         Qt::ElideMiddle, lineBudget) +
+                  tail);
+}
+
+void MainWindow::clearSizeMapWorkerLines()
+{
+    qDeleteAll(m_sizeMapWorkerLines);
+    m_sizeMapWorkerLines.clear();
+    delete m_sizeMapWorkerOverflow;
+    m_sizeMapWorkerOverflow = nullptr;
+    if (m_sizeMapWorkersBox)
+        m_sizeMapWorkersBox->setVisible(false);
 }
 
 QSet<QString> MainWindow::sizeMapPrunedPaths(const QString &path) const
@@ -4380,6 +4479,7 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
     m_sizeMapScanning = true;
     if (m_sizeMapStop)
         m_sizeMapStop->setVisible(true);
+    clearSizeMapWorkerLines();
     const int epoch = ++m_sizeMapScanEpoch;
     if (m_sizeMapElevate)
         m_sizeMapElevate->setVisible(false);
@@ -4392,27 +4492,25 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
     request->setParent(process); // the temp file dies with the process
     process->setProgram(program);
     process->setArguments(arguments);
-    // Root's walk reports itself on stderr, one line per update, so the same
-    // live folder name appears whether the scan runs here or in the helper
-    // (adhoc #112). Whole lines only: a read can land mid-line.
+    // Root's walk reports itself on stderr, one line per update and one worker
+    // per line, so the same live per-thread block appears whether the scan runs
+    // here or in the helper (adhoc #112/#95). Whole lines only: a read can land
+    // mid-line.
     auto pending = std::make_shared<QByteArray>();
     connect(process, &QProcess::readyReadStandardError, this,
-            [this, process, pending, epoch] {
+            [this, process, pending, epoch, path] {
                 pending->append(process->readAllStandardError());
                 for (int cut = pending->indexOf('\n'); cut >= 0;
                      cut = pending->indexOf('\n')) {
                     const QByteArray line = pending->left(cut);
                     pending->remove(0, cut + 1);
-                    QString current;
-                    qint64 bytes = 0;
-                    int files = 0;
+                    forkmesh::DirectorySizeScanProgressUpdate update;
                     // Anything else on stderr is pkexec's or sudo's own chatter.
-                    if (!forkmesh::decodeScanProgress(line, &current, &bytes,
-                                                      &files))
+                    if (!forkmesh::decodeScanProgress(line, &update))
                         continue;
                     if (epoch != m_sizeMapScanEpoch)
                         continue;
-                    showSizeMapScanProgress(current, bytes, files, true);
+                    showSizeMapScanProgress(path, update, true);
                 }
                 // A helper that never emits a newline must not grow the buffer
                 // for the length of a scan of "/".
@@ -4428,6 +4526,7 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
                 m_sizeMapScanning = false;
                 if (m_sizeMapStop)
                     m_sizeMapStop->setVisible(false);
+                clearSizeMapWorkerLines();
                 if (epoch != m_sizeMapScanEpoch)
                     return; // a newer scan superseded this one
                 const QByteArray payload = process->readAllStandardOutput();
@@ -4515,6 +4614,7 @@ void MainWindow::stopSizeMapScan()
     ++m_sizeMapScanEpoch; // discards any progress update already queued
     if (m_sizeMapStop)
         m_sizeMapStop->setVisible(false);
+    clearSizeMapWorkerLines();
     if (m_sizeMapStatus)
         m_sizeMapStatus->setText(QStringLiteral("Scan stopped."));
 }
