@@ -32,6 +32,11 @@ cd "$(dirname "$0")"
 # secret that isn't in the config), so the admin URL keeps working. The Worker
 # reads them the same way (env.ADMIN_PATH, etc.).
 ENV_FILE=".env.production"
+# Operators with a valid Wrangler OAuth session can deliberately ignore an
+# expired API token in .env.production without rewriting the secrets file.
+# The account id is still loaded from that file and Cloudflare validates that
+# the OAuth identity owns the configured Worker and D1 database.
+USE_WRANGLER_OAUTH="${FORKMESH_USE_WRANGLER_OAUTH:-0}"
 
 # Strip a trailing CR (CRLF-saved files) and surrounding whitespace. A stray \r
 # or space on a value is a classic cause of a secret that "exists" in the
@@ -65,6 +70,12 @@ if [ -f "$ENV_FILE" ]; then
             CLOUDFLARE_ACCOUNT_ID)
                 if [ -n "$value" ]; then
                     CF_ACCOUNT_ID_SET=1
+                    export "$key=$value"
+                fi
+                continue
+                ;;
+            CLOUDFLARE_API_TOKEN)
+                if [ "$USE_WRANGLER_OAUTH" != "1" ] && [ -n "$value" ]; then
                     export "$key=$value"
                 fi
                 continue
@@ -118,6 +129,11 @@ adopt_cloudflare_token_alias() {
 # wrangler's own interactive detection (stdin && stdout), so this errors exactly
 # when wrangler would have, never sooner.
 require_cloudflare_auth() {
+    if [ "$USE_WRANGLER_OAUTH" = "1" ]; then
+        unset CLOUDFLARE_API_TOKEN
+        echo "note: using the existing Wrangler OAuth session for this deploy." >&2
+        return 0
+    fi
     adopt_cloudflare_token_alias || true
     [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && return 0
     if [ -t 0 ] && [ -t 1 ]; then
