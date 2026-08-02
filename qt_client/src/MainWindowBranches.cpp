@@ -1661,9 +1661,18 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                            : QStringLiteral("Merged %1 into %2").arg(branch, base))
                 + QStringLiteral("."),
             false);
-        // Issue #291: flag any agent session that produced this branch. This is
-        // idempotent when the cleanup path marked it above.
-        markAgentSessionsMerged(0, branch, branchInBase);
+        if (deletedAgents.isEmpty()) {
+            // Issue #291: flag any agent session that produced this branch. This is
+            // idempotent when the cleanup path marked it above.
+            markAgentSessionsMerged(0, branch, branchInBase);
+        } else {
+            // Rows just disappeared from the Agents tab and their issues lost their
+            // agent assignment — rebuild both instead of leaving stale entries behind.
+            reloadAgents();
+            reloadIssues();
+            refreshIssueList();
+            updateIssueActionState();
+        }
         // adhoc #250: with the "Auto after merge" toggle on, bring every other
         // branch up to date with the just-merged base in the same step. It runs
         // without a confirmation prompt and sets its own detail notice
@@ -1961,7 +1970,9 @@ void MainWindow::deleteWorktreeBranchAndAgent(const QString &worktreePath,
 
     // Delete the agent session(s) first — that stops any runner still holding the
     // worktree open. If one is mid-stop or we lack permission, bail (it flashed
-    // why) before touching the worktree so nothing is half-deleted.
+    // why) before touching the worktree so nothing is half-deleted. force: this
+    // action deletes the branch a provenance-only record documents, so keeping that
+    // record would strand it (and would block the rest of this cleanup outright).
     for (int id : std::as_const(agentIds)) {
         if (!deleteStoredAgentSession(id, /*cleanupWorktree=*/true,
                                       /*allowAssociationOnly=*/true)) {
@@ -2081,7 +2092,9 @@ void MainWindow::deleteWorktreeBranchAndAgentInBackground(
     QElapsedTimer storeTimer;
     storeTimer.start();
     for (const int id : std::as_const(agentIds)) {
-        if (!deleteStoredAgentSession(id, /*cleanupWorktree=*/false)) {
+        // force for the same reason the foreground path does: the branch this record
+        // documents is being deleted in the queue below.
+        if (!deleteStoredAgentSession(id, /*cleanupWorktree=*/false, /*force=*/true)) {
             logSystem(QStringLiteral("Agents: delete of session #%1 (%2) stopped "
                                      "before cleanup started.")
                           .arg(id)
