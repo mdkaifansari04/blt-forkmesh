@@ -4,7 +4,7 @@ export const WORKER_FOOTPRINT = Object.freeze({
   "attachedPythonBytes": 3205782,
   "estimatedStartupSourceBytes": 3081668,
   "onDemandSourceBytes": 124114,
-  "vendoredBytes": 91974,
+  "vendoredBytes": 91813,
   "moduleCount": 74,
   "staticAssetBytes": 81841596,
   "staticAssetCount": 383,
@@ -172,7 +172,7 @@ export const WORKER_FOOTPRINT = Object.freeze({
     },
     {
       "name": "dashboard_shell.py",
-      "bytes": 12266,
+      "bytes": 12405,
       "phase": "startup"
     },
     {
@@ -298,7 +298,7 @@ export const WORKER_FOOTPRINT = Object.freeze({
     },
     {
       "name": "Vendored Python runtime",
-      "bytes": 91974
+      "bytes": 91813
     },
     {
       "name": "Fediverse",
