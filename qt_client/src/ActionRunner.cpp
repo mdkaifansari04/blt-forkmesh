@@ -588,6 +588,13 @@ QStringList ActionRunner::sandboxArguments(const QString &shell,
     bindReadOnlyIfPresent(QStringLiteral("/bin"));
     bindReadOnlyIfPresent(QStringLiteral("/lib"));
     bindReadOnlyIfPresent(QStringLiteral("/lib64"));
+    // Debian resolves /usr/bin/{awk,cc,c++,editor,…} through the
+    // /etc/alternatives symlink farm. Without it those names are dangling
+    // symlinks inside the namespace and every step that runs one dies with
+    // "command not found" (exit 127) — how the v0.7.10 release publish failed
+    // after a full desktop build. The farm only ever points back into /usr,
+    // which is already bound read-only here.
+    bindReadOnlyIfPresent(QStringLiteral("/etc/alternatives"));
     bindReadOnlyIfPresent(QStringLiteral("/etc/passwd"));
     bindReadOnlyIfPresent(QStringLiteral("/etc/group"));
     bindReadOnlyIfPresent(QStringLiteral("/etc/nsswitch.conf"));

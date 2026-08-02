@@ -156,10 +156,15 @@ command -v openssl >/dev/null 2>&1 || {
 meta_dir=".forkmesh/releases/${channel}"
 mkdir -p "$meta_dir" "$cas_dir"
 
+# Hash with the shell alone: `awk` is an /etc/alternatives symlink on Debian and
+# is not guaranteed to resolve inside a minimal sandbox, so the digest of a
+# just-built release must not depend on it.
 sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
-  elif command -v shasum  >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+  local line
+  if command -v sha256sum >/dev/null 2>&1; then line="$(sha256sum "$1")"
+  elif command -v shasum  >/dev/null 2>&1; then line="$(shasum -a 256 "$1")"
   else echo "Error: need sha256sum or shasum." >&2; exit 1; fi
+  printf '%s' "${line%% *}"
 }
 
 # Derive os/arch from a forkmesh-<os>-<arch>[.exe] asset name (best effort).

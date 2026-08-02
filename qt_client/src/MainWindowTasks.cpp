@@ -21,6 +21,11 @@ using namespace forkmesh::ui;
 
 namespace {
 
+// Rows painted per page. The relay returns the whole organization catalog
+// (MAX_TASKS in world_office_tasks.py), so the table pages through it instead
+// of stopping at the first hundred rows.
+constexpr int kOrganizationTaskPageSize = 100;
+
 QString taskText(const QJsonObject &task, const QString &field)
 {
     return task.value(field).toString().trimmed();
@@ -260,39 +265,51 @@ QWidget *MainWindow::buildOrganizationTasksSection()
                 renderOrganizationTaskDetail();
                 updateOrganizationTaskActions();
             });
+    // The search runs over the whole catalog, not just the painted page, so a
+    // match on page 12 still surfaces — it re-pages the filtered set from the
+    // first page.
     connect(m_organizationTasksSearch, &QLineEdit::textChanged, this,
-            [this](const QString &text) {
-                const QString query = text.trimmed();
-                for (int row = 0; row < m_organizationTasksTable->rowCount();
-                     ++row) {
-                    const QTableWidgetItem *indexItem =
-                        m_organizationTasksTable->item(row, 0);
-                    const int index =
-                        indexItem ? indexItem->data(Qt::UserRole).toInt() : -1;
-                    const QJsonObject task =
-                        index >= 0 && index < m_organizationTasks.size()
-                            ? m_organizationTasks.at(index).toObject()
-                            : QJsonObject();
-                    const QJsonObject qa =
-                        task.value(QStringLiteral("qa")).toObject();
-                    const QString haystack =
-                        QStringList{
-                            taskText(task, QStringLiteral("title")),
-                            taskText(task, QStringLiteral("details")),
-                            taskAssigneeLabel(task),
-                            taskText(task, QStringLiteral("repository")),
-                            taskText(task, QStringLiteral("department")),
-                            taskText(task, QStringLiteral("status")),
-                            taskText(qa, QStringLiteral("howToTest")),
-                            taskText(task, QStringLiteral("id")),
-                        }.join(QLatin1Char('\n'));
-                    m_organizationTasksTable->setRowHidden(
-                        row, !query.isEmpty() &&
-                                 !haystack.contains(query,
-                                                    Qt::CaseInsensitive));
-                }
+            [this](const QString &) {
+                m_organizationTasksPage = 0;
+                renderOrganizationTaskRows();
             });
-    splitter->addWidget(m_organizationTasksTable);
+
+    auto *tableHost = new QWidget;
+    auto *tableLayout = new QVBoxLayout(tableHost);
+    tableLayout->setContentsMargins(0, 0, 0, 0);
+    tableLayout->setSpacing(6);
+    tableLayout->addWidget(m_organizationTasksTable, 1);
+
+    auto *pager = new QHBoxLayout;
+    pager->setContentsMargins(0, 0, 0, 0);
+    pager->setSpacing(8);
+    m_organizationTaskPrevPageButton =
+        new QPushButton(QString::fromUtf8("\xE2\x80\xB9 Previous"));
+    m_organizationTaskPrevPageButton->setObjectName(
+        QStringLiteral("ghostButton"));
+    m_organizationTaskNextPageButton =
+        new QPushButton(QString::fromUtf8("Next \xE2\x80\xBA"));
+    m_organizationTaskNextPageButton->setObjectName(
+        QStringLiteral("ghostButton"));
+    m_organizationTaskPageLabel = new QLabel;
+    m_organizationTaskPageLabel->setObjectName(QStringLiteral("mutedLabel"));
+    connect(m_organizationTaskPrevPageButton, &QPushButton::clicked, this,
+            [this] {
+                m_organizationTasksPage =
+                    qMax(0, m_organizationTasksPage - 1);
+                renderOrganizationTaskRows();
+            });
+    connect(m_organizationTaskNextPageButton, &QPushButton::clicked, this,
+            [this] {
+                ++m_organizationTasksPage;
+                renderOrganizationTaskRows();
+            });
+    pager->addWidget(m_organizationTaskPrevPageButton);
+    pager->addWidget(m_organizationTaskPageLabel);
+    pager->addStretch();
+    pager->addWidget(m_organizationTaskNextPageButton);
+    tableLayout->addLayout(pager);
+    splitter->addWidget(tableHost);
 
     auto *detailHost = new QWidget;
     auto *detailLayout = new QVBoxLayout(detailHost);
@@ -621,17 +638,85 @@ void MainWindow::applyOrganizationTasks(const QJsonObject &payload)
             m_organizationTaskDepartments.append(department);
     }
 
-    m_organizationTasksTable->setRowCount(m_organizationTasks.size());
+    renderOrganizationTaskRows(selectedId);
+    const int openCount = openOrganizationTaskCount(m_organizationTasks);
+    if (m_organizationTasksSummary) {
+        m_organizationTasksSummary->setText(
+            QStringLiteral("%1 open \xC2\xB7 %2 total%3")
+                .arg(openCount)
+                .arg(m_organizationTasks.size())
+                .arg(m_organizationTasksCanManage
+                         ? QStringLiteral(" \xC2\xB7 manager")
+                         : QString()));
+    }
+    setOrganizationTaskBadge(openCount);
+    refreshOrganizationTaskQueue();
+}
+
+// Paint one page of the catalog. `m_organizationTasks` always holds every task
+// the relay returned; the search narrows that whole list and the page then cuts
+// a window out of the match set, so nothing past row 100 is unreachable.
+// Column 0 keeps the task's absolute index in Qt::UserRole, which is what
+// selectedOrganizationTask() resolves against.
+void MainWindow::renderOrganizationTaskRows(const QString &selectTaskId)
+{
+    if (!m_organizationTasksTable)
+        return;
+    const QString selectedId =
+        selectTaskId.isEmpty()
+            ? taskText(selectedOrganizationTask(m_organizationTasksTable,
+                                                m_organizationTasks),
+                       QStringLiteral("id"))
+            : selectTaskId;
+    const QString query = m_organizationTasksSearch
+                              ? m_organizationTasksSearch->text().trimmed()
+                              : QString();
+    QList<int> matches;
+    matches.reserve(m_organizationTasks.size());
+    for (int index = 0; index < m_organizationTasks.size(); ++index) {
+        const QJsonObject task = m_organizationTasks.at(index).toObject();
+        if (query.isEmpty()) {
+            matches.append(index);
+            continue;
+        }
+        const QJsonObject qa = task.value(QStringLiteral("qa")).toObject();
+        const QString haystack =
+            QStringList{
+                taskText(task, QStringLiteral("title")),
+                taskText(task, QStringLiteral("details")),
+                taskAssigneeLabel(task),
+                taskText(task, QStringLiteral("repository")),
+                taskText(task, QStringLiteral("department")),
+                taskText(task, QStringLiteral("status")),
+                taskText(qa, QStringLiteral("howToTest")),
+                taskText(task, QStringLiteral("id")),
+            }.join(QLatin1Char('\n'));
+        if (haystack.contains(query, Qt::CaseInsensitive))
+            matches.append(index);
+    }
+
+    const int pageCount =
+        qMax(1, (matches.size() + kOrganizationTaskPageSize - 1) /
+                    kOrganizationTaskPageSize);
+    m_organizationTasksPage =
+        qBound(0, m_organizationTasksPage, pageCount - 1);
+    const int first = m_organizationTasksPage * kOrganizationTaskPageSize;
+    const int last =
+        qMin(matches.size(), first + kOrganizationTaskPageSize);
+
+    // Drop every row first: clearContents() would leave the previous page's
+    // priority spin boxes and assignee combos behind on rows this page renders
+    // as plain cells.
+    m_organizationTasksTable->setRowCount(0);
+    m_organizationTasksTable->setRowCount(qMax(0, last - first));
     int selectedRow = -1;
-    int openCount = 0;
-    for (int row = 0; row < m_organizationTasks.size(); ++row) {
-        const QJsonObject task = m_organizationTasks.at(row).toObject();
+    for (int row = 0; row + first < last; ++row) {
+        const int index = matches.at(first + row);
+        const QJsonObject task = m_organizationTasks.at(index).toObject();
         const QJsonObject qa = task.value(QStringLiteral("qa")).toObject();
         const bool done =
             task.value(QStringLiteral("completedAt")).toDouble() > 0 ||
             taskText(task, QStringLiteral("status")) == QLatin1String("done");
-        if (!done)
-            ++openCount;
         const QStringList values = {
             QString::number(task.value(QStringLiteral("priority")).toInt()),
             taskText(task, QStringLiteral("title")),
@@ -655,7 +740,7 @@ void MainWindow::applyOrganizationTasks(const QJsonObject &payload)
             auto *item = new QTableWidgetItem(values.at(column));
             item->setToolTip(values.at(column));
             if (column == 0) {
-                item->setData(Qt::UserRole, row);
+                item->setData(Qt::UserRole, index);
                 item->setTextAlignment(Qt::AlignCenter);
             }
             m_organizationTasksTable->setItem(row, column, item);
@@ -734,26 +819,31 @@ void MainWindow::applyOrganizationTasks(const QJsonObject &payload)
         if (taskText(task, QStringLiteral("id")) == selectedId)
             selectedRow = row;
     }
-    if (m_organizationTasksSummary) {
-        m_organizationTasksSummary->setText(
-            QStringLiteral("%1 open \xC2\xB7 %2 total%3")
-                .arg(openCount)
-                .arg(m_organizationTasks.size())
-                .arg(m_organizationTasksCanManage
-                         ? QStringLiteral(" \xC2\xB7 manager")
-                         : QString()));
+    if (m_organizationTaskPageLabel) {
+        m_organizationTaskPageLabel->setText(
+            matches.isEmpty()
+                ? (m_organizationTasks.isEmpty()
+                       ? QStringLiteral("No tasks")
+                       : QStringLiteral("No tasks match this search"))
+                : QStringLiteral("%1\xE2\x80\x93%2 of %3 \xC2\xB7 page %4 of %5")
+                      .arg(first + 1)
+                      .arg(last)
+                      .arg(matches.size())
+                      .arg(m_organizationTasksPage + 1)
+                      .arg(pageCount));
     }
-    setOrganizationTaskBadge(openCount);
+    if (m_organizationTaskPrevPageButton)
+        m_organizationTaskPrevPageButton->setEnabled(
+            m_organizationTasksPage > 0);
+    if (m_organizationTaskNextPageButton)
+        m_organizationTaskNextPageButton->setEnabled(
+            m_organizationTasksPage + 1 < pageCount);
     if (selectedRow >= 0)
         m_organizationTasksTable->selectRow(selectedRow);
-    else if (!m_organizationTasks.isEmpty())
+    else if (m_organizationTasksTable->rowCount() > 0)
         m_organizationTasksTable->selectRow(0);
-    if (m_organizationTasksSearch)
-        emit m_organizationTasksSearch->textChanged(
-            m_organizationTasksSearch->text());
     renderOrganizationTaskDetail();
     updateOrganizationTaskActions();
-    refreshOrganizationTaskQueue();
 }
 
 void MainWindow::refreshOrganizationTaskQueue()
