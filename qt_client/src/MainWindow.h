@@ -2662,15 +2662,13 @@ private:
     // link the two so the detail header shows the issue (adhoc #189).
     void createLinkedIssueForSelectedSession();
     // Stop and remove one stored agent session (clear its issue assignment, drop
-    // it from the run queue, delete it from the store). Returns true once it's
-    // gone; false (after flashing why) when it can't go yet — a running agent
+    // it from the run queue, delete it from the store). allowAssociationOnly lets
+    // an explicit full cleanup remove a provenance-only entry too. Returns true
+    // once it's gone; false (after flashing why) when it can't go yet — a running agent
     // still stopping, or no host write access to clear the issue. External
-    // (watch-only) sessions aren't handled here. force=true also drops a
-    // provenance-only record that would otherwise be kept for its branch/PR — the
-    // "Merge & clean up" paths use it, since the branch it documents is being
-    // deleted in the same step and its entry would just be left dangling.
+    // (watch-only) sessions aren't handled here.
     bool deleteStoredAgentSession(int sessionId, bool cleanupWorktree = true,
-                                  bool force = false);
+                                  bool allowAssociationOnly = false);
     // Agent-detail "Delete": remove the session from the UI/store first,
     // then clean its worktree, branch, and linked issues asynchronously.
     void deleteWorktreeBranchAndAgentInBackground(

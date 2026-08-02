@@ -2354,12 +2354,11 @@ QWidget *MainWindow::buildAgentsTab()
             return;
         mergeAgentBranchIntoBase(ri, s->branchName, /*deleteAgent=*/false);
     });
-    // Same merge, then the whole run is cleaned up: worktree, branch, and this
-    // session's own entry (mirrors the Worktrees tab's "Merge & clean up").
+    // Same merge, with full source cleanup: worktree, branch, and Agent record.
     m_agentMergeDeleteButton = railActionButton(
         QStringLiteral("check-circle"), QStringLiteral("Merge & clean"),
         "Merge this session's branch into the default branch, then delete the "
-        "worktree, its branch and this agent session");
+        "worktree, source branch, and Agent record");
     connect(m_agentMergeDeleteButton, &QPushButton::clicked, this, [this] {
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
         if (!s || s->branchName.isEmpty())
@@ -8078,7 +8077,7 @@ void MainWindow::deleteAgentSessionEntry(int sessionId)
 }
 
 bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree,
-                                          bool force)
+                                          bool allowAssociationOnly)
 {
     if (!m_agentStore || sessionId <= 0)
         return false;
@@ -8087,9 +8086,7 @@ bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree,
         return true; // already gone — nothing to delete
 
     const AgentSession snapshot = *session;
-    // A provenance-only record outlives a plain delete, but not the cleanup that
-    // deletes the very branch it documents (force).
-    if (snapshot.associationOnly && !force) {
+    if (snapshot.associationOnly && !allowAssociationOnly) {
         flashMessage(
             snapshot.prNumber > 0
                 ? QStringLiteral("This durable Agent record is retained while PR "
