@@ -2624,10 +2624,16 @@ void MainWindow::refreshWebAlerts(bool force)
         m_webAlerts = payload.value(QStringLiteral("notifications")).toArray();
         m_webAlertsUnread = payload.value(QStringLiteral("unread")).toInt();
         updateNotificationButton();
+        // Do not replay alerts that were already waiting when the application
+        // started.  Seed their ids as seen on the first successful response;
+        // subsequent polling is then free to surface genuinely new pings.
+        const bool loadingStartupBaseline = !m_webAlertsBaselineLoaded;
+        m_webAlertsBaselineLoaded = true;
         // An unread error-group ping is an error that just happened somewhere
-        // on the mesh: raise it in the ping area (and flash the red border)
-        // the moment this poll sees it, instead of leaving it to be discovered
-        // on the Pings page. Each alert id flashes once per app run (adhoc #77).
+        // on the mesh: after the startup baseline, raise it in the ping area
+        // (and flash the red border) the moment this poll sees it, instead of
+        // leaving it to be discovered on the Pings page. Each alert id flashes
+        // once per app run (adhoc #77).
         for (const QJsonValue &value : std::as_const(m_webAlerts)) {
             const QJsonObject alert = value.toObject();
             if (alert.value(QStringLiteral("kind")).toString().trimmed() !=
@@ -2639,6 +2645,8 @@ void MainWindow::refreshWebAlerts(bool force)
             if (id.isEmpty() || m_flashedWebAlertIds.contains(id))
                 continue;
             m_flashedWebAlertIds.insert(id);
+            if (loadingStartupBaseline)
+                continue;
             const QString title =
                 alert.value(QStringLiteral("title")).toString().trimmed();
             AppNotification ping;
