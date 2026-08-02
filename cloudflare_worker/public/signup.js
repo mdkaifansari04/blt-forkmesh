@@ -176,6 +176,7 @@
     if (!ok) {
       setSignupHint(
         body.error === "node_name_taken" ? "That username was just taken - try another."
+          : body.error === "inappropriate_node_name" ? "Choose a username without offensive language."
           : body.error === "email_taken" ? "That email is already registered."
           : body.error === "password_too_short" ? "Password must be at least 8 characters."
           : "Could not create the account. Please try again.",

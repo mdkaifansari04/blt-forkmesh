@@ -13,6 +13,12 @@
 /dashboard-chat.js
   Cache-Control: public, max-age=31536000, immutable
 
+# This module is imported by both the content-hashed dashboard bundle and the
+# standalone chat module. Revalidate it on every page load so a vocabulary or
+# normalization update cannot remain pinned behind an older module-cache entry.
+/chat-moderation.js
+  Cache-Control: no-store, max-age=0, must-revalidate
+
 /assets/forkmesh-mark.svg
   Cache-Control: public, max-age=31536000, immutable
 
