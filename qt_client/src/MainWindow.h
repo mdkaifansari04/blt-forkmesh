@@ -828,6 +828,10 @@ protected:
     // Defers heavy, git-backed startup until the window's first frame is on
     // screen, so launch shows the themed UI instead of an unpainted black frame.
     void showEvent(QShowEvent *event) override;
+    // First frame of the real window. This is the moment there is finally
+    // something behind the launch splash, so it is where the handover happens
+    // (adhoc #39).
+    void paintEvent(QPaintEvent *event) override;
     // Image drag-and-drop onto the inline issue comment composer. Also
     // intercepts right-click context menus app-wide to offer "Send to
     // Prompt" on any selected text (adhoc #126).
@@ -864,6 +868,7 @@ private:
     void runDeferredStartup();
     bool m_deferredStartupStarted = false; // showEvent armed the triggers
     bool m_deferredStartupRun = false;     // runDeferredStartup already ran
+    bool m_firstFramePainted = false;      // splash handover happened
     // The top-bar sign-in pill stays hidden until the launch-time silent-auth
     // lookup has completed. m_deferredStartupRun flips before that lookup while
     // restoring the last view, so it cannot safely gate the pill by itself.

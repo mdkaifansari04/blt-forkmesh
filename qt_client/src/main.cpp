@@ -9,6 +9,7 @@
 #include "PublicMirrorRuntime.h"
 #include "ServerNode.h"
 #include "SingleInstance.h"
+#include "StartupSplash.h"
 #include "Theme.h"
 
 #if __has_include("ForkMeshVersion.h")
@@ -46,6 +47,7 @@
 #include <QStringList>
 #include <QStyleFactory>
 #include <QStyleHints>
+#include <QTimer>
 
 #include <cstdio>
 #include <cstdlib>
@@ -653,6 +655,16 @@ int main(int argc, char *argv[])
     QGuiApplication::setDesktopFileName(QStringLiteral("forkmesh"));
     app.setStyle(QStyleFactory::create("Fusion"));
 
+    // From here to the main window's first frame the GUI thread is busy and
+    // nothing is on screen, so put up the launch splash: a centred card that
+    // narrates every startup step as it happens (adhoc #39). It is a no-op
+    // headless, under FORKMESH_NO_SPLASH, and when ui/startupSplash is off.
+    // MainWindow::paintEvent hands over to the real window and fades it out.
+    forkmesh::ui::showStartupSplash(headless, QStringLiteral(FORKMESH_VERSION),
+                                    QStringLiteral(FORKMESH_BUILD_COMMIT));
+    forkmesh::ui::startupStep(
+        QStringLiteral("Checking for an already-running ForkMesh"));
+
     // Refuse to run a second instance for this user. This is the actual fix for
     // "a new ForkMesh window opens seemingly at random": every trigger for that
     // (a desktop session restore, a login-autostart entry racing a manually
@@ -662,10 +674,15 @@ int main(int argc, char *argv[])
     // ~/.forkmesh data out from under the first one. Now a duplicate launch
     // just raises the existing window and exits.
     if (!forkmesh::acquireSingleInstance(localSetupLink)) {
+        // The other instance is being raised instead; this process is about to
+        // exit, so take the splash off the screen rather than flashing it.
+        forkmesh::ui::dismissStartupSplash();
         qInfo().noquote()
             << "ForkMesh is already running; focusing the existing window.";
         return 0;
     }
+    forkmesh::ui::startupStep(
+        QStringLiteral("Recovering interrupted mirror configuration"));
 
     // A mirror Actions helper can be killed after the catalog toggle is
     // published but before its local settings transaction is committed. Revert
@@ -685,6 +702,10 @@ int main(int argc, char *argv[])
                              ? QStringLiteral("unknown recovery error")
                              : recoveryError);
             qCritical().noquote() << message;
+            forkmesh::ui::startupStepFailed(
+                QStringLiteral("Mirror Actions recovery failed — %1")
+                    .arg(recoveryError));
+            forkmesh::ui::dismissStartupSplash();
             if (!headless)
                 QMessageBox::critical(nullptr, QStringLiteral("ForkMesh"),
                                       message);
@@ -698,8 +719,11 @@ int main(int argc, char *argv[])
     // the application font's fallback family list makes Qt render colour glyphs
     // for any emoji codepoint the primary UI family is missing, rather than the
     // flat black-and-white boxes seen without it.
+    forkmesh::ui::startupStep(QStringLiteral("Loading the colour-emoji font"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/NotoColorEmoji.ttf"));
     {
+        forkmesh::ui::startupStep(
+            QStringLiteral("Choosing the interface font"));
         QFont base = app.font();
 
         // Prefer a modern, consistent UI family over the raw platform default
@@ -735,6 +759,8 @@ int main(int argc, char *argv[])
         }
         base.setFamilies(families);
         app.setFont(base);
+        forkmesh::ui::startupDetail(
+            QStringLiteral("UI family: %1").arg(base.family()));
     }
 
     // Host-stats reporting (CPU/RAM/disk in the Mirror nodes view) is off by
@@ -782,6 +808,7 @@ int main(int argc, char *argv[])
                 << "ForkMesh: running as root (--allow-root). git and workflow "
                    "steps will run with root privileges.";
         } else {
+            forkmesh::ui::dismissStartupSplash();
             QMessageBox::critical(
                 nullptr, "ForkMesh",
                 "ForkMesh must not be run as root. It runs git and workflow "
@@ -794,6 +821,7 @@ int main(int argc, char *argv[])
 
     // Apply the saved theme (system/dark/light); when set to "system", follow
     // the OS color scheme and switch live as it changes.
+    forkmesh::ui::startupStep(QStringLiteral("Applying the theme"));
     MainWindow::applyTheme();
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     QObject::connect(app.styleHints(), &QStyleHints::colorSchemeChanged, &app,
@@ -805,6 +833,9 @@ int main(int argc, char *argv[])
     startup.start();
     qInfo().noquote() << QStringLiteral("[startup +%1ms] constructing MainWindow")
                              .arg(startup.elapsed(), 5);
+    // Everything from here until show() runs with no event loop; the splash
+    // repaints synchronously off the startupStep() calls inside the ctor.
+    forkmesh::ui::startupStep(QStringLiteral("Starting the application window"));
     auto *window = new MainWindow;
     const auto openLocalSetup = [window](const QString &target) {
         if (isCloudflareSetupLink(target))
@@ -839,10 +870,18 @@ int main(int argc, char *argv[])
     // surface) and drives the same deferred-startup path — including the
     // headless/offscreen safety net in MainWindow::showEvent — so auto-restore and
     // auto-connect behave identically headless and on the desktop.
+    forkmesh::ui::startupStep(QStringLiteral("Showing the main window"));
     window->show();
     openLocalSetup(localSetupLink);
     qInfo().noquote() << QStringLiteral("[startup +%1ms] window shown; entering event loop")
                              .arg(startup.elapsed(), 5);
+    // The splash normally hands over from MainWindow's first paintEvent, which
+    // is the moment there is actually something behind it. This is the backstop
+    // for platforms/compositors that never deliver that paint (finish() is
+    // idempotent, so the common case ignores it).
+    QTimer::singleShot(4000, &app, [] {
+        forkmesh::ui::finishStartupSplash(QStringLiteral("Window ready"));
+    });
 
     // In headless mode, the node runs the full backend but there's no GUI to
     // interact with, so attach a stdin REPL to observe and drive it.

@@ -11,6 +11,7 @@
 
 #include "ActionStore.h"
 #include "AgentStore.h"
+#include "StartupSplash.h"
 
 namespace forkmesh::ui {
 
@@ -271,6 +272,15 @@ void logStartup(const QString &phase)
     qInfo().noquote() << QStringLiteral("[startup +%1ms] %2")
                              .arg(startupClock().elapsed(), 5)
                              .arg(phase);
+    // The same phases, on screen, while the constructor still owns the GUI
+    // thread (adhoc #39). logStartup() marks work that has *finished*, so it
+    // closes whichever step startupStep() announced; a phase indented by
+    // convention ("  openRepo: commits loaded") is a sub-line of the step that
+    // is still running, not the end of it.
+    if (phase.startsWith(QLatin1String("  ")))
+        startupDetail(phase.trimmed());
+    else if (auto *splash = activeStartupSplash())
+        splash->completeCurrentStep();
 }
 
 // Same idea for the rebuild/restart path, which can be slow (git pull, cmake
