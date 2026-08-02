@@ -787,6 +787,19 @@ public:
     int testCommitWorkspacePage() const;
     QString testBranchDiffBranch() const { return m_branchDiffBranch; }
     QStringList testBranchDiffFiles() const { return m_branchDiffFilePaths; }
+    // Text currently in the range pane, so a test can prove that selecting a
+    // branch never leaves the previously viewed branch's diff on screen while the
+    // new one is read (adhoc #227).
+    QString testBranchDiffText() const;
+    // Whether that branch's patch is already cached, i.e. whether reselecting it
+    // repaints without waiting on git.
+    bool testBranchDiffCached(const QString &branch) const;
+    // Whether the last branch selection painted from that cache rather than from
+    // a placeholder, which is what makes revisiting a branch instant.
+    bool testBranchDiffPaintedFromCache() const
+    {
+        return m_branchDiffPaintedFromCache;
+    }
     // Paths rendered in the universal CHANGES tree, so branch tests can prove
     // the range's files appear without swapping to a second navigator.
     QStringList testSourceControlPaths() const;
@@ -3156,6 +3169,13 @@ private:
         int added = -1;
         int removed = -1;
     };
+    // One branch's already-rendered range patch, kept so re-opening that branch
+    // paints from memory instead of leaving the pane on the previous branch
+    // while git is read again (adhoc #227).
+    struct BranchDiffCacheEntry {
+        QByteArray patch;
+        QString emptyMessage;
+    };
     // Branches table layout: destructive action first, immediately followed by
     // the branch name. Updated/worktree remain hidden backing columns whose data
     // is folded into the compact Branch delegate.
@@ -3670,6 +3690,9 @@ private:
     // that range's files while leaving its composer and actions in place.
     void showRangeFilesInSourceControl(const QStringList &paths,
                                        const QStringList &statuses);
+    // Empty that same tree while a freshly clicked branch's range is read, so it
+    // cannot keep listing the previous branch's files (adhoc #227).
+    void clearRangeFilesInSourceControl();
     bool sourceControlShowsRange() const;
     QString sourceControlGitDir() const;
     void scrollBranchDiffToFile(const QString &path);
@@ -5854,6 +5877,38 @@ private:
     QByteArray m_branchDiffLastPatch;
     QString m_branchDiffLastEmpty;
     bool m_branchDiffLastValid = false;
+    // Clicking a branch used to leave the *previous* branch's diff, changed-file
+    // list and sticky header on screen for as long as the new branch's range read
+    // took — seconds on a large branch — so the pane confidently attributed one
+    // branch's changes to another (adhoc #227). A selection now repaints for the
+    // branch that was clicked straight away: from this cache when that branch has
+    // been reviewed before, otherwise from a placeholder naming it. The git read
+    // still runs behind either one and replaces the patch only if it differs, so
+    // a cached paint is never the final word (stale-while-revalidate).
+    QHash<QString, BranchDiffCacheEntry> m_branchDiffCache;
+    QStringList m_branchDiffCacheOrder; // oldest key first, for eviction
+    qint64 m_branchDiffCacheBytes = 0;
+    static constexpr int kBranchDiffCacheEntries = 8;
+    static constexpr qint64 kBranchDiffCacheBytes = 8 * 1024 * 1024;
+    // Cache key for a branch's range patch: git dir, branch, compare base and the
+    // checkout the range is read from, since a different value for any of them is
+    // a different diff. Empty (uncacheable) in PR mode, whose patch comes from the
+    // pull request rather than from this read.
+    QString branchDiffCacheKey(const QString &branch, const QString &workDir) const;
+    void rememberBranchDiff(const QString &key, const QByteArray &patch,
+                            const QString &emptyMessage);
+    void forgetBranchDiff(const QString &branch); // after the branch is written to
+    void clearBranchDiffCache();
+    // Repaint the range pane for a newly selected branch before its diff is read.
+    // By value: the repaint shells git, which pumps the event loop, and a queued
+    // navigation can reassign whatever the caller passed in (the adhoc #106/#119
+    // UAF family).
+    void beginBranchDiffTransition(QString branch);
+    // Fade the diff in once real content replaces that placeholder.
+    void finishBranchDiffTransition();
+    bool m_branchDiffPendingFade = false;
+    bool m_branchDiffPaintedFromCache = false;
+    QString branchDiffViewedContext(const QString &branch) const;
     // "viewed" key for whatever scope the diff pane currently shows (whole branch,
     // a commit, or the uncommitted changes); set by renderBranchDiffPatch so the
     // per-file Viewed toggle persists against the right scope, not always "all".

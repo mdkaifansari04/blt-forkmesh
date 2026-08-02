@@ -1727,6 +1727,9 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         if (!next.isEmpty())
             m_branchDiffBranch = next;
     }
+    // The base just moved, so every branch's range against it did too — no cached
+    // patch here survives a merge (adhoc #227).
+    clearBranchDiffCache();
     // adhoc #100: the merge just landed a new commit (or, on a failed merge, an
     // aborted one) directly in this checkout, so the top "Sync" button and the
     // Changes panel would otherwise stay stale — showing 0 pending commits — until
@@ -4633,6 +4636,9 @@ void MainWindow::showBranchDiff(const QString &branch, int agentSessionId)
 {
     if (!m_branchDiffView)
         return;
+    // What the pane is showing right now. Anything still on screen from another
+    // branch has to go before this one's read starts (adhoc #227).
+    const bool leavingAnotherBranch = m_branchDiffBranch != branch;
     m_branchDiffBranch = branch;
     m_branchDiffAgentSessionId = agentSessionId;
     updateCommitsCompareIndicator(); // "<branch> -> <base>" on the branch row
@@ -4654,6 +4660,7 @@ void MainWindow::showBranchDiff(const QString &branch, int agentSessionId)
     const QString dir = repoGitDir();
     if (branch.isEmpty() || dir.isEmpty()) {
         m_branchDiffWorkDir.clear();
+        m_branchDiffPendingFade = false;
         m_branchDiffView->clear();
         return;
     }
@@ -4661,6 +4668,9 @@ void MainWindow::showBranchDiff(const QString &branch, int agentSessionId)
     // off the default branch (adhoc #16).
     const QString base = branchCompareBase();
     if (branch == base) {
+        // No range to empty here: selecting the base itself routes the workspace
+        // back to the working-tree page, which owns the CHANGES list.
+        m_branchDiffPendingFade = false;
         setDiffHtml(m_branchDiffView,
             QStringLiteral("<p style='color:#8b949e'>%1 is the branch being "
                            "compared against.</p>")
@@ -4668,10 +4678,191 @@ void MainWindow::showBranchDiff(const QString &branch, int agentSessionId)
         return;
     }
 
+    // Repaint for the branch that was just clicked before reading it, so the
+    // reader never sees the branch they left described as the one they picked.
+    if (leavingAnotherBranch)
+        beginBranchDiffTransition(branch);
+
     // Render the whole-branch diff (async — renderBranchScopeDiff reads git on
     // a worker thread and drops the result if the branch changes meanwhile).
     renderBranchScopeDiff();
 }
+
+// The "viewed" key a branch's range diff checks files off against. PR mode shares
+// the pull request viewer's key so a file ticked in either place stays ticked in
+// both (adhoc #107).
+QString MainWindow::branchDiffViewedContext(const QString &branch) const
+{
+    return m_branchDiffPullNumber >= 0
+               ? QStringLiteral("pull/") + QString::number(m_branchDiffPullNumber)
+               : QStringLiteral("branch/") + branch;
+}
+
+// Hand the range pane over to a newly selected branch. Either the branch has been
+// reviewed before and its patch is still cached — repaint it now, instantly, and
+// let the read behind it confirm or replace it — or nothing about this branch is
+// known yet, in which case the pane empties down to a line naming it rather than
+// keeping the previous branch's diff and file list on screen (adhoc #227).
+void MainWindow::beginBranchDiffTransition(QString branch)
+{
+    if (!m_branchDiffView)
+        return;
+    // Everything here is deliberately git-free: this runs inside the click, and
+    // the range render shells `git status` for the CHANGES composer, which pumps
+    // the event loop — enough to fire a pending navigation record half way
+    // through the switch and leave a phantom entry in the Back/Forward trail.
+    m_branchDiffFilePaths.clear();
+    m_branchDiffFileAnchors.clear();
+    clearRangeFilesInSourceControl();
+    setDiffHtml(m_branchDiffView,
+                QString::fromUtf8("<p style='color:#8b949e'>Reading changes on "
+                                  "%1\xE2\x80\xA6</p>")
+                    .arg(branch.toHtmlEscaped()));
+    // The reader is at the top of a different diff now, not part-way down the
+    // last one.
+    if (QScrollBar *bar = m_branchDiffView->verticalScrollBar())
+        bar->setValue(0);
+
+    const QString key = branchDiffCacheKey(branch, m_branchDiffWorkDir);
+    const auto cached = m_branchDiffCache.constFind(key);
+    if (key.isEmpty() || cached == m_branchDiffCache.constEnd()) {
+        m_branchDiffPaintedFromCache = false;
+        m_branchDiffPendingFade = true; // real content fades in over the line above
+        return;
+    }
+    // Reviewed before: repaint that patch on the next turn of the event loop,
+    // well ahead of the git read and outside the click that asked for it. The
+    // reader sees their branch back within a frame rather than after a read.
+    const QByteArray patch = cached->patch;
+    const QString emptyMessage = cached->emptyMessage;
+    m_branchDiffPaintedFromCache = true;
+    m_branchDiffPendingFade = false;
+    QTimer::singleShot(0, this, [this, branch, patch, emptyMessage] {
+        // Dropped once the reader has moved on, or once the real read has
+        // already landed with the authoritative patch. The page check matters as
+        // much as the branch one: selecting the compare base, or opening a single
+        // commit, leaves m_branchDiffBranch naming the last branch reviewed, and
+        // repainting a range over either of those would drag the workspace back.
+        if (m_branchDiffBranch != branch || m_branchDiffLastValid || !m_commitsStack ||
+            m_commitsStack->currentIndex() != kCommitWorkspaceRangePage)
+            return;
+        m_branchDiffLastPatch = patch;
+        m_branchDiffLastEmpty = emptyMessage;
+        m_branchDiffLastValid = true;
+        renderBranchDiffPatch(QString::fromUtf8(patch), emptyMessage,
+                              branchDiffViewedContext(branch));
+    });
+}
+
+// Fade the real diff in over the placeholder above. Short and self-removing: the
+// opacity effect is dropped the moment it finishes, so nothing rides along on the
+// scrolling of a large diff.
+void MainWindow::finishBranchDiffTransition()
+{
+    if (!m_branchDiffPendingFade)
+        return;
+    m_branchDiffPendingFade = false;
+    if (!m_branchDiffView || !m_branchDiffView->isVisible())
+        return;
+    auto *effect = new QGraphicsOpacityEffect(m_branchDiffView);
+    m_branchDiffView->setGraphicsEffect(effect);
+    auto *fade = new QPropertyAnimation(effect, "opacity", m_branchDiffView);
+    fade->setDuration(140);
+    fade->setStartValue(0.4);
+    fade->setEndValue(1.0);
+    fade->setEasingCurve(QEasingCurve::OutCubic);
+    QPointer<QTextBrowser> view = m_branchDiffView;
+    connect(fade, &QPropertyAnimation::finished, m_branchDiffView, [view] {
+        if (view)
+            view->setGraphicsEffect(nullptr);
+    });
+    fade->start(QAbstractAnimation::DeleteWhenStopped);
+}
+
+QString MainWindow::branchDiffCacheKey(const QString &branch,
+                                       const QString &workDir) const
+{
+    // A PR's patch is served from the pull request itself, not from this read.
+    if (branch.isEmpty() || m_branchDiffPullNumber >= 0)
+        return QString();
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return QString();
+    // Branch second so forgetBranchDiff() can drop every base/checkout variant of
+    // one branch by prefix.
+    return dir + QLatin1Char('\n') + branch + QLatin1Char('\n') +
+           branchCompareBase() + QLatin1Char('\n') + workDir;
+}
+
+void MainWindow::rememberBranchDiff(const QString &key, const QByteArray &patch,
+                                    const QString &emptyMessage)
+{
+    if (key.isEmpty())
+        return;
+    // By value: the eviction loop below hands in the very list element it is
+    // about to remove, so a reference into that list would dangle mid-removal.
+    const auto drop = [this](QString dead) {
+        const auto it = m_branchDiffCache.constFind(dead);
+        if (it == m_branchDiffCache.constEnd())
+            return;
+        m_branchDiffCacheBytes -= it->patch.size();
+        m_branchDiffCache.erase(it);
+        m_branchDiffCacheOrder.removeAll(dead);
+    };
+    drop(key); // re-cached: replace the old copy rather than count it twice
+    // A diff this large costs more to hold than the read it saves.
+    if (patch.size() > kBranchDiffCacheBytes)
+        return;
+    m_branchDiffCache.insert(key, {patch, emptyMessage});
+    m_branchDiffCacheOrder.append(key);
+    m_branchDiffCacheBytes += patch.size();
+    while (!m_branchDiffCacheOrder.isEmpty() &&
+           (m_branchDiffCacheOrder.size() > kBranchDiffCacheEntries ||
+            m_branchDiffCacheBytes > kBranchDiffCacheBytes))
+        drop(m_branchDiffCacheOrder.first());
+}
+
+// Drop a branch's cached patch after something wrote to it (a merge, a pull, a
+// commit, a manual refresh), so the next selection can't paint the state it was
+// in beforehand.
+void MainWindow::forgetBranchDiff(const QString &branch)
+{
+    if (branch.isEmpty())
+        return;
+    const QString prefix =
+        repoGitDir() + QLatin1Char('\n') + branch + QLatin1Char('\n');
+    const QStringList keys = m_branchDiffCacheOrder;
+    for (const QString &key : keys) {
+        if (!key.startsWith(prefix))
+            continue;
+        const auto it = m_branchDiffCache.constFind(key);
+        if (it != m_branchDiffCache.constEnd()) {
+            m_branchDiffCacheBytes -= it->patch.size();
+            m_branchDiffCache.erase(it);
+        }
+        m_branchDiffCacheOrder.removeAll(key);
+    }
+}
+
+void MainWindow::clearBranchDiffCache()
+{
+    m_branchDiffCache.clear();
+    m_branchDiffCacheOrder.clear();
+    m_branchDiffCacheBytes = 0;
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testBranchDiffText() const
+{
+    return m_branchDiffView ? m_branchDiffView->toPlainText() : QString();
+}
+
+bool MainWindow::testBranchDiffCached(const QString &branch) const
+{
+    const QString key = branchDiffCacheKey(branch, branchWorkDir(branch));
+    return !key.isEmpty() && m_branchDiffCache.contains(key);
+}
+#endif
 
 void MainWindow::renderBranchScopeDiff()
 {
@@ -4693,6 +4884,7 @@ void MainWindow::renderBranchScopeDiff()
     // (adhoc #107).
     const int pullNumber = m_branchDiffPullNumber;
     const int agentSessionId = m_branchDiffAgentSessionId;
+    const QString cacheKey = branchDiffCacheKey(branch, work);
     const int gen = ++m_branchScopeDiffGen;
     struct ScopeDiff {
         bool ok = true;
@@ -4733,23 +4925,34 @@ void MainWindow::renderBranchScopeDiff()
             }
             return r;
         },
-        [this, gen, branch, agentSessionId](ScopeDiff r) {
+        [this, gen, branch, agentSessionId, cacheKey](ScopeDiff r) {
             // Dropped if the branch changed while the read was in flight.
             if (gen != m_branchScopeDiffGen || !m_branchDiffView ||
                 m_branchDiffBranch != branch)
                 return;
             if (!r.ok) {
+                m_branchDiffPendingFade = false;
                 setDiffHtml(m_branchDiffView,
                     QStringLiteral(
                         "<p style='color:#f85149'>Could not diff %1: %2</p>")
                         .arg(branch.toHtmlEscaped(), r.err.toHtmlEscaped()));
                 return;
             }
+            // The pane may already be showing this exact patch, repainted from
+            // the cache the moment the branch was clicked. Re-laying it out would
+            // only throw away the reader's scroll position and blink the diff
+            // (adhoc #227), so confirm it in place instead.
+            const bool alreadyShown = m_branchDiffLastValid &&
+                                      m_branchDiffLastPatch == r.out &&
+                                      m_branchDiffViewedContext == r.viewedContext;
             m_branchDiffLastPatch = r.out;
             m_branchDiffLastEmpty = r.emptyMessage;
             m_branchDiffLastValid = true;
-            renderBranchDiffPatch(QString::fromUtf8(r.out), r.emptyMessage,
-                                  r.viewedContext);
+            rememberBranchDiff(cacheKey, r.out, r.emptyMessage);
+            if (!alreadyShown)
+                renderBranchDiffPatch(QString::fromUtf8(r.out), r.emptyMessage,
+                                      r.viewedContext);
+            finishBranchDiffTransition();
             // The list refresh and this click are separated by asynchronous Git
             // reads, so the branch may have moved in between. Reconcile the
             // badge to the exact live file set just rendered; removing its
@@ -5824,6 +6027,9 @@ void MainWindow::pullBaseIntoAllBranches()
                   .arg(base)
                   .arg(updated)
                   .arg(conflicts.size()));
+    // Every branch this touched has a different range against the base now, so
+    // none of their cached patches may be repainted again (adhoc #227).
+    clearBranchDiffCache();
     loadBranchesAndTags();
     loadBranchesPanel();
 
