@@ -9508,8 +9508,8 @@ void MainWindow::updateRepoActivityRail()
                           m_repoDetailStack->currentIndex() == kRepoAgentsTab;
     // Git is where notification bubbles are most useful, but its diff workspace
     // does not need the live log or background queue beside the composer. Keep
-    // just the right-aligned prompt, capped to the bubbles' 560px maximum.
-    constexpr int kGitPromptMaxWidth = 560;
+    // just the prompt, filling the footer instead of leaving an empty region
+    // beneath the diff.
     // Git is its own activity-rail destination, so hide every Code/repository
     // header above the source-control workspace rather than leaving rows of
     // unrelated navigation on screen. The Agents tab gets the same treatment: its
@@ -9528,11 +9528,8 @@ void MainWindow::updateRepoActivityRail()
         m_footerDock->show();
     if (m_footerLeftRegion)
         m_footerLeftRegion->setVisible(!onChanges);
-    if (m_footerGitPromptSpacer)
-        m_footerGitPromptSpacer->setVisible(onChanges);
     if (m_promptWrapper)
-        m_promptWrapper->setMaximumWidth(
-            onChanges ? kGitPromptMaxWidth : QWIDGETSIZE_MAX);
+        m_promptWrapper->setMaximumWidth(QWIDGETSIZE_MAX);
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
     if (m_agentsNavButton)
