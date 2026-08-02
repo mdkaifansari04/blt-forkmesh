@@ -2201,6 +2201,43 @@ int main(int argc, char *argv[])
                           "m_catalogPublishConsecutiveFailures.remove(publishKey)")),
                   "consecutive publish failures are counted, escalated, and cleared on success");
 
+            // The sticky "Viewed" fade installs a QGraphicsOpacityEffect on the
+            // button, and setGraphicsEffect() deletes whichever effect is
+            // already installed. Dropping it with setGraphicsEffect(nullptr)
+            // and then calling deleteLater() on the same pointer freed it twice
+            // and crashed inside QObject::deleteLater (adhoc #52), so the
+            // handler must delete once and hold the effect by QPointer.
+            QFile scmFile(QFileInfo(QString::fromUtf8(__FILE__))
+                              .absoluteDir()
+                              .filePath(QStringLiteral(
+                                  "../src/MainWindowSourceControl.cpp")));
+            const bool scmOpened = scmFile.open(QIODevice::ReadOnly);
+            const QString scmSource =
+                scmOpened ? QString::fromUtf8(scmFile.readAll()) : QString();
+            const int fadeStart = scmSource.indexOf(QStringLiteral(
+                "new QGraphicsOpacityEffect(m_scmStickyViewed)"));
+            const int fadeEnd =
+                scmSource.indexOf(QStringLiteral("animation->start("), fadeStart);
+            QString fadeHandler;
+            if (fadeStart >= 0 && fadeEnd > fadeStart) {
+                // Comment lines describe the old double-delete, so match the
+                // code alone.
+                const QStringList fadeLines =
+                    scmSource.mid(fadeStart, fadeEnd - fadeStart)
+                        .split(QLatin1Char('\n'));
+                for (const QString &line : fadeLines) {
+                    if (!line.trimmed().startsWith(QLatin1String("//")))
+                        fadeHandler += line + QLatin1Char('\n');
+                }
+            }
+            check(scmOpened && !fadeHandler.isEmpty() &&
+                      !fadeHandler.contains(QStringLiteral("deleteLater()")) &&
+                      fadeHandler.contains(QStringLiteral(
+                          "QPointer<QGraphicsEffect>(effect)")) &&
+                      fadeHandler.contains(QStringLiteral(
+                          "button->graphicsEffect() == faded")),
+                  "sticky Viewed fade deletes its opacity effect once, guarded by QPointer");
+
             RepoContributionPublicationCache scanCapacityCache(8, 2);
             check(scanCapacityCache.begin(contributionCacheKey, false) ==
                           CacheBegin::Started &&
