@@ -678,6 +678,27 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    // Headless nodes intentionally place TMPDIR on persistent disk because a
+    // repository materialization can be larger than their RAM-backed /tmp.
+    // An abrupt reboot cannot run the Qt/Python temporary-directory destructors,
+    // so sweep exact ForkMesh mirror artifacts only after proving this is the
+    // sole application instance. This keeps crash debris from growing without
+    // bound across gateway and encrypted-mirror restarts.
+    {
+        QString cleanupError;
+        const int removed =
+            PublicMirrorRuntime::cleanupStaleTemporaryDirectories(
+                QDir::tempPath(), &cleanupError);
+        if (removed < 0) {
+            qWarning().noquote()
+                << "Mirror temporary cleanup skipped:" << cleanupError;
+        } else if (removed > 0) {
+            qInfo().noquote()
+                << "Mirror temporary cleanup removed" << removed
+                << "stale director" << (removed == 1 ? "y." : "ies.");
+        }
+    }
+
     // A mirror Actions helper can be killed after the catalog toggle is
     // published but before its local settings transaction is committed. Revert
     // any such owner-only journal before MainWindow reads repository records or
