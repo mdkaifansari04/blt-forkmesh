@@ -2813,6 +2813,11 @@ const QString kCommentAlertSetting = QStringLiteral("notifications/comments");
 const QString kMirrorUpdateAlertSetting = QStringLiteral("notifications/mirrorUpdated");
 const QString kCoveOpenAlertSetting = QStringLiteral("notifications/coveOpened");
 const QString kNewUserAlertSetting = QStringLiteral("notifications/newUser");
+// In-app cards are separate from OS notifications: they stay above the
+// persistent prompt so a user can see activity in every section of the app.
+const QString kInAppNotificationsSetting = QStringLiteral("notifications/inAppCards");
+const QString kInAppNotificationDurationSetting =
+    QStringLiteral("notifications/inAppCardDurationSeconds");
 const QString kEmailNotifyMentionSetting = QStringLiteral("notifications/email/mention");
 const QString kEmailNotifySubscribedSetting = QStringLiteral("notifications/email/subscribed");
 const QString kEmailNotifyPullSubmittedSetting = QStringLiteral("notifications/email/pullSubmitted");

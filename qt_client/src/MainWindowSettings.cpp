@@ -326,6 +326,33 @@ QWidget *MainWindow::buildSettingsSection()
 
     auto *notifyLabel = new QLabel("PINGS");
     notifyLabel->setObjectName("sectionLabel");
+    auto *inAppPingsCheck =
+        new QCheckBox("Show in-app notification cards above the prompt");
+    inAppPingsCheck->setChecked(
+        QSettings().value(kInAppNotificationsSetting, true).toBool());
+    inAppPingsCheck->setToolTip(
+        "Show every in-app ping in a floating stack above the prompt, wherever "
+        "you are in ForkMesh. Pings remain available on the Pings page when off.");
+    connect(inAppPingsCheck, &QCheckBox::toggled, this, [](bool enabled) {
+        QSettings().setValue(kInAppNotificationsSetting, enabled);
+    });
+    auto *inAppPingDuration = new QComboBox;
+    inAppPingDuration->addItem("In-app pings: 5 seconds", 5);
+    inAppPingDuration->addItem("In-app pings: 10 seconds", 10);
+    inAppPingDuration->addItem("In-app pings: 20 seconds", 20);
+    const int savedInAppDuration =
+        QSettings().value(kInAppNotificationDurationSetting, 5).toInt();
+    const int inAppDurationIndex = inAppPingDuration->findData(savedInAppDuration);
+    inAppPingDuration->setCurrentIndex(inAppDurationIndex < 0 ? 0
+                                                               : inAppDurationIndex);
+    inAppPingDuration->setToolTip(
+        "Choose how long each in-app notification card remains visible. Hovering "
+        "a card pauses its countdown.");
+    connect(inAppPingDuration, &QComboBox::currentIndexChanged, this,
+            [inAppPingDuration](int) {
+                QSettings().setValue(kInAppNotificationDurationSetting,
+                                     inAppPingDuration->currentData().toInt());
+            });
     auto *pushAlertCheck =
         new QCheckBox("Show a system ping when a push reaches a mirror");
     pushAlertCheck->setChecked(
@@ -1748,6 +1775,8 @@ QWidget *MainWindow::buildSettingsSection()
     notifyCol->setContentsMargins(2, 14, 2, 14);
     notifyCol->setSpacing(10);
     notifyCol->addWidget(notifyLabel);
+    notifyCol->addWidget(inAppPingsCheck);
+    notifyCol->addWidget(inAppPingDuration, 0, Qt::AlignLeft);
     notifyCol->addWidget(pushAlertCheck);
     notifyCol->addWidget(actionAlertCombo, 0, Qt::AlignLeft);
     notifyCol->addWidget(nodeConnectAlertCheck);
@@ -4441,9 +4470,6 @@ static constexpr int kPromptBubbleSeconds = 8;
 // finishes. It stays fully opaque throughout — the exit is the motion, not a fade
 // (adhoc #226), so the message is legible right up to the moment it leaves.
 static constexpr int kToastSlideOutMs = 320;
-// The composer-to-bubble arrival, restored on the shared geometry animation
-// whenever a new bubble is shown (the slide-out retunes it).
-static constexpr int kToastFlightMs = 260;
 // Routine notifications enter from just below their final position. Keeping
 // this shorter than the prompt-send flight makes bursts feel responsive without
 // the queue cards popping into place.
@@ -4455,18 +4481,59 @@ static constexpr int kToastEntryOffset = 18;
 // oldest queued message is dropped once the cap is hit.
 static constexpr int kToastQueueLimit = 20;
 
+QString topMessageKindLabel(const QString &kind)
+{
+    static const QHash<QString, QString> labels = {
+        {QStringLiteral("action"), QStringLiteral("Action")},
+        {QStringLiteral("chat"), QStringLiteral("Chat")},
+        {QStringLiteral("comment"), QStringLiteral("Comment")},
+        {QStringLiteral("desktop"), QStringLiteral("System")},
+        {QStringLiteral("discussion"), QStringLiteral("Discussion")},
+        {QStringLiteral("issue"), QStringLiteral("Issue")},
+        {QStringLiteral("mention"), QStringLiteral("Mention")},
+        {QStringLiteral("mirror"), QStringLiteral("Mirror")},
+        {QStringLiteral("pull"), QStringLiteral("Pull request")},
+        {QStringLiteral("prompt"), QStringLiteral("Prompt")},
+        {QStringLiteral("repo"), QStringLiteral("Repository")},
+    };
+    return labels.value(kind, kind.trimmed().isEmpty()
+                                  ? QStringLiteral("System")
+                                  : kind.simplified());
+}
+
+void setTopMessageAction(QPushButton *button, int agentSessionId)
+{
+    if (!button)
+        return;
+    if (agentSessionId > 0) {
+        button->setText(QStringLiteral("View agent"));
+        button->setToolTip(QStringLiteral("Open the agent handling this prompt"));
+        setOcticon(button, "person", 13);
+    } else {
+        button->setText(QStringLiteral("Send to prompt"));
+        button->setToolTip(
+            QStringLiteral("Add this notification to the footer prompt"));
+        setOcticon(button, "paper-airplane", 13);
+    }
+}
+
 // Park a message behind the toast that is currently counting down, dropping the
 // oldest once the queue is full. The queue is rendered beneath the active toast
 // so every pending message remains visible and can be read before its turn.
 void MainWindow::queueTopMessage(const QString &text, bool error,
-                                 const QString &clickHref)
+                                 const QString &clickHref,
+                                 const QString &kind, int durationSeconds)
 {
     const QString trimmed = text.simplified();
     if (trimmed.isEmpty())
         return;
-    const int durationSeconds = error ? kToastErrorSeconds : kToastSuccessSeconds;
+    const int entryDuration = durationSeconds > 0
+                                  ? durationSeconds
+                                  : (error ? kToastErrorSeconds
+                                           : kToastSuccessSeconds);
     m_topMessageQueue.append(
-        {m_nextTopMessageQueueId++, trimmed, error, clickHref, durationSeconds});
+        {m_nextTopMessageQueueId++, trimmed, error, clickHref, entryDuration,
+         kind});
     while (m_topMessageQueue.size() > kToastQueueLimit)
         m_topMessageQueue.removeFirst();
     renderTopMessageQueue();
@@ -4495,6 +4562,11 @@ void MainWindow::renderTopMessageQueue()
         auto *column = new QVBoxLayout(card);
         column->setContentsMargins(12, 8, 10, 8);
         column->setSpacing(6);
+
+        auto *typeBadge = new QLabel(topMessageKindLabel(entry.kind), card);
+        typeBadge->setObjectName("topMessageQueueTypeBadge");
+        typeBadge->setFocusPolicy(Qt::NoFocus);
+        column->addWidget(typeBadge, 0, Qt::AlignLeft);
 
         auto *label = new QLabel(card);
         label->setObjectName("topMessageQueueText");
@@ -4611,7 +4683,7 @@ bool MainWindow::topMessageBusy() const
             m_topMessageSlidingOut || m_topMessageEntering);
 }
 
-// (Re)paint the bottom-right bubble from m_topMessageRaw. Every message is
+// (Re)paint the prompt-anchored bubble from m_topMessageRaw. Every message is
 // shown whole — it wraps across the bubble's full width and the bubble grows to
 // fit, so no notification is ever cut off behind an ellipsis.
 void MainWindow::renderTopMessage()
@@ -4640,11 +4712,17 @@ void MainWindow::renderTopMessage()
                                    .arg(fg, glyph, body);
     }
     m_topMessage->setText(m_topMessageBaseHtml);
+    if (m_topMessageTypeBadge) {
+        m_topMessageTypeBadge->setText(
+            m_topMessageIsPromptBubble ? QStringLiteral("Prompt")
+                                       : topMessageKindLabel(m_topMessageKind));
+        m_topMessageTypeBadge->show();
+    }
 }
 
-// Calculate a readable floating-bubble rectangle in the bottom-right corner.
-// The queue is placed beneath the active bubble, so all notifications share one
-// stable screen edge regardless of which app section or footer is visible.
+// Calculate a readable floating-bubble rectangle directly above the prompt.
+// The prompt can be reparented into another page (for example Git's commit
+// view), so its current geometry — not the window bottom — is the anchor.
 QRect MainWindow::topMessageBubbleRect()
 {
     if (!m_topMessageContainer)
@@ -4656,7 +4734,10 @@ QRect MainWindow::topMessageBubbleRect()
     m_topMessageContainer->setFixedWidth(bubbleWidth);
     // The bubble may grow until it would run past the top of the window; only
     // beyond that does the text scroll.
-    const int roomForBubble = height() - 2 * margin;
+    int promptTop = height() - margin;
+    if (m_promptWrapper && m_promptWrapper->isVisible())
+        promptTop = m_promptWrapper->mapTo(this, QPoint()).y() - margin;
+    const int roomForBubble = qMax(40, promptTop - margin);
     const int maxBubbleHeight = qBound(40, roomForBubble, qMax(40, height() - 2 * margin));
     auto *column = m_topMessageContainer->layout();
     int bubbleHeight = 0;
@@ -4696,8 +4777,8 @@ QRect MainWindow::topMessageBubbleRect()
     } else if (m_topMessageQueueScroll) {
         m_topMessageQueueScroll->hide();
     }
-    const int y = qMax(margin, height() - bubbleHeight - queueHeight -
-                                   (queueHeight > 0 ? margin + 8 : margin));
+    const int y = qMax(margin, promptTop - bubbleHeight - queueHeight -
+                                   (queueHeight > 0 ? 8 : 0));
     return QRect(x, y, bubbleWidth, bubbleHeight);
 }
 
@@ -4774,14 +4855,17 @@ void MainWindow::slideTopMessageOut()
 }
 
 // After a footer send clears the editor, leave a copy of the exact prompt in a
-// bubble that begins at the editor and eases into its notification position.
-void MainWindow::showPromptBubble(const QString &prompt)
+// bubble above the editor. Keeping the entire card above the prompt means it
+// never obscures either a draft or the send controls on any page.
+void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId)
 {
     const QString sent = prompt.trimmed();
     if (sent.isEmpty() || !m_topMessage || !m_topMessageContainer)
         return;
     m_loadStatusShowing = false;
     m_topMessageHref.clear();
+    m_topMessageKind = QStringLiteral("prompt");
+    m_topMessageAgentSessionId = agentSessionId;
     m_topMessageError = false;
     m_topMessageIsPromptBubble = true;
     m_topMessageRaw = sent;
@@ -4793,8 +4877,10 @@ void MainWindow::showPromptBubble(const QString &prompt)
     m_topMessage->show(); // a previous dismiss hid the label
     if (m_topMessageCopy)
         m_topMessageCopy->show();
-    if (m_topMessageSendToPrompt)
+    if (m_topMessageSendToPrompt) {
+        setTopMessageAction(m_topMessageSendToPrompt, m_topMessageAgentSessionId);
         m_topMessageSendToPrompt->show();
+    }
     if (m_topMessageClose)
         m_topMessageClose->show();
     m_topMessageSecondsLeft = kPromptBubbleSeconds; // the row is sized with its countdown in place
@@ -4803,23 +4889,13 @@ void MainWindow::showPromptBubble(const QString &prompt)
         m_topMessageActions->show();
 
     const QRect target = topMessageBubbleRect();
-    QRect source = target;
-    if (m_issueQuickAdd && m_issueQuickAdd->isVisible())
-        source = QRect(m_issueQuickAdd->mapTo(this, QPoint()),
-                       m_issueQuickAdd->size());
-    m_topMessageContainer->setGeometry(source);
+    m_topMessageContainer->setGeometry(target);
     m_topMessageContainer->show();
     m_topMessageContainer->raise();
-    if (m_topMessageFlight) {
+    if (m_topMessageFlight)
         m_topMessageFlight->stop();
-        m_topMessageSlidingOut = false;
-        m_topMessageEntering = true;
-        m_topMessageFlight->setDuration(kToastFlightMs);
-        m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
-        m_topMessageFlight->setStartValue(source);
-        m_topMessageFlight->setEndValue(target);
-        m_topMessageFlight->start();
-    }
+    m_topMessageSlidingOut = false;
+    m_topMessageEntering = false;
 
     if (!m_topMessageTimer) {
         m_topMessageTimer = new QTimer(this);
@@ -4849,7 +4925,8 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 }
 
 void MainWindow::flashMessage(const QString &text, bool error,
-                              const QString &clickHref, int durationSeconds)
+                              const QString &clickHref, int durationSeconds,
+                              const QString &kind)
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
     m_loadStatusShowing = false;
@@ -4867,19 +4944,21 @@ void MainWindow::flashMessage(const QString &text, bool error,
     // the queue and moves the active toast up, rather than replacing a message
     // that may still be being read.
     if (topMessageBusy()) {
-        queueTopMessage(trimmed, error, clickHref);
+        queueTopMessage(trimmed, error, clickHref, kind, durationSeconds);
         return;
     }
     // Carry an optional click target so the whole toast can act as a link (e.g. an
     // "agent is waiting for you" toast jumps to that agent). Cleared by default so
     // an ordinary toast is never left clickable from a previous message.
     m_topMessageHref = clickHref;
+    m_topMessageKind = kind;
+    m_topMessageAgentSessionId = -1;
     m_topMessageError = error;
     m_topMessageIsPromptBubble = false;
     m_topMessageHovering = false;
     m_topMessageRaw = trimmed;
     // The whole message is shown: it wraps to the bubble's full width and the
-    // bubble grows within the bottom-right stack (topMessageBubbleRect), so a long git error is
+    // bubble grows within the prompt-anchored stack (topMessageBubbleRect), so a long git error is
     // readable in place instead of being cut off at an ellipsis.
     renderTopMessage();
     m_topMessage->show();
@@ -4907,8 +4986,10 @@ void MainWindow::flashMessage(const QString &text, bool error,
                                            : kToastSuccessSeconds);
     if (m_topMessageCopy)
         m_topMessageCopy->show();
-    if (m_topMessageSendToPrompt)
+    if (m_topMessageSendToPrompt) {
+        setTopMessageAction(m_topMessageSendToPrompt, -1);
         m_topMessageSendToPrompt->show();
+    }
     if (m_topMessageClose)
         m_topMessageClose->show();
     renderTopMessageCountdown();
@@ -4925,8 +5006,11 @@ void MainWindow::flashMessage(const QString &text, bool error,
         m_topMessageSlidingOut = false;
         m_topMessageEntering = false;
         const QRect target = topMessageBubbleRect();
+        // The prompt anchor reserves a 16px gap below the final card. Keep the
+        // entry motion inside that gap, so even its first frame cannot overlap
+        // the prompt.
         const QRect source = target.translated(
-            0, qMin(kToastEntryOffset, qMax(0, height() - target.bottom() - 1)));
+            0, qMin(kToastEntryOffset, 15));
         m_topMessageContainer->setGeometry(source);
         m_topMessageContainer->show();
         m_topMessageContainer->raise();
@@ -4975,6 +5059,8 @@ void MainWindow::dismissTopMessage()
     m_topMessageHovering = false;
     m_topMessageIsPromptBubble = false;
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
+    m_topMessageKind.clear();
+    m_topMessageAgentSessionId = -1;
     m_topMessageQueue.clear();
     renderTopMessageQueue();
     if (m_topMessageTimer)
@@ -4997,6 +5083,8 @@ void MainWindow::dismissTopMessage()
         m_topMessageCopy->hide();
     if (m_topMessageSendToPrompt)
         m_topMessageSendToPrompt->hide();
+    if (m_topMessageTypeBadge)
+        m_topMessageTypeBadge->hide();
     if (m_topMessageClose)
         m_topMessageClose->hide();
 }
@@ -5019,7 +5107,8 @@ void MainWindow::advanceTopMessageQueue()
         m_topMessage->hide();
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
-    flashMessage(next.text, next.error, next.clickHref, next.durationSeconds);
+    flashMessage(next.text, next.error, next.clickHref, next.durationSeconds,
+                 next.kind);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)
