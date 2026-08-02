@@ -9583,3 +9583,86 @@ test("the HUD online pill counts everyone here and drops the roster down on hove
     "Ada",
   ]);
 });
+
+test("World logo opens a dashboard switcher instead of silently reloading", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await prepareWorldPage(page, "world-brand-nav");
+  await waitForWorld(page);
+
+  const menu = page.locator("[data-world-brand-menu]");
+  const trigger = page.getByRole("button", {
+    name: "ForkMesh menu — go to a dashboard page",
+  });
+  const nav = page.locator("[data-world-brand-nav]");
+
+  // Closed by default, and closed means out of the tab order — not merely
+  // transparent — so the HUD's keyboard path is unchanged for anyone who
+  // never opens the menu.
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expect(nav).toBeHidden();
+
+  await trigger.click();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(menu).toHaveAttribute("data-open", "true");
+  await expect(nav).toBeVisible();
+
+  await expect(nav.locator(".world-brand-nav-label")).toHaveText([
+    "Overview",
+    "Profile",
+    "Repositories",
+    "Tasks",
+    "Network",
+    "Chat",
+    "Settings",
+  ]);
+  expect(
+    await nav
+      .locator("[data-world-brand-nav-link]")
+      .evaluateAll((links) =>
+        links.map((link) => [link.getAttribute("href"), link.target]),
+      ),
+  ).toEqual([
+    ["/dashboard", "_top"],
+    ["/dashboard/profile", "_top"],
+    ["/dashboard/repos", "_top"],
+    ["/dashboard/tasks", "_top"],
+    ["/dashboard/network", "_top"],
+    ["/dashboard/chat", "_top"],
+    ["/dashboard/settings", "_top"],
+    // Public pages ride along as chips under the dashboard list.
+    ["/", "_top"],
+    ["/docs", "_top"],
+    ["/network", "_top"],
+    ["/status", "_top"],
+  ]);
+
+  // The logo's original job survives as an explicit row.
+  await expect(nav.locator("[data-world-logo-refresh]")).toContainText(
+    "Reload World",
+  );
+
+  // Escape closes and hands focus back to the logo.
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveAttribute("data-open", "false");
+  await expect(nav).toBeHidden();
+  await expect(trigger).toBeFocused();
+
+  // Clicking back into the world dismisses it as well.
+  await trigger.click();
+  await expect(menu).toHaveAttribute("data-open", "true");
+  await page.locator("[data-world-canvas-wrap]").click({ position: { x: 40, y: 300 } });
+  await expect(menu).toHaveAttribute("data-open", "false");
+
+  // A keyboard opening lands on the first destination, but a pointer opening
+  // leaves focus on the logo so a mouse user is never pulled out of the
+  // canvas. This is why the panel's visibility is stepped rather than
+  // transitioned: focus() on a still-hidden element is a silent no-op.
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await expect(nav.locator("[data-world-brand-nav-link]").first()).toBeFocused();
+  await page.keyboard.press("Escape");
+  await trigger.click();
+  await expect(trigger).toBeFocused();
+});
