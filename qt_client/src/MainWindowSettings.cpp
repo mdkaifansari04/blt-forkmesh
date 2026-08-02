@@ -733,24 +733,9 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kThemeSetting, m_themeCombo->currentData().toString());
         applyTheme();
     });
-    auto *showCurrencyCombo = new QComboBox;
-    showCurrencyCombo->addItem("Show balance in SOL", QStringLiteral("sol"));
-    showCurrencyCombo->addItem("Show balance in USD", QStringLiteral("usd"));
-    showCurrencyCombo->addItem("Show balance in INR (\xE2\x82\xB9)",
-                               QStringLiteral("inr"));
-    showCurrencyCombo->setToolTip(
-        "Currency for your top-bar balance (live SOL price for USD/INR). "
-        "Also switchable by clicking the balance in the top bar.");
-    {
-        const int idx = showCurrencyCombo->findData(solanaDisplayCurrency());
-        showCurrencyCombo->setCurrentIndex(idx < 0 ? 0 : idx);
-    }
-    connect(showCurrencyCombo, &QComboBox::currentIndexChanged, this, [this,
-            showCurrencyCombo](int) {
-        QSettings().setValue(kSolanaDisplayCurrencySetting,
-                             showCurrencyCombo->currentData().toString());
-        updateNavSolanaBalance();
-    });
+    // The SOL/USD/INR balance-currency picker is gone with the balance's move
+    // under the account avatar (adhoc #96): that line is a tiny always-SOL
+    // figure, so there is no display currency left to choose.
     auto *rebuildButtonCheck =
         new QCheckBox("Show a rebuild & restart button in the top bar");
     rebuildButtonCheck->setChecked(
@@ -1702,7 +1687,6 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addSpacing(6);
     generalCol->addWidget(appearanceLabel);
     generalCol->addWidget(m_themeCombo, 0, Qt::AlignLeft);
-    generalCol->addWidget(showCurrencyCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(rebuildButtonCheck);
     generalCol->addWidget(verboseNetLogCheck);
     generalCol->addSpacing(6);
