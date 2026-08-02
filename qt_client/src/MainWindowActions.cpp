@@ -53,6 +53,42 @@ QString externalActionHeadKey(const RepositoryRecord &repo)
                    .toHex());
 }
 
+// Settings key holding the served mirror's default-branch tip this node has
+// already queued push workflows for. Keyed by repository, not by mirror path:
+// an encrypted mirror is re-materialized into a fresh temporary directory on
+// every seal, so the path is not stable but the commit is.
+QString servedActionHeadKey(const RepositoryRecord &repo)
+{
+    return QStringLiteral("actions/servedHeads/") +
+           QString::fromLatin1(
+               QCryptographicHash::hash(
+                   (repo.owner + QLatin1Char('/') + repo.name).toUtf8(),
+                   QCryptographicHash::Sha256)
+                   .toHex());
+}
+
+// The branch the served mirror's HEAD points at, as a full ref name. Detached
+// or unborn HEADs return empty — there is no branch to report a push on.
+QString gitHeadRef(const QString &repository)
+{
+    QProcess process;
+    process.setProcessChannelMode(QProcess::SeparateChannels);
+    process.start(QStringLiteral("git"),
+                  {QStringLiteral("--git-dir"), repository,
+                   QStringLiteral("symbolic-ref"), QStringLiteral("--quiet"),
+                   QStringLiteral("HEAD")});
+    if (!process.waitForStarted(2000) ||
+        !process.waitForFinished(5000) ||
+        process.exitStatus() != QProcess::NormalExit ||
+        process.exitCode() != 0) {
+        process.kill();
+        return {};
+    }
+    const QString ref =
+        QString::fromUtf8(process.readAllStandardOutput().left(512)).trimmed();
+    return kExternalActionRef.match(ref).hasMatch() ? ref : QString();
+}
+
 QString gitCommitAt(const QString &repository, const QString &ref)
 {
     QProcess process;
@@ -440,6 +476,9 @@ void MainWindow::scanActionSpool()
     // Re-attest the integrity pin at most once per repo per sweep, even if several
     // pushes spooled.
     QSet<int> reattested;
+    // The commit each repository's post-receive hook reported in this sweep, so
+    // the served-head watcher below can tell "already queued" from "new".
+    QHash<int, QString> pushedCommits;
     for (const QString &file : files) {
         const QString full = dir.filePath(file);
         QFile f(full);
@@ -509,10 +548,63 @@ void MainWindow::scanActionSpool()
             continue;
         if (commit.count(QLatin1Char('0')) == commit.size())
             continue;
+        const int pushedIndex = repoIndexFor(owner, name);
+        if (pushedIndex >= 0)
+            pushedCommits.insert(pushedIndex, commit.toLower());
         enqueuePushEvent(owner, name, commit, ref);
     }
+    scanServedMirrorHeads(pushedCommits);
     processActionQueue();
     updateMirrorActionsRuntimeState();
+}
+
+void MainWindow::scanServedMirrorHeads(const QHash<int, QString> &pushedCommits)
+{
+    if (!m_actionStore)
+        return;
+    QSettings settings;
+    for (int index = 0; index < m_repositories.size(); ++index) {
+        // Copy, don't reference: enqueuePushEvent below pumps the event loop
+        // (git subprocesses, cancelSupersededRuns → ActionRunner::stop), and a
+        // nested refresh can reassign m_repositories (adhoc #119).
+        const RepositoryRecord repo = m_repositories.at(index);
+        // Only the node holding the working copy owns this repository's push
+        // events. A pure mirror just replicates whatever the source serves;
+        // queueing here too would fan one merge out into a duplicate run on
+        // every mirror in the mesh. Gateway-managed Actions mirrors keep their
+        // own trigger in scanExternalActionsSources().
+        if (repo.previewOnly || !repo.actionsEnabled ||
+            repo.externallyManagedActions ||
+            repo.localPath.trimmed().isEmpty() ||
+            repo.mirrorPath.trimmed().isEmpty() ||
+            !QDir(repo.mirrorPath).exists())
+            continue;
+        const QString ref = gitHeadRef(repo.mirrorPath);
+        if (ref.isEmpty())
+            continue;
+        const QString commit = gitCommitAt(repo.mirrorPath, ref);
+        if (commit.isEmpty())
+            continue; // mid-reseal materialization, or an unborn branch
+        const QString key = servedActionHeadKey(repo);
+        const QString previous =
+            settings.value(key).toString().trimmed().toLower();
+        if (previous == commit)
+            continue;
+        // Record before queueing: a run that fails to start must not leave the
+        // watcher re-queueing the same commit on every sweep.
+        settings.setValue(key, commit);
+        // Enabling Actions (or a node's first sweep after this watcher shipped)
+        // starts from "now" — the branch's whole history is never replayed as
+        // one enormous push. Mirrors scanExternalActionsSources()'s rule.
+        if (previous.isEmpty())
+            continue;
+        // The mirror's own post-receive hook already reported this exact commit
+        // in this sweep; queueing again would duplicate every workflow run.
+        if (pushedCommits.value(index) == commit)
+            continue;
+        enqueuePushEvent(repo.owner, repo.name, commit, ref);
+    }
+    settings.sync();
 }
 
 void MainWindow::syncMirrorActionsConfiguration()
