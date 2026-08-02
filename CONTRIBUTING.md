@@ -90,7 +90,7 @@ a C++17 compiler, and the `openssl` CLI at runtime for the LAN TLS certificate.
 ```sh
 cd qt_client
 ./run.sh          # incremental Release build and launch
-./run.sh test     # main headless and window test suites
+./run.sh test     # sub-minute critical trust/mirror/agent contracts
 ```
 
 Additional test targets live in `qt_client/tests/` and are built via CMake. See
@@ -109,9 +109,20 @@ uvx --from workers-py pywrangler dev      # run locally
 python3 tests/test_status_page.py         # run a single test module
 ```
 
-Tests live in `cloudflare_worker/tests/`. Run the module(s) relevant to your
-change; if you edit a JavaScript dashboard fragment, rebuild the dashboard
-bundle so the packaged output stays in sync.
+Tests live in `cloudflare_worker/tests/`. The bounded default contracts run from
+the repository root with `python3 tools/run_critical_tests.py worker` and
+`python3 tools/run_critical_tests.py world`; run additional focused modules for
+the behavior you change. If you edit a JavaScript dashboard fragment, rebuild
+the dashboard bundle so the packaged output stays in sync.
+
+The browser World smoke suite is also bounded to 55 seconds:
+
+```sh
+npm --prefix cloudflare_worker/browser_tests test
+```
+
+`npm --prefix cloudflare_worker/browser_tests run test:all` remains available
+for focused browser-test maintenance outside the default gate.
 
 ### Mobile app (`flutter_app/`)
 
