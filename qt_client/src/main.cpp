@@ -915,6 +915,29 @@ int main(int argc, char *argv[])
     openLocalSetup(localSetupLink);
     qInfo().noquote() << QStringLiteral("[startup +%1ms] window shown; entering event loop")
                              .arg(startup.elapsed(), 5);
+    // From here on there is a Log view to put messages in, so everything the app
+    // and Qt log — catalog publishes, mirror syncs, rebuild/restart phases, Qt's
+    // own "QProcess: Destroyed while process ("git") is still running." warnings
+    // — goes there instead of scrolling past in the terminal the desktop was
+    // launched from. The startup lines above deliberately stay on the console:
+    // they time the window that has to exist before any of this can be read.
+    // Headless keeps the console copy (see setAppLogSink): its operator reads
+    // the service journal, and headlessUpdateRestart() in particular relies on
+    // logRestart()'s terminal echo to narrate a rebuild nobody can watch on
+    // screen.
+    forkmesh::setAppLogSink(
+        [window](QtMsgType type, const QString &message) {
+            // Emitted from worker threads too (public-mirror sync, git helpers),
+            // so hop to the GUI thread. A queued call whose receiver is deleted
+            // first is discarded by ~QObject, and clearAppLogSink() below runs
+            // before that delete.
+            QMetaObject::invokeMethod(
+                window, [window, type, message] {
+                    window->logCapturedMessage(type, message);
+                },
+                Qt::QueuedConnection);
+        },
+        headless);
     // The splash normally hands over from MainWindow's first paintEvent, which
     // is the moment there is actually something behind it. This is the backstop
     // for platforms/compositors that never deliver that paint (finish() is
@@ -931,6 +954,11 @@ int main(int argc, char *argv[])
     Q_UNUSED(console);
 
     const int exitCode = app.exec();
+    // Past this point a queued call into the window would never be delivered
+    // (no event loop left to deliver it) and the window is about to go away, so
+    // shutdown logs to the console again. Blocks until any in-flight sink call
+    // has returned, which is what makes the delete below safe.
+    forkmesh::clearAppLogSink();
     if (headless) {
         // Offscreen Qt has crashed in widget teardown on SIGTERM while deleting
         // the hidden text-edit-heavy UI tree. The process is exiting anyway, so
