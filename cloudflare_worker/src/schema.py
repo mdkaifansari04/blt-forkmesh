@@ -499,6 +499,16 @@ SCHEMA_STATEMENTS = [
         scope TEXT NOT NULL, key TEXT NOT NULL, name TEXT,
         lamports INTEGER NOT NULL DEFAULT 0, last_ts INTEGER,
         PRIMARY KEY (scope, key))""",
+    # Last public on-chain balance read for a member's published payout address,
+    # for the "member SOL wallets" board. Both columns are public data (the
+    # address is public profile data, the balance is a public getBalance), and
+    # the row exists only so the board can rank every published address while
+    # re-reading a rotating slice per rebuild instead of all of them at once.
+    """CREATE TABLE IF NOT EXISTS wallet_balances (
+        wallet TEXT PRIMARY KEY, name TEXT,
+        lamports INTEGER NOT NULL DEFAULT 0,
+        checked_at INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE INDEX IF NOT EXISTS idx_wallet_balances_checked ON wallet_balances(checked_at)",
     """CREATE TABLE IF NOT EXISTS notifications (
         dedupe_bi TEXT PRIMARY KEY,
         recipient_bi TEXT NOT NULL,
@@ -655,7 +665,10 @@ SCHEMA_STATEMENTS = [
         claimed_at INTEGER NOT NULL)""",
     # Edge repository-render monitor state. One row is enough to deduplicate
     # outage/recovery mail while the normal status tables retain the public
-    # minute/hour/day history.
+    # minute/hour/day history. Pings and email are independently switchable, so
+    # each channel keeps its own delivered-transition marker: pinged_state must
+    # not be inferred from notified_state or a deployment with mail off would
+    # re-announce the same recovery on every cron tick.
     """CREATE TABLE IF NOT EXISTS repository_monitor_state (
         monitor_id TEXT PRIMARY KEY,
         is_up INTEGER NOT NULL DEFAULT 1,
@@ -663,7 +676,8 @@ SCHEMA_STATEMENTS = [
         outage_started_at INTEGER NOT NULL DEFAULT 0,
         checked_at INTEGER NOT NULL,
         reason TEXT,
-        notified_state TEXT NOT NULL DEFAULT '')""",
+        notified_state TEXT NOT NULL DEFAULT '',
+        pinged_state TEXT NOT NULL DEFAULT '')""",
     # Founders-outreach team: accounts an admin has authorized to send email
     # from the shared founders address via /outreach. `name` is the public
     # account name in plaintext (like users.username) so the roster is listable

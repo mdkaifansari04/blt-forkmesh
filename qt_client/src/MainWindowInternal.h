@@ -14,6 +14,7 @@
 #include "ActionRunner.h"
 #include "BackgroundActivity.h"
 #include "BackoffNetworkAccessManager.h"
+#include "GuiPump.h"
 #include "ClaudeAgentScript.h"
 #include "ClaudeIdeBridge.h"
 #include "ClaudeStreamSession.h"
@@ -28,6 +29,7 @@
 #include "MarkdownEditor.h"
 #include "MessageRow.h"
 #include "MainnodeRoom.h"
+#include "NodeDiagnostics.h"
 #include "PullReviewModel.h"
 #include "RepoHost.h"
 #include "RepoSecurity.h"
@@ -2692,6 +2694,53 @@ inline SortTableWidgetItem *makeByteUsageCell(const QString &label, qint64 used,
             .arg(pct)
             .arg(formatByteSize(total - used));
     return makeResourceBarCell(pct, tip);
+}
+
+// The colour a self-diagnostics severity paints in a node list.
+inline QString nodeHealthColor(int severity)
+{
+    switch (severity) {
+    case NodeDiagnostics::Critical:
+        return QStringLiteral("#f85149");
+    case NodeDiagnostics::Warning:
+        return QStringLiteral("#d29922");
+    case NodeDiagnostics::Info:
+        return QStringLiteral("#58a6ff");
+    default:
+        return QStringLiteral("#3fb950"); // all clear
+    }
+}
+
+// The Health cell every node list shows (adhoc #27): what the node's own
+// periodic self-check found, pushed to us in its heartbeat. Sorts worst-first
+// (unknown below "OK"), colours by severity, and puts the full findings — plus
+// how long ago the node ran them — in the hover tooltip.
+inline SortTableWidgetItem *makeNodeHealthCell(
+    const QList<NodeDiagnostics::Finding> &findings, qint64 diagnosticsMs,
+    qint64 nowMs)
+{
+    const bool reported = diagnosticsMs > 0;
+    auto *item = new SortTableWidgetItem(
+        NodeDiagnostics::summaryLabel(findings, reported));
+    const int severity =
+        reported ? NodeDiagnostics::worstSeverity(findings) : -1;
+    item->setData(kTableSortRole, double(severity));
+    if (!reported) {
+        item->setToolTip(QStringLiteral(
+            "This node has not reported a self-check — an older build, or "
+            "self-diagnostics turned off in its settings."));
+        return item;
+    }
+    item->setForeground(QColor(nodeHealthColor(severity)));
+    QString tip = findings.isEmpty()
+                      ? QStringLiteral("Self-check found no problems.")
+                      : NodeDiagnostics::detailText(findings);
+    const qint64 ageMs = nowMs > 0 ? nowMs - diagnosticsMs : 0;
+    if (ageMs > 60 * 1000)
+        tip += QStringLiteral("\n\nLast reported %1 min ago")
+                   .arg(ageMs / (60 * 1000));
+    item->setToolTip(tip);
+    return item;
 }
 
 // A CPU usage bar cell from a 0..100 host-CPU percentage (< 0 == unknown).
@@ -8416,9 +8465,15 @@ inline qint64 g_lastKeepAlivePumpMs = 0;
 // Service the GUI (timers — incl. the stall-watchdog heartbeat — paints, queued
 // slots, but not user input) and record when. One place so the per-call throttle
 // and the in-wait poll share a single "last pumped" timestamp.
+//
+// The scope marker publishes "the GUI thread is servicing events from inside a
+// blocking wait" (see GuiPump.h): queued work delivered here would otherwise
+// stack a second heavy pass on top of the one that is already mid-flight, which
+// is how the multi-second cascades in the stall log were built.
 inline void pumpKeepAlive()
 {
     g_lastKeepAlivePumpMs = keepAliveClock().elapsed();
+    const KeepAlivePumpScope pumping;
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 12);
 }
 
@@ -8558,6 +8613,69 @@ struct ScopedFlag {
     ScopedFlag &operator=(const ScopedFlag &) = delete;
 };
 
+// The repository directory backing `dir`: the path itself when it is already a
+// bare repo/git dir, `<dir>/.git` for a normal checkout, and the linked worktree
+// directory a `.git` *file* points at ("gitdir: <path>"). Empty when `dir` is not
+// a repository. Purely a path resolution — no git subprocess.
+inline QString resolveGitDirPath(const QString &dir)
+{
+    if (dir.trimmed().isEmpty())
+        return QString();
+    const QFileInfo dotGit(dir + QStringLiteral("/.git"));
+    if (dotGit.isDir())
+        return dotGit.absoluteFilePath();
+    if (dotGit.isFile()) {
+        QFile f(dotGit.absoluteFilePath());
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            return QString();
+        const QString line = QString::fromUtf8(f.readLine(4096)).trimmed();
+        if (!line.startsWith(QLatin1String("gitdir:")))
+            return QString();
+        const QString target = line.mid(7).trimmed();
+        if (target.isEmpty())
+            return QString();
+        // A linked worktree's .git file may hold a relative path.
+        return QDir::isAbsolutePath(target)
+                   ? target
+                   : QDir(dir).absoluteFilePath(target);
+    }
+    // A bare repository (our served mirrors) has HEAD at its root.
+    if (QFileInfo::exists(dir + QStringLiteral("/HEAD")))
+        return dir;
+    return QString();
+}
+
+// The checked-out branch of `dir`, read straight out of the repository's HEAD
+// file instead of shelling out.
+//
+// `git symbolic-ref --short HEAD` (and its `rev-parse --abbrev-ref HEAD` twin)
+// is the most-run git subprocess in the client by a wide margin — the source
+// control pane, the breadcrumb, the repo list, the pull view and the mirror
+// helpers all ask for it on every refresh, and the app log counts ~1900 of them
+// running un-backgrounded on the GUI thread in a single session. All any of them
+// does is read one short file, so read it: a process spawn plus git's own
+// start-up becomes a single open/read.
+//
+// Returns an empty string for a detached HEAD, an unreadable/absent file, or any
+// layout this doesn't recognise — every caller keeps its git path for those, so
+// this is a fast path and never a behaviour change.
+inline QString headBranchFromFile(const QString &dir)
+{
+    const QString gitDir = resolveGitDirPath(dir);
+    if (gitDir.isEmpty())
+        return QString();
+    QFile head(gitDir + QStringLiteral("/HEAD"));
+    if (!head.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString();
+    const QString line = QString::fromUtf8(head.readLine(4096)).trimmed();
+    if (!line.startsWith(QLatin1String("ref:")))
+        return QString(); // detached HEAD: a raw object name
+    const QString ref = line.mid(4).trimmed();
+    if (!ref.startsWith(QLatin1String("refs/heads/")))
+        return QString();
+    return ref.mid(11);
+}
+
 // Run a git command in `dir`, capturing stdout. Returns false (with stderr in
 // `err`) on failure. Used by the in-client repo file browser.
 inline bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
@@ -8605,6 +8723,10 @@ inline QString worktreeHeadBranch(const QString &workTree)
 {
     if (workTree.trimmed().isEmpty() || !QDir(workTree).exists(QStringLiteral(".git")))
         return QString();
+    // HEAD names a branch in the overwhelming majority of cases; read it rather
+    // than spawning git for it (see headBranchFromFile).
+    if (const QString fast = headBranchFromFile(workTree); !fast.isEmpty())
+        return fast;
     QByteArray out;
     if (!runGitCapture(workTree,
                        {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),

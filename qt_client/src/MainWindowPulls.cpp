@@ -1570,6 +1570,7 @@ void MainWindow::showPull(int number)
         m_pullMeta->clear();
         m_pullDiff->clear();
         m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
+        m_pullDiffSourceKey.clear();
         if (m_pullCommitsList)
             m_pullCommitsList->clear();
         renderPullThread(PullRequest());
@@ -1761,6 +1762,7 @@ void MainWindow::showPull(int number)
         m_pullDiff->setPlainText("(no changes)");
         m_pullDiff->setProperty("fm_diffSource", QString()); // not a rendered diff
         m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
+        m_pullDiffSourceKey.clear();
         m_pullFileAnchors.clear();
         m_pullFileOrder.clear();
         m_pullStickyLabelHtml.clear();
@@ -1883,7 +1885,11 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     // The graph browses the PR's head branch when it still exists, so the view
     // reads as one "<head> -> <base>" comparison (adhoc #16). With the branch
     // gone there is nothing to browse, so the graph stays on the default branch.
-    const QString graphRef = liveBranch ? pr.head : repoDefaultBranchFast();
+    const QString defaultBase = repoDefaultBranchFast();
+    m_branchCompareBase =
+        pr.base.trimmed().isEmpty() || pr.base == defaultBase ? QString()
+                                                               : pr.base;
+    const QString graphRef = liveBranch ? pr.head : defaultBase;
     if (!graphRef.isEmpty() && m_repoBranch != graphRef)
         setRepoBranch(graphRef);
     setCommitWorkspacePage(kCommitWorkspaceRangePage);
@@ -2015,7 +2021,9 @@ void MainWindow::adjustDiffFont(int delta)
             vbar->setValue(qMin(scroll, vbar->maximum()));
     }
     m_pullDiffRenderKey.clear(); // the pull view's skip-relayout cache is now stale
+    m_pullDiffSourceKey.clear(); // …and the skip-rebuild cache in front of it
     m_scmDiffRenderKey.clear();  // ditto for the working-tree changes diff
+    m_scmDiffSourceKey.clear();
     // The re-scaled m_pullDiff got a fresh document too; rescan an open find
     // bar's matches against it (issue #333). Same for the range pane's bar.
     if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())
@@ -2145,14 +2153,41 @@ void MainWindow::renderPullDiff()
     if (pr)
         notes = buildPullLineNotes(*pr);
 
-    // Render the whole PR — every changed file — into one scrollable view. The
-    // PR patch carries no git object context for image previews, so pass empty
-    // dir/base/head (the renderer just lays out the text diff). A non-empty
-    // anchorFile turns on the clickable comment gutters for every file.
     QList<DiffFileEntry> files;
     const QSet<QString> viewed =
         loadDiffViewed(QStringLiteral("pull/") + QString::number(m_currentPullNumber));
     const QString fullPatch = pr ? pr->patch : QString();
+    const QString styleSheet = diffStyleSheet(m_diffFontPt);
+
+    // Everything the rendered document is derived from. showPull() re-runs this
+    // for the *same* PR on every pull-list refresh (a push, an agent transcript
+    // event, a merge elsewhere — the list rebuild re-selects the open row, which
+    // re-enters showPull), and building a large PR's split-diff HTML is a
+    // half-second of GUI-thread string concatenation each time. When none of the
+    // inputs moved the document on screen is already correct, and so are the
+    // anchor/order/sticky maps derived from it, so there is nothing to do.
+    QStringList noteKeys = notes.keys();
+    noteKeys.sort();
+    QString notesKey;
+    for (const QString &k : std::as_const(noteKeys))
+        notesKey += k + QLatin1Char('\x1e') + notes.value(k) + QLatin1Char('\x1d');
+    QStringList viewedKeys(viewed.cbegin(), viewed.cend());
+    viewedKeys.sort();
+    const QString sourceKey =
+        QString::number(m_currentPullNumber) + QLatin1Char('\x1f') +
+        QString(diffSplitPref() ? QLatin1Char('s') : QLatin1Char('u')) +
+        QLatin1Char('\x1f') + styleSheet + QLatin1Char('\x1f') +
+        viewedKeys.join(QLatin1Char('\x1e')) + QLatin1Char('\x1f') + notesKey +
+        QLatin1Char('\x1f') + fullPatch;
+    if (!m_pullDiffSourceKey.isEmpty() && sourceKey == m_pullDiffSourceKey &&
+        !m_pullDiffRenderKey.isEmpty())
+        return;
+    m_pullDiffSourceKey = sourceKey;
+
+    // Render the whole PR — every changed file — into one scrollable view. The
+    // PR patch carries no git object context for image previews, so pass empty
+    // dir/base/head (the renderer just lays out the text diff). A non-empty
+    // anchorFile turns on the clickable comment gutters for every file.
     const QString html = renderDiffHtml(fullPatch, files, QString(), QString(),
                                         QString(), QStringLiteral("*"), notes, viewed);
 
@@ -2170,7 +2205,6 @@ void MainWindow::renderPullDiff()
         m_pullStickyLabelHtml.insert(f.path, diffStickyLabelHtml(f));
     }
 
-    const QString styleSheet = diffStyleSheet(m_diffFontPt);
     const QString body =
         html.isEmpty() ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>") : html;
 
@@ -2179,7 +2213,9 @@ void MainWindow::renderPullDiff()
     // which repopulates the file list and re-renders the diff. Skip the
     // re-layout when nothing the document depends on (the PR, theme/font via the
     // stylesheet, split toggle, review notes and viewed state via the html) has
-    // changed.
+    // changed. The source-key check above normally short-circuits before we get
+    // here; this stays as the belt-and-braces guard for any input that key does
+    // not capture.
     const QString key = QString::number(m_currentPullNumber) +
                         QLatin1Char('\x1f') + styleSheet + QLatin1Char('\x1f') +
                         body;
@@ -3090,16 +3126,11 @@ void MainWindow::renderPullCommits(PullRequest pr)
         return QString();
     };
     if (!dir.isEmpty() && !pr.base.isEmpty() && !pr.head.isEmpty()) {
-        QByteArray out;
-        if (runGitCapture(dir,
-                          {"log", "--no-merges", "--date=format:%Y-%m-%d %H:%M",
-                           "--pretty=%H\x1f%h\x1f%s\x1f%an\x1f%ad\x1f%ct\x1f"
-                           "%(trailers:key=ForkMesh-Agent,valueonly,separator=%x2C)",
-                           pr.base + ".." + pr.head},
-                          &out, nullptr) &&
-            !out.trimmed().isEmpty()) {
-            for (const QString &line :
-                 QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts)) {
+        PullRangeSnapshot range;
+        if (pullRangeSnapshot(pr.base, pr.head, &range) &&
+            !range.detailedLog.trimmed().isEmpty()) {
+            for (const QString &line : QString::fromUtf8(range.detailedLog)
+                                           .split('\n', Qt::SkipEmptyParts)) {
                 const QStringList f = line.split(QLatin1Char('\x1f'));
                 if (f.size() < 6)
                     continue;
@@ -3235,20 +3266,78 @@ void MainWindow::renderPullCommits(PullRequest pr)
     }
 }
 
+// The base..head range walks for a PR, reused while neither ref has moved.
+//
+// Both walks are `git log` over a branch range — the single most common blocking
+// call in the stall log, because showPull() runs them afresh on every pull-list
+// refresh (a push, an agent transcript event, a merge elsewhere) even when the
+// branch tips are exactly where they were. Resolving the two refs first costs
+// one short `rev-parse`, and those SHAs are an exact cache key: if neither moved
+// the walk output is byte-identical by construction, so there is nothing to
+// recompute. Returns false when either ref is missing from this node (a
+// cross-node PR), which is the caller's cue to fall back to the signed mbox.
+bool MainWindow::pullRangeSnapshot(const QString &base, const QString &head,
+                                   PullRangeSnapshot *out) const
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || base.isEmpty() || head.isEmpty())
+        return false;
+    QByteArray refsOut;
+    if (!runGitCapture(dir,
+                       {QStringLiteral("rev-parse"),
+                        base + QStringLiteral("^{commit}"),
+                        head + QStringLiteral("^{commit}")},
+                       &refsOut, nullptr))
+        return false;
+    const QStringList resolved =
+        QString::fromUtf8(refsOut).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    if (resolved.size() < 2)
+        return false;
+
+    const QString key = dir + QLatin1Char('\x1f') + base + QLatin1Char('\x1f') + head;
+    const QString baseSha = resolved.at(0).trimmed();
+    const QString headSha = resolved.at(1).trimmed();
+    const auto cached = m_pullRangeCache.constFind(key);
+    if (cached != m_pullRangeCache.constEnd() && cached->baseSha == baseSha &&
+        cached->headSha == headSha) {
+        if (out)
+            *out = *cached;
+        return true;
+    }
+
+    PullRangeSnapshot snapshot;
+    snapshot.baseSha = baseSha;
+    snapshot.headSha = headSha;
+    const QString range = base + QStringLiteral("..") + head;
+    runGitCapture(dir,
+                  {"log", "--no-merges", "--date=format:%Y-%m-%d %H:%M",
+                   "--pretty=%H\x1f%h\x1f%s\x1f%an\x1f%ad\x1f%ct\x1f"
+                   "%(trailers:key=ForkMesh-Agent,valueonly,separator=%x2C)",
+                   range},
+                  &snapshot.detailedLog, nullptr);
+    QByteArray shaOut;
+    if (runGitCapture(dir, {"log", "--no-merges", "--pretty=%H", range}, &shaOut,
+                      nullptr))
+        snapshot.shas =
+            QString::fromUtf8(shaOut).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    // One entry per (repo, base, head); a long session browsing many PRs would
+    // otherwise accumulate every range it ever opened.
+    if (m_pullRangeCache.size() > 64)
+        m_pullRangeCache.clear();
+    m_pullRangeCache.insert(key, snapshot);
+    if (out)
+        *out = snapshot;
+    return true;
+}
+
 // Full commit hashes that make up this PR (base..head), when both refs resolve
 // in the open repo. Used to tie action runs to the PR and to count commits.
 QStringList MainWindow::pullCommitShas(const PullRequest &pr) const
 {
-    QStringList shas;
-    const QString dir = repoGitDir();
-    if (dir.isEmpty() || pr.base.isEmpty() || pr.head.isEmpty())
-        return shas;
-    QByteArray out;
-    if (runGitCapture(dir, {"log", "--no-merges", "--pretty=%H",
-                            pr.base + ".." + pr.head},
-                      &out, nullptr))
-        shas = QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
-    return shas;
+    PullRangeSnapshot range;
+    if (!pullRangeSnapshot(pr.base, pr.head, &range))
+        return {};
+    return range.shas;
 }
 
 // Ids of action runs whose pushed commit belongs to this PR (any of its commits
@@ -3268,11 +3357,18 @@ QList<int> MainWindow::runIdsForPull(PullRequest pr) const
     // caller's reference into m_currentPulls was freed by a nested reload).
     const QString repoOwner = m_repositories.at(m_repoDetailIndex).owner;
     const QString repoName = m_repositories.at(m_repoDetailIndex).name;
-    const QStringList commitShas = pullCommitShas(pr);
-    QSet<QString> shas(commitShas.cbegin(), commitShas.cend());
-    // Also include the head tip in case base..head couldn't be enumerated.
-    const QString dir = repoGitDir();
-    if (!dir.isEmpty() && !pr.head.isEmpty()) {
+    QSet<QString> shas;
+    // Also include the head tip in case base..head couldn't be enumerated. The
+    // snapshot already resolved it, so this no longer costs a second rev-parse.
+    PullRangeSnapshot range;
+    if (pullRangeSnapshot(pr.base, pr.head, &range)) {
+        shas = QSet<QString>(range.shas.cbegin(), range.shas.cend());
+        if (!range.headSha.isEmpty())
+            shas.insert(range.headSha);
+    } else if (const QString dir = repoGitDir();
+               !dir.isEmpty() && !pr.head.isEmpty()) {
+        // The range did not resolve (typically a cross-node PR whose base is not
+        // here); the head alone may still be, and it is what run records point at.
         QByteArray tip;
         if (runGitCapture(dir, {"rev-parse", pr.head}, &tip, nullptr))
             shas.insert(QString::fromUtf8(tip).trimmed());
@@ -3605,7 +3701,18 @@ void MainWindow::buildAndPreviewCurrentPull()
             statusPtr->setText(st.status);
         appendLog(QStringLiteral("\n$ %1 %2\n  (in %3)\n")
                       .arg(st.program, st.args.join(QLatin1Char(' ')), st.dir));
-        auto *proc = new QProcess(dlg);
+        // Parented to the window, not the dialog: ~QWidget deletes a widget's
+        // QProcess children before ~QObject severs their connections, so a
+        // dialog closed mid-build (it is WA_DeleteOnClose) emits finished()
+        // from its own teardown — which here would start the next build step
+        // and parent it to the half-destroyed dialog (adhoc #51).
+        auto *proc = new QProcess(this);
+        connect(dlg.data(), &QObject::destroyed, proc, [proc] {
+            proc->disconnect();
+            if (proc->state() != QProcess::NotRunning)
+                proc->kill();
+            proc->deleteLater();
+        });
         proc->setWorkingDirectory(st.dir);
         proc->setProcessChannelMode(QProcess::MergedChannels);
         connect(proc, &QProcess::readyReadStandardOutput, this, [proc, appendLog] {
