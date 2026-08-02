@@ -13169,7 +13169,7 @@ function officeDoorStatusTexture(THREE, state = "open") {
   });
 }
 
-function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
+function createOfficeMarineAquarium(THREE, animated) {
   const group = new THREE.Group();
   group.name = "forkmesh-office-marine-aquarium";
   group.position.set(-82.9, 0, -10.5);
@@ -13194,7 +13194,6 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
     Object.freeze({ id: "agent", label: "AGENT" }),
   ]);
   const AQUARIUM_ANIMATION_MS = 1000 / 20;
-  const fishLimit = clamp(Math.round(Number(maxFish) || 24), 6, 48);
   const feedingCenter = new THREE.Vector3(0.68, 6.9, -1.8);
   let feedingStartedAt = -Infinity;
   let feedingActive = false;
@@ -13384,7 +13383,7 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       new THREE.Vector2(species.height * 0.23, half * 0.91),
       new THREE.Vector2(0.075, half),
     ];
-    const geometry = new THREE.LatheGeometry(profile, 24);
+    const geometry = new THREE.LatheGeometry(profile, 12);
     geometry.rotateX(Math.PI / 2);
     geometry.scale(species.thickness / species.height, 1, 1);
     geometry.computeVertexNormals();
@@ -13533,7 +13532,7 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
     const highlightMaterial = new THREE.MeshBasicMaterial({ color: "#ffffff" });
     for (const side of [-1, 1]) {
       const eye = new THREE.Mesh(
-        new THREE.SphereGeometry(species.height * 0.105, 16, 12),
+        new THREE.SphereGeometry(species.height * 0.105, 8, 6),
         eyeWhiteMaterial,
       );
       eye.name = `forkmesh-office-aquarium-fish-eye-${species.id}-${side}`;
@@ -13544,7 +13543,7 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       );
       fish.add(eye);
       const iris = new THREE.Mesh(
-        new THREE.SphereGeometry(species.height * 0.067, 14, 10),
+        new THREE.SphereGeometry(species.height * 0.067, 6, 5),
         irisMaterial,
       );
       iris.name = `forkmesh-office-aquarium-fish-iris-${species.id}-${side}`;
@@ -13555,7 +13554,7 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       );
       fish.add(iris);
       const highlight = new THREE.Mesh(
-        new THREE.SphereGeometry(species.height * 0.018, 8, 6),
+        new THREE.SphereGeometry(species.height * 0.018, 4, 3),
         highlightMaterial,
       );
       highlight.name =
@@ -13570,8 +13569,8 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
         new THREE.TorusGeometry(
           species.height * 0.16,
           species.height * 0.018,
-          6,
-          18,
+          4,
+          10,
           Math.PI * 1.18,
         ),
         irisMaterial,
@@ -13590,8 +13589,8 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       new THREE.TorusGeometry(
         species.height * 0.055,
         species.height * 0.016,
-        6,
-        12,
+        4,
+        8,
       ),
       irisMaterial,
     );
@@ -13600,7 +13599,7 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
     mouth.userData.restZ = mouth.position.z;
     fish.add(mouth);
     const lateralHighlight = new THREE.Mesh(
-      new THREE.SphereGeometry(0.5, 18, 10),
+      new THREE.SphereGeometry(0.5, 8, 5),
       new THREE.MeshBasicMaterial({
         color: "#dfffff",
         transparent: true,
@@ -13618,6 +13617,116 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
     lateralHighlight.position.x = species.thickness * 0.52;
     fish.add(lateralHighlight);
     return { fish, tail, pectoralFins, mouth };
+  }
+
+  // Public-account fish keep an Object3D anchor for their individual routes,
+  // but their visible parts are shared instanced geometry. The old cinematic
+  // model used sixteen meshes and roughly a thousand triangles per account;
+  // this school is 46 triangles per account in three draw submissions.
+  function createInstancedUserFish(THREE, count) {
+    const school = new THREE.Group();
+    school.name = "forkmesh-office-aquarium-user-fish-school";
+    const body = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1, 6, 4),
+      new THREE.MeshStandardMaterial({
+        color: "#ffffff",
+        roughness: 0.48,
+        metalness: 0.03,
+      }),
+      count,
+    );
+    body.name = "forkmesh-office-aquarium-user-fish-bodies";
+    const tail = new THREE.InstancedMesh(
+      new THREE.BufferGeometry(),
+      new THREE.MeshStandardMaterial({
+        color: "#ffffff",
+        transparent: true,
+        opacity: 0.9,
+        roughness: 0.42,
+        side: THREE.DoubleSide,
+        forceSinglePass: true,
+        depthWrite: false,
+      }),
+      count,
+    );
+    tail.geometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute([
+        0, 0, 0,
+        0, 1, -1,
+        0, -1, -1,
+        0, 0, -0.78,
+      ], 3),
+    );
+    tail.geometry.setIndex([0, 1, 3, 0, 3, 2]);
+    tail.geometry.computeVertexNormals();
+    tail.name = "forkmesh-office-aquarium-user-fish-tails";
+    const fins = new THREE.InstancedMesh(
+      createReefFishFinGeometry(THREE, 1, 1),
+      new THREE.MeshStandardMaterial({
+        color: "#ffffff",
+        transparent: true,
+        opacity: 0.84,
+        roughness: 0.46,
+        side: THREE.DoubleSide,
+        forceSinglePass: true,
+        depthWrite: false,
+      }),
+      count * 4,
+    );
+    fins.name = "forkmesh-office-aquarium-user-fish-fins";
+    for (const mesh of [body, tail, fins]) {
+      mesh.frustumCulled = false;
+      mesh.instanceMatrix.setUsage?.(THREE.DynamicDrawUsage);
+      school.add(mesh);
+    }
+    return {
+      school,
+      body,
+      tail,
+      fins,
+      matrix: new THREE.Matrix4(),
+      localMatrix: new THREE.Matrix4(),
+      bodyColor: new THREE.Color(),
+      finColor: new THREE.Color(),
+    };
+  }
+
+  function createUserFishAnchor(THREE, species, instanceIndex) {
+    const fish = new THREE.Group();
+    fish.name = `${species.sceneName}-${instanceIndex}`;
+    const body = new THREE.Object3D();
+    body.scale.set(
+      species.thickness / 2,
+      species.height / 2,
+      species.length / 2,
+    );
+    const tail = new THREE.Object3D();
+    tail.position.z = -species.length / 2 + 0.04;
+    tail.scale.set(1, species.height * 0.74, species.length * 0.45);
+    const dorsalFin = new THREE.Object3D();
+    dorsalFin.position.set(0, species.height * 0.5, -species.length * 0.06);
+    dorsalFin.scale.set(1, species.height * 0.68, species.length * 0.68);
+    const analFin = new THREE.Object3D();
+    analFin.position.set(0, -species.height * 0.46, -species.length * 0.08);
+    analFin.scale.set(1, species.height * 0.36, species.length * 0.46);
+    analFin.rotation.z = Math.PI;
+    const pectoralFins = [];
+    for (const side of [-1, 1]) {
+      const pectoralFin = new THREE.Object3D();
+      pectoralFin.position.set(
+        side * species.thickness * 0.46,
+        -species.height * 0.06,
+        species.length * 0.16,
+      );
+      pectoralFin.scale.set(1, species.height * 0.46, species.length * 0.3);
+      pectoralFin.rotation.z = side * (Math.PI / 2 + 0.22);
+      pectoralFin.userData.restZ = pectoralFin.rotation.z;
+      pectoralFins.push(pectoralFin);
+    }
+    const fins = [dorsalFin, analFin, ...pectoralFins];
+    fish.add(body, tail, ...fins);
+    return { fish, body, tail, pectoralFins, fins };
   }
 
   function aquariumCylinderBetween(
@@ -14332,7 +14441,11 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
   // and curated colourways used by the procedural shirts determine its body,
   // accent, species, scale, speed, and route, so the school is stable on every
   // device without ever painting a person's name onto an animal.
+  const userFishAnchors = new THREE.Group();
+  userFishAnchors.name = "forkmesh-office-aquarium-user-fish-anchors";
+  group.add(userFishAnchors);
   const fishStates = [];
+  let userFishInstances = null;
   let fishPopulationKey = "";
   let visitorReaction = 0;
   let visitorReactionTarget = 0;
@@ -14366,13 +14479,42 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
   function disposeAquariumFish() {
     while (fishStates.length) {
       const state = fishStates.pop();
-      group.remove(state.fish);
-      state.fish.traverse((child) => {
+      userFishAnchors.remove(state.fish);
+    }
+    if (userFishInstances) {
+      group.remove(userFishInstances.school);
+      userFishInstances.school.traverse((child) => {
         child.geometry?.dispose?.();
-        child.material?.map?.dispose?.();
         child.material?.dispose?.();
       });
+      userFishInstances = null;
     }
+  }
+
+  function updateInstancedUserFish() {
+    if (!userFishInstances) return;
+    const { body, tail, fins, matrix, localMatrix } = userFishInstances;
+    for (let index = 0; index < fishStates.length; index += 1) {
+      const state = fishStates[index];
+      state.fish.updateMatrix();
+      state.body.updateMatrix();
+      matrix.multiplyMatrices(state.fish.matrix, state.body.matrix);
+      body.setMatrixAt(index, matrix);
+      state.tail.updateMatrix();
+      matrix.multiplyMatrices(state.fish.matrix, state.tail.matrix);
+      tail.setMatrixAt(index, matrix);
+      for (let finIndex = 0; finIndex < state.fins.length; finIndex += 1) {
+        state.fins[finIndex].updateMatrix();
+        localMatrix.multiplyMatrices(
+          state.fish.matrix,
+          state.fins[finIndex].matrix,
+        );
+        fins.setMatrixAt(index * state.fins.length + finIndex, localMatrix);
+      }
+    }
+    body.instanceMatrix.needsUpdate = true;
+    tail.instanceMatrix.needsUpdate = true;
+    fins.instanceMatrix.needsUpdate = true;
   }
 
   function aquariumSchoolValue(value, placeholders = []) {
@@ -14603,11 +14745,9 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
         };
       })
       .filter((user) => user.name);
-    // The directory can contain a thousand lifetime accounts. A cinematic
-    // fish is sixteen meshes, so constructing one per account turns a lobby
-    // decoration into tens of thousands of drawables. Keep a deterministic,
-    // activity-first representative school and expose the full population as
-    // metadata for diagnostics/UI without allocating it into the scene.
+    // Every public account gets one fish. They are still ordered
+    // deterministically so an account's route, colour, and scale persist
+    // across reloads, but their render parts are instanced into three draws.
     const visibleUsers = [...normalized]
       .sort((left, right) => {
         const leftRecent =
@@ -14624,20 +14764,20 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
           Number(rightRecent) - Number(leftRecent) ||
           hashNumber(left.name) - hashNumber(right.name)
         );
-      })
-      .slice(0, fishLimit);
+      });
     group.userData.accountPopulation = normalized.length;
     group.userData.visibleFish = visibleUsers.length;
-    group.userData.fishLimit = fishLimit;
     const nextKey = JSON.stringify(visibleUsers);
     if (nextKey === fishPopulationKey) return;
     fishPopulationKey = nextKey;
     finishAquariumSchool(lastAquariumFishTime, false);
     scheduleNextAquariumSchool(lastAquariumFishTime, true);
     disposeAquariumFish();
-    const population = Math.max(1, visibleUsers.length);
+    const population = visibleUsers.length;
+    userFishInstances = createInstancedUserFish(THREE, population);
+    group.add(userFishInstances.school);
     const schoolScale = clamp(
-      0.78 - Math.log2(population + 1) * 0.055,
+      0.78 - Math.log2(Math.max(1, population) + 1) * 0.055,
       0.32,
       0.7,
     );
@@ -14651,7 +14791,8 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
         accent,
         sceneName: "forkmesh-office-aquarium-user-fish",
       };
-      const { fish, tail, pectoralFins, mouth } = createReefFish(
+      const { fish, body: fishBody, tail, pectoralFins, fins } =
+        createUserFishAnchor(
         THREE,
         species,
         index,
@@ -14686,9 +14827,10 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       const phase = (spread + rng.next() * 0.08) % 1;
       fishStates.push({
         fish,
+        body: fishBody,
         tail,
         pectoralFins,
-        mouth,
+        fins,
         curve: new THREE.CatmullRomCurve3(
           points,
           true,
@@ -14723,8 +14865,32 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
         schoolPoint: new THREE.Vector3(),
         schoolTangent: new THREE.Vector3(),
       });
-      group.add(fish);
+      userFishInstances.body.setColorAt(
+        index,
+        userFishInstances.bodyColor.set(body),
+      );
+      userFishInstances.tail.setColorAt(
+        index,
+        userFishInstances.bodyColor,
+      );
+      userFishInstances.finColor.set(accent);
+      for (let finIndex = 0; finIndex < fins.length; finIndex += 1) {
+        userFishInstances.fins.setColorAt(
+          index * fins.length + finIndex,
+          userFishInstances.finColor,
+        );
+      }
+      userFishAnchors.add(fish);
     });
+    if (userFishInstances.body.instanceColor) {
+      userFishInstances.body.instanceColor.needsUpdate = true;
+    }
+    if (userFishInstances.tail.instanceColor) {
+      userFishInstances.tail.instanceColor.needsUpdate = true;
+    }
+    if (userFishInstances.fins.instanceColor) {
+      userFishInstances.fins.instanceColor.needsUpdate = true;
+    }
     if (visitorReactionTarget > 0) selectVisitorFish();
     updateAquariumFish(0, false);
   }
@@ -15117,17 +15283,8 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
           ) *
             (0.12 + feedingBlend * 0.035);
       }
-      const mouthPuff =
-        index === visitorFocusIndex
-          ? approachBlend *
-            (0.38 +
-              (Math.sin(motionTime * 0.0062 + state.phase * 17) + 1) *
-                0.16)
-          : 0;
-      state.mouth.scale.setScalar(1 + mouthPuff);
-      state.mouth.position.z =
-        state.mouth.userData.restZ + mouthPuff * 0.035;
     }
+    updateInstancedUserFish();
   }
   function updateAquariumReef(time) {
     for (let index = 0; index < corals.length; index += 1) {
@@ -19671,11 +19828,7 @@ export function createWorldScene({
     floorGroup.add(coffeeTable);
   }
   addOfficeFloorAtmosphere(officeInterior, "lobby", 0);
-  const officeAquarium = createOfficeMarineAquarium(
-    THREE,
-    animated,
-    compactRenderer ? 12 : 24,
-  );
+  const officeAquarium = createOfficeMarineAquarium(THREE, animated);
   officeInterior.add(officeAquarium.group);
   const aquariumControlLocalPosition = new THREE.Vector3();
   let aquariumControlsNearby = false;
