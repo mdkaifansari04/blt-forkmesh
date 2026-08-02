@@ -6413,6 +6413,26 @@ void MainWindow::applyCommitIssueClosures()
     if (dir.isEmpty())
         return;
 
+    // This runs off the commits tab landing and every repo refresh behind it, and
+    // both halves of it are heavy: reading 500 full commit messages, then parsing
+    // every signed event of every issue in the repo (IssueStore::loadAll) — the
+    // stall log has this pair blocking the GUI thread for half a second at a time.
+    // Nothing can have changed unless the branch tip moved, and resolving the tip
+    // is one short rev-parse, so gate the whole pass on it.
+    QByteArray tipOut;
+    if (!runGitCapture(dir, {"rev-parse", currentRef()}, &tipOut, nullptr))
+        return;
+    // The store's content signature rides along so an issue filed (or reopened)
+    // after the commit that names it is still picked up without a new commit. It
+    // is empty when it can't be computed, which means "unknown" — don't skip.
+    const QString issuesSignature = store.contentSignature();
+    const QString scanKey = dir + QLatin1Char('\x1f') + currentRef() +
+                            QLatin1Char('\x1f') +
+                            QString::fromUtf8(tipOut).trimmed() +
+                            QLatin1Char('\x1f') + issuesSignature;
+    if (!issuesSignature.isEmpty() && scanKey == m_commitClosureScanKey)
+        return;
+
     // Full commit messages so we catch closing keywords in the body, not just
     // the subject. Records separated by RS (0x1e); fields by US (0x1f).
     QByteArray out;
@@ -6421,17 +6441,27 @@ void MainWindow::applyCommitIssueClosures()
                         currentRef()},
                        &out, nullptr))
         return;
-
-    QList<Issue> issues = store.loadAll();
-    QHash<int, const Issue *> byNumber;
-    for (const Issue &issue : issues)
-        byNumber.insert(issue.number, &issue);
+    // Only mark the tip scanned once the log actually read: a failed read must be
+    // retried, not remembered as "already handled".
+    m_commitClosureScanKey = scanKey;
 
     // GitHub-style closing keywords followed by #<number>.
     static const QRegularExpression closeRe(
         QStringLiteral("\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*"
                        "#(\\d+)"),
         QRegularExpression::CaseInsensitiveOption);
+
+    // Loading (and parsing the signed event log of) every issue in the repo is
+    // the expensive half. The overwhelmingly common case is a window of commits
+    // that names no issue at all, so scan the text first and only pay for the
+    // issues when there is something to close.
+    if (!closeRe.match(QString::fromUtf8(out)).hasMatch())
+        return;
+
+    QList<Issue> issues = store.loadAll();
+    QHash<int, const Issue *> byNumber;
+    for (const Issue &issue : issues)
+        byNumber.insert(issue.number, &issue);
 
     int closedCount = 0;
     QString lastClosed;
@@ -7930,11 +7960,15 @@ QString MainWindow::chooseDefaultBranch(const QStringList &branches,
     if (branches.contains(QStringLiteral("master")))
         return QStringLiteral("master");
 
-    QByteArray head;
-    if (!dir.isEmpty() &&
-        runGitCapture(dir, {"symbolic-ref", "--short", "HEAD"}, &head, nullptr)) {
-        const QString branch = QString::fromUtf8(head).trimmed();
-        if (branches.contains(branch))
+    if (!dir.isEmpty()) {
+        QString branch = headBranchFromFile(dir);
+        if (branch.isEmpty()) {
+            QByteArray head;
+            if (runGitCapture(dir, {"symbolic-ref", "--short", "HEAD"}, &head,
+                              nullptr))
+                branch = QString::fromUtf8(head).trimmed();
+        }
+        if (!branch.isEmpty() && branches.contains(branch))
             return branch;
     }
     if (!checkedOut.isEmpty() && branches.contains(checkedOut))
