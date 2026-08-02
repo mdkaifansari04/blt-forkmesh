@@ -1,4 +1,5 @@
-#pragma once
+#ifndef FORKMESH_MAIN_WINDOW_H
+#define FORKMESH_MAIN_WINDOW_H
 
 #include "ChatBackend.h"
 #include "DiscussionInboxBackoff.h"
@@ -8170,3 +8171,5 @@ private:
     TestIssueHistoryDeleteRunner m_testIssueHistoryDeleteRunner;
 #endif
 };
+
+#endif // FORKMESH_MAIN_WINDOW_H
