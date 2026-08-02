@@ -4940,6 +4940,11 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (event->type() == QEvent::Resize && m_scmDiff &&
         obj == m_scmDiff->viewport())
         layoutScmStickyHeader();
+    // The Git prompt is a lower-right overlay while that workspace is open, so
+    // follow the detail pane rather than reserving height beneath the graph.
+    if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
+        obj == m_commitsStack)
+        positionGitPromptOverlay();
     // Keep the floating "Log" button pinned to the live-log strip's bottom-right
     // corner as the strip resizes (adhoc #137). Don't consume — the strip still
     // needs the resize.
