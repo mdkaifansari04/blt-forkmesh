@@ -725,9 +725,21 @@ public:
                 m_agentStore->appendLog(*session, text);
     }
     void testRunAgentTranscriptSearch() { runAgentTranscriptSearch(); }
+    // Force the coalesced attachment scan to run now (adhoc #222), the way the
+    // hook above forces the debounced transcript scan.
+    void testScanAgentSessionImages()
+    {
+        m_agentImageScanPending = true;
+        refreshAgentTable();
+    }
     // The Agents list's visible rows, as the issue/title column renders them
     // (including the "· N in transcript" marker).
     QStringList testAgentRowTitles() const;
+    // adhoc #222: the attachments the list is carrying for a session's row, and
+    // whether that row has drawn the little square yet — so a test can prove a
+    // picture named in a prompt reaches the row and is decoded into a thumbnail.
+    QStringList testAgentRowImages(int sessionId) const;
+    bool testAgentRowHasThumbnail(int sessionId) const;
     // Whether the leading Branch cell for `branch` carries an icon, so a test can
     // prove the list stamps agent status at the row's left edge (adhoc #251).
     bool testBranchAttachmentHasIcon(const QString &branch) const;
@@ -6793,6 +6805,33 @@ private:
     // what the transcripts are scanned for (that box, or the top bar's).
     QString agentFilterQuery() const;
     QString agentTranscriptQuery() const;
+    // Attachment thumbnails in the sessions list (adhoc #222): a session started
+    // from — or steered with — a pasted screenshot shows it as a small square at
+    // the head of its row, and clicking that square opens the picture full size.
+    // The scan for "Attached image:" lines reads prompts and transcripts off the
+    // GUI thread and is coalesced behind m_agentImageScanPending, the way the
+    // per-row diff probes are; the decode of each thumbnail is off-thread too.
+    QHash<int, QStringList> m_agentSessionImages; // session id -> image paths
+    QHash<int, QString> m_agentImageStamps;       // session id -> scanned stamp
+    int m_agentImageScanGen = 0;
+    bool m_agentImageScanRunning = false;
+    bool m_agentImageScanQueued = false;
+    bool m_agentImageScanPending = true;
+    // image path -> its square, or a null icon once the file has been found
+    // unreadable (so a row asks for it once rather than every refresh)
+    QHash<QString, QIcon> m_agentThumbnails;
+    QSet<QString> m_agentThumbnailsPending;       // decodes in flight
+    void scanAgentSessionImages(const QList<AgentSession> &sessions,
+                                const QString &owner, const QString &name);
+    // The images a row draws from, readable-and-still-on-disk only. Cache-only:
+    // it never touches the disk, so refreshAgentTable() can call it per row.
+    QStringList agentSessionImages(int sessionId) const;
+    // The row's square for `path`, decoding it in the background (and filling the
+    // row in when that lands) the first time it is asked for.
+    QIcon agentThumbnail(const QString &path);
+    void applyAgentThumbnail(const QString &path);
+    // Open a session's attachments full size, one under another.
+    void showAgentSessionImages(int sessionId);
     // Compose row at the top of the session list (adhoc #234): type a prompt,
     // pick a repo and an agent provider, and start an ad-hoc agent right there
     // without going through the footer quick-add bar.
