@@ -35,6 +35,7 @@
 #include <QTimer>
 #include <QPushButton>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QSplitter>
@@ -3362,14 +3363,18 @@ int main(int argc, char *argv[])
                   !genieButton->toolTip().contains(QStringLiteral("agent"),
                                                    Qt::CaseInsensitive),
               QStringLiteral("the composer task button files a General task"));
-        auto *repoTrendChart = seeded.findChild<QWidget *>(QStringLiteral("repoTrendChart"));
+        auto *repoSizeChart = seeded.findChild<QWidget *>(QStringLiteral("repoSizeChart"));
+        auto *repoLinesChart = seeded.findChild<QWidget *>(QStringLiteral("repoLinesChart"));
+        auto *repoFilesChart = seeded.findChild<QWidget *>(QStringLiteral("repoFilesChart"));
+        auto *overviewList = seeded.findChild<QTreeWidget *>(QStringLiteral("overviewList"));
         auto *ratchet = seeded.findChild<QToolButton *>(QStringLiteral("repoRatchetButton"));
-        check(repoTrendChart && ratchet && repoTrendChart->width() == 24 &&
-                  repoTrendChart->height() == 24 &&
-                  repoTrendChart->accessibleName() == QStringLiteral("Repository trends") &&
-                  ratchet->isCheckable() &&
+        check(repoSizeChart && repoLinesChart && repoFilesChart && ratchet &&
+                  repoSizeChart->width() == 34 && repoLinesChart->width() == 34 &&
+                  repoFilesChart->width() == 34 && ratchet->isCheckable() &&
                   ratchet->text() == QStringLiteral("Ratchet"),
-              QStringLiteral("repository trends use one compact vertical meter group"));
+              QStringLiteral("repository trends use three history charts"));
+        check(overviewList && overviewList->columnCount() == 2,
+              QStringLiteral("overview keeps entry metrics and updated time on the left"));
         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.
