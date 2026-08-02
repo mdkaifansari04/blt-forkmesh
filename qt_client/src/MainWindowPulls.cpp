@@ -81,12 +81,14 @@ public:
         QSize size = SelectionBorderRowDelegate::sizeHint(option, index);
         const QFont compact = compactFont(option);
         const QFontMetrics fm(compact);
-        // "99y · 99y" reserves room for Created and Modified ages, then an
-        // icon/count for files and the two tiny diff bars.  Keeping this width
-        // constant makes the title column a clean vertical edge.
-        const int tail = fm.horizontalAdvance(QStringLiteral("99y · 99y")) +
-                         14 + 4 + fm.horizontalAdvance(QStringLiteral("999+")) +
-                         4 + kDiffBarWidth + 16;
+        // Created and Modified each own a fixed-width slot.  Reserving them
+        // separately (including the centred divider) keeps every age, branch
+        // count and churn bar on one vertical guide even when values have very
+        // different widths ("1d" beside "56y", for example).
+        const int tail = 2 * ageSlotWidth(fm) + kAgeDividerWidth +
+                         kAgeToFilesGap + kBranchIconSize + kIconTextGap +
+                         filesSlotWidth(fm) + kFilesToBarsGap + kDiffBarWidth +
+                         kTrailingPad;
         size.rwidth() = qMax(size.width(),
                              option.fontMetrics.horizontalAdvance(QStringLiteral("#9999")) +
                                  18 + tail);
@@ -137,17 +139,17 @@ public:
         const int files = index.data(kPullFilesChangedRole).toInt();
         const QString filesText = files > 999 ? QStringLiteral("999+")
                                                : QString::number(qMax(0, files));
-        const int filesWidth = fm.horizontalAdvance(filesText);
-        const int filesRight = barsLeft - 8;
-        const int fileIconLeft = filesRight - filesWidth - 4 - kBranchIconSize;
+        const int filesRight = barsLeft - kFilesToBarsGap;
+        const int filesLeft = filesRight - filesSlotWidth(fm);
+        const int fileIconLeft = filesLeft - kIconTextGap - kBranchIconSize;
         painter->drawPixmap(fileIconLeft, cell.center().y() - kBranchIconSize / 2,
                             tintedOcticonPixmap(QStringLiteral("git-branch"), muted,
                                                kBranchIconSize));
         painter->setFont(compact);
         painter->setPen(muted);
-        painter->drawText(QRect(fileIconLeft + kBranchIconSize + 4, cell.top(),
-                                filesWidth, cell.height()),
-                          Qt::AlignVCenter | Qt::AlignLeft, filesText);
+        painter->drawText(QRect(filesLeft, cell.top(), filesSlotWidth(fm),
+                                cell.height()),
+                          Qt::AlignVCenter | Qt::AlignRight, filesText);
 
         const qint64 created = index.data(kPullCreatedAtRole).toLongLong();
         const qint64 modified = index.data(kPullModifiedAtRole).toLongLong();
@@ -157,22 +159,44 @@ public:
         const QString modifiedText = modified > 0
                                          ? formatShortRelativeTime(modified / 1000)
                                          : QStringLiteral("-");
-        const QString ages = createdText + QString::fromUtf8(" · ") + modifiedText;
-        const int agesWidth = fm.horizontalAdvance(ages);
-        const int agesRight = fileIconLeft - 9;
-        painter->drawText(QRect(agesRight - agesWidth, cell.top(), agesWidth,
+        const int modifiedRight = fileIconLeft - kAgeToFilesGap;
+        const int modifiedLeft = modifiedRight - ageSlotWidth(fm);
+        const int dividerLeft = modifiedLeft - kAgeDividerWidth;
+        const int createdLeft = dividerLeft - ageSlotWidth(fm);
+        painter->drawText(QRect(createdLeft, cell.top(), ageSlotWidth(fm),
                                 cell.height()),
-                          Qt::AlignVCenter | Qt::AlignLeft, ages);
+                          Qt::AlignVCenter | Qt::AlignRight, createdText);
+        painter->drawText(QRect(dividerLeft, cell.top(), kAgeDividerWidth,
+                                cell.height()),
+                          Qt::AlignCenter, QString::fromUtf8("·"));
+        painter->drawText(QRect(modifiedLeft, cell.top(), ageSlotWidth(fm),
+                                cell.height()),
+                          Qt::AlignVCenter | Qt::AlignRight, modifiedText);
         painter->restore();
     }
 
 private:
     static constexpr int kBranchIconSize = 14;
+    static constexpr int kIconTextGap = 4;
+    static constexpr int kAgeDividerWidth = 9;
+    static constexpr int kAgeToFilesGap = 9;
+    static constexpr int kFilesToBarsGap = 8;
+    static constexpr int kTrailingPad = 16;
     static constexpr int kDiffBarThickness = 2;
     static constexpr int kDiffBarGap = 2;
     static constexpr int kDiffBarWidth = 2 * kDiffBarThickness + kDiffBarGap;
     static constexpr int kDiffBarHeight = 14;
     static constexpr double kDiffBarFullScaleLines = 800.0;
+
+    static int ageSlotWidth(const QFontMetrics &fm)
+    {
+        return fm.horizontalAdvance(QStringLiteral("999y"));
+    }
+
+    static int filesSlotWidth(const QFontMetrics &fm)
+    {
+        return fm.horizontalAdvance(QStringLiteral("999+"));
+    }
 
     static QFont compactFont(const QStyleOptionViewItem &option)
     {
@@ -194,6 +218,48 @@ private:
         return qBound(2, qRound(qMin(1.0, scale) * kDiffBarHeight),
                       kDiffBarHeight);
     }
+};
+
+// A compact overlay anchored to the list's lower-right corner.  Keeping this
+// out of the pane's layout lets the pull rows use the full height while the
+// repository-wide actions remain one easy-to-find floating cluster.
+class PullListFloatingBar final : public QFrame
+{
+public:
+    explicit PullListFloatingBar(QWidget *pane) : QFrame(pane), m_pane(pane)
+    {
+        setObjectName(QStringLiteral("pullListFloatingBar"));
+        pane->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (watched == m_pane && event->type() == QEvent::Resize)
+            anchorToCorner();
+        return QFrame::eventFilter(watched, event);
+    }
+
+    void showEvent(QShowEvent *event) override
+    {
+        QFrame::showEvent(event);
+        anchorToCorner();
+    }
+
+private:
+    void anchorToCorner()
+    {
+        if (!m_pane)
+            return;
+        layout()->activate();
+        adjustSize();
+        constexpr int kInset = 10;
+        move(qMax(kInset, m_pane->width() - width() - kInset),
+             qMax(kInset, m_pane->height() - height() - kInset));
+        raise();
+    }
+
+    QWidget *m_pane = nullptr;
 };
 
 // Every pull-request action is an icon-over-caption tile — the same form as the
@@ -302,17 +368,15 @@ QWidget *MainWindow::buildPullsTab()
                        "head branch"));
     connect(m_pullImportButton, &QPushButton::clicked, this,
             &MainWindow::importPatchAsPull);
-    auto *toolbar = new QHBoxLayout;
-    toolbar->setContentsMargins(0, 0, 0, 0);
-    // Frameless tiles need the gap the pill's border used to provide; this is
-    // the same rhythm as the repository tab row.
-    toolbar->setSpacing(10);
+    auto *floatingBar = new PullListFloatingBar(listPane);
+    auto *toolbar = new QHBoxLayout(floatingBar);
+    toolbar->setContentsMargins(6, 4, 6, 4);
+    toolbar->setSpacing(2);
     toolbar->addWidget(m_pullNewButton, 0, Qt::AlignTop);
     toolbar->addWidget(m_pullChooseDirButton, 0, Qt::AlignTop);
     toolbar->addWidget(m_pullImportButton, 0, Qt::AlignTop);
     toolbar->addWidget(m_pullSyncButton, 0, Qt::AlignTop);
     toolbar->addWidget(m_pullDeleteAllMergedButton, 0, Qt::AlignTop);
-    toolbar->addStretch();
     toolbar->addWidget(m_pullHideDetailButton, 0, Qt::AlignVCenter);
 
     m_pullTable = new QTableWidget(0, 2);
@@ -349,9 +413,7 @@ QWidget *MainWindow::buildPullsTab()
     listLayout->setContentsMargins(0, 0, 0, 0);
     listLayout->setSpacing(0);
     listLayout->addWidget(m_pullTable, 1);
-    toolbar->setContentsMargins(10, 2, 10, 8);
-    toolbar->setSpacing(6);
-    listLayout->addLayout(toolbar);
+    floatingBar->show();
 
     // Right: PR detail — header + changed-files explorer + diff viewer.
     m_pullDetail = new QWidget;
