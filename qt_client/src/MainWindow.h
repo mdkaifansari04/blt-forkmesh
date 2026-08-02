@@ -5826,7 +5826,7 @@ private:
     QLabel *m_statusAppPath = nullptr;
     // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
     QPushButton *m_footerDiagnostics = nullptr;
-    // Live one-per-second moving sparklines for CPU, host memory and disk
+    // Live one-per-second moving sparklines for CPU, host memory, swap and disk
     // usage (adhoc #17), shown in the footer beside the diagnostics. Held as
     // QWidget* and poked via static_cast since ResourceSparkline is private to
     // MainWindowChat.cpp.
@@ -5837,6 +5837,7 @@ private:
     QToolButton *m_repoRatchetButton = nullptr;
     qint64 m_repoStatsLastRefreshMs = 0;
     QWidget *m_memChart = nullptr;
+    QWidget *m_swapChart = nullptr;
     QWidget *m_diskChart = nullptr;
     StallWatchdog *m_stallWatchdog = nullptr;
     QTimer *m_diagTimer = nullptr;

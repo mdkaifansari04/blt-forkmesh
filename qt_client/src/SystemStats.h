@@ -22,6 +22,11 @@ qint64 totalMemoryBytes();
 // Host used RAM == totalMemoryBytes() - availableMemoryBytes().
 qint64 availableMemoryBytes();
 
+// Total / free swap space on the host in bytes (0 when swap is disabled or
+// unavailable). Linux reads SwapTotal and SwapFree from /proc/meminfo.
+qint64 totalSwapBytes();
+qint64 freeSwapBytes();
+
 // Size / free space of the filesystem that holds `path`, in bytes (0 if the
 // path can't be stat'd). Used space == diskTotalBytes() - diskFreeBytes().
 qint64 diskTotalBytes(const QString &path);
