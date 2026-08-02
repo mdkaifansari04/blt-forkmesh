@@ -7967,6 +7967,11 @@ void MainWindow::pushCurrentRepoUpstream()
     // (possibly modal) result. Mark the repo "pushing" now so the button flips to
     // its busy state and the entry guard blocks a second click during the scan.
     m_pushingRepos.insert(index);
+    setRepoSyncActivity(index,
+                        repo.secretScanningEnabled
+                            ? QStringLiteral("Scanning the outgoing commits for "
+                                             "secrets…")
+                            : QStringLiteral("Counting the outgoing commits…"));
     refreshRepoSyncIndicators();
 
     struct PushScan {
@@ -7996,6 +8001,7 @@ void MainWindow::pushCurrentRepoUpstream()
             if (index < 0 || index >= m_repositories.size() ||
                 m_repositories.at(index).localPath != repo.localPath) {
                 m_pushingRepos.remove(index);
+                clearRepoSyncActivity(index);
                 refreshRepoSyncIndicators();
                 return;
             }
@@ -8039,6 +8045,7 @@ void MainWindow::pushCurrentRepoUpstream()
                     const QString path = scan.findings.first().path;
                     const int line = scan.findings.first().line;
                     m_pushingRepos.remove(index);
+                    clearRepoSyncActivity(index);
                     refreshRepoSyncIndicators();
                     openRepoDetail(index);
                     // Switch to the Code tab (index 0) so the highlighted line is
@@ -8053,6 +8060,7 @@ void MainWindow::pushCurrentRepoUpstream()
                 }
                 if (box.clickedButton() != bypassBtn) {
                     m_pushingRepos.remove(index);
+                    clearRepoSyncActivity(index);
                     refreshRepoSyncIndicators();
                     return;
                 }
@@ -8066,6 +8074,9 @@ void MainWindow::pushCurrentRepoUpstream()
 
             if (isRelay) {
                 m_pushingRepos.remove(index);
+                setRepoSyncActivity(
+                    index, QStringLiteral("Publishing local commits to the "
+                                          "served mirror…"));
                 logSystem(QStringLiteral("Git: publishing local commits for %1/%2 to "
                                          "the served mirror.")
                               .arg(repo.owner, repo.name));
@@ -8089,16 +8100,22 @@ void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                   .arg(repo.owner, repo.name, upstream));
 
     auto *process = new QProcess(this);
+    setRepoSyncActivity(index, QStringLiteral("Pushing to %1…").arg(upstream));
+    // --progress: git only writes its counters when stderr is a terminal, and a
+    // QProcess pipe is not one. With it, the label follows the real transfer.
+    auto pushErrors = streamGitProgressActivity(process, index, QString());
     connect(process, &QProcess::finished, this,
-            [this, process, index, repo, upstream, ahead](int exitCode,
-                                                          QProcess::ExitStatus status) {
+            [this, process, index, repo, upstream, ahead, pushErrors](
+                int exitCode, QProcess::ExitStatus status) {
                 if (process->property("handled").toBool())
                     return;
                 process->setProperty("handled", true);
-                const QString errors =
-                    QString::fromUtf8(process->readAllStandardError()).trimmed();
+                pushErrors->append(
+                    QString::fromUtf8(process->readAllStandardError()));
+                const QString errors = gitErrorsWithoutProgress(*pushErrors);
                 process->deleteLater();
                 m_pushingRepos.remove(index);
+                clearRepoSyncActivity(index);
 
                 if (status == QProcess::NormalExit && exitCode == 0) {
                     const QString count =
@@ -8134,6 +8151,7 @@ void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                 process->setProperty("handled", true);
                 process->deleteLater();
                 m_pushingRepos.remove(index);
+                clearRepoSyncActivity(index);
                 logSystem(QStringLiteral("Git: could not start push for %1/%2.")
                               .arg(repo.owner, repo.name));
                 flashMessage(QStringLiteral("Could not run git push for %1/%2.")
@@ -8142,7 +8160,8 @@ void MainWindow::startRepoPush(int index, const RepositoryRecord &repo,
                 refreshRepoSyncIndicators();
             });
     process->start(QStringLiteral("git"),
-                   {QStringLiteral("-C"), repo.localPath, QStringLiteral("push")});
+                   {QStringLiteral("-C"), repo.localPath, QStringLiteral("push"),
+                    QStringLiteral("--progress")});
 }
 
 void MainWindow::showRepoMenu()
@@ -13810,8 +13829,12 @@ QWidget *MainWindow::buildNetworkDiagnosticsSection()
     tabs->addTab(buildRelaysSection(), QStringLiteral("Relays"));
     tabs->addTab(buildNodesSection(), QStringLiteral("Nodes"));
     tabs->addTab(buildHostsSection(), QStringLiteral("Hosts"));
-    connect(tabs, &QTabWidget::currentChanged, this,
-            [this](int index) { refreshNetworkTab(index); });
+    connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
+        refreshNetworkTab(index);
+        // Relays / Nodes / Hosts / diagnostics are separate destinations, so the
+        // Back arrow returns to the tab you were on (adhoc #50).
+        scheduleNavRecord();
+    });
 
     auto *endpointsPage = networkTabPage();
     auto *endpointsLayout = qobject_cast<QVBoxLayout *>(endpointsPage->layout());

@@ -7210,6 +7210,58 @@ private:
     QString m_fullText;
 };
 
+// A one-line, muted status label that sits beside a busy button and carries the
+// live "what is it doing right now" note (the sync button's git/seal progress).
+// It never widens its row: the size hint stays at zero width and the layout
+// hands it whatever space is left, so a long progress line elides instead of
+// pushing the button around. The untruncated text is kept for the tooltip and
+// so a resize re-elides the original rather than an already-cut string.
+class ElidingStatusLabel : public QLabel
+{
+public:
+    explicit ElidingStatusLabel(QWidget *parent = nullptr) : QLabel(parent)
+    {
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        setTextInteractionFlags(Qt::NoTextInteraction);
+    }
+
+    void setFullText(const QString &text)
+    {
+        const QString line = text.simplified();
+        if (line == m_fullText)
+            return;
+        m_fullText = line;
+        setToolTip(line);
+        applyElide();
+    }
+    QString fullText() const { return m_fullText; }
+
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QLabel::minimumSizeHint();
+        hint.setWidth(0);
+        return hint;
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QLabel::resizeEvent(event);
+        applyElide();
+    }
+
+private:
+    void applyElide()
+    {
+        const QString elided = fontMetrics().elidedText(
+            m_fullText, Qt::ElideRight, qMax(0, width()));
+        if (elided != text())
+            QLabel::setText(elided);
+    }
+
+    QString m_fullText;
+};
+
 // A push button that stacks its octicon above a small caption — the same
 // icon-over-words form as the activity rail's entries (adhoc #91) — but driven
 // by the button's live text(), so the existing "Issues (60)" / "Fork 0" count

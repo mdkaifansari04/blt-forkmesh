@@ -986,6 +986,9 @@ QWidget *MainWindow::buildPullsTab()
             if (current.number > 0)
                 renderPullChecks(current);
         }
+        // Conversation / Commits / Checks / Badge are separate destinations
+        // within the PR, so Back walks them (adhoc #50).
+        scheduleNavRecord();
     });
 
     auto *detailLayout = new QVBoxLayout(m_pullDetail);
@@ -1792,6 +1795,8 @@ void MainWindow::showPull(int number)
     renderPullReviewSummary(*found);
     updatePullSubTabCounts(*found);
     updatePullActionState();
+    // An open pull request is a place of its own: Back returns to the list.
+    scheduleNavRecord();
 }
 
 // Show only files matching the selected authorship (issue #365): index 1 keeps
