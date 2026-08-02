@@ -1,0 +1,3866 @@
+<!doctype html>
+<html lang="en" class="dark h-full scroll-smooth">
+  <head>
+    <link rel="me" href="https://mastodon.social/@forkmesh" />
+    <meta charset="utf-8" />
+    <script src="/posthog.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ForkMesh - A resilient, local-first Git forge</title>
+    <meta
+      name="description"
+      content="Keep code and collaboration usable beyond any one host. ForkMesh mirrors Git across independent nodes, keeps project work portable, and turns issues into agent-built changes you review."
+    />
+    <meta name="application-name" content="ForkMesh" />
+    <meta name="apple-mobile-web-app-title" content="ForkMesh" />
+    <meta name="theme-color" content="#090909" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
+    <link rel="manifest" href="/favicon/site.webmanifest" />
+    <meta name="category" content="Developer Tools" />
+    <meta name="creator" content="ForkMesh" />
+    <meta name="publisher" content="ForkMesh" />
+    <meta name="author" content="ForkMesh" />
+    <meta name="robots" content="index, follow" />
+    <meta
+      name="googlebot"
+      content="index, follow, max-video-preview:-1, max-image-preview:large, max-snippet:-1"
+    />
+    <meta
+      name="format-detection"
+      content="telephone=no, address=no, email=no"
+    />
+    <meta
+      name="keywords"
+      content="ForkMesh, resilient Git forge, local-first Git, distributed Git hosting, Git mirror failover, AI coding agents, Codex, Claude Code, signed issues, pull requests, source code preservation, self-hosted developer tools"
+    />
+    <link rel="canonical" href="https://forkmesh.com/homev2" />
+    <!-- The regular product/source-code homepage remains available to guests
+         and signed-in visitors alike. ForkMesh World is embedded below and
+         also has a dedicated /world/ route; dashboard navigation stays explicit. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://forkmesh.com/homev2" />
+    <meta property="og:site_name" content="ForkMesh" />
+    <meta
+      property="og:title"
+      content="ForkMesh - A resilient, local-first Git forge"
+    />
+    <meta
+      property="og:description"
+      content="Keep code, issues, pull requests, releases, and agent-built changes usable beyond any one host with independent Git mirrors and portable collaboration."
+    />
+    <meta property="og:image" content="https://forkmesh.com/assets/blog/forkmesh-noise.webp" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="668" />
+    <meta
+      property="og:image:alt"
+      content="ForkMesh resilient local-first Git forge"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="ForkMesh - A resilient, local-first Git forge"
+    />
+    <meta
+      name="twitter:description"
+      content="Mirror Git across independent nodes, keep collaboration portable, and turn issues into agent-built changes you review."
+    />
+    <meta name="twitter:image" content="https://forkmesh.com/assets/blog/forkmesh-noise.webp" />
+    <meta
+      name="twitter:image:alt"
+      content="ForkMesh resilient local-first Git forge"
+    />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://forkmesh.com/#organization",
+            "name": "ForkMesh",
+            "url": "https://forkmesh.com",
+            "logo": "https://forkmesh.com/logo.png",
+            "description": "ForkMesh is an open-source, local-first Git forge that keeps code and collaboration portable across independent hosts."
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://forkmesh.com/#website",
+            "url": "https://forkmesh.com",
+            "name": "ForkMesh",
+            "description": "A resilient, local-first Git forge for code, collaboration, delivery, and agent-built changes.",
+            "publisher": {
+              "@id": "https://forkmesh.com/#organization"
+            },
+            "inLanguage": "en-US"
+          },
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://forkmesh.com/#software",
+            "name": "ForkMesh",
+            "url": "https://forkmesh.com/homev2",
+            "image": "https://forkmesh.com/assets/blog/forkmesh-noise.webp",
+            "applicationCategory": "DeveloperApplication",
+            "applicationSubCategory": "Local-first Git forge",
+            "operatingSystem": "macOS, Windows, Linux",
+            "description": "ForkMesh mirrors Git repositories across independent nodes, keeps collaboration signed and portable, and orchestrates Codex and Claude Code in isolated worktrees for maintainer-reviewed changes.",
+            "featureList": [
+              "Independent desktop and headless nodes keep Git mirrors",
+              "A stable project URL routes clone and browse traffic to an eligible healthy mirror",
+              "Codex and Claude Code sessions run in isolated Git worktrees",
+              "Maintainers review agent changes and choose when to create a pull request",
+              "Signed issues, pull requests, and discussions keep collaboration portable",
+              "Actions run on connected nodes with logs, artifacts, tags, and releases",
+              "Authenticated shared-key repository rooms keep conversation beside the code",
+              "Web, desktop, mobile, IDE, and MCP access serve the same project workflow"
+            ],
+            "audience": {
+              "@type": "Audience",
+              "audienceType": "open-source maintainers, self-hosting teams, developer communities, researchers, and archivists"
+            },
+            "publisher": {
+              "@id": "https://forkmesh.com/#organization"
+            }
+          },
+          {
+            "@type": "FAQPage",
+            "@id": "https://forkmesh.com/#faq",
+            "mainEntity": [
+              {
+                "@type": "Question",
+                "name": "What is ForkMesh?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "ForkMesh is an open-source, local-first Git forge. Independent nodes keep repository mirrors, mainnodes coordinate discovery and healthy routing, and signed collaboration records keep project work portable."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Is ForkMesh replacing GitHub or GitLab?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "No. ForkMesh works with Git instead of replacing it. The goal is to make repositories more portable and resilient, so important code can stay discoverable and cloneable even if one platform, account, or organization disappears."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Where is the Git data stored?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Git mirrors live on desktop nodes. Mainnodes coordinate the network, but they are not the canonical storage layer for Git objects. When someone clones a repository through ForkMesh, the route can be coordinated by a mainnode while an online desktop node serves the Git data."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "What is a desktop node?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "A desktop node is the local ForkMesh app. It hosts your repository workspace and can keep public bare Git mirrors or opaque client-encrypted private replicas. Its authenticated gateway can serve clone and browse data through ordinary HTTPS when eligible and healthy."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "What is a mainnode?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "A mainnode is a coordination node for the ForkMesh network. It handles catalog discovery, account lookup, healthy HTTPS mirror selection, encrypted repo rooms, signed inboxes, and routing without becoming the owner of everyone’s source code."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "How does collaboration work?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "ForkMesh uses portable collaboration records such as signed issue events and signed patch PRs. Instead of locking all project activity inside one service database, collaboration can move with the repository and be verified by clients."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "How do AI coding agents work in ForkMesh?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "ForkMesh can launch Codex or Claude Code for a task in an isolated Git worktree. You can follow and steer the session, review its branch diff, and choose when to create a pull request."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Are repo rooms encrypted?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Yes, as authenticated shared-key transport. Clients encrypt messages before relay, but the mainnode derives and distributes the default passphrase, so its operator can decrypt room content. At most 500 persisted frames per room are retained for 7 days."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Do I need to run a mainnode to use ForkMesh?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "No. Most users can start by running a desktop node and mirroring repositories they care about. Communities, teams, or operators can run mainnodes when they want to coordinate their own catalog, routes, rooms, and inboxes."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Who is ForkMesh for?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "ForkMesh is for open-source maintainers, self-hosting teams, developer communities, researchers, and archivists who want a complete project to remain usable beyond one provider or account."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Can ForkMesh preserve a repository if the original host goes offline?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Yes, when an eligible, healthy, integrity-matching mirror is available. ForkMesh can route browsing and clones to that copy behind the same public project URL."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Does ForkMesh store my repositories in the cloud?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "ForkMesh does not make the Worker or a mainnode the canonical Git storage layer. Git mirrors live on desktop nodes. Mainnodes coordinate discovery, routing, rooms, inboxes, and lookup."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "How is ForkMesh different from a normal Git backup?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "A normal backup protects one copy. ForkMesh adds network discovery, live clone routing, signed collaboration records, encrypted repo rooms, and mainnode coordination so preserved repositories can still be found and used by others."
+                }
+              },
+              {
+                "@type": "Question",
+                "name": "Can open-source communities run their own ForkMesh network?",
+                "acceptedAnswer": {
+                  "@type": "Answer",
+                  "text": "Yes. Communities can run mainnodes for their own catalog, routing, rooms, inboxes, and account lookup while contributors run desktop or headless nodes that host permitted repositories."
+                }
+              }
+            ]
+          }
+        ]
+      }
+    </script>
+    <link rel="stylesheet" href="/tailwind.css" />
+    <script>window.tailwind = window.tailwind || {};</script>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              background: "var(--background)",
+              foreground: "var(--foreground)",
+              card: "var(--card)",
+              border: "var(--border)",
+              muted: "var(--muted)",
+              "muted-foreground": "var(--muted-foreground)",
+              primary: "var(--primary)",
+              "primary-foreground": "var(--primary-foreground)",
+              accent: "var(--accent)",
+              "accent-foreground": "var(--accent-foreground)",
+            },
+            fontFamily: {
+              sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
+              domine: ["Domine", "Georgia", "serif"],
+              favorit: [
+                "ABCFavorit",
+                "Inter",
+                "ui-sans-serif",
+                "system-ui",
+                "sans-serif",
+              ],
+              "favorit-mono": [
+                "ui-monospace",
+                "SFMono-Regular",
+                "Menlo",
+                "Consolas",
+                "monospace",
+              ],
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      @font-face {
+        font-family: "Domine";
+        src: url("/assets/fonts/Domine-Regular.ttf") format("truetype");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Domine";
+        src: url("/assets/fonts/Domine-Bold.ttf") format("truetype");
+        font-weight: 700;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "ABCFavorit";
+        src: url("/assets/fonts/ABCFavorit-Bold.otf") format("opentype");
+        font-weight: 400;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "ABCFavorit";
+        src: url("/assets/fonts/ABCFavorit-Bold.otf") format("opentype");
+        font-weight: 500;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "ABCFavorit";
+        src: url("/assets/fonts/ABCFavorit-Bold.otf") format("opentype");
+        font-weight: 600;
+        font-style: normal;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "ABCFavorit";
+        src: url("/assets/fonts/ABCFavorit-Bold.otf") format("opentype");
+        font-weight: 700;
+        font-style: normal;
+        font-display: swap;
+      }
+      :root {
+        --background: #090909;
+        --foreground: #f5f5f5;
+        --card: #1f1f1f;
+        --card-foreground: #f5f5f5;
+        --primary: #e8e8e8;
+        --primary-foreground: #1f1f1f;
+        --muted: #272727;
+        --muted-foreground: #a3a3a3;
+        --accent: oklch(0.72 0.17 152);
+        --accent-foreground: oklch(0.985 0 0);
+        --border: #313131;
+        --border-subtle: #313131;
+        --border-muted: #313131;
+        --ring: oklch(0.556 0 0);
+        --radius: 0.625rem;
+        --landing-body-font: Inter, ui-sans-serif, system-ui, sans-serif;
+        --landing-hero-font: Domine, Georgia, serif;
+        --landing-heading-font: ABCFavorit, Inter, ui-sans-serif, system-ui, sans-serif;
+        --landing-mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100%;
+        background: #090909;
+        color: var(--foreground);
+        font-family: var(--landing-body-font);
+        -webkit-font-smoothing: antialiased;
+        text-rendering: geometricPrecision;
+      }
+
+      .skip-link {
+        position: fixed;
+        left: 1rem;
+        top: 0.75rem;
+        z-index: 100;
+        transform: translateY(-180%);
+        border-radius: 0.65rem;
+        background: var(--primary);
+        color: var(--primary-foreground);
+        padding: 0.6rem 0.9rem;
+        font-weight: 700;
+        transition: transform 150ms ease;
+      }
+
+      .skip-link:focus {
+        transform: translateY(0);
+      }
+
+      #features,
+      #network,
+      #workflow,
+      #faq {
+        scroll-margin-top: 6rem;
+      }
+
+      a,
+      button,
+      summary,
+      input {
+        outline-color: color-mix(in oklab, var(--accent), white 8%);
+      }
+
+      .font-domine {
+        font-family: var(--landing-hero-font);
+        font-synthesis: none;
+      }
+
+      .font-favorit {
+        font-family: var(--landing-heading-font);
+      }
+
+      .font-favorit-mono {
+        font-family: var(--landing-mono-font);
+      }
+
+      .hero-section h1 {
+        font-family: var(--landing-hero-font);
+        font-synthesis: none;
+      }
+
+      #features h2,
+      #network h2,
+      #solution h2,
+      #product-loop.forkmesh h2,
+      #faq .faq-title,
+      .feature-card h3,
+      #solution article h3,
+      #product-loop.forkmesh .step h3,
+      #faq-list .faq-item summary {
+        font-family: var(--landing-heading-font);
+      }
+
+      .hero-section p,
+      #features p,
+      #network p,
+      #solution p,
+      #product-loop.forkmesh .lead,
+      #product-loop.forkmesh .step p,
+      #faq .faq-intro,
+      #faq-list .faq-item p,
+      #faq .faq-note {
+        font-family: var(--landing-body-font);
+      }
+
+      @keyframes fade-blur-up {
+        from {
+          opacity: 0;
+          filter: blur(12px);
+          transform: translateY(18px);
+        }
+        to {
+          opacity: 1;
+          filter: blur(0);
+          transform: translateY(0);
+        }
+      }
+
+      @keyframes mesh-pulse {
+        0%,
+        100% {
+          opacity: 0.45;
+          transform: scale(0.98);
+        }
+        50% {
+          opacity: 0.9;
+          transform: scale(1.02);
+        }
+      }
+
+      @keyframes bar-idle {
+        0%,
+        100% {
+          opacity: 0.62;
+        }
+        50% {
+          opacity: 0.9;
+        }
+      }
+
+      .motion-in {
+        animation: fade-blur-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+      }
+
+      .motion-delay-1 {
+        animation-delay: 0.12s;
+      }
+
+      .motion-delay-2 {
+        animation-delay: 0.24s;
+      }
+
+      .motion-delay-3 {
+        animation-delay: 0.36s;
+      }
+
+      .hero-section {
+        position: relative;
+        isolation: isolate;
+        overflow: hidden;
+        background: var(--background);
+      }
+
+      .hero-scene {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100svh;
+        overflow: hidden;
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      .hero-background {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      .hero-backdrop {
+        position: absolute;
+        inset: 0;
+        background-position: center;
+        background-repeat: no-repeat;
+        background-size: cover;
+        opacity: 0.88;
+      }
+
+      .hero-dim {
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.22);
+      }
+
+      .hero-top-fade {
+        position: absolute;
+        inset: 0 0 auto;
+        height: min(42vh, 26rem);
+        background: linear-gradient(
+          to bottom,
+          var(--background) 0%,
+          rgba(9, 9, 9, 0.98) 12%,
+          rgba(9, 9, 9, 0.78) 34%,
+          rgba(9, 9, 9, 0.24) 70%,
+          transparent 100%
+        );
+      }
+
+      .hero-side-vignette {
+        position: absolute;
+        inset: 0 0 auto;
+        height: min(64vh, 40rem);
+        background: linear-gradient(
+          to right,
+          rgba(9, 9, 9, 0.66) 0%,
+          rgba(9, 9, 9, 0.24) 8%,
+          transparent 19%,
+          transparent 81%,
+          rgba(9, 9, 9, 0.24) 92%,
+          rgba(9, 9, 9, 0.66) 100%
+        );
+        -webkit-mask-image: linear-gradient(
+          to bottom,
+          #000 0%,
+          #000 38%,
+          rgba(0, 0, 0, 0.5) 62%,
+          transparent 100%
+        );
+        mask-image: linear-gradient(
+          to bottom,
+          #000 0%,
+          #000 38%,
+          rgba(0, 0, 0, 0.5) 62%,
+          transparent 100%
+        );
+      }
+
+      .hero-stage {
+        position: relative;
+        z-index: 1;
+        min-height: 100svh;
+      }
+
+      .nav-shell {
+        transition:
+          max-width 300ms ease,
+          background-color 300ms ease,
+          border-color 300ms ease,
+          padding 300ms ease,
+          border-radius 300ms ease,
+          backdrop-filter 300ms ease;
+      }
+
+      .site-nav.is-scrolled .nav-shell {
+        max-width: 56rem;
+        border-color: var(--border);
+        background: color-mix(in oklab, var(--background), transparent 48%);
+        border-radius: 1rem;
+        backdrop-filter: blur(18px);
+      }
+
+      @media (min-width: 1024px) {
+        .site-nav.is-scrolled .nav-shell {
+          padding-left: 1.25rem;
+          padding-right: 1.25rem;
+        }
+
+        .site-nav.is-scrolled .hide-on-scroll {
+          display: none;
+        }
+
+        .site-nav.is-scrolled .show-on-scroll {
+          display: inline-flex;
+        }
+      }
+
+      .menu-panel {
+        display: none;
+      }
+
+      .site-nav[data-open="true"] .menu-panel {
+        display: block;
+      }
+
+      .site-nav[data-open="true"] .menu-open-icon {
+        opacity: 0;
+        transform: rotate(180deg) scale(0);
+      }
+
+      .site-nav[data-open="true"] .menu-close-icon {
+        opacity: 1;
+        transform: rotate(0deg) scale(1);
+      }
+
+      .mobile-world-join {
+        display: none;
+      }
+
+      @media (min-width: 1024px) {
+        .menu-panel {
+          display: flex;
+        }
+      }
+
+      @media (max-width: 1023px) {
+        .mobile-world-join {
+          position: absolute;
+          left: 50%;
+          top: 50%;
+          display: flex;
+          align-items: center;
+          gap: 0.45rem;
+          transform: translate(-50%, -50%);
+          white-space: nowrap;
+        }
+
+        .mobile-world-count {
+          color: var(--muted-foreground);
+          font-size: 0.7rem;
+          font-weight: 700;
+          letter-spacing: 0.02em;
+        }
+
+        .mobile-world-count::before {
+          content: "";
+          display: inline-block;
+          width: 0.42rem;
+          height: 0.42rem;
+          margin-right: 0.28rem;
+          border-radius: 999px;
+          background: #32d583;
+          box-shadow: 0 0 0.55rem rgba(50, 213, 131, 0.7);
+          vertical-align: 0.02rem;
+        }
+
+        .mobile-world-button {
+          display: inline-flex;
+          min-height: 2rem;
+          align-items: center;
+          border: 1px solid color-mix(in oklab, #32d583 70%, var(--border));
+          border-radius: 0.65rem;
+          padding: 0.38rem 0.62rem;
+          background: color-mix(in oklab, #32d583 13%, transparent);
+          color: var(--foreground);
+          font-size: 0.72rem;
+          font-weight: 800;
+          text-decoration: none;
+        }
+      }
+
+      @media (max-width: 390px) {
+        .mobile-world-join {
+          gap: 0.28rem;
+        }
+
+        .mobile-world-count {
+          font-size: 0.62rem;
+        }
+
+        .mobile-world-button {
+          padding-inline: 0.45rem;
+          font-size: 0.66rem;
+        }
+      }
+
+      .button-primary,
+      .button-outline,
+      .button-ghost {
+        display: inline-flex;
+        min-height: 2.25rem;
+        align-items: center;
+        justify-content: center;
+        border-radius: 0.75rem;
+        padding: 0.5rem 1rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+        white-space: nowrap;
+        transition:
+          transform 150ms ease,
+          background-color 150ms ease,
+          border-color 150ms ease,
+          color 150ms ease;
+      }
+
+      .button-primary {
+        background: var(--primary);
+        color: var(--primary-foreground);
+      }
+
+      .button-primary:hover {
+        background: color-mix(in oklab, var(--primary), transparent 18%);
+      }
+
+      .button-outline {
+        border: 1px solid var(--border);
+        background: color-mix(in oklab, var(--background), white 4%);
+        color: var(--foreground);
+      }
+
+      .button-outline:hover,
+      .button-ghost:hover {
+        background: color-mix(in oklab, var(--muted), transparent 35%);
+      }
+
+      .button-ghost {
+        color: var(--foreground);
+      }
+
+      .button-primary:active,
+      .button-outline:active,
+      .button-ghost:active {
+        transform: translateY(1px);
+      }
+
+      /* Logged-in account chip rendered into the hero auth buttons by
+         home-header-auth.js. */
+      .home-auth-avatar {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.1rem;
+        height: 1.1rem;
+        margin-right: 0.4rem;
+        border-radius: 9999px;
+        overflow: hidden;
+        background: color-mix(in oklab, var(--primary-foreground), transparent 82%);
+        font-size: 0.65rem;
+        font-weight: 700;
+      }
+
+      .home-auth-avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      .app-mockup {
+        --c: #000;
+        --s: #0a0a0a;
+        --s2: #141414;
+        --s3: #1c1c1c;
+        --b: #1f1f1f;
+        --bs: #2c2c2c;
+        --t: #e9edf3;
+        --t2: #9099a4;
+        --t3: #5b6470;
+        --mesh: #3fb950;
+        --fork: #a371f7;
+        height: 100%;
+        min-height: 390px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        background: var(--c);
+        color: var(--t);
+        font-size: 13px;
+      }
+
+      .fm-icon {
+        width: 13px;
+        height: 13px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 2;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex-shrink: 0;
+      }
+
+      .fm-topbar {
+        height: 44px;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 16px;
+        background: var(--s);
+        border-bottom: 1px solid var(--b);
+      }
+
+      .fm-crumbs,
+      .fm-actions {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-width: 0;
+      }
+
+      .fm-crumbs {
+        overflow: hidden;
+        white-space: nowrap;
+      }
+
+      .fm-logo-sq {
+        width: 18px;
+        height: 18px;
+        border-radius: 5px;
+        background: var(--s2) url("/assets/logo.png") center / contain no-repeat;
+        flex-shrink: 0;
+      }
+
+      .fm-dim {
+        color: var(--t2);
+      }
+
+      .fm-sep {
+        color: var(--t3);
+      }
+
+      .fm-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 999px;
+        background: var(--mesh);
+        display: inline-block;
+        margin-right: 5px;
+      }
+
+      .fm-pill,
+      .fm-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        border-radius: 6px;
+        border: 1px solid var(--b);
+        font-size: 11px;
+        font-weight: 600;
+      }
+
+      .fm-pill {
+        padding: 3px 7px;
+        color: var(--mesh);
+        background: rgba(63, 185, 80, 0.12);
+        border-color: rgba(63, 185, 80, 0.3);
+      }
+
+      .fm-btn {
+        padding: 5px 9px;
+        color: var(--t);
+        background: var(--s2);
+      }
+
+      .fm-shell {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        overflow: hidden;
+      }
+
+      .fm-rail {
+        width: 50px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 0;
+        border-right: 1px solid var(--b);
+      }
+
+      .fm-ws {
+        width: 32px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 9px;
+        font-weight: 700;
+        font-size: 12px;
+      }
+
+      .fm-ws-mesh {
+        background: var(--mesh);
+        color: #06120a;
+        box-shadow:
+          0 0 0 2px var(--c),
+          0 0 0 3px var(--mesh);
+      }
+
+      .fm-ws-fork {
+        margin-top: 8px;
+        background: var(--fork);
+        color: #1a0e2e;
+      }
+
+      .fm-ws-add,
+      .fm-rail-btn {
+        border: 0;
+        background: transparent;
+        color: var(--t3);
+      }
+
+      .fm-ws-add {
+        margin-top: 8px;
+        width: 32px;
+        height: 32px;
+        border-radius: 9px;
+        border: 1.5px dashed var(--b);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .fm-main {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .fm-repo-hd {
+        padding: 14px 18px 0;
+        flex-shrink: 0;
+      }
+
+      .fm-repo-title-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      .fm-title {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        font-size: 15px;
+      }
+
+      .fm-owner {
+        color: var(--t2);
+        font-weight: 500;
+      }
+
+      .fm-name {
+        font-weight: 700;
+      }
+
+      .fm-tag,
+      .fm-mirror {
+        border-radius: 999px;
+        border: 1px solid var(--b);
+        padding: 1px 6px;
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .fm-tag {
+        color: var(--t2);
+      }
+
+      .fm-mirror {
+        color: var(--fork);
+        background: rgba(163, 113, 247, 0.12);
+        border-color: rgba(163, 113, 247, 0.32);
+      }
+
+      .fm-tabs {
+        display: flex;
+        gap: 2px;
+        margin-top: 12px;
+        overflow-x: auto;
+        border-bottom: 1px solid var(--b);
+      }
+
+      .fm-tab {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 7px 10px;
+        border-bottom: 2px solid transparent;
+        color: var(--t2);
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .fm-tab.active {
+        color: var(--t);
+        border-bottom-color: #f78166;
+      }
+
+      @media (max-width: 640px) {
+        .fm-tabs .fm-tab:nth-child(n + 6) {
+          display: none;
+        }
+      }
+
+      .fm-view-code {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: 220px minmax(0, 1fr);
+        gap: 12px;
+        padding: 12px 16px;
+      }
+
+      .fm-tree,
+      .fm-editor {
+        min-height: 0;
+        overflow: hidden;
+        border-radius: 8px;
+        border: 1px solid var(--b);
+        background: var(--s);
+      }
+
+      .fm-tree {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .fm-tree-head {
+        padding: 10px 12px 6px;
+        color: var(--t3);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .fm-search {
+        margin: 0 10px 8px;
+        border: 1px solid var(--b);
+        background: var(--s2);
+        color: var(--t3);
+        border-radius: 6px;
+        padding: 6px 8px;
+        font-size: 12px;
+      }
+
+      .fm-file {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 0 6px;
+        padding: 5px 6px;
+        border-radius: 5px;
+        color: var(--t2);
+        font-size: 12px;
+      }
+
+      .fm-file.active {
+        color: var(--t);
+        background: rgba(255, 255, 255, 0.1);
+      }
+
+      .fm-ft {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 14px;
+        border-radius: 3px;
+        background: rgba(90, 176, 239, 0.15);
+        color: #5ab0ef;
+        font-family: var(--landing-mono-font);
+        font-size: 8px;
+        font-weight: 700;
+      }
+
+      .fm-editor {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .fm-editor-tabs {
+        display: flex;
+        overflow-x: auto;
+        background: var(--s2);
+        border-bottom: 1px solid var(--b);
+      }
+
+      .fm-editor-tab {
+        height: 34px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 0 10px;
+        border-right: 1px solid var(--b);
+        color: var(--t2);
+        font-size: 11.5px;
+      }
+
+      .fm-editor-tab.active {
+        background: var(--s);
+        color: var(--t);
+      }
+
+      .fm-code {
+        flex: 1;
+        overflow: auto;
+        padding: 10px 0;
+        font-family: var(--landing-mono-font);
+        font-size: 11.5px;
+        line-height: 1.7;
+        counter-reset: line;
+      }
+
+      .fm-code-line {
+        display: flex;
+        min-width: max-content;
+      }
+
+      .fm-code-line::before {
+        counter-increment: line;
+        content: counter(line);
+        width: 38px;
+        padding-right: 12px;
+        color: var(--t3);
+        text-align: right;
+        user-select: none;
+        flex-shrink: 0;
+      }
+
+      .tok-kw {
+        color: #ff7b72;
+      }
+
+      .tok-str {
+        color: #a5d6ff;
+      }
+
+      .tok-fn {
+        color: #d2a8ff;
+      }
+
+      .tok-key {
+        color: #7ee787;
+      }
+
+      .tok-punct {
+        color: var(--t3);
+      }
+
+      .feature-card {
+        border-radius: 0.75rem;
+        background: #000;
+        color: var(--foreground);
+        overflow: hidden;
+        border: 1px solid var(--border);
+      }
+
+      #product-loop.forkmesh {
+        --pricing-bg: #0a0a0b;
+        --pricing-text: #f2f2f0;
+        --pricing-muted: #6f6f72;
+        --pricing-line: #222224;
+        width: 100%;
+        margin: 0 auto;
+        padding: 96px 0;
+        color: var(--pricing-text);
+        font-family: var(--landing-body-font);
+        text-align: center;
+      }
+
+      #product-loop.forkmesh .pricing-content {
+        width: min(calc(100% - 3rem), 40rem);
+        margin: 0 auto;
+      }
+
+      #product-loop.forkmesh .index {
+        margin-bottom: 24px;
+        color: var(--pricing-muted);
+        font-size: 11px;
+        letter-spacing: 0.1em;
+      }
+
+      #product-loop.forkmesh h2 {
+        margin: 0 0 20px;
+        color: var(--pricing-text);
+        font-family: var(--landing-heading-font);
+        font-size: 48px;
+        font-weight: 600;
+        line-height: 1.08;
+        letter-spacing: 0;
+      }
+
+      #product-loop.forkmesh h2 em {
+        border-bottom: 2px solid var(--pricing-text);
+        font-style: normal;
+      }
+
+      #product-loop.forkmesh .lead {
+        max-width: 440px;
+        margin: 0 auto 56px;
+        color: var(--pricing-muted);
+        font-size: 16px;
+        line-height: 1.7;
+      }
+
+      #product-loop.forkmesh .rule {
+        margin: 0 0 4px;
+        border: 0;
+        border-top: 1px solid var(--pricing-line);
+      }
+
+      #product-loop.forkmesh .row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 16px 4px;
+        border-bottom: 1px solid var(--pricing-line);
+        text-align: left;
+      }
+
+      #product-loop.forkmesh .row .k {
+        color: var(--pricing-muted);
+        font-size: 13px;
+      }
+
+      #product-loop.forkmesh .row .v {
+        color: var(--pricing-text);
+        font-size: 14px;
+        text-align: right;
+        white-space: nowrap;
+      }
+
+      #product-loop.forkmesh .row .v small {
+        margin-left: 6px;
+        color: var(--pricing-muted);
+        font-size: 11px;
+      }
+
+      #product-loop.forkmesh .formula {
+        margin: 48px 0 56px;
+      }
+
+      #product-loop.forkmesh .formula .caption {
+        margin-bottom: 18px;
+        color: var(--pricing-muted);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      #product-loop.forkmesh .formula-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: center;
+        gap: 14px;
+      }
+
+      #product-loop.forkmesh .formula-row .op {
+        color: var(--pricing-muted);
+        font-size: 16px;
+      }
+
+      #product-loop.forkmesh .formula-row .term {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+
+      #product-loop.forkmesh .formula-row .term .n {
+        color: var(--pricing-text);
+        font-size: 21px;
+      }
+
+      #product-loop.forkmesh .formula-row .term .l {
+        margin-top: 4px;
+        color: var(--pricing-muted);
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      #product-loop.forkmesh .formula-row .result {
+        border-bottom: 2px solid var(--pricing-text);
+        padding-bottom: 2px;
+        font-weight: 600;
+      }
+
+      #product-loop.forkmesh .steps {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 32px;
+        margin-bottom: 56px;
+        text-align: left;
+      }
+
+      #product-loop.forkmesh .step .num {
+        margin-bottom: 10px;
+        color: var(--pricing-muted);
+        font-size: 11px;
+      }
+
+      #product-loop.forkmesh .step h3 {
+        margin: 0 0 8px;
+        color: var(--pricing-text);
+        font-size: 15px;
+        font-weight: 600;
+      }
+
+      #product-loop.forkmesh .step p {
+        margin: 0;
+        color: var(--pricing-muted);
+        font-size: 13px;
+        line-height: 1.65;
+      }
+
+      #product-loop.forkmesh .cta-block {
+        display: inline-flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 28px;
+        padding: 8px 8px 8px 22px;
+        border: 1px solid var(--pricing-line);
+        border-radius: 100px;
+      }
+
+      #product-loop.forkmesh .cta-block .price {
+        color: var(--pricing-muted);
+        font-size: 13px;
+      }
+
+      #product-loop.forkmesh .cta-block .price strong {
+        color: var(--pricing-text);
+      }
+
+      #product-loop.forkmesh .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 11px 20px;
+        border: 0;
+        border-radius: 100px;
+        background: var(--pricing-text);
+        color: var(--pricing-bg);
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      #product-loop.forkmesh footer {
+        color: var(--pricing-muted);
+        font-size: 11px;
+        letter-spacing: 0.02em;
+      }
+
+      #product-loop.forkmesh footer span {
+        margin: 0 8px;
+        opacity: 0.5;
+      }
+
+      .network-bar {
+        cursor: pointer;
+        transition:
+          height 250ms cubic-bezier(0.16, 1, 0.3, 1),
+          opacity 250ms ease,
+          fill 250ms ease,
+          stroke 250ms ease;
+        animation: bar-idle 3.2s ease-in-out infinite;
+      }
+
+      .network-bar:focus {
+        outline: none;
+        stroke: oklch(0.72 0.17 152);
+        stroke-width: 2;
+      }
+
+      .mesh-card {
+        background:
+          radial-gradient(
+            ellipse at center,
+            rgba(40, 200, 120, 0.15),
+            transparent 65%
+          ),
+          #050505;
+      }
+
+      details.faq-item summary::-webkit-details-marker {
+        display: none;
+      }
+
+      #faq {
+        background: #090909;
+      }
+
+      #faq .faq-title {
+        color: #f4f4f4;
+        font-size: 3.75rem;
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      #faq .faq-intro {
+        color: #a3a3a3;
+        font-size: 1.125rem;
+        line-height: 1.65;
+      }
+
+      #faq .faq-wrap {
+        margin-top: 3.5rem;
+        max-width: 58rem;
+      }
+
+      #faq-list.faq-panel {
+        overflow: hidden;
+        border: 1px solid var(--border-subtle);
+        border-radius: 1.5rem;
+        background:
+          linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.018),
+            rgba(255, 255, 255, 0) 38%
+          ),
+          #1a1a1a;
+        padding: 1rem 0;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+      }
+
+      #faq-list .faq-item {
+        padding-left: 3rem;
+        padding-right: 3rem;
+      }
+
+      #faq-list .faq-item summary {
+        min-height: 4.25rem;
+        align-items: center;
+        padding-top: 0;
+        padding-bottom: 0;
+        color: #f1f1f1;
+        font-size: 1.125rem;
+        font-weight: 600;
+        line-height: 1.35;
+      }
+
+      #faq-list .faq-item p {
+        margin-top: -0.25rem;
+        padding-bottom: 1.375rem;
+        color: #a8a8a8;
+        font-size: 1rem;
+        line-height: 1.7;
+      }
+
+      #faq-list .faq-divider {
+        margin: 0 3rem;
+        border: 0;
+        border-top: 1px dashed var(--border);
+        opacity: 0.78;
+      }
+
+      details.faq-item[open] {
+        background: var(--card);
+        box-shadow: none;
+      }
+
+      details.faq-item .faq-icon {
+        position: relative;
+        display: inline-flex;
+        width: 1rem;
+        height: 1rem;
+        margin-top: 0.125rem;
+        flex-shrink: 0;
+        color: #a5a5a5;
+        font-size: 0;
+        transition:
+          color 180ms ease,
+          transform 180ms ease;
+      }
+
+      details.faq-item .faq-icon::before {
+        content: "";
+        width: 0.55rem;
+        height: 0.55rem;
+        border-right: 1.75px solid currentColor;
+        border-bottom: 1.75px solid currentColor;
+        transform: rotate(45deg);
+      }
+
+      details.faq-item[open] .faq-icon {
+        transform: rotate(180deg);
+      }
+
+      #faq .faq-note {
+        margin-top: 1.75rem;
+        padding-left: 3rem;
+        padding-right: 3rem;
+        color: #a3a3a3;
+        font-size: 1.125rem;
+        line-height: 1.65;
+      }
+
+      #faq .faq-note a {
+        color: #f1f1f1;
+      }
+
+      .footer-glow-text {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        color: rgba(232, 232, 232, 0.74);
+        filter: drop-shadow(0 0 24px rgba(255, 255, 255, 0.18));
+        mask-image: radial-gradient(
+          7.5rem 7.5rem at var(--footer-glow-x, 50%) var(--footer-glow-y, 50%),
+          black 0%,
+          black 34%,
+          rgba(0, 0, 0, 0.7) 62%,
+          transparent 100%
+        );
+        -webkit-mask-image: radial-gradient(
+          7.5rem 7.5rem at var(--footer-glow-x, 50%) var(--footer-glow-y, 50%),
+          black 0%,
+          black 34%,
+          rgba(0, 0, 0, 0.7) 62%,
+          transparent 100%
+        );
+        opacity: var(--footer-glow-opacity, 0);
+      }
+
+      .footer-glow-base {
+        color: #0d0d0d;
+      }
+
+      .site-footer-word-wrap {
+        position: relative;
+        display: flex;
+        justify-content: center;
+        height: clamp(6rem, 23vw, 22rem);
+        margin-bottom: -7.5rem;
+        overflow: hidden;
+        user-select: none;
+      }
+
+      .site-footer-glow {
+        position: relative;
+        display: inline-block;
+      }
+
+      .site-footer-word {
+        display: block;
+        font-size: 23vw;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: 0;
+      }
+
+      .site-footer-logo {
+        height: 2.5rem;
+        width: auto;
+      }
+
+      .site-footer-panel {
+        position: relative;
+        z-index: 10;
+        min-height: clamp(34rem, 47vw, 42rem);
+        border-color: #242424;
+        background: #000000;
+      }
+
+      .site-footer-links-grid {
+        display: grid;
+        width: 100%;
+        max-width: 80rem;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        column-gap: 2.5rem;
+        row-gap: 3rem;
+        align-items: start;
+        margin-inline: auto;
+        padding-inline: 1.25rem;
+        padding-top: clamp(5.75rem, 8vw, 8rem);
+        padding-bottom: clamp(5.75rem, 8vw, 8rem);
+      }
+
+      .site-footer-brand {
+        grid-column: 1 / -1;
+      }
+
+      .site-footer-brand-copy {
+        max-width: 12.75rem;
+        color: #8c8c8c;
+        font-size: 1rem;
+        line-height: 1.58;
+      }
+
+      .site-footer-link-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        margin: 1rem 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .site-footer-column-title {
+        color: #e5e5e5;
+        font-size: 0.95rem;
+        font-weight: 600;
+      }
+
+      .site-footer-column-link {
+        color: #888888;
+        font-size: 0.95rem;
+        transition: color 180ms ease;
+      }
+
+      .site-footer-column-link:hover {
+        color: #e8e8e8;
+      }
+
+      .site-footer-socials {
+        display: flex;
+        gap: 0.5rem;
+        margin-top: 1.5rem;
+      }
+
+      .site-footer-social-link {
+        display: flex;
+        width: 2.25rem;
+        height: 2.25rem;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #2f2f2f;
+        border-radius: 0.5rem;
+        color: #8e8e8e;
+        transition:
+          border-color 180ms ease,
+          color 180ms ease;
+      }
+
+      .site-footer-social-link:hover {
+        border-color: rgba(232, 232, 232, 0.3);
+        color: #e8e8e8;
+      }
+
+      .site-footer-social-link svg {
+        width: 1rem;
+        height: 1rem;
+      }
+
+      .site-footer-status-pill {
+        border-color: #2f2f2f;
+        color: #8e8e8e;
+      }
+
+      .site-footer-status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 1.5rem;
+        padding: 0.375rem 0.75rem;
+        border-width: 1px;
+        border-style: solid;
+        border-radius: 0.5rem;
+        font-size: 0.95rem;
+        line-height: 1.25;
+      }
+
+      .site-footer-status-dot {
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 9999px;
+        background: #28c878;
+      }
+
+      .site-footer-copyright {
+        max-width: 80rem;
+        border-color: #242424;
+        color: #858585;
+        margin-inline: auto;
+        padding-inline: 1.25rem;
+        padding-top: 1.65rem;
+        padding-bottom: 1.65rem;
+      }
+
+      @media (max-width: 768px) {
+        .site-footer-word-wrap {
+          margin-bottom: -3rem;
+        }
+      }
+
+      @media (min-width: 768px) {
+        .site-footer-links-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+
+      @media (min-width: 1024px) {
+        .site-footer-links-grid {
+          grid-template-columns: repeat(6, minmax(0, 1fr));
+          padding-inline: 2rem;
+        }
+
+        .site-footer-brand {
+          grid-column: auto;
+        }
+
+        .site-footer-copyright {
+          padding-inline: 2rem;
+        }
+      }
+
+      .pattern-rails {
+        position: relative;
+        display: block;
+        overflow: hidden;
+      }
+
+      .pattern-rails > #product-loop {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+      }
+
+      .pattern-rails::before,
+      .pattern-rails::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: clamp(4.75rem, 5.85vw, 7.5rem);
+        pointer-events: none;
+        background-image: repeating-linear-gradient(
+          315deg,
+          rgba(82, 82, 82, 0.34) 0,
+          rgba(82, 82, 82, 0.34) 1px,
+          transparent 1px,
+          transparent 5px
+        );
+        background-size: 6px 6px;
+        border-left: 1px solid rgba(255, 255, 255, 0.065);
+        border-right: 1px solid rgba(255, 255, 255, 0.065);
+        opacity: 0.72;
+        mask-image: linear-gradient(
+          to bottom,
+          transparent 0,
+          black 10%,
+          black 88%,
+          transparent 100%
+        );
+      }
+
+      .pattern-rails::before {
+        left: max(1rem, calc(50% - 31rem));
+      }
+
+      .pattern-rails::after {
+        right: max(1rem, calc(50% - 31rem));
+      }
+
+      #support-forkmesh {
+        position: relative;
+        scroll-margin-top: 6rem;
+        padding: 1rem 1rem 4rem;
+      }
+
+      #support-forkmesh .support-mission-shell {
+        width: min(100%, 72rem);
+        margin-inline: auto;
+      }
+
+      #support-forkmesh .support-mission-card {
+        position: relative;
+        isolation: isolate;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        overflow: hidden;
+        border: 1px solid rgba(134, 239, 172, 0.28);
+        border-radius: 1.5rem;
+        padding: clamp(1.5rem, 4vw, 3.25rem);
+        background: #0b110d;
+        background-image: radial-gradient(circle at 0% 12%, rgba(34, 197, 94, 0.22), transparent 38%);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.15),
+          inset 0 1.5rem 3rem rgba(134, 239, 172, 0.025),
+          0 1.25rem 3rem rgba(0, 0, 0, 0.52);
+      }
+
+      #support-forkmesh .support-mission-card::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+        background: url("/noisy-background.avif");
+        background-size: 270px 270px;
+        opacity: 0.1;
+        mix-blend-mode: soft-light;
+      }
+
+      #support-forkmesh .support-mission-copy {
+        position: relative;
+        z-index: 1;
+        min-width: 0;
+      }
+
+      #support-forkmesh .support-mission-kicker {
+        margin: 0;
+        color: #c9f7d8;
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      #support-forkmesh h2 {
+        margin: 0.8rem 0 0;
+        max-width: 38rem;
+        color: #fff;
+        font-family: var(--landing-hero-font);
+        font-size: clamp(2rem, 4vw, 3.2rem);
+        font-synthesis: none;
+        letter-spacing: -0.045em;
+        line-height: 1.03;
+      }
+
+      #support-forkmesh .support-mission-story {
+        color: rgba(238, 236, 247, 0.78);
+        font-family: var(--landing-body-font);
+        font-size: 0.95rem;
+        line-height: 1.6;
+      }
+
+      #support-forkmesh .support-mission-story {
+        max-width: 38rem;
+        margin: 1.1rem 0 0;
+      }
+
+      #support-forkmesh .support-mission-story + .support-mission-story {
+        margin-top: 0.75rem;
+      }
+
+      #support-forkmesh .support-mission-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 1.5rem;
+      }
+
+      #support-forkmesh .support-mission-cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 2.75rem;
+        border-radius: 0.7rem;
+        padding: 0.7rem 1rem;
+        background: #fff;
+        color: #161020;
+        font-family: var(--landing-heading-font);
+        font-size: 0.84rem;
+        font-weight: 700;
+        text-decoration: none;
+        transition: transform 160ms ease, background-color 160ms ease;
+      }
+
+      #support-forkmesh .support-mission-cta:hover {
+        transform: translateY(-1px);
+        background: #f4fff7;
+      }
+
+      #support-forkmesh .support-mission-secondary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 2.75rem;
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        border-radius: 0.7rem;
+        padding: 0.7rem 1rem;
+        color: rgba(255, 255, 255, 0.9);
+        font-family: var(--landing-heading-font);
+        font-size: 0.84rem;
+        font-weight: 700;
+        text-decoration: none;
+        transition: border-color 160ms ease, background-color 160ms ease;
+      }
+
+      #support-forkmesh .support-mission-secondary:hover {
+        border-color: rgba(255, 255, 255, 0.48);
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      @media (max-width: 768px) {
+        #faq .faq-title {
+          font-size: 3rem;
+          line-height: 1;
+        }
+
+        #faq .faq-intro {
+          font-size: 1rem;
+          line-height: 1.55;
+        }
+
+        #faq .faq-wrap {
+          margin-top: 3rem;
+          max-width: 100%;
+        }
+
+        #faq-list.faq-panel {
+          border-radius: 1.25rem;
+          padding: 0.5rem 0;
+        }
+
+        #faq-list .faq-item {
+          padding-left: 1.25rem;
+          padding-right: 1.25rem;
+        }
+
+        #faq-list .faq-item summary {
+          min-height: 3.875rem;
+          font-size: 1rem;
+          line-height: 1.35;
+        }
+
+        #faq-list .faq-item p {
+          font-size: 0.95rem;
+        }
+
+        #faq-list .faq-divider {
+          margin-left: 1.25rem;
+          margin-right: 1.25rem;
+        }
+
+        #faq .faq-note {
+          padding-left: 1.25rem;
+          padding-right: 1.25rem;
+          font-size: 1rem;
+          line-height: 1.55;
+        }
+
+        .app-mockup {
+          min-height: 360px;
+          font-size: 12px;
+        }
+
+        .fm-actions,
+        .fm-rail,
+        .fm-tree,
+        .fm-tag,
+        .fm-mirror {
+          display: none;
+        }
+
+        .fm-view-code {
+          grid-template-columns: minmax(0, 1fr);
+          padding: 10px;
+        }
+
+        .fm-repo-hd {
+          padding-left: 12px;
+          padding-right: 12px;
+        }
+
+        .fm-code {
+          font-size: 10.5px;
+        }
+
+        .pattern-rails {
+          display: block;
+          width: 100%;
+          max-width: 100vw;
+        }
+
+        .pattern-rails::before,
+        .pattern-rails::after {
+          display: none;
+        }
+
+        .pattern-rails > #product-loop {
+          width: 100%;
+          margin-inline: 0;
+        }
+
+        #product-loop.forkmesh {
+          width: 100%;
+          padding: 6rem 0 4rem;
+        }
+
+        #product-loop.forkmesh .pricing-content {
+          width: min(calc(100% - 2.5rem), 40rem);
+        }
+
+        #product-loop.forkmesh h2 {
+          font-size: 32px;
+        }
+
+        #product-loop.forkmesh .lead {
+          max-width: 21.5rem;
+        }
+
+        #product-loop.forkmesh .row {
+          align-items: flex-start;
+        }
+
+        #product-loop.forkmesh .row .v small {
+          display: block;
+          margin-top: 3px;
+          margin-left: 0;
+        }
+
+        #product-loop.forkmesh .steps {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 24px;
+        }
+
+        #product-loop.forkmesh .cta-block {
+          flex-direction: column;
+          align-items: stretch;
+          width: 100%;
+          gap: 12px;
+          padding: 18px;
+          border-radius: 14px;
+        }
+
+        #product-loop.forkmesh .btn {
+          width: 100%;
+        }
+
+        #product-loop.forkmesh footer {
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: center;
+          gap: 0.35rem 0;
+        }
+
+        #support-forkmesh {
+          padding: 0 1.25rem 4rem;
+        }
+
+        #support-forkmesh .support-mission-card {
+          border-radius: 1.25rem;
+          padding: 1.5rem;
+        }
+
+        #support-forkmesh h2 {
+          font-size: clamp(2rem, 10vw, 2.7rem);
+        }
+
+        #support-forkmesh .support-mission-story {
+          font-size: 0.94rem;
+          line-height: 1.58;
+        }
+
+      }
+
+      @media (max-width: 420px) {
+        #faq .faq-title {
+          font-size: 2.75rem;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+      <link rel="stylesheet" href="/site-footer.css" />
+    <script src="/site-footer.js?v=acdada792fa2" defer></script>
+    <script src="/home-header-auth.js?v=77163e4940c7" defer></script>
+  </head>
+  <body class="min-h-full bg-background text-foreground">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <main id="main-content" class="overflow-hidden" tabindex="-1">
+      <header>
+        <nav
+          id="site-nav"
+          class="site-nav fixed z-20 w-full px-2"
+          data-open="false"
+        >
+          <div
+            class="nav-shell mx-auto mt-2 max-w-6xl border border-transparent px-6 transition-all lg:px-12"
+          >
+            <div
+              class="relative flex flex-wrap items-center justify-between gap-6 py-3 lg:gap-0 lg:py-4"
+            >
+              <div class="flex w-full justify-between lg:w-auto">
+                <a
+                  href="/"
+                  aria-label="home"
+                  class="brand flex items-center space-x-2"
+                >
+                  <img
+                    src="/assets/logo.png"
+                    alt=""
+                    aria-hidden="true"
+                    width="34"
+                    height="40"
+                    class="brand-mark h-10 w-auto"
+                  />
+                </a>
+                <div class="mobile-world-join" aria-label="ForkMesh World live users">
+                  <span class="mobile-world-count" data-home-world-count aria-live="polite">— live</span>
+                  <a class="mobile-world-button" href="/world">Join World</a>
+                </div>
+                <button
+                  id="mobile-menu-toggle"
+                  type="button"
+                  aria-label="Open Menu"
+                  aria-expanded="false"
+                  aria-controls="mobile-nav-panel"
+                  class="relative z-20 -m-2.5 -mr-4 block cursor-pointer p-2.5 lg:hidden"
+                >
+                  <svg
+                    class="menu-open-icon m-auto size-6 transition duration-200"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <line x1="4" y1="7" x2="20" y2="7"></line>
+                    <line x1="4" y1="12" x2="20" y2="12"></line>
+                    <line x1="4" y1="17" x2="20" y2="17"></line>
+                  </svg>
+                  <svg
+                    class="menu-close-icon absolute inset-0 m-auto size-6 -rotate-180 scale-0 opacity-0 transition duration-200"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                </button>
+              </div>
+
+              <div class="absolute inset-0 m-auto hidden size-fit lg:block">
+                <ul class="flex gap-5 text-sm">
+                  <li>
+                    <a
+                      class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                      href="#features"
+                      >Features</a
+                    >
+                  </li>
+                  <li>
+                    <a
+                      class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                      href="#workflow"
+                      >How it works</a
+                    >
+                  </li>
+                  <li>
+                    <a
+                      class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                      href="/world"
+                      >World</a
+                    >
+                  </li>
+                  <li>
+                    <a
+                      class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                      href="/pricing"
+                      >Pricing</a
+                    >
+                  </li>
+                  <li>
+                    <a
+                      class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                      href="#faq"
+                      >FAQ</a
+                    >
+                  </li>
+                  <li>
+                    <a
+                      class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                      href="/blog"
+                      >Blog</a
+                    >
+                  </li>
+                </ul>
+              </div>
+
+              <div
+                id="mobile-nav-panel"
+                class="menu-panel mb-6 w-full flex-wrap items-center justify-end space-y-8 rounded-3xl border border-border bg-background p-6 shadow-2xl shadow-zinc-950/40 md:flex-nowrap lg:m-0 lg:w-fit lg:gap-6 lg:space-y-0 lg:border-transparent lg:bg-transparent lg:p-0 lg:shadow-none"
+              >
+                <div class="lg:hidden">
+                  <ul class="space-y-6 text-base">
+                    <li>
+                      <a
+                        class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                        href="#features"
+                        >Features</a
+                      >
+                    </li>
+                    <li>
+                      <a
+                        class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                      href="#workflow"
+                      >How it works</a
+                      >
+                    </li>
+                    <li>
+                      <a
+                        class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                        href="/world"
+                        >World</a
+                      >
+                    </li>
+                    <li>
+                      <a
+                        class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                        href="/pricing"
+                        >Pricing</a
+                      >
+                    </li>
+                    <li>
+                      <a
+                        class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                        href="#faq"
+                        >FAQ</a
+                      >
+                    </li>
+                    <li>
+                      <a
+                        class="block text-muted-foreground duration-150 hover:text-accent-foreground"
+                        href="/blog"
+                        >Blog</a
+                      >
+                    </li>
+                  </ul>
+                </div>
+                <div
+                  class="flex w-full flex-col space-y-3 sm:flex-row sm:gap-3 sm:space-y-0 md:w-fit"
+                >
+                  <a
+                    data-home-auth-secondary
+                    class="button-outline hide-on-scroll h-9 rounded-lg px-3 text-[0.8rem]"
+                    href="/login"
+                    >Login</a
+                  >
+                  <a
+                    data-home-auth-primary
+                    class="button-primary h-9 rounded-lg px-3 text-[0.8rem]"
+                    href="/signup"
+                    >Get Started</a
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+        </nav>
+      </header>
+
+      <section
+        class="hero-section relative isolate overflow-hidden bg-background"
+      >
+      <!-- <img
+        src="/assets/video/network.jpg"
+        alt=""
+        class="absolute top-0 left-0 w-full h-full"
+      /> -->
+        <div
+          aria-hidden="true"
+          class="hero-scene pointer-events-none absolute inset-x-0 top-0 z-0 overflow-hidden"
+        >
+          <video
+            aria-hidden="true"
+            autoplay
+            class="hero-background w-full h-full"
+            loop
+            muted
+            playsinline
+            preload="auto"
+            src="/assets/hero.mp4"
+          ></video>
+          <div class="hero-dim"></div>
+          <div class="hero-side-vignette"></div>
+          <div class="hero-top-fade"></div>
+        </div>
+        <div class="hero-stage relative z-10 min-h-[100svh] pt-24 md:pt-36">
+          <div class="mx-auto max-w-7xl px-6">
+            <div class="text-center sm:mx-auto lg:mr-auto lg:mt-0">
+              <p
+                class="motion-in mx-auto mt-8 font-favorit-mono text-xs font-semibold uppercase tracking-[0.18em] text-accent lg:mt-16"
+              >
+                A resilient, local-first Git forge
+              </p>
+              <h1
+                class="motion-in motion-delay-1 mx-auto mt-5 max-w-5xl font-bold text-balance font-domine text-5xl leading-[1.05] tracking-normal md:text-7xl xl:text-[5.25rem]"
+              >
+                Keep your whole project alive beyond any one host
+              </h1>
+              <p
+                class="motion-in motion-delay-2 mx-auto mt-8 max-w-2xl text-balance text-lg leading-relaxed text-foreground/90"
+              >
+                ForkMesh lets developers collaborate on, mirror, and preserve
+                source-code repositories across independent hosts&mdash;without
+                relying on any single hosting provider. An eligible, healthy,
+                integrity-matching mirror can keep the same project URL
+                browsable and cloneable if the source host goes offline.
+              </p>
+              <div
+                id="install-banner"
+                class="motion-in motion-delay-3 mx-auto mt-10 flex w-full max-w-xl items-center gap-3 rounded-xl border border-[#3B3B3B] bg-muted/80 py-2 pl-4 pr-2 text-left backdrop-blur-md"
+              >
+                <span
+                  aria-hidden="true"
+                  class="font-favorit-mono text-sm text-muted-foreground"
+                  >$</span
+                >
+                <code
+                  class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap font-favorit-mono text-sm text-foreground"
+                  >curl -fsSL https://forkmesh.com/install.sh | bash</code
+                >
+                <button
+                  type="button"
+                  id="hero-install-copy"
+                  data-copy="curl -fsSL https://forkmesh.com/install.sh | bash"
+                  class="button-outline h-8 shrink-0 rounded-lg px-3 text-xs"
+                  aria-label="Copy install command"
+                  aria-live="polite"
+                >
+                  Copy
+                </button>
+              </div>
+              <div
+                class="motion-in motion-delay-3 mt-6 flex flex-col items-center justify-center gap-2 md:flex-row"
+              >
+                <div class="rounded-xl bg-white/20 p-1">
+                  <a
+                    href="/desktop"
+                    class="button-primary rounded-xl px-5 text-base"
+                    >Install ForkMesh</a
+                  >
+                </div>
+                <a
+                  href="/forkmesh/forkmesh"
+                  class="button-outline inline-flex h-10 items-center gap-2 rounded-xl px-5 text-base"
+                  >Explore a live repository
+                  <span aria-hidden="true">&rarr;</span></a
+                >
+              </div>
+              <div
+                class="motion-in motion-delay-3 mt-4 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-sm text-foreground/75"
+                aria-label="ForkMesh product details"
+              >
+                <span>Open source</span><span aria-hidden="true">&middot;</span>
+                <span>Git-native</span><span aria-hidden="true">&middot;</span>
+                <span>macOS, Windows &amp; Linux</span><span aria-hidden="true">&middot;</span>
+                <a class="underline-offset-4 hover:underline" href="/docs">Read the docs</a>
+              </div>
+            </div>
+          </div>
+
+          <div
+            class="relative mx-auto mt-8 max-w-full overflow-hidden px-2 [mask-image:linear-gradient(to_bottom,black_55%,transparent_100%)] sm:mt-12 md:mt-20"
+          >
+            <div
+              class="relative mx-auto max-w-6xl overflow-hidden rounded-2xl border-[0.5px] border-[#3B3B3B] bg-background shadow-lg shadow-zinc-950/15"
+            >
+              <div
+                aria-hidden="true"
+                inert
+                class="relative aspect-[15/8] overflow-hidden rounded-2xl bg-background"
+              >
+                <div class="app-mockup">
+                  <div class="fm-topbar">
+                    <div class="fm-crumbs">
+                      <span class="fm-logo-sq" aria-label="ForkMesh"></span>
+                      <strong>ForkMesh</strong>
+                      <span class="fm-sep">/</span>
+                      <span class="fm-dim"
+                        ><span class="fm-dot"></span>forkmesh.com</span
+                      >
+                      <span class="fm-sep">›</span>
+                      <span class="fm-dim">Repositories</span>
+                      <span class="fm-sep">›</span>
+                      <span>node-f4rlozos/repository</span>
+                    </div>
+                    <div class="fm-actions">
+                      <span class="fm-pill">
+                        <svg class="fm-icon" viewBox="0 0 24 24">
+                          <rect
+                            x="3"
+                            y="11"
+                            width="18"
+                            height="11"
+                            rx="2"
+                          ></rect>
+                          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                        </svg>
+                        Encrypted
+                      </span>
+                      <span class="fm-btn">
+                        <svg class="fm-icon" viewBox="0 0 24 24">
+                          <path
+                            d="M21 11.5a8.38 8.38 0 0 1-9 8.4A8.5 8.5 0 1 1 21 11.5z"
+                          ></path>
+                        </svg>
+                        Chat
+                      </span>
+                    </div>
+                  </div>
+                  <div class="fm-shell">
+                    <aside class="fm-rail">
+                      <div>
+                        <div class="fm-ws fm-ws-mesh">F</div>
+                        <div class="fm-ws fm-ws-fork">F</div>
+                        <button
+                          class="fm-ws-add"
+                          type="button"
+                          aria-label="Add workspace"
+                        >
+                          +
+                        </button>
+                      </div>
+                      <button
+                        class="fm-rail-btn"
+                        type="button"
+                        aria-label="Settings"
+                      >
+                        <svg class="fm-icon" viewBox="0 0 24 24">
+                          <circle cx="12" cy="12" r="3"></circle>
+                          <path
+                            d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"
+                          ></path>
+                        </svg>
+                      </button>
+                    </aside>
+                    <div class="fm-main">
+                      <div class="fm-repo-hd">
+                        <div class="fm-repo-title-row">
+                          <div class="fm-title">
+                            <span class="fm-owner">node-f4rlozos</span>
+                            <span class="fm-sep">/</span>
+                            <span class="fm-name">repository</span>
+                            <span class="fm-tag">Public</span>
+                            <span class="fm-mirror">Mirror</span>
+                          </div>
+                          <div class="fm-actions">
+                            <span class="fm-btn">Fork <b>0</b></span>
+                            <span class="fm-btn">Mirror <b>1</b></span>
+                            <span class="fm-btn">Star <b>0</b></span>
+                          </div>
+                        </div>
+                        <nav class="fm-tabs" aria-label="Repository sections">
+                          <span class="fm-tab active">Code</span>
+                          <span class="fm-tab">Commits</span>
+                          <span class="fm-tab"
+                            >Issues <span class="fm-sep">39</span></span
+                          >
+                          <span class="fm-tab"
+                            >Pull requests <span class="fm-sep">5</span></span
+                          >
+                          <span class="fm-tab">Actions</span>
+                          <span class="fm-tab">Wiki</span>
+                          <span class="fm-tab">Security</span>
+                          <span class="fm-tab">Insights</span>
+                        </nav>
+                      </div>
+                      <section class="fm-view-code">
+                        <aside class="fm-tree">
+                          <div class="fm-tree-head">Files</div>
+                          <div class="fm-search">
+                            Search mirrored repositories
+                          </div>
+                          <div class="fm-file active">
+                            <span class="fm-ft">TSX</span> App.tsx
+                          </div>
+                          <div class="fm-file">
+                            <span class="fm-ft">TSX</span> RepositoryCard.tsx
+                          </div>
+                          <div class="fm-file">
+                            <span class="fm-ft">TS</span> repositories.ts
+                          </div>
+                          <div class="fm-file">
+                            <span class="fm-ft">MD</span> README.md
+                          </div>
+                        </aside>
+                        <div class="fm-editor">
+                          <div class="fm-editor-tabs">
+                            <span class="fm-editor-tab active"
+                              ><span class="fm-ft">TSX</span> App.tsx</span
+                            >
+                            <span class="fm-editor-tab"
+                              ><span class="fm-ft">TSX</span>
+                              RepositoryCard.tsx</span
+                            >
+                            <span class="fm-editor-tab"
+                              ><span class="fm-ft">TS</span>
+                              repositories.ts</span
+                            >
+                          </div>
+                          <pre
+                            class="fm-code"
+                            aria-label="ForkMesh code mockup"
+                          ><span class="fm-code-line"><span class="tok-kw">import</span> { <span class="tok-fn">useMemo</span>, <span class="tok-fn">useState</span> } <span class="tok-kw">from</span> <span class="tok-str">"react"</span>;</span>
+<span class="fm-code-line"><span class="tok-kw">import</span> { RepositoryCard } <span class="tok-kw">from</span> <span class="tok-str">"@/components/repository-card"</span>;</span>
+<span class="fm-code-line"><span class="tok-kw">import</span> { repositories } <span class="tok-kw">from</span> <span class="tok-str">"@/data/repositories"</span>;</span>
+<span class="fm-code-line"> </span>
+<span class="fm-code-line"><span class="tok-kw">export default function</span> <span class="tok-fn">App</span>() {</span>
+<span class="fm-code-line">  <span class="tok-kw">const</span> [query, setQuery] = <span class="tok-fn">useState</span>(<span class="tok-str">""</span>);</span>
+<span class="fm-code-line"> </span>
+<span class="fm-code-line">  <span class="tok-kw">const</span> visibleRepositories = <span class="tok-fn">useMemo</span>(() =&gt; {</span>
+<span class="fm-code-line">    <span class="tok-kw">return</span> repositories.<span class="tok-fn">filter</span>((repo) =&gt;</span>
+<span class="fm-code-line">      repo.name.toLowerCase().includes(query.toLowerCase()),</span>
+<span class="fm-code-line">    );</span>
+<span class="fm-code-line">  }, [query]);</span>
+<span class="fm-code-line"> </span>
+<span class="fm-code-line">  <span class="tok-kw">return</span> (</span>
+<span class="fm-code-line">    &lt;main className=<span class="tok-str">"min-h-screen bg-neutral-950 text-white"</span>&gt;</span>
+<span class="fm-code-line">      &lt;h1&gt;ForkMesh Repositories&lt;/h1&gt;</span>
+<span class="fm-code-line">      &lt;RepositoryCard repository={visibleRepositories[0]} /&gt;</span>
+<span class="fm-code-line">    &lt;/main&gt;</span>
+<span class="fm-code-line">  );</span>
+<span class="fm-code-line">}</span></pre>
+                        </div>
+                      </section>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <section class="pb-16 pt-16 md:pb-28" aria-labelledby="proof-title">
+            <div class="mx-auto max-w-6xl px-6">
+              <div class="border-y border-border bg-background/75 py-8 backdrop-blur-sm sm:px-6">
+                <p class="font-favorit-mono text-xs font-semibold uppercase tracking-[0.16em] text-accent">
+                  The proof is the workflow
+                </p>
+                <h2 id="proof-title" class="mt-2 font-favorit text-2xl text-foreground">
+                  Keep building through a source-host outage.
+                </h2>
+                <ol class="mt-6 grid gap-5 text-left sm:grid-cols-2 lg:grid-cols-4">
+                  <li class="border-l border-border pl-4">
+                    <span class="font-favorit-mono text-xs text-muted-foreground">01</span>
+                    <strong class="mt-1 block text-sm text-foreground">Collaborate</strong>
+                    <span class="mt-1 block text-sm leading-6 text-muted-foreground">Work with issues, pull requests, Actions, and agents.</span>
+                  </li>
+                  <li class="border-l border-border pl-4">
+                    <span class="font-favorit-mono text-xs text-muted-foreground">02</span>
+                    <strong class="mt-1 block text-sm text-foreground">Add a mirror</strong>
+                    <span class="mt-1 block text-sm leading-6 text-muted-foreground">Let another permitted node keep an independent Git copy.</span>
+                  </li>
+                  <li class="border-l border-border pl-4">
+                    <span class="font-favorit-mono text-xs text-muted-foreground">03</span>
+                    <strong class="mt-1 block text-sm text-foreground">Lose the source host</strong>
+                    <span class="mt-1 block text-sm leading-6 text-muted-foreground">The router checks eligible mirrors for health and integrity.</span>
+                  </li>
+                  <li class="border-l border-border pl-4">
+                    <span class="font-favorit-mono text-xs text-muted-foreground">04</span>
+                    <strong class="mt-1 block text-sm text-foreground">Clone again</strong>
+                    <span class="mt-1 block text-sm leading-6 text-muted-foreground">Use the same public URL while a verified copy is available.</span>
+                  </li>
+                </ol>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section
+        id="features"
+        class="mx-auto max-w-6xl px-5 py-24 lg:px-8 lg:py-32"
+      >
+        <h2
+          class="max-w-3xl text-balance font-favorit text-5xl leading-[1.05] tracking-tight text-foreground sm:text-6xl"
+        >
+          One project workflow. No single required source host.
+        </h2>
+        <p class="mt-5 max-w-3xl text-pretty text-lg leading-relaxed text-muted-foreground">
+          ForkMesh brings the daily work of building software into the same
+          local-first system that keeps it available: planning, agents, Git
+          review, delivery, conversation, and independent mirrors.
+        </p>
+        <div class="grid grid-cols-6 gap-3 py-12">
+          <article
+            class="feature-card relative col-span-full flex min-h-64 lg:col-span-2"
+          >
+            <div class="relative m-auto size-fit px-4 py-8 text-center">
+              <div
+                class="relative mx-auto flex h-24 w-56 items-center justify-center"
+              >
+                <svg
+                  class="absolute inset-0 size-full text-muted"
+                  viewBox="0 0 254 104"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M112.9 97.7C140.4 97.1 171 94.7 201.1 87.5c9.3-2.2 18.5-4.9 27.2-9.3 3.9-1.9 7.6-4.2 11.1-6.9 2.5-2.1 4.6-4.6 6.2-7.4 3.8-6.6 2.7-13.4-3.1-18.3-3.5-2.9-7.3-5.3-11.3-7.3-11.7-5.6-24-9.9-36.7-12.8-10.5-2.3-21.1-3.8-31.8-4.2-1.3 0-2.5-.1-3.7-.5-.9-.4-2.1-1.6-2-2.3.2-.6.4-1.1.8-1.5.4-.5.8-.8 1.3-1.1 1.1-.3 2.2-.4 3.3-.3 17.4-.2 34.2 3.3 50.6 8.9 8 2.8 15.8 6 23.4 9.7 4.1 2 7.8 4.6 11.1 7.7 6.9 6.4 8.3 15.1 4.4 23.7-2 4.4-5.1 8.2-8.9 11.1-6.7 5.4-14.4 8.8-22.4 11.7-15.5 5.5-31.5 8.6-47.8 10.9-19.3 2.7-38.7 4.3-58.2 4.6-23.4.4-46.6-.8-69.4-6.2-9.1-2-17.9-5.4-25.9-10C13.8 84.6 9.2 80.6 5.4 75.8-.5 67.7-1.1 59.2 3.3 50.3c2.5-4.9 6-9.3 10.2-12.9 10.8-9.9 23.6-16.5 37.1-21.7C68.1 8.9 86.5 5.1 105.2 2.8 129 .1 153.2.1 177 2.9c20.7 2.3 41 6.1 60.6 13.5 2.5 1 4.9 2.1 7.3 3.3 1.7.8 2.8 2 2.1 4-.5 1.5-2.2 2-4.4 1-12.3-5.6-25.4-8.4-38.5-11.1-15.3-3.1-30.9-5.1-46.5-5.9-27.7-1.9-55.4.5-82.4 6.9-14.6 3.3-28.6 8.8-41.7 16.1-6.9 3.7-13.1 8.4-18.5 14-2.1 2.1-3.9 4.5-5.4 7-4.7 7.8-4 15.6 2.3 22.1 3.3 3.3 7 6.2 10.9 8.6 8.8 5.4 18.5 8.2 28.5 10.3 19.3 4 38.7 5.1 61.6 5Z"
+                    fill="currentColor"
+                  />
+                </svg>
+                <span class="relative text-5xl font-semibold">Your forge</span>
+              </div>
+              <h3 class="mt-6 text-3xl font-semibold">Runs where your code lives</h3>
+            </div>
+          </article>
+          <article
+            class="feature-card col-span-full sm:col-span-3 lg:col-span-2"
+          >
+            <div class="px-4 py-8">
+              <div
+                class="relative mx-auto flex aspect-square size-32 rounded-full border border-border before:absolute before:-inset-2 before:rounded-full before:border before:border-border"
+              >
+                <svg
+                  class="m-auto size-20 text-zinc-500"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z"
+                  ></path>
+                  <path d="m9 12 2 2 4-5"></path>
+                </svg>
+              </div>
+              <div class="relative z-10 mt-6 space-y-2 text-center">
+                <h3 class="text-lg font-medium text-white">
+                  Signed and portable
+                </h3>
+                <p class="text-foreground">
+                  Issues, pull requests, and discussions carry verifiable
+                  authorship instead of living only in one forge database.
+                </p>
+              </div>
+            </div>
+          </article>
+          <article
+            class="feature-card col-span-full sm:col-span-3 lg:col-span-2"
+          >
+            <div class="px-4 py-8">
+              <div class="pt-6 lg:px-6">
+                <svg
+                  class="w-full text-muted-foreground"
+                  viewBox="0 0 386 123"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <rect
+                    width="386"
+                    height="123"
+                    rx="10"
+                    fill="currentColor"
+                    opacity=".12"
+                  ></rect>
+                  <path
+                    d="M3 121c12-27 32-36 63-40 20 0 29 0 42-17 8 0 10 28 18 28s18-14 29-11c12 2 33 11 40 11s12-28 20-28 25 30 30 28c6-2 15-32 22-32 6 0 18 28 21 28 8 0 13-15 18-15 7 0 17-7 29-9 12-1 13 18 28 17 15-2 20 25 20 25"
+                    stroke="oklch(0.72 0.17 152)"
+                    stroke-width="3"
+                  />
+                  <path
+                    d="M3 123c14-29 33-36 63-42 20 0 31 12 43-17 8 0 9 28 17 28s18-14 30-11c11 2 32 11 39 11s12-28 20-28 25 30 30 28c6-2 15-32 22-32 6 0 18 28 20 28 9 0 14-15 19-15 7 0 17-8 30-10 12-1 13 20 28 18 10-1 17 12 20 26v16Z"
+                    fill="oklch(0.72 0.17 152 / .16)"
+                  />
+                </svg>
+              </div>
+              <div class="relative z-10 mt-14 space-y-2 text-center">
+                <h3 class="text-lg font-medium">
+                  Fail over to a verified mirror
+                </h3>
+                <p class="text-foreground">
+                  Keep one public project URL. Clone and browse requests can
+                  route to an eligible, healthy, integrity-matching copy when
+                  the original host is unavailable.
+                </p>
+              </div>
+            </div>
+          </article>
+          <article class="feature-card col-span-full lg:col-span-3">
+            <div class="grid h-full gap-8 p-6 sm:grid-cols-2">
+              <div
+                class="relative z-10 flex flex-col justify-between space-y-12 lg:space-y-6"
+              >
+                <div
+                  class="relative flex aspect-square size-12 rounded-full border-[0.5px] border-[#3B3B3B]"
+                >
+                  <svg
+                    class="m-auto size-5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.3"
+                  >
+                    <path
+                      d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z"
+                    ></path>
+                  </svg>
+                </div>
+                <div class="space-y-2">
+                  <h3 class="text-lg font-medium text-white">
+                    Turn tasks into reviewed changes
+                  </h3>
+                  <p class="text-foreground">
+                    Run Codex or Claude Code in isolated worktrees, follow and
+                    steer each session, inspect the branch diff, and choose
+                    when the work is ready for a pull request.
+                  </p>
+                </div>
+              </div>
+              <div
+                class="relative rounded-tl-lg border-l border-t border-border p-6"
+              >
+                <div class="absolute left-3 top-2 flex gap-1">
+                  <span
+                    class="block size-2 rounded-full border border-border bg-foreground/10"
+                  ></span>
+                  <span
+                    class="block size-2 rounded-full border border-border bg-foreground/10"
+                  ></span>
+                  <span
+                    class="block size-2 rounded-full border border-border bg-foreground/10"
+                  ></span>
+                </div>
+                <svg
+                  class="mt-8 w-full"
+                  viewBox="0 0 366 190"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M1 150 28 90l18 12 18-45 28 65 28-18 30 34 38-101 26 56 24-15 28-58 30 92 36-60 30 74"
+                    stroke="oklch(0.72 0.17 152)"
+                    stroke-width="2"
+                  />
+                  <path
+                    d="M1 190V150l27-60 18 12 18-45 28 65 28-18 30 34 38-101 26 56 24-15 28-58 30 92 36-60 30 74v64Z"
+                    fill="oklch(0.72 0.17 152 / .15)"
+                  />
+                </svg>
+              </div>
+            </div>
+          </article>
+          <article class="feature-card col-span-full lg:col-span-3">
+            <div class="grid h-full gap-8 p-6 sm:grid-cols-2">
+              <div
+                class="relative z-10 flex flex-col justify-between space-y-12 lg:space-y-6"
+              >
+                <div
+                  class="relative flex aspect-square size-12 rounded-full border-[0.5px] border-[#3B3B3B] p-2"
+                >
+                  <svg
+                    class="m-auto size-5"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.3"
+                  >
+                    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+                    <circle cx="9" cy="7" r="4"></circle>
+                    <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                  </svg>
+                </div>
+                <div class="space-y-2">
+                  <h3 class="text-lg font-medium">
+                    The whole forge, in one workspace
+                  </h3>
+                  <p class="text-foreground">
+                    Browse code, plan issues and projects, review Git history,
+                    run Actions, publish releases, search the codebase, and
+                    turn chat into tracked work without switching tools.
+                  </p>
+                </div>
+              </div>
+              <div
+                class="relative mt-6 before:absolute before:inset-y-0 before:left-1/2 before:w-px before:bg-border sm:mt-0"
+              >
+                <div
+                  class="relative flex h-full flex-col justify-center space-y-6 py-6"
+                >
+                  <div
+                    class="relative flex w-[calc(50%+0.875rem)] items-center justify-end gap-2"
+                  >
+                    <span
+                      class="rounded border border-border px-2 py-1 text-xs shadow-sm"
+                      >node-f4rlozos</span
+                    >
+                    <span
+                      class="z-10 flex size-7 items-center justify-center rounded-full bg-emerald-400 text-xs font-bold text-black ring-4 ring-background"
+                      >F</span
+                    >
+                  </div>
+                  <div
+                    class="relative ml-[calc(50%-1rem)] flex items-center gap-2"
+                  >
+                    <span
+                      class="z-10 flex size-8 items-center justify-center rounded-full bg-violet-400 text-xs font-bold text-black ring-4 ring-background"
+                      >N</span
+                    >
+                    <span
+                      class="rounded border border-border px-2 py-1 text-xs shadow-sm"
+                      >node1</span
+                    >
+                  </div>
+                  <div
+                    class="relative flex w-[calc(50%+0.875rem)] items-center justify-end gap-2"
+                  >
+                    <span
+                      class="rounded border border-border px-2 py-1 text-xs shadow-sm"
+                      >node-msryAdT7</span
+                    >
+                    <span
+                      class="z-10 flex size-7 items-center justify-center rounded-full bg-sky-400 text-xs font-bold text-black ring-4 ring-background"
+                      >M</span
+                    >
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
+        </div>
+        <div class="mt-3 flex justify-end">
+          <a class="button-ghost h-10 rounded-xl px-5" href="/features">
+            Explore every shipped feature <span aria-hidden="true">&rarr;</span>
+          </a>
+        </div>
+      </section>
+
+      <section
+        id="network"
+        class="mx-auto max-w-6xl px-5 py-24 lg:px-8 lg:py-32"
+      >
+        <div class="mx-auto max-w-3xl text-center">
+          <video
+            aria-hidden="true"
+            autoplay
+            class="mx-auto mb-4 block"
+            height="170"
+            loop
+            muted
+            playsinline
+            poster="/assets/video/network.jpg"
+            preload="auto"
+            src="/assets/video/network.mp4"
+            width="170"
+          ></video>
+          <h2
+            class="mt-4 text-balance font-favorit text-5xl font-normal leading-[1.05] tracking-tight text-foreground sm:text-6xl"
+          >
+            One project URL. Independent places to serve it.
+          </h2>
+          <p
+            class="mx-auto mt-5 max-w-2xl text-pretty text-lg leading-relaxed text-muted-foreground"
+          >
+            Desktop and headless nodes keep permitted Git mirrors. The routing
+            layer checks freshness, health, eligibility, and source-attested
+            integrity before a mirror can serve public browse or clone traffic.
+          </p>
+          <div class="mt-6 flex justify-center">
+            <a
+              class="button-outline inline-flex items-center gap-2 rounded-xl px-5 h-10 text-base"
+              href="/network"
+              >See the live network
+              <span aria-hidden="true">&rarr;</span></a
+            >
+          </div>
+        </div>
+
+        <div
+          class="relative mx-auto mt-10 max-w-6xl overflow-hidden rounded-2xl border-[0.5px] border-[#3B3B3B] bg-black p-5 shadow-2xl sm:p-7 lg:mt-12 lg:min-h-[34rem] lg:overflow-visible lg:p-10"
+        >
+          <span
+            aria-hidden="true"
+            class="pointer-events-none absolute left-1/2 top-[-0.5px] h-px hidden lg:block w-48 -translate-x-1/2 rounded-full bg-[linear-gradient(90deg,transparent,rgba(40,200,120,0.92)_18%,rgba(40,200,120,0.95)_50%,rgba(40,200,120,0.92)_82%,transparent)] shadow-[0_0_18px_rgba(40,200,120,0.75)]"
+          ></span>
+          <div
+            class="grid w-full items-stretch gap-6 overflow-visible text-foreground lg:grid-cols-[minmax(0,1fr)_22rem]"
+          >
+            <div
+              class="relative top-20 hidden lg:block -ml-4 min-h-[24rem] scale-[1.12] overflow-visible rounded-xl px-3 py-8 sm:px-8 lg:-ml-10 lg:min-h-[26rem]"
+            >
+              <svg
+                aria-labelledby="node-bars-title node-bars-desc"
+                class="h-full min-h-[22rem] w-full cursor-pointer overflow-visible lg:min-h-[24rem]"
+                role="group"
+                viewBox="0 0 350 130"
+              >
+                <title id="node-bars-title">
+                  ForkMesh mirror-routing illustration
+                </title>
+                <desc id="node-bars-desc">
+                  Focus a node to see how source and mirror eligibility affect
+                  a public repository route. This is an illustrative topology,
+                  not live telemetry.
+                </desc>
+                <g id="network-bars" transform="rotate(180, 175, 65)"></g>
+              </svg>
+            </div>
+            <aside
+              class="mesh-card relative flex min-h-0 w-full flex-col justify-between overflow-hidden rounded-xl border border-border p-6 shadow-2xl shadow-black/20 lg:min-h-[24rem]"
+            >
+              <span
+                aria-hidden="true"
+                class="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/45 to-transparent"
+              ></span>
+              <div aria-live="polite" aria-atomic="true">
+                <p class="text-xs tracking-wide text-muted-foreground">
+                  ROUTING EXAMPLE
+                </p>
+                <p
+                  id="node-id"
+                  class="mt-1 break-all font-favorit-mono text-4xl font-semibold leading-tight text-foreground"
+                >
+                  scan the mesh
+                </p>
+                <p
+                  id="node-role"
+                  class="mt-3 text-sm leading-6 text-muted-foreground"
+                >
+                  Scan the mesh / Discovery mode
+                </p>
+                <div class="mt-5 flex flex-col gap-3 text-sm">
+                  <span class="flex items-center justify-between gap-4">
+                    <span class="flex items-center gap-2 text-foreground"
+                      ><span
+                        class="size-2 rounded-full bg-[oklch(0.72_0.17_152)]"
+                      ></span
+                      >Eligibility</span
+                    >
+                    <span id="node-signal" class="text-muted-foreground"
+                      >idle</span
+                    >
+                  </span>
+                  <span class="flex items-center justify-between gap-4">
+                    <span class="flex items-center gap-2 text-foreground"
+                      ><span class="size-2 rounded-full bg-zinc-500"></span
+                      >Health</span
+                    >
+                    <span id="node-latency" class="text-muted-foreground"
+                      >--</span
+                    >
+                  </span>
+                  <span class="flex items-center justify-between gap-4">
+                    <span class="flex items-center gap-2 text-foreground"
+                      ><span
+                        class="size-2 rounded-full bg-[rgba(40,200,120,0.55)]"
+                      ></span
+                      >Role</span
+                    >
+                    <span
+                      id="node-region"
+                      class="text-right text-muted-foreground"
+                      >No node selected</span
+                    >
+                  </span>
+                </div>
+              </div>
+              <div class="mt-6 border-t border-border pt-5">
+                <p class="text-xs tracking-wide text-muted-foreground">
+                  PUBLIC ROUTE
+                </p>
+                <p
+                  id="node-copy"
+                  class="mt-2 text-sm leading-6 text-muted-foreground"
+                >
+                  Hover or focus a bar to inspect an illustrative source or
+                  mirror candidate.
+                </p>
+                <a
+                  href="/network"
+                  class="mt-5 inline-flex items-center rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground/75 hover:text-foreground"
+                >See verified network state &rarr;</a>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section
+        id="workflow"
+        class="mx-auto max-w-6xl px-5 py-24 lg:px-8 lg:py-32"
+      >
+        <span id="agents" class="block scroll-mt-28"></span>
+        <h2
+          class="font-favorit text-5xl font-normal tracking-tight text-foreground sm:text-6xl"
+        >
+          Daily development, portable by design
+        </h2>
+        <p
+          class="mt-5 max-w-xl text-pretty text-lg leading-relaxed text-muted-foreground"
+        >
+          Preservation is useful when the project stays active. ForkMesh keeps
+          planning, agent work, Git review, delivery, and conversation in the
+          same workflow as the independent mirrors that protect the code.
+        </p>
+        <div class="mt-14 grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <article
+            class="relative overflow-hidden rounded-2xl border border-transparent bg-black p-6 lg:p-8"
+          >
+            <span
+              aria-hidden="true"
+              class="pointer-events-none absolute inset-x-0 top-0 h-px bg-border"
+            ></span>
+            <span
+              aria-hidden="true"
+              class="pointer-events-none absolute inset-x-[18%] top-0 hidden sm:block h-px bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.5)_16%,rgba(255,255,255,0.95)_50%,rgba(255,255,255,0.5)_84%,transparent_100%)] opacity-50"
+            ></span>
+            <div
+              class="relative top-6 w-full rounded-xl border-[0.5px] border-[#3B3B3B] bg-[radial-gradient(circle_at_86%_8%,rgba(255,255,255,0.13),transparent_34%),radial-gradient(circle_at_72%_0%,rgba(40,200,120,0.11),transparent_28%),linear-gradient(135deg,rgba(255,255,255,0.07),rgba(255,255,255,0.025)_42%,rgba(0,0,0,0.08))] p-6 sm:-right-[3.25rem] sm:top-11 sm:w-[calc(100%+2.75rem)]"
+            >
+              <div class="flex items-center gap-4">
+                <span
+                  class="flex size-12 items-center justify-center rounded-lg bg-accent/15 text-accent"
+                >
+                  <svg
+                    class="size-6"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <rect x="2" y="3" width="20" height="8" rx="2"></rect>
+                    <rect x="2" y="13" width="20" height="8" rx="2"></rect>
+                    <path d="M6 7h.01M6 17h.01"></path>
+                  </svg>
+                </span>
+                <div>
+                  <p class="text-sm text-muted-foreground">Agent session</p>
+                  <p
+                    class="flex items-center gap-1 text-lg font-semibold text-foreground"
+                  >
+                    Codex / issue branch
+                    <span class="text-muted-foreground">⌄</span>
+                  </p>
+                </div>
+              </div>
+              <div
+                class="mt-6 grid grid-cols-3 gap-4 border-t border-border pt-5"
+              >
+                <div>
+                  <p class="text-xs text-muted-foreground">WORKTREE</p>
+                  <p class="mt-1 text-xl font-normal text-foreground">Isolated</p>
+                </div>
+                <div>
+                  <p class="text-xs text-muted-foreground">SESSIONS</p>
+                  <p class="mt-1 text-xl font-normal text-foreground">Parallel</p>
+                </div>
+                <div>
+                  <p class="text-xs text-muted-foreground">ACTIVITY</p>
+                  <svg
+                    viewBox="0 0 80 30"
+                    class="mt-2 h-7 w-full"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M0,28 L20,22 L40,18 L60,8 L80,4"
+                      fill="none"
+                      stroke="oklch(0.72 0.17 152)"
+                      stroke-width="2"
+                    ></path>
+                  </svg>
+                </div>
+              </div>
+            </div>
+            <svg
+              class="mt-14 size-5 text-foreground"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <rect x="2" y="3" width="20" height="8" rx="2"></rect>
+              <rect x="2" y="13" width="20" height="8" rx="2"></rect>
+            </svg>
+            <h3 class="mt-4 font-favorit text-lg font-normal text-foreground">
+              From task to reviewed pull request
+            </h3>
+            <p class="mt-2 text-sm leading-relaxed text-muted-foreground">
+              Start Codex or Claude Code in a dedicated worktree, watch and
+              steer the session, inspect its branch in the Git view, and click
+              Create PR only when you are satisfied with the change.
+            </p>
+            <a
+              href="/features#agents"
+              class="mt-4 inline-block text-sm font-medium text-foreground underline-offset-4 hover:underline"
+              >Learn more</a
+            >
+          </article>
+
+          <article
+            class="relative overflow-hidden rounded-2xl border border-transparent bg-black p-6 lg:p-8"
+          >
+            <span
+              aria-hidden="true"
+              class="pointer-events-none absolute inset-x-0 top-0 h-px bg-border"
+            ></span>
+            <span
+              aria-hidden="true"
+              class="pointer-events-none absolute inset-x-[18%] top-0 hidden sm:block h-px bg-[linear-gradient(90deg,transparent_0%,rgba(255,255,255,0.5)_16%,rgba(255,255,255,0.95)_50%,rgba(255,255,255,0.5)_84%,transparent_100%)] opacity-50"
+            ></span>
+            <div
+              class="relative top-6 w-full rounded-xl border-[0.5px] border-[#3B3B3B] bg-[radial-gradient(ellipse_at_center,rgba(40,200,120,0.15),transparent_65%)] p-6 sm:-right-[3.25rem] sm:top-11"
+            >
+              <div class="grid grid-cols-2 gap-6">
+                <div>
+                  <p class="text-xs tracking-wide text-muted-foreground">
+                    PLAN
+                  </p>
+                  <p class="mt-1 text-4xl font-semibold text-foreground">Track</p>
+                  <div class="mt-5 flex flex-col gap-3 text-sm">
+                    <span class="flex items-center justify-between"
+                      ><span class="flex items-center gap-2 text-foreground"
+                        ><span class="size-2 rounded-full bg-accent"></span
+                        >Issues</span
+                      ><span class="text-muted-foreground">signed</span></span
+                    >
+                    <span class="flex items-center justify-between"
+                      ><span class="flex items-center gap-2 text-foreground"
+                        ><span class="size-2 rounded-full bg-zinc-500"></span
+                        >Projects</span
+                      ><span class="text-muted-foreground">shared</span></span
+                    >
+                  </div>
+                </div>
+                <div>
+                  <p class="text-xs tracking-wide text-muted-foreground">
+                    SHIP
+                  </p>
+                  <p class="mt-1 text-4xl font-semibold text-foreground">Deliver</p>
+                  <div class="mt-5 flex flex-col gap-3 text-sm">
+                    <span class="flex items-center gap-2 text-foreground"
+                      ><span class="size-2 rounded-full bg-zinc-400"></span
+                      >Actions</span
+                    >
+                    <span class="flex items-center gap-2 text-foreground"
+                      ><span class="size-2 rounded-full bg-zinc-700"></span
+                      >Releases</span
+                    >
+                  </div>
+                </div>
+              </div>
+            </div>
+            <svg
+              class="mt-14 size-5 text-foreground"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.5"
+            >
+              <path
+                d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3v8Z"
+              ></path>
+              <path d="m9 12 2 2 4-5"></path>
+            </svg>
+            <h3 class="mt-4 font-favorit text-lg font-normal text-foreground">
+              The work around the code comes too
+            </h3>
+            <p class="mt-2 text-sm leading-relaxed text-muted-foreground">
+              Plan issues and projects, review branches and pull requests, run
+              targeted Actions, publish artifacts and releases, hold
+              discussions, and move between desktop, web, mobile, IDE, and MCP.
+            </p>
+            <a
+              href="/features"
+              class="mt-4 inline-block text-sm font-medium text-foreground underline-offset-4 hover:underline"
+              >Learn more</a
+            >
+          </article>
+        </div>
+      </section>
+
+      <div class="pattern-rails relative w-full">
+        <section id="product-loop" class="forkmesh">
+          <div class="pricing-content">
+            <div class="index">FORKMESH - THE COMPLETE PROJECT LOOP</div>
+
+            <h2 id="pricing-title">Plan the work.<br />Keep <em>control of the result</em>.</h2>
+
+            <p class="lead">
+              ForkMesh connects the work maintainers do every day to the
+              resilience they need long term. Start with a task, use an agent
+              where it helps, review real Git changes, ship on your own nodes,
+              and keep independent copies available.
+            </p>
+
+            <hr class="rule" />
+
+            <div class="row">
+              <div class="k">Workspace</div>
+              <div class="v">Native desktop app <small>local Git, branches, worktrees, and review</small></div>
+            </div>
+            <div class="row">
+              <div class="k">Agents</div>
+              <div class="v">Codex + Claude Code <small>isolated, parallel, resumable sessions</small></div>
+            </div>
+            <div class="row">
+              <div class="k">Collaboration</div>
+              <div class="v">Signed project records <small>issues, pull requests, and discussions</small></div>
+            </div>
+            <div class="row">
+              <div class="k">Delivery</div>
+              <div class="v">Actions on connected nodes <small>logs, artifacts, tags, and releases</small></div>
+            </div>
+            <div class="row">
+              <div class="k">Access</div>
+              <div class="v">Desktop, web, mobile, IDE + MCP <small>one project across every surface</small></div>
+            </div>
+
+            <div class="formula">
+              <div class="caption">A review-first agent loop</div>
+              <div class="formula-row">
+                <div class="term"><span class="n">TASK</span><span class="l">Define the outcome</span></div>
+                <span class="op">→</span>
+                <div class="term"><span class="n">AGENT</span><span class="l">Work in isolation</span></div>
+                <span class="op">→</span>
+                <div class="term"><span class="n result">REVIEW</span><span class="l">You choose what ships</span></div>
+              </div>
+            </div>
+
+            <div class="steps">
+              <div class="step">
+                <div class="num">01</div>
+                <h3>Plan in context</h3>
+                <p>File an issue, capture a task from chat, or choose work from a project board with the repository already attached.</p>
+              </div>
+              <div class="step">
+                <div class="num">02</div>
+                <h3>Run work in parallel</h3>
+                <p>Give Codex or Claude Code a dedicated branch and worktree, then follow, steer, stop, or resume every session.</p>
+              </div>
+              <div class="step">
+                <div class="num">03</div>
+                <h3>Review actual Git</h3>
+                <p>Inspect the agent branch, commits, and range diff in one Git view. You decide when to create the pull request.</p>
+              </div>
+              <div class="step">
+                <div class="num">04</div>
+                <h3>Ship from your nodes</h3>
+                <p>Run targeted Actions, publish verified releases, and let eligible mirrors keep the public project route useful.</p>
+              </div>
+            </div>
+
+            <div class="cta-block">
+              <div class="price">Open source <strong>and free during launch</strong></div>
+              <a class="btn" href="/desktop">Install ForkMesh &rarr;</a>
+            </div>
+
+            <footer>
+              Optional, self-custodial community rewards remain available in
+              the World<span>&middot;</span><a href="/world?landmark=fountain">Learn about rewards</a>
+            </footer>
+          </div>
+        </section>
+      </div>
+
+      <section id="support-forkmesh" aria-labelledby="support-forkmesh-title">
+        <div class="support-mission-shell">
+          <div class="support-mission-card">
+            <div class="support-mission-copy">
+              <p class="support-mission-kicker">Support ForkMesh</p>
+              <h2 id="support-forkmesh-title">
+                Help us keep source code alive across machines people control.
+              </h2>
+              <p class="support-mission-story">
+                ForkMesh started after Kaif had 65+ merged open-source contributions become hard to access when a long-running organization was flagged and became unavailable almost overnight.
+              </p>
+              <p class="support-mission-story">
+                Kaif and Jett started ForkMesh so source-code history, repo mirrors, and collaboration records do not have to depend on one fragile place.
+              </p>
+              <div class="support-mission-actions">
+                <a
+                  class="support-mission-cta"
+                  href="https://www.patreon.com/16434219/join"
+                  target="_blank"
+                  rel="noreferrer"
+                >Support ForkMesh on Patreon</a>
+                <a class="support-mission-secondary" href="/dashboard">Browse Instance</a>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="faq" class="py-16 md:py-24">
+        <div class="mx-auto w-full px-4 md:px-6">
+          <div class="mx-auto max-w-xl text-center">
+            <h2
+              class="faq-title text-balance font-favorit text-5xl font-bold sm:text-6xl"
+            >
+              ForkMesh FAQ
+            </h2>
+            <p class="faq-intro mt-4 text-balance text-muted-foreground">
+              Answers about desktop nodes, mainnodes, local Git mirrors, signed
+              collaboration, encrypted repo rooms, and how ForkMesh keeps source
+              code portable.
+            </p>
+          </div>
+          <div class="faq-wrap mx-auto mt-12 max-w-6xl">
+            <div
+              id="faq-list"
+              class="faq-panel w-full rounded-2xl bg-muted/50 p-1"
+            >
+              <details class="faq-item group rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  What is ForkMesh?<span class="faq-icon">⌄</span>
+                </summary>
+                <p class="pb-2.5 text-base">
+                  ForkMesh is local-first infrastructure for preserving and
+                  collaborating on source code. Desktop nodes keep real Git
+                  encrypted mirrors locally, while mainnodes coordinate
+                  discovery, direct-HTTPS clone routing, encrypted repo rooms, signed
+                  inboxes, and account lookup.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  Is ForkMesh replacing GitHub or GitLab?<span class="faq-icon"
+                    >⌄</span
+                  >
+                </summary>
+                <p class="pb-2.5 text-base">
+                  No. ForkMesh works with Git instead of replacing it. The goal
+                  is to make repositories more portable and resilient, so
+                  important code can stay discoverable and cloneable even if one
+                  platform, account, or organization disappears.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  Where is the Git data stored?<span class="faq-icon">⌄</span>
+                </summary>
+                <p class="pb-2.5 text-base">
+                  Encrypted Git mirrors live on independently operated desktop
+                  nodes. Mainnodes coordinate the network, but they are not the
+                  canonical storage layer for Git objects. When someone clones
+                  a public repository through ForkMesh, the Worker proxies a
+                  healthy, integrity-verified HTTPS mirror under the original
+                  URL.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  What is a desktop node?<span class="faq-icon">⌄</span>
+                </summary>
+                <p class="pb-2.5 text-base">
+                  A desktop node is the local ForkMesh app that keeps encrypted
+                  repository mirrors on your machine. Its authenticated gateway
+                  can serve clone and browse data through ordinary HTTPS when
+                  healthy; multiplayer sockets carry no repository bytes.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  What is a mainnode?<span class="faq-icon">⌄</span>
+                </summary>
+                <p class="pb-2.5 text-base">
+                  A mainnode is a coordination node for the ForkMesh network. It
+                  handles catalog discovery, account lookup, healthy HTTPS mirror routing,
+                  encrypted repo rooms, signed inboxes, and routing without
+                  becoming the owner of everyone's source code.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  How does collaboration work?<span class="faq-icon">⌄</span>
+                </summary>
+                <p class="pb-2.5 text-base">
+                  ForkMesh uses portable collaboration records such as signed
+                  issue events and signed patch PRs. Instead of locking all
+                  project activity inside one service database, collaboration
+                  can move with the repository and be verified by clients.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  Are repo rooms encrypted?<span class="faq-icon">⌄</span>
+                </summary>
+                <p class="pb-2.5 text-base">
+                  Yes, as authenticated shared-key transport. Clients encrypt
+                  messages before relay, but the mainnode derives and
+                  distributes the default passphrase, so its operator can
+                  decrypt room content. At most 500 persisted frames per room
+                  are retained for 7 days.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  Do I need to run a mainnode to use ForkMesh?<span
+                    class="faq-icon"
+                    >⌄</span
+                  >
+                </summary>
+                <p class="pb-2.5 text-base">
+                  No. Most users can start by running a desktop node and
+                  mirroring repositories they care about. Communities, teams, or
+                  operators can run mainnodes when they want to coordinate their
+                  own catalog, routes, rooms, and inboxes.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  Who is ForkMesh for?<span class="faq-icon">⌄</span>
+                </summary>
+                <p class="pb-2.5 text-base">
+                  ForkMesh is for maintainers, open-source communities,
+                  researchers, archivists, and teams that care about keeping
+                  source code available long term. If a repository matters,
+                  ForkMesh gives people a way to help preserve it.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  Can ForkMesh preserve a repository if the original host goes
+                  offline?<span class="faq-icon">⌄</span>
+                </summary>
+                <p class="pb-2.5 text-base">
+                  Yes, if the repository has already been mirrored by desktop
+                  nodes. ForkMesh is designed so Git history can remain
+                  available through local mirrors instead of depending on one
+                  hosted forge staying online.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  Does ForkMesh store my repositories in the cloud?<span
+                    class="faq-icon"
+                    >⌄</span
+                  >
+                </summary>
+                <p class="pb-2.5 text-base">
+                  ForkMesh does not make the Worker or a mainnode the canonical
+                  Git storage layer. Git mirrors live on desktop nodes.
+                  Mainnodes coordinate discovery, routing, rooms, inboxes, and
+                  lookup.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  How is ForkMesh different from a normal Git backup?<span
+                    class="faq-icon"
+                    >⌄</span
+                  >
+                </summary>
+                <p class="pb-2.5 text-base">
+                  A normal backup protects one copy. ForkMesh adds network
+                  discovery, direct-HTTPS clone routing, signed collaboration records,
+                  encrypted repo rooms, and mainnode coordination so preserved
+                  repositories can still be found and used by others.
+                </p>
+              </details>
+              <hr class="faq-divider mx-7 border-dashed border-border" />
+              <details class="faq-item rounded-xl px-7 py-1">
+                <summary
+                  class="flex cursor-pointer items-start justify-between gap-4 py-2.5 text-left text-base font-medium"
+                >
+                  Can open-source communities run their own ForkMesh
+                  network?<span class="faq-icon">⌄</span>
+                </summary>
+                <p class="pb-2.5 text-base">
+                  Yes. Communities can run mainnodes for their own catalog,
+                  direct-HTTPS routing, encrypted rooms, inboxes, and account
+                  lookup while contributors run desktop nodes that keep
+                  encrypted repository mirrors locally.
+                </p>
+              </details>
+            </div>
+            <p class="faq-note mt-6 px-8 text-muted-foreground">
+              Still have questions? Join the early ForkMesh community when it
+              opens, or follow upcoming product updates on
+              <a href="/signup" class="font-medium text-primary hover:underline"
+                >X</a
+              >.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <div data-forkmesh-footer="landing"></div>
+    </main>
+
+    <script>
+      (() => {
+        const nav = document.getElementById("site-nav");
+        const toggle = document.getElementById("mobile-menu-toggle");
+        const updateNav = () => {
+          nav.classList.toggle("is-scrolled", window.scrollY > 50);
+        };
+        updateNav();
+        window.addEventListener("scroll", updateNav, { passive: true });
+        toggle?.addEventListener("click", () => {
+          const open = nav.dataset.open !== "true";
+          nav.dataset.open = String(open);
+          toggle.setAttribute("aria-expanded", String(open));
+          toggle.setAttribute("aria-label", open ? "Close Menu" : "Open Menu");
+        });
+        nav?.querySelectorAll("a").forEach((link) => {
+          link.addEventListener("click", () => {
+            nav.dataset.open = "false";
+            toggle?.setAttribute("aria-expanded", "false");
+            toggle?.setAttribute("aria-label", "Open Menu");
+          });
+        });
+      })();
+
+      (() => {
+        const count = document.querySelector("[data-home-world-count]");
+        if (!count) return;
+        let busy = false;
+        const refresh = async () => {
+          if (busy || document.hidden) return;
+          busy = true;
+          try {
+            const response = await fetch("/api/world/online", {
+              headers: { accept: "application/json" },
+              cache: "no-store",
+            });
+            if (!response.ok) return;
+            const payload = await response.json();
+            const online = Math.max(0, Number(payload?.online) || 0);
+            count.textContent = `${online.toLocaleString()} live`;
+            count.setAttribute(
+              "aria-label",
+              `${online} ${online === 1 ? "user" : "users"} live in ForkMesh World`,
+            );
+          } catch (_) {
+            // The Join World action remains available during a count outage.
+          } finally {
+            busy = false;
+          }
+        };
+        void refresh();
+        window.setInterval(refresh, 30_000);
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden) void refresh();
+        });
+      })();
+
+      (() => {
+        const button = document.getElementById("hero-install-copy");
+        if (!button) return;
+        const original = button.textContent.trim();
+        button.addEventListener("click", async () => {
+          const text = button.dataset.copy || "";
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (_) {
+            const temp = document.createElement("textarea");
+            temp.value = text;
+            temp.setAttribute("readonly", "");
+            temp.style.position = "fixed";
+            temp.style.opacity = "0";
+            document.body.appendChild(temp);
+            temp.select();
+            document.execCommand("copy");
+            temp.remove();
+          }
+          button.textContent = "Copied";
+          window.setTimeout(() => {
+            button.textContent = original;
+          }, 1600);
+        });
+      })();
+
+      (() => {
+        const profiles = [
+          {
+            id: "node-kai7f3",
+            name: "Kai",
+            region: "Bengaluru edge",
+            role: "Maintainer room",
+            signal: "98%",
+            latency: "18 ms",
+            copy: "Ready to open an encrypted repo room.",
+          },
+          {
+            id: "node-lina9b",
+            name: "Lina",
+            region: "Berlin relay",
+            role: "Design review",
+            signal: "94%",
+            latency: "31 ms",
+            copy: "Available for a secure asset handoff.",
+          },
+          {
+            id: "node-miro2c",
+            name: "Miro",
+            region: "Toronto mesh",
+            role: "CI witness",
+            signal: "91%",
+            latency: "42 ms",
+            copy: "Watching release checks across the room.",
+          },
+          {
+            id: "node-asha4d",
+            name: "Asha",
+            region: "Mumbai peer",
+            role: "Patch reviewer",
+            signal: "96%",
+            latency: "22 ms",
+            copy: "Standing by for a branch-level review.",
+          },
+          {
+            id: "node-oren8e",
+            name: "Oren",
+            region: "London gateway",
+            role: "Docs sync",
+            signal: "89%",
+            latency: "53 ms",
+            copy: "Mirroring room notes for late joiners.",
+          },
+          {
+            id: "node-sena1f",
+            name: "Sena",
+            region: "Seoul cell",
+            role: "Runtime trace",
+            signal: "93%",
+            latency: "35 ms",
+            copy: "Streaming diagnostic context privately.",
+          },
+          {
+            id: "node-niko6g",
+            name: "Niko",
+            region: "Athens link",
+            role: "Dependency check",
+            signal: "87%",
+            latency: "61 ms",
+            copy: "Comparing package drift before merge.",
+          },
+          {
+            id: "node-zara5h",
+            name: "Zara",
+            region: "Dubai bridge",
+            role: "Security lane",
+            signal: "95%",
+            latency: "28 ms",
+            copy: "Holding a zero-trust review channel.",
+          },
+          {
+            id: "node-ivo3j",
+            name: "Ivo",
+            region: "Lisbon peer",
+            role: "Prototype room",
+            signal: "90%",
+            latency: "47 ms",
+            copy: "Ready for a temporary build space.",
+          },
+          {
+            id: "node-mei0k",
+            name: "Mei",
+            region: "Singapore hub",
+            role: "Data diff",
+            signal: "97%",
+            latency: "20 ms",
+            copy: "Reconciling schema notes across peers.",
+          },
+          {
+            id: "node-rafa2m",
+            name: "Rafa",
+            region: "Sao Paulo relay",
+            role: "Launch watch",
+            signal: "88%",
+            latency: "66 ms",
+            copy: "Keeping production signals in the room.",
+          },
+          {
+            id: "node-yuna7n",
+            name: "Yuna",
+            region: "Tokyo edge",
+            role: "Model eval",
+            signal: "92%",
+            latency: "39 ms",
+            copy: "Sharing eval traces without leaving the mesh.",
+          },
+          {
+            id: "node-emil4p",
+            name: "Emil",
+            region: "Stockholm peer",
+            role: "Infra plan",
+            signal: "86%",
+            latency: "72 ms",
+            copy: "Drafting deployment topology in-room.",
+          },
+          {
+            id: "node-tala8q",
+            name: "Tala",
+            region: "Cairo bridge",
+            role: "Incident room",
+            signal: "90%",
+            latency: "58 ms",
+            copy: "Prepared for a focused recovery thread.",
+          },
+          {
+            id: "node-joel5r",
+            name: "Joel",
+            region: "New York mesh",
+            role: "Founder sync",
+            signal: "99%",
+            latency: "16 ms",
+            copy: "Closest node for a live decision room.",
+          },
+        ];
+        const idle = {
+          id: "scan the mesh",
+          name: "Scan the mesh",
+          region: "No node selected",
+          role: "Discovery mode",
+          signal: "idle",
+          latency: "--",
+          copy: "Hover or focus a bar to scan the mesh and resolve a live ForkMesh node.",
+        };
+        const barsGroup = document.getElementById("network-bars");
+        const els = {
+          id: document.getElementById("node-id"),
+          role: document.getElementById("node-role"),
+          signal: document.getElementById("node-signal"),
+          latency: document.getElementById("node-latency"),
+          region: document.getElementById("node-region"),
+          copy: document.getElementById("node-copy"),
+        };
+        const bars = [];
+        const renderNode = (node) => {
+          els.id.textContent = node.id;
+          els.role.textContent = `${node.name} / ${node.role}`;
+          els.signal.textContent = node.signal;
+          els.latency.textContent = node.latency;
+          els.region.textContent = node.region;
+          els.copy.textContent = node.copy;
+        };
+        const setSelected = (selectedIndex) => {
+          renderNode(selectedIndex == null ? idle : profiles[selectedIndex]);
+          bars.forEach((bar, index) => {
+            const baseHeight = 41.5199;
+            const distance =
+              selectedIndex == null
+                ? Infinity
+                : Math.abs(selectedIndex - index);
+            const influence = Math.max(0, 1 - distance * 0.25);
+            const height = baseHeight + influence * 150;
+            const opacity =
+              selectedIndex == null ? 0.78 : 0.18 + influence * 0.82;
+            bar.setAttribute("height", String(height));
+            bar.setAttribute(
+              "fill",
+              selectedIndex === index ? "#dcfce7" : "#171717",
+            );
+            bar.setAttribute(
+              "stroke",
+              selectedIndex === index ? "oklch(0.72 0.17 152)" : "#626262",
+            );
+            bar.style.opacity = opacity;
+            bar.setAttribute("aria-pressed", String(selectedIndex === index));
+          });
+        };
+        profiles.forEach((node, index) => {
+          const rect = document.createElementNS(
+            "http://www.w3.org/2000/svg",
+            "rect",
+          );
+          rect.classList.add("network-bar");
+          rect.setAttribute("role", "button");
+          rect.setAttribute("tabindex", "0");
+          rect.setAttribute(
+            "aria-label",
+            `${node.id}, ${node.role}, ${node.signal} signal`,
+          );
+          rect.setAttribute("aria-pressed", "false");
+          rect.setAttribute("x", String(0.4 + index * 15));
+          rect.setAttribute("y", String(0.75 + index * -15));
+          rect.setAttribute("width", "183.071");
+          rect.setAttribute("height", "41.5199");
+          rect.setAttribute("rx", "6.5");
+          rect.setAttribute(
+            "transform",
+            "matrix(0.866025 0.5 0 1 0.0580127 -2.88838)",
+          );
+          rect.setAttribute("fill", "#171717");
+          rect.setAttribute("stroke", "#626262");
+          rect.style.opacity = "0.78";
+          rect.addEventListener("pointerenter", () => setSelected(index));
+          rect.addEventListener("click", () => setSelected(index));
+          rect.addEventListener("focus", () => setSelected(index));
+          rect.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setSelected(index);
+            }
+          });
+          rect.addEventListener("pointerleave", () => setSelected(null));
+          rect.addEventListener("blur", () => setSelected(null));
+          bars.push(rect);
+          barsGroup.appendChild(rect);
+        });
+        setSelected(null);
+      })();
+
+      (() => {
+        document.querySelectorAll("#faq-list details").forEach((details) => {
+          details.addEventListener("toggle", () => {
+            if (!details.open) return;
+            document.querySelectorAll("#faq-list details").forEach((other) => {
+              if (other !== details) other.open = false;
+            });
+          });
+        });
+      })();
+
+    </script>
+  </body>
+</html>
