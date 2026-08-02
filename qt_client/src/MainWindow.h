@@ -834,6 +834,10 @@ public:
     // so a test can prove a waiting commit keeps its buttons on screen even while
     // outgoing commits are pending (adhoc #66).
     QString testScmCommitControlsState() const;
+    // The checkout that Git-page commit actions operate on. While reviewing a
+    // linked branch this must be that branch's worktree, never the primary
+    // checkout, or an apparently local commit would land on the wrong branch.
+    QString testSourceControlGitDir() const { return sourceControlGitDir(); }
     // Rescan the working tree the way the panel's Refresh button does, so a test
     // doesn't have to wait out the 10s change-badge poll.
     void testRefreshSourceControl() { refreshSourceControl(/*force=*/true); }
@@ -844,6 +848,9 @@ public:
     // universal source-control panel and commit graph for every diff kind.
     int testGitFilesSlotPage() const;
     int testGitHistorySlotPage() const;
+    // Exercise the working-tree review frontier in both directions: a down pass
+    // must mark files and an up pass must remove those automatic marks again.
+    bool testScmAutoViewedRoundTrip();
     // The base end of the "<branch> \xE2\x86\x92 <base>" compare indicator beside
     // the graph's branch button, or empty while it's hidden — so a test can
     // prove browsing a branch shows what it is being compared against, and that
