@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = (ROOT / "src/entry.py").read_text(encoding="utf-8")
+MIRRORS = (ROOT / "src/mirrors.py").read_text(encoding="utf-8")
 SCHEMA = (ROOT / "src/schema.py").read_text(encoding="utf-8")
 URLS = (ROOT / "src/urls.py").read_text(encoding="utf-8")
 DASHBOARD = (
@@ -31,31 +32,38 @@ def test_org_agents_are_separate_member_scoped_encrypted_records():
     assert "await encrypt_row(env, record)" in ENTRY
     assert "await encrypt_row(env, job)" in ENTRY
     assert "privacyBoundary" in ENTRY
-    assert '"privacyBoundary": "engineering-team-encrypted-at-rest"' in ENTRY
+    assert (
+        '"organization-owner-or-engineering-encrypted-at-rest"'
+        in ENTRY
+    )
     assert "engineering_team_required" in ENTRY
     assert "team='engineering'" in ENTRY
-    assert '"engineeringAccess": True' in ENTRY
-    assert '"privacyBoundary": "engineering-team-encrypted-at-rest"' in ENTRY
+    assert '"canQueueAgent": True' in ENTRY
+    assert '"canViewAgentSessions": True' in ENTRY
+    assert 'if role != "owner" and not is_engineering:' in ENTRY
+    assert "organization_owner" in ENTRY
+    assert "await _contribution_run_batch(env, [" in ENTRY
     assert ENTRY.count("context, error = await _org_agent_member_context(") >= 1
-    assert (
-        "if not engineering:\n"
-        "        return None, json_response("
-    ) in ENTRY
 
 
-def test_only_a_fresh_signed_provider_capable_mirror_receives_bounded_jobs():
-    assert "agent_provider_mirror_candidates" in ENTRY
+def test_offline_owner_desktop_and_fresh_mirror_routes_remain_fail_closed():
+    assert "agent_provider_target_decision" in ENTRY
+    assert "agent_provider_mirror_candidates" in MIRRORS
     assert "10 * 60 * 1000" in ENTRY
     assert "context[\"nodeOwner\"]" in ENTRY
-    assert "provider, preferred_node" in ENTRY
+    assert 'org_owner=context["role"] == "owner"' in ENTRY
+    assert "source_owned=await _account_owns_node(" in ENTRY
     assert '"agentProviders"' in QT_REPOS
     assert 'QStringLiteral("claude-code")' in QT_REPOS
     assert 'QStringLiteral("codex")' in QT_REPOS
-    assert "no_eligible_agent_node" in ENTRY
-    assert '"runtimeMode") or "").strip().lower() == "desktop"' in ENTRY
-    assert "await _is_admin(env, context[\"actor\"])" in ENTRY
+    assert "waiting_for_desktop" in MIRRORS
+    assert "provider_not_advertised" in MIRRORS
+    assert "target_not_owned" in MIRRORS
+    assert 'source_runtime != "desktop"' in MIRRORS
+    assert "platform_admin=await _is_admin(env, context[\"actor\"])" in ENTRY
     assert "ORG_AGENT_MAX_PROMPT = 8000" in ENTRY
     assert "ORG_AGENT_JOB_LEASE_MS = 2 * 60 * 1000" in ENTRY
+    assert "ORDER BY queued.id LIMIT 1" in ENTRY
     assert "status='leased'" in ENTRY
     assert "lease_not_found" in ENTRY
     assert "ORG_AGENT_BOTS_RE" in URLS
@@ -89,17 +97,37 @@ def test_agents_ui_chat_and_world_expose_both_fixed_bot_identities():
     assert "mirrorNodeAgentSessionsHTML" in WORLD
     assert "wireMirrorNodeAgentWorkspace" in WORLD
     assert "data-world-agent-followup" in WORLD
-    assert "Only members of the" in WORLD
+    assert "Organization owners can save" in WORLD
 
 
-def test_agent_chat_fails_closed_and_never_enters_the_shared_room():
+def test_agent_frontends_use_scoped_queue_capabilities_and_server_messages():
     assert "orgAgentEngineeringAccess = false" in CHAT
+    assert "orgAgentQueueAccess = false" in CHAT
     assert "await loadOrgAgentChatAccess()" in CHAT
-    assert "data?.engineeringAccess === true" in CHAT
+    assert "data?.canQueueAgent === true" in CHAT
+    assert "payload?.canQueueAgent === true" in DASHBOARD
+    assert "payload?.canQueueAgent === true" in WORLD
+    assert "payload?.canViewAgentSessions === true" in DASHBOARD
+    assert "payload?.canViewAgentSessions === true" in WORLD
+    assert "String(details.message || \"\").trim()" in CHAT
+    assert "String(details.message || \"\").trim()" in DASHBOARD
+    assert "String(details.message || \"\").trim()" in WORLD
+    assert "error.payload = details" in CHAT
+    assert "error.payload = details" in DASHBOARD
+    assert "error.payload = details" in WORLD
+    assert "orgAgentAccessLoaded || !orgAgentEngineeringAccess" not in CHAT
+    assert "no_eligible_headless_mirror" not in CHAT
+    assert "no_eligible_headless_mirror" not in DASHBOARD
+    assert "no_eligible_headless_mirror" not in WORLD
+    assert "I could not queue that task." not in CHAT
+    assert "Saved for ${target}" in CHAT
+    assert "Saved for ${target}" in DASHBOARD
+    assert "Saved for ${target}" in WORLD
+
+
+def test_agent_chat_never_enters_the_shared_room_and_visibility_fails_closed():
     assert "orgAgentIdentity(entry.sender, entry.senderId)" in CHAT
     assert "if (!orgAgentIdentity(plain.sender, plain.senderId)) send(plain)" in CHAT
-    assert "Claude and Codex chat is available only to the Engineering team." in CHAT
-    assert "Only Engineering team members can start this agent." in CHAT
     assert "setAgentBotAccess" in SCENE
     assert "let agentBotAccessAllowed = false" in SCENE
     assert "avatar.visible = false" in SCENE
@@ -132,7 +160,7 @@ def test_world_explains_stalled_agent_jobs_and_bot_clicks_open_full_status():
     assert "session?.diagnostic" in SCENE
     assert 'diagnostic.level || "").toLowerCase() === "attention"' in SCENE
     assert "openAgentBotDetail(name, {" in WORLD
-    assert "ENGINEERING AGENT / LIVE SESSION STATUS" in WORLD
+    assert "ORGANIZATION AGENT / SESSION STATUS" in WORLD
     assert "provider," in WORLD
     assert "allNodes: true" in WORLD
     assert "data-world-agent-open-chat" in WORLD
@@ -184,7 +212,7 @@ def test_a_general_bot_request_picks_whichever_runtime_has_a_mirror():
     for marker in (
         'ORG_AGENT_GENERAL_PROVIDERS = ("agent", "bot", "auto")',
         "general_bot = provider in ORG_AGENT_GENERAL_PROVIDERS",
-        "if not target_node and general_bot:",
+        'if not target_decision.get("ok") and general_bot:',
         "for candidate in ORG_AGENT_PROVIDERS[1:]:",
         "async def cancel_agent_session(self, org_bi, session_id):",
         "UPDATE org_agent_jobs SET status='cancelled'",

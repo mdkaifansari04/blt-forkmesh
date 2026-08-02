@@ -102,6 +102,80 @@ const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";
 const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
 const CLAUDE_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@claude\b/i;
 const CODEX_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@codex\b/i;
+const ORG_AGENT_ERROR_MESSAGES = Object.freeze({
+  invalid_session: "Your session is no longer valid. Sign in again.",
+  forbidden: "You do not have permission to access this agent workspace.",
+  engineering_team_required:
+    "Engineering team membership is required to view these agent sessions.",
+  org_owner_required:
+    "Organization owner access is required to queue work for this desktop.",
+  repository_not_linked:
+    "This repository is not linked to the organization.",
+  repository_not_published:
+    "The linked desktop has not published this repository yet.",
+  target_not_owned:
+    "The selected desktop is not owned by this organization owner.",
+  target_not_desktop:
+    "The selected target is not a desktop runtime.",
+  provider_not_advertised:
+    "The linked desktop has not advertised this agent provider.",
+  preferred_target_ineligible:
+    "The selected desktop is not eligible for this agent request.",
+  no_online_agent_mirror: "No eligible online agent mirror is available.",
+  no_eligible_agent_node:
+    "No eligible agent node is available for this repository.",
+  invalid_provider: "Choose Claude Code or Codex.",
+  invalid_model: "That model is not available for the selected provider.",
+  prompt_required: "Add a task for the agent.",
+  invalid_target_node: "The selected target node is not valid.",
+  invalid_task_key: "The task key is not valid.",
+  invalid_issue_number: "The issue number is not valid.",
+  invalid_issue_task_key: "The issue task key is not valid.",
+  session_not_promptable:
+    "This agent session is not accepting another prompt.",
+  agent_not_ready: "The agent is not ready for another prompt.",
+  queue_persistence_failed: "The agent request could not be saved. Try again.",
+});
+
+function jsonResponseError(response, payload, fallback = "Request failed.") {
+  const details = payload && typeof payload === "object" ? payload : {};
+  const code = String(details.error || "").trim();
+  const message =
+    String(details.message || "").trim() ||
+    ORG_AGENT_ERROR_MESSAGES[code] ||
+    code ||
+    (response?.status ? `Request returned ${response.status}.` : fallback);
+  const error = new Error(message);
+  error.code = code;
+  error.status = Number(response?.status || 0);
+  error.payload = details;
+  for (const key of [
+    "requiredTeam",
+    "targetNode",
+    "provider",
+    "requiredAction",
+    "retryable",
+  ]) {
+    if (details[key] !== undefined) error[key] = details[key];
+  }
+  return error;
+}
+
+function orgAgentSavedMessage(payload) {
+  const serverMessage = String(payload?.message || "").trim();
+  if (serverMessage) return serverMessage;
+  const target = String(
+    payload?.targetNode ||
+      payload?.session?.targetNode ||
+      "the linked desktop",
+  );
+  const waitingForDesktop =
+    payload?.targetOnline === false ||
+    payload?.queueState === "waiting_for_desktop";
+  return waitingForDesktop
+    ? `Saved for ${target}. It will start after the linked desktop reconnects and passes the Haiku safety check.`
+    : `Saved for ${target}. It will start after the Haiku safety check passes.`;
+}
 const POSITION_KEY_PREFIX = "forkmesh.world.position.v1.";
 const DETAIL_WIDTH_KEY = "forkmesh.world.detailWidth.v1";
 const DETAIL_WIDTH_MIN = 320;
@@ -5738,6 +5812,8 @@ class ForkMeshWorld extends HTMLElement {
     this.orgAgentAccess = {
       state: "loading",
       requiredTeam: "engineering",
+      canQueueAgent: false,
+      canViewAgentSessions: false,
     };
     this.infrastructureConsoleCapture = null;
     this.infrastructureConsoleEntries = [];
@@ -7118,7 +7194,11 @@ class ForkMeshWorld extends HTMLElement {
         onAgentBotChat: (botId, session = null) => {
           if (this.orgAgentAccess?.state !== "allowed") {
             this.toast(
-              "Claude and Codex chat is available only to the Engineering team.",
+              String(
+                this.orgAgentAccess?.accessReason ||
+                  this.orgAgentAccess?.message ||
+                  "You do not have access to this agent workspace.",
+              ),
             );
             return;
           }
@@ -8336,6 +8416,9 @@ class ForkMeshWorld extends HTMLElement {
       this.orgAgentAccess = {
         state: "denied",
         requiredTeam: "engineering",
+        canQueueAgent: false,
+        canViewAgentSessions: false,
+        accessReason: "Sign in to access organization agents.",
       };
       this.world?.updateMirrorAgentTasks?.([]);
       this.world?.setAgentBotAccess?.(false);
@@ -8355,10 +8438,24 @@ class ForkMeshWorld extends HTMLElement {
         ? payload.sessions
         : [];
       this.orgAgentSessions = sessions;
+      const engineeringAccess = payload?.engineeringAccess === true;
+      const canQueueAgent =
+        payload?.canQueueAgent === true || engineeringAccess;
+      const canViewAgentSessions =
+        payload?.canViewAgentSessions === true || engineeringAccess;
       this.orgAgentAccess = {
-        state: payload?.engineeringAccess === true ? "allowed" : "denied",
+        state:
+          canQueueAgent || canViewAgentSessions
+            ? "allowed"
+            : "denied",
         requiredTeam: String(payload?.requiredTeam || "engineering"),
         memberRole: String(payload?.memberRole || ""),
+        engineeringAccess,
+        canQueueAgent,
+        canViewAgentSessions,
+        accessReason: String(
+          payload?.accessReason || payload?.message || "",
+        ),
       };
       this.world?.setAgentBotAccess?.(
         this.orgAgentAccess.state === "allowed",
@@ -8386,16 +8483,20 @@ class ForkMeshWorld extends HTMLElement {
     } catch (error) {
       this.orgAgentSessions = [];
       this.world?.updateMirrorAgentTasks?.([]);
+      const message = String(
+        error?.message || "Agent sessions are temporarily unavailable.",
+      );
       this.orgAgentAccess = {
         state:
-          Number(error?.status || 0) === 403
+          [401, 403].includes(Number(error?.status || 0))
             ? "denied"
             : "unavailable",
         requiredTeam: "engineering",
-        message:
-          String(error?.message || "") === "engineering_team_required"
-            ? "Only Engineering team members can view or control agent prompt sessions."
-            : "Agent sessions are temporarily unavailable.",
+        canQueueAgent: false,
+        canViewAgentSessions: false,
+        code: String(error?.code || ""),
+        message,
+        accessReason: message,
       };
       this.world?.setAgentBotAccess?.(false);
       return null;
@@ -9119,9 +9220,19 @@ class ForkMeshWorld extends HTMLElement {
           signal: controller.signal,
           credentials: "same-origin",
         });
+        let value = {};
+        let parseError = null;
+        try {
+          value = await response.json();
+        } catch (error) {
+          parseError = error;
+        }
         if (!response.ok) {
-          const error = new Error(`${path} returned ${response.status}`);
-          error.status = response.status;
+          const error = jsonResponseError(
+            response,
+            value,
+            `${path} returned ${response.status}.`,
+          );
           const retryHeader = String(response.headers.get("retry-after") || "");
           const retrySeconds = Number(retryHeader);
           const retryDate = Date.parse(retryHeader);
@@ -9132,7 +9243,7 @@ class ForkMeshWorld extends HTMLElement {
               : 0;
           throw error;
         }
-        const value = await response.json();
+        if (parseError) throw parseError;
         if (method === "GET" && (maxAge > 0 || staleIfError)) {
           if (
             !this.responseCache.has(requestKey) &&
@@ -9209,9 +9320,11 @@ class ForkMeshWorld extends HTMLElement {
       try {
         payload = await response.json();
       } catch (_) {}
-      if (!response.ok) {
-        throw new Error(
-          String(payload?.error || `Request returned ${response.status}`),
+      if (!response.ok || payload?.ok === false) {
+        throw jsonResponseError(
+          response,
+          payload,
+          `Request returned ${response.status}.`,
         );
       }
       return payload;
@@ -14685,22 +14798,31 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   mirrorNodeAgentSessionsHTML(node, options = {}) {
-    const requiredTeam = escapeHTML(
-      this.orgAgentAccess?.requiredTeam || "engineering",
-    );
     if (this.orgAgentAccess?.state !== "allowed") {
+      const configurationError = [
+        "repository_not_linked",
+        "repository_not_published",
+      ].includes(String(this.orgAgentAccess?.code || ""));
       return `
         <section class="world-feature-card" data-world-mirror-agent-workspace>
           <h3>Agent prompt sessions</h3>
           <div class="world-notice world-notice-warning">
-            <strong>Engineering access required</strong>
+            <strong>${
+              configurationError
+                ? "Repository setup required"
+                : "Agent access unavailable"
+            }</strong>
             <span>${escapeHTML(
-              this.orgAgentAccess?.message ||
-                `Only members of the ${requiredTeam} team can view transcripts or start, revise, and re-prompt these sessions.`,
+              this.orgAgentAccess?.accessReason ||
+                this.orgAgentAccess?.message ||
+                "You do not have access to this agent workspace.",
             )}</span>
           </div>
         </section>`;
     }
+    const canQueueAgent = this.orgAgentAccess?.canQueueAgent === true;
+    const canViewAgentSessions =
+      this.orgAgentAccess?.canViewAgentSessions === true;
     const nodeName = String(node?.name || node?.machineName || "")
       .trim()
       .toLowerCase();
@@ -14711,7 +14833,7 @@ class ForkMeshWorld extends HTMLElement {
       : "";
     const allNodes = options?.allNodes === true;
     const focusSessionId = String(options?.focusSessionId || "");
-    const sessions = this.orgAgentSessions
+    const sessions = (canViewAgentSessions ? this.orgAgentSessions : [])
       .filter(
         (session) =>
           (allNodes ||
@@ -14759,9 +14881,9 @@ class ForkMeshWorld extends HTMLElement {
       const history = Array.isArray(session?.history)
         ? session.history.slice(-80)
         : [];
-      const promptable = ["running", "queued"].includes(
-        String(session?.status || ""),
-      );
+      const promptable =
+        canQueueAgent &&
+        ["running", "queued"].includes(String(session?.status || ""));
       const availabilityBad =
         availability.binaryFound === false ||
         availability.loginState === "missing";
@@ -14924,12 +15046,12 @@ class ForkMeshWorld extends HTMLElement {
       <section class="world-feature-card" data-world-mirror-agent-workspace>
         <h3>${
           providerFilter
-            ? `${providerFilter === "codex" ? "Codex" : "Claude Code"} engineering workspace`
-            : "Engineering agent workspace"
+            ? `${providerFilter === "codex" ? "Codex" : "Claude Code"} agent workspace`
+            : "Organization agent workspace"
         }</h3>
-        <p>Full mirror-reported session detail, transcript, and prompt controls. Every new prompt is re-checked by the tool-free Haiku gate.</p>
+        <p>Organization owners can save work for their linked desktop while it is offline. Every new prompt is checked by the tool-free Haiku gate before the coding agent runs.</p>
         ${
-          allNodes && providerFilter
+          allNodes && providerFilter && canQueueAgent
             ? `<div class="world-detail-actions">
                 <button class="world-primary-action" type="button" data-world-agent-open-chat="${
                   providerFilter === "codex" ? "@codex " : "@claude "
@@ -14938,7 +15060,7 @@ class ForkMeshWorld extends HTMLElement {
             : ""
         }
         ${
-          nodeName
+          nodeName && canQueueAgent
             ? `<form class="world-agent-prompt-form" data-world-agent-start>
           <label>Start a session on ${escapeHTML(nodeName || "this mirror")}
             <textarea name="prompt" maxlength="8000" required rows="3" placeholder="Describe the repository task…"></textarea>
@@ -14951,14 +15073,32 @@ class ForkMeshWorld extends HTMLElement {
         </form>`
             : ""
         }
+        ${
+          !canQueueAgent
+            ? `<div class="world-notice world-notice-warning">
+                <strong>Agent queue access is unavailable</strong>
+                <span>${escapeHTML(
+                  this.orgAgentAccess?.accessReason ||
+                    "You do not have permission to queue an agent for this repository.",
+                )}</span>
+              </div>`
+            : ""
+        }
         <div class="world-agent-session-list">
-          ${sessionHTML || `<p class="world-empty-state">No ${
-            providerFilter
-              ? providerFilter === "codex"
-                ? "Codex"
-                : "Claude Code"
-              : "agent prompt"
-          } sessions are available here yet.</p>`}
+          ${
+            canViewAgentSessions
+              ? sessionHTML || `<p class="world-empty-state">No ${
+                  providerFilter
+                    ? providerFilter === "codex"
+                      ? "Codex"
+                      : "Claude Code"
+                    : "agent prompt"
+                } sessions are available here yet.</p>`
+              : `<p class="world-empty-state">${escapeHTML(
+                  this.orgAgentAccess?.accessReason ||
+                    "Session transcripts are not available with your current access.",
+                )}</p>`
+          }
         </div>
       </section>`;
   }
@@ -14979,10 +15119,19 @@ class ForkMeshWorld extends HTMLElement {
       const status = form.querySelector("[data-world-agent-form-status]");
       const controls = [...form.elements];
       controls.forEach((control) => { control.disabled = true; });
-      if (status) status.textContent = "Queueing the Haiku security check…";
+      if (status) {
+        status.textContent =
+          "Saving this request for the linked desktop. It does not need to be online yet…";
+      }
       try {
-        await this.postJSON(endpoint, { prompt, ...extra }, { timeout: 12_000 });
-        if (status) status.textContent = "Prompt queued securely.";
+        const payload = await this.postJSON(
+          endpoint,
+          { prompt, ...extra },
+          { timeout: 12_000 },
+        );
+        const message = orgAgentSavedMessage(payload);
+        if (status) status.textContent = message;
+        this.toast(message);
         await this.refreshOrgAgentBots();
         const nodeName = String(node?.name || node?.machineName || "")
           .trim()
@@ -14997,12 +15146,9 @@ class ForkMeshWorld extends HTMLElement {
       } catch (error) {
         controls.forEach((control) => { control.disabled = false; });
         if (status) {
-          status.textContent =
-            String(error?.message || "") === "no_eligible_headless_mirror"
-              ? "This mirror is not currently eligible to run the session."
-              : `Could not queue the prompt: ${String(
-                  error?.message || "unknown error",
-                )}`;
+          status.textContent = String(
+            error?.message || "The agent request failed.",
+          );
         }
       }
     };
@@ -15998,7 +16144,11 @@ class ForkMeshWorld extends HTMLElement {
   ) {
     if (this.orgAgentAccess?.state !== "allowed") {
       this.toast(
-        "Claude and Codex status is available only to the Engineering team.",
+        String(
+          this.orgAgentAccess?.accessReason ||
+            this.orgAgentAccess?.message ||
+            "You do not have access to this agent workspace.",
+        ),
       );
       return;
     }
@@ -16019,7 +16169,7 @@ class ForkMeshWorld extends HTMLElement {
     detail.innerHTML = `
       <header class="world-detail-header">
         <div>
-          <p class="world-eyebrow">ENGINEERING AGENT / LIVE SESSION STATUS</p>
+          <p class="world-eyebrow">ORGANIZATION AGENT / SESSION STATUS</p>
           <h2 id="world-detail-title">${label}</h2>
         </div>
         <button class="world-detail-close" type="button" data-world-detail-close aria-label="Close ${label} details">×</button>
@@ -20647,9 +20797,13 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   selectRepositoryIssueAgentProvider(issue = {}) {
-    if (this.orgAgentAccess?.state !== "allowed") {
+    if (this.orgAgentAccess?.canQueueAgent !== true) {
       this.toast(
-        "Only Engineering team members can assign issues to Claude or Codex.",
+        String(
+          this.orgAgentAccess?.accessReason ||
+            this.orgAgentAccess?.message ||
+            "You do not have permission to assign this issue to an agent.",
+        ),
       );
       return false;
     }
@@ -20671,9 +20825,13 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async assignRepositoryIssueToAgent(issue = {}) {
-    if (this.orgAgentAccess?.state !== "allowed") {
+    if (this.orgAgentAccess?.canQueueAgent !== true) {
       this.toast(
-        "Only Engineering team members can assign issues to Claude or Codex.",
+        String(
+          this.orgAgentAccess?.accessReason ||
+            this.orgAgentAccess?.message ||
+            "You do not have permission to assign this issue to an agent.",
+        ),
       );
       return false;
     }
@@ -20712,7 +20870,7 @@ class ForkMeshWorld extends HTMLElement {
       } · ${model}…`,
     );
     try {
-      await this.postJSON(
+      const payload = await this.postJSON(
         this.organizationAgentEndpoint(),
         {
           provider,
@@ -20728,19 +20886,11 @@ class ForkMeshWorld extends HTMLElement {
       );
       this.world?.setRepositoryIssueAgentPicker?.(null);
       await this.refreshOrgAgentBots();
-      this.toast(
-        `Issue #${number} queued for ${
-          provider === "codex" ? "Codex" : "Claude"
-        } · ${model}; Haiku security review runs first.`,
-      );
+      this.toast(orgAgentSavedMessage(payload));
       return true;
     } catch (error) {
       this.toast(
-        String(error?.message || "") === "no_eligible_headless_mirror"
-          ? "No eligible headless mirror is online for this assignment."
-          : `Could not assign issue #${number}: ${String(
-              error?.message || "unknown error",
-            )}`,
+        String(error?.message || "The issue assignment could not be saved."),
       );
       return false;
     } finally {
