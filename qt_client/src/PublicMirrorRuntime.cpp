@@ -1302,6 +1302,12 @@ QString PublicMirrorRuntime::refsSha256FromForEachRef(
             .toHex());
 }
 
+QString PublicMirrorRuntime::repositoryRefsSha256(
+    const QString &repositoryPath, const Tools &tools, QString *error)
+{
+    return refsSha256(repositoryPath, tools, error);
+}
+
 PublicMirrorMaterialization::PublicMirrorMaterialization(
     std::unique_ptr<QTemporaryDir> directory, QString repositoryPath)
     : m_directory(std::move(directory)),

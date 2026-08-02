@@ -136,6 +136,13 @@ public:
     static bool toolingAvailable(const Tools &tools = Tools(),
                                  QString *error = nullptr);
     static bool isArchiveId(const QString &value);
+    // Cheap heads+tags fingerprint used by an already-open desktop mirror to
+    // prove its source has not moved. This lets the caller retain the existing
+    // authenticated materialization instead of decrypting the same large
+    // archive into a new temporary directory on every sync request.
+    static QString repositoryRefsSha256(
+        const QString &repositoryPath, const Tools &tools = Tools(),
+        QString *error = nullptr);
     // Hash "<object> <refname>" rows by refname, matching the Python gateway's
     // canonical heads+tags fingerprint regardless of Git's output order.
     static QString refsSha256FromForEachRef(const QByteArray &output);
