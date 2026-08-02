@@ -1712,8 +1712,28 @@ int main(int argc, char *argv[])
                       queueOverlay->parentWidget()->width() &&
                   queueStatus->text() == QStringLiteral("Queue: 0 / 5"),
               QStringLiteral("Agents queue floats over the list viewport with its "
-                             "queued count and run limit"));
+                             "running count and run limit"));
         if (queueStatus && decrease && increase && settingsLimit) {
+            AgentSession runningOne;
+            runningOne.id = 133890;
+            runningOne.owner = QStringLiteral("me");
+            runningOne.name = QStringLiteral("r");
+            runningOne.prompt = QStringLiteral("Queue running-count fixture");
+            runningOne.status = AgentStatus::Running;
+            AgentSession runningTwo = runningOne;
+            runningTwo.id = 133891;
+            window.testAddAgentSession(runningOne);
+            window.testAddAgentSession(runningTwo);
+            QSettings().setValue(QStringLiteral("agents/maxRunning"), 11);
+            window.testRefreshAgentQueueControls();
+            check(queueStatus->text() == QStringLiteral("Queue: 2 / 11") &&
+                      queueStatus->toolTip().contains(QStringLiteral("2 agents running")),
+                  QStringLiteral("queue readout shows running agents against the "
+                                 "concurrent-agent limit"));
+            window.testRemoveAgentSession(runningOne.id);
+            window.testRemoveAgentSession(runningTwo.id);
+            QSettings().setValue(QStringLiteral("agents/maxRunning"), 5);
+            window.testRefreshAgentQueueControls();
             increase->click();
             check(QSettings().value(QStringLiteral("agents/maxRunning")).toInt() == 6 &&
                       queueStatus->text() == QStringLiteral("Queue: 0 / 6") &&

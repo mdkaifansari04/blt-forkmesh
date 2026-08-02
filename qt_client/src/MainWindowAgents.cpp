@@ -8702,21 +8702,15 @@ void MainWindow::setAgentConcurrencyLimit(int limit)
 void MainWindow::refreshAgentQueueControls()
 {
     const int limit = maxRunningAgents();
-    int queued = 0;
-    for (const AgentSession &session : std::as_const(m_agentSessions)) {
-        if (!session.merged && !isExternalSession(session.id) &&
-            session.status == AgentStatus::Queued) {
-            ++queued;
-        }
-    }
+    const int running = runningAgentCount();
     if (m_agentQueueStatusLabel) {
         m_agentQueueStatusLabel->setText(
-            QStringLiteral("Queue: %1 / %2").arg(queued).arg(limit));
+            QStringLiteral("Queue: %1 / %2").arg(running).arg(limit));
         m_agentQueueStatusLabel->setToolTip(
-            QStringLiteral("%1 agent%2 queued; up to %3 run at once. Use − / + "
+            QStringLiteral("%1 agent%2 running; up to %3 run at once. Use − / + "
                            "to adjust the concurrent-agent limit.")
-                .arg(queued)
-                .arg(queued == 1 ? QString() : QStringLiteral("s"))
+                .arg(running)
+                .arg(running == 1 ? QString() : QStringLiteral("s"))
                 .arg(limit));
     }
     if (m_agentQueueLimitDecreaseButton)
