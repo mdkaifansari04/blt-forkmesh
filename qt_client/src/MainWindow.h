@@ -19,6 +19,7 @@
 #include "RepoSecurity.h"
 #include "RepoContributionSnapshot.h"
 #include "MirrorCrypto.h"
+#include "GuiPump.h"
 
 // Per-session live-output state behind the top bar's blinking fleet lights.
 // lastActivityMs is bumped on every raw-output chunk so the light keeps blinking
@@ -89,6 +90,7 @@ struct MirrorSelfSnapshot {
 #include <QTextBlockUserData>
 #include <QTextCursor>
 #include <QThread>
+#include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -2142,6 +2144,25 @@ private:
     void showPullCheckLog(int runId);               // load a run's log into the panel
     QStringList pullCommitShas(const PullRequest &pr) const; // base..head SHAs
     QList<int> runIdsForPull(PullRequest pr) const; // matching action runs
+    // Everything a PR's base..head range walk yields, cached against the two
+    // resolved SHAs. showPull() re-runs for the same PR on every pull reload —
+    // and it is reached several times over per pass (the commit list, the checks
+    // table, the review summary all want the range) — so the same two `git log`
+    // walks were being re-run over and over on the GUI thread for a range that
+    // had not moved. Resolving base and head is a single cheap `rev-parse`; the
+    // walks behind it only re-run when one of those SHAs actually changes.
+    struct PullRangeSnapshot {
+        QString baseSha;
+        QString headSha;
+        QByteArray detailedLog; // renderPullCommits' rich per-commit format
+        QStringList shas;       // %H list for pullCommitShas/runIdsForPull
+    };
+    bool pullRangeSnapshot(const QString &base, const QString &head,
+                           PullRangeSnapshot *out) const;
+    // Keyed "<repo dir>\x1f<base>\x1f<head>"; mutable because the two consumers
+    // above are const. Cleared wholesale once it outgrows a session's worth of
+    // open PRs.
+    mutable QHash<QString, PullRangeSnapshot> m_pullRangeCache;
     void runChecksForCurrentPull();                 // enqueue workflows at PR head
     // Check out the PR's head into a throwaway worktree, build the ForkMesh app
     // from it, and launch the freshly built binary as an isolated preview node so
@@ -3071,13 +3092,38 @@ private:
                 T result = work();
                 QMetaObject::invokeMethod(
                     this,
-                    [apply = std::move(apply), result = std::move(result)]() mutable {
-                        apply(std::move(result));
+                    [this, apply = std::move(apply),
+                     result = std::move(result)]() mutable {
+                        deliverOffThreadResult(std::move(apply),
+                                               std::move(result));
                     },
                     Qt::QueuedConnection);
             });
         connect(worker, &QThread::finished, worker, &QObject::deleteLater);
         worker->start();
+    }
+    // Hand a worker's result to its apply handler, but never *inside* a
+    // keep-alive pump: a queued delivery that arrives while the GUI thread is
+    // parked in a blocking git read (waitForGit pumps the event loop) runs its
+    // handler nested inside whatever render was already in flight, so two heavy
+    // passes share one stack and their durations add up into a single freeze —
+    // the shape of the 14.6s "spool sweep → commit reload → source-control diff
+    // → pull-list rebuild" stall. Re-posting costs one event-loop hop and gives
+    // the handler a clean top-level stack. (Deferring re-checks each turn, so a
+    // pump that is still running when the timer fires just defers again.)
+    template <typename T>
+    void deliverOffThreadResult(std::function<void(T)> apply, T result)
+    {
+        if (forkmesh::ui::inKeepAlivePump()) {
+            QTimer::singleShot(
+                0, this,
+                [this, apply = std::move(apply),
+                 result = std::move(result)]() mutable {
+                    deliverOffThreadResult(std::move(apply), std::move(result));
+                });
+            return;
+        }
+        apply(std::move(result));
     }
     // Bumped on every loadWorktreesPanel() rebuild so the async per-row `git
     // status` callbacks can drop their result if the table was rebuilt meanwhile.
@@ -5839,6 +5885,12 @@ private:
     // fillCommitStats) from a superseded load drops itself instead of writing
     // mismatched Files/+/− counts into the new rows.
     int m_commitsLoadGen = 0;
+    // repo dir + ref + tip + issue-store signature that applyCommitIssueClosures()
+    // last scanned. Reading 500 full commit messages and then every issue's signed
+    // event log is expensive enough to show up in the stall log, and its result is
+    // a pure function of those four things, so an unchanged key means there is
+    // nothing to re-derive.
+    QString m_commitClosureScanKey;
     // Short-lived cache for repoBranches() — avoids re-running `git branch` on
     // every loadCommits() call (e.g. on each search keystroke). Keyed by dir;
     // expires after 5 s so the button menu stays fresh after branch operations.
@@ -5985,6 +6037,12 @@ private:
     QList<int> m_scmFileTops;        // cached absolute y of each section header
     QHash<QString, QString> m_scmStickyLabelHtml; // section key -> sticky label
     QString m_scmDiffRenderKey;      // skip the re-layout when nothing changed
+    // …and the inputs behind it (patch, viewed set, stylesheet, split toggle), so
+    // an unchanged working tree skips rebuilding the diff HTML too and not just
+    // re-laying it out. refreshSourceControl() is on the path of every commit
+    // reload and repo-update sweep, so this ran far more often than the working
+    // tree actually changed.
+    QString m_scmDiffSourceKey;
     QFrame *m_scmStickyHeader = nullptr;
     QLabel *m_scmStickyPath = nullptr;
     PacmanProgress *m_scmStickyPacman = nullptr;
@@ -6198,6 +6256,15 @@ private:
     // refresh/poll re-renders the same file with unchanged content. Cleared
     // whenever the widget is set to something other than a rendered diff.
     QString m_pullDiffRenderKey;
+    // …and the *inputs* that produced it (PR number, patch, review notes, viewed
+    // set, stylesheet, split toggle). Skipping only the re-layout still left
+    // renderDiffHtml() rebuilding the whole HTML document on every pull-list
+    // refresh — string-building a large PR's split diff is the single most
+    // frequent entry in the stall log (renderSplitDiffHtml under
+    // refreshPullList → showPull), so match on the inputs and skip the build
+    // itself. Cleared alongside m_pullDiffRenderKey. The rendered file
+    // anchors/order/sticky labels stay valid exactly when this matches.
+    QString m_pullDiffSourceKey;
     // current PR: file path -> the "file-N" HTML anchor in the all-files diff,
     // so selecting a file in the list (or Prev/Next) can scroll straight to it.
     QHash<QString, QString> m_pullFileAnchors;
