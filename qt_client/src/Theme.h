@@ -475,6 +475,11 @@ QPushButton#agentsMagicButton:checked {
 #topMessageOverlay { background-color: #161b22; border: 1px solid #30363d;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #c9d1d9; }
+QPushButton#topMessageAction {
+    background: rgba(88,166,255,0.12); border: 1px solid rgba(88,166,255,0.42);
+    border-radius: 6px; color: #58a6ff; font-size: 11px; font-weight: 600; padding: 2px 6px;
+}
+QPushButton#topMessageAction:hover { background: rgba(88,166,255,0.22); color: #79c0ff; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #30363d; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #8b949e;
@@ -1764,6 +1769,11 @@ QPushButton#agentsMagicButton:checked {
 #topMessageOverlay { background-color: #ffffff; border: 1px solid #d0d7de;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #1f2328; }
+QPushButton#topMessageAction {
+    background: rgba(9,105,218,0.08); border: 1px solid rgba(9,105,218,0.35);
+    border-radius: 6px; color: #0969da; font-size: 11px; font-weight: 600; padding: 2px 6px;
+}
+QPushButton#topMessageAction:hover { background: rgba(9,105,218,0.16); color: #0550ae; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #656d76;
