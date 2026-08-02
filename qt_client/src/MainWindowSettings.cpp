@@ -9,6 +9,7 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "NodeDiagnostics.h"
 #include "QrCode.h"
 #include "WorldSpeechBridge.h"
 
@@ -887,16 +888,29 @@ QWidget *MainWindow::buildSettingsSection()
     struct NodeStatToggle {
         const char *label;
         const QString &key;
+        bool defaultOn;
+        const char *tip;
     };
     const NodeStatToggle nodeStatToggles[] = {
-        {"Report CPU usage", TelemetrySettings::kReportCpu},
-        {"Report memory usage", TelemetrySettings::kReportMemory},
-        {"Report disk usage", TelemetrySettings::kReportDisk},
+        {"Report CPU usage", TelemetrySettings::kReportCpu, false, nullptr},
+        {"Report memory usage", TelemetrySettings::kReportMemory, false, nullptr},
+        {"Report disk usage", TelemetrySettings::kReportDisk, false, nullptr},
+        // On by default, unlike the three gauges: these are the problems nobody
+        // can see from the outside (adhoc #27), and they carry findings rather
+        // than load figures. The one caveat worth stating is the log summary.
+        {"Report self-diagnostics", TelemetrySettings::kReportDiagnostics, true,
+         "Run periodic health checks (disk filling up, inode and file-descriptor "
+         "pressure, defunct processes, relay link flapping, clock drift, errors "
+         "in this node's log) and push the findings to every node list. Includes "
+         "a short excerpt of the newest error line from this node's own log."},
     };
     QList<QCheckBox *> nodeStatChecks;
     for (const NodeStatToggle &toggle : nodeStatToggles) {
         auto *check = new QCheckBox(QString::fromUtf8(toggle.label));
-        check->setChecked(QSettings().value(toggle.key, false).toBool());
+        if (toggle.tip)
+            check->setToolTip(QString::fromUtf8(toggle.tip));
+        check->setChecked(
+            QSettings().value(toggle.key, toggle.defaultOn).toBool());
         const QString key = toggle.key;
         connect(check, &QCheckBox::toggled, this, [this, key](bool enabled) {
             QSettings().setValue(key, enabled);
@@ -1851,6 +1865,10 @@ QWidget *MainWindow::buildSettingsSection()
     addTab(buildDataSection(), "Data");
 
     m_settingsTabs = tabs;
+    // Each settings tab is its own destination on the Back/Forward trail
+    // (adhoc #50), so leaving one and coming back lands where you were.
+    connect(tabs, &QTabWidget::currentChanged, this,
+            [this](int) { scheduleNavRecord(); });
     layout->addWidget(tabs, 1);
     layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);
@@ -4332,6 +4350,29 @@ void MainWindow::saveNetworkLog()
     m_networkLogDiskLines = m_networkLog.size();
 }
 
+void MainWindow::logCapturedMessage(QtMsgType type, const QString &text)
+{
+    QString line = text.trimmed();
+    if (line.isEmpty())
+        return;
+    // Qt's own warnings read as plain statements ("QProcess: Destroyed while
+    // process ("git") is still running."), so without a severity word nothing
+    // in the entry says it wasn't ordinary progress. Say it — "Error" also
+    // earns the red ERROR badge from networkLogStyleFor().
+    switch (type) {
+    case QtWarningMsg:
+        line = QStringLiteral("Warning: ") + line;
+        break;
+    case QtCriticalMsg:
+    case QtFatalMsg:
+        line = QStringLiteral("Error: ") + line;
+        break;
+    default:
+        break;
+    }
+    logSystem(line);
+}
+
 void MainWindow::logSystem(const QString &text)
 {
     // Some callers (e.g. flashMessage("") to dismiss the toast) pass empty or
@@ -4345,6 +4386,10 @@ void MainWindow::logSystem(const QString &text)
     plain.replace(QChar(0x2014), QLatin1Char('-'));
     plain.replace(QChar(0x2026), QStringLiteral("..."));
     const QString line = time + "  " + plain;
+    // Feed the node's self-check (adhoc #27): error lines here are what a
+    // headless node would otherwise only ever tell a terminal nobody reads, and
+    // the running tally is pushed to every node list with the heartbeat.
+    NodeDiagnostics::hostCollector().noteLogLine(plain);
     m_networkLog.append(line);
     bool chipsChanged = false;
     while (m_networkLog.size() > kNetworkLogLimit) {

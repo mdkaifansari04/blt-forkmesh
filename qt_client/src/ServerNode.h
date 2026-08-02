@@ -21,6 +21,11 @@ namespace TelemetrySettings {
 inline const QString kReportCpu = QStringLiteral("nodes/reportCpu");
 inline const QString kReportMemory = QStringLiteral("nodes/reportMemory");
 inline const QString kReportDisk = QStringLiteral("nodes/reportDisk");
+// Self-diagnostics (adhoc #27) are ON by default, headless and headful alike:
+// they carry no load figures or paths, only the health findings a fleet operator
+// has no other way to see, and a node that hides them is a node nobody can tell
+// is quietly filling its disk.
+inline const QString kReportDiagnostics = QStringLiteral("nodes/reportDiagnostics");
 } // namespace TelemetrySettings
 
 class QTimer;
@@ -131,6 +136,10 @@ private:
         qint64 diskUsedBytes = 0;
         qint64 diskTotalBytes = 0;
         double cpuPercent = -1.0;
+        // Self-diagnostics the peer ran on itself and pushed with its heartbeat,
+        // plus when we last heard them (so a stale set can be aged out).
+        QList<NodeDiagnostics::Finding> diagnostics;
+        qint64 diagnosticsMs = 0;
         qint64 lastSeenMs = 0;
         bool online = true;
     };
@@ -158,6 +167,9 @@ private:
     // "sys" field of every frame. Throttled internally so it only re-samples on
     // the heartbeats, not on each chat send. Cheap on Linux (/proc + statvfs).
     void sampleSystemStats();
+    // Re-run this node's self-diagnostics (throttled inside the collector) and
+    // cache the findings advertised in the "dg" field of our heartbeats.
+    void sampleDiagnostics();
     // Lightweight broadcast so peers refresh this node's "last seen"; sent on a
     // timer while connected. Unknown to older peers, but they still record it as
     // activity (every frame with a senderId refreshes the peer's last-seen time).
@@ -234,6 +246,8 @@ private:
     qint64 m_diskUsedBytes = 0;
     qint64 m_diskTotalBytes = 0;
     double m_cpuPercent = -1.0;
+    QList<NodeDiagnostics::Finding> m_diagnostics; // our own last self-check
+    qint64 m_diagnosticsMs = 0;                    // when it last ran (0 = never)
     qint64 m_lastStatsSampleMs = 0; // throttle so chat sends don't re-sample
     QString m_nodeId;
     // SHA-256 of mainnode URL + room; scopes the persisted roster so members are

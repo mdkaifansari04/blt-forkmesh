@@ -13,6 +13,7 @@
 #include "../src/DiscussionInboxBackoff.h"
 #include "../src/DiscussionStore.h"
 #include "../src/ForkMeshIdentity.h"
+#include "../src/GlobalSearchMatch.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
 #include "../src/LocalBackupStore.h"
@@ -20,6 +21,7 @@
 #include "../src/PrivateMirrorStore.h"
 #include "../src/McpConnector.h"
 #include "../src/NetworkBackoff.h"
+#include "../src/NodeDiagnostics.h"
 #include "../src/PlatformLogFilter.h"
 #include "../src/ProjectStore.h"
 #include "../src/PullAiReview.h"
@@ -361,6 +363,125 @@ int main(int argc, char *argv[])
         const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
         check(linked == input,
               "reference linker skips existing links, URLs, inline code, and code blocks");
+    }
+
+    // Ctrl+K search: the rules that decide what the overlay finds, and the
+    // parsers for the git output it searches (adhoc #28 widened it from
+    // issues/PRs/code to everything this node holds).
+    {
+        using namespace forkmesh::search;
+
+        QString where;
+        Issue issue;
+        issue.number = 7;
+        issue.title = QStringLiteral("Relay drops a heartbeat");
+        IssueEvent opened;
+        opened.type = QStringLiteral("open");
+        opened.body = QStringLiteral("The node stops advertising after an hour.");
+        IssueEvent comment;
+        comment.type = QStringLiteral("comment");
+        comment.body = QStringLiteral("Reproduced on mirror6 with a cold cache.");
+        issue.events = {opened, comment};
+        check(matchIssue(issue, QStringLiteral("HEARTBEAT"), &where) &&
+                  where == QStringLiteral("title"),
+              "search matches an issue title case-insensitively");
+        check(matchIssue(issue, QStringLiteral("advertising"), &where) &&
+                  !where.startsWith(QStringLiteral("comment: ")),
+              "search reports an open-event body hit as the description");
+        check(matchIssue(issue, QStringLiteral("mirror6"), &where) &&
+                  where.startsWith(QStringLiteral("comment: ")),
+              "search flags an issue comment hit as a comment");
+        check(!matchIssue(issue, QStringLiteral("solana"), &where),
+              "search leaves an unrelated issue alone");
+
+        PullRequest pull;
+        pull.title = QStringLiteral("Widen the search overlay");
+        pull.description = QStringLiteral("Also covers branches and worktrees.");
+        check(matchPull(pull, QStringLiteral("worktrees"), &where) &&
+                  where.contains(QStringLiteral("branches and worktrees")),
+              "search matches a pull request description and quotes it");
+
+        Discussion discussion;
+        discussion.title = QStringLiteral("Roadmap");
+        DiscussionEvent reply;
+        reply.type = QStringLiteral("comment");
+        reply.body = QStringLiteral("What about federated relays?");
+        discussion.events = {reply};
+        check(matchDiscussion(discussion, QStringLiteral("federated"), &where) &&
+                  where.startsWith(QStringLiteral("comment: ")),
+              "search matches a discussion comment");
+
+        Project project;
+        project.title = QStringLiteral("Phase 3");
+        project.body = QStringLiteral("Ship the global search overlay.");
+        check(matchProject(project, QStringLiteral("overlay"), &where),
+              "search matches a project description");
+
+        check(!containsFold(QString(), QStringLiteral("x")) &&
+                  !containsFold(QStringLiteral("x"), QString()),
+              "empty fields and empty queries never match");
+
+        const QString snippet = snippetAround(
+            QStringLiteral("alpha\nbeta gamma delta epsilon zeta eta theta iota "
+                           "kappa lambda mu nu xi omicron pi rho sigma NEEDLE "
+                           "tail"),
+            QStringLiteral("needle"));
+        check(snippet.contains(QStringLiteral("NEEDLE")) &&
+                  snippet.startsWith(QString::fromUtf8("\xE2\x80\xA6")) &&
+                  !snippet.contains(QLatin1Char('\n')),
+              "snippets are single-line, elided, and centred on the match");
+
+        // `git worktree list --porcelain`: records are separated by blank lines,
+        // but a new "worktree " line alone must also close the previous record.
+        const QVector<WorktreeRecord> worktrees = parseWorktreePorcelain(
+            {QStringLiteral("worktree /home/f/projects/forkmesh"),
+             QStringLiteral("HEAD 1111111111111111111111111111111111111111"),
+             QStringLiteral("branch refs/heads/main"),
+             QStringLiteral("worktree /tmp/forkmesh-worktrees/issue-0-s28"),
+             QStringLiteral("HEAD 2222222222222222222222222222222222222222"),
+             QStringLiteral("branch refs/heads/agent/adhoc-28-search"),
+             QStringLiteral("worktree /tmp/detached"),
+             QStringLiteral("HEAD 3333333333333333333333333333333333333333"),
+             QStringLiteral("detached")});
+        check(worktrees.size() == 3, "every worktree record is parsed");
+        check(worktrees.at(0).branch == QStringLiteral("main") &&
+                  worktrees.at(0).path ==
+                      QStringLiteral("/home/f/projects/forkmesh"),
+              "worktree branches lose their refs/heads/ prefix");
+        check(worktrees.at(1).branch ==
+                  QStringLiteral("agent/adhoc-28-search"),
+              "an agent worktree is parsed without a blank separator line");
+        check(worktrees.at(2).detached && worktrees.at(2).branch.isEmpty(),
+              "a detached worktree is flagged and carries no branch");
+        check(parseWorktreePorcelain({QStringLiteral("branch refs/heads/main")})
+                  .isEmpty(),
+              "an attribute with no worktree line is ignored");
+
+        // `git grep -n <rev>` prefixes each row with "<rev>:".
+        const CodeRow row = parseGrepRow(
+            QStringLiteral("main:qt_client/src/MainWindowSearch.cpp:42:  const "
+                           "int gen = ++m_searchGen;"),
+            QStringLiteral("main"));
+        check(row.valid && row.line == 42 &&
+                  row.path ==
+                      QStringLiteral("qt_client/src/MainWindowSearch.cpp") &&
+                  row.text.startsWith(QStringLiteral("const int gen")),
+              "a git grep row is split into path, line and trimmed text");
+        check(!parseGrepRow(QStringLiteral("no line number here"),
+                            QStringLiteral("main"))
+                   .valid,
+              "a malformed git grep row is dropped");
+
+        check(categoryIndexOf(QStringLiteral("repo")) <
+                      categoryIndexOf(QStringLiteral("branch")) &&
+                  categoryIndexOf(QStringLiteral("branch")) <
+                      categoryIndexOf(QStringLiteral("code")),
+              "search groups run from identity matches down to content matches");
+        check(categoryIndexOf(QStringLiteral("worktree")) < categoryCount() &&
+                  categoryIndexOf(QStringLiteral("agent")) < categoryCount(),
+              "worktrees and agent sessions are searchable categories");
+        check(categoryIndexOf(QStringLiteral("nonsense")) == categoryCount(),
+              "an unknown hit kind sorts last instead of vanishing");
     }
 
     {
@@ -2200,6 +2321,43 @@ int main(int argc, char *argv[])
                       publicationSource.contains(QStringLiteral(
                           "m_catalogPublishConsecutiveFailures.remove(publishKey)")),
                   "consecutive publish failures are counted, escalated, and cleared on success");
+
+            // The sticky "Viewed" fade installs a QGraphicsOpacityEffect on the
+            // button, and setGraphicsEffect() deletes whichever effect is
+            // already installed. Dropping it with setGraphicsEffect(nullptr)
+            // and then calling deleteLater() on the same pointer freed it twice
+            // and crashed inside QObject::deleteLater (adhoc #52), so the
+            // handler must delete once and hold the effect by QPointer.
+            QFile scmFile(QFileInfo(QString::fromUtf8(__FILE__))
+                              .absoluteDir()
+                              .filePath(QStringLiteral(
+                                  "../src/MainWindowSourceControl.cpp")));
+            const bool scmOpened = scmFile.open(QIODevice::ReadOnly);
+            const QString scmSource =
+                scmOpened ? QString::fromUtf8(scmFile.readAll()) : QString();
+            const int fadeStart = scmSource.indexOf(QStringLiteral(
+                "new QGraphicsOpacityEffect(m_scmStickyViewed)"));
+            const int fadeEnd =
+                scmSource.indexOf(QStringLiteral("animation->start("), fadeStart);
+            QString fadeHandler;
+            if (fadeStart >= 0 && fadeEnd > fadeStart) {
+                // Comment lines describe the old double-delete, so match the
+                // code alone.
+                const QStringList fadeLines =
+                    scmSource.mid(fadeStart, fadeEnd - fadeStart)
+                        .split(QLatin1Char('\n'));
+                for (const QString &line : fadeLines) {
+                    if (!line.trimmed().startsWith(QLatin1String("//")))
+                        fadeHandler += line + QLatin1Char('\n');
+                }
+            }
+            check(scmOpened && !fadeHandler.isEmpty() &&
+                      !fadeHandler.contains(QStringLiteral("deleteLater()")) &&
+                      fadeHandler.contains(QStringLiteral(
+                          "QPointer<QGraphicsEffect>(effect)")) &&
+                      fadeHandler.contains(QStringLiteral(
+                          "button->graphicsEffect() == faded")),
+                  "sticky Viewed fade deletes its opacity effect once, guarded by QPointer");
 
             RepoContributionPublicationCache scanCapacityCache(8, 2);
             check(scanCapacityCache.begin(contributionCacheKey, false) ==
@@ -5798,6 +5956,56 @@ int main(int argc, char *argv[])
               "clearEvents starts the next run with a clean transcript");
     }
 
+    // Live transcript search: the search bar filters the session list by what a
+    // run actually said, so the store has to find a query across both the raw log
+    // and the stream-json events, count the hits, and hand back the surrounding
+    // text for the matching row's tooltip.
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "transcript search temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session = store.createSession(session);
+
+        check(store.searchTranscript(session, "recovery") == 0,
+              "an empty transcript matches nothing");
+
+        store.appendLog(session, "only seeing RECOVERY pings here");
+        store.appendEvent(session,
+                          QJsonObject{{"type", "assistant"},
+                                      {"text", "failure pings need recovery"}});
+
+        QString snippet;
+        check(store.searchTranscript(session, "recovery", &snippet) == 2,
+              "hits are counted across the raw log and the event stream");
+        check(snippet.contains("seeing RECOVERY pings"),
+              "the snippet carries the text around the first hit");
+        check(store.searchTranscript(session, "Recovery") == 2,
+              "transcript search is case-insensitive");
+        check(store.searchTranscript(session, "nowhere in here") == 0,
+              "a query the run never said matches nothing");
+        check(store.searchTranscript(session, "   ") == 0,
+              "a blank query never claims a match");
+
+        // Only the tail of a long-running session is read, so scanning every
+        // session on each keystroke stays cheap.
+        AgentSession chatty;
+        chatty.owner = "octo";
+        chatty.name = "demo";
+        chatty = store.createSession(chatty);
+        store.appendLog(chatty, "needle at the very start");
+        store.appendLog(chatty,
+                        QString(AgentStore::kTranscriptSearchTailBytes + 4096,
+                                QLatin1Char('x')));
+        check(store.searchTranscript(chatty, "needle") == 0,
+              "text older than the search tail is out of scope");
+        store.appendLog(chatty, "needle again at the end");
+        check(store.searchTranscript(chatty, "needle") == 1,
+              "the tail of a long transcript is still searched");
+    }
+
     // The Claude Code run summary the CLI reports on finish ("done · N turns ·
     // Ms · $X") is stored on the session and survives a restart (issue #296).
     {
@@ -6749,6 +6957,78 @@ int main(int argc, char *argv[])
               "isFontDatabaseNoise matches only the font-database warning");
     }
 
+    // The app's progress lines and Qt's own warnings belong in the Log view, not
+    // in the terminal the desktop was launched from. The filter's sink is what
+    // moves them: it takes the message *instead of* the console, except headless
+    // (keepConsoleEcho), where the operator only has the console.
+    {
+        QStringList captured;
+        capturedMessages = &captured;
+        QtMessageHandler previous = qInstallMessageHandler(captureMessages);
+        forkmesh::installPlatformLogFilter(); // chains to captureMessages
+
+        QList<QPair<QtMsgType, QString>> sunk;
+        const auto record = [&sunk](QtMsgType type, const QString &message) {
+            sunk.append({type, message});
+        };
+
+        forkmesh::setAppLogSink(record, /*keepConsoleEcho=*/false);
+        qWarning("QProcess: Destroyed while process (\"git\") is still running.");
+        qInfo("Catalog publish response: jett/forkmesh 201 0");
+        // Noise stays noise: the sink must not be handed what the console was
+        // already spared.
+        qWarning("OpenType support missing for \"Noto Mono\", script 9");
+
+        forkmesh::setAppLogSink(record, /*keepConsoleEcho=*/true);
+        qWarning("forkmesh-headless-echo-line");
+
+        // A sink that logs would otherwise re-enter itself forever.
+        forkmesh::setAppLogSink(
+            [&sunk](QtMsgType type, const QString &message) {
+                sunk.append({type, message});
+                if (!message.startsWith(QLatin1String("re-entrant")))
+                    qWarning("re-entrant sink line");
+            },
+            /*keepConsoleEcho=*/false);
+        qWarning("forkmesh-reentrant-trigger");
+
+        forkmesh::clearAppLogSink();
+        qWarning("forkmesh-after-clear-line");
+        qInstallMessageHandler(previous); // restore so PASS/FAIL output prints
+        capturedMessages = nullptr;
+
+        const QString console = captured.join(QLatin1Char('\n'));
+        QStringList sunkText;
+        for (const auto &entry : sunk)
+            sunkText << entry.second;
+        const QString logged = sunkText.join(QLatin1Char('\n'));
+
+        check(logged.contains(QStringLiteral(
+                  "QProcess: Destroyed while process (\"git\") is still "
+                  "running.")) &&
+                  !console.contains(QStringLiteral("QProcess: Destroyed")),
+              "Qt's QProcess teardown warning goes to the log, not the console");
+        check(logged.contains(QStringLiteral("Catalog publish response")) &&
+                  !console.contains(QStringLiteral("Catalog publish response")),
+              "the app's own qInfo progress lines go to the log only");
+        check(!logged.contains(QStringLiteral("OpenType support missing")),
+              "known platform noise is still dropped before the sink");
+        check(sunk.first().first == QtWarningMsg &&
+                  sunk.at(1).first == QtInfoMsg,
+              "the sink is told each message's severity");
+        check(logged.contains(QStringLiteral("forkmesh-headless-echo-line")) &&
+                  console.contains(QStringLiteral("forkmesh-headless-echo-line")),
+              "keepConsoleEcho (headless) logs and still prints to the console");
+        // Qt refuses to re-enter an installed handler at all — the nested line
+        // goes straight to stderr, past captureMessages — so the observable
+        // guarantee is that it never loops back into the sink.
+        check(sunkText.count(QStringLiteral("re-entrant sink line")) == 0,
+              "a sink that logs re-entrantly does not feed itself");
+        check(!logged.contains(QStringLiteral("forkmesh-after-clear-line")) &&
+                  console.contains(QStringLiteral("forkmesh-after-clear-line")),
+              "clearAppLogSink sends messages back to the console");
+    }
+
     // MCP connector (adhoc #16): the token is a bearer credential that lets an
     // external agent write signed entries as this node, so minting, masking,
     // persistence permissions and revocation all have to hold.
@@ -7041,6 +7321,255 @@ int main(int argc, char *argv[])
     }
 #endif
 
+
+    {
+        // Node self-diagnostics (adhoc #27): the checks a node runs on itself
+        // and pushes to every node list. The gauges already show CPU/RAM/disk;
+        // these rules exist for what a point sample cannot show, so each one is
+        // pinned here against the shape of input that must (and must not) trip it.
+        using namespace NodeDiagnostics;
+        const qint64 hour = 60 * 60 * 1000;
+        const qint64 gb = 1024LL * 1024 * 1024;
+        auto findingFor = [](const QList<Finding> &findings, const char *id) {
+            for (const Finding &f : findings) {
+                if (f.id == QLatin1String(id))
+                    return f;
+            }
+            return Finding{};
+        };
+        auto has = [&](const QList<Finding> &findings, const char *id) {
+            return !findingFor(findings, id).id.isEmpty();
+        };
+        auto diskInputs = [&](qint64 spanMs, qint64 startFree, qint64 endFree) {
+            Inputs in;
+            in.nowMs = 1000 * hour;
+            in.windowMs = kWindowMs;
+            in.diskHistory = {DiskSample{in.nowMs - spanMs, startFree, 100 * gb},
+                              DiskSample{in.nowMs, endFree, 100 * gb}};
+            return in;
+        };
+
+        // A volume losing 1 GB/hour with 10 GB left is hours from wedging, and
+        // its disk bar still reads a comfortable 90%.
+        const Finding trend =
+            findingFor(evaluate(diskInputs(4 * hour, 14 * gb, 10 * gb)),
+                       "disk-trend");
+        check(trend.severity == Critical && trend.message.contains("Disk filling") &&
+                  trend.message.contains("hours"),
+              "a fast-filling disk is critical with a time-to-full horizon");
+        check(findingFor(evaluate(diskInputs(24 * hour, 100 * gb, 90 * gb)),
+                         "disk-trend")
+                      .severity == Warning,
+              "10 GB/day against 90 GB free is a warning, not a crisis");
+        check(findingFor(evaluate(diskInputs(24 * hour, 92 * gb, 90 * gb)),
+                         "disk-trend")
+                      .severity == Info,
+              "a month and a half of headroom is a note");
+        check(!has(evaluate(diskInputs(24 * hour, 91 * gb, 90 * gb)), "disk-trend"),
+              "three months out is not worth telling the fleet about");
+        check(!has(evaluate(diskInputs(2 * 60 * 1000, 14 * gb, 10 * gb)),
+                   "disk-trend"),
+              "a trend measured over two minutes is noise, not a trend");
+        check(!has(evaluate(diskInputs(4 * hour, 10 * gb, 14 * gb)), "disk-trend"),
+              "a disk that is freeing space raises nothing");
+        check(!has(evaluate(diskInputs(4 * hour, 10 * gb, 10 * gb - 1024)),
+                   "disk-trend"),
+              "a kilobyte of churn an hour is not a leak");
+
+        Inputs base;
+        base.nowMs = 1000 * hour;
+        base.windowMs = kWindowMs;
+
+        // Inodes and file descriptors: both fail writes/connections while every
+        // gauge on the row still looks fine.
+        Inputs inodes = base;
+        inodes.inodesTotal = 1000000;
+        inodes.inodesFree = 100000; // 90% used
+        check(findingFor(evaluate(inodes), "disk-inodes").severity == Warning,
+              "90% of inodes used warns before the disk does");
+        inodes.inodesFree = 20000; // 98% used
+        check(findingFor(evaluate(inodes), "disk-inodes").severity == Critical,
+              "a nearly full inode table is critical");
+        check(!has(evaluate(base), "disk-inodes"),
+              "a host that cannot report inodes reports nothing about them");
+
+        Inputs fds = base;
+        fds.openFileDescriptors = 800;
+        fds.fileDescriptorLimit = 1024;
+        check(findingFor(evaluate(fds), "file-descriptors").severity == Warning,
+              "descriptors at 78% of the limit warn");
+        fds.openFileDescriptors = 1000;
+        check(findingFor(evaluate(fds), "file-descriptors").severity == Critical,
+              "descriptors about to hit the limit are critical");
+        fds.openFileDescriptors = -1;
+        check(!has(evaluate(fds), "file-descriptors"),
+              "an unknown descriptor count raises nothing");
+
+        Inputs readonly = base;
+        readonly.dataDirWritable = false;
+        check(findingFor(evaluate(readonly), "data-dir").severity == Critical,
+              "a read-only data directory is critical");
+
+        Inputs zombies = base;
+        zombies.zombieProcesses = 30;
+        check(findingFor(evaluate(zombies), "zombie-processes").severity == Warning,
+              "a pile of defunct children warns");
+        zombies.zombieProcesses = 4;
+        check(!has(evaluate(zombies), "zombie-processes"),
+              "a handful of defunct children is a race, not a leak");
+
+        // Log errors: the whole point of pushing them is that nobody reads a
+        // headless node's terminal, so the newest line travels with the count.
+        Inputs logs = base;
+        logs.logErrors = 12;
+        logs.logErrorSample = QStringLiteral("mirror push failed: exit 128");
+        const Finding logFinding = findingFor(evaluate(logs), "log-errors");
+        check(logFinding.severity == Warning &&
+                  logFinding.message.contains("12 errors") &&
+                  logFinding.message.contains("exit 128"),
+              "a run of log errors warns and carries the newest line");
+        logs.logErrors = 2;
+        check(findingFor(evaluate(logs), "log-errors").severity == Info,
+              "a couple of log errors is a note, not a warning");
+        check(!has(evaluate(base), "log-errors"),
+              "a quiet log raises nothing");
+
+        Inputs link = base;
+        link.relayDrops = 6;
+        link.backpressureDrops = 40;
+        check(findingFor(evaluate(link), "relay-flap").severity == Warning &&
+                  findingFor(evaluate(link), "relay-backpressure").severity ==
+                      Warning,
+              "a flapping relay link and dropped frames are both reported");
+
+        Inputs skew = base;
+        skew.clockSkewKnown = true;
+        skew.clockSkewMs = 6 * 60 * 1000;
+        check(findingFor(evaluate(skew), "clock-skew").severity == Critical &&
+                  findingFor(evaluate(skew), "clock-skew").message.contains("ahead of"),
+              "a badly drifted clock is critical and says which way it drifted");
+        skew.clockSkewMs = -3 * 60 * 1000;
+        check(findingFor(evaluate(skew), "clock-skew").message.contains("behind"),
+              "a clock running slow is described as behind");
+        skew.clockSkewMs = 20 * 1000;
+        check(!has(evaluate(skew), "clock-skew"),
+              "twenty seconds of drift is not worth a row");
+
+        // Ordering and the node-list column text.
+        Inputs many = base;
+        many.dataDirWritable = false;
+        many.relayDrops = 6;
+        many.logErrors = 1;
+        const QList<Finding> ranked = evaluate(many);
+        check(ranked.size() == 3 && ranked.first().severity == Critical &&
+                  ranked.last().severity == Info,
+              "findings come back worst first");
+        check(summaryLabel(ranked, true) ==
+                  QString::fromUtf8("1 critical \xC2\xB7 1 warning"),
+              "the column counts criticals and warnings, notes only when alone");
+        check(summaryLabel({}, true) == QStringLiteral("OK"),
+              "a node that checked and found nothing reads OK");
+        check(summaryLabel({}, false) == QString::fromUtf8("\xE2\x80\x94"),
+              "a node that never reported is unknown, not healthy");
+        check(worstSeverity({}) == Ok && worstSeverity(ranked) == Critical,
+              "the worst severity drives the row's colour");
+
+        // Wire form: bounded in both directions, so neither our heartbeat nor a
+        // hostile peer's can inflate a frame or a tooltip.
+        QList<Finding> wide;
+        for (int i = 0; i < 12; ++i)
+            wide.append(Finding{QStringLiteral("check-%1").arg(i), Warning,
+                                QString(400, QLatin1Char('x'))});
+        const QJsonArray encoded = toJson(wide);
+        check(encoded.size() == kMaxWireFindings &&
+                  encoded.first().toObject().value("m").toString().size() ==
+                      kMaxMessageChars,
+              "the wire form caps how many findings and how long each one is");
+        check(fromJson(encoded).size() == kMaxWireFindings,
+              "a peer cannot push more findings than the wire allows");
+        const QList<Finding> hostile = fromJson(QJsonArray{
+            QJsonObject{{"i", QStringLiteral("evil")},
+                        {"s", 99},
+                        {"m", QString(400, QLatin1Char('y'))}},
+            QJsonObject{{"i", QStringLiteral("low")}, {"s", -5}, {"m", QStringLiteral("hm")}},
+            QJsonObject{{"i", QString()}, {"s", 2}, {"m", QString()}}});
+        check(hostile.size() == 2 && hostile.first().severity == Critical &&
+                  hostile.first().message.size() == kMaxMessageChars &&
+                  hostile.last().severity == Ok,
+              "a peer's severities are clamped, its text truncated and its "
+              "empty rows dropped");
+        const QList<Finding> roundTripped = fromJson(toJson(ranked));
+        check(roundTripped.size() == ranked.size() &&
+                  roundTripped.first().id == ranked.first().id &&
+                  roundTripped.first().severity == Critical,
+              "a decoded set keeps its worst-first order");
+
+        // The collector: what it counts, and what it refuses to count.
+        QTemporaryDir logDir;
+        check(logDir.isValid(), "the diagnostics test has a temporary log dir");
+        const QString logPath = logDir.filePath(QStringLiteral("node.log"));
+        {
+            QFile seed(logPath);
+            check(seed.open(QIODevice::WriteOnly),
+                  "the test log file can be created");
+            seed.write("2026-01-01 00:00:00  older error nobody should re-report\n");
+            seed.close();
+        }
+        Collector collector;
+        collector.setLogPaths({logPath});
+        const qint64 t0 = base.nowMs;
+        collector.run(t0); // first pass baselines the existing log
+        check(!has(collector.findings(), "log-errors"),
+              "a log file's existing history is not replayed as fresh errors");
+        {
+            QFile append(logPath);
+            check(append.open(QIODevice::WriteOnly | QIODevice::Append),
+                  "the test log file can be appended to");
+            append.write("2026-01-01 00:01:00  mirror sync failed: exit 128\n");
+            append.write("2026-01-01 00:01:01  everything is fine here\n");
+            append.write("2026-01-01 00:01:02    UI stalled ~900 ms\n");
+            append.close();
+        }
+        const QList<Finding> scanned = collector.run(t0 + Collector::kRunIntervalMs);
+        check(findingFor(scanned, "log-errors").message.contains("1 error"),
+              "only the newly appended error line is counted");
+        check(!has(scanned, "ui-stalls"),
+              "one stall report is below the threshold that would report it");
+
+        Collector counters;
+        counters.noteLogLine(QStringLiteral("push failed: remote hung up"), t0);
+        counters.noteLogLine(QStringLiteral("published 3 repositories"), t0);
+        counters.noteLogLine(
+            QStringLiteral("Self-diagnostics: 1 error in the log"), t0);
+        const QList<Finding> fromApp = counters.run(t0);
+        check(findingFor(fromApp, "log-errors").message.contains("1 error"),
+              "the app log feeds the check, and its own summary line does not");
+        // A restart resets the node's counters; that must not read as a burst.
+        counters.noteBackpressureDrops(500);
+        check(!has(counters.run(t0 + Collector::kRunIntervalMs),
+                   "relay-backpressure"),
+              "the first backpressure reading is a baseline, not 500 drops");
+        counters.noteBackpressureDrops(560);
+        check(findingFor(counters.run(t0 + 2 * Collector::kRunIntervalMs),
+                         "relay-backpressure")
+                  .message.contains("60"),
+              "only frames dropped since the baseline are reported");
+
+        Collector throttled;
+        throttled.noteRelayDrop(t0);
+        throttled.noteRelayDrop(t0);
+        check(findingFor(throttled.run(t0), "relay-flap").severity == Info,
+              "two link drops in the window are a note");
+        throttled.noteRelayDrop(t0);
+        throttled.noteRelayDrop(t0);
+        throttled.noteRelayDrop(t0);
+        check(findingFor(throttled.run(t0 + 1000), "relay-flap").severity == Info,
+              "a re-run inside the interval hands back the cached findings");
+        check(findingFor(throttled.run(t0 + Collector::kRunIntervalMs),
+                         "relay-flap")
+                      .severity == Warning,
+              "once the interval passes the extra link drops are evaluated");
+    }
 #if defined(Q_OS_LINUX)
     {
         // Descriptor accounting and the startup limit raise. The app dies with

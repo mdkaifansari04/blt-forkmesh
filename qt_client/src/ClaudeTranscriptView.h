@@ -91,6 +91,15 @@ public:
     // Render Edit/MultiEdit diffs side-by-side (old | new) instead of unified.
     void setSplitDiffs(bool on);
 
+    // Why a failed `result` event failed, in words: the CLI's own message when
+    // it sent one, otherwise the machine-readable subtype spelled out. Shared
+    // with the host so the transcript row, the status pill and the stored
+    // session error all give the same reason instead of a bare "Failed".
+    static QString failureReason(const QJsonObject &ev);
+    // Whether a `result` event reports a failed run: is_error, or any "error_*"
+    // subtype (error_max_turns / error_during_execution / …).
+    static bool resultIsError(const QJsonObject &ev);
+
     // Speak Codex's dialect instead of Claude Code's (adhoc #34). The two CLIs
     // narrate the same work differently, and a Codex run rendered in Claude's
     // idiom reads wrong: Codex says "Ran <command>" with the command inline and
