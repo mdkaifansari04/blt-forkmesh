@@ -18,7 +18,12 @@ namespace forkmesh {
 
 bool autoBackupDefault(const QString &cloudflareApiToken)
 {
-    return !cloudflareApiToken.trimmed().isEmpty();
+    // A control node's live store can be several gigabytes. Keeping 24 hourly
+    // compressed copies filled both desktops and the small VPSes they manage.
+    // Backups remain available as an explicit opt-in, but credentials must
+    // never silently turn a storage-heavy recurring job on.
+    (void)cloudflareApiToken;
+    return false;
 }
 
 QString defaultBackupRoot()

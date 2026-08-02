@@ -18,9 +18,8 @@ PUBLIC = ROOT / "public"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import dashboard_bundle
-import dashboard_shell
-import build_worker_footprint
+import dashboard_bundle  # noqa: E402
+import dashboard_shell  # noqa: E402
 
 
 def _read(rel):
@@ -62,10 +61,8 @@ def main():
         outputs[rel] = dashboard_shell.stamp_asset_versions(_read(rel), versions)
     outputs["dashboard.js"] = dashboard_js
     changed = [rel for rel, text in sorted(outputs.items()) if _write_if_changed(rel, text)]
-    if build_worker_footprint.build():
-        changed.append("world/worker-footprint.js")
-
-
+    # The pre-split SPA duplicate: /dashboard.html routes are gone, the per-page
+    # documents replace it. Drop a stale copy left by older builds.
     legacy = PUBLIC / "dashboard.html"
     if legacy.exists():
         legacy.unlink()

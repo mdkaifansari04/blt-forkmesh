@@ -46,6 +46,7 @@ from solana import (
     _base58_encode,
     _b64url_encode,
     _solana_rpc,
+    _solana_rpc_write,
 )
 
 MAX_ROOM_NAME = 80
@@ -543,6 +544,70 @@ from events import (
     verify_release_manifest,
 )
 
+# ActivityPub federation protocol spine (WebFinger/NodeInfo/actor/Note builders,
+# draft-cavage HTTP-signature strings, the Digest header format, remote-document
+# extraction + HTML sanitization) lives in activitypub.py — a pure, js-free
+# sibling module the test suite imports directly. Only the WebCrypto RSA glue,
+# the D1-backed actor/follower/delivery state and the HTTP handlers live below.
+import activitypub as ap  # noqa: E402
+import activitypub_threads as ap_threads  # noqa: E402
+import edge_routing as https_routing  # noqa: E402
+import fediverse_digest as fedi_digest  # noqa: E402
+import reward_policy  # noqa: E402
+# Objective evidence, one-account-one-vote governance, and contextual-only
+# community placement policy live outside the route spine.
+import community_ads_api  # noqa: E402
+# Verified public fediverse feedback remains review-only until an authorized
+# owner explicitly queues it and the owner node confirms materialization.
+import fediverse_mentions_api  # noqa: E402
+# Non-custodial organization succession is isolated from account, repository,
+# device, agent, and financial handlers. The API receives no platform-admin
+# authorization primitive and can mutate only organization membership roles.
+import organization_succession_api  # noqa: E402
+# Least-privilege roles, owner-sealed envelope validation, and metadata-only
+# audit sanitization live in a pure sibling module. Keeping these allowlists
+# out of the route handlers makes them independently testable.
+import security_controls as security_control  # noqa: E402
+# Strict public-artifact validation and bounded encrypted D1 history for daily
+# repository security scans lives in a pure sibling module.
+import security_scan_ingest  # noqa: E402
+# Transient multiplayer protocol sanitization. This pure module owns the
+# allowlist for every public world-presence field; the Durable Object below
+# never relays arbitrary client JSON.
+import world as world_protocol  # noqa: E402
+# Fixed-footprint HyperLogLog helpers for the public Arrival Grid's approximate
+# unique counts. Raw edge request attributes never cross into this pure module.
+import world_visitors as world_visitor_metrics  # noqa: E402
+# Public-only Fediverse directory and authenticated media-space orchestration
+# live behind a small adapter so they reuse this Worker's established sessions,
+# blind indexes, D1 helpers, and metadata-only audit trail.
+import world_community_api  # noqa: E402
+# Community announcements are UTC D1 records with public cached reads and
+# platform-admin-only audited mutations; no production event is hardcoded in
+# the Three.js client.
+import world_events_api  # noqa: E402
+# Persisted Code Workshop reports and participant events use the same narrow
+# authenticated/encrypted D1 adapter as the other World collaboration APIs.
+import world_social_feeds  # noqa: E402
+import world_satellites  # noqa: E402
+import world_workshops  # noqa: E402
+# Organization-scoped Office marketing tasks use a separate HTTP/D1 subsystem.
+# It never receives platform-admin authorization or an Office Durable Object,
+# and its human-readable task/check-in data is encrypted at rest.
+import world_office_tasks  # noqa: E402
+import world_build_board  # noqa: E402
+import world_element_store  # noqa: E402
+import world_link_kiosk  # noqa: E402
+# Private administrator-created channel policy is kept in a pure module and
+# receives only this Worker's narrow session, crypto, D1, and audit adapter.
+import chat_channels_api  # noqa: E402
+# Direct messages have a stricter participant-only authorization policy and
+# therefore use a separate pure API module instead of channel admin semantics.
+import chat_direct_messages_api  # noqa: E402
+# Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
+# "fingerprint" attached to federated PR-opened notes. The federated copy is a
+# square PNG — fediverse clients won't preview an SVG attachment.
+from pull_badge import patch_file_stats, pull_badge_png  # noqa: E402
 
 
 
@@ -1395,6 +1460,36 @@ async def repository_metadata_cache_put(env, cache_key, response, status):
         await asyncio.gather(*writes, return_exceptions=True)
     except Exception:
         pass
+
+
+def request_bypasses_repository_metadata_cache(request):
+    """Honor explicit live-read semantics before mirror selection.
+
+    Dashboard repository reads use ``fetch(..., cache="no-store")`` and also
+    send ``Cache-Control: no-cache``.  Those requests must reach a healthy
+    mirror so the round-robin cursor advances and the Mirrors view records the
+    node that actually served the request.  Immutable state-addressed cache
+    entries remain available to ordinary clients that do not request a live
+    read.
+    """
+    try:
+        cache_control = str(
+            request.headers.get("cache-control") or ""
+        ).lower()
+        pragma = str(request.headers.get("pragma") or "").lower()
+    except Exception:
+        return False
+    directives = {
+        part.split("=", 1)[0].strip()
+        for part in cache_control.split(",")
+        if part.strip()
+    }
+    return bool(
+        directives.intersection({"no-cache", "no-store"})
+        or "no-cache" in {
+            part.strip() for part in pragma.split(",") if part.strip()
+        }
+    )
 
 
 async def purge_catalog_related_caches():
@@ -2769,6 +2864,30 @@ async def _status_alert_pings_enabled(env):
     return bool(settings["statusPings"])
 
 
+def _status_recovery_ping_body(alert, now):
+    """Recovery copy that still names the outage it closes.
+
+    A bare "green again" line reads the same whether the system blinked for a
+    minute or was down for an hour, and it is the only ping an administrator
+    sees when the outage ping could not be delivered.
+    """
+    # Only the sample that actually flipped green knows an outage window. A
+    # re-send of an undelivered recovery ping must not describe the time since
+    # the recovery as downtime.
+    started = int(alert.get("recovered_outage_started_at") or 0)
+    minutes = int((int(now) - started) // 60000) if started else 0
+    if started and minutes >= 0:
+        duration = (
+            "under a minute" if minutes < 1 else
+            "1 minute" if minutes == 1 else
+            "%d minutes" % minutes)
+        reason = clean_string(alert.get("prior_reason", ""), 200)
+        return (
+            "Down for %s. The current /status probe is green again.%s" % (
+                duration, (" Last failure: " + reason) if reason else ""))
+    return "The current /status probe is green again."
+
+
 async def _enqueue_operational_alert_pings(env, alerts, now):
     """Best-effort, deduplicated operational alerts for every platform admin."""
     if not alerts or not await _status_alert_pings_enabled(env):
@@ -2789,26 +2908,67 @@ async def _enqueue_operational_alert_pings(env, alerts, now):
             recovered = bool(alert.get("is_up"))
             system_id = clean_string(alert.get("system", ""), 120)
             label = clean_string(alert.get("label", ""), 160)
-            outage_started_at = int(alert.get("outage_started_at") or now)
+            # One ping per transition, not per sample: the stamp must identify
+            # the transition itself. outage_started_at is 0 once a system is
+            # green, so a recovery keys off the change stamp instead.
+            stamp = int(
+                alert.get("changed_at")
+                or alert.get("outage_started_at")
+                or now)
+            # An outage the administrators were never pinged about, closed by a
+            # recovery that reaches them: the enqueue rides the same platform
+            # the probe just found broken, so the failure ping is exactly the
+            # one most likely to have been lost. Backfill it, stamped at the
+            # start of the outage, so the pair is never a recovery on its own.
+            missed = int(alert.get("missed_outage_started_at") or 0)
+            if recovered and missed:
+                await enqueue_notification(
+                    env, admin, "operational_alert",
+                    label + " needs attention",
+                    body=(clean_string(alert.get("prior_reason", ""), 240)
+                          or "The /status health check for this system "
+                             "failed."),
+                    href="/status", source="operational-status",
+                    dedupe="operational-status:%s:down:%s" % (
+                        system_id, missed),
+                    ts=missed,
+                    meta={"system": system_id, "state": "down"},
+                )
             title = (
                 label + " recovered" if recovered else
                 label + " needs attention")
             body = (
-                "The current /status probe is green again." if recovered else
+                _status_recovery_ping_body(alert, now) if recovered else
                 clean_string(alert.get("reason", ""), 240)
                 or "The current /status health check failed.")
             await enqueue_notification(
                 env, admin, "operational_alert", title, body=body,
                 href="/status", source="operational-status",
                 dedupe="operational-status:%s:%s:%s" % (
-                    system_id, "up" if recovered else "down",
-                    outage_started_at),
+                    system_id, "up" if recovered else "down", stamp),
                 ts=now,
                 meta={"system": system_id,
                       "state": "up" if recovered else "down"},
             )
             delivered = True
     return delivered
+
+
+async def _record_operational_alert_pings_sent(env, alerts):
+    """Mark delivered ping transitions so the next sample stays quiet."""
+    for alert in alerts:
+        system_id = clean_string(alert.get("system", ""), 120)
+        if not system_id:
+            continue
+        # is_up guards the write against a sample that flipped underneath this
+        # send, exactly like the mail path's notified_state update.
+        await d1_run(
+            env,
+            "UPDATE repository_monitor_state SET pinged_state=? "
+            "WHERE monitor_id=? AND is_up=?",
+            "up" if alert.get("is_up") else "down", "status:" + system_id,
+            1 if alert.get("is_up") else 0,
+        )
 
 
 async def _repository_monitor_admin_emails(env):
@@ -3150,11 +3310,13 @@ async def _record_status_monitor_transitions(
     status_systems = status_systems or STATUS_SYSTEMS
     rows = await d1_all(
         env,
-        "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state "
-        "FROM repository_monitor_state WHERE monitor_id LIKE 'status:%'",
+        "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state,"
+        "pinged_state,reason FROM repository_monitor_state "
+        "WHERE monitor_id LIKE 'status:%'",
     )
     prior = {str(row.get("monitor_id") or ""): row for row in (rows or [])}
     pending = []
+    ping_pending = []
     values = []
     for system_id, label in status_systems:
         monitor_id = "status:" + system_id
@@ -3168,6 +3330,8 @@ async def _record_status_monitor_transitions(
             int(row.get("outage_started_at") or 0) if row else 0)
         prior_notified = (
             str(row.get("notified_state") or "") if row else "")
+        prior_pinged = (
+            str(row.get("pinged_state") or "") if row else "")
         changed = not row or previous_up != is_up
         changed_at = int(now) if changed else previous_changed_at
         outage_started_at = (
@@ -3177,7 +3341,12 @@ async def _record_status_monitor_transitions(
             ("up" if is_up else "") if not row else
             "" if previous_up != is_up else
             prior_notified)
+        pinged = (
+            ("up" if is_up else "") if not row else
+            "" if previous_up != is_up else
+            prior_pinged)
         should_notify = notified != state
+        should_ping = pinged != state
         if system_id == "flagship_repository":
             if (
                 not is_up
@@ -3188,28 +3357,53 @@ async def _record_status_monitor_transitions(
 
 
                 should_notify = False
-            elif (
-                is_up
-                and row
-                and not previous_up
-                and prior_notified != "down"
-            ):
-
-
-                notified = "up"
-                should_notify = False
-        if should_notify:
-            pending.append({
+                should_ping = False
+            elif is_up and row and not previous_up:
+                # A probe that recovered inside the grace window never paged,
+                # so it must not send a confusing recovery-only alert. Each
+                # channel answers that for itself: mail being off is not a
+                # reason to swallow the recovery ping for an outage that was
+                # pinged, and vice versa.
+                if prior_notified != "down":
+                    notified = "up"
+                    should_notify = False
+                if prior_pinged != "down":
+                    pinged = "up"
+                    should_ping = False
+        if should_notify or should_ping:
+            alert = {
                 "system": system_id, "label": label, "state": state,
                 "is_up": is_up, "reason": clean_string(
                     reason.get(system_id, "") or "", 240),
                 "outage_started_at": outage_started_at,
                 "previous_changed_at": previous_changed_at,
-            })
+                "changed_at": changed_at,
+                # The last failure this system recorded. On a recovery the
+                # current sample has no reason of its own, so this is the only
+                # description of what actually went wrong.
+                "prior_reason": clean_string(
+                    (str(row.get("reason") or "") if row else ""), 240),
+                # The outage this sample closed, on the flip itself and never
+                # on a later re-send of an undelivered recovery.
+                "recovered_outage_started_at": (
+                    (prior_outage or previous_changed_at)
+                    if is_up and row and not previous_up else 0),
+                # Set only when a sampled outage closes without its own ping
+                # having been delivered (a failed enqueue during the incident,
+                # or Pings switched on mid-outage).
+                "missed_outage_started_at": (
+                    prior_outage
+                    if is_up and prior_pinged != "down" and prior_outage
+                    else 0),
+            }
+            if should_notify:
+                pending.append(alert)
+            if should_ping:
+                ping_pending.append(alert)
         values.extend([
             monitor_id, 1 if is_up else 0, changed_at, outage_started_at,
             int(now), clean_string(reason.get(system_id, "") or "", 240),
-            notified,
+            notified, pinged,
         ])
 
     n = len(status_systems)
@@ -3217,22 +3411,29 @@ async def _record_status_monitor_transitions(
         env,
         "INSERT INTO repository_monitor_state "
         "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
-        "notified_state) VALUES " + ", ".join(["(?,?,?,?,?,?,?)"] * n) + " "
+        "notified_state,pinged_state) VALUES "
+        + ", ".join(["(?,?,?,?,?,?,?,?)"] * n) + " "
         "ON CONFLICT(monitor_id) DO UPDATE SET "
         "is_up=excluded.is_up,changed_at=excluded.changed_at,"
         "outage_started_at=excluded.outage_started_at,"
         "checked_at=excluded.checked_at,reason=excluded.reason,"
-        "notified_state=excluded.notified_state",
+        "notified_state=excluded.notified_state,"
+        "pinged_state=excluded.pinged_state",
         *values,
     )
+    if ping_pending:
+        try:
+            if await _enqueue_operational_alert_pings(env, ping_pending, now):
+                # Same rule as the mail path: only a delivered transition is
+                # recorded, so a deployment with Pings switched off still gets
+                # one alert for whatever is red when it switches them on.
+                await _record_operational_alert_pings_sent(env, ping_pending)
+        except BaseException:
+            # Pings are a secondary delivery channel and must never block status
+            # sampling or the independently configured email path.
+            pass
     if not pending:
         return
-    try:
-        await _enqueue_operational_alert_pings(env, pending, now)
-    except BaseException:
-        # Pings are a secondary delivery channel and must never block status
-        # sampling or the independently configured email path.
-        pass
     # notified_state is deliberately left untouched while alert mail is off:
     # whatever is red when an admin turns it on gets one email then, instead
     # of the switch silently swallowing the transition that is still current.
@@ -4974,6 +5175,121 @@ async def site_referrer_leaderboard(env):
     return resp
 
 
+# --- Member SOL wallets -------------------------------------------------------
+# Members who publish an optional self-custodial payout address, ranked by the
+# public balance of that address. Both halves are already public: the address is
+# public profile data (_account_public_payload exposes it), and the amount is a
+# plain getBalance any block explorer answers identically for that address.
+# Private profiles are excluded, no key or transaction is involved, and a
+# position here is neither a payout nor a promise of one.
+WALLET_LEADERBOARD_CACHE_KEY = (
+    "https://forkmesh.internal/api/leaderboards/wallets"
+)
+WALLET_LEADERBOARD_TTL = 300  # seconds per colo; balances move slower than this
+WALLET_LEADERBOARD_LIMIT = 10
+# Each balance costs one public-RPC subrequest, so a rebuild refreshes only the
+# least-recently-checked slice and ranks everyone else from their stored read.
+# Rotation means every published wallet is reached within a few rebuilds instead
+# of a fixed head of the directory being the only one ever priced.
+WALLET_BALANCE_REFRESH_PER_REBUILD = 6
+WALLET_BALANCE_RETAIN_ROWS = 500
+
+
+async def wallet_leaderboard(env):
+    cached = await edge_cache_match(WALLET_LEADERBOARD_CACHE_KEY)
+    if cached is not None:
+        return cached
+    await ensure_schema(env)
+    now = int(Date.now())
+    rows = await d1_all(
+        env,
+        "SELECT data FROM users ORDER BY username COLLATE NOCASE LIMIT ?",
+        1000)
+    members = []
+    seen = set()
+    for row in rows or []:
+        rec = await decrypt_row(env, row.get("data", ""))
+        if (not rec or _account_kind(rec) != "user"
+                or rec.get("status") != "active"
+                or rec.get("profile_private")):
+            continue
+        name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
+        wallet = (rec.get("solana") or "").strip()
+        if not name or name in seen or not SOLANA_RE.match(wallet):
+            continue
+        seen.add(name)
+        members.append({"name": name, "wallet": wallet})
+
+    stored = {}
+    for row in await d1_all(
+            env, "SELECT wallet, lamports, checked_at FROM wallet_balances"):
+        wallet = str(row.get("wallet") or "")
+        if wallet:
+            stored[wallet] = (int(row.get("lamports") or 0),
+                              int(row.get("checked_at") or 0))
+
+    # Oldest reading first, so the rotation always spends its subrequests on the
+    # least fresh members (an unseen wallet sorts at 0 and goes first).
+    members.sort(key=lambda m: (stored.get(m["wallet"], (0, 0))[1], m["name"]))
+    refresh = members[:WALLET_BALANCE_REFRESH_PER_REBUILD]
+    balances = await asyncio.gather(*[
+        _solana_balance_lamports(env, member["wallet"]) for member in refresh])
+    for member, lamports in zip(refresh, balances):
+        # None means the RPC could not answer; keep the last stored reading
+        # rather than publishing an unchecked address as zero.
+        if lamports is None:
+            continue
+        stored[member["wallet"]] = (int(lamports), now)
+        await d1_run(
+            env,
+            "INSERT INTO wallet_balances "
+            "(wallet, name, lamports, checked_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(wallet) DO UPDATE SET name=excluded.name,"
+            "lamports=excluded.lamports,checked_at=excluded.checked_at",
+            member["wallet"], member["name"], int(lamports), now)
+    # An address a member has since removed or replaced leaves a row nothing
+    # reads, so bound the table the way the referrer board does — only once it
+    # actually needs bounding, since every rebuild would otherwise pay a write.
+    if len(stored) > WALLET_BALANCE_RETAIN_ROWS:
+        await d1_run(
+            env,
+            "DELETE FROM wallet_balances WHERE wallet NOT IN ("
+            "SELECT wallet FROM wallet_balances "
+            "ORDER BY checked_at DESC LIMIT ?)",
+            WALLET_BALANCE_RETAIN_ROWS)
+
+    board = []
+    for member in members:
+        lamports, checked_at = stored.get(member["wallet"], (0, 0))
+        if not checked_at:
+            continue
+        board.append({
+            "name": member["name"],
+            "wallet": member["wallet"],
+            "lamports": lamports,
+            "sol": lamports / LAMPORTS_PER_SOL,
+            "checkedAt": checked_at,
+        })
+    board.sort(key=lambda entry: (-entry["lamports"], entry["name"]))
+    resp = json_response(
+        {"ok": True,
+         "board": board[:WALLET_LEADERBOARD_LIMIT],
+         # Members publishing an address, and how many of them this rebuild
+         # re-priced, so a rotation behind the full set is visible rather than
+         # looking like complete coverage.
+         "members": len(members),
+         "refreshed": len(refresh),
+         "custody": "external-self-custodial-public-address",
+         "notice": (
+             "Public payout addresses and their public on-chain balances. "
+             "ForkMesh holds no member funds or keys, and a place on this "
+             "board is not a reward, payout, or promise of one."
+         )},
+        cache_seconds=WALLET_LEADERBOARD_TTL)
+    await edge_cache_put(WALLET_LEADERBOARD_CACHE_KEY, resp)
+    return resp
+
+
 async def leaderboards_overview(env):
     """One public leaderboard model shared by the website and World.
 
@@ -4981,22 +5297,25 @@ async def leaderboards_overview(env):
     only normalizes their already-public rows so clients cannot drift on which
     boards exist, how they are titled, or which value each board ranks.
     """
-
-
-
-    network_response, referral_response, site_response, users_response = (
+    # These five public sources are independent. Resolve them concurrently so
+    # the combined endpoint costs the slowest cache/database read, not the sum
+    # of all five, which keeps both the page and World island quick at startup.
+    (network_response, referral_response, site_response, users_response,
+     wallet_response) = (
         await asyncio.gather(
             network_leaderboards(env),
             referral_leaderboard(env),
             site_referrer_leaderboard(env),
             _account_users_directory(env, None),
+            wallet_leaderboard(env),
         )
     )
-    network, referrals, sites, users = await asyncio.gather(
+    network, referrals, sites, users, wallets = await asyncio.gather(
         _response_json(network_response),
         _response_json(referral_response),
         _response_json(site_response),
         _response_json(users_response),
+        _response_json(wallet_response),
     )
     activity_rows = []
     for user in users.get("users", []):
@@ -5072,6 +5391,10 @@ async def leaderboards_overview(env):
             "External sites sending visits to ForkMesh",
             "visits", sites.get("board"), "community"),
         board(
+            "wallets", "Member SOL wallets",
+            "Published payout addresses by public on-chain balance",
+            "sol", wallets.get("board"), "community"),
+        board(
             "funds-mainnodes", "Legacy funds · mainnodes",
             "Historical reporting aggregate; not a balance",
             "sol", network.get("fundsMainnodes"), "historical"),
@@ -5093,6 +5416,7 @@ async def leaderboards_overview(env):
             "activity": {"board": activity_rows},
             "referrals": referrals,
             "sites": sites,
+            "wallets": wallets,
             "fundsNotice": network.get("fundsNotice", ""),
             "fundsState": network.get("fundsState", ""),
             "fundsCustody": network.get("fundsCustody", ""),
@@ -7491,13 +7815,7 @@ OFFICE_ATTENDANCE_FLOOR_LABELS = {
     "lobby": "Lobby",
     "marketing": "Marketing",
     "engineering": "Engineering",
-    "product-design": "Product & Design",
-    "security": "Security",
     "infrastructure": "Infrastructure",
-    "community": "Community",
-    "partnerships": "Partnerships",
-    "operations": "Operations",
-    "executive": "Executive",
     "rooftop": "Rooftop",
 }
 
@@ -8063,27 +8381,8 @@ OFFICE_FLOOR_TEAM_ALIASES = {
         "engineering", "engineers", "development", "developers",
         "platform", "frontend", "backend",
     },
-    "product-design": {
-        "product-design", "product", "design", "ux", "ui-ux",
-    },
-    "security": {
-        "security", "security-team", "trust-safety", "trust-and-safety",
-    },
     "infrastructure": {
         "infrastructure", "infra", "devops", "site-reliability", "sre",
-    },
-    "community": {
-        "community", "community-team", "developer-relations", "devrel",
-    },
-    "partnerships": {
-        "partnerships", "partnership", "business-development", "bizdev",
-    },
-    "operations": {
-        "operations", "ops", "people-operations", "finance-operations",
-    },
-    "executive": {
-        "executive", "executives", "leadership", "organization-leadership",
-        "org-leadership",
     },
 }
 
@@ -9882,11 +10181,6 @@ WORLD_QA_CARDS = (
      "done, or error plus a bounded redacted log tail. Click the Actions face "
      "and confirm the full authorized run list opens. Repeat without write "
      "access and confirm no private run or log data appears."),
-    ("executive-office-floor", "Executive Office floor",
-     "Sign in as an Executive-team member and ride the elevator to Executive. "
-     "Confirm the strategy table, ten chairs, organization map and floor label "
-     "render without intersecting adjacent stories. Confirm a non-Executive "
-     "member cannot select the floor and attendance reports Executive."),
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
      "appears immediately, animates while work is active, and ends with a "
@@ -11126,9 +11420,22 @@ async def purge_stale_registered_nodes(env, force=False):
 PBKDF2_ITERS = 100000
 SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
+BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+BASE58_INDEX = {ch: i for i, ch in enumerate(BASE58_ALPHABET)}
+SOLANA_SYSTEM_PROGRAM = "11111111111111111111111111111111"
+# Custodial deposit sweep: half of a confirmed deposit goes to the treasury,
+# half is shared between online functioning mirror nodes.
+DEPOSIT_TREASURY_SPLIT_NUMERATOR = 1
+DEPOSIT_TREASURY_SPLIT_DENOMINATOR = 2
+# One legacy Solana transaction must fit the packet limit. With one signer,
+# the treasury, the system program and the transfer instructions, 20 mirror
+# payees still leaves headroom.
+MAX_SWEEP_PAYEES = 20
+SOLANA_SWEEP_FEE_RESERVE_LAMPORTS = 5000
 
-
-
+# Legacy deposit-record constants remain only for read-only historical status
+# and the offline migration tool. Signup is free; no deployed Worker creates
+# deposit wallets, holds a wallet signing key, or sweeps funds.
 LAMPORTS_PER_SOL = 1000000000
 
 
@@ -11324,6 +11631,13 @@ SCHEMA_ALTER_STATEMENTS = [
 
 
     "ALTER TABLE error_log ADD COLUMN actor TEXT NOT NULL DEFAULT ''",
+    # Per-channel delivered-transition marker for operational alerts. Pings are
+    # on by default and email is not, so the Pings channel needs its own state:
+    # sharing notified_state left every ping-only deployment re-sending the same
+    # transition every minute, which buried the outage pings under duplicated
+    # recovery pings once the notification cap trimmed the inbox.
+    """ALTER TABLE repository_monitor_state
+       ADD COLUMN pinged_state TEXT NOT NULL DEFAULT ''""",
 ]
 
 
@@ -16249,6 +16563,36 @@ def _account_world_client_fields(rec):
     )
 
 
+WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS = 60 * 60 * 1000
+
+
+def _account_public_last_email(rec):
+    """The last account email's coarse age and delivery outcome.
+
+    World paints "LAST EMAIL 2D AGO · DELIVERED" on every member badge, so the
+    stamp rides the public directory rather than only the owner's own
+    authenticated read. The send time is rounded down to the hour, and the
+    address, the email kind and the running send count stay behind
+    /api/accounts/sessions.
+    """
+    try:
+        ts = int((rec or {}).get("last_email_ts") or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    if ts <= 0:
+        return {"lastEmailAt": 0, "lastEmailStatus": ""}
+    return {
+        "lastEmailAt": (
+            (ts // WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS)
+            * WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS
+        ),
+        "lastEmailStatus": (
+            ACCOUNT_EMAIL_STATUS_DELIVERED if (rec or {}).get("last_email_ok")
+            else ACCOUNT_EMAIL_STATUS_FAILED
+        ),
+    }
+
+
 def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     return {
@@ -16270,6 +16614,7 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
 
 
         "activityBucket": activity_bucket,
+        **_account_public_last_email(rec),
         **_account_world_client_fields(rec),
     }
 
@@ -17401,6 +17746,144 @@ async def _account_reserve(env, request):
 
 def _amount_sol(lamports):
     return "%.9f" % (int(lamports) / LAMPORTS_PER_SOL)
+
+
+# --- Custodial deposit signing ----------------------------------------------
+# These rebuild the write path used by temporary per-purchase deposit
+# addresses. They are reachable only from the deposit sweep, which is gated on
+# _custodial_deposits_enabled(); the direct wallet-to-pool path never touches
+# them and never puts a key on the Worker.
+def _base58_decode(value):
+    n = 0
+    for ch in str(value or ""):
+        if ch not in BASE58_INDEX:
+            return b""
+        n = n * 58 + BASE58_INDEX[ch]
+    raw = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+    pad = 0
+    for ch in str(value or ""):
+        if ch == "1":
+            pad += 1
+        else:
+            break
+    return b"\x00" * pad + raw
+
+
+def _shortvec(n):
+    out = bytearray()
+    while True:
+        elem = n & 0x7F
+        n >>= 7
+        if n:
+            elem |= 0x80
+        out.append(elem)
+        if not n:
+            return bytes(out)
+
+
+def _solana_transfer_message(from_addr, transfers, blockhash):
+    account_addrs = [from_addr]
+    for to_addr, _lamports in transfers:
+        if to_addr not in account_addrs:
+            account_addrs.append(to_addr)
+    if SOLANA_SYSTEM_PROGRAM not in account_addrs:
+        account_addrs.append(SOLANA_SYSTEM_PROGRAM)
+    program_idx = account_addrs.index(SOLANA_SYSTEM_PROGRAM)
+    out = bytearray()
+    out += bytes([1, 0, 1])
+    out += _shortvec(len(account_addrs))
+    for addr in account_addrs:
+        raw = _base58_decode(addr)
+        if len(raw) != 32:
+            return b""
+        out += raw
+    blockhash_raw = _base58_decode(blockhash)
+    if len(blockhash_raw) != 32:
+        return b""
+    out += blockhash_raw
+    out += _shortvec(len(transfers))
+    for to_addr, lamports in transfers:
+        data = struct.pack("<IQ", 2, int(lamports))
+        out += bytes([program_idx])
+        out += _shortvec(2) + bytes([0, account_addrs.index(to_addr)])
+        out += _shortvec(len(data)) + data
+    return bytes(out)
+
+
+async def _solana_sign_message(from_addr, seed_b64url, message):
+    pub = _base58_decode(from_addr)
+    if len(pub) != 32 or not seed_b64url or not message:
+        return b""
+    try:
+        jwk = {
+            "kty": "OKP", "crv": "Ed25519", "x": _b64url_encode(pub),
+            "d": seed_b64url, "ext": True, "key_ops": ["sign"],
+        }
+        key = await js_crypto.subtle.importKey(
+            "jwk", to_js(jwk), to_js({"name": "Ed25519"}), False,
+            _to_js(["sign"]),
+        )
+        sig = await js_crypto.subtle.sign(
+            to_js({"name": "Ed25519"}), key, _to_js(message))
+        return bytes(Uint8Array.new(sig).to_py())
+    except Exception:
+        return b""
+
+
+async def _solana_latest_blockhash(env):
+    resp = await _solana_rpc(env, "getLatestBlockhash", [])
+    if not isinstance(resp, dict):
+        return ""
+    try:
+        return str(resp["result"]["value"]["blockhash"] or "")
+    except Exception:
+        return ""
+
+
+async def _solana_send_transaction(env, tx_bytes):
+    encoded = base64.b64encode(tx_bytes).decode()
+    resp = await _solana_rpc_write(
+        env, "sendTransaction",
+        [encoded, {"encoding": "base64", "skipPreflight": False}],
+    )
+    if not isinstance(resp, dict):
+        return ""
+    result = resp.get("result")
+    return str(result or "") if result else ""
+
+
+async def _solana_send_transfers(env, from_addr, seed_b64url, transfers):
+    transfers = [(to, int(lamports)) for to, lamports in transfers
+                 if SOLANA_RE.match(to or "") and int(lamports) > 0]
+    if not transfers:
+        return ""
+    blockhash = await _solana_latest_blockhash(env)
+    if not blockhash:
+        return ""
+    message = _solana_transfer_message(from_addr, transfers, blockhash)
+    sig = await _solana_sign_message(from_addr, seed_b64url, message)
+    if len(sig) != 64:
+        return ""
+    tx = _shortvec(1) + sig + message
+    return await _solana_send_transaction(env, tx)
+
+
+async def _new_solana_keypair():
+    """Generate a fresh per-purchase deposit keypair.
+
+    A Solana address is an Ed25519 public key. The 32-byte seed (the JWK "d"
+    field) is what the sweep later signs with, so it is stored encrypted and
+    deleted as soon as the sweep succeeds.
+    """
+    pair = await js_crypto.subtle.generateKey(
+        to_js({"name": "Ed25519"}), True, _to_js(["sign", "verify"]))
+    pub_raw = await js_crypto.subtle.exportKey("raw", pair.publicKey)
+    pub = bytes(Uint8Array.new(pub_raw).to_py())
+    jwk = await js_crypto.subtle.exportKey("jwk", pair.privateKey)
+    seed_b64url = str(getattr(jwk, "d", "") or "")
+    if len(pub) != 32 or not seed_b64url:
+        return None, None
+    return _base58_encode(pub), seed_b64url
 
 
 def _solana_pay_uri(address, amount_lamports, reference="", message="Join ForkMesh"):
@@ -20791,6 +21274,661 @@ async def reward_contributions_handler(env, request):
             "distribution is not complete until its separate finalized "
             "on-chain transfer is verified."
         ),
+    }, cache_control="no-store")
+
+
+WORLD_ELEMENT_STORE_BODY_MAX_BYTES = 8 * 1024
+WORLD_ELEMENT_PURCHASE_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def _world_element_library(rec, now=0):
+    return world_element_store.clean_owned(
+        (rec or {}).get("world_elements"), now)
+
+
+async def _create_element_store_split_intent(env, purchase):
+    """Write the unsigned intent paying one purchase's mirror-node half.
+
+    The treasury half needs no transfer: it is already in the pool address the
+    buyer's wallet paid. Only the mirror half moves, and only after the
+    instance owner's local signer reviews and signs this plan.
+    """
+    purchase = purchase or {}
+    if purchase.get("distribution_intent_id"):
+        return [str(purchase.get("distribution_intent_id"))]
+    rec = await _central_fund_record(env)
+    if not rec or not rec.get("signer_account"):
+        return []
+    now = int(Date.now())
+    snapshot = await _eligible_reward_snapshot(env, now)
+    eligible = list(snapshot.get("eligible") or [])
+    if not eligible:
+        return []
+    mirror_total = int(purchase.get("mirror_lamports") or 0)
+    chunk_count = (
+        len(eligible) + REWARD_TRANSFERS_PER_INTENT - 1
+    ) // REWARD_TRANSFERS_PER_INTENT
+    fee_reserve = REWARD_POOL_FEE_RESERVE_LAMPORTS * chunk_count
+    per_node = (mirror_total - fee_reserve) // len(eligible)
+    if per_node <= 0:
+        return []
+    balance = await _reward_balance_lamports(env, rec.get("address"))
+    if balance is None or int(balance) < per_node * len(eligible) + fee_reserve:
+        return []
+    transfers = [{
+        "address": item["walletAddress"],
+        "lamports": per_node,
+        "nodeId": item["nodeId"],
+    } for item in eligible]
+    purchase_id = str(purchase.get("purchase_id") or "")
+    statements = []
+    intent_ids = []
+    for chunk_index in range(chunk_count):
+        intent_id = _random_bytes(16).hex()
+        intent_ids.append(intent_id)
+        start = chunk_index * REWARD_TRANSFERS_PER_INTENT
+        plan = {
+            "v": 2,
+            "network": rec.get("network", "mainnet-beta"),
+            "sourceAddress": rec.get("address", ""),
+            "custody": {
+                "forkMeshHoldsUserKeys": False,
+                "fundsRemainInSourceWalletUntilSigned": True,
+            },
+            "signing": {
+                "required": True,
+                "performed": False,
+                "method": "external-local-qt",
+            },
+            "transfers": transfers[start:start + REWARD_TRANSFERS_PER_INTENT],
+            "eligibility": {
+                "snapshotHash": snapshot.get("snapshotHash", ""),
+                "eligibleCount": len(eligible),
+                "rejected": snapshot.get("rejected", []),
+                "policy": snapshot.get("policy", {}),
+                "limitations": snapshot.get("limitations", []),
+                "source": snapshot.get("source", ""),
+            },
+            "policy": "element-store-half-to-eligible-mirrors-v1",
+            "purchaseId": purchase_id,
+            "elementId": str(purchase.get("element_id") or ""),
+            "purchaseLamports": int(purchase.get("amount_lamports") or 0),
+            "treasuryRetainedLamports": int(
+                purchase.get("treasury_lamports") or 0),
+            "mirrorShareLamports": mirror_total,
+            "distributedLamports": per_node * len(eligible),
+            "retainedForNetworkFeesAndRemainder": (
+                mirror_total - per_node * len(eligible)
+            ),
+            "split": world_element_store.split_policy_public(),
+            "batch": {
+                "chunkIndex": chunk_index,
+                "chunkCount": chunk_count,
+                "maximumTransfersPerTransaction": REWARD_TRANSFERS_PER_INTENT,
+            },
+            "generatedAt": now,
+            "notice": (
+                "Half of a voluntary world-element purchase, shared between "
+                "online eligible mirror nodes. Not an investment and no "
+                "financial return is promised."
+            ),
+        }
+        statements.append((
+            "INSERT INTO chain_intents "
+            "(intent_id,kind,source_address,signer_account,status,data,"
+            "created_at,expires_at) "
+            "VALUES (?,?,?,?,'pending_signature',?,?,?)",
+            (
+                intent_id,
+                "world_element_store_mirror_split",
+                rec.get("address", ""),
+                rec.get("signer_account", ""),
+                json.dumps(plan, sort_keys=True, separators=(",", ":")),
+                now,
+                now + 4 * 60 * 60 * 1000,
+            ),
+        ))
+    statements.append((
+        "UPDATE world_element_purchases "
+        "SET status='awaiting_distribution', distribution_intent_id=? "
+        "WHERE purchase_id=? AND distribution_intent_id=''",
+        (intent_ids[0], purchase_id),
+    ))
+    await _contribution_run_batch(env, statements)
+    await _audit_sensitive_action(
+        env, "", "world.element_store_split_intent",
+        "world_element_purchase", purchase_id, "requested", {
+            "elementId": str(purchase.get("element_id") or ""),
+            "eligibleCount": len(eligible),
+            "snapshotHash": snapshot.get("snapshotHash", ""),
+            "mirrorShareLamports": mirror_total,
+            "distributedLamports": per_node * len(eligible),
+            "intentCount": chunk_count,
+        })
+    return intent_ids
+
+
+async def _grant_purchased_element(env, account_bi, rec, row, signature,
+                                   details):
+    """Record the finalized purchase and add the element to the account."""
+    now = int(Date.now())
+    element_id = str(row.get("element_id") or "")
+    item = world_element_store.element(element_id)
+    await d1_run(
+        env,
+        "UPDATE world_element_purchases SET status='confirmed', "
+        "tx_signature=?, source_address=?, confirmed_at=? "
+        "WHERE purchase_id=? AND status IN ('prepared','awaiting_finality')",
+        signature, details.get("sourceAddress", ""), now,
+        row.get("purchase_id"),
+    )
+    owned = _world_element_library(rec, now)
+    previous = owned.get(element_id) or {}
+    owned[element_id] = {
+        "params": world_element_store.clean_params(
+            item, previous.get("params")),
+        "placement": world_element_store.clean_placement(
+            previous.get("placement")),
+        "enabled": True,
+        "purchaseId": str(row.get("purchase_id") or ""),
+        "transactionSignature": signature,
+        "purchasedAt": now,
+        "updatedAt": now,
+    }
+    rec["world_elements"] = owned
+    await _save_account(env, account_bi, rec)
+    row = dict(row)
+    row.update({
+        "status": "confirmed",
+        "tx_signature": signature,
+        "source_address": details.get("sourceAddress", ""),
+        "confirmed_at": now,
+    })
+    # Only the direct path owes an unsigned mirror-distribution intent. A
+    # custodial deposit pays the mirror half in its own sweep transaction, so
+    # creating an intent here would pay that half a second time.
+    if str(row.get("method") or "direct") != "deposit":
+        intent_ids = await _create_element_store_split_intent(env, row)
+        if intent_ids:
+            row["status"] = "awaiting_distribution"
+            row["distribution_intent_id"] = intent_ids[0]
+    await _audit_sensitive_action(
+        env, "", "world.element_purchase_confirm", "world_element_purchase",
+        str(row.get("purchase_id") or ""), "success", {
+            "elementId": element_id,
+            "lamports": int(row.get("amount_lamports") or 0),
+            "treasuryLamports": int(row.get("treasury_lamports") or 0),
+            "mirrorLamports": int(row.get("mirror_lamports") or 0),
+            "transactionSignature": signature,
+        })
+    return row, owned
+
+
+def _deposit_treasury_address(env):
+    """Public treasury address that receives the custodial deposit's half."""
+    address = clean_string(
+        getattr(env, "TREASURY_SOLANA_ADDRESS", "")
+        or getattr(env, "COMMUNITY_REWARD_POOL_ADDRESS", ""),
+        64,
+    ).strip()
+    return address if SOLANA_RE.match(address) else ""
+
+
+def _custodial_deposits_enabled(env):
+    """Whether the Worker may mint and sweep temporary deposit addresses.
+
+    Off unless a treasury is configured to sweep into, and killable outright
+    with CUSTODIAL_DEPOSITS=0. When this is off the store still sells elements
+    through the direct wallet-to-pool path, which puts no key on the Worker.
+    """
+    flag = str(getattr(env, "CUSTODIAL_DEPOSITS", "") or "").strip().lower()
+    if flag in ("0", "false", "off", "no"):
+        return False
+    return bool(_deposit_treasury_address(env))
+
+
+async def _online_mirror_payout_addresses(env, exclude=""):
+    """Payout addresses of online, functioning, eligible mirror nodes."""
+    snapshot = await _eligible_reward_snapshot(env, int(Date.now()))
+    seen = set()
+    addresses = []
+    for item in snapshot.get("eligible") or []:
+        address = str(item.get("walletAddress") or "").strip()
+        if (not SOLANA_RE.match(address) or address in seen
+                or address == exclude):
+            continue
+        seen.add(address)
+        addresses.append(address)
+        if len(addresses) >= MAX_SWEEP_PAYEES:
+            break
+    return addresses
+
+
+def _deposit_sweep_plan(transferable, treasury, payees):
+    """Split a swept deposit 50/50 between treasury and online mirrors.
+
+    Integer division keeps the remainder with the treasury, so the transfers
+    can never total more than what was actually received.
+    """
+    treasury_lamports = int(transferable)
+    transfers = []
+    if payees:
+        half = (int(transferable) * DEPOSIT_TREASURY_SPLIT_NUMERATOR
+                // DEPOSIT_TREASURY_SPLIT_DENOMINATOR)
+        per_node = (int(transferable) - half) // len(payees)
+        if per_node > 0:
+            transfers = [(payee, per_node) for payee in payees]
+            treasury_lamports = int(transferable) - per_node * len(payees)
+    transfers.insert(0, (treasury, treasury_lamports))
+    merged = []
+    by_addr = {}
+    for addr, lamports in transfers:
+        if addr in by_addr:
+            by_addr[addr] += int(lamports)
+        else:
+            by_addr[addr] = int(lamports)
+            merged.append(addr)
+    return [(addr, by_addr[addr]) for addr in merged if by_addr[addr] > 0]
+
+
+async def _sweep_element_deposit(env, row, balance=None):
+    """Send a confirmed deposit on to the treasury and online mirror nodes.
+
+    Idempotent: once a signature is stored the deposit is never sent again.
+    The signing seed is destroyed as soon as the sweep confirms, so a swept
+    purchase leaves no key on the Worker.
+    """
+    purchase_id = str(row.get("purchase_id") or "")
+    if row.get("sweep_signature"):
+        return str(row.get("sweep_signature"))
+    # Two concurrent pollers can both reach here, because D1 gives no atomic
+    # compare-and-swap to claim the sweep with. The chain settles it instead:
+    # same signer, transfers and blockhash produce a byte-identical
+    # transaction, which the cluster deduplicates by signature; if the
+    # blockhash has rolled, the second attempt spends an already-emptied
+    # account and is rejected for insufficient funds. Either way the deposit
+    # cannot be sent twice.
+    from_addr = str(row.get("deposit_address") or "")
+    stored = str(row.get("deposit_secret") or "")
+    if not SOLANA_RE.match(from_addr) or not stored:
+        return ""
+    treasury = _deposit_treasury_address(env)
+    if not treasury:
+        await _record_sweep_error(env, purchase_id, "treasury_not_configured")
+        return ""
+    secret = await decrypt_row(env, stored)
+    seed = (secret or {}).get("seed") if isinstance(secret, dict) else ""
+    if not seed:
+        await _record_sweep_error(env, purchase_id, "deposit_key_unreadable")
+        return ""
+    if balance is None:
+        balance = await _solana_balance_lamports(env, from_addr)
+    if balance is None:
+        await _record_sweep_error(env, purchase_id, "balance_unavailable")
+        return ""
+    transferable = int(balance) - SOLANA_SWEEP_FEE_RESERVE_LAMPORTS
+    if transferable <= 0:
+        await _record_sweep_error(env, purchase_id, "balance_too_low_for_fee")
+        return ""
+    payees = await _online_mirror_payout_addresses(env, exclude=from_addr)
+    transfers = _deposit_sweep_plan(transferable, treasury, payees)
+    signature = await _solana_send_transfers(env, from_addr, seed, transfers)
+    if not signature:
+        await _record_sweep_error(env, purchase_id, "send_transaction_failed")
+        return ""
+    now = int(Date.now())
+    # Clearing deposit_secret is the point of the whole flow: the Worker holds
+    # a key only for the window between minting the address and sweeping it.
+    await d1_run(
+        env,
+        "UPDATE world_element_purchases SET sweep_signature=?, sweep_at=?, "
+        "sweep_error='', deposit_secret='' WHERE purchase_id=? "
+        "AND sweep_signature=''",
+        signature, now, purchase_id,
+    )
+    await _audit_sensitive_action(
+        env, "", "world.element_deposit_sweep", "world_element_purchase",
+        purchase_id, "success", {
+            "treasuryLamports": next(
+                (l for a, l in transfers if a == treasury), 0),
+            "mirrorPayees": len(payees),
+            "transactionSignature": signature,
+        })
+    return signature
+
+
+async def _record_sweep_error(env, purchase_id, message):
+    await d1_run(
+        env,
+        "UPDATE world_element_purchases SET sweep_error=? WHERE purchase_id=?",
+        message, purchase_id,
+    )
+
+
+async def sweep_pending_element_deposits(env):
+    """Cron: retry sweeps whose first attempt could not complete."""
+    if not _custodial_deposits_enabled(env):
+        return 0
+    rows = await d1_all(
+        env,
+        "SELECT * FROM world_element_purchases WHERE method='deposit' "
+        "AND deposit_secret<>'' AND sweep_signature='' "
+        "AND status IN ('confirmed','awaiting_distribution') "
+        "ORDER BY confirmed_at ASC LIMIT 10",
+    )
+    swept = 0
+    for row in rows or []:
+        if await _sweep_element_deposit(env, row):
+            swept += 1
+    return swept
+
+
+async def _element_deposit_status(env, request, data, account_bi, rec, now):
+    """Poll a temporary deposit address; grant and sweep once it is funded."""
+    purchase_id = clean_string(data.get("purchaseId", ""), 32).lower()
+    if not WORLD_ELEMENT_PURCHASE_RE.fullmatch(purchase_id):
+        return json_response({"error": "invalid_purchase"}, status=400)
+    row = await d1_first(
+        env,
+        "SELECT * FROM world_element_purchases WHERE purchase_id=?",
+        purchase_id,
+    )
+    if (not row or str(row.get("account_bi") or "") != account_bi
+            or str(row.get("method") or "") != "deposit"):
+        return json_response({"error": "not_found"}, status=404)
+    element_id = str(row.get("element_id") or "")
+    required = int(row.get("amount_lamports") or 0)
+    address = str(row.get("deposit_address") or "")
+    status = str(row.get("status") or "")
+    if status in ("confirmed", "awaiting_distribution"):
+        return json_response({
+            "ok": True,
+            "status": status,
+            "elementId": element_id,
+            "depositAddress": address,
+            "sweepSignature": str(row.get("sweep_signature") or ""),
+            "owned": _world_element_library(rec, now),
+        }, cache_control="no-store")
+    if int(row.get("expires_at") or 0) <= now and status == "prepared":
+        # An unfunded deposit expires, but the address is left readable so a
+        # late payment can still be reconciled by the operator.
+        await d1_run(
+            env,
+            "UPDATE world_element_purchases SET status='expired' "
+            "WHERE purchase_id=? AND status='prepared'",
+            purchase_id,
+        )
+        return json_response({"error": "purchase_expired"}, status=410)
+    balance = await _solana_balance_lamports(env, address)
+    if balance is None:
+        return json_response({
+            "ok": True, "status": "balance_unavailable",
+            "depositAddress": address, "requiredLamports": required,
+        }, status=202, cache_control="no-store")
+    if int(balance) < required:
+        return json_response({
+            "ok": True,
+            "status": "awaiting_payment",
+            "depositAddress": address,
+            "requiredLamports": required,
+            "receivedLamports": int(balance),
+            "receivedSol": _amount_sol(int(balance)),
+        }, status=202, cache_control="no-store")
+    row, owned = await _grant_purchased_element(
+        env, account_bi, rec, row, "", {"sourceAddress": ""})
+    signature = await _sweep_element_deposit(env, row, balance=balance)
+    return json_response({
+        "ok": True,
+        "status": row.get("status"),
+        "elementId": element_id,
+        "depositAddress": address,
+        "receivedLamports": int(balance),
+        "sweepSignature": signature,
+        "sweepPending": not signature,
+        "owned": owned,
+        "notice": world_element_store.custody_notice("deposit"),
+    }, cache_control="no-store")
+
+
+async def world_element_store_handler(env, request, path):
+    """Browse, buy and configure modular World elements."""
+    await ensure_schema(env)
+    method = method_name(request)
+    route = path.rstrip("/")
+    now = int(Date.now())
+    fund = await _central_fund_record(env)
+
+    if route.endswith("/catalog"):
+        if method != "GET":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        deposits = _custodial_deposits_enabled(env)
+        return json_response({
+            "ok": True,
+            "elements": world_element_store.catalog_public(),
+            "split": world_element_store.split_policy_public(),
+            "poolAddress": (fund or {}).get("address", ""),
+            "network": (fund or {}).get("network", ""),
+            "purchasesEnabled": bool(fund) or deposits,
+            "paymentMethods": world_element_store.payment_methods_public(
+                direct=bool(fund), deposit=deposits),
+            "treasuryAddress": _deposit_treasury_address(env),
+        }, cache_control="no-store")
+
+    if route.endswith("/library"):
+        if method != "GET":
+            return json_response({"error": "method_not_allowed"}, status=405)
+        account_bi, rec = await _account_session_record(env, request)
+        if not account_bi or not rec:
+            return json_response({"error": "invalid_session"}, status=401)
+        return json_response({
+            "ok": True,
+            "owned": _world_element_library(rec, now),
+            "storage": "account-encrypted",
+        }, cache_control="no-store")
+
+    if method != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    if not _request_same_origin(request):
+        return json_response({"error": "origin_not_allowed"}, status=403)
+    try:
+        data = await bounded_json_request(
+            request, WORLD_ELEMENT_STORE_BODY_MAX_BYTES)
+    except RequestBodyTooLarge:
+        return json_response({"error": "payload_too_large"}, status=413)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    account_bi, rec = await _account_session_record(env, request, data)
+    if not account_bi or not rec:
+        return json_response({"error": "invalid_session"}, status=401)
+    action = clean_string(data.get("action", ""), 20).lower()
+
+    if action == "configure":
+        element_id = clean_string(data.get("elementId", ""), 64).lower()
+        item = world_element_store.element(element_id)
+        owned = _world_element_library(rec, now)
+        if not item or element_id not in owned:
+            return json_response({"error": "element_not_owned"}, status=403)
+        entry = dict(owned[element_id])
+        entry["params"] = world_element_store.clean_params(
+            item, data.get("params"))
+        if isinstance(data.get("placement"), dict):
+            entry["placement"] = world_element_store.clean_placement(
+                data.get("placement"))
+        if isinstance(data.get("enabled"), bool):
+            entry["enabled"] = data.get("enabled")
+        entry["updatedAt"] = now
+        owned[element_id] = entry
+        rec["world_elements"] = owned
+        await _save_account(env, account_bi, rec)
+        return json_response({
+            "ok": True, "elementId": element_id, "element": entry,
+        }, cache_control="no-store")
+
+    deposits_enabled = _custodial_deposits_enabled(env)
+    if not fund and not deposits_enabled:
+        return json_response(
+            {"error": "community_pool_not_configured"}, status=503)
+
+    if action == "deposit-status":
+        return await _element_deposit_status(env, request, data, account_bi,
+                                             rec, now)
+
+    if action == "prepare":
+        element_id = clean_string(data.get("elementId", ""), 64).lower()
+        item = world_element_store.element(element_id)
+        if not item:
+            return json_response({"error": "unknown_element"}, status=404)
+        method = clean_string(data.get("method", "direct"), 16).lower()
+        if method not in ("direct", "deposit"):
+            return json_response({"error": "invalid_method"}, status=400)
+        if method == "deposit" and not deposits_enabled:
+            return json_response(
+                {"error": "custodial_deposits_disabled"}, status=503)
+        if method == "direct" and not fund:
+            return json_response(
+                {"error": "community_pool_not_configured"}, status=503)
+        if element_id in _world_element_library(rec, now):
+            return json_response(
+                {"error": "element_already_owned"}, status=409)
+        pending = await d1_first(
+            env,
+            "SELECT COUNT(*) AS c FROM world_element_purchases "
+            "WHERE account_bi=? AND status='prepared' AND expires_at>?",
+            account_bi, now,
+        )
+        if int((pending or {}).get("c") or 0) >= 5:
+            return json_response(
+                {"error": "too_many_pending_purchases"}, status=429)
+        amount = int(item["priceLamports"])
+        split = world_element_store.split_lamports(amount)
+        purchase_id = _random_bytes(16).hex()
+        reference = _base58_encode(_random_bytes(32))
+        expires_at = now + world_element_store.PURCHASE_EXPIRES_MS
+        deposit_address = ""
+        deposit_secret = ""
+        if method == "deposit":
+            # A fresh Ed25519 keypair per purchase. The seed is stored
+            # encrypted and destroyed by the sweep; nothing else may read it.
+            deposit_address, seed = await _new_solana_keypair()
+            if not deposit_address or not seed:
+                return json_response(
+                    {"error": "deposit_address_unavailable"}, status=503)
+            deposit_secret = await encrypt_row(env, {"seed": seed})
+        pay_to = deposit_address if method == "deposit" else fund.get(
+            "address", "")
+        await d1_run(
+            env,
+            "INSERT INTO world_element_purchases "
+            "(purchase_id,account_bi,element_id,amount_lamports,"
+            "treasury_lamports,mirror_lamports,reference_address,status,"
+            "created_at,expires_at,method,deposit_address,deposit_secret) "
+            "VALUES (?,?,?,?,?,?,?,'prepared',?,?,?,?,?)",
+            purchase_id, account_bi, element_id, amount,
+            split["treasuryLamports"], split["mirrorLamports"], reference,
+            now, expires_at, method, deposit_address, deposit_secret,
+        )
+        return json_response({
+            "ok": True,
+            "purchaseId": purchase_id,
+            "elementId": element_id,
+            "method": method,
+            "amountLamports": amount,
+            "amountSol": _amount_sol(amount),
+            "payToAddress": pay_to,
+            "poolAddress": fund.get("address", "") if fund else "",
+            "depositAddress": deposit_address,
+            "network": (fund or {}).get("network", _reward_network(env)),
+            "referenceAddress": reference,
+            "expiresAt": expires_at,
+            "uri": _solana_pay_uri(
+                pay_to, amount,
+                reference="" if method == "deposit" else reference,
+                message=f"ForkMesh world element: {item['label']}",
+            ),
+            "custody": world_element_store.custody_notice(method),
+            "split": {
+                **world_element_store.split_policy_public(),
+                "treasuryLamports": split["treasuryLamports"],
+                "mirrorNodeLamports": split["mirrorLamports"],
+            },
+        }, status=201, cache_control="no-store")
+
+    if action != "confirm":
+        return json_response({"error": "invalid_action"}, status=400)
+    purchase_id = clean_string(data.get("purchaseId", ""), 32).lower()
+    signature = clean_string(data.get("transactionSignature", ""), 120).strip()
+    if (not WORLD_ELEMENT_PURCHASE_RE.fullmatch(purchase_id)
+            or not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{64,120}", signature)):
+        return json_response({"error": "invalid_confirmation"}, status=400)
+    row = await d1_first(
+        env,
+        "SELECT * FROM world_element_purchases WHERE purchase_id=?",
+        purchase_id,
+    )
+    if not row or str(row.get("account_bi") or "") != account_bi:
+        return json_response({"error": "not_found"}, status=404)
+    if row.get("status") in ("confirmed", "awaiting_distribution"):
+        if row.get("tx_signature") != signature:
+            return json_response(
+                {"error": "purchase_already_confirmed"}, status=409)
+        return json_response({
+            "ok": True,
+            "status": row.get("status"),
+            "elementId": str(row.get("element_id") or ""),
+            "owned": _world_element_library(rec, now),
+        }, cache_control="no-store")
+    if int(row.get("expires_at") or 0) <= now:
+        await d1_run(
+            env,
+            "UPDATE world_element_purchases SET status='expired' "
+            "WHERE purchase_id=? AND status='prepared'",
+            purchase_id,
+        )
+        return json_response({"error": "purchase_expired"}, status=410)
+    replay = await d1_first(
+        env,
+        "SELECT purchase_id FROM world_element_purchases "
+        "WHERE tx_signature=? AND purchase_id<>?",
+        signature, purchase_id,
+    )
+    if replay:
+        return json_response({"error": "transaction_replay"}, status=409)
+    details = await _solana_contribution_details(
+        env, signature,
+        pool_address=fund.get("address", ""),
+        reference_address=row.get("reference_address", ""),
+        amount_lamports=int(row.get("amount_lamports") or 0),
+    )
+    if details is False:
+        return json_response(
+            {"error": "purchase_transaction_mismatch"}, status=409)
+    if details is None:
+        await d1_run(
+            env,
+            "UPDATE world_element_purchases "
+            "SET status='awaiting_finality', tx_signature=? "
+            "WHERE purchase_id=? AND status='prepared'",
+            signature, purchase_id,
+        )
+        return json_response({
+            "ok": True,
+            "status": "awaiting_finality",
+            "notice": (
+                "Non-custodial: ForkMesh retained no wallet key. The element "
+                "unlocks once the direct public transfer is finalized."
+            ),
+        }, status=202, cache_control="no-store")
+    row, owned = await _grant_purchased_element(
+        env, account_bi, rec, row, signature, details)
+    return json_response({
+        "ok": True,
+        "status": row.get("status"),
+        "elementId": str(row.get("element_id") or ""),
+        "transactionSignature": signature,
+        "explorerUrl": _reward_explorer_url(
+            fund.get("network", "mainnet-beta"), signature=signature),
+        "distributionIntentId": str(row.get("distribution_intent_id") or ""),
+        "owned": owned,
     }, cache_control="no-store")
 
 
@@ -36872,16 +38010,29 @@ async def world_admin_errors_handler(env, request):
             data = await bounded_json_request(request)
             row_id = int(data.get("id") or 0)
         except (AttributeError, TypeError, ValueError):
+            data = {}
             row_id = 0
-        if row_id <= 0:
+        group = data.get("group") if isinstance(data, dict) else None
+        if row_id <= 0 and not isinstance(group, dict):
             return json_response(
                 {"error": "invalid_error_id"},
                 status=400,
                 cache_control="no-store",
             )
         if method == "POST":
+            if isinstance(group, dict):
+                form = {
+                    "group_status": [str(group.get("status") or "")[:12]],
+                    "group_method": [str(group.get("method") or "")[:12]],
+                    "group_path": [str(group.get("path") or "")[:2000]],
+                    "group_message": [str(group.get("message") or "")[:1000]],
+                    "group_users": [clean_string(
+                        group.get("users") or "", 300)],
+                }
+            else:
+                form = {"error_id": [str(row_id)]}
             message, details = await _admin_error_create_bot_task(
-                env, {"error_id": [str(row_id)]}, actor)
+                env, form, actor)
             if details.get("taskId"):
                 return json_response(
                     {"ok": True, "message": message, **details},
@@ -36894,7 +38045,25 @@ async def world_admin_errors_handler(env, request):
                 cache_control="no-store",
             )
         await ensure_schema(env)
-        await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
+        if isinstance(group, dict):
+            status = str(group.get("status") or "")[:12]
+            request_method = str(group.get("method") or "")[:12].upper()
+            path = str(group.get("path") or "")[:2000]
+            message = str(group.get("message") or "")[:1000]
+            if not status or not request_method:
+                return json_response(
+                    {"error": "invalid_error_group"},
+                    status=400,
+                    cache_control="no-store",
+                )
+            await d1_run(
+                env,
+                "DELETE FROM error_log WHERE CAST(status AS TEXT)=? "
+                "AND UPPER(method)=? AND path=? AND message=?",
+                status, request_method, path, message,
+            )
+        else:
+            await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
         return json_response({"ok": True}, cache_control="no-store")
     try:
         query = parse_qs(urlparse(request.url).query)
@@ -36904,14 +38073,26 @@ async def world_admin_errors_handler(env, request):
         after = 0
     await ensure_schema(env)
     latest = await d1_first(
-        env, "SELECT id,ts FROM error_log ORDER BY id DESC LIMIT 1")
+        env,
+        "SELECT id,ts,status,method,path FROM error_log ORDER BY id DESC "
+        "LIMIT 1")
     count = await d1_first(
         env, "SELECT COUNT(*) AS n FROM error_log WHERE id>?", after)
+    try:
+        latest_status = max(0, int((latest or {}).get("status") or 0))
+    except (TypeError, ValueError):
+        latest_status = 0
     payload = {
         "ok": True,
         "latestId": max(0, int((latest or {}).get("id") or 0)),
         "latestAt": max(0, int((latest or {}).get("ts") or 0)),
         "newCount": min(9999, max(0, int((count or {}).get("n") or 0))),
+        # Enough for the World HUD to say what just broke without putting a
+        # route, a message, or an actor into the notice: the same coarse
+        # (status, source) pair the new-error-group Ping carries.
+        "latestStatus": latest_status,
+        "latestSource": _admin_error_source(
+            (latest or {}).get("method"), (latest or {}).get("path")),
     }
     if query.get("include", ["0"])[0] == "1":
         rows = await d1_all(
@@ -36926,6 +38107,8 @@ async def world_admin_errors_handler(env, request):
             "FROM error_log WHERE ts>=? ORDER BY id DESC LIMIT 1000",
             int(Date.now()) - 24 * 60 * 60 * 1000,
         )
+        now = int(Date.now())
+        hourly = [0] * 24
         groups = {}
         for row in grouped_rows or []:
             signature = (
@@ -36936,12 +38119,20 @@ async def world_admin_errors_handler(env, request):
             )
             group = groups.setdefault(signature, {
                 "count": 0,
-                "firstSeen": int(row.get("ts") or 0),
+                "firstSeen": 0,
                 "lastSeen": 0,
+                "hours": [0] * 24,
                 "actors": {},
                 "anonymous": 0,
             })
             timestamp = max(0, int(row.get("ts") or 0))
+            if 0 < timestamp < 10 ** 11:
+                timestamp *= 1000
+            age_hours = max(0, (now - timestamp) // (60 * 60 * 1000))
+            if age_hours < 24:
+                bucket = 23 - int(age_hours)
+                hourly[bucket] += 1
+                group["hours"][bucket] += 1
             group["count"] += 1
             group["firstSeen"] = min(group["firstSeen"] or timestamp, timestamp)
             group["lastSeen"] = max(group["lastSeen"], timestamp)
@@ -36952,6 +38143,7 @@ async def world_admin_errors_handler(env, request):
                     group["actors"].get(related_actor, 0) + 1)
             else:
                 group["anonymous"] += 1
+        payload["hourly"] = hourly
         payload["groups"] = [
             {
                 "status": signature[0],
@@ -36961,6 +38153,7 @@ async def world_admin_errors_handler(env, request):
                 "count": group["count"],
                 "firstSeen": group["firstSeen"],
                 "lastSeen": group["lastSeen"],
+                "hours": group["hours"],
                 "actors": [
                     {"name": name, "count": count}
                     for name, count in sorted(
@@ -41801,6 +42994,7 @@ def _https_mirror_endpoint_projection(row):
         "healthy": bool(row.get("healthy")),
         "integrity": row.get("integrity"),
         "abuseBlocked": bool(row.get("abuse_blocked")),
+        "refsSha256": row.get("forkmesh_refs_sha256"),
     }
 
 
@@ -41808,7 +43002,8 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
     rows = await d1_all(
         env,
         """SELECT node_name,base_url,public_key,registration_sig,issued_at,
-                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked
+                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked,
+                  forkmesh_refs_sha256
              FROM mirror_https_endpoints""",
     )
     records = [
@@ -41829,6 +43024,13 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
         str(node or "").lower()
         for node in context.get("currentNodes", set())
     }
+    # Catalog identities can nominate one preferred current host even when
+    # several healthy endpoints carry the exact same signed refs digest. Treat
+    # those byte-identical copies as equally current so this preference sort
+    # does not undo the cursor rotation and pin every request to one node.
+    current_nodes = https_routing.equivalent_current_endpoint_nodes(
+        selected, current_nodes, context.get("currentPins", set())
+    )
     if current_nodes:
         selected.sort(
             key=lambda item: (
@@ -42929,6 +44131,9 @@ async def _https_mirror_proxy(
         return json_response({"error": "method_not_allowed"}, status=405)
     query = _https_mirror_request_query(
         urlparse(request.url), operation, release_sha=release_sha)
+    bypass_cache = bool(
+        bypass_cache or request_bypasses_repository_metadata_cache(request)
+    )
     metadata_cache_key = (
         repository_metadata_cache_key(context, operation, query)
         if method == "GET" else ""
@@ -43230,6 +44435,9 @@ class Default(WorkerEntrypoint):
             try:
                 await verify_submitted_chain_intents(self.env)
                 await verify_submitted_reward_contributions(self.env)
+                # Retry deposit sweeps whose first attempt could not send, so
+                # a Worker-held key is never left sitting on a funded address.
+                await sweep_pending_element_deposits(self.env)
             except BaseException as error:
                 await log_cron_error(
                     self.env, "/cron/verify-reward-intents",
@@ -44192,6 +45400,14 @@ class Default(WorkerEntrypoint):
                 "/api/world/preferences", "/api/world/preferences/"):
             return await world_preferences_handler(self.env, request)
 
+        if (
+            url.path == "/api/world/store"
+            or url.path == "/api/world/store/"
+            or url.path.startswith("/api/world/store/")
+        ):
+            return await world_element_store_handler(
+                self.env, request, url.path)
+
         if url.path in (
                 "/api/world/office/attendance",
                 "/api/world/office/attendance/"):
@@ -44350,6 +45566,10 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/network/leaderboards", "/api/network/leaderboards/"):
             return await network_leaderboards(self.env)
+        # Members who published a public payout address, by on-chain balance.
+        if url.path in ("/api/leaderboards/wallets",
+                        "/api/leaderboards/wallets/"):
+            return await wallet_leaderboard(self.env)
         if url.path in ("/api/leaderboards", "/api/leaderboards/"):
             return await leaderboards_overview(self.env)
 

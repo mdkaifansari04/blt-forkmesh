@@ -32,6 +32,11 @@ cd "$(dirname "$0")"
 
 
 ENV_FILE=".env.production"
+# Operators with a valid Wrangler OAuth session can deliberately ignore an
+# expired API token in .env.production without rewriting the secrets file.
+# The account id is still loaded from that file and Cloudflare validates that
+# the OAuth identity owns the configured Worker and D1 database.
+USE_WRANGLER_OAUTH="${FORKMESH_USE_WRANGLER_OAUTH:-0}"
 
 
 
@@ -65,6 +70,12 @@ if [ -f "$ENV_FILE" ]; then
             CLOUDFLARE_ACCOUNT_ID)
                 if [ -n "$value" ]; then
                     CF_ACCOUNT_ID_SET=1
+                    export "$key=$value"
+                fi
+                continue
+                ;;
+            CLOUDFLARE_API_TOKEN)
+                if [ "$USE_WRANGLER_OAUTH" != "1" ] && [ -n "$value" ]; then
                     export "$key=$value"
                 fi
                 continue
@@ -118,6 +129,11 @@ adopt_cloudflare_token_alias() {
 
 
 require_cloudflare_auth() {
+    if [ "$USE_WRANGLER_OAUTH" = "1" ]; then
+        unset CLOUDFLARE_API_TOKEN
+        echo "note: using the existing Wrangler OAuth session for this deploy." >&2
+        return 0
+    fi
     adopt_cloudflare_token_alias || true
     [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && return 0
     if [ -t 0 ] && [ -t 1 ]; then
@@ -546,6 +562,7 @@ verify_marketing_routes() {
 
     local checks=(
         "/|ForkMesh - Local-first source code preservation"
+        "/homev2|ForkMesh - A resilient, local-first Git forge"
         "/pricing|ForkMesh Pricing - Coding Reimagined for Teams"
         "/blog|Blog · ForkMesh"
         "/blog/introducing-forkmesh/|Introducing ForkMesh"
@@ -565,7 +582,7 @@ verify_marketing_routes() {
         fi
     done
     if [ "$failed" != "0" ]; then
-        echo "       The main Worker must own /, /pricing, /blog and posts before" >&2
+        echo "       The main Worker must own /, /homev2, /pricing, /blog and posts before" >&2
         echo "       the legacy marketing Worker/routes are retired." >&2
         return 1
     fi

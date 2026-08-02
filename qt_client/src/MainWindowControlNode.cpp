@@ -336,6 +336,10 @@ QWidget *MainWindow::buildControlNodeSection()
     tabs->setObjectName(QStringLiteral("controlNodeTabs"));
     tabs->setDocumentMode(true);
     m_controlNodeTabs = tabs;
+    // Each operational area is its own destination on the Back/Forward trail
+    // (adhoc #50).
+    connect(tabs, &QTabWidget::currentChanged, this,
+            [this](int) { scheduleNavRecord(); });
     const auto addTab = [tabs](QWidget *card, const QString &name) {
         auto *body = new QWidget;
         auto *bodyCol = new QVBoxLayout(body);

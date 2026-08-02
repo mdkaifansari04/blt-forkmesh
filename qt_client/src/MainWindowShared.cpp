@@ -11,6 +11,7 @@
 
 #include "ActionStore.h"
 #include "AgentStore.h"
+#include "StartupSplash.h"
 
 namespace forkmesh::ui {
 
@@ -116,26 +117,30 @@ QString mirrorHeadBranch(const QString &mirrorPath)
 {
     if (!QDir(mirrorPath).exists())
         return QString();
-    QProcess p;
-    p.start("git", {"-C", mirrorPath, "symbolic-ref", "--short", "HEAD"});
-    if (p.waitForFinished(5000) && p.exitCode() == 0) {
-        const QString head = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
-        if (!head.isEmpty() &&
-            (!mirrorCommitForRef(mirrorPath, QStringLiteral("HEAD")).isEmpty() ||
-             !mirrorCommitForRef(mirrorPath,
-                                 QStringLiteral("refs/heads/") + head).isEmpty()))
-            return head;
+    // A bare mirror's HEAD is one line on disk; only fall back to the subprocess
+    // when it isn't the plain "ref: refs/heads/<branch>" form.
+    QString head = headBranchFromFile(mirrorPath);
+    if (head.isEmpty()) {
+        QProcess p;
+        p.start("git", {"-C", mirrorPath, "symbolic-ref", "--short", "HEAD"});
+        if (p.waitForFinished(5000) && p.exitCode() == 0)
+            head = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
     }
-
-
-
-
-
-
-
-
-
-
+    if (!head.isEmpty() &&
+        (!mirrorCommitForRef(mirrorPath, QStringLiteral("HEAD")).isEmpty() ||
+         !mirrorCommitForRef(mirrorPath,
+                             QStringLiteral("refs/heads/") + head).isEmpty()))
+        return head;
+    // A bare mirror cloned from the relay can carry an unset/dangling HEAD (the
+    // relay serves git-upload-pack without advertising a symref HEAD), so the
+    // symbolic-ref above yields nothing. Every downstream figure the Mirror nodes
+    // view shows for a node — its latest commit and the issue/commit/pull/
+    // discussion counts — is read relative to this branch, so an empty result
+    // blanks nearly the whole row for such a node (issue #243). Fall back to an
+    // actual served branch: prefer main/master, else the first refs/heads/* or
+    // refs/remotes/* held. The live RepoHost can serve from remote refs, so the
+    // advert/catalog path must accept them too or a usable headless mirror looks
+    // empty on the website.
     QProcess refs;
     refs.start("git", {"-C", mirrorPath, "for-each-ref",
                        "--format=%(refname)", "refs/heads/", "refs/remotes/"});
@@ -271,6 +276,15 @@ void logStartup(const QString &phase)
     qInfo().noquote() << QStringLiteral("[startup +%1ms] %2")
                              .arg(startupClock().elapsed(), 5)
                              .arg(phase);
+    // The same phases, on screen, while the constructor still owns the GUI
+    // thread (adhoc #39). logStartup() marks work that has *finished*, so it
+    // closes whichever step startupStep() announced; a phase indented by
+    // convention ("  openRepo: commits loaded") is a sub-line of the step that
+    // is still running, not the end of it.
+    if (phase.startsWith(QLatin1String("  ")))
+        startupDetail(phase.trimmed());
+    else if (auto *splash = activeStartupSplash())
+        splash->completeCurrentStep();
 }
 
 

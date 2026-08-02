@@ -105,6 +105,38 @@ int main(int argc, char **argv)
 
     QTemporaryDir root;
     check(root.isValid(), "temporary root is available");
+    QString error;
+
+    const QString cleanupRoot = root.filePath(QStringLiteral("runtime"));
+    check(QDir().mkpath(
+              QDir(cleanupRoot).filePath(
+                  QStringLiteral("forkmesh-mirror-runtime-stale_1/repository-0"))) &&
+              QDir().mkpath(
+                  QDir(cleanupRoot).filePath(
+                      QStringLiteral("forkmesh-public-mirror-Ab12Cd/repository.git"))) &&
+              QDir().mkpath(
+                  QDir(cleanupRoot).filePath(
+                      QStringLiteral("ForkMesh-Zz91Qq/repository.git"))) &&
+              QDir().mkpath(
+                  QDir(cleanupRoot).filePath(
+                      QStringLiteral("ForkMesh-Keep01/operator-data"))) &&
+              QDir().mkpath(
+                  QDir(cleanupRoot).filePath(
+                      QStringLiteral("operator-data"))),
+          "stale mirror cleanup fixture is created");
+    QFile cleanupPermissions(cleanupRoot);
+    check(cleanupPermissions.setPermissions(
+              QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+              QFileDevice::ExeOwner),
+          "stale mirror cleanup root is owner-only");
+    check(PublicMirrorRuntime::cleanupStaleTemporaryDirectories(
+              cleanupRoot, &error) == 3 &&
+              QFileInfo::exists(
+                  QDir(cleanupRoot).filePath(QStringLiteral("operator-data"))) &&
+              QFileInfo::exists(
+                  QDir(cleanupRoot).filePath(QStringLiteral("ForkMesh-Keep01"))),
+          "startup removes only exact stale mirror materializations");
+
     const QString toolsRoot = root.filePath(QStringLiteral("tools"));
     check(QDir().mkpath(toolsRoot), "fake tool directory is created");
     const QString fakeAge =
@@ -158,7 +190,7 @@ raise SystemExit(2)
     tools.ageKeygen = fakeKeygen;
     tools.tar = QStringLiteral("tar");
     tools.git = QStringLiteral("git");
-    QString error;
+    error.clear();
     check(PublicMirrorRuntime::toolingAvailable(tools, &error),
           "all encrypted public mirror tools are available");
     PublicMirrorRuntime::Tools missing = tools;
@@ -340,6 +372,18 @@ raise SystemExit(2)
               archiveRoot, vaultPath, vaultSecret, archiveId,
               tools, &error),
           "ciphertext tampering is rejected before age is invoked");
+    error.clear();
+    auto recovered = PublicMirrorRuntime::syncRepository(
+        source, archiveRoot, vaultPath, vaultSecret, archiveId,
+        tools, &error);
+    check(recovered.isValid() &&
+              recovered.metadata.archiveId == archiveId &&
+              QString::fromLatin1(
+                  QCryptographicHash::hash(readAll(ciphertext),
+                                           QCryptographicHash::Sha256)
+                      .toHex()) ==
+                  recovered.metadata.ciphertextSha256,
+          "an authenticated source can rebuild a damaged archive in place");
 
     const QString managedRoot =
         root.filePath(QStringLiteral("legacy-mirrors"));

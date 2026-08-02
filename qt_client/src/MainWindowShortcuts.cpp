@@ -66,7 +66,123 @@ void shortcutMeta(const QString &filePath, QString *name, QString *description)
     }
 }
 
+// The prompt a "prompt" card drafts into the composer: the file's text minus
+// the "# name:" / "# description:" header lines, which describe the card rather
+// than form part of the ask.
+QString shortcutPromptText(const QString &filePath)
+{
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        return {};
+    QString text;
+    while (!file.atEnd()) {
+        const QString line = QString::fromUtf8(file.readLine());
+        const QString trimmed = line.trimmed();
+        if (trimmed.startsWith(QLatin1String("# name:")) ||
+            trimmed.startsWith(QLatin1String("# description:")))
+            continue;
+        text += line;
+    }
+    return text.trimmed();
 }
+// A card is a QPushButton so it picks up the themed #shortcutCard styling and
+// click handling, but QPushButton::sizeHint is computed from its text/icon and
+// ignores the child layout — cards ended up one button-height tall and their
+// contents overlapped the next row. Report the layout's sizes instead.
+class ShortcutCard final : public QPushButton
+{
+public:
+    explicit ShortcutCard(QWidget *parent = nullptr) : QPushButton(parent)
+    {
+        setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    }
+
+    QSize sizeHint() const override
+    {
+        return layout() ? layout()->sizeHint() : QPushButton::sizeHint();
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        return layout() ? layout()->minimumSize() : QPushButton::minimumSizeHint();
+    }
+};
+
+// Cards flow into a grid whose column count follows the panel width, so a wide
+// window shows several per row instead of one full-width strip per shortcut.
+class ShortcutCardGrid final : public QWidget
+{
+public:
+    explicit ShortcutCardGrid(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        m_grid = new QGridLayout(this);
+        m_grid->setContentsMargins(0, 0, 0, 0);
+        m_grid->setHorizontalSpacing(10);
+        m_grid->setVerticalSpacing(10);
+    }
+
+    void clearCards()
+    {
+        for (QWidget *card : std::as_const(m_cards))
+            card->deleteLater();
+        m_cards.clear();
+        while (QLayoutItem *item = m_grid->takeAt(0))
+            delete item;
+        m_columns = 0;
+    }
+
+    void addCard(QWidget *card)
+    {
+        card->setParent(this);
+        m_cards.append(card);
+        reflow(true);
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QWidget::resizeEvent(event);
+        reflow(false);
+    }
+
+private:
+    // ~320px keeps a card wide enough for its title row plus the edit/delete
+    // buttons; four columns is as far as it goes before cards look empty.
+    int columnsForWidth() const
+    {
+        return qBound(1, (width() + m_grid->horizontalSpacing()) /
+                             (320 + m_grid->horizontalSpacing()),
+                      4);
+    }
+
+    void reflow(bool force)
+    {
+        const int columns = columnsForWidth();
+        if (!force && columns == m_columns)
+            return;
+        m_columns = columns;
+        while (QLayoutItem *item = m_grid->takeAt(0))
+            delete item; // widgets stay alive; only the layout items go
+        for (int i = 0; i < m_cards.size(); ++i)
+            m_grid->addWidget(m_cards.at(i), i / columns, i % columns);
+        for (int column = 0; column < 4; ++column)
+            m_grid->setColumnStretch(column, column < columns ? 1 : 0);
+        // Keep the last row from stretching when the grid is taller than its
+        // cards (the scroll area resizes this host to fill).
+        const int rows = (m_cards.size() + columns - 1) / columns;
+        for (int row = 0; row < m_lastRowCount; ++row)
+            m_grid->setRowStretch(row, 0);
+        m_grid->setRowStretch(rows, 1);
+        m_lastRowCount = rows + 1;
+    }
+
+    QGridLayout *m_grid = nullptr;
+    QList<QWidget *> m_cards;
+    int m_columns = 0;
+    int m_lastRowCount = 0;
+};
+
+} // namespace
 
 QString MainWindow::shortcutsDirPath() const
 {
@@ -114,19 +230,16 @@ QWidget *MainWindow::buildShortcutsTab()
     auto *hint = new QLabel(
         "Scripts, prompts and skills stored in this repo's .forkmesh/shortcuts/ "
         "folder, so they version and sync with the code. Click a script card to "
-        "run it (bash, from the repo root) — its output streams below. Other "
+        "run it (bash, from the repo root) — its output streams below. A prompt "
+        "card fills the composer with its text, ready to send to an agent; other "
         "files open in the editor.");
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
     layout->addWidget(hint);
 
-
-
-    m_shortcutCardsHost = new QWidget;
-    auto *cardsLayout = new QVBoxLayout(m_shortcutCardsHost);
-    cardsLayout->setContentsMargins(0, 0, 0, 0);
-    cardsLayout->setSpacing(8);
-    cardsLayout->addStretch();
+    // Cards scroll in their own area so a long list never squeezes the output
+    // pane; loadShortcutsPanel rebuilds the host's grid.
+    m_shortcutCardsHost = new ShortcutCardGrid;
     auto *scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
@@ -166,13 +279,8 @@ void MainWindow::loadShortcutsPanel()
 {
     if (!m_shortcutCardsHost)
         return;
-    auto *cardsLayout = static_cast<QVBoxLayout *>(m_shortcutCardsHost->layout());
-    while (cardsLayout->count() > 1) {
-        QLayoutItem *item = cardsLayout->takeAt(0);
-        if (item->widget())
-            item->widget()->deleteLater();
-        delete item;
-    }
+    auto *cardsGrid = static_cast<ShortcutCardGrid *>(m_shortcutCardsHost);
+    cardsGrid->clearCards();
     if (m_shortcutsSummary)
         m_shortcutsSummary->clear();
 
@@ -193,26 +301,30 @@ void MainWindow::loadShortcutsPanel()
                                   .arg(files.size())
                                   .arg(files.size() == 1 ? "" : "s"));
 
-    int insertAt = 0;
     for (const QFileInfo &info : files) {
         const QString path = info.absoluteFilePath();
         const bool script = shortcutIsScript(path);
+        const bool prompt = shortcutKind(path) == QLatin1String("prompt");
         QString name, description;
         shortcutMeta(path, &name, &description);
 
-
-
-
-
-        auto *card = new QPushButton;
+        // The card is itself a button — clicking anywhere runs a script or
+        // opens anything else in the editor. Its labels are made transparent
+        // to the mouse so clicks land on the card; the edit/delete buttons
+        // stay clickable on top of it.
+        auto *card = new ShortcutCard;
         card->setObjectName("shortcutCard");
         card->setCursor(Qt::PointingHandCursor);
-        card->setToolTip(script
-                             ? QStringLiteral("Run %1").arg(info.fileName())
-                             : QStringLiteral("Edit %1").arg(info.fileName()));
-        connect(card, &QPushButton::clicked, this, [this, path, script] {
+        card->setToolTip(
+            script ? QStringLiteral("Run %1").arg(info.fileName())
+                   : prompt ? QStringLiteral("Draft %1 in the composer")
+                                  .arg(info.fileName())
+                            : QStringLiteral("Edit %1").arg(info.fileName()));
+        connect(card, &QPushButton::clicked, this, [this, path, script, prompt] {
             if (script)
                 runShortcut(path);
+            else if (prompt)
+                draftShortcutPrompt(path);
             else
                 openShortcutEditor(path);
         });
@@ -225,11 +337,16 @@ void MainWindow::loadShortcutsPanel()
         titleRow->setContentsMargins(0, 0, 0, 0);
         titleRow->setSpacing(8);
         auto *icon = new QLabel;
-        icon->setPixmap(themedOcticon(script ? "rocket" : "file",
+        icon->setPixmap(themedOcticon(script ? "rocket"
+                                             : prompt ? "comment" : "file",
                                       QColor("#2ea043"), 16)
                             .pixmap(16, 16));
         icon->setAttribute(Qt::WA_TransparentForMouseEvents);
         auto *title = new QLabel(name);
+        // Wraps rather than forcing a wide column when a shortcut has a long
+        // name; the title takes the row's spare width so short names stay on
+        // one line.
+        title->setWordWrap(true);
         title->setStyleSheet("font-weight:600;font-size:14px;background:transparent;");
         title->setAttribute(Qt::WA_TransparentForMouseEvents);
         auto *kind = new QLabel(shortcutKind(path));
@@ -252,9 +369,8 @@ void MainWindow::loadShortcutsPanel()
         connect(deleteButton, &QPushButton::clicked, this,
                 [this, path] { deleteShortcut(path); });
         titleRow->addWidget(icon);
-        titleRow->addWidget(title);
+        titleRow->addWidget(title, 1);
         titleRow->addWidget(kind);
-        titleRow->addStretch();
         titleRow->addWidget(editButton);
         titleRow->addWidget(deleteButton);
         cardLayout->addLayout(titleRow);
@@ -267,8 +383,38 @@ void MainWindow::loadShortcutsPanel()
             cardLayout->addWidget(desc);
         }
 
-        cardsLayout->insertWidget(insertAt++, card);
+        cardsGrid->addCard(card);
     }
+}
+
+// Clicking a prompt card drafts its text into the footer composer, the same way
+// the stall badge drafts its fix-it prompt (adhoc #73) — one Enter from an agent
+// run, with a chance to edit first. {{stallLog}} / {{appLog}} are substituted
+// with this machine's real log paths so a prompt that asks an agent to read them
+// carries the right locations on every platform.
+void MainWindow::draftShortcutPrompt(const QString &filePath)
+{
+    QString prompt = shortcutPromptText(filePath);
+    if (prompt.isEmpty() || !m_issueQuickAdd) {
+        openShortcutEditor(filePath); // nothing to send: fall back to editing
+        return;
+    }
+    const QString stallLog = stallLogPath();
+    prompt.replace(QStringLiteral("{{stallLog}}"),
+                   stallLog.isEmpty()
+                       ? QStringLiteral("(disabled in this build)")
+                       : QDir::toNativeSeparators(stallLog));
+    prompt.replace(QStringLiteral("{{appLog}}"),
+                   QDir::toNativeSeparators(networkLogPath()));
+    // Anything half-typed goes into the recall history first, so overwriting the
+    // box never loses a prompt — Up brings it straight back.
+    recordQuickAddHistory(m_issueQuickAdd->toPlainText());
+    m_issueQuickAdd->setPlainText(prompt);
+    m_issueQuickAdd->moveCursor(QTextCursor::End);
+    m_issueQuickAdd->setFocus();
+    setRepoDetailNotice(QStringLiteral("Drafted \"%1\" in the composer — review "
+                                       "it, then send it to an agent.")
+                            .arg(QFileInfo(filePath).fileName()));
 }
 
 void MainWindow::runShortcut(const QString &filePath)

@@ -755,8 +755,18 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         }
     }
 
+    // The accounts directory is the authority for user identities.  A stale
+    // peer/relay frame can arrive without its accountKind stamp; normalize it
+    // here so all downstream surfaces classify that identity as a user rather
+    // than independently rediscovering it as a node.
+    for (MemberInfo &member : newRoster) {
+        const QString identity = nodeListIdentityKey(member).toLower();
+        if (!identity.isEmpty() && m_chatDirectoryUsers.contains(identity))
+            member.accountKind = QStringLiteral("user");
+    }
 
-
+    // Keep the sighting map bounded to peers the roster still carries: every
+    // visitor id we ever saw would otherwise stay in it for the whole run.
     QHash<QString, qint64> keptSightings;
     keptSightings.reserve(newRoster.size());
     for (const MemberInfo &m : std::as_const(newRoster)) {
@@ -800,13 +810,15 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
                 continue;
             if (!ownName.isEmpty() && m.name.compare(ownName, Qt::CaseInsensitive) == 0)
                 continue;
-
-
-
-
-
-
-            if (m.accountKind == QLatin1String("user"))
+            // A plain user account (accountKind "user") is a person, not a
+            // serving node — e.g. a desktop signed in as a user rather than a
+            // linked node, or ForkBot's relayed chat identity. Announcing it as
+            // "Node connected" is misleading (adhoc #37 hit this same mix-up in
+            // the node switcher); missing accountKind (older peers) still
+            // counts as a node for backward compatibility.
+            if (m.accountKind == QLatin1String("user") ||
+                m_chatDirectoryUsers.contains(
+                    nodeListIdentityKey(m).trimmed().toLower()))
                 continue;
 
 
@@ -1040,6 +1052,7 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
         member.id = QStringLiteral("user:") + key;
         member.name = name;
         member.ownerUser = name;
+        member.accountKind = QStringLiteral("user");
         member.self = !ownName.isEmpty() &&
                       ownName.compare(name, Qt::CaseInsensitive) == 0;
         member.online = false;
@@ -1080,11 +1093,20 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
     }
     m_chatDirectoryLoaded = true;
     m_chatDirectoryUsers = next;
-
-
-
-    if (m_nodesTable)
-        refreshNodesTable();
+    // The roster may have arrived before this directory fetch. Normalize those
+    // cached entries too, so a user identity remains a user everywhere until
+    // the next live roster update rather than only being filtered at render
+    // time.
+    for (MemberInfo &member : m_homeRoster) {
+        const QString identity = nodeListIdentityKey(member).trimmed().toLower();
+        if (!identity.isEmpty() && m_chatDirectoryUsers.contains(identity))
+            member.accountKind = QStringLiteral("user");
+    }
+    // The public user directory is the authority for the user/node boundary
+    // and for each account's linked fleet. Rebuild the shared node source so
+    // the switcher, counts, and Nodes page all discard user accounts and retain
+    // offline linked machines together.
+    refreshRepositoryList();
     if (m_networkReposTable && !m_networkReposLastPayload.isEmpty())
         renderNetworkRepos(m_networkReposLastPayload);
     refreshMentionCandidates();
@@ -1168,6 +1190,12 @@ void MainWindow::refreshChatMembers()
         member.name = display;
         const QString key = groupKeyFor(member);
         const bool isDirectory = member.id.startsWith(QStringLiteral("user:"));
+        const bool isUserAccount =
+            isDirectory ||
+            member.accountKind.compare(QLatin1String("user"),
+                                       Qt::CaseInsensitive) == 0 ||
+            m_chatDirectoryUsers.contains(
+                nodeListIdentityKey(member).trimmed().toLower());
 
         int idx;
         const auto it = groupIndex.constFind(key);
@@ -1202,9 +1230,9 @@ void MainWindow::refreshChatMembers()
                 m_avatars.insert(g.primary.id, m_avatars.value(member.id));
         }
 
-
-
-        if (!isDirectory) {
+        // A directory entry's nodeName is a joined list, not a single node; its
+        // nodes are expanded from ownedNodes below. Live peers are real nodes.
+        if (!isUserAccount) {
             ChatUserGroup &g = groups[idx];
             if (g.anchorId.isEmpty() && !member.id.isEmpty())
                 g.anchorId = member.id;
@@ -1853,6 +1881,9 @@ void MainWindow::switchConversation(const QString &conversation)
     rebuildConversationView();
     refreshTypingLabel();
     refreshChatMembers();
+    // The open room/DM is the Chat destination, so Back returns to the previous
+    // conversation instead of leaving Chat entirely (adhoc #50).
+    scheduleNavRecord();
 
 
     if (isDirectConversation(conversation)) {

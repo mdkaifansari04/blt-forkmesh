@@ -2387,6 +2387,87 @@ forkmesh-world.world-admin-error-arrival::after {
   backdrop-filter: blur(4px);
 }
 
+/* A saved QA verdict should read as a real outcome, not just a changed count.
+   The effect stays local to the reviewer and never blocks the World controls. */
+.world-qa-result-effect {
+  position: absolute;
+  z-index: 81;
+  inset: 0;
+  display: grid;
+  place-items: start center;
+  overflow: hidden;
+  padding: max(76px, calc(var(--safe-top) + 62px)) 18px 18px;
+  pointer-events: none;
+}
+
+.world-qa-result-notice {
+  display: grid;
+  gap: 4px;
+  width: min(480px, calc(100vw - 36px));
+  border: 2px solid #3fb950;
+  border-radius: 8px;
+  background: rgb(8 22 16 / 0.96);
+  box-shadow: 0 12px 42px rgb(0 0 0 / 0.52);
+  padding: 12px 18px;
+  color: #eafff0;
+  text-align: center;
+}
+
+.world-qa-result-notice strong {
+  color: #7ee787;
+  font: 900 0.9rem "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.1em;
+}
+
+.world-qa-result-notice span {
+  overflow: hidden;
+  color: #c8e8d4;
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-qa-result-effect--failed {
+  border: 9px solid #ff3f46;
+  box-shadow: inset 0 0 0 3px rgb(255 232 232 / 0.92), inset 0 0 42px rgb(154 0 11 / 0.64);
+}
+
+.world-qa-result-effect--failed .world-qa-result-notice {
+  border-color: #ff5a61;
+  background: rgb(43 11 15 / 0.97);
+}
+
+.world-qa-result-effect--failed .world-qa-result-notice strong {
+  color: #ff9b9f;
+}
+
+.world-qa-pass-confetti {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.world-qa-pass-confetti i {
+  position: absolute;
+  top: 18%;
+  left: var(--x);
+  width: 7px;
+  height: 12px;
+  border-radius: 2px;
+  background: hsl(var(--hue) 90% 62%);
+  opacity: 0;
+  transform: translateY(-18px) rotate(0deg);
+  animation: world-qa-confetti 1.65s var(--delay) ease-out both;
+}
+
+@keyframes world-qa-confetti {
+  10% { opacity: 1; }
+  100% {
+    opacity: 0;
+    transform: translateY(280px) rotate(540deg);
+  }
+}
+
 .world-qa-failure-dialog {
   display: grid;
   width: min(520px, 100%);
@@ -4666,6 +4747,50 @@ forkmesh-world.world-office-active .world-quick-dock {
   font: 0.72rem "ForkMesh Mono", monospace;
 }
 
+.world-node-delete-progress {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  margin: 4px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.world-node-delete-progress li {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  border-top: 2px solid #59332d;
+  padding-top: 7px;
+  color: #8f7773;
+  font: 0.62rem "ForkMesh Mono", monospace;
+  text-align: center;
+}
+
+.world-node-delete-progress b {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+.world-node-delete-progress li[data-state="active"] {
+  border-color: #ff9a89;
+  color: #ffb0a3;
+}
+
+.world-node-delete-progress li[data-state="complete"] {
+  border-color: #55c68b;
+  color: #75d9a5;
+}
+
+.world-node-delete-progress li[data-state="error"] {
+  border-color: #ff4f4f;
+  color: #ff7777;
+}
+
 .world-danger-action {
   min-height: 36px;
   border: 1px solid #ff745f;
@@ -6805,6 +6930,90 @@ forkmesh-world.world-office-active .world-quick-dock {
   outline: none;
 }
 
+/* Store tab: one card per purchasable element, showing its price and declared
+   network reads before purchase and its parameter form once owned. */
+.world-store-list {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.world-store-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--world-line);
+  background: #0a1915;
+}
+
+.world-store-card header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.world-store-card[data-owned="true"] {
+  border-color: var(--world-mint);
+}
+
+.world-store-card button {
+  min-height: 34px;
+  border: 1px solid var(--world-line);
+  background: #0d241d;
+  color: var(--world-copy);
+  cursor: pointer;
+  font: 0.62rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-store-card button:hover,
+.world-store-card button:focus-visible {
+  background: #12332a;
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-store-params {
+  display: grid;
+  gap: 6px;
+}
+
+.world-store-buy {
+  display: grid;
+  gap: 6px;
+}
+
+.world-store-address code {
+  display: block;
+  padding: 6px;
+  border: 1px solid var(--world-line);
+  background: #061310;
+  font: 0.6rem "ForkMesh Mono", monospace;
+  word-break: break-all;
+}
+
+.world-store-param {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font: 0.62rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.04em;
+}
+
+.world-store-param input[type="text"],
+.world-store-param input[type="number"],
+.world-store-param select {
+  min-height: 30px;
+  border: 1px solid var(--world-line);
+  background: #061310;
+  color: var(--world-copy);
+  font: inherit;
+  padding: 0 6px;
+}
+
 /* Elements tab: one single-line row per registered world element, in a flat
    table sorted by clicking its column headers. */
 .world-element-master {
@@ -6922,6 +7131,92 @@ forkmesh-world.world-office-active .world-quick-dock {
 .world-element-row[data-enabled="false"] strong {
   color: var(--world-muted);
   text-decoration: line-through;
+}
+
+.world-object-table {
+  margin-top: 10px;
+  max-height: 320px;
+  /* Object names are the point of this table, so a narrow panel scrolls
+     sideways rather than crushing every label down to an ellipsis. */
+  overflow: auto;
+}
+
+.world-object-head,
+.world-object-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) 96px 62px 54px 44px;
+  align-items: center;
+  gap: 8px;
+}
+
+.world-object-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--world-line);
+  background: var(--world-panel-solid);
+}
+
+.world-object-head button {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--world-muted);
+  cursor: pointer;
+  text-align: left;
+  font: 700 0.6rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.world-object-head button:hover,
+.world-object-head button:focus-visible {
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-object-head button[aria-sort="ascending"],
+.world-object-head button[aria-sort="descending"] {
+  color: var(--world-copy);
+}
+
+.world-object-head button:nth-of-type(n + 4) {
+  text-align: right;
+}
+
+.world-object-row {
+  min-height: 24px;
+  border-top: 1px solid var(--world-line);
+  padding: 2px 0;
+}
+
+.world-object-row:first-of-type {
+  border-top: 0;
+}
+
+.world-object-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--world-copy);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.world-object-group {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--world-muted);
+  font-size: 0.62rem;
+}
+
+.world-object-row[data-visible="false"] strong {
+  color: var(--world-muted);
+  font-style: italic;
 }
 
 .world-work-stats {
@@ -11186,7 +11481,135 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: none !important;
 }
 
+/* Who-is-online pill. The roster drops down on hover or keyboard focus, and
+   the click pins it open so touch — which never hovers — sees the same list. */
+.world-online-menu {
+  position: relative;
+  display: inline-flex;
+}
 
+.world-online-dropdown {
+  position: absolute;
+  z-index: 1;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 244px;
+  max-width: calc(100vw - 24px);
+  max-height: min(52vh, 340px);
+  overflow-y: auto;
+  border: 1px solid rgb(139 148 158 / 0.55);
+  border-radius: 12px;
+  background: rgb(13 17 23 / 0.94);
+  padding: 8px;
+  box-shadow: 0 14px 34px rgb(1 4 9 / 0.5);
+  backdrop-filter: blur(14px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+/* Bridges the gap under the pill so the pointer can reach the panel. */
+.world-online-dropdown::before {
+  position: absolute;
+  top: -8px;
+  right: 0;
+  left: 0;
+  height: 8px;
+  content: "";
+}
+
+.world-online-menu:hover .world-online-dropdown,
+.world-online-menu:focus-within .world-online-dropdown,
+.world-online-menu[data-open="true"] .world-online-dropdown {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.world-online-heading {
+  margin: 0 0 6px;
+  padding: 0 6px;
+  color: #8b949e;
+  font: 700 0.58rem/1.4 "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-online-people {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 2px;
+  list-style: none;
+}
+
+.world-status-actions .world-online-people button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  align-items: center;
+  justify-content: stretch;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 5px 6px;
+  gap: 0 8px;
+  grid-template-areas:
+    "flag name"
+    "flag activity";
+  grid-template-columns: 18px minmax(0, 1fr);
+  box-shadow: none;
+  text-align: left;
+}
+
+.world-status-actions .world-online-people button:hover,
+.world-status-actions .world-online-people button:focus-visible {
+  background: rgb(56 139 253 / 0.22);
+  outline: none;
+}
+
+.world-online-flag {
+  grid-area: flag;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.world-online-name {
+  overflow: hidden;
+  grid-area: name;
+  color: #f0f6fc;
+  font: 700 0.72rem/1.3 "ForkMesh Lato", system-ui, sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-online-activity {
+  overflow: hidden;
+  grid-area: activity;
+  color: #8b949e;
+  font: 500 0.6rem/1.3 "ForkMesh Mono", ui-monospace, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-online-more {
+  margin: 6px 0 0;
+  padding: 0 6px;
+  color: #8b949e;
+  font: 500 0.58rem/1.4 "ForkMesh Mono", ui-monospace, monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-online-dropdown {
+    transition: none;
+  }
+}
+
+/* Newest messages are inserted first by the controller. */
 .world-native-chat #fullChatMessages {
   align-content: start;
 }
@@ -11412,6 +11835,38 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-task-quick-filters {
   display: inline-flex;
   gap: 4px;
+}
+
+/* One page of task rows at a time; the pager only appears once the filtered
+   catalog is longer than a page. */
+.world-task-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 0 2px;
+  color: #8b98a7;
+  font-size: 0.68rem;
+}
+
+.world-task-pager button {
+  border: 1px solid #2c3644;
+  border-radius: 6px;
+  background: rgb(22 27 34 / 0.9);
+  padding: 4px 10px;
+  color: #c9d1d9;
+  font: inherit;
+  cursor: pointer;
+}
+
+.world-task-pager button:hover:not(:disabled) {
+  border-color: #58a6ff;
+  color: #c8e1ff;
+}
+
+.world-task-pager button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .world-task-board-tools .world-task-quick-filters button {
@@ -11696,6 +12151,51 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   margin: 14px 0 18px;
 }
 
+.world-error-analytics {
+  margin: 0 0 16px;
+}
+
+.world-error-analytics h4 {
+  margin: 0 0 8px;
+  color: #dbe8f5;
+  font-size: 0.76rem;
+}
+
+.world-error-chart {
+  display: grid;
+  height: 150px;
+  grid-template-columns: repeat(24, minmax(8px, 1fr));
+  align-items: end;
+  gap: 4px;
+  border-bottom: 1px solid #324152;
+  padding-top: 12px;
+}
+
+.world-error-chart > span {
+  display: block;
+  min-height: 2px;
+  border-radius: 3px 3px 0 0;
+  background: #58a6ff;
+}
+
+.world-error-chart > span[data-empty="true"] {
+  background: #273444;
+}
+
+.world-error-chart > span:focus-visible,
+.world-error-sparkline:focus-visible {
+  outline: 2px solid #79c0ff;
+  outline-offset: 2px;
+}
+
+.world-error-hours {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  color: #8593a2;
+  font: 650 0.62rem/1 "ForkMesh Mono", ui-monospace, monospace;
+}
+
 .world-error-groups h4,
 .world-error-raw-title {
   margin: 0 0 8px;
@@ -11704,15 +12204,15 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-error-group-table {
-  min-width: 1480px;
+  min-width: 1840px;
 }
 
 .world-error-group-header,
 .world-error-group-row {
   display: grid;
   grid-template-columns:
-    62px 70px 82px minmax(220px, 1.2fr) minmax(300px, 1.8fr)
-    170px 150px 150px;
+    62px 185px 92px 70px 82px minmax(220px, 1.2fr)
+    minmax(300px, 1.8fr) 170px 100px 100px 160px;
   align-items: center;
 }
 
@@ -11730,6 +12230,72 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: flex;
   align-items: center;
   padding-left: 12px;
+}
+
+.world-error-source {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  border: 1px solid #3b4a5a;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #79c0ff;
+  font: 700 0.57rem/1 system-ui, sans-serif;
+  white-space: nowrap;
+}
+
+.world-error-source--javascript {
+  border-color: rgb(163 113 247 / 0.6);
+  color: #d2a8ff;
+}
+
+.world-error-sparkline {
+  display: grid !important;
+  width: 180px;
+  height: 34px;
+  grid-template-columns: repeat(24, 1fr);
+  align-items: end;
+  gap: 2px;
+  overflow: visible !important;
+  border-bottom: 1px solid #324152;
+  padding: 2px 0 !important;
+}
+
+.world-error-sparkline i {
+  display: block;
+  min-height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: #58a6ff;
+}
+
+.world-error-sparkline i[data-empty="true"] {
+  background: #273444;
+}
+
+.world-error-message {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  overflow: visible !important;
+}
+
+.world-error-message > span {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-error-message button {
+  min-height: 24px;
+  flex: 0 0 auto;
+  border: 1px solid #3b4a5a;
+  border-radius: 6px;
+  background: #141d27;
+  color: #c8e1ff;
+  padding: 0 7px;
+  font: 700 0.58rem/1 system-ui, sans-serif;
+  cursor: pointer;
 }
 
 .world-error-actor-stack i,
@@ -11754,16 +12320,16 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-error-table-header,
 .world-error-row {
   display: grid !important;
-  min-width: 1640px;
+  min-width: 1735px;
   grid-template-columns:
-    65px 160px 72px 82px minmax(260px, 1.35fr) minmax(330px, 1.8fr)
-    70px minmax(170px, 0.9fr) 132px;
+    65px 160px 92px 72px 82px minmax(260px, 1.35fr)
+    minmax(330px, 1.8fr) 70px minmax(170px, 0.9fr) 132px;
   align-items: center;
 }
 
 .world-error-table {
   display: block;
-  min-width: 1640px;
+  min-width: 1735px;
 }
 
 .world-error-table .world-error-row {
@@ -11789,6 +12355,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: flex;
   gap: 5px;
   align-items: center;
+  overflow: visible !important;
+  white-space: normal !important;
 }
 
 .world-task-row--mine::after {
@@ -12460,6 +13028,10 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
 @media (prefers-reduced-motion: reduce) {
   .world-instance-fireworks {
+    display: none;
+  }
+
+  .world-qa-pass-confetti {
     display: none;
   }
 }

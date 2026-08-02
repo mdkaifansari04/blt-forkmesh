@@ -138,6 +138,9 @@ QWidget *MainWindow::buildProjectsSection()
     listTab->setChecked(true);
     viewGroup->addButton(listTab, 0);
     viewGroup->addButton(ganttTab, 1);
+    // Held as a member so the Back/Forward trail can re-select the sub-view it
+    // recorded, driving the same click path (adhoc #50).
+    m_projectViewTabs = viewGroup;
 
     m_projectStatusFilter = new QComboBox;
     m_projectStatusFilter->setObjectName("issueControlSm");
@@ -212,6 +215,7 @@ QWidget *MainWindow::buildProjectsSection()
             m_projectViewStack->setCurrentIndex(id);
         if (id == 1)
             refreshProjectGantt();
+        scheduleNavRecord();
     });
     connect(m_projectStatusFilter, &QComboBox::currentIndexChanged, this,
             [this](int) {

@@ -29,6 +29,7 @@ enum MirrorNodeColumn {
     MirrorNodeColBranches,
     MirrorNodeColPulls,
     MirrorNodeColDiscussions,
+    MirrorNodeColHealth,
     MirrorNodeColCpu,
     MirrorNodeColRam,
     MirrorNodeColDisk,
@@ -1095,7 +1096,8 @@ QWidget *MainWindow::buildMirrorNodesTab()
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
         {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Sync delay", "Size",
-         "Issues", "Commits", "Branches", "Pulls", "Discussions", "CPU", "RAM",
+         "Issues", "Commits", "Branches", "Pulls", "Discussions", "Health",
+         "CPU", "RAM",
          "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones", "Website",
          "Artifacts", "Reachability"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
@@ -1122,6 +1124,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColBranches, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColPulls, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColDiscussions, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColHealth, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColCpu, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColRam, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColDisk, QHeaderView::ResizeToContents);
@@ -2178,9 +2181,17 @@ void MainWindow::loadMirrorNodesPanel()
         m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                     discussionsItem);
 
+        // Health: the node's own self-check findings, pushed with its heartbeat
+        // (adhoc #27) — the disk trend, log errors and link flapping the three
+        // gauges beside it can't show. Hover for the findings.
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColHealth,
+            makeNodeHealthCell(node.diagnostics, node.diagnosticsMs,
+                               QDateTime::currentMSecsSinceEpoch()));
 
-
-
+        // CPU / RAM / disk usage bars (hover for the underlying figures). The
+        // telemetry is per-node, advertised in the node's heartbeats; peers that
+        // don't advertise it (older builds) leave the bars as an em-dash.
         m_mirrorNodesTable->setItem(row, MirrorNodeColCpu,
                                     makeCpuUsageCell(node.cpuPercent));
         m_mirrorNodesTable->setItem(
@@ -2436,11 +2447,17 @@ void MainWindow::loadMirrorNodesPanel()
                          QString::number(refDiscussions));
             m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                         catDiscussionsItem);
+            // Health: self-diagnostics ride the live heartbeat, not the signed
+            // catalog record, so an offline/catalog-only row has none to show.
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColHealth,
+                makeNodeHealthCell({}, 0, 0));
 
-
-
-
-
+            // CPU / RAM / disk: a node that opted into public host telemetry
+            // signs it into its catalog record (headless mirrors renew it every
+            // registration lease), and /mirrors passes it through — so render
+            // it exactly like the live-roster rows instead of a hard-coded
+            // em-dash. Absent fields still show as unknown.
             m_mirrorNodesTable->setItem(
                 row, MirrorNodeColCpu,
                 makeCpuUsageCell(m.value(QStringLiteral("cpuPercent"))

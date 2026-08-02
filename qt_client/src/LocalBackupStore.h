@@ -38,14 +38,11 @@ constexpr int kBackupKeepDefault = 24;
 constexpr int kBackupKeepMin = 1;
 constexpr int kBackupKeepMax = 240;
 
-
-
-
-
-
-
-
-
+// The default for backup/hourlyEnabled when the user has never chosen is off
+// everywhere. A rolling day of multi-gigabyte control-node snapshots can fill
+// a disk in hours, so even credentials-bearing control nodes must explicitly
+// opt in from Settings -> Data. The parameter is retained for source/API
+// compatibility with older callers.
 bool autoBackupDefault(const QString &cloudflareApiToken);
 
 

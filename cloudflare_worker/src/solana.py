@@ -98,9 +98,26 @@ def _solana_endpoints(env):
     return endpoints
 
 
+# Custodial deposit sweeps are the one flow allowed to submit a transaction.
+# It stays a separate name from _solana_rpc so the read-only helper keeps its
+# "cannot ever send" property: a caller must ask for the write path by name.
+_SOLANA_WRITE_METHODS = frozenset({"sendTransaction"})
+
+
+async def _solana_rpc_write(env, method, params):
+    """Submit a signed transaction. Only for custodial deposit sweeps."""
+    if method not in _SOLANA_WRITE_METHODS:
+        return None
+    return await _solana_rpc_call(env, method, params)
+
+
 async def _solana_rpc(env, method, params):
     if method not in _SOLANA_READ_ONLY_METHODS:
         return None
+    return await _solana_rpc_call(env, method, params)
+
+
+async def _solana_rpc_call(env, method, params):
     from js import AbortSignal
     from js import fetch as js_fetch
     payload = json.dumps(

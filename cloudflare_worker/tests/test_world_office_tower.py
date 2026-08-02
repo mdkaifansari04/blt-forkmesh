@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runtime contracts for the unified eleven-storey World office campus."""
+"""Runtime contracts for the unified five-storey World office campus."""
 
 import ast
 import json
@@ -39,7 +39,7 @@ def entry_constant(name):
     raise AssertionError(f"{name} not found")
 
 
-def test_tower_has_eleven_floors_and_is_about_ten_times_the_old_width():
+def test_tower_has_five_floors_and_is_about_ten_times_the_old_width():
     assert TOWER_MODULE.exists()
     result = run_tower_script(
         """
@@ -60,15 +60,22 @@ def test_tower_has_eleven_floors_and_is_about_ten_times_the_old_width():
         """
     )
 
-    assert result["count"] == 11
-    assert len(result["floors"]) == 11
-    assert [floor["level"] for floor in result["floors"]] == list(range(11))
-    assert len({floor["id"] for floor in result["floors"]}) == 11
+    assert result["count"] == 5
+    assert len(result["floors"]) == 5
+    assert [floor["level"] for floor in result["floors"]] == list(range(5))
+    assert len({floor["id"] for floor in result["floors"]}) == 5
+    assert [floor["id"] for floor in result["floors"]] == [
+        "lobby",
+        "marketing",
+        "engineering",
+        "infrastructure",
+        "rooftop",
+    ]
     assert 9 <= result["oldWidthRatio"] <= 11
     assert result["floorHeight"] == 16
-    assert result["towerHeight"] == 11 * 16
+    assert result["towerHeight"] == 5 * 16
     assert [floor["y"] for floor in result["floors"]] == [
-        level * 16 for level in range(11)
+        level * 16 for level in range(5)
     ]
 
     public_floors = {
@@ -80,10 +87,13 @@ def test_tower_has_eleven_floors_and_is_about_ten_times_the_old_width():
     restricted = [
         floor for floor in result["floors"] if not floor["publicForMembers"]
     ]
-    assert len(restricted) == 9
+    assert len(restricted) == 3
     assert all(floor["team"] for floor in restricted)
-    assert "marketing" in {floor["id"] for floor in restricted}
-    assert "executive" in {floor["id"] for floor in restricted}
+    assert {floor["id"] for floor in restricted} == {
+        "marketing",
+        "engineering",
+        "infrastructure",
+    }
 
 
 def test_authenticated_members_get_two_common_floors_but_team_floors_stay_restricted():
@@ -131,8 +141,10 @@ def test_authenticated_members_get_two_common_floors_but_team_floors_stay_restri
             tower.canAccessOfficeFloor(serverAuthorized, "marketing"),
           marketingMemberCanMarketing:
             tower.canAccessOfficeFloor(marketingMember, "marketing"),
-          authorizedStillCannotSecurity:
-            tower.canAccessOfficeFloor(serverAuthorized, "security"),
+          authorizedStillCannotInfrastructure:
+            tower.canAccessOfficeFloor(serverAuthorized, "infrastructure"),
+          removedFloor:
+            tower.canAccessOfficeFloor(serverAuthorized, "executive"),
           unknownFloor: tower.canAccessOfficeFloor(serverAuthorized, "unknown"),
           account: serverAuthorized.account,
         }));
@@ -151,7 +163,10 @@ def test_authenticated_members_get_two_common_floors_but_team_floors_stay_restri
     assert result["authorizedCanEngineering"] is True
     assert result["authorizedCannotMarketing"] is False
     assert result["marketingMemberCanMarketing"] is True
-    assert result["authorizedStillCannotSecurity"] is False
+    assert result["authorizedStillCannotInfrastructure"] is False
+    # Retired department storeys are gone from the tower entirely: their team
+    # names still exist elsewhere, but no elevator button can select them.
+    assert result["removedFloor"] is False
     assert result["unknownFloor"] is False
     assert result["account"] == "alice"
 
@@ -175,9 +190,10 @@ def test_team_floor_explanations_match_every_server_alias_exactly():
         process.stdout.write(JSON.stringify({
           aliases,
           resolved,
-          normalizedSecurity: tower.officeFloorsForTeam(
-            " Trust & Safety ",
+          normalizedInfrastructure: tower.officeFloorsForTeam(
+            " Site Reliability ",
           ).map((floor) => floor.id),
+          retiredTeam: tower.officeFloorsForTeam("trust-and-safety"),
           unknown: tower.officeFloorsForTeam("not-a-real-team"),
         }));
         """
@@ -193,7 +209,8 @@ def test_team_floor_explanations_match_every_server_alias_exactly():
     for floor_id, aliases in result["resolved"].items():
         assert aliases
         assert all(resolved == [floor_id] for resolved in aliases.values())
-    assert result["normalizedSecurity"] == ["security"]
+    assert result["normalizedInfrastructure"] == ["infrastructure"]
+    assert result["retiredTeam"] == []
     assert result["unknown"] == []
 
 
@@ -383,13 +400,7 @@ def test_every_floor_has_collidable_obstacles_and_reachable_open_space():
           lobby: [-18, -2],
           marketing: [0, 0],
           engineering: [0, 0],
-              "product-design": [-12, 0],
-          security: [0, -4],
           infrastructure: [-50, 0],
-          community: [0, -3],
-          partnerships: [0, 0],
-          operations: [0, 0],
-          executive: [0, 0],
           rooftop: [0, 8],
         };
         const floors = tower.OFFICE_FLOORS.map((floor) => {
@@ -460,7 +471,7 @@ def test_every_floor_has_collidable_obstacles_and_reachable_open_space():
         """
     )
 
-    assert len(result["floors"]) == 11
+    assert len(result["floors"]) == 5
     assert all(floor["obstacleHit"] for floor in result["floors"])
     assert all(floor["obstacleNotWalkable"] for floor in result["floors"])
     assert all(floor["openSpaceWalkable"] for floor in result["floors"])

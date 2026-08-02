@@ -2886,10 +2886,42 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
     ]
     assert "if (this.activityNoticesSettled()) {" in push
     assert "this.world?.armMirrorPushEffect?.(" in push
-
-    toast_start = APP.index("  toast(message, { priority = 0, lockMs = 0 } = {}) {")
+    # Notices a visitor causes by acting are never gated.
+    toast_start = APP.index(
+        '  toast(message, { priority = 0, lockMs = 0, kind = "" } = {}) {')
     toast = APP[toast_start:APP.index("\n  }", toast_start)]
     assert "activityNoticesSettled" not in toast
+
+
+def test_failure_pings_are_never_crowded_out_by_the_recoveries_that_close_them():
+    # adhoc #57: an outage ping is always older than the recovery that closes
+    # it, so a newest-first cut of one poll's pings filled all three bubbles
+    # with "recovered" lines and left every failure inside "+N more".
+    start = APP.index("  announceWorldNotifications() {")
+    announce = APP[start:APP.index("\n  }", start)]
+    assert "const attention = personalNotifications.filter(" in announce
+    assert "worldNotificationNeedsAttention," in announce
+    assert "WORLD_ATTENTION_PING_ANNOUNCE_LIMIT" in announce
+    assert "WORLD_ROUTINE_PING_ANNOUNCE_LIMIT" in announce
+    assert 'this.toast(`New ping: ${item.title}`, { kind: "error" });' in announce
+    assert "more need attention" in announce
+    # Attention pings are announced after the routine ones: the stack keeps six
+    # cards and drops the oldest, and the newest card sits by the ping corner.
+    assert announce.index("const routine = personalNotifications.filter(") < (
+        announce.index('{ kind: "error" });'))
+    # The classifier reads the transition the ping carries rather than guessing
+    # from wording, so the normalizer has to keep that state on the record.
+    assert 'state: rawState === "up" || rawState === "down" ? rawState : "",' in APP
+    assert "function worldNotificationNeedsAttention(item) {" in APP
+    assert 'if (String(item.kind || "").toLowerCase() === "error_group") return true;' in APP
+    assert 'if (item.state === "down") return true;' in APP
+    assert 'if (item.state === "up") return false;' in APP
+    # "needs attention" reads as neutral status to any wording heuristic, so an
+    # explicit kind wins over the inferred one.
+    assert "kind: kind || inferredKind," in APP
+    # The ping table marks the same rows.
+    assert "worldNotificationNeedsAttention(item);" in APP
+    assert '"danger"' in APP
 
 
 def test_collapsed_chat_bar_shows_an_unread_count_excluding_own_lines():
@@ -3075,3 +3107,30 @@ def test_world_presence_socket_has_a_bounded_open_deadline_and_retirement():
     assert "this.socketRecovery.markOpen(socket)" in connect
     assert "this.socketRecovery.retire(socket)" in connect
     assert "this.socketRecovery.scheduleReconnect(" in APP
+
+
+def test_hud_counts_who_is_online_and_drops_the_roster_down_on_hover():
+    assert "data-world-online-menu" in APP
+    assert "data-world-online-count" in APP
+    assert "data-world-online-list" in APP
+    assert 'title="Who is online right now"' in APP
+    assert "WORLD_ONLINE_ROSTER_LIMIT = 40" in APP
+    # The count is this visitor plus the peers the live socket announced, and
+    # every row reads fields presence already publishes.
+    assert "onlineRoster() {" in APP
+    assert "this.remotePlayers.forEach((player, id) => {" in APP
+    assert "this.renderOnlineRoster();" in APP
+    assert "person.self ? \" (you)\" : \"\"" in APP
+    assert "more online, not listed here" in APP
+    assert "Realtime presence is offline, so only you are counted" in APP
+    # Movement frames must not rebuild the list under the pointer.
+    assert "if (signature === this.onlineRosterSignature) return;" in APP
+    # A row opens the same public profile the avatar does; hover, focus, and a
+    # pinning click all reach the panel.
+    assert "data-world-online-person" in APP
+    assert "openOnlineRosterMember(peerId, returnFocus = null) {" in APP
+    assert "setOnlineRosterOpen(" in APP
+    assert '.world-online-menu:hover .world-online-dropdown' in CSS
+    assert '.world-online-menu:focus-within .world-online-dropdown' in CSS
+    assert '.world-online-menu[data-open="true"] .world-online-dropdown' in CSS
+    assert ".world-status-actions .world-online-people button" in CSS

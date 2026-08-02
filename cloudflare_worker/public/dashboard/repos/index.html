@@ -782,7 +782,7 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=427b33439d82" defer></script>
+    <script src="/dashboard.js?v=f64afb2e6c06" defer></script>
     <script src="/dashboard-chat.js?v=f73f6d2a300f" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="repos">
@@ -836,6 +836,10 @@
             class="hidden absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-2xl shadow-background/50"
           >
             <div data-global-search-results class="max-h-96 overflow-y-auto py-1"></div>
+            <div
+              data-global-search-page-filter
+              class="hidden items-center gap-1.5 border-t border-border bg-secondary/40 px-3 py-2 text-[11px] text-muted-foreground"
+            ></div>
           </div>
         </div>
 
@@ -1032,6 +1036,10 @@
           <a data-nav="repos" data-nav-link aria-current="page" href="/dashboard/repos" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
             Repositories
+          </a>
+          <a data-nav="tasks" data-nav-link href="/dashboard/tasks" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+            <i data-lucide="list-checks" class="h-4 w-4 text-muted-foreground"></i>
+            Tasks
           </a>
           <a data-nav="network" data-nav-link href="/dashboard/network" class="flex items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="activity" class="h-4 w-4 text-muted-foreground"></i>

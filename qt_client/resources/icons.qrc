@@ -78,6 +78,12 @@
         <file alias="mastodon.svg">icons/octicons/mastodon.svg</file>
         <file alias="twitter-bird.svg">icons/octicons/twitter-bird.svg</file>
     </qresource>
+    <!-- VS Code codicons (CC BY 4.0, see icons/LICENSE-codicons.txt), used where
+         octicons has no equivalent glyph. tintedOcticonPixmap falls back to this
+         prefix, so themedOcticon("worktree") resolves here. -->
+    <qresource prefix="/icons/codicons">
+        <file alias="worktree.svg">icons/codicons/worktree.svg</file>
+    </qresource>
     <qresource prefix="/app">
         <file alias="forkmesh.png">icons/forkmesh.png</file>
     </qresource>

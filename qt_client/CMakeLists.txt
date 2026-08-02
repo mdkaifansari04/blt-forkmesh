@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.9 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.11 LANGUAGES CXX)
 
 
 
@@ -148,6 +148,8 @@ set(FORKMESH_APP_SOURCES
     src/PlatformLogFilter.cpp
     src/SingleInstance.h
     src/SingleInstance.cpp
+    src/StartupSplash.h
+    src/StartupSplash.cpp
     src/Theme.h
     src/AccountCapability.h
     src/ForkMeshIdentity.h
@@ -179,6 +181,7 @@ set(FORKMESH_APP_SOURCES
     src/NodeEventSocket.h
     src/NodeEventSocket.cpp
     src/BackgroundActivity.h
+    src/GuiPump.h
     src/ActionTelemetry.h
     src/ActionTelemetry.cpp
     src/NetworkBackoff.h
@@ -260,6 +263,7 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeStreamSession.cpp
     src/CodexAppServerSession.h
     src/CodexAppServerSession.cpp
+    src/CodexTranscriptStyle.h
     src/ClaudeTranscriptView.h
     src/ClaudeTranscriptView.cpp
     src/ClaudeSessionScan.h
@@ -276,6 +280,8 @@ set(FORKMESH_APP_SOURCES
     src/StallWatchdog.cpp
     src/SystemStats.h
     src/SystemStats.cpp
+    src/NodeDiagnostics.h
+    src/NodeDiagnostics.cpp
     src/LocalBackupStore.h
     src/LocalBackupStore.cpp
     src/McpConnector.h
@@ -298,6 +304,8 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowReleases.cpp
     src/MainWindowShortcuts.cpp
     src/MainWindowSearch.cpp
+    src/GlobalSearchMatch.h
+    src/GlobalSearchMatch.cpp
     src/MainWindowSettings.cpp
     src/MainWindowMcp.cpp
     src/MainWindowData.cpp
@@ -555,6 +563,8 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
+        src/GlobalSearchMatch.h
+        src/GlobalSearchMatch.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/UsageLimitCalendar.h
@@ -574,6 +584,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ChatVisitorPresence.h
         src/SystemStats.h
         src/SystemStats.cpp
+        src/NodeDiagnostics.h
+        src/NodeDiagnostics.cpp
     )
     # Qt6::Concurrent: DirectorySizeScan scans top-level trees in parallel.
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network Qt6::Concurrent OpenSSL::Crypto)
@@ -613,6 +625,8 @@ if(FORKMESH_BUILD_TESTS)
         src/RoomCrypto.cpp
         src/SystemStats.h
         src/SystemStats.cpp
+        src/NodeDiagnostics.h
+        src/NodeDiagnostics.cpp
         src/ServerNode.h
         src/ServerNode.cpp
         src/OfficeChannelMirror.h
@@ -765,6 +779,7 @@ if(FORKMESH_BUILD_TESTS)
         tests/test_codex_app_server.cpp
         src/CodexAppServerSession.h
         src/CodexAppServerSession.cpp
+        src/CodexTranscriptStyle.h
     )
     target_link_libraries(forkmesh-codex-tests PRIVATE Qt6::Core)
     if(APPLE)

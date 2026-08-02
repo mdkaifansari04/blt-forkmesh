@@ -1067,7 +1067,22 @@ void MainWindow::refreshRepositoryList()
     m_repoMenuEntries.clear();
     m_nodeMenuEntries.clear();
 
+    // Account names and machine-node names are different namespaces.  The
+    // public directory is authoritative for the former: a user called "jett"
+    // must never become a node entry merely because an old presence frame, a
+    // relay heartbeat, or a repository owner uses that same string.
+    const bool selfIsUserAccount =
+        m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
+    const QString localUser = selfIsUserAccount
+                                  ? accountOwner().trimmed().toLower()
+                                  : QString();
+    auto isDirectoryUser = [this, localUser](const QString &name) {
+        const QString key = name.trimmed().toLower();
+        return m_chatDirectoryUsers.contains(key) ||
+               (!localUser.isEmpty() && key == localUser);
+    };
 
+    // Repos grouped by node (owner).
     QHash<QString, QList<int>> reposByNode;
     for (int i = 0; i < m_repositories.size(); ++i)
         reposByNode[m_repositories.at(i).owner].append(i);
@@ -1096,9 +1111,15 @@ void MainWindow::refreshRepositoryList()
                   return a.name.localeAwareCompare(b.name) < 0;
               });
     for (const MemberInfo &m : std::as_const(ranked)) {
-
-
-
+        // User-presence frames are chat identities, not machines.  Keep this
+        // check here as well as in the Nodes page so every node surface (the
+        // switcher, issue assignee picker, and chrome count) agrees.
+        if (m.accountKind.compare(QLatin1String("user"),
+                                  Qt::CaseInsensitive) == 0)
+            continue;
+        // Temporary world/website chat visitors are humans passing through the
+        // public room, not serving nodes — never turn them into node entries
+        // (adhoc #308: "World Guest fb9d" rows in the Nodes list / dropdown).
         if (isTemporaryChatGuest(m))
             continue;
 
@@ -1106,7 +1127,7 @@ void MainWindow::refreshRepositoryList()
 
 
         const QString nodeKey = nodeListIdentityKey(m);
-        if (nodeKey.isEmpty())
+        if (nodeKey.isEmpty() || isDirectoryUser(nodeKey))
             continue;
         if (!nodes.contains(nodeKey)) {
             NodeInfo ni;
@@ -1134,6 +1155,11 @@ void MainWindow::refreshRepositoryList()
     for (int i = 0; i < m_repositories.size(); ++i) {
         const RepositoryRecord &repo = m_repositories.at(i);
         const QString owner = repo.owner;
+        // A repository can be attributed to its human account while the
+        // machine that serves it is recorded separately.  Do not turn that
+        // account owner into a phantom node.
+        if (isDirectoryUser(owner))
+            continue;
         if (!nodes.contains(owner)) {
             if (repo.previewOnly)
                 continue;
@@ -1142,8 +1168,24 @@ void MainWindow::refreshRepositoryList()
         }
     }
 
+    // Directory-linked machines are real nodes even while they are offline and
+    // absent from both the chat roster and local repository cache.  Adding
+    // them here gives the node switcher the same complete fleet as the Nodes
+    // directory, without ever adding the user account itself.
+    for (const MemberInfo &user : std::as_const(m_chatDirectoryUsers)) {
+        for (const QString &node :
+             user.nodeName.split(QStringLiteral(", "), Qt::SkipEmptyParts)) {
+            const QString nodeName = node.trimmed();
+            if (nodeName.isEmpty() || isDirectoryUser(nodeName) ||
+                nodes.contains(nodeName))
+                continue;
+            nodes.insert(nodeName, NodeInfo());
+            nodeOrder.append(nodeName);
+        }
+    }
 
-
+    // Repos already shown locally by "owner/name", so advertised mirrors are
+    // not duplicated.
     QSet<QString> shownLocalRepoKeys;
     for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
         const QString key = repo.owner + "/" + repo.name;
@@ -1685,11 +1727,11 @@ void MainWindow::promptAddRepository()
 
 void MainWindow::createNewRepository()
 {
-
-
-
-
-
+    // A single "new repository" screen: name + description + an optional first
+    // prompt + public/private visibility + a README choice + a local-only
+    // choice + where on disk to create it. Everything past the dialog (git
+    // init, seeding, mirror + publish) lives in provisionNewRepository so it
+    // can be exercised without the UI.
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("New repository"));
 
@@ -1743,8 +1785,34 @@ void MainWindow::createNewRepository()
         new QCheckBox(QStringLiteral("Add a README on the main branch"), &dialog);
     readmeBox->setChecked(true);
 
+    // "Local only": git init here and nothing else — no mirror push, no catalog
+    // record, no repo channel on the relay. The visibility choice above is kept
+    // on the record and takes effect if the repo is published later (the same
+    // wording the repository settings page uses for this state).
+    auto *localOnlyBox = new QCheckBox(
+        QStringLiteral("Local only \xE2\x80\x94 don't publish it to the network"),
+        &dialog);
+    localOnlyBox->setToolTip(
+        QStringLiteral("Create the repository on this machine only. Nothing is "
+                       "pushed to ForkMesh until you turn its \"Serve\" toggle "
+                       "on from the Control Node page."));
+    auto *localOnlyHint = new QLabel(
+        QStringLiteral("Stays on this machine: no mirror is served and it never "
+                       "appears in the catalog. Publish it later with the "
+                       "\"Serve\" toggle on the Control Node page; the "
+                       "visibility above applies from then on."),
+        &dialog);
+    localOnlyHint->setObjectName(QStringLiteral("statusLine"));
+    localOnlyHint->setWordWrap(true);
+    localOnlyHint->setVisible(false);
+    connect(localOnlyBox, &QCheckBox::toggled, &dialog,
+            [localOnlyHint, visibilityHint](bool on) {
+                localOnlyHint->setVisible(on);
+                visibilityHint->setEnabled(!on);
+            });
 
-
+    // Where the working copy is created. Defaults to the home folder; the folder
+    // the repo lands in is <location>/<name>.
     auto *locationEdit = new QLineEdit(QDir::homePath(), &dialog);
     auto *browseButton = new QPushButton(QStringLiteral("Browse\xE2\x80\xA6"), &dialog);
     browseButton->setCursor(Qt::PointingHandCursor);
@@ -1769,6 +1837,8 @@ void MainWindow::createNewRepository()
     form->addRow(QStringLiteral("First prompt"), promptEdit);
     form->addRow(QStringLiteral("Visibility"), visibilityWidget);
     form->addRow(QString(), readmeBox);
+    form->addRow(QString(), localOnlyBox);
+    form->addRow(QString(), localOnlyHint);
     form->addRow(QStringLiteral("Location"), locationWidget);
 
     auto *buttons =
@@ -1816,7 +1886,8 @@ void MainWindow::createNewRepository()
         QString error;
         const int index = provisionNewRepository(
             dest, name, descriptionEdit->toPlainText(), promptEdit->toPlainText(),
-            readmeBox->isChecked(), privateRadio->isChecked(), &error);
+            readmeBox->isChecked(), privateRadio->isChecked(),
+            localOnlyBox->isChecked(), &error);
         if (index < 0) {
             QMessageBox::warning(&dialog, "New repository",
                                  error.isEmpty()
@@ -1835,7 +1906,8 @@ void MainWindow::createNewRepository()
 int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
                                        const QString &description,
                                        const QString &firstPrompt, bool addReadme,
-                                       bool isPrivate, QString *error)
+                                       bool isPrivate, bool localOnly,
+                                       QString *error)
 {
     const auto fail = [&](const QString &message) -> int {
         if (error)
@@ -1936,9 +2008,12 @@ int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
     repo.owner = accountOwner();
     repo.description = about;
     repo.solanaAddress = savedSolanaAddress();
-    repo.publishToNetwork = true;
-
-
+    // Local only: keep the record off the network entirely — nothing is served
+    // or published until the owner turns publishing on later. The visibility
+    // choice still rides along so it applies from the moment they do.
+    repo.publishToNetwork = !localOnly;
+    // A repo created private never has a public catalog record: publish below
+    // routes through syncRepository, which seals the private replica instead.
     repo.isPrivate = isPrivate;
     repo.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
     repo.mirrorPath = repositoryMirrorRoot() + "/" +
@@ -1949,7 +2024,10 @@ int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
     const int index = m_repositories.size() - 1;
     saveRepositories();
     refreshRepositoryList();
-    if (m_backend)
+    // A local-only repo does not join its relay channel either: subscribing
+    // would advertise owner/name on the mesh, which is exactly what the choice
+    // opts out of.
+    if (m_backend && !localOnly)
         m_backend->addChannel(repositoryChannel(repo));
 
 
@@ -1966,11 +2044,16 @@ int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
                       repo.owner + "/" + repo.name + ": " + issueErr);
     }
 
-    publishRepositoryAfterMirrorRefresh(index, false);
+    if (!localOnly)
+        publishRepositoryAfterMirrorRefresh(index, false);
     logSystem("New repository: created " +
-              QString(repo.isPrivate ? "private " : "public ") + repo.owner + "/" +
-              repo.name + " in " + dest + ".");
-    flashMessage(QStringLiteral("Created %1/%2.").arg(repo.owner, repo.name));
+              QString(localOnly ? "local-only "
+                                : (repo.isPrivate ? "private " : "public ")) +
+              repo.owner + "/" + repo.name + " in " + dest + ".");
+    flashMessage(localOnly ? QStringLiteral("Created %1/%2 locally.")
+                                 .arg(repo.owner, repo.name)
+                           : QStringLiteral("Created %1/%2.")
+                                 .arg(repo.owner, repo.name));
     return index;
 }
 
@@ -5531,6 +5614,8 @@ void MainWindow::syncPrivateRepository(int index, bool quiet)
     if (PrivateMirrorStore::isOpaqueId(repo.privateReplicaId) &&
         repo.publishToNetwork) {
         m_syncingRepos.insert(index, quiet);
+        setRepoSyncActivity(
+            index, QStringLiteral("Verifying the collaborators' keys…"));
         refreshRepositoryList();
         requestPrivateRecipientBundles(
             repo,  false,
@@ -5539,6 +5624,7 @@ void MainWindow::syncPrivateRepository(int index, bool quiet)
                                 QStringList, QString error) {
                 m_syncingRepos.remove(index);
                 if (!ready) {
+                    clearRepoSyncActivity(index);
                     logSystem(QStringLiteral(
                         "Private mirror: recipient-key verification blocked "
                         "the refresh; the previous encrypted epoch remains "
@@ -5568,6 +5654,7 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
         m_syncingRepos.contains(index))
         return;
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
+        clearRepoSyncActivity(index);
         if (!quiet)
             flashMessage(
                 QStringLiteral("The local owner identity is required before a "
@@ -5578,6 +5665,7 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
     const QByteArray vaultSecret =
         privateIdentityVaultSecret(m_profileIdentity);
     if (vaultSecret.size() < 32) {
+        clearRepoSyncActivity(index);
         if (!quiet)
             flashMessage(QStringLiteral(
                              "Could not unlock the owner-only private-mirror vault."),
@@ -5626,8 +5714,10 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
 
     auto result = std::make_shared<PrivateSyncWorkerResult>();
     m_syncingRepos.insert(index, quiet);
-
-
+    setRepoSyncActivity(
+        index, QStringLiteral("Sealing the owner-only private replica…"));
+    // Recompute publication state before encryption/migration; private
+    // repository names remain absent from public presence and catalogs.
     startRepoHosts();
     refreshRepositoryList();
     if (!quiet)
@@ -5694,6 +5784,7 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
             [this, worker, result, index, quiet, legacyMirrorPath] {
                 worker->deleteLater();
                 m_syncingRepos.remove(index);
+                clearRepoSyncActivity(index);
                 if (index < 0 || index >= m_repositories.size()) {
                     refreshRepositoryList();
                     return;
@@ -6217,17 +6308,22 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
         !m_publicMirrorMaterializations.contains(existingArchiveId) &&
         (legacyMirrorPath.trimmed().isEmpty() ||
          !QDir(legacyMirrorPath).exists());
-    if (reopeningSealedArchive)
-        source.clear();
-
-
-
+    // During a private→public transition, the authenticated private
+    // materialization is the only name-free source. Prefer it over the legacy
+    // named relay clone URL, which is intentionally inert for private bytes.
     if (PrivateMirrorStore::isOpaqueId(repo.privateReplicaId) &&
         QDir(legacyMirrorPath).exists()) {
         source = legacyMirrorPath;
     }
     if (source.isEmpty() && QDir(legacyMirrorPath).exists())
         source = legacyMirrorPath;
+    // Keep the real source available as a recovery path. The old startup path
+    // discarded it before attempting archive reopen, so an interrupted
+    // ciphertext/metadata rotation produced an authentication error forever:
+    // every retry only reopened the same damaged pair.
+    const QString recoverySource = source;
+    if (reopeningSealedArchive)
+        source.clear();
     if (source.isEmpty() &&
         !PublicMirrorRuntime::isArchiveId(existingArchiveId)) {
         vaultSecret.fill('\0');
@@ -6242,6 +6338,8 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     }
 
     m_syncingRepos.insert(index, quiet);
+    setRepoSyncActivity(index,
+                        QStringLiteral("Preparing the encrypted mirror…"));
     refreshRepositoryList();
     logSystem(QStringLiteral(
         "Public mirror: sealing %1/%2 with official age encryption; "
@@ -6261,7 +6359,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
         << (managedCheckoutSource ? "managed-origin" : "ordinary")
         << (source.isEmpty() ? "archive-reopen" : "source-clone");
     QString upstreamUrl;
-    if (managedCheckoutSource && !source.isEmpty()) {
+    if (managedCheckoutSource && !recoverySource.isEmpty()) {
         const QUrl upstream(repo.cloneUrl.trimmed());
         if (upstream.isValid() && !upstream.host().isEmpty() &&
             upstream.host().compare(catalogApiUrl().host(),
@@ -6274,17 +6372,28 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     const QString vaultPath = publicIdentityVaultPath();
     const QString owner = repo.owner;
     const QString name = repo.name;
+    // Each seal stage announces itself from the worker thread; hop it back to
+    // the GUI thread, where the sync button's live status line lives.
+    PublicMirrorRuntime::Progress progress = [this, index](const QString &line) {
+        QMetaObject::invokeMethod(
+            this, [this, index, line] { setRepoSyncActivity(index, line); },
+            Qt::QueuedConnection);
+    };
     QThread *worker = QThread::create(
-        [result, source, upstreamUrl, managedCheckoutSource, archiveRoot, vaultPath,
+        [result, source, recoverySource, upstreamUrl, managedCheckoutSource,
+         archiveRoot, vaultPath, progress,
          mutableVaultSecret = std::move(vaultSecret), existingArchiveId,
          legacyMirrorPath, managedMirrorRoot]() mutable {
             if (!upstreamUrl.isEmpty()) {
+                progress(QStringLiteral("Fetching the managed checkout from "
+                                        "its upstream…"));
                 result->upstreamSummary =
                     forkmesh::upstream::refreshManagedCheckoutFromUpstream(
-                        source, upstreamUrl)
+                        recoverySource, upstreamUrl)
                         .summary();
             }
             if (source.isEmpty()) {
+                progress(QStringLiteral("Opening the sealed archive…"));
                 result->metadata = PublicMirrorRuntime::readMetadata(
                     archiveRoot, existingArchiveId, &result->error);
                 if (result->metadata.isValid()) {
@@ -6301,17 +6410,30 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                                 std::move(materialization));
                     }
                 }
-            } else {
+            }
+
+            // A missing/corrupt archive is recoverable when the repository's
+            // authenticated local/upstream source still exists. Re-seal the
+            // same opaque archive id and replace both durable files, instead
+            // of retrying the broken archive-reopen forever.
+            const QString sealSource =
+                source.isEmpty() ? recoverySource : source;
+            if ((!result->metadata.isValid() || !result->materialization) &&
+                !sealSource.isEmpty()) {
+                const QString reopenError = result->error;
+                result->error.clear();
                 PublicMirrorRuntime::SyncResult sync =
                     managedCheckoutSource
                         ? PublicMirrorRuntime::syncManagedCheckout(
-                              source, archiveRoot, vaultPath,
+                              sealSource, archiveRoot, vaultPath,
                               mutableVaultSecret, existingArchiveId,
-                              PublicMirrorRuntime::Tools(), &result->error)
+                              PublicMirrorRuntime::Tools(), &result->error,
+                              progress)
                         : PublicMirrorRuntime::syncSource(
-                              source, {}, archiveRoot, vaultPath,
+                              sealSource, {}, archiveRoot, vaultPath,
                               mutableVaultSecret, existingArchiveId,
-                              PublicMirrorRuntime::Tools(), &result->error);
+                              PublicMirrorRuntime::Tools(), &result->error,
+                              progress);
                 qInfo().noquote()
                     << "Public mirror sync result:"
                     << (managedCheckoutSource ? "managed-origin" : "ordinary")
@@ -6324,6 +6446,12 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                     result->materialization =
                         std::shared_ptr<PublicMirrorMaterialization>(
                             std::move(sync.materialization));
+                }
+                if (result->metadata.isValid() && result->materialization &&
+                    !reopenError.isEmpty()) {
+                    result->notice = QStringLiteral(
+                        "The damaged encrypted archive was rebuilt from its "
+                        "authenticated repository source.");
                 }
             }
 
@@ -6369,6 +6497,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
          quiet] {
             worker->deleteLater();
             m_syncingRepos.remove(index);
+            clearRepoSyncActivity(index);
             if (!result->upstreamSummary.isEmpty())
                 logSystem(QStringLiteral("Mirror: %1/%2 %3")
                               .arg(owner, name, result->upstreamSummary));
@@ -6446,6 +6575,9 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                     flashMessage(result->notice, true);
                 return;
             }
+
+            if (!result->notice.isEmpty())
+                logSystem(QStringLiteral("Public mirror: ") + result->notice);
 
             logSystem(
                 QStringLiteral(
@@ -6766,12 +6898,16 @@ void MainWindow::syncRepository(int index, bool quiet)
 
 
     const QStringList authArgs = viewAuthGitArgs(repo, source);
+    // --progress: git writes its transfer counters only when stderr is a
+    // terminal, and a QProcess pipe is not one. With it, the sync button's live
+    // status line follows the real fetch/clone instead of sitting on "Syncing".
     const QStringList args =
         authArgs +
-        (hasMirror ? QStringList{"-C", repo.mirrorPath, "fetch", "--prune",
-                                "origin"} +
+        (hasMirror ? QStringList{"-C", repo.mirrorPath, "fetch", "--progress",
+                                "--prune", "origin"} +
                         kStableRefspecs
-                  : QStringList{"clone", "--bare", source, repo.mirrorPath});
+                  : QStringList{"clone", "--progress", "--bare", source,
+                                repo.mirrorPath});
     const QString mirrorPath = repo.mirrorPath;
 
 
@@ -6889,16 +7025,22 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                                 const QString &beforeHeadCommit)
 {
     auto *process = new QProcess(this);
+    setRepoSyncActivity(index, hasMirror
+                                   ? QStringLiteral("Fetching from the source…")
+                                   : QStringLiteral("Cloning the source…"));
+    auto fetchErrors = streamGitProgressActivity(process, index, QString());
     connect(process, &QProcess::finished, this,
             [this, process, index, quiet, beforeDigest, beforeHeadCommit,
-             hasMirror](
+             hasMirror, fetchErrors](
                 int exitCode, QProcess::ExitStatus) {
-                const QString errors =
-                    QString::fromUtf8(process->readAllStandardError()).trimmed();
+                fetchErrors->append(
+                    QString::fromUtf8(process->readAllStandardError()));
+                const QString errors = gitErrorsWithoutProgress(*fetchErrors);
                 process->deleteLater();
 
                 if (index < 0 || index >= m_repositories.size()) {
                     m_syncingRepos.remove(index);
+                    clearRepoSyncActivity(index);
                     refreshRepositoryList();
                     return;
                 }
@@ -6922,6 +7064,9 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
 
                     const QString mirrorPath = repo.mirrorPath;
                     const QString localPath = repo.localPath;
+                    setRepoSyncActivity(
+                        index,
+                        QStringLiteral("Tidying the mirror's refs…"));
                     auto afterDigest = std::make_shared<QString>();
                     auto headBranch = std::make_shared<QString>();
                     auto headCommit = std::make_shared<QString>();
@@ -6941,6 +7086,7 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                              headCommit] {
                         worker->deleteLater();
                         m_syncingRepos.remove(index);
+                        clearRepoSyncActivity(index);
                         if (index < 0 || index >= m_repositories.size()) {
                             refreshRepositoryList();
                             return;
@@ -7029,6 +7175,7 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                     worker->start();
                 } else {
                     m_syncingRepos.remove(index);
+                    clearRepoSyncActivity(index);
                     refreshRepositoryList();
 
 
@@ -7064,6 +7211,7 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
             [this, process, index, quiet] {
                 process->deleteLater();
                 m_syncingRepos.remove(index);
+                clearRepoSyncActivity(index);
                 refreshRepositoryList();
                 if (!quiet)
                     flashMessage(

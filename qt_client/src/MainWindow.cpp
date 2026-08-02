@@ -3,6 +3,7 @@
 #include "MainWindow.h"
 #include "CrashHandler.h"
 #include "MainWindowInternal.h"
+#include "StartupSplash.h"
 #include "WorldSpeechBridge.h"
 
 using namespace forkmesh::ui;
@@ -55,8 +56,23 @@ MainWindow::~MainWindow()
 
     forkmesh::BackgroundActivity::setListener(nullptr);
 
+    // QProcess children outlive this destructor body: QObject teardown deletes
+    // them from ~QWidget's deleteChildren(), and ~QProcess kills the child and
+    // waits for it, emitting finished()/errorOccurred() from there. MainWindow
+    // is still a live QObject at that point, so those connections have NOT been
+    // severed yet — but every derived member the handlers touch was destroyed
+    // when MainWindow's members were, so the slot runs on freed memory. The SSH
+    // mirror push handler crashed exactly here: finishPush() reached
+    // m_sshMirrorPushing.remove() on an already-destroyed QSet (SIGSEGV in
+    // QHash::findBucket during "MainWindow teardown"). Sever every signal of
+    // every process descendant now — nothing started before teardown needs to
+    // report back once the window is going away.
+    const QList<QProcess *> processChildren = findChildren<QProcess *>();
+    for (QProcess *process : processChildren)
+        process->disconnect();
 
-
+    // Revoke the browser's memory-only voice capability and stop any local
+    // capture while MainWindow's voice state is still alive.
     if (m_worldSpeechBridge)
         m_worldSpeechBridge->stop();
 
@@ -115,10 +131,15 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         QStringLiteral("/.forkmesh/diagnostics/actions.jsonl"));
 #endif
     logStartup(QStringLiteral("MainWindow ctor begin"));
-
-
-
-
+    // Each startupStep() below names the work that is about to run, and the
+    // logStartup() that follows the work closes it. Together they are the
+    // launch splash's live list (adhoc #39) as well as the terminal's timing
+    // log; both are no-ops when no splash is up.
+    startupStep(QStringLiteral("Installing shortcuts and window chrome"));
+    // App-wide filter so right-click on ANY selected text (transcript, diff,
+    // README, logs — not just the prompt boxes themselves) can offer "Send to
+    // Prompt", without wiring a custom context menu into every text widget
+    // individually (adhoc #126). See eventFilter's QEvent::ContextMenu branch.
     if (qApp)
         qApp->installEventFilter(this);
 
@@ -143,6 +164,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     if (!savedGeometry.isEmpty())
         restoreGeometry(savedGeometry);
 
+    startupDetail(savedGeometry.isEmpty()
+                      ? QStringLiteral("No saved geometry; opening at 1060x700")
+                      : QStringLiteral("Restored the last window geometry"));
+
+    startupStep(QStringLiteral("Registering the system tray icon"));
     m_trayIcon = new QSystemTrayIcon(this);
     m_trayIcon->setIcon(style()->standardIcon(QStyle::SP_MessageBoxInformation));
     m_trayIcon->setToolTip("ForkMesh");
@@ -155,14 +181,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     connect(qApp, &QCoreApplication::aboutToQuit, this,
             &MainWindow::saveChatHistory);
 
-
-
-
-
-
+    // BackoffNetworkAccessManager gates every /api/* request through an
+    // exponential per-host backoff, so a rate-limited relay (Cloudflare 429s)
+    // doesn't get hammered by every independent call site's own retry. It also
+    // hosts the app-level whitelist firewall: default-on, with user-approved
+    // rules persisted in QSettings.
+    startupStep(QStringLiteral("Bringing up networking and the request firewall"));
     auto *network = new BackoffNetworkAccessManager(this);
-    network->setFirewallEnabled(
-        QSettings().value(kRequestFirewallEnabledSetting, true).toBool());
+    const bool firewallOn =
+        QSettings().value(kRequestFirewallEnabledSetting, true).toBool();
+    startupDetail(firewallOn
+                      ? QStringLiteral("Request firewall: on")
+                      : QStringLiteral("Request firewall: off"));
+    network->setFirewallEnabled(firewallOn);
     network->setFirewallRules(requestFirewallWhitelistWithDefaults());
     network->setFirewallPrompt(
         [this](const QString &method, const QUrl &url, QString *allowRuleOut) {
@@ -260,6 +291,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
             QSettings().value(kClaudeModelsCacheSetting).toByteArray())
             .array();
 
+    startupStep(QStringLiteral("Loading relays, favicons and the network log"));
     loadServers();
     loadCachedFavicons();
 
@@ -272,6 +304,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     logSystem(QStringLiteral("Session started - ForkMesh v" FORKMESH_VERSION "."));
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
     logStartup(QStringLiteral("servers + favicons loaded"));
+    startupDetail(QStringLiteral("%1 relay(s) known").arg(m_servers.size()));
+
+    startupStep(QStringLiteral("Restoring the profile and node name"));
 
 
 
@@ -320,7 +355,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     }
     if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
         m_userName = saved;
+    startupDetail(m_freshInstall
+                      ? QStringLiteral("First run — this node is now \"%1\"")
+                            .arg(savedProfileName())
+                      : QStringLiteral("Node name: %1").arg(savedProfileName()));
 
+    startupStep(QStringLiteral("Building the account surface"));
     m_stack = new QStackedWidget(this);
 
 
@@ -329,27 +369,40 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 
     m_stack->addWidget(buildSetupPage());
     logStartup(QStringLiteral("setup page built"));
+    startupStep(QStringLiteral("Building the application shell"));
     m_stack->addWidget(buildChatPage());
     logStartup(QStringLiteral("chat/app page built"));
     m_stack->setCurrentIndex(1);
     setCentralWidget(m_stack);
-
-
-
-
-
-
+    // Build the two largest, most frequently visited repository surfaces before
+    // the window becomes interactive. QWidget construction cannot legally run
+    // on a worker thread; paying this one-time cost here keeps the first repo
+    // click and the first Code/Issues switch below a frame-scale budget instead
+    // of freezing an already-visible window for ~230ms each. Less common repo
+    // tabs remain lazy.
+    startupStep(QStringLiteral("Warming the Code and Issues surfaces"));
     ensureRepoDetailSectionBuilt();
     ensureRepoDetailTabBuilt(0);
     ensureRepoDetailTabBuilt(2);
     logStartup(QStringLiteral("core repository surfaces warmed"));
+    startupStep(QStringLiteral("Loading repositories"));
     initializeWorldSpeechBridge();
     loadRepositories();
     refreshRepositoryList();
     logStartup(QStringLiteral("repositories loaded"));
+    startupDetail(
+        QStringLiteral("%1 repositor%2 on this node")
+            .arg(m_repositories.size())
+            .arg(m_repositories.size() == 1 ? QStringLiteral("y")
+                                            : QStringLiteral("ies")));
+    startupStep(QStringLiteral("Restoring actions and agent sessions"));
     initActions();
     initAgents();
     logStartup(QStringLiteral("actions + agents initialized"));
+    if (!m_agentQueue.isEmpty())
+        startupDetail(QStringLiteral("%1 agent session(s) queued to resume")
+                          .arg(m_agentQueue.size()));
+    startupStep(QStringLiteral("Choosing the repository to reopen"));
     const QString lastRepository =
         QSettings().value(kLastRepositorySetting).toString();
     if (!lastRepository.isEmpty()) {
@@ -368,13 +421,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         }
     }
     logStartup(QStringLiteral("last repository restore scheduled"));
+    startupDetail(m_pendingRestoreRepoIndex >= 0
+                      ? QStringLiteral("Will reopen %1").arg(lastRepository)
+                      : QStringLiteral("Nothing to reopen"));
+    startupStep(QStringLiteral("Selecting the active relay"));
     loadActiveServerIntoEdits();
     updateBreadcrumb();
     logStartup(QStringLiteral("active server + breadcrumb"));
+    startupStep(QStringLiteral("Fetching relay favicons"));
     for (int i = 0; i < m_servers.size(); ++i)
         fetchFavicon(i);
     logStartup(QStringLiteral("favicons fetched"));
 
+    startupStep(QStringLiteral("Arming background timers"));
     m_typingStopTimer = new QTimer(this);
     m_typingStopTimer->setSingleShot(true);
     connect(m_typingStopTimer, &QTimer::timeout, this, [this] {
@@ -493,7 +552,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     QTimer::singleShot(3000, this, &MainWindow::ensureFlagshipRepo);
 
     logStartup(QStringLiteral("timers started"));
+    startupDetail(QStringLiteral(
+        "Mirror sync, relay sync, chat expiry, latency, auto-update"));
+
+    startupStep(QStringLiteral("Loading the node signing key"));
     if (!m_profileIdentity.load()) {
+        startupStepFailed(m_profileIdentity.errorString());
         m_setupError->setText(m_profileIdentity.errorString());
         m_setupError->show();
     } else {
@@ -513,6 +577,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 
 
         m_pendingSilentAuth = true;
+        startupDetail(QStringLiteral("Ed25519 key %1")
+                          .arg(m_profileIdentity.shortPublicKey()));
     }
     logStartup(QStringLiteral("identity loaded"));
     // A provisioned headless mirror never builds or opens the Control Node
@@ -522,6 +588,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // connector token, so ordinary clients with no endpoint are a no-op.
     QTimer::singleShot(
         0, this, &MainWindow::maybeAutoStartDirectMirrorServices);
+    startupStep(QStringLiteral("Computing home statistics"));
     updateHomeStats();
 
 
@@ -545,6 +612,18 @@ void MainWindow::showEvent(QShowEvent *event)
 
 
     QTimer::singleShot(5000, this, &MainWindow::runDeferredStartup);
+}
+
+void MainWindow::paintEvent(QPaintEvent *event)
+{
+    QMainWindow::paintEvent(event);
+    if (m_firstFramePainted)
+        return;
+    m_firstFramePainted = true;
+    // The launch splash has been narrating startup over an empty screen; this
+    // is the first frame with the real window behind it. Hand over and let it
+    // fade (adhoc #39). Idempotent, and a no-op when no splash is up.
+    finishStartupSplash(QStringLiteral("Main window painted"));
 }
 
 void MainWindow::runDeferredStartup()
