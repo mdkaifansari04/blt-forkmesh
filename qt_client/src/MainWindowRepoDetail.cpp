@@ -9506,10 +9506,9 @@ void MainWindow::updateRepoActivityRail()
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 2;
     const bool onAgents = onHome && m_repoDetailStack &&
                           m_repoDetailStack->currentIndex() == kRepoAgentsTab;
-    // Git is where notification bubbles are most useful, but its diff workspace
-    // does not need the live log or background queue beside the composer. Keep
-    // just the prompt, filling the footer instead of leaving an empty region
-    // beneath the diff.
+    // Git is where notification bubbles are most useful, but its graph needs
+    // the full height of the workspace. Its prompt is moved over the lower
+    // right detail pane instead of reserving a full-width footer.
     // Git is its own activity-rail destination, so hide every Code/repository
     // header above the source-control workspace rather than leaving rows of
     // unrelated navigation on screen. The Agents tab gets the same treatment: its
@@ -9524,12 +9523,9 @@ void MainWindow::updateRepoActivityRail()
         m_repoFilesModeBar->setVisible(!onChanges);
     if (m_repoOverviewChrome)
         m_repoOverviewChrome->setVisible(!onChanges && !onBranches);
-    if (m_footerDock)
-        m_footerDock->show();
     if (m_footerLeftRegion)
         m_footerLeftRegion->setVisible(!onChanges);
-    if (m_promptWrapper)
-        m_promptWrapper->setMaximumWidth(QWIDGETSIZE_MAX);
+    setGitPromptOverlay(onChanges);
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
     if (m_agentsNavButton)
@@ -9550,6 +9546,58 @@ void MainWindow::updateRepoActivityRail()
     syncAgentPageSearch();
     if (onChanges)
         QTimer::singleShot(0, this, &MainWindow::positionTopMessageBubble);
+}
+
+void MainWindow::setGitPromptOverlay(bool enabled)
+{
+    const bool shouldFloat = enabled && m_commitsStack && m_footerDock &&
+                             m_promptWrapper;
+    if (shouldFloat == m_gitPromptOverlayVisible) {
+        if (shouldFloat)
+            positionGitPromptOverlay();
+        else if (m_footerDock)
+            m_footerDock->show();
+        return;
+    }
+
+    if (shouldFloat) {
+        if (QLayout *dockLayout = m_footerDock->layout())
+            dockLayout->removeWidget(m_promptWrapper);
+        m_promptWrapper->setParent(m_commitsStack);
+        m_promptWrapper->setMaximumWidth(560);
+        m_footerDock->hide();
+        m_gitPromptOverlayVisible = true;
+        m_promptWrapper->show();
+        QTimer::singleShot(0, this, &MainWindow::positionGitPromptOverlay);
+        return;
+    }
+
+    m_promptWrapper->hide();
+    m_promptWrapper->setParent(m_footerDock);
+    if (auto *dockLayout = qobject_cast<QHBoxLayout *>(m_footerDock->layout()))
+        dockLayout->addWidget(m_promptWrapper, 1);
+    m_promptWrapper->setMaximumWidth(QWIDGETSIZE_MAX);
+    m_gitPromptOverlayVisible = false;
+    m_footerDock->show();
+}
+
+void MainWindow::positionGitPromptOverlay()
+{
+    if (!m_gitPromptOverlayVisible || !m_promptWrapper || !m_commitsStack)
+        return;
+
+    constexpr int kMargin = 8;
+    constexpr int kMaxWidth = 560;
+    const QSize hostSize = m_commitsStack->size();
+    const int width = qMin(kMaxWidth, qMax(0, hostSize.width() - 2 * kMargin));
+    const int height = m_promptWrapper->sizeHint().height();
+    if (width <= 0 || height <= 0)
+        return;
+
+    m_promptWrapper->resize(width, height);
+    m_promptWrapper->move(hostSize.width() - kMargin - width,
+                          qMax(kMargin, hostSize.height() - kMargin - height));
+    m_promptWrapper->raise();
 }
 
 // Mirror the top-bar search into the commit-list filter while the Git page is
@@ -9606,6 +9654,7 @@ void MainWindow::syncAgentPageSearch()
 QWidget *MainWindow::buildRepoCommitsTab()
 {
     m_commitsStack = new QStackedWidget;
+    m_commitsStack->installEventFilter(this);
 
     // --- Page 0: the commit list.
     auto *listPage = new QWidget;

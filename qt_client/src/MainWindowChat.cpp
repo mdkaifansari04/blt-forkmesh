@@ -1464,9 +1464,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     leftRegionLayout->addWidget(logPanel, 1);
     leftRegionLayout->addWidget(m_backgroundQueue, 0);
 
-    // Horizontal split: bordered log + Background, then prompt. In the Git
-    // workspace the left region is hidden, allowing the prompt to use the full
-    // footer width rather than leaving an empty spacer beneath the diff. The hairline
+    // Horizontal split: bordered log + Background, then prompt. The hairline
     // rule that used to sit between the two halves is gone (adhoc #84): every
     // panel in the row already carries its own border, so the extra line was one
     // divider too many.
