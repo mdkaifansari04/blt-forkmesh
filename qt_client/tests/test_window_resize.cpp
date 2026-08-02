@@ -1392,26 +1392,25 @@ int main(int argc, char *argv[])
     // Repository detail is intentionally built on first navigation. Verify the
     // real PR and Agents controls only after taking that user-visible path,
     // keeping the startup performance contract intact.
-    bool prFixMenuFound = false;
-    for (QPushButton *fixButton : window.findChildren<QPushButton *>()) {
-        if (!fixButton->text().startsWith(QStringLiteral("Fix with agent")) ||
-            !fixButton->menu())
-            continue;
-        QStringList labels;
-        for (QAction *action : fixButton->menu()->actions())
-            labels << action->text();
-        // "CC" is Claude Code, shortened with the rest of the provider labels
-        // (adhoc #38).
-        if (labels == QStringList({QStringLiteral("Claude API"),
-                                   QStringLiteral("OpenAI API"),
-                                   QStringLiteral("CC")})) {
-            prFixMenuFound = true;
-            break;
-        }
+    // adhoc #7: the PR header's conflict action is a plain "Fix" that fills the
+    // prompt box — no provider dropdown to pick a resolver from — and the whole
+    // header row wears the same flat rail style (no filled primary pills).
+    bool prFixButtonFound = false;
+    bool prHeaderStyleUniform = true;
+    for (QPushButton *b : window.findChildren<QPushButton *>()) {
+        if (b->text() == QStringLiteral("Fix") && !b->menu())
+            prFixButtonFound = true;
+        if (b->text() == QStringLiteral("Review with AI") ||
+            b->text() == QStringLiteral("Fix all with AI") ||
+            b->text() == QStringLiteral("Merge") ||
+            b->text() == QStringLiteral("Fix conflicts with agent"))
+            prHeaderStyleUniform &= b->objectName() == QStringLiteral("ghostButton");
     }
-    check(prFixMenuFound,
-          QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
-                         "and Claude Code after repository navigation"));
+    check(prFixButtonFound,
+          QStringLiteral("PR header offers a plain 'Fix' button with no provider "
+                         "dropdown after repository navigation"));
+    check(prHeaderStyleUniform,
+          QStringLiteral("PR header actions all use the flat ghostButton style"));
     // The Agents tab is built when it's first opened, and a repo no longer opens
     // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
     // before reading its list back. This also proves that route works for a repo
@@ -1647,16 +1646,18 @@ int main(int argc, char *argv[])
                outgoingTimer.elapsed() < 5000)
             QApplication::processEvents(QEventLoop::AllEvents, 10);
         check(outgoingHistory && outgoingPanel && syncChanges && outgoingLabel &&
-                  outgoingPanel->isVisibleTo(&window) &&
+                  !outgoingPanel->isVisibleTo(&window) &&
+                  syncChanges->isVisibleTo(&window) &&
                   syncChanges->text().contains(QStringLiteral("3↑")) &&
                   syncChanges->isEnabled() &&
                   outgoingLabel->text().contains(QStringLiteral("main")) &&
                   railMarkedBeforeOpen && window.testGitPendingSyncCount() == 3,
-              QString("Source Control shows three outgoing commits and an enabled "
-                      "Sync Changes button (history=%1 visible=%2 button=%3 "
-                      "label=%4)")
+              QString("Source Control promotes the enabled Sync Changes action "
+                      "while outgoing commits are pending (history=%1 cardHidden=%2 "
+                      "buttonVisible=%3 button=%4 label=%5)")
                   .arg(outgoingHistory)
-                  .arg(outgoingPanel && outgoingPanel->isVisibleTo(&window))
+                  .arg(outgoingPanel && !outgoingPanel->isVisibleTo(&window))
+                  .arg(syncChanges && syncChanges->isVisibleTo(&window))
                   .arg(syncChanges ? syncChanges->text()
                                    : QStringLiteral("<missing>"))
                   .arg(outgoingLabel ? outgoingLabel->text()
@@ -1667,7 +1668,17 @@ int main(int argc, char *argv[])
         bool localRef = false;
         bool remoteRef = false;
         bool mergeLoop = false;
+        bool outgoingTopRow = false;
         if (graph) {
+            if (graph->rowCount() > 0) {
+                QTableWidgetItem *topSummary = graph->item(0, 6);
+                QTableWidgetItem *topLane = graph->item(0, 8);
+                outgoingTopRow = topSummary && topLane &&
+                                 topSummary->data(Qt::UserRole + 35).toBool() &&
+                                 topLane->data(Qt::UserRole + 20).toList().isEmpty() &&
+                                 topLane->data(Qt::UserRole + 22).toList() ==
+                                     QVariantList{0};
+            }
             for (int row = 0; row < graph->rowCount(); ++row) {
                 if (QTableWidgetItem *summary = graph->item(row, 6)) {
                     const QStringList kinds =
@@ -1686,9 +1697,11 @@ int main(int argc, char *argv[])
                 }
             }
         }
-        check(localRef && remoteRef && mergeLoop,
-              QString("commit graph identifies local target refs, remote cloud "
-                      "refs, and a merge loop (local=%1 remote=%2 loop=%3)")
+        check(outgoingTopRow && localRef && remoteRef && mergeLoop,
+              QString("commit graph links an outgoing dotted top row to local "
+                      "target refs, remote cloud refs, and a merge loop "
+                      "(outgoing=%1 local=%2 remote=%3 loop=%4)")
+                  .arg(outgoingTopRow)
                   .arg(localRef)
                   .arg(remoteRef)
                   .arg(mergeLoop));
@@ -2155,6 +2168,40 @@ int main(int argc, char *argv[])
                       "on main (status = %1, stash = %2)")
                   .arg(restoredStatus,
                        gitOutput(wtPath, {"stash", "list"})));
+        // Advance main again and suppress the automatic path for this one view,
+        // so the actual toolbar button has to perform the update. This catches
+        // the manual route passing m_branchDiffBranch by reference across
+        // event-pumping Git calls.
+        QFile manualPullFile(wtRepo.path() + QStringLiteral("/manual-pull.txt"));
+        if (manualPullFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            manualPullFile.write("arrived through Pull main\n");
+            manualPullFile.close();
+        }
+        runGitChecked(wtRepo.path(), {"add", "manual-pull.txt"});
+        runGitChecked(wtRepo.path(), {"commit", "-m", "advance main for manual pull"});
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        window.testSuppressAutoPullForBranch(
+            QStringLiteral("feature/keep-selected"));
+        QElapsedTimer pullButtonTimer;
+        pullButtonTimer.start();
+        while (pullButtonTimer.elapsed() < 5000 &&
+               !window.testBranchPullEnabled())
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        const bool pullButtonClicked = window.testClickBranchPull();
+        QApplication::processEvents();
+        const QString manualPullCounts = gitOutput(
+            wtRepo.path(),
+            {"rev-list", "--left-right", "--count",
+             "main...feature/keep-selected"});
+        check(pullButtonClicked && manualPullCounts.startsWith(QLatin1Char('0')) &&
+                  QFileInfo::exists(wtPath + QStringLiteral("/manual-pull.txt")),
+              QString("Pull main button updates the linked branch it was clicked "
+                      "for (clicked = %1, main...branch = %2, file = %3)")
+                  .arg(pullButtonClicked)
+                  .arg(manualPullCounts)
+                  .arg(QFileInfo::exists(
+                           wtPath + QStringLiteral("/manual-pull.txt"))));
         // Now that automatic synchronization has completed, introduce the
         // staged deletion and re-open the same branch. This isolates the diff
         // regression without making the earlier pull test reject a dirty tree.
@@ -2396,10 +2443,13 @@ int main(int argc, char *argv[])
         issueSession.baseBranch = QStringLiteral("main");
         issueSession.baseRef = agentRouteBaseRef;
         window.testAddAgentSession(issueSession);
+        // Model the intermittent stale list badge from the report. The live
+        // branch review below must reconcile it to the exact rendered set.
+        window.testSetCachedAgentDiffFiles(issueSession.id, 3);
 
         // adhoc #131: the agent detail page's "Branch" button opens that session's
-        // diff against main without repointing the graph below it. The sessions
-        // list is global, so the click still has to bind the Git view to the
+        // branch and diff against main. The sessions list is global, so the click
+        // still has to bind the Git view to the
         // session's own repository first; from another repo's detail page it
         // would otherwise render that repo's (missing) branch. Park the detail
         // view on "me/r", then take the route for the session on "me/wtrepo".
@@ -2413,10 +2463,10 @@ int main(int argc, char *argv[])
                       "session's repository (adhoc #131, git dir = %1)")
                   .arg(agentBranchDir));
         check(window.testCommitWorkspacePage() == 2 &&
-                  window.testBrowsedBranch() == QStringLiteral("main") &&
+                  window.testBrowsedBranch() == agentRouteBranch &&
                   window.testBranchDiffBranch() == agentRouteBranch,
-              QString("the agent's Branch button reviews its range without "
-                      "moving the graph off main (page = %1, graph = %2, diff = %3)")
+              QString("the agent's Branch button binds the graph and range to "
+                      "the same branch (page = %1, graph = %2, diff = %3)")
                   .arg(window.testCommitWorkspacePage())
                   .arg(window.testBrowsedBranch(), window.testBranchDiffBranch()));
         check(window.testGitFilesSlotPage() == 0 &&
@@ -2441,6 +2491,10 @@ int main(int argc, char *argv[])
               QString("an agent's Branch button always compares against main "
                       "(base = %1)")
                   .arg(window.testCompareIndicatorText()));
+        check(window.testComparedBranchText() == agentRouteBranch,
+              QString("an agent review names the agent branch on the left instead "
+                      "of displaying main -> main (left = %1)")
+                  .arg(window.testComparedBranchText()));
         bool containsPrimaryChange = false;
         for (const QString &path : window.testSourceControlPaths()) {
             if (path.startsWith(QStringLiteral("main-only/primary-unrelated-"))) {
@@ -2453,6 +2507,12 @@ int main(int argc, char *argv[])
               QString("an agent branch excludes the primary checkout's 23 unrelated "
                       "changes (files = %1)")
                   .arg(window.testSourceControlPaths().join(QStringLiteral(", "))));
+        check(window.testCachedAgentDiffFiles(issueSession.id) ==
+                  window.testSourceControlPaths().size(),
+              QString("opening an agent branch self-heals a stale 3-file badge to "
+                      "the live rendered count (badge = %1, files = %2)")
+                  .arg(window.testCachedAgentDiffFiles(issueSession.id))
+                  .arg(window.testSourceControlPaths().size()));
         QElapsedTimer agentPullTimer;
         agentPullTimer.start();
         QString agentPullCounts;

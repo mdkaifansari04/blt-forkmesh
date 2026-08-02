@@ -21,7 +21,8 @@ class ScrollJumpButtons;
 // and tool rows, ⎿-connected results, ✻ thinking rows — flat monospace columns
 // rather than boxed cards. Claude stream-json events and the normalized Codex
 // app-server events share this surface: assistant text, live reasoning, tool
-// headers and output, diffs, questions, usage, and final results.
+// headers and output, diffs, questions, usage, and final results. A Codex run
+// re-dresses those same rows in Codex's own idiom — see setCodexStyle().
 class ClaudeTranscriptView : public QScrollArea
 {
     Q_OBJECT
@@ -98,6 +99,15 @@ public:
     // Whether a `result` event reports a failed run: is_error, or any "error_*"
     // subtype (error_max_turns / error_during_execution / …).
     static bool resultIsError(const QJsonObject &ev);
+
+    // Speak Codex's dialect instead of Claude Code's (adhoc #34). The two CLIs
+    // narrate the same work differently, and a Codex run rendered in Claude's
+    // idiom reads wrong: Codex says "Ran <command>" with the command inline and
+    // an exit= line over its output, folds a burst of file reads/searches into a
+    // single "Explored" block, titles a write "Edited <path>", and ticks
+    // "Working (1m 00s)" while a turn runs. Set from the session's provider
+    // before its events are replayed or streamed.
+    void setCodexStyle(bool on);
 
     // Host-supplied context for the "session started" divider (adhoc #9): the
     // worktree branch the run works on, the permission mode it was launched
@@ -182,9 +192,15 @@ private:
     // AskUserQuestion for the activity-ticker state.
     bool addAssistantText(const QString &markdown);
     // A "Name(args)" tool header line (the row's gutter supplies the ● glyph).
-    QWidget *dotHeader(const QString &name, const QString &subtitle);
+    // bareSubtitle drops the parentheses, for Codex's "Ran git status" /
+    // "Edited src/foo.cpp" phrasing; html passes the subtitle through as markup
+    // (the shell-highlighted command line) instead of escaping it.
+    QWidget *dotHeader(const QString &name, const QString &subtitle,
+                       bool bareSubtitle = false, bool html = false);
     // The CLI's "  ⎿  result" shape: an L-connector gutter beside the content.
-    QWidget *connectorRow(QWidget *content);
+    // glyph overrides the connector — Codex hangs a command's remaining script
+    // lines off a "│" and saves the "└" for the block that closes the card.
+    QWidget *connectorRow(QWidget *content, const QString &glyph = QString());
     // Monospace content with no panel background (it hangs off a tool header).
     QWidget *makeMono(const QString &text, bool collapsedIfLong);
 
@@ -220,6 +236,31 @@ private:
     // once the conversation has moved past it.
     void lockInlineChoices(QWidget *box);
 
+    // ---- Codex CLI dialect (see setCodexStyle) -----------------------------
+    struct ToolCard; // defined among the members below
+    // The one block hanging off a "Ran" card, created on first use: the exit=
+    // line and the command's output share it, so the card closes with a single
+    // "└" the way the CLI draws it.
+    QVBoxLayout *codexResultColumn(ToolCard &tc);
+    // Fold this tool call into the open "Explored" block (opening one if the
+    // previous row isn't already a block), Codex's summary of a burst of
+    // exploration. Returns false when the call isn't read-only.
+    bool addCodexExplore(const QString &id, const QString &name,
+                         const QJsonObject &input);
+    // The "Ran <command>" card: the first command line in the header, any
+    // further script lines under it (capped like the CLI's "… +N lines"), and
+    // the exit code over the output once the result lands.
+    void addCodexCommand(const QString &id, const QString &command);
+    // The finished command's result: an exit= line (the transport folds the exit
+    // code onto the end of the output) above a peek of what it printed.
+    void addCodexCommandResult(const QString &id, const QString &text,
+                               bool isError);
+    // One command line as markup: the leading word of each pipeline stage and
+    // the shell operators tinted, flags picked out, everything else plain.
+    QString codexCommandHtml(const QString &line) const;
+    // A muted "… +N lines" note, the CLI's elision marker.
+    QWidget *codexMoreLines(int n);
+
     QString toolSubtitle(const QString &name, const QJsonObject &input) const;
     QWidget *toolBody(const QString &name, const QJsonObject &input);
     QWidget *makeDiff(const QString &oldText, const QString &newText);
@@ -237,6 +278,15 @@ private:
     QWidget *m_activity = nullptr;        // live "what it's doing" ticker row
     QLabel *m_activityLabel = nullptr;
     QTimer *m_activityTimer = nullptr;
+    qint64 m_activityStartMs = 0;         // Codex ticks elapsed, not gerunds
+
+    // ---- Codex dialect state (see setCodexStyle) ---------------------------
+    bool m_codexStyle = false;
+    // The "Explored" block still accepting lines: it stays open only while it
+    // is the newest row, so addRow() closes it for anything else that lands.
+    QPointer<QWidget> m_exploreBlock;
+    QVBoxLayout *m_exploreLines = nullptr;
+    bool m_keepExplore = false; // addRow() guard: this row IS the block/ticker
 
     // ---- incremental "load earlier" state (don't-truncate-the-transcript) --
     // While >= 0, addRow() inserts rows at this column index instead of the
@@ -257,6 +307,13 @@ private:
     struct ToolCard {
         QVBoxLayout *io = nullptr;   // column: header, body, then ⎿ result rows
         bool hasResult = false;      // a result row was appended
+        // Codex "Ran" card: the result opens with an exit= line (parsed off the
+        // trailing "Exit code: N" the transport appends) above the output.
+        bool codexCommand = false;
+        // Codex "Explored" entry: the call is a line in a shared block rather
+        // than a card of its own, so its output is dropped — but a failure
+        // still has to show, and it shows on that line.
+        QPointer<QLabel> exploreLine;
         // Read/Grep/Glob: the header already names the file or pattern, so the
         // (often huge) raw result folds down to a muted "N lines" note.
         bool summarizeResult = false;
@@ -265,6 +322,7 @@ private:
         bool suppressResult = false;
         QPointer<QLabel> liveOutput; // incrementally streamed command output
         QString liveOutputText;
+        QVBoxLayout *codexResult = nullptr; // see codexResultColumn()
     };
     QHash<QString, ToolCard> m_toolCards;
     QHash<QString, QPointer<QLabel>> m_liveAgentText;

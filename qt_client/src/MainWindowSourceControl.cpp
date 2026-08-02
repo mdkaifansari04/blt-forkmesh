@@ -435,7 +435,9 @@ QWidget *MainWindow::buildSourceControlPanel()
 
     // Three small buttons on a single line. The FlowLayout stays so a column
     // dragged really narrow wraps instead of clipping, but at any normal width
-    // the row reads as one line of commit actions.
+    // the row reads as one line of commit actions. When local commits are
+    // waiting to sync, this row instead presents the blocking Sync Changes
+    // action; publishing must be resolved before another commit can be made.
     m_scmControlsPanel = new QWidget;
     auto *controlsRow = new FlowLayout(m_scmControlsPanel, 0, 6, 6);
     controlsRow->addWidget(m_scmCommitButton);
@@ -482,11 +484,15 @@ QWidget *MainWindow::buildSourceControlPanel()
     setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
     connect(m_scmSyncButton, &QPushButton::clicked, this,
             &MainWindow::pushCurrentRepoUpstream);
-    outgoingLayout->addWidget(m_scmSyncButton);
+    // The old outgoing card is deliberately not placed in the source-control
+    // layout. Its state now has a dotted, linked row at the very top of the
+    // commit graph; the action belongs beside the compose controls instead.
+    controlsRow->addWidget(m_scmSyncButton);
+    m_scmSyncButton->hide();
     m_scmOutgoingPanel->hide();
 
     auto *header = new QHBoxLayout;
-    auto *title = new QLabel("CHANGES");
+    auto *title = new QLabel(QString::fromUtf8("\xE2\x96\xBE CHANGES"));
     title->setObjectName("sectionLabel");
     m_scmCountLabel = new QLabel;
     m_scmCountLabel->setObjectName("statusLine");
@@ -557,9 +563,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     header->addWidget(m_scmAutoViewedButton);
     header->addWidget(m_scmPrevButton);
     header->addWidget(m_scmNextButton);
-    header->addWidget(m_scmRefreshButton);
     root->addLayout(header);
-    root->addWidget(m_scmOutgoingPanel);
 
     m_scmTree = new QTreeWidget;
     m_scmTree->setObjectName("fileTree");
@@ -1175,13 +1179,25 @@ void MainWindow::refreshSourceControlOutgoing()
 {
     if (!m_scmOutgoingPanel || !m_scmOutgoingLabel || !m_scmSyncButton)
         return;
+    auto showCommitControls = [this](bool show) {
+        for (QPushButton *button : {m_scmCommitButton, m_scmCommitPushButton,
+                                    m_scmStageCommitPushButton}) {
+            if (button)
+                button->setVisible(show);
+        }
+        if (m_scmSyncButton)
+            m_scmSyncButton->setVisible(!show);
+    };
     const bool showOutgoingPanel =
         !sourceControlShowsRange() && m_scmPanel && m_scmPanel->isVisible();
-    if (!showOutgoingPanel)
+    if (!showOutgoingPanel) {
         m_scmOutgoingPanel->hide();
+        showCommitControls(true);
+    }
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         ++m_scmOutgoingGeneration;
         m_scmOutgoingPanel->hide();
+        showCommitControls(true);
         if (m_railGitButton) {
             m_railGitButton->setPendingSyncCount(0);
             m_railGitButton->setToolTip(
@@ -1198,6 +1214,7 @@ void MainWindow::refreshSourceControlOutgoing()
         !QDir(repo.localPath).exists(QStringLiteral(".git"))) {
         ++m_scmOutgoingGeneration;
         m_scmOutgoingPanel->hide();
+        showCommitControls(true);
         if (m_railGitButton)
             m_railGitButton->setPendingSyncCount(0);
         return;
@@ -1210,6 +1227,7 @@ void MainWindow::refreshSourceControlOutgoing()
                        &branchOut, nullptr)) {
         ++m_scmOutgoingGeneration;
         m_scmOutgoingPanel->hide(); // detached HEAD has no branch to publish
+        showCommitControls(true);
         if (m_railGitButton)
             m_railGitButton->setPendingSyncCount(0);
         return;
@@ -1249,6 +1267,7 @@ void MainWindow::refreshSourceControlOutgoing()
         m_scmSyncButton->setEnabled(false);
         m_scmSyncButton->setText(QStringLiteral("Syncing Changes…"));
         setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
+        showCommitControls(false);
     }
 
     // Counting a long branch walk synchronously can stall the UI on a large
@@ -1257,7 +1276,8 @@ void MainWindow::refreshSourceControlOutgoing()
     const int generation = ++m_scmOutgoingGeneration;
     runGitDetached(
         repo.localPath, countArgs,
-        [this, generation, repoIndex, branch](bool ok, const QByteArray &out) {
+        [this, generation, repoIndex, branch, showCommitControls](bool ok,
+                                                                   const QByteArray &out) {
             if (generation != m_scmOutgoingGeneration ||
                 repoIndex != m_repoDetailIndex)
                 return;
@@ -1278,12 +1298,14 @@ void MainWindow::refreshSourceControlOutgoing()
             if (sourceControlShowsRange() || !m_scmPanel ||
                 !m_scmPanel->isVisible()) {
                 m_scmOutgoingPanel->hide();
+                showCommitControls(true);
                 return;
             }
             const bool stillBusy = m_pushingRepos.contains(repoIndex) ||
                                    m_syncingRepos.contains(repoIndex);
             if (pending <= 0 && !stillBusy) {
                 m_scmOutgoingPanel->hide();
+                showCommitControls(true);
                 return;
             }
 
@@ -1300,7 +1322,10 @@ void MainWindow::refreshSourceControlOutgoing()
                 stillBusy ? QStringLiteral("Syncing Changes…")
                           : QStringLiteral("Sync Changes %1↑").arg(pending));
             setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
-            m_scmOutgoingPanel->show();
+            // Outgoing state is rendered as the graph's linked dotted top row,
+            // not as a second, disconnected card above CHANGES.
+            m_scmOutgoingPanel->hide();
+            showCommitControls(false);
         });
 }
 
@@ -1370,16 +1395,24 @@ void MainWindow::setupScmDiffPane()
         // so the state change is noticeable without shifting the header.
         auto *effect = new QGraphicsOpacityEffect(m_scmStickyViewed);
         effect->setOpacity(0.55);
+        // setGraphicsEffect() owns and *deletes* whichever effect is already
+        // installed, so it is the single delete for this one too: dropping it
+        // with setGraphicsEffect(nullptr) below and then calling deleteLater()
+        // on the same pointer was a use-after-free that crashed on the next
+        // click (adhoc #52). Clicking again inside the 180ms fade likewise
+        // destroys this effect early, so hold it (and the button) by QPointer
+        // and only clear the effect that is still ours.
         m_scmStickyViewed->setGraphicsEffect(effect);
         auto *animation =
             new QPropertyAnimation(effect, "opacity", m_scmStickyViewed);
         animation->setDuration(180);
         animation->setStartValue(0.55);
         animation->setEndValue(1.0);
-        connect(animation, &QPropertyAnimation::finished,
-                m_scmStickyViewed, [button = m_scmStickyViewed, effect] {
-                    button->setGraphicsEffect(nullptr);
-                    effect->deleteLater();
+        connect(animation, &QPropertyAnimation::finished, m_scmStickyViewed,
+                [button = QPointer<QPushButton>(m_scmStickyViewed),
+                 faded = QPointer<QGraphicsEffect>(effect)] {
+                    if (button && faded && button->graphicsEffect() == faded)
+                        button->setGraphicsEffect(nullptr); // deletes `faded`
                 });
         animation->start(QAbstractAnimation::DeleteWhenStopped);
         renderScmCombinedDiff();
