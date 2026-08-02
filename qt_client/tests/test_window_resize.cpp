@@ -1,4 +1,5 @@
 #include "../src/MainWindow.h"
+#include "../src/ClaudeTranscriptView.h"
 #include "../src/PlatformLogFilter.h"
 #include "ForkMeshVersion.h"
 
@@ -3510,6 +3511,46 @@ int main(int argc, char *argv[])
                   QStringLiteral("see forkmesh://pull/o/r/7.")) ==
                   QStringLiteral("see <forkmesh://pull/o/r/7>."),
               QStringLiteral("autolink leaves trailing punctuation out of a permalink"));
+
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("review feat/clickable-agent-transcripts")) ==
+                  QStringLiteral("review [feat/clickable-agent-transcripts]"
+                                 "(forkmesh-branch:feat%2Fclickable-agent-transcripts)"),
+              QStringLiteral("agent transcript links a feature branch"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("open qt_client/src/ClaudeTranscriptView.cpp:1445")) ==
+                  QStringLiteral("open [qt_client/src/ClaudeTranscriptView.cpp:1445]"
+                                 "(forkmesh-file:qt_client%2Fsrc%2FClaudeTranscriptView.cpp?line=1445)"),
+              QStringLiteral("agent transcript links a repo file at a line"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("open /repo/qt_client/src/MainWindow.cpp#L42")) ==
+                  QStringLiteral("open [/repo/qt_client/src/MainWindow.cpp#L42]"
+                                 "(forkmesh-file:%2Frepo%2Fqt_client%2Fsrc%2FMainWindow.cpp?line=42)"),
+              QStringLiteral("agent transcript links an absolute file at a line"));
+        check(ClaudeTranscriptView::linkifyReferences(QStringLiteral("edit MainWindow.h")) ==
+                  QStringLiteral("edit [MainWindow.h](forkmesh-file:MainWindow.h)"),
+              QStringLiteral("agent transcript links a bare filename"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("see #123 and a1b2c3d")) ==
+                  QStringLiteral("see [#123](forkmesh-ref:123) and "
+                                 "[a1b2c3d](forkmesh-commit:a1b2c3d)"),
+              QStringLiteral("agent transcript links issue and commit references"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("```\nMainWindow.h\nfeat/not-a-link\n```")) ==
+                  QStringLiteral("```\nMainWindow.h\nfeat/not-a-link\n```"),
+              QStringLiteral("agent transcript leaves fenced code untouched"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("[MainWindow.h](https://example.test/file)")) ==
+                  QStringLiteral("[MainWindow.h](https://example.test/file)"),
+              QStringLiteral("agent transcript never nests an existing link"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("use `MainWindow.h` next")) ==
+                  QStringLiteral("use [MainWindow.h](forkmesh-file:MainWindow.h) next"),
+              QStringLiteral("agent transcript makes an exact inline filename clickable"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("visit https://example.com/MainWindow.h")) ==
+                  QStringLiteral("visit https://example.com/MainWindow.h"),
+              QStringLiteral("agent transcript leaves web URLs intact"));
     }
 
     // issue #195: a commit SHA mentioned in a commit message body becomes a

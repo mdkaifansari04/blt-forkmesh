@@ -42,6 +42,7 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 
 namespace {
@@ -107,6 +108,174 @@ int countMatchesIn(const QString &orig, Qt::TextFormat fmt, const QString &query
     for (QTextCursor c = d.find(query); !c.isNull(); c = d.find(query, c))
         ++n;
     return n;
+}
+
+// References that are useful inside an Agent transcript. Branch prefixes are
+// deliberately explicit so prose containing an ordinary slash never becomes a
+// link; filenames require a real extension or one of the conventional extension-
+// free project names. The host validates the target against the open repository
+// again when clicked.
+const QRegularExpression &transcriptReferenceRegex()
+{
+    static const QRegularExpression re(QStringLiteral(
+        "(forkmesh://(?:issue|pull|commit)/[^\\s<>()\\[\\]]*[^\\s<>()\\[\\].,;:!?'\"])"
+        "|(?<![\\w/#])#(\\d+)\\b"
+        "|(?<![\\w./-])(?=[0-9a-f]{7,40}(?![0-9a-f]))(?=[0-9a-f]*[a-f])([0-9a-f]{7,40})(?![\\w./-])"
+        "|(?<![\\w./-])((?:(?:api-pr|feature|feat|fix|bugfix|hotfix|release|agent|pr|chore|refactor|docs|test|ci|build|perf|style)/[A-Za-z0-9._/-]*[A-Za-z0-9_-]|main|master|develop|development|trunk))(?![\\w./-])"
+        "|(?<![\\w./-])((?:/|\\./)?(?:(?:[A-Za-z0-9_.-]+/)+)?(?:[A-Za-z_][A-Za-z0-9_.-]*\\.[A-Za-z][A-Za-z0-9]{0,11}|CMakeLists\\.txt|Dockerfile|Makefile|README(?:\\.[A-Za-z0-9]+)?|LICENSE(?:\\.[A-Za-z0-9]+)?))(?::(\\d+)|#L(\\d+))?"));
+    return re;
+}
+
+enum class TranscriptRefKind { Permalink, Issue, Commit, Branch, File };
+
+TranscriptRefKind transcriptRefKind(const QRegularExpressionMatch &m)
+{
+    if (!m.captured(1).isEmpty())
+        return TranscriptRefKind::Permalink;
+    if (!m.captured(2).isEmpty())
+        return TranscriptRefKind::Issue;
+    if (!m.captured(3).isEmpty())
+        return TranscriptRefKind::Commit;
+    if (!m.captured(4).isEmpty())
+        return TranscriptRefKind::Branch;
+    return TranscriptRefKind::File;
+}
+
+QString transcriptRefHref(const QRegularExpressionMatch &m)
+{
+    switch (transcriptRefKind(m)) {
+    case TranscriptRefKind::Permalink:
+        return m.captured(1);
+    case TranscriptRefKind::Issue:
+        return QStringLiteral("forkmesh-ref:%1").arg(m.captured(2));
+    case TranscriptRefKind::Commit:
+        return QStringLiteral("forkmesh-commit:%1").arg(m.captured(3));
+    case TranscriptRefKind::Branch:
+        return QStringLiteral("forkmesh-branch:%1")
+            .arg(QString::fromLatin1(QUrl::toPercentEncoding(m.captured(4))));
+    case TranscriptRefKind::File: {
+        QString href = QStringLiteral("forkmesh-file:%1")
+                           .arg(QString::fromLatin1(
+                               QUrl::toPercentEncoding(m.captured(5))));
+        const QString line = !m.captured(6).isEmpty() ? m.captured(6)
+                                                       : m.captured(7);
+        if (!line.isEmpty())
+            href += QStringLiteral("?line=%1").arg(line);
+        return href;
+    }
+    }
+    return QString();
+}
+
+QString linkifyTranscriptText(const QString &text, bool html)
+{
+    QString out;
+    int last = 0;
+    auto it = transcriptReferenceRegex().globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        const QString before = text.mid(last, m.capturedStart() - last);
+        out += html ? esc(before) : before;
+        const QString shown = m.captured(0);
+        const QString href = transcriptRefHref(m);
+        if (transcriptRefKind(m) == TranscriptRefKind::Permalink && !html)
+            out += QStringLiteral("<%1>").arg(href);
+        else if (html)
+            out += QStringLiteral("<a href=\"%1\">%2</a>")
+                       .arg(href.toHtmlEscaped(), shown.toHtmlEscaped());
+        else
+            out += QStringLiteral("[%1](%2)").arg(shown, href);
+        last = m.capturedEnd();
+    }
+    out += html ? esc(text.mid(last)) : text.mid(last);
+    return out;
+}
+
+int transcriptMarkdownLinkEnd(const QString &line, int start)
+{
+    const int close = line.indexOf(QLatin1Char(']'), start + 1);
+    if (close < 0 || close + 1 >= line.size() ||
+        line.at(close + 1) != QLatin1Char('('))
+        return -1;
+    const int end = line.indexOf(QLatin1Char(')'), close + 2);
+    return end < 0 ? -1 : end + 1;
+}
+
+int transcriptAutolinkEnd(const QString &line, int start)
+{
+    const int close = line.indexOf(QLatin1Char('>'), start + 1);
+    if (close < 0 ||
+        !line.mid(start + 1, close - start - 1).contains(QStringLiteral("://")))
+        return -1;
+    return close + 1;
+}
+
+bool exactBranchOrFileReference(const QString &text)
+{
+    const QRegularExpressionMatch m = transcriptReferenceRegex().match(text);
+    if (!m.hasMatch() || m.capturedStart() != 0 || m.capturedEnd() != text.size())
+        return false;
+    const TranscriptRefKind kind = transcriptRefKind(m);
+    return kind == TranscriptRefKind::Branch || kind == TranscriptRefKind::File;
+}
+
+QString linkifyTranscriptLine(const QString &line)
+{
+    QString out;
+    int i = 0;
+    while (i < line.size()) {
+        const QChar c = line.at(i);
+        if (c == QLatin1Char('`')) {
+            int run = 1;
+            while (i + run < line.size() && line.at(i + run) == QLatin1Char('`'))
+                ++run;
+            const QString ticks = line.mid(i, run);
+            const int close = line.indexOf(ticks, i + run);
+            if (close >= 0) {
+                const QString code = line.mid(i + run, close - i - run);
+                out += exactBranchOrFileReference(code)
+                           ? linkifyTranscriptText(code, false)
+                           : line.mid(i, close + run - i);
+                i = close + run;
+            } else {
+                out += ticks;
+                i += run;
+            }
+            continue;
+        }
+        if (c == QLatin1Char('[')) {
+            const int end = transcriptMarkdownLinkEnd(line, i);
+            if (end > i) {
+                out += line.mid(i, end - i);
+                i = end;
+                continue;
+            }
+        }
+        if (c == QLatin1Char('<')) {
+            const int end = transcriptAutolinkEnd(line, i);
+            if (end > i) {
+                out += line.mid(i, end - i);
+                i = end;
+                continue;
+            }
+        }
+        int next = i;
+        while (next < line.size()) {
+            const QChar d = line.at(next);
+            if (d == QLatin1Char('`') || d == QLatin1Char('[') ||
+                d == QLatin1Char('<'))
+                break;
+            ++next;
+        }
+        if (next == i) {
+            out += c;
+            ++i;
+        } else {
+            out += linkifyTranscriptText(line.mid(i, next - i), false);
+            i = next;
+        }
+    }
+    return out;
 }
 } // namespace
 
@@ -807,6 +976,24 @@ void ClaudeTranscriptView::applyScheme()
         m_jumpButtons->setButtonStyle(btnCss);
 }
 
+void ClaudeTranscriptView::enableReferenceLinks(QLabel *label)
+{
+    if (!label)
+        return;
+    label->setTextInteractionFlags(Qt::TextSelectableByMouse |
+                                   Qt::LinksAccessibleByMouse);
+    label->setOpenExternalLinks(false);
+    connect(label, &QLabel::linkActivated, this,
+            [this](const QString &href) { emit referenceActivated(href); });
+}
+
+QString ClaudeTranscriptView::referenceHtml(const QString &plainText) const
+{
+    QString html = linkifyTranscriptText(plainText, true);
+    html.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
+    return html;
+}
+
 void ClaudeTranscriptView::clear()
 {
     clearActivity();
@@ -1110,8 +1297,24 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
             QString line = QStringLiteral("session started ") + parts.join(QLatin1Char(' '));
             if (!context.isEmpty())
                 line += QStringLiteral(" · ") + context.join(QStringLiteral(" · "));
-            auto *l = new QLabel(esc(line));
+            QString lineHtml = referenceHtml(line);
+            if (!m_ctxBranch.isEmpty()) {
+                const QString encoded = QString::fromLatin1(
+                    QUrl::toPercentEncoding(m_ctxBranch));
+                const QString href = QStringLiteral("forkmesh-branch:%1").arg(encoded);
+                if (!lineHtml.contains(href)) {
+                    const QString needle = esc(
+                        QStringLiteral("branch %1").arg(m_ctxBranch));
+                    const QString replacement = QStringLiteral(
+                        "branch <a href=\"%1\">%2</a>")
+                                                    .arg(href, esc(m_ctxBranch));
+                    lineHtml.replace(needle, replacement);
+                }
+            }
+            auto *l = new QLabel(lineHtml);
+            l->setTextFormat(Qt::RichText);
             l->setWordWrap(true); // long branch names shouldn't widen the view
+            enableReferenceLinks(l);
             l->setFont(monoFont());
             l->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
             addRow(l, QString(), GlyphNone);
@@ -1218,9 +1421,11 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
         // Synthetic, host-injected status row — e.g. the auto model router
         // explaining which model it picked and why (adhoc #91). Muted, like
         // the "session started" divider; persists and replays with the stream.
-        auto *l = new QLabel(ev.value(QStringLiteral("text")).toString());
-        l->setTextFormat(Qt::PlainText);
+        auto *l = new QLabel(
+            referenceHtml(ev.value(QStringLiteral("text")).toString()));
+        l->setTextFormat(Qt::RichText);
         l->setWordWrap(true);
+        enableReferenceLinks(l);
         l->setFont(monoFont());
         l->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
@@ -1237,9 +1442,7 @@ void ClaudeTranscriptView::appendAgentText(const QString &id, const QString &tex
         auto *created = new CacheLabel;
         created->setTextFormat(Qt::MarkdownText);
         created->setWordWrap(true);
-        created->setTextInteractionFlags(Qt::TextSelectableByMouse |
-                                         Qt::LinksAccessibleByMouse);
-        created->setOpenExternalLinks(true);
+        enableReferenceLinks(created);
         created->setFont(monoFont());
         created->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;border:none;")
@@ -1250,7 +1453,7 @@ void ClaudeTranscriptView::appendAgentText(const QString &id, const QString &tex
     }
     QString &value = m_liveAgentTextValue[id];
     value += text;
-    label->setText(value);
+    label->setText(linkifyReferences(value));
 }
 
 void ClaudeTranscriptView::completeAgentText(const QString &id,
@@ -1259,7 +1462,7 @@ void ClaudeTranscriptView::completeAgentText(const QString &id,
     QPointer<QLabel> label = m_liveAgentText.value(id);
     if (label) {
         const QString complete = text.isEmpty() ? m_liveAgentTextValue.value(id) : text;
-        label->setText(complete);
+        label->setText(linkifyReferences(complete));
         m_liveAgentTextValue[id] = complete;
         return;
     }
@@ -1329,8 +1532,9 @@ void ClaudeTranscriptView::ensureLiveThinking()
     m_thinkingTokens = 0;
     m_thinkingStartMs = QDateTime::currentMSecsSinceEpoch();
     m_thinkingBody = new CacheLabel(QStringLiteral("…"));
+    m_thinkingBody->setTextFormat(Qt::RichText);
     m_thinkingBody->setWordWrap(true);
-    m_thinkingBody->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    enableReferenceLinks(m_thinkingBody);
     m_thinkingBody->setFont(monoFont());
     m_thinkingBody->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.muted));
     m_liveThinking = makeCollapsible(QStringLiteral("Thinking…"), m_thinkingBody, false);
@@ -1352,7 +1556,7 @@ void ClaudeTranscriptView::appendThinkingDelta(const QString &text)
         return;
     m_thinkingText += text;
     if (m_thinkingBody)
-        m_thinkingBody->setText(m_thinkingText);
+        m_thinkingBody->setText(referenceHtml(m_thinkingText));
     // live estimate from accumulated text; server setThinkingTokens overrides when available
     const int est = qMax(1, m_thinkingText.length() / 4);
     if (m_liveThinking)
@@ -1366,9 +1570,10 @@ void ClaudeTranscriptView::finalizeThinking(const QString &fullText)
     if (!m_liveThinking) {
         if (completed.isEmpty() || completed == m_lastFinalizedThinkingText)
             return;
-        auto *body = new CacheLabel(completed);
+        auto *body = new CacheLabel(referenceHtml(completed));
+        body->setTextFormat(Qt::RichText);
         body->setWordWrap(true);
-        body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        enableReferenceLinks(body);
         body->setFont(monoFont());
         body->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;border:none;")
@@ -1390,7 +1595,7 @@ void ClaudeTranscriptView::finalizeThinking(const QString &fullText)
     m_liveThinking->setHeaderText(label);
     m_liveThinking->setExpanded(false);
     if (m_thinkingBody)
-        m_thinkingBody->setText(finalText);
+        m_thinkingBody->setText(referenceHtml(finalText));
     m_lastFinalizedThinkingText = finalText;
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
@@ -1412,6 +1617,37 @@ Collapsible *ClaudeTranscriptView::makeCollapsible(const QString &header,
 
 // Assistant prose renders as plain, full-width text (no card), matching the
 // Claude Code conversation view where only the user's turns are boxed.
+QString ClaudeTranscriptView::linkifyReferences(const QString &markdown)
+{
+    if (markdown.isEmpty())
+        return markdown;
+    QString out;
+    out.reserve(markdown.size() + 48);
+    bool inFence = false;
+    QString fenceMarker;
+    const QStringList lines = markdown.split(QLatin1Char('\n'));
+    for (int i = 0; i < lines.size(); ++i) {
+        if (i > 0)
+            out += QLatin1Char('\n');
+        const QString &line = lines.at(i);
+        const QString trimmed = line.trimmed();
+        const bool fenceLine = trimmed.startsWith(QStringLiteral("```")) ||
+                               trimmed.startsWith(QStringLiteral("~~~"));
+        if (inFence) {
+            out += line;
+            if (fenceLine && trimmed.startsWith(fenceMarker))
+                inFence = false;
+        } else if (fenceLine) {
+            inFence = true;
+            fenceMarker = trimmed.left(3);
+            out += line;
+        } else {
+            out += linkifyTranscriptLine(line);
+        }
+    }
+    return out;
+}
+
 bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringList &options)
 {
     // A markdown ordered-list item: "1. ..." or "1) ...", one per line. Capture
@@ -1462,10 +1698,9 @@ bool ClaudeTranscriptView::addAssistantText(const QString &markdown)
 {
     auto *l = new CacheLabel;
     l->setTextFormat(Qt::MarkdownText);
-    l->setText(markdown);
+    l->setText(linkifyReferences(markdown));
     l->setWordWrap(true);
-    l->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
-    l->setOpenExternalLinks(true);
+    enableReferenceLinks(l);
     l->setFont(monoFont());
     l->setStyleSheet(
         QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
@@ -1527,9 +1762,10 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
 
     const QString bodyText = prose.join(QLatin1Char('\n')).trimmed();
     if (!bodyText.isEmpty()) {
-        auto *body = new CacheLabel(bodyText);
+        auto *body = new CacheLabel(referenceHtml(bodyText));
+        body->setTextFormat(Qt::RichText);
         body->setWordWrap(true);
-        body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        enableReferenceLinks(body);
         body->setFont(monoFont());
         body->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
         v->addWidget(body);
@@ -2046,15 +2282,13 @@ bool ClaudeTranscriptView::addCodexExplore(const QString &id, const QString &nam
             return false;
     } else if (name == QLatin1String("Read")) {
         verb = QStringLiteral("Read");
-        target = input.value(QStringLiteral("file_path"))
-                     .toString()
-                     .section(QLatin1Char('/'), -1);
+        target = input.value(QStringLiteral("file_path")).toString();
     } else if (name == QLatin1String("Grep")) {
         verb = QStringLiteral("Search");
         target = input.value(QStringLiteral("pattern")).toString();
         const QString path = input.value(QStringLiteral("path")).toString();
         if (!path.isEmpty())
-            target += QStringLiteral(" in ") + path.section(QLatin1Char('/'), -1);
+            target += QStringLiteral(" in ") + path;
     } else if (name == QLatin1String("Glob")) {
         verb = QStringLiteral("List");
         target = input.value(QStringLiteral("pattern")).toString();
@@ -2089,11 +2323,12 @@ bool ClaudeTranscriptView::addCodexExplore(const QString &id, const QString &nam
     auto *l = new CacheLabel;
     l->setTextFormat(Qt::RichText);
     l->setWordWrap(true);
-    l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    enableReferenceLinks(l);
     l->setFont(monoFont());
     l->setText(QStringLiteral("<span style='color:%1'>%2</span> "
                               "<span style='color:%3'>%4</span>")
-                   .arg(m_p.accent, esc(verb), m_p.text, esc(target.trimmed())));
+                   .arg(m_p.accent, esc(verb), m_p.text,
+                        linkifyTranscriptText(target.trimmed(), true)));
     l->setStyleSheet(QStringLiteral("background:transparent;border:none;"));
     m_exploreLines->addWidget(l);
 
@@ -2282,12 +2517,14 @@ QString ClaudeTranscriptView::toolSubtitle(const QString &name,
         return input.value(QStringLiteral("description")).toString();
     if (name == QLatin1String("Read")) {
         const QString fp = input.value(QStringLiteral("file_path")).toString();
-        const QString base = fp.section(QLatin1Char('/'), -1);
         const int off = input.value(QStringLiteral("offset")).toInt();
         const int lim = input.value(QStringLiteral("limit")).toInt();
         if (off > 0 && lim > 0)
-            return QStringLiteral("%1 (lines %2-%3)").arg(base).arg(off).arg(off + lim - 1);
-        return base.isEmpty() ? fp : base;
+            return QStringLiteral("%1:%2 (lines %2-%3)")
+                .arg(fp)
+                .arg(off)
+                .arg(off + lim - 1);
+        return fp;
     }
     if (name == QLatin1String("Edit") || name == QLatin1String("Write")
         || name == QLatin1String("MultiEdit") || name == QLatin1String("NotebookEdit"))
@@ -2380,7 +2617,10 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
         layout->setSpacing(8);
         for (const QJsonValue &value : input.value(QStringLiteral("changes")).toArray()) {
             const QJsonObject change = value.toObject();
-            auto *path = new QLabel(change.value(QStringLiteral("path")).toString());
+            auto *path = new QLabel(
+                referenceHtml(change.value(QStringLiteral("path")).toString()));
+            path->setTextFormat(Qt::RichText);
+            enableReferenceLinks(path);
             path->setStyleSheet(
                 QStringLiteral("color:%1;font-weight:600;background:transparent;")
                     .arg(m_p.muted));
@@ -2413,12 +2653,13 @@ QWidget *ClaudeTranscriptView::dotHeader(const QString &name,
     auto *l = new CacheLabel;
     l->setTextFormat(Qt::RichText);
     l->setWordWrap(true);
-    l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    enableReferenceLinks(l);
     l->setFont(monoFont());
     QString markup = QStringLiteral("<span style='color:%1;font-weight:700'>%2</span>")
                          .arg(m_p.text, esc(name));
     if (!subtitle.trimmed().isEmpty()) {
-        const QString arg = html ? subtitle.trimmed() : esc(subtitle.trimmed());
+        const QString arg = html ? subtitle.trimmed()
+                                 : linkifyTranscriptText(subtitle.trimmed(), true);
         if (bareSubtitle)
             markup += QStringLiteral(" <span style='color:%1'>%2</span>")
                           .arg(m_p.text, arg);
@@ -2497,10 +2738,10 @@ QWidget *ClaudeTranscriptView::makeMono(const QString &text, bool collapsedIfLon
     // resulting size so repaints stay cheap.
     const QString shown = capLabelText(text, collapsedIfLong);
     auto *l = new CacheLabel;
-    l->setTextFormat(Qt::PlainText);
-    l->setText(shown);
+    l->setTextFormat(Qt::RichText);
+    l->setText(referenceHtml(shown));
     l->setWordWrap(true);
-    l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    enableReferenceLinks(l);
     l->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     l->setStyleSheet(
         QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
