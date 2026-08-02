@@ -4364,6 +4364,74 @@ int main(int argc, char *argv[])
         window.testResetNetworkLog();
     }
 
+    // "Merge & clean up" must leave nothing of the run behind: the branch's work
+    // lands in main, and its branch *and* its Agent entry go with the cleanup.
+    // Keeping the session listed was reported as "the agent entry is still around".
+    // Runs last: it opens a repository of its own and deletes sessions from the
+    // shared agent store, so it must not hand either on to another block.
+    QTemporaryDir cleanupRepo;
+    if (initGitRepo(cleanupRepo)) {
+        const QString cleanBranch = QStringLiteral("agent/adhoc-1304-clean");
+        runGitChecked(cleanupRepo.path(), {"checkout", "-q", "-b", cleanBranch});
+        {
+            QFile landed(cleanupRepo.path() + QStringLiteral("/landed.txt"));
+            landed.open(QIODevice::WriteOnly);
+            landed.write("agent work\n");
+            landed.close();
+        }
+        runGitChecked(cleanupRepo.path(), {"add", "landed.txt"});
+        runGitChecked(cleanupRepo.path(), {"commit", "-m", "agent work"});
+        runGitChecked(cleanupRepo.path(), {"checkout", "-q", "main"});
+        const int cleanupIdx =
+            window.testAddLocalRepository("me", "cleanrepo", cleanupRepo.path());
+        window.testOpenRepository(cleanupIdx);
+        QApplication::processEvents();
+
+        AgentSession ran;
+        ran.id = 13040;
+        ran.owner = QStringLiteral("me");
+        ran.name = QStringLiteral("cleanrepo");
+        ran.branchName = cleanBranch;
+        ran.issueTitle = QStringLiteral("clean up after the merge");
+        ran.baseBranch = QStringLiteral("main");
+        ran.status = AgentStatus::Success;
+        window.testAddAgentSession(ran);
+        // The provenance-only record a manual PR leaves behind documents this same
+        // branch, so it can't outlive the branch either.
+        AgentSession provenance = ran;
+        provenance.id = 13041;
+        provenance.associationOnly = true;
+        provenance.prNumber = 1304;
+        window.testAddAgentSession(provenance);
+        // A session on another branch is untouched by this cleanup.
+        AgentSession other = ran;
+        other.id = 13042;
+        other.branchName = QStringLiteral("agent/adhoc-1304-other");
+        other.associationOnly = false;
+        other.prNumber = 0;
+        window.testAddAgentSession(other);
+
+        check(window.testMergeBranchAndCleanUp(cleanBranch),
+              QStringLiteral("\"Merge & clean up\" lands the agent branch in the "
+                             "default branch"));
+        check(gitOutput(cleanupRepo.path(), {"branch", "--list", cleanBranch})
+                  .isEmpty(),
+              QStringLiteral("\"Merge & clean up\" deletes the merged branch"));
+        check(!window.testHasAgentSession(13040),
+              QStringLiteral("\"Merge & clean up\" deletes the agent entry that "
+                             "produced the merged branch"));
+        check(!window.testHasAgentSession(13041),
+              QStringLiteral("\"Merge & clean up\" deletes the branch's "
+                             "provenance-only Agent record too"));
+        check(window.testHasAgentSession(13042),
+              QStringLiteral("\"Merge & clean up\" keeps agent entries for other "
+                             "branches"));
+        check(window.testAgentStatusCellText(13040).isEmpty(),
+              QString("the cleaned-up agent session leaves no row behind "
+                      "(cell = %1)")
+                  .arg(window.testAgentStatusCellText(13040)));
+    }
+
     stopChildProcesses(window);
     return failures == 0 ? 0 : 1;
 }
