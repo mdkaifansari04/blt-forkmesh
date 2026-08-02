@@ -262,6 +262,7 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeStreamSession.cpp
     src/CodexAppServerSession.h
     src/CodexAppServerSession.cpp
+    src/CodexTranscriptStyle.h
     src/ClaudeTranscriptView.h
     src/ClaudeTranscriptView.cpp
     src/ClaudeSessionScan.h
@@ -767,6 +768,7 @@ if(FORKMESH_BUILD_TESTS)
         tests/test_codex_app_server.cpp
         src/CodexAppServerSession.h
         src/CodexAppServerSession.cpp
+        src/CodexTranscriptStyle.h
     )
     target_link_libraries(forkmesh-codex-tests PRIVATE Qt6::Core)
     if(APPLE)

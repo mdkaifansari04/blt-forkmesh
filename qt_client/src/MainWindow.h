@@ -1241,6 +1241,9 @@ private:
     // the path to the user check for that.
     static QString stallLogPath();
     void updateFooterDiagnostics();
+    // Log a warning while descriptor use is still recoverable: exhausting the
+    // cap aborts the process from inside glib rather than failing an operation.
+    void checkFileDescriptorPressure();
     void refreshRepositoryStats();
     void toggleRepositoryRatchet(bool enabled);
     void onUiStall(qint64 peakMs, const QString &blockingCall, const QString &backtrace);
@@ -5438,6 +5441,10 @@ private:
     QHash<qint64, QVector<double>> m_highMemoryRssHistory;
     qulonglong m_diagLastCpuTicks = 0;
     qint64 m_diagLastCpuMs = 0;
+    // File-descriptor pressure sampling: every 15 s off the 1 s diagnostics
+    // tick, warning once per upward crossing (see checkFileDescriptorPressure).
+    qint64 m_fdPressureLastCheckMs = 0;
+    bool m_fdPressureAlertArmed = true;
 
     // Repo detail view
     int m_repoDetailIndex = -1;
