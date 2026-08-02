@@ -2994,9 +2994,11 @@ void MainWindow::updateRepoSource()
     }
     repo.cloneUrl = newUrl;
     saveRepositories();
-    // Repoint the bare mirror's origin so the next sync fetches from the new
-    // location. A repo backed by a local working copy fetches from that path
-    // instead (see repositorySource()), so leave its remote alone.
+    if (!repo.localPath.trimmed().isEmpty() && !newUrl.isEmpty())
+        configureForkSource(m_repoDetailIndex, newUrl);
+    // Repoint a mirror-only repository's origin so its next sync fetches from
+    // the new location. A local fork's working-copy origin was updated above;
+    // its served mirror continues to sync from that working copy.
     if (repo.localPath.trimmed().isEmpty() && !newUrl.isEmpty() &&
         !repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists())
         runGitCapture(repo.mirrorPath,
