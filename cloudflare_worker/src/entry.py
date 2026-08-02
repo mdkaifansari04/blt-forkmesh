@@ -5383,23 +5383,40 @@ async def leaderboards_overview(env):
     # These five public sources are independent. Resolve them concurrently so
     # the combined endpoint costs the slowest cache/database read, not the sum
     # of all five, which keeps both the page and World island quick at startup.
-    (network_response, referral_response, site_response, users_response,
-     wallet_response) = (
-        await asyncio.gather(
-            network_leaderboards(env),
-            referral_leaderboard(env),
-            site_referrer_leaderboard(env),
-            _account_users_directory(env, None),
-            wallet_leaderboard(env),
-        )
+    sources = (
+        ("network", network_leaderboards(env)),
+        ("referrals", referral_leaderboard(env)),
+        ("sites", site_referrer_leaderboard(env)),
+        ("users", _account_users_directory(env, None)),
+        ("wallets", wallet_leaderboard(env)),
     )
-    network, referrals, sites, users, wallets = await asyncio.gather(
-        _response_json(network_response),
-        _response_json(referral_response),
-        _response_json(site_response),
-        _response_json(users_response),
-        _response_json(wallet_response),
-    )
+    # return_exceptions on purpose: a bare gather re-raises the first failure,
+    # so one broken source used to 500 the whole hub — the website grid and the
+    # World island both went dark over a board neither of them needed. adhoc
+    # #225 did exactly that from a call-arity mismatch deep inside the users
+    # directory, and the same 500 was logged again here under /api/leaderboards.
+    # A source that fails now costs its own boards and nothing else.
+    settled = await asyncio.gather(
+        *(source for _name, source in sources), return_exceptions=True)
+    payloads = []
+    degraded = []
+    for (name, _source), result in zip(sources, settled):
+        if isinstance(result, BaseException):
+            degraded.append(name)
+            payloads.append({})
+            # Workers Logs stays off, so a degraded board would otherwise be
+            # invisible: report it best-effort, and never let telemetry sink
+            # the response the surviving boards are still being served in.
+            try:
+                await capture_sentry_error(
+                    env, 500, "GET", "/api/leaderboards",
+                    "leaderboards source failed: " + name + ": "
+                    + _safe_error_text(result), error=result)
+            except BaseException:
+                pass
+            continue
+        payloads.append(await _response_json(result))
+    network, referrals, sites, users, wallets = payloads
     activity_rows = []
     for user in users.get("users", []):
         if not isinstance(user, dict):
@@ -5419,7 +5436,8 @@ async def leaderboards_overview(env):
         key=lambda row: (-row["totalActiveMs"], row["name"].lower()))
     activity_rows = activity_rows[:LEADERBOARD_LIMIT]
 
-    def board(board_id, title, subtitle, value_kind, rows, category):
+    def board(board_id, title, subtitle, value_kind, rows, category,
+              source="network"):
         return {
             "id": board_id,
             "title": title,
@@ -5427,6 +5445,10 @@ async def leaderboards_overview(env):
             "valueKind": value_kind,
             "category": category,
             "rows": rows if isinstance(rows, list) else [],
+            # An empty board that failed to load reads exactly like one nobody
+            # has entered yet. Name the source per board so a client can say
+            # which of the two it is showing.
+            "degraded": source in degraded,
         }
 
     window_hours = int(network.get("windowHours") or 48)
@@ -5434,7 +5456,7 @@ async def leaderboards_overview(env):
         board(
             "activity", "World activity",
             "Registered members by total public active time",
-            "duration", activity_rows, "community"),
+            "duration", activity_rows, "community", "users"),
         board(
             "uptime", "Mainnode uptime",
             "Most minutes online · last %dh" % window_hours,
@@ -5468,15 +5490,15 @@ async def leaderboards_overview(env):
         board(
             "referrals", "Member referrals",
             "Signups first; clicks break ties",
-            "referrals", referrals.get("board"), "community"),
+            "referrals", referrals.get("board"), "community", "referrals"),
         board(
             "referring-sites", "Referring websites",
             "External sites sending visits to ForkMesh",
-            "visits", sites.get("board"), "community"),
+            "visits", sites.get("board"), "community", "sites"),
         board(
             "wallets", "Member SOL wallets",
             "Published payout addresses by public on-chain balance",
-            "sol", wallets.get("board"), "community"),
+            "sol", wallets.get("board"), "community", "wallets"),
         board(
             "funds-mainnodes", "Legacy funds · mainnodes",
             "Historical reporting aggregate; not a balance",
@@ -5494,6 +5516,10 @@ async def leaderboards_overview(env):
         {
             "ok": True,
             "observedAt": int(Date.now()),
+            # Which sources could not be read for this rebuild. Their boards
+            # are present but empty, so without this an outage behind one of
+            # them reads as "nobody has ranked yet" rather than a gap.
+            "degraded": degraded,
             "boards": boards,
             "network": network,
             "activity": {"board": activity_rows},
