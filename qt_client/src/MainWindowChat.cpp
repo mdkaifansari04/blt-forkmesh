@@ -4120,13 +4120,14 @@ void MainWindow::showDiagnosticsDialog()
 }
 
 // Column layout of the "High memory usage" table; adhoc #98 added the trend
-// square and the command line and adhoc #96 the agent attribution, so the
-// indexes are worth naming.
+// square and the command line, adhoc #96 the agent attribution and adhoc #228
+// the parent process, so the indexes are worth naming.
 static constexpr int kHighMemoryTrendColumn = 1;
-static constexpr int kHighMemoryAgentColumn = 6;
-static constexpr int kHighMemoryCommandColumn = 7;
-static constexpr int kHighMemoryActionColumn = 8;
-static constexpr int kHighMemoryColumnCount = 9;
+static constexpr int kHighMemoryParentColumn = 3;
+static constexpr int kHighMemoryAgentColumn = 7;
+static constexpr int kHighMemoryCommandColumn = 8;
+static constexpr int kHighMemoryActionColumn = 9;
+static constexpr int kHighMemoryColumnCount = 10;
 // How many rows carry a trend square. One per row for all 30 would be mostly
 // noise; the top ten are the ones worth watching grow.
 static constexpr int kHighMemoryTrendRows = 10;
@@ -4148,9 +4149,9 @@ void MainWindow::showHighMemoryProcessPanel()
     dialog->setModal(false);
     dialog->setWindowTitle(QStringLiteral("High memory usage"));
     // Wide enough for the command-line column to be worth reading (adhoc #98)
-    // beside the agent column (adhoc #96), clamped to the screen so it still
-    // fits on smaller displays.
-    QSize preferred(1420, 620);
+    // beside the agent (adhoc #96) and parent (adhoc #228) columns, clamped to
+    // the screen so it still fits on smaller displays.
+    QSize preferred(1680, 620);
     if (QScreen *screen = QGuiApplication::primaryScreen())
         preferred =
             preferred.boundedTo(screen->availableGeometry().size() * 0.92);
@@ -4161,8 +4162,11 @@ void MainWindow::showHighMemoryProcessPanel()
         "<b>Host memory is above 85%</b><br>"
         "Processes are sorted by resident memory, and the top ten carry a "
         "trend square showing how their memory has moved since this panel "
-        "opened. Anything an agent run started — the agent itself and every "
-        "build, test or tool below it — names that run in the Agent column. "
+        "opened. The Parent column names the process that started each row — "
+        "hover it for the whole ancestry chain. Anything an agent run started "
+        "— the agent itself and every build, test or tool below it — names "
+        "that run in the Agent column, and “Stop agent” ends that run "
+        "cleanly instead of killing one process out from under it. "
         "“Kill” requests a normal termination and “Kill all” does the "
         "same for every listed process sharing that name; ForkMesh and PID 1 "
         "are protected."));
@@ -4178,10 +4182,10 @@ void MainWindow::showHighMemoryProcessPanel()
     m_highMemoryProcessTable = new QTableWidget(0, kHighMemoryColumnCount);
     m_highMemoryProcessTable->setHorizontalHeaderLabels(
         {QStringLiteral("Process"), QStringLiteral("Trend"),
-         QStringLiteral("PID"), QStringLiteral("Owner"),
-         QStringLiteral("Memory"), QStringLiteral("Host %"),
-         QStringLiteral("Agent"), QStringLiteral("Command line"),
-         QStringLiteral("Action")});
+         QStringLiteral("PID"), QStringLiteral("Parent"),
+         QStringLiteral("Owner"), QStringLiteral("Memory"),
+         QStringLiteral("Host %"), QStringLiteral("Agent"),
+         QStringLiteral("Command line"), QStringLiteral("Action")});
     m_highMemoryProcessTable->verticalHeader()->setVisible(false);
     m_highMemoryProcessTable->setSelectionBehavior(
         QAbstractItemView::SelectRows);
@@ -4200,12 +4204,13 @@ void MainWindow::showHighMemoryProcessPanel()
     m_highMemoryProcessTable->setColumnWidth(0, 180);
     m_highMemoryProcessTable->setColumnWidth(kHighMemoryTrendColumn, 46);
     m_highMemoryProcessTable->setColumnWidth(2, 72);
-    m_highMemoryProcessTable->setColumnWidth(3, 110);
-    m_highMemoryProcessTable->setColumnWidth(4, 105);
-    m_highMemoryProcessTable->setColumnWidth(5, 72);
+    m_highMemoryProcessTable->setColumnWidth(kHighMemoryParentColumn, 170);
+    m_highMemoryProcessTable->setColumnWidth(4, 110);
+    m_highMemoryProcessTable->setColumnWidth(5, 105);
+    m_highMemoryProcessTable->setColumnWidth(6, 72);
     m_highMemoryProcessTable->setColumnWidth(kHighMemoryAgentColumn, 190);
     m_highMemoryProcessTable->setColumnWidth(kHighMemoryActionColumn,
-                                            160); // Kill + Kill all
+                                            250); // Kill + Kill all + Stop agent
     // Tall enough for a trend square to sit inside a row.
     m_highMemoryProcessTable->verticalHeader()->setDefaultSectionSize(38);
     layout->addWidget(m_highMemoryProcessTable, 1);
@@ -4301,8 +4306,11 @@ void MainWindow::refreshHighMemoryProcessTable()
                 // Parent of every process on the host, so a listed row can be
                 // walked back to the agent run that spawned it (adhoc #96).
                 // `ps` already reports it, which keeps the attribution free of
-                // a second /proc pass.
+                // a second /proc pass. The names ride along because a parent is
+                // usually *not* itself a listed row (adhoc #228): the ninja that
+                // spawned a fat cc1plus barely shows up in the memory list.
                 QHash<qint64, qint64> parentOf;
+                QHash<qint64, QString> nameOf;
                 const QList<QByteArray> lines = output.split('\n');
                 int validProcesses = 0;
                 for (const QByteArray &raw : lines) {
@@ -4334,6 +4342,7 @@ void MainWindow::refreshHighMemoryProcessTable()
                         name = name.mid(slash + 1);
                     if (name.isEmpty())
                         name = commandLine;
+                    nameOf.insert(pid, name);
                     ++validProcesses;
                     // `ps` is already RSS-sorted. Only materialize the top
                     // culprits: hundreds of cell widgets and repeated
@@ -4375,6 +4384,8 @@ void MainWindow::refreshHighMemoryProcessTable()
                 // and the cc1plus swarm an agent kicked off say whose they are.
                 struct AgentOwner {
                     qint64 rootPid = 0;
+                    int sessionId = 0;
+                    bool stoppable = false;
                     QString label;
                     QString detail;
                 };
@@ -4391,6 +4402,8 @@ void MainWindow::refreshHighMemoryProcessTable()
                         title = QStringLiteral("Agent run #%1").arg(session.id);
                     AgentOwner owner;
                     owner.rootPid = rootPid;
+                    owner.sessionId = session.id;
+                    owner.stoppable = isStoppableAgentSession(session.id);
                     owner.label =
                         session.issueNumber > 0
                             ? QStringLiteral("#%1 %2").arg(session.issueNumber).arg(title)
@@ -4426,6 +4439,26 @@ void MainWindow::refreshHighMemoryProcessTable()
                     return nullptr;
                 };
 
+                // The chain a row hangs off, parent first and init last, for the
+                // Parent column's tooltip (adhoc #228). Same hop cap as above,
+                // and for the same reason: a `ps` snapshot taken while processes
+                // exit can hand back a parent chain that loops.
+                auto ancestryOf = [&parentOf, &nameOf](qint64 pid) {
+                    QStringList chain;
+                    qint64 current = parentOf.value(pid, 0);
+                    for (int hops = 0; current > 0 && hops < 64; ++hops) {
+                        chain << QStringLiteral("%1 (%2)")
+                                     .arg(nameOf.value(
+                                         current, QStringLiteral("?")))
+                                     .arg(current);
+                        const qint64 parent = parentOf.value(current, 0);
+                        if (parent <= 0 || parent == current)
+                            break;
+                        current = parent;
+                    }
+                    return chain.join(QStringLiteral("\n  ↑ "));
+                };
+
                 m_highMemoryProcessTable->setUpdatesEnabled(false);
                 m_highMemoryProcessTable->clearContents();
                 m_highMemoryProcessTable->setRowCount(rows.size());
@@ -4443,10 +4476,33 @@ void MainWindow::refreshHighMemoryProcessTable()
                     };
                     put(0, process.name);
                     put(2, QString::number(process.pid), process.pid);
-                    put(3, process.owner);
-                    put(4, SystemStats::formatBytes(process.rssKb * 1024),
+                    // Who started this process (adhoc #228). A bare PID says
+                    // little on a pressured host, so the cell names the parent
+                    // and the tooltip walks the chain up to init — that is what
+                    // turns "another cc1plus" into "the ninja under agent #12".
+                    const qint64 parentPid = parentOf.value(process.pid, 0);
+                    const QString parentName =
+                        nameOf.value(parentPid, QStringLiteral("?"));
+                    put(kHighMemoryParentColumn,
+                        parentPid > 0 ? QStringLiteral("%1 (%2)")
+                                            .arg(parentName)
+                                            .arg(parentPid)
+                                      : QStringLiteral("—"),
+                        parentPid);
+                    if (QTableWidgetItem *parentCell =
+                            m_highMemoryProcessTable->item(
+                                row, kHighMemoryParentColumn))
+                        parentCell->setToolTip(
+                            parentPid > 0
+                                ? QStringLiteral("Ancestry:\n%1")
+                                      .arg(ancestryOf(process.pid))
+                                : QStringLiteral(
+                                      "No parent reported — the process "
+                                      "exited during the scan, or it is PID 1."));
+                    put(4, process.owner);
+                    put(5, SystemStats::formatBytes(process.rssKb * 1024),
                         process.rssKb);
-                    put(5, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
+                    put(6, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
                         process.percent);
                     // Whose run this is, if any (adhoc #96). The agent's own
                     // process names the session outright; anything it started
@@ -4568,6 +4624,36 @@ void MainWindow::refreshHighMemoryProcessTable()
                     actionRow->setSpacing(4);
                     actionRow->addWidget(kill);
                     actionRow->addWidget(killAll);
+
+                    // "Stop agent" on any row an agent run owns (adhoc #228).
+                    // SIGTERMing a cc1plus only makes the run fail confusingly;
+                    // stopping the session takes its whole process tree down and
+                    // leaves the row in a state the Agents section understands.
+                    if (agent) {
+                        auto *stop = new QPushButton(QStringLiteral("Stop agent"));
+                        stop->setProperty("buttonSize", "sm");
+                        stop->setEnabled(agent->stoppable);
+                        stop->setToolTip(
+                            agent->stoppable
+                                ? QStringLiteral("Stop the agent run “%1” "
+                                                 "and everything it started")
+                                      .arg(agent->label)
+                                : QStringLiteral("“%1” is no longer running")
+                                      .arg(agent->label));
+                        // Deferred out of the click: the confirmation below runs
+                        // a nested event loop, the panel's 5s auto-refresh fires
+                        // inside it, and the rebuild deletes this very button —
+                        // so nothing may return into its clicked() emission.
+                        connect(stop, &QPushButton::clicked, this,
+                                [this, sessionId = agent->sessionId,
+                                 label = agent->label] {
+                                    QTimer::singleShot(
+                                        0, this, [this, sessionId, label] {
+                                            stopHighMemoryAgent(sessionId, label);
+                                        });
+                                });
+                        actionRow->addWidget(stop);
+                    }
                     m_highMemoryProcessTable->setCellWidget(
                         row, kHighMemoryActionColumn, actions);
                 }
@@ -4655,6 +4741,55 @@ void MainWindow::killHighMemoryProcess(qint64 pid, const QString &name)
         QStringLiteral("Per-process termination is not supported on this "
                        "platform yet."));
 #endif
+}
+
+// Row-level "Stop agent" (adhoc #228). The panel lists processes, but the thing
+// worth stopping is usually the run above them: killing one compiler out of a
+// build leaves the agent alive, confused and still holding its memory, whereas
+// stopping the session ends the whole tree and marks the row Stopped.
+void MainWindow::stopHighMemoryAgent(int sessionId, const QString &label)
+{
+    if (sessionId <= 0)
+        return;
+    // The button is disabled for finished runs, so this is the race where the
+    // session ended between the scan and the click.
+    if (!isStoppableAgentSession(sessionId)) {
+        if (m_highMemoryProcessStatus)
+            m_highMemoryProcessStatus->setText(
+                QStringLiteral("“%1” is no longer running.").arg(label));
+        return;
+    }
+    auto *parent = m_highMemoryDialog
+                       ? static_cast<QWidget *>(m_highMemoryDialog.data())
+                       : static_cast<QWidget *>(this);
+    // External (watch-only) rows run their own confirmation inside
+    // stopExternalSession — asking twice for one click reads like a bug.
+    if (!isExternalSession(sessionId) &&
+        QMessageBox::warning(
+            parent, QStringLiteral("Stop agent"),
+            QStringLiteral("Stop the agent run “%1”?\n\n"
+                           "Everything it started — builds, tests and tools — "
+                           "goes down with it. Its worktree and branch are "
+                           "kept, so the run can be started again.")
+                .arg(label),
+            QMessageBox::Cancel | QMessageBox::Yes,
+            QMessageBox::Cancel) != QMessageBox::Yes)
+        return;
+
+    if (!stopAgentSessionById(sessionId)) {
+        if (m_highMemoryProcessStatus)
+            m_highMemoryProcessStatus->setText(
+                QStringLiteral("Could not stop “%1” — it is no longer "
+                               "running.")
+                    .arg(label));
+        return;
+    }
+    if (m_highMemoryProcessStatus)
+        m_highMemoryProcessStatus->setText(
+            QStringLiteral("Stop requested for the agent run “%1”.")
+                .arg(label));
+    // The tree takes a moment to wind down; re-scan once it has.
+    QTimer::singleShot(750, this, &MainWindow::refreshHighMemoryProcessTable);
 }
 
 void MainWindow::killAllHighMemoryProcesses(const QString &name,

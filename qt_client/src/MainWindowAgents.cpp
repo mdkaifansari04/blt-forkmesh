@@ -9951,6 +9951,58 @@ void MainWindow::stopAllRunningAgents()
                      .arg(ids.size() == 1 ? QString() : QStringLiteral("s")));
 }
 
+// One session's worth of "Stop all", for callers outside the Agents section that
+// hold an id and nothing else — the high-memory panel's per-row "Stop agent"
+// (adhoc #228). Same three moves as the loop above: drop it from the queue, stop
+// whatever is executing it, and force the status transition a queued or wedged
+// row would otherwise never make on its own.
+bool MainWindow::isStoppableAgentSession(int sessionId) const
+{
+    const AgentSession *session = nullptr;
+    for (const AgentSession &candidate : std::as_const(m_agentSessions)) {
+        if (candidate.id == sessionId) {
+            session = &candidate;
+            break;
+        }
+    }
+    if (!session || session->merged)
+        return false;
+    // External (watch-only) rows belong to another process, but Stop on them
+    // signals that CLI directly, so they count here too.
+    return session->status == AgentStatus::Running ||
+           session->status == AgentStatus::Waiting ||
+           session->status == AgentStatus::Queued;
+}
+
+bool MainWindow::stopAgentSessionById(int sessionId)
+{
+    if (sessionId <= 0 || !isStoppableAgentSession(sessionId))
+        return false;
+    if (isExternalSession(sessionId)) {
+        stopExternalSession(sessionId);
+        return true;
+    }
+    m_agentQueue.removeAll(sessionId);
+    if (AgentRunner *runner = runnerForSession(sessionId))
+        runner->stop();
+    stopStreamSession(sessionId, /*refreshUi=*/false);
+    if (AgentSession *as = findAgentSession(sessionId);
+        as && (as->status == AgentStatus::Queued ||
+               as->status == AgentStatus::Running ||
+               as->status == AgentStatus::Waiting)) {
+        as->status = AgentStatus::Stopped;
+        as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+        if (m_agentStore)
+            m_agentStore->saveSession(*as);
+    }
+    scheduleAgentSessionsPush(); // adhoc #182: mirror the new status to the web
+    reloadAgents();
+    if (sessionId == m_selectedAgentSessionId)
+        showAgentSession(sessionId);
+    updateAgentActionState();
+    return true;
+}
+
 // The sessions "Start all" would act on: our own idle work, in any repository —
 // stopped (by the panic button or by hand) or failed, and so resumable. Running,
 // waiting and queued rows are already in flight, merged ones are finished, and
