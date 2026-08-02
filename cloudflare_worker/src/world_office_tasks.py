@@ -20,7 +20,10 @@ PREFIX = "/api/world/office/marketing-tasks"
 UNIVERSAL_PREFIX = "/api/tasks"
 LEGACY_MARKETING_PREFIX = PREFIX
 BODY_MAX_BYTES = 64 * 1024
-MAX_TASKS = 2000
+# A single response stays bounded for D1/runtime safety, but task admission is
+# intentionally unbounded: the durable catalog must never reject new owner or
+# agent work merely because older tasks still exist.
+TASK_LIST_RESPONSE_LIMIT = 2000
 MAX_CHECKINS_PER_TASK = 50
 MAX_TITLE = 160
 MAX_DETAILS = 4000
@@ -355,7 +358,7 @@ async def _latest_checkins(runtime, task_ids):
     # task_ids originate in the D1 result and are validated opaque hex ids.
     task_ids = [
         str(value).lower() for value in task_ids if valid_id(value)
-    ][:MAX_TASKS]
+    ][:TASK_LIST_RESPONSE_LIMIT]
     if not task_ids:
         return {}
     rows = []
@@ -556,7 +559,7 @@ async def _list(
         + " AND ".join(where)
         + " ORDER BY completed_at>0,priority,updated_at DESC,task_id DESC LIMIT ?",
         *arguments,
-        MAX_TASKS,
+        TASK_LIST_RESPONSE_LIMIT,
     )
     if marketing_only and not can_manage:
         # Preserve the private assignee-only behavior of the physical Marketing
@@ -1050,14 +1053,6 @@ async def _create(
         if destination == "qa" or data.get("sendToQa") is True
         else 0
     )
-    count = await runtime.d1_first(
-        "SELECT COUNT(*) AS count FROM organization_tasks "
-        "WHERE org_bi=?",
-        org_bi,
-    )
-    if int((count or {}).get("count") or 0) >= MAX_TASKS:
-        return _response(
-            runtime, {"error": "task_capacity_reached"}, status=409)
     task_id = runtime.new_id()
     if not valid_id(task_id):
         return _response(runtime, {"error": "id_generation_failed"}, status=500)

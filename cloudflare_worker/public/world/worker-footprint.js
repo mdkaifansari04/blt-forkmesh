@@ -47,7 +47,7 @@ export const WORKER_FOOTPRINT = Object.freeze({
     },
     {
       "name": "world_office_tasks.py",
-      "bytes": 69892,
+      "bytes": 69548,
       "phase": "startup"
     },
     {
