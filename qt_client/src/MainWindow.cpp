@@ -56,6 +56,21 @@ MainWindow::~MainWindow()
     // a raw `this`.
     forkmesh::BackgroundActivity::setListener(nullptr);
 
+    // QProcess children outlive this destructor body: QObject teardown deletes
+    // them from ~QWidget's deleteChildren(), and ~QProcess kills the child and
+    // waits for it, emitting finished()/errorOccurred() from there. MainWindow
+    // is still a live QObject at that point, so those connections have NOT been
+    // severed yet — but every derived member the handlers touch was destroyed
+    // when MainWindow's members were, so the slot runs on freed memory. The SSH
+    // mirror push handler crashed exactly here: finishPush() reached
+    // m_sshMirrorPushing.remove() on an already-destroyed QSet (SIGSEGV in
+    // QHash::findBucket during "MainWindow teardown"). Sever every signal of
+    // every process descendant now — nothing started before teardown needs to
+    // report back once the window is going away.
+    const QList<QProcess *> processChildren = findChildren<QProcess *>();
+    for (QProcess *process : processChildren)
+        process->disconnect();
+
     // Revoke the browser's memory-only voice capability and stop any local
     // capture while MainWindow's voice state is still alive.
     if (m_worldSpeechBridge)

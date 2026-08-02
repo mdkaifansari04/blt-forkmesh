@@ -117,10 +117,21 @@ def test_admin_hud_counts_only_rows_after_the_local_seen_cursor():
     assert '"DELETE FROM error_log WHERE id=?"' in ENTRY
     assert "_admin_error_create_bot_task(" in ENTRY
     assert 'payload["groups"]' in ENTRY
+    assert 'payload["hourly"]' in ENTRY
+    assert '"hours": [0] * 24' in ENTRY
     assert "world-error-group-table" in WORLD
+    assert "world-error-chart" in WORLD
+    assert "world-error-sparkline" in WORLD
     assert "world-error-table-header" in WORLD
     assert "data-world-admin-error-delete" in WORLD
     assert "data-world-admin-error-task" in WORLD
+    assert "data-world-admin-error-group-delete" in WORLD
+    assert "data-world-admin-error-group-task" in WORLD
+    assert "data-world-admin-error-copy" in WORLD
     assert "async deleteAdminError(" in WORLD
     assert "async createTaskFromAdminError(" in WORLD
+    assert "async deleteAdminErrorGroup(" in WORLD
+    assert "async createTaskFromAdminErrorGroup(" in WORLD
+    assert "relativeTime(group.firstSeen)" in WORLD
+    assert 'title="${escapeHTML(exactTime(group.firstSeen))}"' in WORLD
     assert ".world-error-actor-stack" in WORLD_CSS
