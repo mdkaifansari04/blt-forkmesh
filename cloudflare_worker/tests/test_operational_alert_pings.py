@@ -29,9 +29,37 @@ def test_both_operational_monitor_paths_enqueue_pings():
         ENTRY_TEXT.index("def _status_expected_checks_for_hour")
     ]
     assert "await _enqueue_operational_alert_pings(env, [alert], now)" in watchdog
-    assert "await _enqueue_operational_alert_pings(env, pending, now)" in transitions
+    assert (
+        "await _enqueue_operational_alert_pings(env, ping_pending, now)"
+        in transitions)
     assert 'href="/status"' in ENTRY_TEXT
     assert 'source="operational-status"' in ENTRY_TEXT
+
+
+def test_ping_channel_tracks_its_own_delivered_transition():
+    """Outage pings must not be crowded out by repeated recovery pings.
+
+    Pings default on and mail defaults off, so a ping-only deployment gets no
+    notified_state updates. Without an independent marker every later sample
+    re-announced the last transition, and recoveries keyed off a stamp that
+    moved each minute, so duplicated "recovered" rows trimmed the outage pings
+    out of the capped inbox.
+    """
+    transitions = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _record_status_monitor_transitions"):
+        ENTRY_TEXT.index("def _status_expected_checks_for_hour")
+    ]
+    enqueue = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _enqueue_operational_alert_pings"):
+        ENTRY_TEXT.index("async def _repository_monitor_admin_emails")
+    ]
+    assert "pinged_state TEXT NOT NULL DEFAULT ''" in ENTRY_TEXT
+    assert 'prior_pinged != "down"' in transitions
+    assert "should_ping = pinged != state" in transitions
+    assert "await _record_operational_alert_pings_sent(env, ping_pending)" \
+        in transitions
+    assert 'alert.get("changed_at")' in enqueue
+    assert "UPDATE repository_monitor_state SET pinged_state=?" in ENTRY_TEXT
 
 
 def test_admin_setting_exposes_independent_ping_and_email_controls():
