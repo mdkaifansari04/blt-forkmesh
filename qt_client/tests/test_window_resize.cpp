@@ -1427,24 +1427,26 @@ int main(int argc, char *argv[])
     // real PR and Agents controls only after taking that user-visible path,
     // keeping the startup performance contract intact.
     // adhoc #7: the PR header's conflict action is a plain "Fix" that fills the
-    // prompt box — no provider dropdown to pick a resolver from — and the whole
-    // header row wears the same flat rail style (no filled primary pills).
+    // prompt box — no provider dropdown to pick a resolver from. adhoc #59: the
+    // whole header row is icon-over-caption rail tiles ("repoActionStack"), the
+    // same form as the activity rail, instead of a mix of pill shapes.
     bool prFixButtonFound = false;
     bool prHeaderStyleUniform = true;
     for (QPushButton *b : window.findChildren<QPushButton *>()) {
         if (b->text() == QStringLiteral("Fix") && !b->menu())
             prFixButtonFound = true;
-        if (b->text() == QStringLiteral("Review with AI") ||
-            b->text() == QStringLiteral("Fix all with AI") ||
+        if (b->text() == QStringLiteral("AI review") ||
+            b->text() == QStringLiteral("Fix all") ||
             b->text() == QStringLiteral("Merge") ||
-            b->text() == QStringLiteral("Fix conflicts with agent"))
-            prHeaderStyleUniform &= b->objectName() == QStringLiteral("ghostButton");
+            b->text() == QStringLiteral("Agent fix"))
+            prHeaderStyleUniform &=
+                b->objectName() == QStringLiteral("repoActionStack");
     }
     check(prFixButtonFound,
           QStringLiteral("PR header offers a plain 'Fix' button with no provider "
                          "dropdown after repository navigation"));
     check(prHeaderStyleUniform,
-          QStringLiteral("PR header actions all use the flat ghostButton style"));
+          QStringLiteral("PR header actions all use the rail-style icon tile"));
     // The Agents tab is built when it's first opened, and a repo no longer opens
     // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
     // before reading its list back. This also proves that route works for a repo
