@@ -748,6 +748,9 @@ public:
     // lazily-built list back the way a user reaches it (adhoc #119).
     void testOpenAgentsOverview() { openAgentsOverview(); }
     void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
+    int testAgentDotCount() const;
+    void testSetAgentSessionStatus(int sessionId, const QString &status);
+    void testRemoveAgentSession(int sessionId);
     // Live search: type into the top bar the way a user does (textChanged drives
     // the whole feature), persist a line of a session's transcript, force the
     // debounced transcript scan to run now, and read the filtered list back.
