@@ -638,9 +638,10 @@ function deterministicTreeLayout() {
 // backing stores (plus the same again once uploaded as RGBA textures) before
 // the first frame, which is more than a mobile browser lets one tab hold: the
 // tab is killed seconds into the boot and reloads into the crash guard. The
-// compact renderer therefore paints its large plates at half resolution — a
-// quarter of the bytes — while the draw code keeps its original coordinate
-// system through a pre-scaled context, so only the backing store shrinks.
+// compact renderer therefore paints its large plates at quarter resolution —
+// one sixteenth of the desktop bytes. A merely oversized desktop surface uses
+// half resolution. The draw code keeps its original coordinate system through
+// a pre-scaled context, so only the backing store shrinks.
 const CANVAS_TEXTURE_SCALE_MIN_PIXELS = 512 * 512;
 let canvasTextureScale = 1;
 
@@ -15980,7 +15981,11 @@ export function createWorldScene({
     compactRenderer || requestedSurfacePixels > RENDER_PIXEL_BUDGET;
   // Set before anything paints: every plate below reads this while building
   // its backing store, and the tab is killed by their sum, not by any one.
-  canvasTextureScale = memoryConstrainedRenderer ? 0.5 : 1;
+  canvasTextureScale = compactRenderer
+    ? 0.25
+    : memoryConstrainedRenderer
+      ? 0.5
+      : 1;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(DAYLIGHT_ENVIRONMENT.background);
   const worldSky = createWorldSky({
@@ -34696,6 +34701,7 @@ export function createWorldScene({
         gpu: contextInfo.gpu,
         compactRenderer,
         memoryConstrainedRenderer,
+        canvasTextureScale,
         pixelBudget: RENDER_PIXEL_BUDGET,
         threeRevision: String(THREE.REVISION || ""),
         toneMapping: toneMappingName(renderer.toneMapping),
