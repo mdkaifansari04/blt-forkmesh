@@ -381,7 +381,7 @@ QWidget *MainWindow::buildRepoFilesPanel()
     // activity rail and the repo tabs (adhoc #6), so the whole mode row —
     // toggles, toolbar counts and trends — reads as one line.
     m_filesModeOverviewButton =
-        new VerticalIconButton("Code overview", VerticalIconButton::Tab);
+        new VerticalIconButton("Overview", VerticalIconButton::Tab);
     m_filesModeOverviewButton->setObjectName("repoTab");
     m_filesModeOverviewButton->setCheckable(true);
     m_filesModeOverviewButton->setChecked(true);
@@ -404,7 +404,7 @@ QWidget *MainWindow::buildRepoFilesPanel()
             [this] { showRepoEditor(); });
 
     m_filesModeCoveExplorerButton =
-        new VerticalIconButton("Cove Explorer", VerticalIconButton::Tab);
+        new VerticalIconButton("Coves", VerticalIconButton::Tab);
     m_filesModeCoveExplorerButton->setObjectName("repoTab");
     m_filesModeCoveExplorerButton->setCheckable(true);
     m_filesModeCoveExplorerButton->setCursor(Qt::PointingHandCursor);
@@ -414,29 +414,29 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeCoveExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoCoveExplorer(); });
 
-    // Thirty-day repository trends and the Ratchet mode toggle, moved down
-    // from the window-chrome line onto this row (adhoc #6). Each sparkline
-    // point represents a day; they sit deliberately a little larger than the
-    // chrome's live host-resource squares.
-    auto *repoSizeChart =
-        new ResourceSparkline(QStringLiteral("SIZE"), nullptr, 44, 30);
-    auto *repoLinesChart =
-        new ResourceSparkline(QStringLiteral("LOC"), nullptr, 44, 30);
-    auto *repoFilesChart =
-        new ResourceSparkline(QStringLiteral("FILES"), nullptr, 44, 30);
+    // Thirty-day repository trends and the Ratchet toggle, moved down from the
+    // window-chrome line onto this row (adhoc #6). Each sparkline point
+    // represents a day. They are drawn at exactly the chrome CPU/MEM/DISK
+    // squares' side (adhoc #421) so the two rows of charts read as one family
+    // instead of two sizes of the same card.
+    auto *repoSizeChart = new ResourceSparkline(QStringLiteral("SIZE"), nullptr,
+                                                kResourceSparklineSide, 30);
+    auto *repoLinesChart = new ResourceSparkline(QStringLiteral("LOC"), nullptr,
+                                                 kResourceSparklineSide, 30);
+    auto *repoFilesChart = new ResourceSparkline(
+        QStringLiteral("FILES"), nullptr, kResourceSparklineSide, 30);
     repoSizeChart->setObjectName(QStringLiteral("repoSizeChart"));
     repoLinesChart->setObjectName(QStringLiteral("repoLinesChart"));
     repoFilesChart->setObjectName(QStringLiteral("repoFilesChart"));
     m_repoSizeChart = repoSizeChart;
     m_repoLinesChart = repoLinesChart;
     m_repoFilesChart = repoFilesChart;
-    m_repoRatchetButton = new QToolButton;
+    m_repoRatchetButton = new RatchetToggleButton;
     m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
-    m_repoRatchetButton->setText(QStringLiteral("Ratchet mode"));
-    m_repoRatchetButton->setCheckable(true);
     m_repoRatchetButton->setToolTip(
         QStringLiteral("Hold the repository at or below the tracked size it started "
                        "today at. The ceiling re-bases each day."));
+    m_repoRatchetButton->setAccessibleName(QStringLiteral("Ratchet mode"));
     connect(m_repoRatchetButton, &QToolButton::toggled, this,
             &MainWindow::toggleRepositoryRatchet);
 
@@ -800,8 +800,12 @@ QWidget *MainWindow::buildRepoEditorPage()
             showRepoOverview();
         updateRepoFileSaveActions();
     });
-    connect(m_repoFileTabs, &QTabWidget::currentChanged, this,
-            [this] { updateRepoFileSaveActions(); });
+    connect(m_repoFileTabs, &QTabWidget::currentChanged, this, [this] {
+        updateRepoFileSaveActions();
+        // Each open file is a place on the Back/Forward trail, so opening one
+        // from the file list (or switching tabs) is a step (adhoc #50).
+        scheduleNavRecord();
+    });
     // Ctrl+S saves the current tab: commit direct when this node owns a working
     // tree, otherwise fall back to opening a PR (the only save path on a mirror).
     auto *saveShortcut = new QShortcut(QKeySequence::Save, m_repoFileTabs);
@@ -3264,13 +3268,20 @@ void MainWindow::showOverviewCommits()
     // in case a queued repository refresh completed during navigation.
     updateRepoActivityRail();
     QTimer::singleShot(0, this, [this] {
-        const bool stillOnGit =
-            m_repoDetailStack && m_repoDetailStack->currentIndex() == 0 &&
-            m_filesStack && m_filesStack->currentIndex() == 0 &&
-            m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
-        if (stillOnGit)
+        if (gitWorkspaceIsVisible())
             updateRepoActivityRail();
     });
+}
+
+// True when the Git workspace is the view actually on screen: the repo's Code
+// tab, with the overview body on the Git page and the file list rather than the
+// editor showing. Async loads consult this before re-asserting a page, so a
+// diff landing late can't yank the user out of wherever they navigated to.
+bool MainWindow::gitWorkspaceIsVisible() const
+{
+    return m_repoDetailStack && m_repoDetailStack->currentIndex() == 0 &&
+           m_filesStack && m_filesStack->currentIndex() == 0 &&
+           m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
 }
 
 // Swap the overview body back to the file list + README.
@@ -3386,6 +3397,7 @@ void MainWindow::loadRepoOverview(const QString &path)
                             .arg(path, currentRef(), head);
     if (key == m_overviewLoadedKey && m_overviewList->topLevelItemCount() > 0) {
         m_overviewPath = path;
+        scheduleNavRecord();
         return;
     }
     m_overviewLoadedKey.clear(); // cleared until this load completes successfully
@@ -3397,6 +3409,9 @@ void MainWindow::loadRepoOverview(const QString &path)
     GitKeepAlive keepAlive;
 
     m_overviewPath = path;
+    // Walking into (or out of) a directory in the file list is a browser-style
+    // step, so Back returns to the directory you came from (adhoc #50).
+    scheduleNavRecord();
 
     // Gather phase: every git read below lands in locals only. The keep-alive
     // pump services paint events between reads, so any widget cleared or
@@ -5222,8 +5237,15 @@ void MainWindow::recordNavLocation()
     if (here.detailTab == 0 && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack)
         here.overviewPage = m_overviewBodyStack->currentIndex();
-    if (here.overviewPage == 1)
+    if (here.overviewPage == 1) {
         here.branch = m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
+        // A commit's diff is its own place on the Git view, so Back from a
+        // commit returns to the list rather than leaving the repo.
+        if (m_commitsStack &&
+            m_commitsStack->currentIndex() == kCommitWorkspaceCommitPage)
+            here.commit = m_currentCommitHash;
+    }
+    captureNavSubPlace(here);
 
     // Remember the tab actually being viewed so a relaunch can restore it
     // (see kLastRepoDetailTabSetting / runDeferredStartup) instead of always
@@ -5246,6 +5268,167 @@ void MainWindow::recordNavLocation()
     updateNavHistoryButtons();
 }
 
+// Repo-relative path of the file the editor is showing, or an empty string when
+// no file tab is open.
+QString MainWindow::openRepoFilePath() const
+{
+    if (!m_repoFileTabs)
+        return QString();
+    QWidget *current = m_repoFileTabs->currentWidget();
+    if (!current)
+        return QString();
+    return m_openFileTabs.key(current);
+}
+
+// Fill in the half of a place that lives *below* the tab bar (adhoc #50): which
+// sub-menu the view is on and which item it has open. Kept next to
+// applyNavSubPlace so capture and replay stay in step — every view added to one
+// needs the matching arm in the other.
+void MainWindow::captureNavSubPlace(NavPlace &place) const
+{
+    if (place.section == 2) {
+        // Chat: the open room/DM is the destination, not "Chat" as a whole.
+        place.conversation = m_currentConversation;
+        return;
+    }
+    if (place.section == 1) {
+        if (m_settingsTabs)
+            place.subTab = m_settingsTabs->currentIndex();
+        return;
+    }
+    if (place.section == kControlNodeSectionIndex) {
+        if (m_controlNodeTabs)
+            place.subTab = m_controlNodeTabs->currentIndex();
+        return;
+    }
+    if (place.section == kNetworkDiagnosticsSectionIndex ||
+        place.section == kNodesSectionIndex) {
+        // Both sections are views onto the same tab widget (Nodes is one of its
+        // tabs), so the open tab is what distinguishes the places.
+        if (m_networkTabs)
+            place.subTab = m_networkTabs->currentIndex();
+        return;
+    }
+    if (place.repoIndex < 0)
+        return;
+    switch (place.detailTab) {
+    case 0: // Code
+        if (m_filesStack && m_filesStack->currentIndex() == 1)
+            place.filePath = openRepoFilePath();
+        else if (place.overviewPage <= 0)
+            // Walking into a directory in the file list is a step of its own.
+            place.overviewDir = m_overviewPath;
+        break;
+    case 2: // Issues
+        if (m_issueListStack)
+            place.subTab = m_issueListStack->currentIndex();
+        if (m_issueDetail && !m_issueDetail->isHidden())
+            place.itemNumber = m_currentIssueNumber;
+        break;
+    case 3: // Agents — the selected session is what the pane shows
+        place.itemNumber = m_selectedAgentSessionId;
+        break;
+    case 4: // Pull requests
+        place.itemNumber = m_currentPullNumber;
+        if (m_pullSubStack && m_currentPullNumber > 0)
+            place.subTab = m_pullSubStack->currentIndex();
+        break;
+    case 5: // Discussions
+        place.itemNumber = m_currentDiscussionNumber;
+        break;
+    default:
+        // Projects sits at a runtime index, so it can't be a case label.
+        if (place.detailTab == m_projectsTabIndex && m_projectViewStack)
+            place.subTab = m_projectViewStack->currentIndex(); // List / Gantt
+        break;
+    }
+}
+
+// Replay the sub-menu / open item captured by captureNavSubPlace, driving the
+// same entry points a click would so each view loads its data.
+void MainWindow::applyNavSubPlace(const NavPlace &place)
+{
+    if (place.section == 2) {
+        if (!place.conversation.isEmpty())
+            switchConversation(place.conversation);
+        return;
+    }
+    if (place.section == 1) {
+        if (m_settingsTabs && place.subTab >= 0 &&
+            place.subTab < m_settingsTabs->count())
+            m_settingsTabs->setCurrentIndex(place.subTab);
+        return;
+    }
+    if (place.section == kControlNodeSectionIndex) {
+        if (m_controlNodeTabs && place.subTab >= 0 &&
+            place.subTab < m_controlNodeTabs->count())
+            m_controlNodeTabs->setCurrentIndex(place.subTab);
+        return;
+    }
+    if (place.section == kNetworkDiagnosticsSectionIndex ||
+        place.section == kNodesSectionIndex) {
+        if (m_networkTabs && place.subTab >= 0 &&
+            place.subTab < m_networkTabs->count())
+            showNetworkTab(place.subTab);
+        return;
+    }
+    if (place.repoIndex < 0 || place.repoIndex != m_repoDetailIndex)
+        return;
+    switch (place.detailTab) {
+    case 0: // Code
+        if (!place.filePath.isEmpty()) {
+            openRepoFile(place.filePath);
+        } else if (place.overviewPage <= 0) {
+            // Leaving the editor behind: back to the file list, at the
+            // directory this place was recorded in.
+            if (m_filesStack && m_filesStack->currentIndex() != 0)
+                m_filesStack->setCurrentIndex(0);
+            if (m_overviewPath != place.overviewDir)
+                loadRepoOverview(place.overviewDir);
+        }
+        break;
+    case 2: // Issues
+        if (place.subTab >= 0)
+            selectIssueListTab(place.subTab);
+        if (place.itemNumber > 0) {
+            showIssue(place.itemNumber);
+        } else if (m_issueDetail && !m_issueDetail->isHidden()) {
+            // The recorded place had no issue open — close the detail pane so
+            // Back out of an issue lands on the bare list.
+            m_issueDetail->hide();
+            if (m_issueDetailToggle)
+                m_issueDetailToggle->setText(QStringLiteral("Show detail"));
+        }
+        break;
+    case 3: // Agents
+        if (place.itemNumber > 0 && m_selectedAgentSessionId != place.itemNumber &&
+            findAgentSession(place.itemNumber))
+            showAgentSession(place.itemNumber);
+        break;
+    case 4: // Pull requests
+        if (place.itemNumber > 0) {
+            if (m_currentPullNumber != place.itemNumber)
+                showPull(place.itemNumber);
+            if (place.subTab >= 0 && m_pullSubTabs &&
+                m_pullSubTabs->button(place.subTab) &&
+                m_pullSubStack->currentIndex() != place.subTab)
+                m_pullSubTabs->button(place.subTab)->click();
+        }
+        break;
+    case 5: // Discussions
+        if (place.itemNumber > 0 && m_currentDiscussionNumber != place.itemNumber)
+            showDiscussion(place.itemNumber);
+        break;
+    default:
+        if (place.detailTab == m_projectsTabIndex && place.subTab >= 0 &&
+            m_projectViewStack &&
+            m_projectViewStack->currentIndex() != place.subTab && m_projectViewTabs &&
+            m_projectViewTabs->button(place.subTab))
+            m_projectViewTabs->button(place.subTab)->click();
+        break;
+    }
+}
+
 void MainWindow::restoreNavEntry(int index)
 {
     if (index < 0 || index >= m_navHistory.size())
@@ -5265,6 +5448,7 @@ void MainWindow::restoreNavEntry(int index)
         const NavPlace target = place;
         QTimer::singleShot(0, this, [this, target] {
             applyNavDetailTab(target);
+            applyNavSubPlace(target);
             m_navRestoring = false;
             updateNavHistoryButtons();
         });
@@ -5272,6 +5456,7 @@ void MainWindow::restoreNavEntry(int index)
     }
     showSection(place.section);
     applyNavDetailTab(place);
+    applyNavSubPlace(place);
     m_navRestoring = false;
     updateNavHistoryButtons();
 }
@@ -5316,6 +5501,13 @@ void MainWindow::applyNavDetailTab(const NavPlace &place)
             else
                 loadCommits();
         }
+        // A commit diff is a place inside the Git view: reopen the one this
+        // entry was recorded on, or step back out of whichever is on screen.
+        if (!place.commit.isEmpty())
+            showCommit(place.commit);
+        else if (m_commitsStack &&
+                 m_commitsStack->currentIndex() == kCommitWorkspaceCommitPage)
+            setCommitWorkspacePage(kCommitWorkspaceChangesPage);
         return;
     }
     if (m_repoDetailStack->currentIndex() == place.detailTab)
@@ -5360,6 +5552,11 @@ QString MainWindow::navPlaceLabel(const NavPlace &place) const
                                   .arg(place.branch.isEmpty()
                                            ? QStringLiteral("main")
                                            : place.branch);
+                // A commit diff names the commit it is showing, so Back out of
+                // one reads as a step rather than a repeat of "Git · main".
+                if (!place.commit.isEmpty())
+                    destination = QStringLiteral("%1 · %2")
+                                      .arg(destination, place.commit.left(7));
                 break;
             case 2:
                 destination = QStringLiteral("Branches");
@@ -5369,17 +5566,78 @@ QString MainWindow::navPlaceLabel(const NavPlace &place) const
                 break;
             default:
                 destination = QStringLiteral("Code");
+                if (!place.filePath.isEmpty())
+                    destination = QStringLiteral("Code · %1").arg(place.filePath);
+                else if (!place.overviewDir.isEmpty())
+                    destination =
+                        QStringLiteral("Code · %1/").arg(place.overviewDir);
                 break;
             }
+        } else if (place.detailTab == 3) {
+            // Agents lost its top-bar button (adhoc #178), so name it directly.
+            destination = place.itemNumber > 0
+                              ? QStringLiteral("Agent session %1").arg(place.itemNumber)
+                              : QStringLiteral("Agents");
         } else if (m_repoDetailTabs && m_repoDetailTabs->button(place.detailTab)) {
             destination = m_repoDetailTabs->button(place.detailTab)->text();
+            if (place.detailTab == 2) { // Issues
+                if (place.subTab > 0 && m_issueTabGroup &&
+                    m_issueTabGroup->button(place.subTab))
+                    destination = m_issueTabGroup->button(place.subTab)->text();
+                if (place.itemNumber > 0)
+                    destination = QStringLiteral("Issue #%1").arg(place.itemNumber);
+            } else if (place.detailTab == 5 && place.itemNumber > 0) { // Discussions
+                destination =
+                    QStringLiteral("Discussion #%1").arg(place.itemNumber);
+            } else if (place.detailTab == 4 && place.itemNumber > 0) { // Pulls
+                destination = QStringLiteral("PR #%1").arg(place.itemNumber);
+                if (place.subTab > 0 && m_pullSubTabs &&
+                    m_pullSubTabs->button(place.subTab))
+                    destination =
+                        QStringLiteral("%1 · %2")
+                            .arg(destination,
+                                 m_pullSubTabs->button(place.subTab)->text());
+            }
         } else {
             destination = QStringLiteral("Repository");
         }
     } else {
         switch (place.section) {
-        case 2:
+        case 1:
+            destination = QStringLiteral("Settings");
+            if (m_settingsTabs && place.subTab >= 0 &&
+                place.subTab < m_settingsTabs->count())
+                destination = QStringLiteral("Settings · %1")
+                                  .arg(m_settingsTabs->tabText(place.subTab));
+            break;
+        case 2: {
             destination = QStringLiteral("Chat");
+            if (!place.conversation.isEmpty()) {
+                // Same naming switchConversation puts in the channel header, so
+                // the tooltip reads like the room the user sees.
+                const QString room =
+                    isDirectConversation(place.conversation)
+                        ? kDmPrefix + m_dmNames.value(dmPeerId(place.conversation),
+                                                      QStringLiteral("unknown"))
+                        : place.conversation;
+                destination = QStringLiteral("Chat · %1").arg(room);
+            }
+            break;
+        }
+        case kControlNodeSectionIndex:
+            destination = QStringLiteral("Control node");
+            if (m_controlNodeTabs && place.subTab >= 0 &&
+                place.subTab < m_controlNodeTabs->count())
+                destination = QStringLiteral("Control node · %1")
+                                  .arg(m_controlNodeTabs->tabText(place.subTab));
+            break;
+        case kNetworkDiagnosticsSectionIndex:
+        case kNodesSectionIndex:
+            destination = QStringLiteral("Network");
+            if (m_networkTabs && place.subTab >= 0 &&
+                place.subTab < m_networkTabs->count())
+                destination = QStringLiteral("Network · %1")
+                                  .arg(m_networkTabs->tabText(place.subTab));
             break;
         default:
             destination = QStringLiteral("Home");
@@ -5421,6 +5679,19 @@ QString MainWindow::testNavBackToolTip() const
 QString MainWindow::testNavForwardToolTip() const
 {
     return m_navForwardButton ? m_navForwardButton->toolTip() : QString();
+}
+
+int MainWindow::testFilesStackPage() const
+{
+    return m_filesStack ? m_filesStack->currentIndex() : -1;
+}
+
+QString MainWindow::testOpenCommitHash() const
+{
+    return (m_commitsStack &&
+            m_commitsStack->currentIndex() == kCommitWorkspaceCommitPage)
+               ? m_currentCommitHash
+               : QString();
 }
 #endif
 
@@ -5784,6 +6055,10 @@ void MainWindow::setCommitWorkspacePage(int page)
         m_gitHistorySlot->setCurrentIndex(0);
     updateCommitsCompareIndicator();
     updateRepoActivityRail();
+    // Opening a commit's diff (and stepping back out of it) is a move the
+    // Back/Forward arrows can replay. Debounced, so the capture reads the
+    // commit hash showCommit assigns right after this call.
+    scheduleNavRecord();
 }
 
 // The "<branch> -> <base>" compare indicator on the graph's branch row: while a
@@ -6853,7 +7128,13 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
     }
 
     stopCommitDiffSpin();
-    setCommitWorkspacePage(kCommitWorkspaceCommitPage);
+    // Only re-assert the commit page while the Git workspace is still the view
+    // on screen. This render lands one or two async git reads after the click,
+    // and pressing Back (or opening a file, or leaving the tab) in that window
+    // used to be undone by this line — the Back button appeared not to work on
+    // a commit at all (adhoc #50).
+    if (gitWorkspaceIsVisible())
+        setCommitWorkspacePage(kCommitWorkspaceCommitPage);
 }
 
 void MainWindow::loadRepoInsights()
@@ -8613,7 +8894,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Commits", "git-branch"},
                                 {"Issues", "issue-opened"},
                                 {"Agents", "terminal"},
-                                {"PRs", "git-pull-request"},
+                                {"Pulls", "git-pull-request"},
                                 {"Discussions", "comment"},
                                 {"Actions", "workflow"},
                                 {"Security", "shield-check"},
@@ -8622,7 +8903,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                                 {"Branches", "repo-forked"},
                                 {"Worktrees", "worktree"},
                                 {"Releases", "tag"},
-                                {"Mirror nodes", "server"},
+                                {"Mirrors", "server"},
                                 {"Artifacts", "package"},
                                 {"Shortcuts", "rocket"},
                                 {"Settings", "gear"},
@@ -8649,7 +8930,7 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 1 || i == 3 || i == 10 || i == 11)
             continue;
         const TabDef tab = tabs.at(i);
-        // Releases (id 12) lives in the Code overview's mode row next to Tags
+        // Releases (id 12) lives in the Overview's mode row next to Tags
         // (adhoc #180), not the tab row, but takes the same form as every real
         // tab: icon stacked over a small caption (adhoc #91), the same shape
         // as the activity rail, so both rows read compact.
@@ -8682,44 +8963,60 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 17)
             m_repoProjectsTab = b; // handle for the Projects (N) badge
         m_repoDetailTabs->addButton(b, i);
-        if (i == 12)
+        if (i == 0) {
+            // Code (adhoc #421): no top-bar tab. The activity rail already owns a
+            // "Code" destination that runs exactly this click path, and the
+            // Overview / Explorer / Coves row below is the code view's own
+            // navigation — three "Code" affordances stacked on top of each other
+            // read as a duplicate. The button stays in m_repoDetailTabs (id 0),
+            // parented but hidden, so every switchTo*/idClicked path, the checked
+            // state and the stack's index-addressing are untouched.
+            b->setParent(this);
+            b->hide();
+        } else if (i == 12)
             // Releases (adhoc #180): no top-bar tab. Its button is placed in the
-            // Code overview toolbar next to Tags (see buildRepoOverviewPage), so
-            // releases sit beside tags instead of between Insights and Mirror
-            // nodes. It stays in m_repoDetailTabs (id 12) so tab switching, the
+            // Overview toolbar next to Tags (see buildRepoOverviewPage), so
+            // releases sit beside tags instead of between Insights and Mirrors.
+            // It stays in m_repoDetailTabs (id 12) so tab switching, the
             // Releases (N) badge and the Tags button shortcut all keep working.
             (void)b; // added to the toolbar layout below, not the tab row
         else if (i == 17)
-            // Projects sits right after Issues in the row (Code=0, Issues=1
-            // among the visible buttons) despite its appended positional id.
-            tabRow->insertWidget(2, b);
+            // Projects sits right after Issues in the row (Issues is the first
+            // visible button now that Code is rail-only) despite its appended
+            // positional id.
+            tabRow->insertWidget(1, b, 0, Qt::AlignTop);
         else if (i == 18)
             // Size map sits right after Insights. By this point the row holds
-            // Code, Issues, Projects, PRs, Discussions, Actions, Security,
-            // Quality, Insights (indices 0-8), so index 9 drops it between
-            // Insights and Releases; its positional id stays 18.
-            tabRow->insertWidget(9, b);
+            // Issues, Projects, Pulls, Discussions, Actions, Security, Quality,
+            // Insights (indices 0-7), so index 8 drops it between Insights and
+            // Mirrors; its positional id stays 18.
+            tabRow->insertWidget(8, b, 0, Qt::AlignTop);
         else if (i == 14)
-            // Artifacts sits right after Releases (the tag list) instead of
-            // between Mirror nodes and Shortcuts (adhoc #181). By this point the
-            // row holds Code, Issues, PRs, Discussions, Actions, Security,
-            // Quality, Insights, Releases, Mirror nodes (indices 0-9), so index 9
-            // drops Artifacts between Releases and Mirror nodes. Its positional
-            // id stays 14 so the stack-page index-addressing is unchanged.
-            tabRow->insertWidget(9, b);
+            // Artifacts follows Mirrors rather than leading Shortcuts
+            // (adhoc #181). By this point the row holds Issues, Pulls,
+            // Discussions, Actions, Security, Quality, Insights, Mirrors
+            // (indices 0-7) — Projects and Size map are inserted later — so
+            // index 8 lands it just past Mirrors. Its positional id stays 14 so
+            // the stack-page index-addressing is unchanged.
+            tabRow->insertWidget(8, b, 0, Qt::AlignTop);
         else
-            tabRow->addWidget(b);
+            tabRow->addWidget(b, 0, Qt::AlignTop);
     }
     tabRow->addStretch();
     // Repo actions (Notify / Fork / Mirror / Source / Open) on the same line
     // as the tabs (adhoc #6), right-aligned past the stretch. Same
     // icon-over-caption form as everything else in the row; Fork/Mirror carry
     // their counts as corner badges.
-    tabRow->addWidget(notifyButton);
-    tabRow->addWidget(m_forkButton);
-    tabRow->addWidget(m_mirrorButton);
-    tabRow->addWidget(m_sourceButton);
-    tabRow->addWidget(m_repoOpenButton);
+    // Top-aligned like the tabs (adhoc #421). The row lives in a fixed-56px
+    // scroll area that only sometimes shows a horizontal scrollbar, so leaving
+    // these 44px buttons to centre themselves moved the whole line up and down
+    // by 6px with the window width — and with it the line the icons sit on,
+    // which the activity rail is now aligned to.
+    tabRow->addWidget(notifyButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_forkButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_mirrorButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_sourceButton, 0, Qt::AlignTop);
+    tabRow->addWidget(m_repoOpenButton, 0, Qt::AlignTop);
     auto *tabBar = new QWidget;
     tabBar->setObjectName("repoTabBar");
     tabBar->setLayout(tabRow);
@@ -8992,7 +9289,12 @@ QWidget *MainWindow::buildRepoDetailSection()
                 });
     if (m_filesStack)
         connect(m_filesStack, &QStackedWidget::currentChanged, this,
-                [this](int) { updateRepoActivityRail(); });
+                [this](int) {
+                    updateRepoActivityRail();
+                    // Crossing between the file list and the editor is a move
+                    // Back can undo.
+                    scheduleNavRecord();
+                });
     updateRepoActivityRail();
 
     m_repoDetailChrome = new QWidget;

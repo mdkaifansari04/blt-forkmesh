@@ -1885,6 +1885,9 @@ void MainWindow::switchConversation(const QString &conversation)
     rebuildConversationView();
     refreshTypingLabel();
     refreshChatMembers();
+    // The open room/DM is the Chat destination, so Back returns to the previous
+    // conversation instead of leaving Chat entirely (adhoc #50).
+    scheduleNavRecord();
 
     // Selection lives in exactly one sidebar list at a time.
     if (isDirectConversation(conversation)) {
