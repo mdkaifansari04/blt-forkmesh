@@ -135,12 +135,7 @@ def _runtime():
             "lobby": "Lobby",
             "marketing": "Marketing",
             "engineering": "Engineering",
-            "product-design": "Product & Design",
-            "security": "Security",
             "infrastructure": "Infrastructure",
-            "community": "Community",
-            "partnerships": "Partnerships",
-            "operations": "Operations",
             "rooftop": "Rooftop",
         },
         "OFFICE_ATTENDANCE_LIVE_TTL_MS": 75_000,
@@ -483,9 +478,9 @@ def test_stale_open_visit_is_closed_and_live_floor_tracks_heartbeat():
     _Clock.value += 30_000
     heartbeat = _run(handler(None, _Request({
         "action": "heartbeat",
-        "floor": "product-design",
+        "floor": "infrastructure",
     })))
-    assert heartbeat["payload"]["visits"][0]["floor"] == "Product & Design"
+    assert heartbeat["payload"]["visits"][0]["floor"] == "Infrastructure"
 
     _Clock.value += 75_001
     stale = _run(handler(None, _Request(method="GET")))
