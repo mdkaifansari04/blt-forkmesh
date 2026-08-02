@@ -872,76 +872,138 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size() || !m_actionStore)
         return;
+    // Everything the worker needs, by value: m_repositories can be reassigned
+    // while it runs, and the apply below re-resolves the index anyway.
+    const QString mirrorPath = m_repositories.at(repoIndex).mirrorPath;
+    const QString ownerKey = owner;
+    const QString nameKey = name;
+    const QString commitKey = commit;
+    const QString refKey = ref;
+
+    runOffThread<WorkflowScan>(
+        [mirrorPath, commitKey, trigger]() -> WorkflowScan {
+            WorkflowScan scan;
+            // Every git read here runs inside the served mirror. If its
+            // directory is gone (e.g. the record's path diverged from the
+            // on-disk mirror), each read fails silently and the caller would
+            // end with the misleading "no .forkmesh/ workflow with 'on: push'"
+            // line — report what is actually wrong instead.
+            if (!QDir(mirrorPath).exists()) {
+                scan.mirrorMissing = true;
+                return scan;
+            }
+            const QStringList base{QStringLiteral("-C"), mirrorPath};
+            auto capture = [&base](const QStringList &args) -> QString {
+                QProcess process;
+                process.setProcessChannelMode(QProcess::SeparateChannels);
+                process.start(QStringLiteral("git"), base + args);
+                if (!process.waitForStarted(3000) ||
+                    !process.waitForFinished(10000)) {
+                    process.kill();
+                    process.waitForFinished(1000);
+                    return {};
+                }
+                if (process.exitCode() != 0)
+                    return {};
+                return QString::fromUtf8(process.readAllStandardOutput());
+            };
+
+            // Metadata-only pushes (issues, pull requests, commit comments)
+            // shouldn't trigger CI: they carry no code change. A release is an
+            // explicit, intentional publish, so it skips this guard.
+            if (trigger == WorkflowTrigger::Push) {
+                const QStringList changed =
+                    capture({QStringLiteral("diff-tree"),
+                             QStringLiteral("--no-commit-id"),
+                             QStringLiteral("--name-only"),
+                             QStringLiteral("-r"), commitKey})
+                        .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+                const auto isMetadataPath = [](const QString &p) {
+                    return p.startsWith(QLatin1String(".forkmesh/issues/")) ||
+                           p.startsWith(QLatin1String("pulls/")) ||
+                           p.startsWith(QLatin1String(".forkmesh/commits/"));
+                };
+                if (!changed.isEmpty() &&
+                    std::all_of(changed.cbegin(), changed.cend(),
+                                isMetadataPath)) {
+                    scan.metadataOnly = true;
+                    return scan;
+                }
+            }
+
+            // List .forkmesh/*.yml|*.yaml at the pushed commit without checking
+            // it out, then read each one's content.
+            const QStringList paths =
+                capture({QStringLiteral("ls-tree"), QStringLiteral("-r"),
+                         QStringLiteral("--name-only"), commitKey,
+                         QStringLiteral("--"), QStringLiteral(".forkmesh")})
+                    .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            for (const QString &path : paths) {
+                if (!(path.endsWith(QLatin1String(".yml")) ||
+                      path.endsWith(QLatin1String(".yaml"))))
+                    continue;
+                const QString content =
+                    capture({QStringLiteral("show"),
+                             commitKey + QLatin1Char(':') + path});
+                if (content.isEmpty())
+                    continue;
+                scan.workflows.append({path, content});
+            }
+            // Warm the repository-state digest here rather than leaving the
+            // first bindActionRepositoryState() on the GUI thread to archive and
+            // hash the whole tree. Every workflow at this commit shares the same
+            // (mirror, commit) pair, so one call fills the memo for all of them.
+            if (!scan.workflows.isEmpty()) {
+                QString tree, execution;
+                ActionStore::repositoryStateDigest(mirrorPath, commitKey, &tree,
+                                                   &execution, nullptr);
+            }
+            return scan;
+        },
+        [this, ownerKey, nameKey, commitKey, refKey, trigger](WorkflowScan scan) {
+            applyWorkflowScan(ownerKey, nameKey, commitKey, refKey, trigger,
+                              scan);
+        });
+}
+
+// GUI-thread half of queueWorkflowsForCommit: turn the workflows the worker read
+// out of the mirror into queued (or approval-pending) runs.
+void MainWindow::applyWorkflowScan(const QString &owner, const QString &name,
+                                   const QString &commit, const QString &ref,
+                                   WorkflowTrigger trigger,
+                                   const WorkflowScan &scan)
+{
+    if (!m_actionStore)
+        return;
+    // Re-resolve: the catalog can have been rewritten while the worker ran.
+    const int repoIndex = repoIndexFor(owner, name);
+    if (repoIndex < 0 || repoIndex >= m_repositories.size())
+        return;
     // Copy, don't reference: cancelSupersededRuns() below pumps the event loop
     // (ActionRunner::stop → QProcess::waitForFinished), and a nested refresh can
     // reassign m_repositories — a reference would dangle for the loop's later
     // iterations (adhoc #119).
     const RepositoryRecord repo = m_repositories.at(repoIndex);
 
-    // Every git read below runs inside the served mirror. If its directory is
-    // gone (e.g. the record's path diverged from the on-disk mirror), each read
-    // fails silently and this would end with the misleading "no .forkmesh/
-    // workflow with 'on: push'" log line — say what is actually wrong instead.
-    if (!QDir(repo.mirrorPath).exists()) {
+    if (scan.mirrorMissing) {
         logSystem(QStringLiteral(
                       "Actions: served mirror %1 for %2/%3 is missing \xE2\x80\x94 "
                       "cannot look up workflows at %4.")
                       .arg(repo.mirrorPath, owner, name, commit.left(8)));
         return;
     }
-
-    // Metadata-only pushes (issues, pull requests, commit comments) shouldn't
-    // trigger CI: they carry no code change. List the pushed commit's files and
-    // bail if every one lives under a metadata folder. A release is an explicit,
-    // intentional publish, so it skips this guard and runs regardless.
-    if (trigger == WorkflowTrigger::Push) {
-        QProcess names;
-        names.start(QStringLiteral("git"),
-                    {QStringLiteral("-C"), repo.mirrorPath,
-                     QStringLiteral("diff-tree"), QStringLiteral("--no-commit-id"),
-                     QStringLiteral("--name-only"), QStringLiteral("-r"), commit});
-        names.waitForFinished(10000);
-        const QStringList changed =
-            QString::fromUtf8(names.readAllStandardOutput())
-                .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-        const auto isMetadataPath = [](const QString &p) {
-            return p.startsWith(QLatin1String(".forkmesh/issues/")) ||
-                   p.startsWith(QLatin1String("pulls/")) ||
-                   p.startsWith(QLatin1String(".forkmesh/commits/"));
-        };
-        if (!changed.isEmpty() &&
-            std::all_of(changed.cbegin(), changed.cend(), isMetadataPath)) {
-            logSystem(QString::fromUtf8(
-                          "Actions: %1/%2 @ %3 only touches issues/PRs \xE2\x80\x94 "
-                          "skipping workflows.")
-                          .arg(owner, name, commit.left(8)));
-            return;
-        }
+    if (scan.metadataOnly) {
+        logSystem(QString::fromUtf8(
+                      "Actions: %1/%2 @ %3 only touches issues/PRs \xE2\x80\x94 "
+                      "skipping workflows.")
+                      .arg(owner, name, commit.left(8)));
+        return;
     }
 
-    // List .forkmesh/*.yml|*.yaml at the pushed commit without checking it out.
-    QProcess ls;
-    ls.start(QStringLiteral("git"),
-             {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("ls-tree"),
-              QStringLiteral("-r"), QStringLiteral("--name-only"), commit,
-              QStringLiteral("--"), QStringLiteral(".forkmesh")});
-    ls.waitForFinished(10000);
-    const QStringList paths = QString::fromUtf8(ls.readAllStandardOutput())
-                                  .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-
     bool added = false;
-    for (const QString &path : paths) {
-        if (!(path.endsWith(QLatin1String(".yml")) ||
-              path.endsWith(QLatin1String(".yaml"))))
-            continue;
-        QProcess show;
-        show.start(QStringLiteral("git"),
-                   {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("show"),
-                    commit + QLatin1Char(':') + path});
-        show.waitForFinished(10000);
-        if (show.exitCode() != 0)
-            continue;
-        const QString content = QString::fromUtf8(show.readAllStandardOutput());
+    for (const auto &entry : scan.workflows) {
+        const QString &path = entry.first;
+        const QString &content = entry.second;
         const ActionWorkflow wf = ActionFile::parse(path, content);
         const bool matchesTrigger = trigger == WorkflowTrigger::Release
                                         ? wf.triggersOnRelease()
@@ -1690,11 +1752,9 @@ void MainWindow::recordNotification(AppNotification item)
 }
 
 // The pill above the footer mini-log is this window's ping area, so every
-// recorded event shows there. A routine event queues behind whatever is
-// already counting down rather than stomping it; an error must be seen the
-// moment it happens, so it goes straight through flashMessage (which replaces
-// a routine toast immediately and only queues behind another error) and
-// flashes the red app border (adhoc #77).
+// recorded event shows there. Events that arrive while another toast is up are
+// added to its visible queue rather than stomping it; errors also flash the red
+// app border (adhoc #77).
 void MainWindow::flashNotification(const AppNotification &item)
 {
     QString text = item.title.simplified();

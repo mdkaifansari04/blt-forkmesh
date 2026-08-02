@@ -123,6 +123,10 @@ const FRESH_ARRIVAL_CAMPFIRE_PREVIEW = Object.freeze({
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
 const SAVED_VIEWS_MAX = 5;
 const RENDERER_RECOVERY_DELAY_MS = 1500;
+// A lost context can be restored by the browser, but some driver resets never
+// recover in place. Give the browser a real chance first, then restart once
+// in the compact renderer rather than leaving a visible World at 0 FPS.
+const RENDERER_RECOVERY_RELOAD_DELAY_MS = 10_000;
 // A tab that dies abruptly (GPU reset, renderer out-of-memory kill, browser
 // tab discard) never fires pagehide, so a per-tab marker that survives into
 // the next load proves the previous world session crashed and this load is
@@ -5853,6 +5857,18 @@ class ForkMeshWorld extends HTMLElement {
     this.diagnosticsFrameHistory = [];
     this.diagnosticsHeapHistory = [];
     this.rendererRecoveryTimer = 0;
+    this.rendererRecoveryReloadTimer = 0;
+    this.rendererRecoveryReloading = false;
+    // Current renderer.info counts are a point-in-time view. Keep bounded
+    // high-water marks too: a context lost hours into a visit needs to say
+    // whether the GPU or JS heap ever grew substantially before it failed.
+    this.rendererDiagnosticsHighWater = {
+      textures: 0,
+      geometries: 0,
+      programs: 0,
+      heapUsedMb: 0,
+      bufferPixels: 0,
+    };
     this.viewportSyncTimer = 0;
     this.lastStableViewportHeight = 0;
     this.lastStableViewportWidth = 0;
@@ -7080,8 +7096,8 @@ class ForkMeshWorld extends HTMLElement {
         onQaAction: (action) => void this.handleQaAction(action),
         onRepositoryIssueOpen: (issue) =>
           this.openRepositoryIssueWorkbench(issue),
-        onRendererStateChange: (state) => {
-          this.handleRendererStateChange(state);
+        onRendererStateChange: (state, detail) => {
+          this.handleRendererStateChange(state, detail);
         },
         onForkbotChat: () => {
           this.openChatTerminal("@forkbot ");
@@ -8870,6 +8886,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   reloadForRendererRecovery = () => {
+    if (this.rendererRecoveryReloading || this.destroyed) return;
+    this.rendererRecoveryReloading = true;
+    window.clearTimeout(this.rendererRecoveryReloadTimer);
+    this.rendererRecoveryReloadTimer = 0;
     // The context never restored, so this GPU could not sustain the full
     // renderer; count it like a crash so the reload boots into safe mode.
     this.recordWorldCrash();
@@ -8882,17 +8902,20 @@ class ForkMeshWorld extends HTMLElement {
     location.reload();
   };
 
-  handleRendererStateChange(state) {
+  handleRendererStateChange(state, detail = null) {
     const recovery = this.$("[data-world-renderer-recovery]");
     if (!recovery) return;
     window.clearTimeout(this.rendererRecoveryTimer);
+    window.clearTimeout(this.rendererRecoveryReloadTimer);
     this.rendererRecoveryTimer = 0;
+    this.rendererRecoveryReloadTimer = 0;
     if (state === "restored") {
       recovery.hidden = true;
       recovery.querySelector("[data-world-renderer-reload]")?.setAttribute(
         "hidden",
         "",
       );
+      this.rendererRecoveryReloading = false;
       this.world?.setPaused(document.hidden);
       return;
     }
@@ -8904,6 +8927,9 @@ class ForkMeshWorld extends HTMLElement {
       this.reportedRendererContextLoss = true;
       const renderer = this.lastDiagnosticsSnapshot?.renderer;
       const output = this.lastDiagnosticsSnapshot?.output;
+      const complexity = this.lastDiagnosticsSnapshot?.complexity;
+      const memory = this.lastDiagnosticsSnapshot?.memory;
+      const highWater = this.rendererDiagnosticsHighWater;
       const uptimeS = Math.max(
         0,
         Math.round((Date.now() - (this.crashGuardStartedAt || Date.now())) / 1000),
@@ -8913,15 +8939,28 @@ class ForkMeshWorld extends HTMLElement {
         `World renderer crashed; WebGL context lost after ${coarseCrashLabel(uptimeS)}s`,
         `device ${device.touch ? "touch" : "pointer"} ${device.screen || "unknown"} screen`,
         `renderer ${output?.compactRenderer === true ? "compact" : "full"}`,
+        `webgl${output?.webgl2 === true ? "2" : "1"} aa ${output?.antialias === true ? "on" : "off"} shadows ${renderer?.shadowsEnabled === true ? "on" : "off"}`,
+        `visibility ${String(document.visibilityState || "unknown").slice(0, 16)}`,
         `fps ${coarseCrashLabel(renderer?.fps)}`,
+        `draws ${coarseCrashLabel(renderer?.calls)}`,
         `triangles ${coarseCrashLabel(renderer?.triangles)}`,
         `textures ${coarseCrashLabel(renderer?.textures)}`,
         `geometries ${coarseCrashLabel(renderer?.geometries)}`,
+        `programs ${coarseCrashLabel(renderer?.programs)}`,
         `dpr ${renderer ? Number(renderer.pixelRatio) || 0 : 0}`,
+        `buffer ${coarseCrashLabel(output?.drawingBufferWidth)}x${coarseCrashLabel(output?.drawingBufferHeight)}`,
+        `heap ${coarseCrashLabel(memory?.heapUsedMB, "MB")} trend ${coarseCrashLabel(memory?.heapTrendMBPerMin, "MB/min")}`,
+        `peak textures ${coarseCrashLabel(highWater.textures)} geometries ${coarseCrashLabel(highWater.geometries)} programs ${coarseCrashLabel(highWater.programs)} buffer ${coarseCrashLabel(highWater.bufferPixels)}px heap ${coarseCrashLabel(highWater.heapUsedMb, "MB")}`,
+        `estimated gpu ${coarseCrashLabel((Number(complexity?.textureBytes) || 0) / 1048576, "MB")} textures ${coarseCrashLabel((Number(complexity?.geometryBytes) || 0) / 1048576, "MB")} geometry`,
+        `context losses ${coarseCrashLabel(this.rendererContextLosses)}`,
         `cores ${coarseCrashLabel(device.cores)}`,
         `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
         `safe mode ${this.rendererSafeMode === true ? "on" : "off"}`,
       ];
+      const statusMessage = String(detail?.statusMessage || "")
+        .replace(/[^\w ().,:;/-]+/g, " ")
+        .slice(0, 120);
+      if (statusMessage) parts.push(`context reason ${statusMessage}`);
       const gpu = this.rendererGpuLabel();
       if (gpu) parts.push(`gpu ${gpu}`);
       this.reportWorldClientError(parts.join("; "));
@@ -8946,10 +8985,22 @@ class ForkMeshWorld extends HTMLElement {
       if (title) title.textContent = "The 3D renderer needs a fresh start.";
       if (copy) {
         copy.textContent =
-          "Nothing refreshed automatically. Your position is saved; reload when you are ready.";
+          this.rendererSafeMode === true
+            ? "Your position is saved; reload when you are ready. This visit is already using the safer renderer."
+            : "Your position is saved. A safer renderer will open automatically if recovery does not finish.";
       }
       reload?.removeAttribute("hidden");
     }, RENDERER_RECOVERY_DELAY_MS);
+    // Only automatically restart the first, full-renderer loss. The next
+    // load is deliberately compact; making that fallback loop reload forever
+    // would hide a persistent browser or driver failure from the visitor.
+    if (!this.rendererSafeMode) {
+      this.rendererRecoveryReloadTimer = window.setTimeout(() => {
+        this.rendererRecoveryReloadTimer = 0;
+        if (!this.world?.renderer?.getContext?.().isContextLost?.()) return;
+        this.reloadForRendererRecovery();
+      }, RENDERER_RECOVERY_RELOAD_DELAY_MS);
+    }
   }
 
   renderWebGLFallback() {
@@ -27255,9 +27306,39 @@ class ForkMeshWorld extends HTMLElement {
       }
     }
     snapshot.history = [...this.diagnosticsFrameHistory];
+    this.noteRendererDiagnosticsHighWater(snapshot);
     this.lastDiagnosticsSnapshot = snapshot;
     this.lastDiagnosticsSnapshotAt = Date.now();
     return snapshot;
+  }
+
+  noteRendererDiagnosticsHighWater(snapshot) {
+    const renderer = snapshot?.renderer;
+    const output = snapshot?.output;
+    const memory = snapshot?.memory;
+    if (!renderer && !output && !memory) return;
+    const highWater = this.rendererDiagnosticsHighWater;
+    highWater.textures = Math.max(
+      highWater.textures,
+      Number(renderer?.textures) || 0,
+    );
+    highWater.geometries = Math.max(
+      highWater.geometries,
+      Number(renderer?.geometries) || 0,
+    );
+    highWater.programs = Math.max(
+      highWater.programs,
+      Number(renderer?.programs) || 0,
+    );
+    highWater.heapUsedMb = Math.max(
+      highWater.heapUsedMb,
+      Number(memory?.heapUsedMB) || 0,
+    );
+    highWater.bufferPixels = Math.max(
+      highWater.bufferPixels,
+      (Number(output?.drawingBufferWidth) || 0) *
+        (Number(output?.drawingBufferHeight) || 0),
+    );
   }
 
   renderDiagnostics() {
@@ -30120,8 +30201,10 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.elementDepositTimer);
     window.clearInterval(this.instanceDirectoryTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
+    window.clearTimeout(this.rendererRecoveryReloadTimer);
     window.clearTimeout(this.viewportSyncTimer);
     this.rendererRecoveryTimer = 0;
+    this.rendererRecoveryReloadTimer = 0;
     this.viewportSyncTimer = 0;
     this.inflightRequests.clear();
     this.responseCache.clear();

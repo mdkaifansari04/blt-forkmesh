@@ -271,7 +271,7 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
     font-family: monospace; font-size: 12px;
 }
 #diffView {
-    background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    background-color: #0d1117; border: none; border-radius: 0;
     color: #e6edf3; font-family: monospace; font-size: 12px;
 }
 #pullReviewSummary {
@@ -485,6 +485,10 @@ QPushButton#agentsMagicButton:checked {
 }
 #topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
 #topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+#topMessageQueue { background: transparent; border: none; }
+#topMessageQueueContent { background: transparent; }
+#topMessageQueueCard { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
+#topMessageQueueText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
 /* The message text scrolls only when it is taller than the window allows; the
    area must stay see-through either way so the bubble keeps its rounded fill. */
 #topMessageScroll, #topMessageViewport, #topMessageActions {
@@ -1314,8 +1318,8 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
 }
 #diffView {
     background-color: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 6px;
+    border: none;
+    border-radius: 0;
     color: #e6edf3;
     font-family: monospace;
     font-size: 12px;
@@ -1343,15 +1347,19 @@ QPlainTextEdit#actionLog {
     selection-background-color: #2563eb;
     selection-color: #ffffff;
 }
-#agentStatusPill {
-    background-color: #f3f4f6;
+QToolButton#agentStatusPill {
+    background-color: transparent;
     border: 1px solid #d1d5db;
-    border-radius: 11px;
-    padding: 2px 10px;
-    font-size: 12px;
+    border-radius: 12px;
+    padding: 2px 7px 2px 4px;
+    font-size: 11px;
     font-weight: 600;
     color: #1f2937;
 }
+QToolButton#agentStatusPill:hover { background-color: #f3f4f6; }
+QToolButton#agentStatusPill[outcomeTone="success"] { border-color: #3fb950; }
+QToolButton#agentStatusPill[outcomeTone="failure"] { border-color: #f85149; }
+QToolButton#agentStatusPill[outcomeTone="pending"] { border-color: #e3742f; }
 #agentNetPanel {
     background-color: #f9fafb;
     border: 1px solid #d1d5db;
@@ -1574,7 +1582,7 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
     font-family: monospace; font-size: 12px;
 }
 #diffView {
-    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+    background-color: #ffffff; border: none; border-radius: 0;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
 #pullReviewSummary {
@@ -1799,6 +1807,10 @@ QPushButton#agentsMagicButton:checked {
 }
 #topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
 #topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+#topMessageQueue { background: transparent; border: none; }
+#topMessageQueueContent { background: transparent; }
+#topMessageQueueCard { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
+#topMessageQueueText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
 /* See the dark rules: transparent so the bubble's own rounded fill shows. */
 #topMessageScroll, #topMessageViewport, #topMessageActions {
     background: transparent; border: none;
@@ -2611,8 +2623,8 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
 }
 #diffView {
     background-color: #ffffff;
-    border: 1px solid #d0d7de;
-    border-radius: 6px;
+    border: none;
+    border-radius: 0;
     color: #1f2328;
     font-family: monospace;
     font-size: 12px;
@@ -2640,14 +2652,18 @@ QPlainTextEdit#actionLog {
     selection-background-color: #0969da;
     selection-color: #ffffff;
 }
-#agentStatusPill {
-    background-color: #f6f8fa;
+QToolButton#agentStatusPill {
+    background-color: transparent;
     border: 1px solid #d0d7de;
-    border-radius: 11px;
-    padding: 2px 10px;
-    font-size: 12px;
+    border-radius: 12px;
+    padding: 2px 7px 2px 4px;
+    font-size: 11px;
     font-weight: 600;
 }
+QToolButton#agentStatusPill:hover { background-color: #f6f8fa; }
+QToolButton#agentStatusPill[outcomeTone="success"] { border-color: #3fb950; }
+QToolButton#agentStatusPill[outcomeTone="failure"] { border-color: #f85149; }
+QToolButton#agentStatusPill[outcomeTone="pending"] { border-color: #e3742f; }
 #agentNetPanel {
     background-color: #f6f8fa;
     border: 1px solid #d0d7de;

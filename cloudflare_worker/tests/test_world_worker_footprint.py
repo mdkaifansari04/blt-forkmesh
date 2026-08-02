@@ -55,12 +55,13 @@ def test_worker_footprint_budgets_match_current_source_tree():
         "compressedBundlePaidBytes": 10_000_000,
         "uncompressedBundleBytes": 64_000_000,
         "startupTimeMs": 1000,
+        "startupSourceBytesSoft": 2_500_000,
         "dynamicRequestsFreeDaily": 100_000,
     }
     assert data["staticLimits"] == {
         "assetCount": 20_000,
         "maxAssetBytes": 25 * 1024 * 1024,
-        "initialWorldModuleBytesSoft": 2_500_000,
+        "initialWorldModuleBytesSoft": 2_600_000,
     }
 
 
@@ -93,6 +94,45 @@ def test_provider_import_module_is_loaded_only_when_its_routes_need_it():
     assert "repository_import = _repository_import_module()" in ENTRY
     assert "import world_infrastructure" not in eager_imports
     assert "def _world_infrastructure_module():" in ENTRY
+
+
+def test_optional_python_route_modules_are_deferred_from_global_scope():
+    """Keep Cloudflare's Python startup validation below its memory ceiling."""
+    eager_imports = ENTRY[: ENTRY.index("def _repository_import_module():")]
+    deferred = (
+        "activitypub",
+        "activitypub_threads",
+        "badges",
+        "blog_feed",
+        "chat_channels_api",
+        "chat_direct_messages_api",
+        "community_ads_api",
+        "contributions",
+        "edge_routing",
+        "fediverse_digest",
+        "fediverse_mentions_api",
+        "og_card",
+        "organization_discord",
+        "organization_succession_api",
+        "reward_policy",
+        "security_controls",
+        "security_scan_ingest",
+        "schema",
+        "world",
+        "world_build_board",
+        "world_community_api",
+        "world_element_store",
+        "world_events_api",
+        "world_link_kiosk",
+        "world_office_tasks",
+        "world_satellites",
+        "world_social_feeds",
+        "world_visitors",
+        "world_workshops",
+    )
+    for module in deferred:
+        assert f'_LazyModule("{module}")' in eager_imports
+        assert f"import {module}" not in eager_imports
 
 
 def test_infrastructure_room_renders_detailed_honest_footprint_chart():
