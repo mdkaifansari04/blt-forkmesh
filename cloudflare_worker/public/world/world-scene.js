@@ -1,4 +1,8 @@
 import {
+  loadStoreElementModule,
+  normalizeElementParams,
+} from "./elements/index.js";
+import {
   LANDMARKS,
   OUTFIT_COLOR_OPTIONS,
   OUTFIT_STYLE_OPTIONS,
@@ -15971,6 +15975,86 @@ export function createWorldScene({
         triangles,
         interactives,
       };
+    });
+  }
+
+  // Purchased store elements are plugins from ./elements: nothing in the world
+  // bundle knows their geometry, so they are built on demand and registered
+  // through the same element registry as built-in content. That gives them the
+  // Elements toggle, the diagnostics cost breakdown and disable-on-load for
+  // free.
+  const storeElementInstances = new Map();
+
+  // An element may only read the endpoints its manifest declared, which the
+  // store disclosed before purchase. Anything else is refused here rather than
+  // trusted to the element.
+  function storeElementFetcher(manifest) {
+    const allowed = new Set(manifest.network || []);
+    return async (path) => {
+      const target = String(path || "");
+      if (!allowed.has(target)) {
+        throw new Error(`${manifest.id} may not read ${target}`);
+      }
+      const response = await fetch(target, {
+        credentials: "same-origin",
+        headers: { accept: "application/json" },
+      });
+      if (!response.ok) throw new Error(`${target} failed`);
+      return response.json();
+    };
+  }
+
+  async function installStoreElement(spec) {
+    const id = String(spec?.id || "");
+    if (!id) return false;
+    removeStoreElement(id);
+    const module = await loadStoreElementModule(id);
+    const manifest = module.manifest;
+    const params = normalizeElementParams(manifest, spec?.params);
+    const instance = module.build({
+      THREE,
+      params,
+      net: storeElementFetcher(manifest),
+    });
+    const group = instance?.group;
+    if (!group) throw new Error(`store element ${id} built no group`);
+    const placement = spec?.placement || {};
+    group.name = `store-element-${id}`;
+    group.position.set(Number(placement.x) || 0, 0, Number(placement.z) || 0);
+    group.rotation.y = Number(placement.heading) || 0;
+    world.add(group);
+    storeElementInstances.set(id, instance);
+    registerWorldElement(
+      id,
+      manifest.label || id,
+      manifest.category || "Store",
+      group,
+      () => storeElementInstances.get(id) === instance,
+    );
+    if (spec?.enabled === false) setWorldElementEnabled(id, false);
+    return true;
+  }
+
+  function removeStoreElement(id) {
+    const instance = storeElementInstances.get(id);
+    if (!instance) return false;
+    storeElementInstances.delete(id);
+    instance.group?.parent?.remove?.(instance.group);
+    instance.dispose?.();
+    worldElements.delete(id);
+    return true;
+  }
+
+  function tickStoreElements(nowMs) {
+    storeElementInstances.forEach((instance, id) => {
+      if (typeof instance.tick !== "function") return;
+      if (!worldElementEnabled(id)) return;
+      try {
+        instance.tick(nowMs);
+      } catch {
+        // One bad plugin frame must not stop the world; the element keeps its
+        // last drawn state and the next frame tries again.
+      }
     });
   }
 
@@ -33655,6 +33739,7 @@ export function createWorldScene({
     }
     updateCamera(delta);
     if (worldElementEnabled("sky")) worldSky.tick(Date.now(), camera.position);
+    tickStoreElements(time);
     // Spatial scans and DOM-adjacent controls do not need monitor refresh
     // cadence. Bounding them to 12.5Hz removes repeated portal walks and
     // layout writes while movement and WebGL rendering remain full-rate.
@@ -34473,6 +34558,8 @@ export function createWorldScene({
     listWorldElements,
     setWorldElementEnabled,
     listSceneObjects,
+    installStoreElement,
+    removeStoreElement,
     getEnvironmentState: () => ({
       theme: currentTheme,
       lightLevel,

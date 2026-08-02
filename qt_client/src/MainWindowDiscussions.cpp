@@ -369,6 +369,8 @@ void MainWindow::showDiscussion(int number)
         }
     }
     m_currentDiscussionNumber = found ? number : -1;
+    // An open discussion is its own place on the Back/Forward trail (adhoc #50).
+    scheduleNavRecord();
     if (!found) {
         if (m_discussionTitle)
             m_discussionTitle->setText("Select a discussion");

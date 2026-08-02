@@ -1072,19 +1072,37 @@ int MainWindow::testRepoTabContentTop()
 
 int MainWindow::testRepoTabGapAroundIssues() const
 {
-    if (!m_repoCodeTab || !m_repoIssuesTab || !m_repoPullsTab)
+    // Issues now heads the row: Code is rail-only since adhoc #421, so the two
+    // gaps to probe are Issues→Projects and Projects→Pulls.
+    if (!m_repoProjectsTab || !m_repoIssuesTab || !m_repoPullsTab)
         return -1;
-    const QRect codeRect(m_repoCodeTab->mapTo(const_cast<MainWindow *>(this),
-                                              QPoint(0, 0)),
-                         m_repoCodeTab->size());
+    const QRect projectsRect(
+        m_repoProjectsTab->mapTo(const_cast<MainWindow *>(this), QPoint(0, 0)),
+        m_repoProjectsTab->size());
     const QRect issuesRect(m_repoIssuesTab->mapTo(const_cast<MainWindow *>(this),
                                                   QPoint(0, 0)),
                            m_repoIssuesTab->size());
     const QRect pullsRect(m_repoPullsTab->mapTo(const_cast<MainWindow *>(this),
                                                 QPoint(0, 0)),
                           m_repoPullsTab->size());
-    return qMin(issuesRect.left() - codeRect.right() - 1,
-                pullsRect.left() - issuesRect.right() - 1);
+    return qMin(projectsRect.left() - issuesRect.right() - 1,
+                pullsRect.left() - projectsRect.right() - 1);
+}
+
+// Adhoc #421: the rail's top destination and the repo tab row have to draw
+// their icons on one line — the rail sitting a few pixels low is the first
+// thing the eye catches on that corner. Both ActivityRailButton and
+// VerticalIconButton inset their glyph 6px from the widget's own top, so the
+// skew between the two widget tops *is* the skew between the two icon lines.
+int MainWindow::testRailTabIconLineSkew() const
+{
+    if (!m_railCodeButton || !m_repoIssuesTab)
+        return -100000;
+    auto *self = const_cast<MainWindow *>(this);
+    if (!m_railCodeButton->isVisibleTo(self) || !m_repoIssuesTab->isVisibleTo(self))
+        return -100000;
+    return m_railCodeButton->mapTo(self, QPoint(0, 0)).y() -
+           m_repoIssuesTab->mapTo(self, QPoint(0, 0)).y();
 }
 
 // Adhoc #354: the looper toggle moved inline into the Issues heading row,

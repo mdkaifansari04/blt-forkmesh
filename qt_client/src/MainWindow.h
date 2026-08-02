@@ -117,10 +117,12 @@ class AgentDotMatrix;
 class NodeDotMatrix;
 class RelaySpeedDot;
 class ActionRunStrip;
+class ElidingStatusLabel;
 }
 using forkmesh::ui::ActionRunStrip;
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
+using forkmesh::ui::ElidingStatusLabel;
 using forkmesh::ui::NodeDotMatrix;
 using forkmesh::ui::RelaySpeedDot;
 class PacmanProgress;
@@ -308,6 +310,12 @@ public:
     // public deployment topology may be prefilled; credentials are rejected
     // by the URL parser and entered in the focused session-only local field.
     void openCloudflareSetupFromSystemLink(const QString &target = {});
+
+    // Records a qDebug/qInfo/qWarning line that installPlatformLogFilter()
+    // captured as a Log entry, so the app's own progress lines and Qt's own
+    // warnings land where the user can read them instead of in the terminal.
+    // GUI thread only — main.cpp's sink marshals worker-thread messages here.
+    void logCapturedMessage(QtMsgType type, const QString &text);
 
     // Apply the saved theme (system/dark/light) to the whole application.
     static void applyTheme();
@@ -571,6 +579,7 @@ public:
     void testStopRepoHosts() { stopRepoHosts(); }
     int testRepoTabContentTop(); // y of the tab content within the window
     int testRepoTabGapAroundIssues() const;
+    int testRailTabIconLineSkew() const;
     int testIssueLooperGapFromNewIssueButton() const;
     bool testIssueLooperRowAligned() const;
     int testTopNavTrailingGap() const;
@@ -794,6 +803,20 @@ public:
     void testNavigateForward() { navigateForward(); }
     QString testNavBackToolTip() const;
     QString testNavForwardToolTip() const;
+    // Sub-tab-level navigation (adhoc #50): open a file / walk a directory in
+    // the Code view and read back which one the view is showing, so a test can
+    // prove Back and Forward step between them instead of jumping a tab away.
+    void testOpenRepoFile(const QString &path) { openRepoFile(path); }
+    QString testOpenRepoFilePath() const { return openRepoFilePath(); }
+    void testOpenRepoDirectory(const QString &path) { loadRepoOverview(path); }
+    QString testOverviewDirectory() const { return m_overviewPath; }
+    // Which half of the Code view is on screen: 0 = file list, 1 = editor.
+    // (Out of line: QStackedWidget is only forward-declared here.)
+    int testFilesStackPage() const;
+    // The commit whose diff the Git view is showing ("" when it is on the
+    // working-tree page), so a test can prove Back leaves a commit diff.
+    QString testOpenCommitHash() const;
+    void testShowCommit(const QString &hash) { showCommit(hash); }
     // Click the range pane's "Merge to main" (deleteAll=false) or "Merge & delete
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
@@ -3513,6 +3536,15 @@ private:
     void restoreNavEntry(int index);           // navigate to a recorded place
     struct NavPlace;
     void applyNavDetailTab(const NavPlace &place); // re-select a recorded repo tab
+    // The level below the tab bar: sub-menus (Issues list/board, PR sub-tabs,
+    // Settings/Nodes tabs) and the item open inside them (issue, pull, commit,
+    // file, chat room). Capture and replay are deliberately adjacent.
+    void captureNavSubPlace(NavPlace &place) const;
+    void applyNavSubPlace(const NavPlace &place);
+    QString openRepoFilePath() const; // file the code editor is showing
+    // Whether the Git workspace is the view on screen right now (see the
+    // definition): async page re-asserts must not fire once it isn't.
+    bool gitWorkspaceIsVisible() const;
     QString navPlaceLabel(const NavPlace &place) const; // human-readable trail destination
     void navigateBack();
     void navigateForward();
@@ -5950,17 +5982,38 @@ private:
     // place we landed on: section, repository, repo tab, and—inside Git—the
     // browsed branch. This lets Back / Forward cross Code ↔ Git and branch ↔
     // branch rather than treating them as the same Code-tab location.
+    //
+    // The trail goes one level deeper than the tab bar (adhoc #50): the sub-menu
+    // a tab is showing (Issues' list/board/labels, a PR's Conversation/Files,
+    // the Settings and Nodes tab bars) and the item open inside it (issue, pull,
+    // commit, file, chat conversation) are all part of the place, so opening one
+    // and pressing Back returns to the list you came from instead of jumping a
+    // whole tab away.
     struct NavPlace {
         int section = 0;
         int repoIndex = -1;
         int detailTab = -1;
         int overviewPage = -1; // files=0, Git=1, branches=2, worktrees=3
         QString branch;
+        // Sub-menu inside the current tab: the Issues list stack (table /
+        // milestones / labels / board), a pull request's sub-tabs, or the
+        // Settings / Nodes QTabWidget page when the place is one of those
+        // sections. -1 when the tab has no sub-menu.
+        int subTab = -1;
+        // The issue or pull request opened in that tab's detail pane (-1 = none).
+        int itemNumber = -1;
+        QString commit;    // Git view: the commit whose diff is open
+        QString filePath;  // Code view: the file open in the editor
+        QString overviewDir; // Code view: the directory the file list is showing
+        QString conversation; // Chat: the room / DM on screen
         bool operator==(const NavPlace &o) const
         {
             return section == o.section && repoIndex == o.repoIndex &&
                    detailTab == o.detailTab && overviewPage == o.overviewPage &&
-                   branch == o.branch;
+                   branch == o.branch && subTab == o.subTab &&
+                   itemNumber == o.itemNumber && commit == o.commit &&
+                   filePath == o.filePath && overviewDir == o.overviewDir &&
+                   conversation == o.conversation;
         }
     };
     QPushButton *m_navBackButton = nullptr;
@@ -6044,12 +6097,30 @@ private:
     QWidget *m_scmOutgoingPanel = nullptr;
     QLabel *m_scmOutgoingLabel = nullptr; // branch + pending commit count
     QPushButton *m_scmSyncButton = nullptr; // publish/push pending commits
+    // The sync button and its live status line share one row so the note sits
+    // beside the button and the pair hides/shows as a unit.
+    QWidget *m_scmSyncRow = nullptr;
+    ElidingStatusLabel *m_scmSyncStatus = nullptr; // "Writing objects: 62%" …
     int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
-    // Inputs to updateScmCommitControlVisibility(). Commits waiting to sync used
-    // to swap the commit row out for Sync Changes unconditionally, which stranded
-    // a staged change with a typed message and no button to land it.
-    bool m_scmOutgoingBlocking = false; // commits ahead, or a sync in flight
-    int m_scmPendingChangeCount = 0;    // working-tree rows the panel would list
+    // Latest one-line progress note per syncing/pushing repository row, keyed
+    // the same way m_syncingRepos/m_pushingRepos are. Only the open repo's note
+    // is painted; the rest are kept so switching back mid-sync still shows one.
+    QHash<int, QString> m_repoSyncActivity;
+    // Publish/clear that note. Safe to call for any repo: a note for a row that
+    // is not on screen is simply remembered. Must run on the GUI thread.
+    void setRepoSyncActivity(int index, const QString &line);
+    void clearRepoSyncActivity(int index);
+    // Feed a subprocess's stderr into the note: git writes its progress there
+    // ("Enumerating objects…", "Writing objects: 62%"), one \r-separated frame
+    // at a time. Returns the accumulated stderr so the finished handler can
+    // still report the failure text it would have read at the end.
+    std::shared_ptr<QString> streamGitProgressActivity(QProcess *process,
+                                                       int index,
+                                                       const QString &prefix);
+    // Strip git's counter frames back out of a captured stderr stream so a
+    // failure is still logged as its actual message, not as the tail of
+    // "Receiving objects:  98%".
+    static QString gitErrorsWithoutProgress(const QString &text);
     // Stage all / Unstage all / Discard all have no buttons of their own in the
     // panel any more — the CHANGES group headers carry those three actions.
     QPushButton *m_scmRefreshButton = nullptr;
@@ -7398,6 +7469,7 @@ private:
     // Projects tab widgets + state (issue #384).
     QTableWidget *m_projectTable = nullptr;
     QStackedWidget *m_projectViewStack = nullptr; // 0 list table, 1 Gantt
+    QButtonGroup *m_projectViewTabs = nullptr;    // its List / Gantt toggle
     QComboBox *m_projectStatusFilter = nullptr;   // Open | Closed | All
     // The Gantt chart (a ProjectGantt, kept as a QWidget* since that type is
     // only included by MainWindowProjects.cpp) and its scroll host.
