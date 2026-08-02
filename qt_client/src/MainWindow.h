@@ -2792,6 +2792,15 @@ private:
     void removePushHook(const RepositoryRecord &repo) const;
     void installAllPushHooks() const;
     void scanActionSpool();              // read *.push/*.commit events, enqueue runs
+    // Queue push-triggered workflows when the served mirror's own default branch
+    // advances, whatever moved it. The post-receive hook only fires for a real
+    // `git push` into that mirror, but everything this app does lands in the
+    // working copy and reaches the mirror through syncRepository's `git fetch`,
+    // which runs no hooks — so nothing was queued for merges made in-app.
+    // `pushedCommits` maps a repository index to the commit its post-receive
+    // hook already reported in this same sweep, so a real push is not queued
+    // twice.
+    void scanServedMirrorHeads(const QHash<int, QString> &pushedCommits);
     // Apply a controller-written generation without restarting the headless
     // node, then poll gateway-managed sources into their isolated Actions
     // mirrors. Neither path changes the gateway's serving hook/object store.
