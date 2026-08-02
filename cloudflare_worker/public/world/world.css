@@ -11826,6 +11826,51 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   margin: 14px 0 18px;
 }
 
+.world-error-analytics {
+  margin: 0 0 16px;
+}
+
+.world-error-analytics h4 {
+  margin: 0 0 8px;
+  color: #dbe8f5;
+  font-size: 0.76rem;
+}
+
+.world-error-chart {
+  display: grid;
+  height: 150px;
+  grid-template-columns: repeat(24, minmax(8px, 1fr));
+  align-items: end;
+  gap: 4px;
+  border-bottom: 1px solid #324152;
+  padding-top: 12px;
+}
+
+.world-error-chart > span {
+  display: block;
+  min-height: 2px;
+  border-radius: 3px 3px 0 0;
+  background: #58a6ff;
+}
+
+.world-error-chart > span[data-empty="true"] {
+  background: #273444;
+}
+
+.world-error-chart > span:focus-visible,
+.world-error-sparkline:focus-visible {
+  outline: 2px solid #79c0ff;
+  outline-offset: 2px;
+}
+
+.world-error-hours {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  color: #8593a2;
+  font: 650 0.62rem/1 "ForkMesh Mono", ui-monospace, monospace;
+}
+
 .world-error-groups h4,
 .world-error-raw-title {
   margin: 0 0 8px;
@@ -11834,15 +11879,15 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-error-group-table {
-  min-width: 1480px;
+  min-width: 1840px;
 }
 
 .world-error-group-header,
 .world-error-group-row {
   display: grid;
   grid-template-columns:
-    62px 70px 82px minmax(220px, 1.2fr) minmax(300px, 1.8fr)
-    170px 150px 150px;
+    62px 185px 92px 70px 82px minmax(220px, 1.2fr)
+    minmax(300px, 1.8fr) 170px 100px 100px 160px;
   align-items: center;
 }
 
@@ -11860,6 +11905,72 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: flex;
   align-items: center;
   padding-left: 12px;
+}
+
+.world-error-source {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  border: 1px solid #3b4a5a;
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #79c0ff;
+  font: 700 0.57rem/1 system-ui, sans-serif;
+  white-space: nowrap;
+}
+
+.world-error-source--javascript {
+  border-color: rgb(163 113 247 / 0.6);
+  color: #d2a8ff;
+}
+
+.world-error-sparkline {
+  display: grid !important;
+  width: 180px;
+  height: 34px;
+  grid-template-columns: repeat(24, 1fr);
+  align-items: end;
+  gap: 2px;
+  overflow: visible !important;
+  border-bottom: 1px solid #324152;
+  padding: 2px 0 !important;
+}
+
+.world-error-sparkline i {
+  display: block;
+  min-height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: #58a6ff;
+}
+
+.world-error-sparkline i[data-empty="true"] {
+  background: #273444;
+}
+
+.world-error-message {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  overflow: visible !important;
+}
+
+.world-error-message > span {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-error-message button {
+  min-height: 24px;
+  flex: 0 0 auto;
+  border: 1px solid #3b4a5a;
+  border-radius: 6px;
+  background: #141d27;
+  color: #c8e1ff;
+  padding: 0 7px;
+  font: 700 0.58rem/1 system-ui, sans-serif;
+  cursor: pointer;
 }
 
 .world-error-actor-stack i,
@@ -11884,16 +11995,16 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 .world-error-table-header,
 .world-error-row {
   display: grid !important;
-  min-width: 1640px;
+  min-width: 1735px;
   grid-template-columns:
-    65px 160px 72px 82px minmax(260px, 1.35fr) minmax(330px, 1.8fr)
-    70px minmax(170px, 0.9fr) 132px;
+    65px 160px 92px 72px 82px minmax(260px, 1.35fr)
+    minmax(330px, 1.8fr) 70px minmax(170px, 0.9fr) 132px;
   align-items: center;
 }
 
 .world-error-table {
   display: block;
-  min-width: 1640px;
+  min-width: 1735px;
 }
 
 .world-error-table .world-error-row {
@@ -11919,6 +12030,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: flex;
   gap: 5px;
   align-items: center;
+  overflow: visible !important;
+  white-space: normal !important;
 }
 
 .world-task-row--mine::after {
