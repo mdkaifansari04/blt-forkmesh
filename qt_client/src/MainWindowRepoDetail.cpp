@@ -415,20 +415,12 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeCoveExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoCoveExplorer(); });
 
-    // Thirty-day repository trends and the Ratchet toggle sit at the right of
-    // the code toolbar, aligned with the icon rows above.
-    auto *repoSizeChart = new ResourceSparkline(QStringLiteral("SIZE"), nullptr,
-                                                kResourceSparklineSide, 30);
-    auto *repoLinesChart = new ResourceSparkline(QStringLiteral("LOC"), nullptr,
-                                                 kResourceSparklineSide, 30);
-    auto *repoFilesChart = new ResourceSparkline(
-        QStringLiteral("FILES"), nullptr, kResourceSparklineSide, 30);
-    repoSizeChart->setObjectName(QStringLiteral("repoSizeChart"));
-    repoLinesChart->setObjectName(QStringLiteral("repoLinesChart"));
-    repoFilesChart->setObjectName(QStringLiteral("repoFilesChart"));
-    m_repoSizeChart = repoSizeChart;
-    m_repoLinesChart = repoLinesChart;
-    m_repoFilesChart = repoFilesChart;
+    // Three related repository measures belong in one compact vertical-meter
+    // group, matching the Claude/Codex usage gauge instead of competing as
+    // three large horizontal cards.
+    auto *repoTrendChart = new RepositoryTrendMiniChart;
+    repoTrendChart->setObjectName(QStringLiteral("repoTrendChart"));
+    m_repoTrendChart = repoTrendChart;
     m_repoRatchetButton = new RatchetToggleButton;
     m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
     m_repoRatchetButton->setToolTip(
@@ -442,11 +434,12 @@ QWidget *MainWindow::buildRepoFilesPanel()
     // the bottom status bar (see buildStatusBar). One line holds the mode
     // toggles, the branch/worktree/remote/commit/tag/release counts (moved up
     // from the overview page), the go-to-file box and the repo trends
-    // (adhoc #6).
+    // (adhoc #6). Match the tab strip's 10px rhythm so the two icon rows scan
+    // as one aligned toolbar rather than two unrelated clusters.
     m_repoFilesModeBar = new QWidget;
     auto *modeRow = new QHBoxLayout(m_repoFilesModeBar);
     modeRow->setContentsMargins(8, 0, 16, 0);
-    modeRow->setSpacing(2);
+    modeRow->setSpacing(10);
     modeRow->addWidget(m_filesModeOverviewButton);
     modeRow->addWidget(m_filesModeExplorerButton);
     modeRow->addWidget(m_filesModeCoveExplorerButton);
@@ -466,15 +459,15 @@ QWidget *MainWindow::buildRepoFilesPanel()
     modeRow->addSpacing(10);
     modeRow->addWidget(m_fileSearch);
     modeRow->addStretch(1);
-    modeRow->addWidget(repoSizeChart);
-    modeRow->addWidget(repoLinesChart);
-    modeRow->addWidget(repoFilesChart);
+    modeRow->addWidget(repoTrendChart);
     modeRow->addWidget(m_repoRatchetButton);
 
     auto *panel = new QWidget;
     auto *layout = new QVBoxLayout(panel);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(0);
+    // Keep the toolbar tight to the tab row above, but give the document below
+    // enough air that the commit strip is not visually welded to its controls.
+    layout->setSpacing(8);
     layout->addWidget(m_repoFilesModeBar);
     layout->addWidget(m_filesStack, 1);
     // The trend charts were born just now (this panel builds lazily), so seed
@@ -519,9 +512,9 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewList->setAllColumnsShowFocus(true);
     m_overviewList->header()->hide();
     m_overviewList->header()->setStretchLastSection(false);
-    // The name column ends at the longest filename (including its compact
-    // metrics), so commit subjects begin immediately after the file name rather
-    // than drifting across a wide empty table.
+    // The name column ends just past the longest filename.  A small fixed gutter
+    // keeps commit subjects readable without the old inline metric glyphs
+    // pushing every subject far across the page.
     m_overviewList->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_overviewList->header()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_overviewList->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
@@ -635,7 +628,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     auto *filesBody = new QWidget;
     auto *filesBodyLayout = new QVBoxLayout(filesBody);
     filesBodyLayout->setContentsMargins(0, 0, 0, 0);
-    filesBodyLayout->setSpacing(0);
+    filesBodyLayout->setSpacing(8);
     filesBodyLayout->addWidget(m_overviewCrumb);
     filesBodyLayout->addWidget(m_overviewList);
     filesBodyLayout->addWidget(m_readmeView);
@@ -675,7 +668,7 @@ QWidget *MainWindow::buildRepoOverviewPage()
     auto *leftColumn = new QWidget;
     auto *leftLayout = new QVBoxLayout(leftColumn);
     leftLayout->setContentsMargins(0, 0, 0, 0);
-    leftLayout->setSpacing(0);
+    leftLayout->setSpacing(8);
     leftLayout->addWidget(m_repoOverviewChrome);
     leftLayout->addWidget(m_overviewBodyStack, 1);
 
@@ -3710,62 +3703,6 @@ void MainWindow::loadRepoOverview(const QString &path)
         page->setUpdatesEnabled(true);
 }
 
-// Three tiny tracks next to each filename summarize size, source lines and
-// recursive file count. They deliberately use a single baseline rather than
-// full table columns: the file name remains the visual anchor and the commit
-// subject can start right after the longest name.
-static QWidget *makeOverviewMetricTrack(double fraction, const QString &toolTip)
-{
-    auto *metric = new QWidget;
-    metric->setFixedSize(24, 8);
-    metric->setToolTip(toolTip);
-    auto *track = new QFrame(metric);
-    track->setObjectName("overviewMetricTrack");
-    track->setGeometry(0, 2, 24, 4);
-    auto *fill = new QFrame(track);
-    fill->setObjectName("overviewMetricFill");
-    const int width = fraction <= 0.0 ? 0 : qMax(2, qRound(24 * qMin(1.0, fraction)));
-    fill->setGeometry(0, 0, width, 4);
-    for (QWidget *child : {track, fill})
-        child->setAttribute(Qt::WA_TransparentForMouseEvents);
-    return metric;
-}
-
-static QWidget *makeOverviewNameCell(const QIcon &icon, const QString &name,
-                                     double sizeFraction, double locFraction,
-                                     double fileFraction, qint64 size, qint64 loc,
-                                     qint64 files)
-{
-    auto *cell = new QWidget;
-    cell->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
-    // Leave the containing tree in charge of row clicks (directory navigation
-    // and opening files); this is display-only chrome.
-    cell->setAttribute(Qt::WA_TransparentForMouseEvents);
-    auto *layout = new QHBoxLayout(cell);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(4);
-    auto *iconLabel = new QLabel;
-    iconLabel->setFixedSize(16, 16);
-    iconLabel->setPixmap(icon.pixmap(16, 16));
-    auto *nameLabel = new QLabel(name);
-    nameLabel->setObjectName("overviewFileName");
-    layout->addWidget(iconLabel);
-    layout->addWidget(makeOverviewMetricTrack(
-        sizeFraction, QStringLiteral("Size: %1").arg(formatByteSize(size))));
-    layout->addWidget(makeOverviewMetricTrack(
-        locFraction, loc > 0 ? QStringLiteral("Lines of code: %1").arg(QLocale().toString(loc))
-                             : QStringLiteral("No source lines")));
-    layout->addWidget(makeOverviewMetricTrack(
-        fileFraction,
-        files > 0 ? QStringLiteral("Files: %1").arg(QLocale().toString(files))
-                  : QStringLiteral("No files")));
-    layout->addSpacing(4);
-    layout->addWidget(nameLabel);
-    for (QWidget *child : {iconLabel, nameLabel})
-        child->setAttribute(Qt::WA_TransparentForMouseEvents);
-    return cell;
-}
-
 void MainWindow::populateOverviewTree()
 {
     if (!m_overviewList)
@@ -3818,37 +3755,21 @@ void MainWindow::populateOverviewTree()
                   return a.name.compare(b.name, Qt::CaseInsensitive) < 0;
               });
 
-    qint64 maxSize = 0;
-    qint64 maxLoc = 0;
-    qint64 maxFiles = 0;
-    for (const OverviewRow &e : std::as_const(rows)) {
-        maxSize = qMax(maxSize, e.size);
-        maxLoc = qMax(maxLoc, e.loc);
-        maxFiles = qMax(maxFiles, e.fileCount);
-    }
-
     for (const OverviewRow &e : std::as_const(rows)) {
         auto *item = new QTreeWidgetItem(m_overviewList);
         const QIcon icon = e.isDir ? iconForDir(false) : iconForFile(e.name);
         item->setIcon(0, icon);
         item->setText(0, e.name);
-        item->setSizeHint(
-            0, QSize(QFontMetrics(m_overviewList->font()).horizontalAdvance(e.name) +
-                         16 + 3 * 24 + 4 * 5,
-                     22));
+        constexpr int kCommitGutter = 32;
+        item->setSizeHint(0, QSize(QFontMetrics(m_overviewList->font())
+                                       .horizontalAdvance(e.name) +
+                                   16 + kCommitGutter,
+                                   28));
         item->setData(0, Qt::UserRole, e.path);
         item->setData(0, Qt::UserRole + 1, e.isDir ? 1 : 0);
         item->setToolTip(0, QStringLiteral("Size: %1\nLines of code: %2\nFiles: %3")
                                 .arg(formatByteSize(e.size), QLocale().toString(e.loc),
                                      QLocale().toString(e.fileCount)));
-        m_overviewList->setItemWidget(
-            item, 0,
-            makeOverviewNameCell(icon, e.name,
-                                 maxSize > 0 ? double(e.size) / double(maxSize) : 0.0,
-                                 maxLoc > 0 ? double(e.loc) / double(maxLoc) : 0.0,
-                                 maxFiles > 0 ? double(e.fileCount) / double(maxFiles)
-                                              : 0.0,
-                                 e.size, e.loc, e.fileCount));
         item->setText(1, e.subject);
         item->setToolTip(1, e.subject);
         item->setText(2, formatShortRelativeTime(e.commitTs));
@@ -3860,7 +3781,7 @@ void MainWindow::populateOverviewTree()
     }
     int listHeight = m_overviewList->frameWidth() * 2;
     for (int row = 0; row < m_overviewList->topLevelItemCount(); ++row)
-        listHeight += qMax(22, m_overviewList->sizeHintForRow(row));
+        listHeight += qMax(28, m_overviewList->sizeHintForRow(row));
     m_overviewList->setFixedHeight(qMax(1, listHeight));
     m_overviewList->setUpdatesEnabled(true);
 }
@@ -9264,9 +9185,22 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBarScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     tabBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     tabBarScroll->setMinimumWidth(0);
-    // Tall enough for the stacked icon-over-caption tabs (44px, adhoc #91),
-    // their top inset, plus the horizontal scrollbar a narrow window needs.
-    tabBarScroll->setFixedHeight(56 + kRepoTabRowTopInset);
+    // The row needs only its 44px icon-over-caption buttons plus their shared
+    // top inset.  The old 56px floor left a conspicuous blank band before the
+    // Code toolbar whenever no horizontal scrollbar was needed.  Put the
+    // scrollbar's height back only while it is actually visible, so a narrow
+    // window can still pan the complete tab strip without clipping its icons.
+    auto adjustTabBarHeight = [tabBarScroll] {
+        const int scrollbarHeight = tabBarScroll->horizontalScrollBar()->maximum() > 0
+                                       ? tabBarScroll->horizontalScrollBar()
+                                             ->sizeHint()
+                                             .height()
+                                       : 0;
+        tabBarScroll->setFixedHeight(44 + kRepoTabRowTopInset + scrollbarHeight);
+    };
+    connect(tabBarScroll->horizontalScrollBar(), &QScrollBar::rangeChanged,
+            tabBarScroll, [adjustTabBarHeight](int, int) { adjustTabBarHeight(); });
+    QTimer::singleShot(0, tabBarScroll, adjustTabBarHeight);
 
     // The integrity-pin warning ("clones are being rejected — reset the pin")
     // doesn't live in an in-page banner here; refreshRepoPinBanner surfaces it as

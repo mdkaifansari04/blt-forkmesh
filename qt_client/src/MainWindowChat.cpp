@@ -3692,14 +3692,13 @@ void MainWindow::checkFileDescriptorPressure()
 
 void MainWindow::refreshRepositoryStats()
 {
-    // The trend charts and Ratchet toggle live on the Code overview's mode row
-    // (adhoc #6), which is built lazily with the repo detail's Code tab.
-    if (!m_repoSizeChart || !m_repoLinesChart || !m_repoFilesChart)
+    // The grouped trend meter and Ratchet toggle live on the Code overview's
+    // mode row, which is built lazily with the repo detail's Code tab.
+    if (!m_repoTrendChart)
         return;
     const QString dir = repoGitDir();
     const bool available = !dir.isEmpty() && repoHasWorkingTree();
-    const QList<QWidget *> statsWidgets{m_repoSizeChart, m_repoLinesChart,
-                                        m_repoFilesChart, m_repoRatchetButton};
+    const QList<QWidget *> statsWidgets{m_repoTrendChart, m_repoRatchetButton};
     for (QWidget *widget : statsWidgets)
         if (widget) widget->setVisible(available);
     if (!available) return;
@@ -3724,28 +3723,24 @@ void MainWindow::refreshRepositoryStats()
         if (!error.isEmpty()) logSystem(QStringLiteral("Repository stats: %1").arg(error));
         return;
     }
-    QVector<double> sizes, lines, files;
     double maxSize = 1, maxLines = 1, maxFiles = 1;
     for (const RepoStatsSample &day : days) {
-        sizes << double(day.bytes); lines << double(day.lines); files << double(day.files);
         maxSize = qMax(maxSize, double(day.bytes));
         maxLines = qMax(maxLines, double(day.lines));
         maxFiles = qMax(maxFiles, double(day.files));
     }
     const RepoStatsSample &latest = days.last();
-    static_cast<ResourceSparkline *>(m_repoSizeChart)->setSamples(
-        sizes, maxSize, SystemStats::formatBytes(latest.bytes));
-    static_cast<ResourceSparkline *>(m_repoLinesChart)->setSamples(
-        lines, maxLines, QString::number(latest.lines));
-    static_cast<ResourceSparkline *>(m_repoFilesChart)->setSamples(
-        files, maxFiles, QString::number(latest.files));
+    static_cast<RepositoryTrendMiniChart *>(m_repoTrendChart)->setRatios(
+        double(latest.bytes) / maxSize, double(latest.lines) / maxLines,
+        double(latest.files) / maxFiles);
     const QString span = days.size() == 1
                              ? QStringLiteral("today")
                              : QStringLiteral("%1 to %2").arg(days.first().day,
                                                                days.last().day);
-    m_repoSizeChart->setToolTip(QStringLiteral("Tracked repository size, %1").arg(span));
-    m_repoLinesChart->setToolTip(QStringLiteral("Tracked lines of code, %1").arg(span));
-    m_repoFilesChart->setToolTip(QStringLiteral("Tracked files, %1").arg(span));
+    m_repoTrendChart->setToolTip(
+        QStringLiteral("Repository trends (%1)\nSize: %2\nLines of code: %3\nFiles: %4")
+            .arg(span, SystemStats::formatBytes(latest.bytes),
+                 QLocale().toString(latest.lines), QLocale().toString(latest.files)));
     if (m_repoRatchetButton) {
         QSignalBlocker blocker(m_repoRatchetButton);
         m_repoRatchetButton->setChecked(RepoStatsStore::ratchetEnabled(dir));
