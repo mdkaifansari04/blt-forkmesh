@@ -33,9 +33,9 @@ struct AgentScannerState {
 };
 
 // Per-session "what did this agent change" summary shown in the agents list
-// (issue #170): files its patch touched, and how far its branch sits ahead of /
-// behind the base branch. -1 means "unknown / not applicable" — e.g. a running
-// session with no patch yet, or a branch that has since been removed.
+// (issue #170): files its live branch review touches (falling back to its stored
+// patch after cleanup), and how far the branch sits ahead of / behind its base.
+// -1 means "unknown / not applicable" — e.g. a running session with no patch yet.
 struct AgentDiffStat {
     int files = -1;
     int ahead = -1;
@@ -282,6 +282,18 @@ struct NotificationLink {
     bool isValid() const { return !kind.isEmpty(); }
 };
 Q_DECLARE_METATYPE(NotificationLink)
+
+// One row of the Ctrl+K search overlay. Filled on a worker thread (nothing
+// GUI-owned is touched there) and rendered/activated on the GUI thread.
+struct GlobalSearchHit {
+    QString kind;       // see kSearchCategories in MainWindowSearch.cpp
+    int number = 0;     // issue/PR/discussion/project/agent/run id, or repo index
+    QString path;       // file path, branch, worktree branch, commit/tag ref
+    int line = 0;       // code hit: 1-based line number
+    int repoIndex = -1; // repository the hit belongs to (-1 = the open one)
+    QString primary;    // main row text
+    QString detail;     // dimmer context (where it matched)
+};
 
 class MainWindow : public QMainWindow
 {
@@ -741,6 +753,7 @@ public:
     // prove browsing a branch shows what it is being compared against, and that
     // the base is switchable (adhoc #16).
     QString testCompareIndicatorText() const;
+    QString testComparedBranchText() const;
     // Point the compare indicator's base dropdown at another branch, so a test
     // can prove the range re-diffs against it (adhoc #16).
     void testSetCompareBase(const QString &base);
@@ -759,6 +772,12 @@ public:
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
     bool testClickBranchReviewMerge(bool deleteAll);
+    void testSuppressAutoPullForBranch(const QString &branch)
+    {
+        m_branchAutoPullAttempted = branch;
+    }
+    bool testBranchPullEnabled() const;
+    bool testClickBranchPull();
     // issue #291: when an agent task's worktree/PR lands in the base branch the
     // session is flagged "merged" on its Status column and detail page. Drive the
     // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
@@ -776,6 +795,16 @@ public:
     // as "files|dirty|worktree|behind|ahead", so a test can prove the chip's
     // file and visible branch-health markers are fed from the session's diff stat.
     QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
+    void testSetCachedAgentDiffFiles(int sessionId, int files)
+    {
+        AgentDiffStat stat = m_agentDiffStats.value(sessionId);
+        stat.files = files;
+        m_agentDiffStats.insert(sessionId, stat);
+    }
+    int testCachedAgentDiffFiles(int sessionId) const
+    {
+        return m_agentDiffStats.value(sessionId).files;
+    }
     bool testAgentSessionMerged(int sessionId) const;
 #endif
 
@@ -1881,13 +1910,21 @@ private:
     void openPullReference(int number);
     void openCommitHashReference(const QString &hash);
     void openReferenceLink(const QString &href);
-    // Global search (Ctrl+K, issue #360). A repo-scoped overlay that searches the
-    // open repo's issues and pull requests (titles, bodies and comments — parsed
-    // from the stores) plus its code (`git grep` on the working tree/mirror, run
-    // off the GUI thread). Results are clickable and jump to the matching issue,
-    // PR, or file+line. Repo-scoped only for v1; full-mesh code search is out.
+    // Global search (Ctrl+K, issue #360). One overlay that searches everything
+    // this node holds: repositories and agent sessions across the whole app, and
+    // for the open repository its issues, pull requests, discussions, projects,
+    // milestones, workflow runs, branches, worktrees, tags, commits, file names
+    // and file contents. All of it runs off the GUI thread in two waves — the
+    // cheap metadata first, then the `git grep`/`git log` content scan — so the
+    // list fills immediately and a big repo never freezes the window. Every row
+    // is clickable and jumps to the thing it matched.
     void openGlobalSearch();
     void runGlobalSearch(const QString &query);
+    // Render m_searchHits into the overlay list, grouped by category, and update
+    // the status line. Called once per wave as results land.
+    void rebuildGlobalSearchList(const QString &query);
+    // Close the overlay and navigate to what `hit` matched.
+    void activateGlobalSearchHit(const GlobalSearchHit &hit);
     QDialog *m_searchDialog = nullptr;
     QLineEdit *m_searchInput = nullptr;
     QListWidget *m_searchList = nullptr;
@@ -1895,6 +1932,10 @@ private:
     // Bumped on every keystroke so a stale off-thread `git grep` result is dropped
     // when the query has moved on (mirrors the m_worktreeStatusGen pattern).
     int m_searchGen = 0;
+    // Hits gathered so far for the current query, across both waves, and how many
+    // waves are still running (the status line says "searching" until it's 0).
+    QVector<GlobalSearchHit> m_searchHits;
+    int m_searchWavesPending = 0;
     // Resolve a reference link clicked inside an issue/PR comment body. Handles
     // the private schemes autolinkReferences() emits (forkmesh-ref:N → issue/PR,
     // forkmesh-commit:SHA → commit) and forkmesh:// permalinks (issue/pull/commit);
@@ -2244,6 +2285,9 @@ private:
     void updateAgentCostCell(int sessionId);   // in-place Cost-column update
     void updateAgentRunSummaryCells(int sessionId); // in-place Turns/Time update
     void updateAgentStatusCell(int sessionId); // in-place Status-column update
+    void applyAgentDiffStatResult(int generation, int repoIndex, int sessionId,
+                                  const AgentDiffStat &stat,
+                                  const QString &signature);
     void refreshAgentStatusPill(int sessionId); // in-place detail-header pill update
     void animateRunningAgentIcons();           // spins running rows' Status glyph
     // Pulse a session's night-rider light so the agents-list activity column
@@ -3032,7 +3076,7 @@ private:
     // opens its range diff against that base at the same time — one combined
     // view, "<branch> -> <base>", rather than a separate review page (adhoc
     // #16).
-    void switchToBranch(const QString &branch);
+    void switchToBranch(const QString &branch, int agentSessionId = -1);
     // Base branch of the Git view's comparison. Empty means "the repo's default
     // branch", which is where every comparison starts; the compare indicator's
     // base dropdown sets it, and leaving the compare view clears it (adhoc #16).
@@ -3115,7 +3159,7 @@ private:
     // a `git branch -D` (and its noisy "branch not found" error) when the branch was
     // already gone — the desired end state either way.
     bool localBranchExists(const QString &repoPath, const QString &branch) const;
-    void showBranchDiff(const QString &branch);
+    void showBranchDiff(const QString &branch, int agentSessionId = -1);
     // Paint the branch detail bar from already-gathered counts, and let auto-pull
     // decide once the bar reflects them (the counts arrive off-thread now).
     void applyBranchDetailActions(const QString &branch, const QString &base,
@@ -5555,6 +5599,10 @@ private:
     // has since switched branch (issue #353 — showBranchDiff/
     // renderBranchScopeDiff shelled git on the GUI thread).
     int m_branchScopeDiffGen = 0;
+    // Agent session that opened the current live branch review. The completed
+    // diff uses this identity to reconcile its exact file count back into the
+    // Agents-list badge when the branch moved between refresh and click.
+    int m_branchDiffAgentSessionId = -1;
     // Branch merge-conflict probes. `git merge-tree` costs ~0.5-1s per branch on a
     // busy repo, so running one per row inline froze the branches panel for
     // seconds on every rebuild — and one lands after every delete/merge/pull

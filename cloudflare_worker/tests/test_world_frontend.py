@@ -3075,3 +3075,30 @@ def test_world_presence_socket_has_a_bounded_open_deadline_and_retirement():
     assert "this.socketRecovery.markOpen(socket)" in connect
     assert "this.socketRecovery.retire(socket)" in connect
     assert "this.socketRecovery.scheduleReconnect(" in APP
+
+
+def test_hud_counts_who_is_online_and_drops_the_roster_down_on_hover():
+    assert "data-world-online-menu" in APP
+    assert "data-world-online-count" in APP
+    assert "data-world-online-list" in APP
+    assert 'title="Who is online right now"' in APP
+    assert "WORLD_ONLINE_ROSTER_LIMIT = 40" in APP
+    # The count is this visitor plus the peers the live socket announced, and
+    # every row reads fields presence already publishes.
+    assert "onlineRoster() {" in APP
+    assert "this.remotePlayers.forEach((player, id) => {" in APP
+    assert "this.renderOnlineRoster();" in APP
+    assert "person.self ? \" (you)\" : \"\"" in APP
+    assert "more online, not listed here" in APP
+    assert "Realtime presence is offline, so only you are counted" in APP
+    # Movement frames must not rebuild the list under the pointer.
+    assert "if (signature === this.onlineRosterSignature) return;" in APP
+    # A row opens the same public profile the avatar does; hover, focus, and a
+    # pinning click all reach the panel.
+    assert "data-world-online-person" in APP
+    assert "openOnlineRosterMember(peerId, returnFocus = null) {" in APP
+    assert "setOnlineRosterOpen(" in APP
+    assert '.world-online-menu:hover .world-online-dropdown' in CSS
+    assert '.world-online-menu:focus-within .world-online-dropdown' in CSS
+    assert '.world-online-menu[data-open="true"] .world-online-dropdown' in CSS
+    assert ".world-status-actions .world-online-people button" in CSS

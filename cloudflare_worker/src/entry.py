@@ -1397,6 +1397,36 @@ async def repository_metadata_cache_put(env, cache_key, response, status):
         pass
 
 
+def request_bypasses_repository_metadata_cache(request):
+    """Honor explicit live-read semantics before mirror selection.
+
+    Dashboard repository reads use ``fetch(..., cache="no-store")`` and also
+    send ``Cache-Control: no-cache``.  Those requests must reach a healthy
+    mirror so the round-robin cursor advances and the Mirrors view records the
+    node that actually served the request.  Immutable state-addressed cache
+    entries remain available to ordinary clients that do not request a live
+    read.
+    """
+    try:
+        cache_control = str(
+            request.headers.get("cache-control") or ""
+        ).lower()
+        pragma = str(request.headers.get("pragma") or "").lower()
+    except Exception:
+        return False
+    directives = {
+        part.split("=", 1)[0].strip()
+        for part in cache_control.split(",")
+        if part.strip()
+    }
+    return bool(
+        directives.intersection({"no-cache", "no-store"})
+        or "no-cache" in {
+            part.strip() for part in pragma.split(",") if part.strip()
+        }
+    )
+
+
 async def purge_catalog_related_caches():
     # One concurrent sweep instead of four sequential awaits — this runs on
     # every catalog write, inside the request's critical path.
@@ -2789,7 +2819,13 @@ async def _enqueue_operational_alert_pings(env, alerts, now):
             recovered = bool(alert.get("is_up"))
             system_id = clean_string(alert.get("system", ""), 120)
             label = clean_string(alert.get("label", ""), 160)
-            outage_started_at = int(alert.get("outage_started_at") or now)
+            # One ping per transition, not per sample: the stamp must identify
+            # the transition itself. outage_started_at is 0 once a system is
+            # green, so a recovery keys off the change stamp instead.
+            stamp = int(
+                alert.get("changed_at")
+                or alert.get("outage_started_at")
+                or now)
             title = (
                 label + " recovered" if recovered else
                 label + " needs attention")
@@ -2801,14 +2837,30 @@ async def _enqueue_operational_alert_pings(env, alerts, now):
                 env, admin, "operational_alert", title, body=body,
                 href="/status", source="operational-status",
                 dedupe="operational-status:%s:%s:%s" % (
-                    system_id, "up" if recovered else "down",
-                    outage_started_at),
+                    system_id, "up" if recovered else "down", stamp),
                 ts=now,
                 meta={"system": system_id,
                       "state": "up" if recovered else "down"},
             )
             delivered = True
     return delivered
+
+
+async def _record_operational_alert_pings_sent(env, alerts):
+    """Mark delivered ping transitions so the next sample stays quiet."""
+    for alert in alerts:
+        system_id = clean_string(alert.get("system", ""), 120)
+        if not system_id:
+            continue
+        # is_up guards the write against a sample that flipped underneath this
+        # send, exactly like the mail path's notified_state update.
+        await d1_run(
+            env,
+            "UPDATE repository_monitor_state SET pinged_state=? "
+            "WHERE monitor_id=? AND is_up=?",
+            "up" if alert.get("is_up") else "down", "status:" + system_id,
+            1 if alert.get("is_up") else 0,
+        )
 
 
 async def _repository_monitor_admin_emails(env):
@@ -3150,11 +3202,13 @@ async def _record_status_monitor_transitions(
     status_systems = status_systems or STATUS_SYSTEMS
     rows = await d1_all(
         env,
-        "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state "
-        "FROM repository_monitor_state WHERE monitor_id LIKE 'status:%'",
+        "SELECT monitor_id,is_up,changed_at,outage_started_at,notified_state,"
+        "pinged_state FROM repository_monitor_state "
+        "WHERE monitor_id LIKE 'status:%'",
     )
     prior = {str(row.get("monitor_id") or ""): row for row in (rows or [])}
     pending = []
+    ping_pending = []
     values = []
     for system_id, label in status_systems:
         monitor_id = "status:" + system_id
@@ -3168,6 +3222,8 @@ async def _record_status_monitor_transitions(
             int(row.get("outage_started_at") or 0) if row else 0)
         prior_notified = (
             str(row.get("notified_state") or "") if row else "")
+        prior_pinged = (
+            str(row.get("pinged_state") or "") if row else "")
         changed = not row or previous_up != is_up
         changed_at = int(now) if changed else previous_changed_at
         outage_started_at = (
@@ -3177,7 +3233,12 @@ async def _record_status_monitor_transitions(
             ("up" if is_up else "") if not row else
             "" if previous_up != is_up else
             prior_notified)
+        pinged = (
+            ("up" if is_up else "") if not row else
+            "" if previous_up != is_up else
+            prior_pinged)
         should_notify = notified != state
+        should_ping = pinged != state
         if system_id == "flagship_repository":
             if (
                 not is_up
@@ -3188,28 +3249,36 @@ async def _record_status_monitor_transitions(
                 # from the retiring Worker version, which cannot see the new
                 # deployment timestamp yet.
                 should_notify = False
-            elif (
-                is_up
-                and row
-                and not previous_up
-                and prior_notified != "down"
-            ):
+                should_ping = False
+            elif is_up and row and not previous_up:
                 # A probe that recovered inside the grace window never paged,
-                # so it must not send a confusing recovery-only email.
-                notified = "up"
-                should_notify = False
-        if should_notify:
-            pending.append({
+                # so it must not send a confusing recovery-only alert. Each
+                # channel answers that for itself: mail being off is not a
+                # reason to swallow the recovery ping for an outage that was
+                # pinged, and vice versa.
+                if prior_notified != "down":
+                    notified = "up"
+                    should_notify = False
+                if prior_pinged != "down":
+                    pinged = "up"
+                    should_ping = False
+        if should_notify or should_ping:
+            alert = {
                 "system": system_id, "label": label, "state": state,
                 "is_up": is_up, "reason": clean_string(
                     reason.get(system_id, "") or "", 240),
                 "outage_started_at": outage_started_at,
                 "previous_changed_at": previous_changed_at,
-            })
+                "changed_at": changed_at,
+            }
+            if should_notify:
+                pending.append(alert)
+            if should_ping:
+                ping_pending.append(alert)
         values.extend([
             monitor_id, 1 if is_up else 0, changed_at, outage_started_at,
             int(now), clean_string(reason.get(system_id, "") or "", 240),
-            notified,
+            notified, pinged,
         ])
 
     n = len(status_systems)
@@ -3217,22 +3286,29 @@ async def _record_status_monitor_transitions(
         env,
         "INSERT INTO repository_monitor_state "
         "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
-        "notified_state) VALUES " + ", ".join(["(?,?,?,?,?,?,?)"] * n) + " "
+        "notified_state,pinged_state) VALUES "
+        + ", ".join(["(?,?,?,?,?,?,?,?)"] * n) + " "
         "ON CONFLICT(monitor_id) DO UPDATE SET "
         "is_up=excluded.is_up,changed_at=excluded.changed_at,"
         "outage_started_at=excluded.outage_started_at,"
         "checked_at=excluded.checked_at,reason=excluded.reason,"
-        "notified_state=excluded.notified_state",
+        "notified_state=excluded.notified_state,"
+        "pinged_state=excluded.pinged_state",
         *values,
     )
+    if ping_pending:
+        try:
+            if await _enqueue_operational_alert_pings(env, ping_pending, now):
+                # Same rule as the mail path: only a delivered transition is
+                # recorded, so a deployment with Pings switched off still gets
+                # one alert for whatever is red when it switches them on.
+                await _record_operational_alert_pings_sent(env, ping_pending)
+        except BaseException:
+            # Pings are a secondary delivery channel and must never block status
+            # sampling or the independently configured email path.
+            pass
     if not pending:
         return
-    try:
-        await _enqueue_operational_alert_pings(env, pending, now)
-    except BaseException:
-        # Pings are a secondary delivery channel and must never block status
-        # sampling or the independently configured email path.
-        pass
     # notified_state is deliberately left untouched while alert mail is off:
     # whatever is red when an admin turns it on gets one email then, instead
     # of the switch silently swallowing the transition that is still current.
@@ -11324,6 +11400,13 @@ SCHEMA_ALTER_STATEMENTS = [
     # 0108). Empty for anonymous traffic; the admin error view names it per row
     # and per group so a recurring failure can be traced to the affected user.
     "ALTER TABLE error_log ADD COLUMN actor TEXT NOT NULL DEFAULT ''",
+    # Per-channel delivered-transition marker for operational alerts. Pings are
+    # on by default and email is not, so the Pings channel needs its own state:
+    # sharing notified_state left every ping-only deployment re-sending the same
+    # transition every minute, which buried the outage pings under duplicated
+    # recovery pings once the notification cap trimmed the inbox.
+    """ALTER TABLE repository_monitor_state
+       ADD COLUMN pinged_state TEXT NOT NULL DEFAULT ''""",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -36877,16 +36960,29 @@ async def world_admin_errors_handler(env, request):
             data = await bounded_json_request(request)
             row_id = int(data.get("id") or 0)
         except (AttributeError, TypeError, ValueError):
+            data = {}
             row_id = 0
-        if row_id <= 0:
+        group = data.get("group") if isinstance(data, dict) else None
+        if row_id <= 0 and not isinstance(group, dict):
             return json_response(
                 {"error": "invalid_error_id"},
                 status=400,
                 cache_control="no-store",
             )
         if method == "POST":
+            if isinstance(group, dict):
+                form = {
+                    "group_status": [str(group.get("status") or "")[:12]],
+                    "group_method": [str(group.get("method") or "")[:12]],
+                    "group_path": [str(group.get("path") or "")[:2000]],
+                    "group_message": [str(group.get("message") or "")[:1000]],
+                    "group_users": [clean_string(
+                        group.get("users") or "", 300)],
+                }
+            else:
+                form = {"error_id": [str(row_id)]}
             message, details = await _admin_error_create_bot_task(
-                env, {"error_id": [str(row_id)]}, actor)
+                env, form, actor)
             if details.get("taskId"):
                 return json_response(
                     {"ok": True, "message": message, **details},
@@ -36899,7 +36995,25 @@ async def world_admin_errors_handler(env, request):
                 cache_control="no-store",
             )
         await ensure_schema(env)
-        await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
+        if isinstance(group, dict):
+            status = str(group.get("status") or "")[:12]
+            request_method = str(group.get("method") or "")[:12].upper()
+            path = str(group.get("path") or "")[:2000]
+            message = str(group.get("message") or "")[:1000]
+            if not status or not request_method:
+                return json_response(
+                    {"error": "invalid_error_group"},
+                    status=400,
+                    cache_control="no-store",
+                )
+            await d1_run(
+                env,
+                "DELETE FROM error_log WHERE CAST(status AS TEXT)=? "
+                "AND UPPER(method)=? AND path=? AND message=?",
+                status, request_method, path, message,
+            )
+        else:
+            await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
         return json_response({"ok": True}, cache_control="no-store")
     try:
         query = parse_qs(urlparse(request.url).query)
@@ -36931,6 +37045,8 @@ async def world_admin_errors_handler(env, request):
             "FROM error_log WHERE ts>=? ORDER BY id DESC LIMIT 1000",
             int(Date.now()) - 24 * 60 * 60 * 1000,
         )
+        now = int(Date.now())
+        hourly = [0] * 24
         groups = {}
         for row in grouped_rows or []:
             signature = (
@@ -36941,12 +37057,20 @@ async def world_admin_errors_handler(env, request):
             )
             group = groups.setdefault(signature, {
                 "count": 0,
-                "firstSeen": int(row.get("ts") or 0),
+                "firstSeen": 0,
                 "lastSeen": 0,
+                "hours": [0] * 24,
                 "actors": {},
                 "anonymous": 0,
             })
             timestamp = max(0, int(row.get("ts") or 0))
+            if 0 < timestamp < 10 ** 11:
+                timestamp *= 1000
+            age_hours = max(0, (now - timestamp) // (60 * 60 * 1000))
+            if age_hours < 24:
+                bucket = 23 - int(age_hours)
+                hourly[bucket] += 1
+                group["hours"][bucket] += 1
             group["count"] += 1
             group["firstSeen"] = min(group["firstSeen"] or timestamp, timestamp)
             group["lastSeen"] = max(group["lastSeen"], timestamp)
@@ -36957,6 +37081,7 @@ async def world_admin_errors_handler(env, request):
                     group["actors"].get(related_actor, 0) + 1)
             else:
                 group["anonymous"] += 1
+        payload["hourly"] = hourly
         payload["groups"] = [
             {
                 "status": signature[0],
@@ -36966,6 +37091,7 @@ async def world_admin_errors_handler(env, request):
                 "count": group["count"],
                 "firstSeen": group["firstSeen"],
                 "lastSeen": group["lastSeen"],
+                "hours": group["hours"],
                 "actors": [
                     {"name": name, "count": count}
                     for name, count in sorted(
@@ -41806,6 +41932,7 @@ def _https_mirror_endpoint_projection(row):
         "healthy": bool(row.get("healthy")),
         "integrity": row.get("integrity"),
         "abuseBlocked": bool(row.get("abuse_blocked")),
+        "refsSha256": row.get("forkmesh_refs_sha256"),
     }
 
 
@@ -41813,7 +41940,8 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
     rows = await d1_all(
         env,
         """SELECT node_name,base_url,public_key,registration_sig,issued_at,
-                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked
+                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked,
+                  forkmesh_refs_sha256
              FROM mirror_https_endpoints""",
     )
     records = [
@@ -41834,6 +41962,13 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
         str(node or "").lower()
         for node in context.get("currentNodes", set())
     }
+    # Catalog identities can nominate one preferred current host even when
+    # several healthy endpoints carry the exact same signed refs digest. Treat
+    # those byte-identical copies as equally current so this preference sort
+    # does not undo the cursor rotation and pin every request to one node.
+    current_nodes = https_routing.equivalent_current_endpoint_nodes(
+        selected, current_nodes, context.get("currentPins", set())
+    )
     if current_nodes:
         selected.sort(
             key=lambda item: (
@@ -42934,6 +43069,9 @@ async def _https_mirror_proxy(
         return json_response({"error": "method_not_allowed"}, status=405)
     query = _https_mirror_request_query(
         urlparse(request.url), operation, release_sha=release_sha)
+    bypass_cache = bool(
+        bypass_cache or request_bypasses_repository_metadata_cache(request)
+    )
     metadata_cache_key = (
         repository_metadata_cache_key(context, operation, query)
         if method == "GET" else ""

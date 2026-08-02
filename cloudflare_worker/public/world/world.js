@@ -607,6 +607,9 @@ const WORLD_SPACE_IDS = new Set([
   "central",
   "west",
 ]);
+// Rows the HUD "who is online" dropdown draws before it stops and reports the
+// remainder as a count. The panel stays scrollable and readable on a phone.
+const WORLD_ONLINE_ROSTER_LIMIT = 40;
 
 function escapeHTML(value) {
   return String(value ?? "")
@@ -4272,7 +4275,27 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </nav>
         </header>
 
-        <nav class="world-status-actions" aria-label="MCP prompt, notifications, errors, and tasks">
+        <nav class="world-status-actions" aria-label="Who is online, MCP prompt, notifications, errors, and tasks">
+          <div class="world-online-menu" data-world-online-menu data-open="false">
+            <button
+              class="world-online-button"
+              type="button"
+              data-world-online-toggle
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-label="1 person online right now"
+              title="Who is online right now"
+            >
+              <span class="world-status-action-icon" aria-hidden="true">👥</span>
+              <span class="world-tool-count" data-world-online-count>1</span>
+            </button>
+            <div
+              class="world-online-dropdown"
+              data-world-online-list
+              role="group"
+              aria-label="People online in the World right now"
+            ></div>
+          </div>
           <button class="world-prompt-button" type="button" data-world-mcp-prompt aria-label="Copy MCP task prompt" title="Copy a task-scoped MCP prompt">
             <span class="world-prompt-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false">
@@ -5497,6 +5520,9 @@ class ForkMeshWorld extends HTMLElement {
     this.remotePlayers = new Map();
     this.localPeers = new Map();
     this.inactivePlayers = [];
+    // Last roster written into the HUD "who is online" dropdown, so movement
+    // frames that change nobody's name or state never rebuild that list.
+    this.onlineRosterSignature = "";
     // address → {sol, txBucket, fetchedAt, pending} for the chest wallet QR.
     this.walletBadges = new Map();
     this.memberDirectory = [];
@@ -5608,6 +5634,7 @@ class ForkMeshWorld extends HTMLElement {
     this.qaDeckSelectedKey = "";
     this.qaLoad = null;
     this.qaSaving = false;
+    this.qaResultTimer = 0;
     this.updateCheckTimer = 0;
     this.deployStatusTimer = 0;
     this.deployObservedRevision = "";
@@ -5668,6 +5695,7 @@ class ForkMeshWorld extends HTMLElement {
     this.adminStatusIssueActive = false;
     this.adminErrors = [];
     this.adminErrorGroups = [];
+    this.adminErrorHours = [];
     this.adminErrorsState = "idle";
     this.adminErrorBoardSearch = "";
     this.adminErrorBoardFilter = "all";
@@ -5807,6 +5835,7 @@ class ForkMeshWorld extends HTMLElement {
       this.landmarkCapabilities,
     );
     this.renderSavedViews();
+    this.renderOnlineRoster();
     this.syncViewportHeight();
     window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
     window.visualViewport?.addEventListener("scroll", this.syncViewportHeight);
@@ -7884,9 +7913,13 @@ class ForkMeshWorld extends HTMLElement {
         { timeout: 8000 },
       );
       this.applyQaDeck(payload, { afterKey: card.key });
-      this.toast(
-        `${card.title}: ${verdict}. Your result and the shared QA totals were updated.`,
-      );
+      if (["pass", "fail"].includes(verdict)) {
+        this.announceQaVerdict(card, verdict);
+      } else {
+        this.toast(
+          `${card.title}: ${verdict}. Your result and the shared QA totals were updated.`,
+        );
+      }
       return true;
     } catch (error) {
       this.toast(
@@ -7896,6 +7929,57 @@ class ForkMeshWorld extends HTMLElement {
     } finally {
       this.qaSaving = false;
     }
+  }
+
+  announceQaVerdict(card, verdict) {
+    if (!card || !["pass", "fail"].includes(verdict)) return;
+    const title = String(card.title || "QA card").trim().slice(0, 120);
+    const passed = verdict === "pass";
+    const result = passed ? "passed" : "failed";
+    this.toast(
+      `QA ping · ${title} ${result}.${passed ? " 🎉" : ""}`,
+      { priority: 2, lockMs: 4500 },
+    );
+
+    this.$("[data-world-qa-result-effect]")?.remove();
+    window.clearTimeout(this.qaResultTimer);
+    const layer = document.createElement("section");
+    layer.className = `world-qa-result-effect world-qa-result-effect--${result}`;
+    layer.dataset.worldQaResultEffect = "true";
+    layer.setAttribute("role", "status");
+    layer.setAttribute(
+      "aria-label",
+      passed ? "QA card passed" : "QA card failed",
+    );
+    const notice = document.createElement("div");
+    notice.className = "world-qa-result-notice";
+    const heading = document.createElement("strong");
+    heading.textContent = passed ? "QA PASSED!" : "QA FAILED";
+    const copy = document.createElement("span");
+    copy.textContent = title;
+    notice.append(heading, copy);
+    layer.append(notice);
+    if (
+      passed &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      const confetti = document.createElement("div");
+      confetti.className = "world-qa-pass-confetti";
+      confetti.setAttribute("aria-hidden", "true");
+      for (let index = 0; index < 24; index += 1) {
+        const particle = document.createElement("i");
+        particle.style.setProperty("--x", `${18 + Math.random() * 64}%`);
+        particle.style.setProperty("--delay", `${Math.random() * 0.35}s`);
+        particle.style.setProperty("--hue", `${96 + Math.floor(Math.random() * 80)}`);
+        confetti.append(particle);
+      }
+      layer.append(confetti);
+    }
+    this.append(layer);
+    this.qaResultTimer = window.setTimeout(() => {
+      layer.remove();
+      this.qaResultTimer = 0;
+    }, passed ? 3600 : 4600);
   }
 
   async recordTaskQaVerdict(task, verdict) {
@@ -10465,6 +10549,13 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         diagnostics.removeAttribute("open");
       }
+      const onlineMenu = this.$("[data-world-online-menu]");
+      if (
+        onlineMenu?.dataset.open === "true" &&
+        !event.target.closest("[data-world-online-menu]")
+      ) {
+        this.setOnlineRosterOpen(false);
+      }
       const settingsPanel = this.$("[data-world-settings]");
       if (
         settingsPanel?.dataset.open === "true" &&
@@ -10633,6 +10724,22 @@ class ForkMeshWorld extends HTMLElement {
       }
       if (event.target.closest("[data-world-instance-snapshot]")) {
         this.downloadInstanceSetupCard();
+        return;
+      }
+      const onlinePerson = event.target.closest("[data-world-online-person]");
+      if (onlinePerson) {
+        this.openOnlineRosterMember(
+          onlinePerson.dataset.worldOnlinePerson,
+          onlinePerson,
+        );
+        return;
+      }
+      // Hover opens the roster in CSS; the click pins it open so touch — which
+      // has no hover at all — reaches the same list.
+      if (event.target.closest("[data-world-online-toggle]")) {
+        this.setOnlineRosterOpen(
+          this.$("[data-world-online-menu]")?.dataset.open !== "true",
+        );
         return;
       }
       const mcpPromptButton = event.target.closest("[data-world-mcp-prompt]");
@@ -11006,6 +11113,27 @@ class ForkMeshWorld extends HTMLElement {
       if (errorTask) {
         void this.createTaskFromAdminError(
           errorTask.dataset.worldAdminErrorTask,
+        );
+        return;
+      }
+      const errorGroupDelete = event.target.closest(
+        "[data-world-admin-error-group-delete]",
+      );
+      if (errorGroupDelete) {
+        void this.deleteAdminErrorGroup(errorGroupDelete.dataset);
+        return;
+      }
+      const errorGroupTask = event.target.closest(
+        "[data-world-admin-error-group-task]",
+      );
+      if (errorGroupTask) {
+        void this.createTaskFromAdminErrorGroup(errorGroupTask.dataset);
+        return;
+      }
+      const errorCopy = event.target.closest("[data-world-admin-error-copy]");
+      if (errorCopy) {
+        void this.copyAdminErrorMessage(
+          errorCopy.dataset.worldAdminErrorCopy,
         );
         return;
       }
@@ -11490,7 +11618,10 @@ class ForkMeshWorld extends HTMLElement {
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
       if (this.$("[data-world-chat-terminal]")?.open) return;
-      if (
+      if (this.$("[data-world-online-menu]")?.dataset.open === "true") {
+        this.setOnlineRosterOpen(false);
+        this.$("[data-world-online-toggle]")?.focus();
+      } else if (
         this.$("[data-world-instance-launcher]")?.dataset.open === "true"
       ) {
         this.toggleInstanceLauncher(false);
@@ -12762,7 +12893,11 @@ class ForkMeshWorld extends HTMLElement {
         const status = Number(item.status) || 0;
         if (filter === "server" && status < 500) return false;
         if (filter === "client" && (status < 400 || status >= 500)) return false;
-        if (filter === "browser" && item.method !== "BROWSER") return false;
+        if (
+          filter === "browser" &&
+          item.method !== "JS" &&
+          !String(item.path || "").startsWith("/client-error/")
+        ) return false;
         if (
           query &&
           ![
@@ -12806,7 +12941,11 @@ class ForkMeshWorld extends HTMLElement {
       const status = Number(item.status) || 0;
       if (filter === "server" && status < 500) return false;
       if (filter === "client" && (status < 400 || status >= 500)) return false;
-      if (filter === "browser" && item.method !== "BROWSER") return false;
+      if (
+        filter === "browser" &&
+        item.method !== "JS" &&
+        !String(item.path || "").startsWith("/client-error/")
+      ) return false;
       return (
         !query ||
         [
@@ -12832,6 +12971,40 @@ class ForkMeshWorld extends HTMLElement {
           .join("")}
         ${anonymous ? `<i title="${anonymous.toLocaleString()} anonymous occurrence(s)">?</i>` : ""}
       </span>`;
+    const errorSource = (item) =>
+      item.method === "JS" || String(item.path || "").startsWith("/client-error/")
+        ? "JavaScript"
+        : "Worker";
+    const sourceBadge = (item) =>
+      `<span class="world-error-source world-error-source--${
+        errorSource(item) === "JavaScript" ? "javascript" : "worker"
+      }">${errorSource(item)}</span>`;
+    const exactTime = (timestamp) => {
+      const instant = new Date(timestamp);
+      return Number.isNaN(instant.getTime()) ? "Unknown time" : instant.toLocaleString();
+    };
+    const relativeTime = (timestamp) =>
+      timestamp ? relativeTimeLabel(timestamp) : "unknown";
+    const chartHours = Array.from({ length: 24 }, (_, index) =>
+      Math.max(0, Number(this.adminErrorHours[index]) || 0),
+    );
+    const chartPeak = Math.max(0, ...chartHours);
+    const chartTotal = chartHours.reduce((total, count) => total + count, 0);
+    const hourLabel = (index) => {
+      const hoursAgo = 23 - index;
+      return hoursAgo === 0 ? "current hour" : `${hoursAgo} hours ago`;
+    };
+    const groupDataAttributes = (group) => {
+      const users = [
+        ...group.actors.map((actor) => `${actor.name} (${actor.count})`),
+        ...(group.anonymous ? [`anonymous (${group.anonymous})`] : []),
+      ].join(", ");
+      return `data-world-admin-error-group-status="${escapeHTML(group.status)}"
+        data-world-admin-error-group-method="${escapeHTML(group.method)}"
+        data-world-admin-error-group-path="${escapeHTML(group.path)}"
+        data-world-admin-error-group-message="${escapeHTML(group.message)}"
+        data-world-admin-error-group-users="${escapeHTML(users)}"`;
+    };
     return `
       <section class="world-activity-board world-activity-board--errors" aria-label="Error log">
         <header class="world-activity-board-heading">
@@ -12865,27 +13038,49 @@ class ForkMeshWorld extends HTMLElement {
           <div data-tone="warning"><strong>${total4xx}</strong><span>Client</span></div>
           <div data-tone="cool"><strong>${rows.length}</strong><span>Showing</span></div>
         </div>
+        <section class="world-error-analytics" aria-labelledby="world-error-analytics-title">
+          <h4 id="world-error-analytics-title">Previous 24 hours · ${chartTotal.toLocaleString()} occurrence${chartTotal === 1 ? "" : "s"}</h4>
+          <div class="world-error-chart" role="img" aria-label="24-hour error frequency">
+            ${chartHours
+              .map((count, index) => `<span tabindex="0" role="img" aria-label="${hourLabel(index)}: ${count} error${count === 1 ? "" : "s"}" data-empty="${count === 0}" style="height:${chartPeak ? Math.max(2, Math.round((132 * count) / chartPeak) : 2)}px" title="${hourLabel(index)} · ${count}"></span>`)
+              .join("")}
+          </div>
+          <div class="world-error-hours"><span>24h ago</span><span>12h ago</span><span>now</span></div>
+        </section>
         <section class="world-error-groups" aria-labelledby="world-error-groups-title">
           <h4 id="world-error-groups-title">Equivalent errors · previous 24 hours</h4>
           <div class="world-error-group-table" role="table" aria-label="Grouped error occurrences">
             <div class="world-error-group-header" role="row">
-              <span>Count</span><span>Status</span><span>Method</span>
-              <span>Path</span><span>Message</span><span>Users</span>
-              <span>First</span><span>Last</span>
+              <span>Count</span><span>24-hour frequency</span><span>Source</span>
+              <span>Status</span><span>Method</span><span>Path</span><span>Message</span>
+              <span>Users</span><span>First</span><span>Last</span><span>Actions</span>
             </div>
             ${grouped.length
               ? grouped
                   .map(
-                    (group) => `<div class="world-error-group-row" role="row">
+                    (group) => {
+                      const hours = Array.from({ length: 24 }, (_, index) =>
+                        Math.max(0, Number(group.hours[index]) || 0),
+                      );
+                      const peak = Math.max(0, ...hours);
+                      const attrs = groupDataAttributes(group);
+                      return `<div class="world-error-group-row" role="row">
                       <strong>${group.count.toLocaleString()}</strong>
+                      <span class="world-error-sparkline" tabindex="0" role="img" aria-label="24-hour frequency: ${group.count.toLocaleString()} occurrence${group.count === 1 ? "" : "s"}">${hours.map((count, index) => `<i data-empty="${count === 0}" style="height:${peak ? Math.max(2, Math.round((28 * count) / peak)) : 2}px" title="${hourLabel(index)} · ${count}"></i>`).join("")}</span>
+                      ${sourceBadge(group)}
                       <span>${escapeHTML(group.status || "ERR")}</span>
                       <span>${escapeHTML(group.method || "—")}</span>
                       <code title="${escapeHTML(group.path || "—")}">${escapeHTML(group.path || "—")}</code>
-                      <span title="${escapeHTML(group.message || "—")}">${escapeHTML(group.message || "—")}</span>
+                      <span class="world-error-message" title="${escapeHTML(group.message || "—")}"><span>${escapeHTML(group.message || "—")}</span><button type="button" data-world-admin-error-copy="${escapeHTML(group.message || "")}" title="Copy this message">Copy</button></span>
                       ${errorActorFaces(group.actors, group.anonymous)}
-                      <time>${escapeHTML(group.firstSeen ? new Date(group.firstSeen).toLocaleString() : "—")}</time>
-                      <time>${escapeHTML(group.lastSeen ? new Date(group.lastSeen).toLocaleString() : "—")}</time>
-                    </div>`,
+                      <time datetime="${escapeHTML(group.firstSeen ? new Date(group.firstSeen).toISOString() : "")}" title="${escapeHTML(exactTime(group.firstSeen))}">${escapeHTML(relativeTime(group.firstSeen))}</time>
+                      <time datetime="${escapeHTML(group.lastSeen ? new Date(group.lastSeen).toISOString() : "")}" title="${escapeHTML(exactTime(group.lastSeen))}">${escapeHTML(relativeTime(group.lastSeen))}</time>
+                      <span class="world-error-row-actions">
+                        <button type="button" ${attrs} data-world-admin-error-group-task>Task</button>
+                        <button type="button" ${attrs} data-world-admin-error-group-delete>Delete group</button>
+                      </span>
+                    </div>`;
+                    },
                   )
                   .join("")
               : '<p class="world-activity-empty">No grouped errors match these controls.</p>'}
@@ -12893,7 +13088,7 @@ class ForkMeshWorld extends HTMLElement {
         </section>
         <h4 class="world-error-raw-title">Individual records</h4>
         <div class="world-error-table-header" role="row">
-          <span>ID</span><span>Time</span><span>Status</span><span>Method</span>
+          <span>ID</span><span>Time</span><span>Source</span><span>Status</span><span>Method</span>
           <span>Path</span><span>Message</span><span>User</span><span>CF-Ray</span>
           <span>Actions</span>
         </div>
@@ -12915,10 +13110,11 @@ class ForkMeshWorld extends HTMLElement {
                     return `<li class="world-activity-row world-error-row" data-tone="${tone}">
                       <span>${escapeHTML(item.id)}</span>
                       <time datetime="${escapeHTML(Number.isNaN(instant.getTime()) ? "" : instant.toISOString())}">${escapeHTML(Number.isNaN(instant.getTime()) ? "Unknown" : instant.toLocaleString())}</time>
+                      ${sourceBadge(item)}
                       <strong>${escapeHTML(item.status || "ERR")}</strong>
                       <span>${escapeHTML(item.method || "—")}</span>
                       <code title="${escapeHTML(item.path || "—")}">${escapeHTML(item.path || "—")}</code>
-                      <span title="${escapeHTML(item.message || "Logged error")}">${escapeHTML(item.message || "Logged error")}</span>
+                      <span class="world-error-message" title="${escapeHTML(item.message || "Logged error")}"><span>${escapeHTML(item.message || "Logged error")}</span><button type="button" data-world-admin-error-copy="${escapeHTML(item.message || "")}" title="Copy this message">Copy</button></span>
                       <span class="world-error-single-actor" title="${escapeHTML(actor)}">${escapeHTML(actor.slice(0, 1).toUpperCase())}</span>
                       <span title="${escapeHTML(item.ray || "—")}">${escapeHTML(item.ray || "—")}</span>
                       <span class="world-error-row-actions">
@@ -12982,6 +13178,9 @@ class ForkMeshWorld extends HTMLElement {
           count: Math.max(0, Number(group?.count) || 0),
           firstSeen: Math.max(0, Number(group?.firstSeen) || 0),
           lastSeen: Math.max(0, Number(group?.lastSeen) || 0),
+          hours: Array.from({ length: 24 }, (_, index) =>
+            Math.max(0, Number(group?.hours?.[index]) || 0),
+          ),
           actors: (Array.isArray(group?.actors) ? group.actors : [])
             .slice(0, 16)
             .map((entry) => ({
@@ -12991,6 +13190,9 @@ class ForkMeshWorld extends HTMLElement {
             .filter((entry) => entry.name),
           anonymous: Math.max(0, Number(group?.anonymous) || 0),
         }));
+      this.adminErrorHours = Array.from({ length: 24 }, (_, index) =>
+        Math.max(0, Number(payload?.hourly?.[index]) || 0),
+      );
       this.adminErrorsState = this.adminErrors.length ? "ready" : "empty";
     } catch (_) {
       this.adminErrorsState = "unavailable";
@@ -13032,6 +13234,70 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {
       this.toast("A Bot task could not be created from that error.");
     }
+  }
+
+  adminErrorGroupFromDataset(dataset) {
+    return {
+      status: sanitizePresenceText(dataset.worldAdminErrorGroupStatus, "", 12),
+      method: sanitizePresenceText(
+        dataset.worldAdminErrorGroupMethod,
+        "",
+        12,
+      ).toUpperCase(),
+      path: sanitizeNotificationText(dataset.worldAdminErrorGroupPath, "", 2000),
+      message: sanitizeNotificationText(
+        dataset.worldAdminErrorGroupMessage,
+        "",
+        1000,
+      ),
+      users: sanitizeNotificationText(
+        dataset.worldAdminErrorGroupUsers,
+        "",
+        300,
+      ),
+    };
+  }
+
+  async deleteAdminErrorGroup(dataset) {
+    if (this.identity?.isAdmin !== true) return;
+    const group = this.adminErrorGroupFromDataset(dataset);
+    if (!group.status || !group.method) return;
+    if (!window.confirm("Delete every error in this group? This cannot be undone.")) {
+      return;
+    }
+    try {
+      await this.postJSON(
+        "/api/world/admin/errors",
+        { group },
+        { method: "DELETE", timeout: 7000 },
+      );
+      await this.refreshAdminErrorRows();
+      this.toast("Equivalent error group deleted.");
+    } catch (_) {
+      this.toast("Error group could not be deleted.");
+    }
+  }
+
+  async createTaskFromAdminErrorGroup(dataset) {
+    if (this.identity?.isAdmin !== true) return;
+    const group = this.adminErrorGroupFromDataset(dataset);
+    if (!group.status || !group.method) return;
+    try {
+      await this.postJSON(
+        "/api/world/admin/errors",
+        { group },
+        { timeout: 7000 },
+      );
+      this.toast("Equivalent error group sent to the organization task list.");
+      this.officeTasks?.refresh?.({ quiet: true, force: true });
+    } catch (_) {
+      this.toast("A Bot task could not be created from that error group.");
+    }
+  }
+
+  async copyAdminErrorMessage(message) {
+    if (await copyWorldText(message)) this.toast("Error message copied.");
+    else this.toast("The error message could not be copied.");
   }
 
   async openAdminErrors(returnFocus = null) {
@@ -25351,7 +25617,7 @@ class ForkMeshWorld extends HTMLElement {
     const kind =
       /\b(?:failed|error|unavailable|could not|denied)\b/i.test(copy)
         ? "error"
-        : /\b(?:saved|ready|complete|success|online)\b/i.test(copy)
+        : /\b(?:saved|ready|complete|success|online|passed)\b/i.test(copy)
           ? "success"
           : "status";
     this.activityNotice(copy, { kind, sender: "ForkMesh" });
@@ -27597,6 +27863,171 @@ class ForkMeshWorld extends HTMLElement {
     this.syncWorldFaceImages(players);
     this.syncMemberLounge();
     this.updateSystemCapacityMetrics();
+    this.renderOnlineRoster();
+  }
+
+  // Everyone the live socket says is in the World right now: this visitor
+  // first, then each announced peer by name. Only fields presence already
+  // publishes are read, so the roster can never show more than an avatar does.
+  onlineRoster() {
+    const roster = [];
+    const seen = new Set();
+    if (this.identity && this.settings?.privacy) {
+      const self = publicIdentity(this.identity, this.settings);
+      const selfId = String(this.serverPeerId || this.identity.id || "self");
+      seen.add(selfId);
+      roster.push({
+        id: selfId,
+        self: true,
+        name: self.name,
+        flag: self.flag,
+        countryCode: self.countryCode,
+        accountStatus: self.accountStatus,
+        activity: self.status === "hidden" ? "online" : self.status,
+        statusEmoji: self.statusEmoji,
+        statusNote: self.statusNote,
+      });
+    }
+    const peers = [];
+    this.remotePlayers.forEach((player, id) => {
+      const peerId = String(id || "");
+      if (!player || !peerId || seen.has(peerId)) return;
+      seen.add(peerId);
+      peers.push({
+        id: peerId,
+        self: false,
+        player,
+        name: player.name || "visitor",
+        flag: player.flag || "",
+        countryCode: player.countryCode || "",
+        accountStatus: player.accountStatus || "Guest",
+        activity: player.activity || "online",
+        statusEmoji: player.statusEmoji || "",
+        statusNote: player.statusNote || "",
+      });
+    });
+    peers.sort((left, right) =>
+      left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+    );
+    return [...roster, ...peers];
+  }
+
+  onlineRosterDetail(person) {
+    const status = [person.statusEmoji, person.statusNote]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" ");
+    if (status) return status;
+    return (
+      AVAILABILITY_OPTIONS.find((option) => option.id === person.activity)
+        ?.label || "Online"
+    );
+  }
+
+  // Keeps the HUD count honest on every peer render. The dropdown body is
+  // rewritten only when somebody actually joined, left, or changed state —
+  // movement frames must not yank the list out from under a pointer.
+  renderOnlineRoster() {
+    const badge = this.$("[data-world-online-count]");
+    const list = this.$("[data-world-online-list]");
+    if (!badge && !list) return;
+    const people = this.onlineRoster();
+    const count = people.length;
+    const realtimeOffline = !(
+      this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId)
+    );
+    if (badge) badge.textContent = count > 99 ? "99+" : String(count);
+    this.$("[data-world-online-toggle]")?.setAttribute(
+      "aria-label",
+      count === 1
+        ? "1 person online right now — show who is here"
+        : `${count} people online right now — show who is here`,
+    );
+    if (!list) return;
+    const shown = people.slice(0, WORLD_ONLINE_ROSTER_LIMIT);
+    const remaining = count - shown.length;
+    const signature = [
+      realtimeOffline ? "offline" : "online",
+      remaining,
+      ...shown.map(
+        (person) => `${person.id} ${person.name} ${this.onlineRosterDetail(person)}`,
+      ),
+    ].join("");
+    if (signature === this.onlineRosterSignature) return;
+    this.onlineRosterSignature = signature;
+    list.innerHTML = `
+      <p class="world-online-heading">${
+        count === 1
+          ? "You are the only one here"
+          : `${count} people online now`
+      }</p>
+      <ul class="world-online-people">
+        ${shown
+          .map(
+            (person) => `<li>
+              <button
+                type="button"
+                data-world-online-person="${escapeHTML(person.id)}"
+                title="Open ${escapeHTML(person.name)}’s public profile"
+              >
+                <span class="world-online-flag" aria-hidden="true">${escapeHTML(
+                  person.flag || "◌",
+                )}</span>
+                <span class="world-online-name">${escapeHTML(person.name)}${
+                  person.self ? " (you)" : ""
+                }</span>
+                <span class="world-online-activity">${escapeHTML(
+                  this.onlineRosterDetail(person),
+                )}</span>
+              </button>
+            </li>`,
+          )
+          .join("")}
+      </ul>
+      ${
+        remaining > 0
+          ? `<p class="world-online-more">+${remaining} more online, not listed here</p>`
+          : ""
+      }
+      ${
+        realtimeOffline
+          ? `<p class="world-online-more">Realtime presence is offline, so only you are counted until it reconnects.</p>`
+          : ""
+      }`;
+  }
+
+  setOnlineRosterOpen(open) {
+    const menu = this.$("[data-world-online-menu]");
+    if (!menu) return;
+    menu.dataset.open = open ? "true" : "false";
+    this.$("[data-world-online-toggle]")?.setAttribute(
+      "aria-expanded",
+      open ? "true" : "false",
+    );
+  }
+
+  // A roster row is the same door the avatar itself is: it opens that
+  // member's public detail panel, it never moves or contacts anybody.
+  openOnlineRosterMember(peerId, returnFocus = null) {
+    const id = String(peerId || "");
+    const person = this.onlineRoster().find((entry) => entry.id === id);
+    if (!person) return;
+    this.setOnlineRosterOpen(false);
+    this.openWorldMemberDetail(
+      {
+        ...(person.player || {}),
+        peerId: person.self ? "" : id,
+        self: person.self === true,
+        name: person.name,
+        accountStatus: person.accountStatus,
+        flag: person.flag,
+        countryCode: person.countryCode,
+        status: person.activity,
+        statusEmoji: person.statusEmoji,
+        statusNote: person.statusNote,
+      },
+      { returnFocus },
+    );
   }
 
   // Public balance and transaction-recency bucket for one published wallet
@@ -28647,6 +29078,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearTimeout(this.adminErrorEffectTimer);
     window.clearTimeout(this.instanceCelebrationTimer);
     window.clearTimeout(this.installCelebrationTimer);
+    window.clearTimeout(this.qaResultTimer);
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
