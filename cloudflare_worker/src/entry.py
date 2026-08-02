@@ -411,6 +411,7 @@ from urls import (  # noqa: E402
     ORG_BOT_TOKENS_RE,
     ORG_DISCORD_RE,
     DISCORD_OAUTH_CALLBACK_RE,
+    MAILTRAP_WEBHOOK_RE,
     BOT_SESSION_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
@@ -1532,13 +1533,42 @@ async def notify_repo_mirrors(env, owner, repo, topic):
     if not context:
         return
     source_owner = str(owner or "").strip().lower()
-    for node in sorted({
+    mirror_nodes = {
         str(value or "").strip().lower()
         for value in context.get("nodes", set())
-    }):
-        if not valid_node_name(node) or node == source_owner:
+        if valid_node_name(str(value or "").strip().lower())
+    }
+    # A headless mirror opens its event socket under the node account, while a
+    # desktop node linked to a person opens the same socket under that owner's
+    # account. The HTTPS catalog is keyed by machine name, so notifying only
+    # `mirror2` silently missed a live socket authenticated as (for example)
+    # `jett`. Fan the payload-free hint to both identities. The node ownership
+    # relation is server-written and the query is bounded by the already
+    # bounded integrity-approved mirror set.
+    targets = set(mirror_nodes)
+    if mirror_nodes:
+        try:
+            placeholders = ",".join("?" for _node in mirror_nodes)
+            rows = await d1_all(
+                env,
+                "SELECT lower(n.name) AS node_name,lower(u.username) AS owner "
+                "FROM nodes n LEFT JOIN users u ON u.user_bi=n.user_bi "
+                "WHERE lower(n.name) IN (" + placeholders + ")",
+                *sorted(mirror_nodes),
+            )
+            for row in rows or []:
+                node = str(row.get("node_name") or "").strip().lower()
+                linked_owner = str(row.get("owner") or "").strip().lower()
+                if node in mirror_nodes and valid_node_name(linked_owner):
+                    targets.add(linked_owner)
+        except Exception:
+            # The machine-name notification remains the fallback for headless
+            # nodes and for a transient ownership lookup failure.
+            pass
+    for target in sorted(targets):
+        if not valid_node_name(target) or target == source_owner:
             continue
-        await notify_repo_host(env, node, repo, topic)
+        await notify_repo_host(env, target, repo, topic)
 
 
 async def node_events_handler(env, request):
@@ -2149,6 +2179,7 @@ STATUS_SYSTEMS = [
     ("api", "API"),
     ("errors", "Worker errors"),
     ("database", "Database"),
+    ("email", "Email delivery"),
     ("flagship_repository", "forkmesh/forkmesh repository page"),
     ("installer", "Installer delivery"),
     ("git_hosting", "Git hosting network"),
@@ -2180,6 +2211,12 @@ STATUS_SYSTEM_CHECKS = {
         "Runs a real SELECT round trip against the D1 database once a "
         "minute. Passes when the query returns a row; fails on any query "
         "error."),
+    "email": (
+        "Checks that the Mailtrap sending API and signed delivery webhook are "
+        "configured, then inspects the most recent account email lifecycle. "
+        "Passes when no send has failed and the latest accepted email receives "
+        "a delivery lifecycle event within 30 minutes. Recipient addresses, "
+        "subjects, and message bodies are never stored in this health signal."),
     "flagship_repository": (
         "Loads https://forkmesh.com/forkmesh/forkmesh once a minute, then "
         "loads the root repository tree, README.md, one issue, one discussion, "
@@ -2251,6 +2288,12 @@ STATUS_MONITOR_GUIDANCE = {
         "Cloudflare D1 health, bindings, migrations, and query errors",
         "Confirm the production D1 binding and quota, then repair the failed "
         "migration or query before retrying the health check."),
+    "email": (
+        "Mailtrap API responses, webhook signatures, and recent delivery "
+        "lifecycle records",
+        "Restore the Mailtrap API token and webhook secret, confirm the "
+        "delivery webhook reaches ForkMesh, then send a test email and verify "
+        "that its delivery event is recorded."),
     "flagship_repository": (
         "the forkmesh/forkmesh mirror endpoints, repository integrity pins, "
         "and root-tree, README, issue, discussion, and pull responses",
@@ -3721,6 +3764,16 @@ async def record_status_sample(env):
         reason["database"] = "Database query failed: " + str(exc)[:160]
 
     try:
+        email_ok, email_reason = await _email_delivery_status(env, now)
+        ok["email"] = email_ok
+        if not email_ok:
+            reason["email"] = email_reason
+    except Exception as exc:
+        ok["email"] = False
+        reason["email"] = (
+            "Email delivery health query failed: " + str(exc)[:160])
+
+    try:
         repository_ok, repository_reason = await _flagship_repository_probe(env)
         if (
             not repository_ok
@@ -3880,23 +3933,31 @@ async def record_status_sample(env):
         ok["website"] = ok["api"] = ok["errors"] = True
         ok["realtime"] = ok["durable_objects"] = True
 
-    # Each registered mirror that has supplied a valid ForkMesh repository
-    # proof gets its own /status row. This registry contains cryptographically
-    # bound node identities; unlike account_presence or host_presence it cannot
-    # turn a user/chat name or an ad-hoc repository request into a fake node.
-    # Keep recently disconnected mirrors in the sample set for the 30-day
-    # history window so an outage becomes red instead of making the row vanish.
+    # Every registered mirror* node gets its own /status row, including nodes
+    # that have never managed to publish a valid endpoint proof. The roster is
+    # the union of account-bound node registrations and signed direct-HTTPS
+    # endpoint registrations; chat/user presence can never invent a row.
+    # Missing, stale, unhealthy, and unverified endpoints stay visible as red.
     status_systems = list(STATUS_SYSTEMS)
     try:
         mirror_rows = await d1_all(
             env,
-            """SELECT node_name,checked_at,healthy,integrity,
-                      forkmesh_active,forkmesh_verified_at
-                 FROM mirror_https_endpoints
-                WHERE abuse_blocked=0 AND forkmesh_verified_at>0
-                  AND (forkmesh_active=1 OR forkmesh_verified_at>=?)
-                ORDER BY lower(node_name) LIMIT ?""",
-            now - STATUS_HISTORY_RETAIN_MS,
+            """WITH mirror_names AS (
+                   SELECT lower(name) AS node_name
+                     FROM nodes
+                    WHERE name IS NOT NULL AND lower(name) LIKE 'mirror%'
+                   UNION
+                   SELECT lower(node_name) AS node_name
+                     FROM mirror_https_endpoints
+                    WHERE lower(node_name) LIKE 'mirror%'
+               )
+               SELECT names.node_name,endpoint.checked_at,endpoint.healthy,
+                      endpoint.integrity,endpoint.abuse_blocked,
+                      endpoint.forkmesh_active,endpoint.forkmesh_verified_at
+                 FROM mirror_names names
+                 LEFT JOIN mirror_https_endpoints endpoint
+                   ON lower(endpoint.node_name)=names.node_name
+                ORDER BY names.node_name LIMIT ?""",
             STATUS_MIRROR_MAX,
         )
         seen_mirrors = set()
@@ -3904,6 +3965,7 @@ async def record_status_sample(env):
             mirror_name = str(row.get("node_name") or "").strip().lower()
             if (
                 mirror_name in seen_mirrors
+                or not mirror_name.startswith("mirror")
                 or not re.fullmatch(
                     r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
             ):
@@ -3920,8 +3982,10 @@ async def record_status_sample(env):
             is_healthy = int(row.get("healthy") or 0) == 1
             integrity_ok = str(row.get("integrity") or "") == "ok"
             is_active = int(row.get("forkmesh_active") or 0) == 1
+            is_allowed = int(row.get("abuse_blocked") or 0) == 0
             mirror_ok = (
-                is_fresh and is_healthy and integrity_ok and is_active)
+                is_fresh and is_healthy and integrity_ok and is_active
+                and is_allowed)
             ok[system_id] = mirror_ok
             if not mirror_ok:
                 if not is_fresh:
@@ -3935,6 +3999,9 @@ async def record_status_sample(env):
                     reason[system_id] = (
                         mirror_name + " reported repository integrity " +
                         (str(row.get("integrity") or "unknown")))
+                elif not is_allowed:
+                    reason[system_id] = (
+                        mirror_name + " is blocked from serving traffic")
                 else:
                     reason[system_id] = (
                         mirror_name + " is reachable but is not serving an "
@@ -4082,10 +4149,33 @@ async def status_history(env, view="full"):
         by_system_minute.setdefault(system_id, {})[int(row["minute_ts"])] = row
         last_sample_ts = max(last_sample_ts, int(row["minute_ts"]))
 
-    # Dynamic mirror systems are written by record_status_sample only after a
-    # node supplies a valid signed repository proof. Build the public roster
-    # from those recorded IDs, never from user/account presence.
+    # Start with recorded mirror history, then union current registered
+    # mirror* names so a newly registered but broken node appears immediately
+    # as down instead of disappearing until its first successful proof.
     recorded_system_ids = set(by_system_hour) | set(by_system_minute)
+    try:
+        registered_mirrors = await d1_all(
+            env,
+            """SELECT lower(name) AS node_name
+                 FROM nodes
+                WHERE name IS NOT NULL AND lower(name) LIKE 'mirror%'
+               UNION
+               SELECT lower(node_name) AS node_name
+                 FROM mirror_https_endpoints
+                WHERE lower(node_name) LIKE 'mirror%'
+               ORDER BY node_name LIMIT ?""",
+            STATUS_MIRROR_MAX,
+        )
+        for row in registered_mirrors or []:
+            mirror_name = str(row.get("node_name") or "").strip().lower()
+            if (
+                mirror_name.startswith("mirror")
+                and re.fullmatch(
+                    r"[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?", mirror_name)
+            ):
+                recorded_system_ids.add(STATUS_MIRROR_PREFIX + mirror_name)
+    except Exception:
+        pass
     mirror_systems = []
     for system_id in recorded_system_ids:
         if not system_id.startswith(STATUS_MIRROR_PREFIX):
@@ -9009,6 +9099,22 @@ class _OfficeMarketingTasksRuntime:
             cache_control=cache_control,
             extra_headers=extra_headers,
         )
+
+    def binary_response(self, data, mime, name):
+        safe_name = re.sub(
+            r"[^A-Za-z0-9._ -]+", "_", str(name or "task-image"))[:120]
+        return JsResponse.new(Uint8Array.new(_to_js(bytes(data))), to_js({
+            "status": 200,
+            "headers": {
+                "content-type": str(mime),
+                "content-disposition": (
+                    'inline; filename="' + safe_name.replace('"', "_") + '"'
+                ),
+                "cache-control": "private, no-store, max-age=0",
+                "content-security-policy": "default-src 'none'; sandbox",
+                "x-content-type-options": "nosniff",
+            },
+        }))
 
     async def ensure_schema(self):
         await ensure_schema(self.env)
@@ -16558,6 +16664,10 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "activityBucket": activity_bucket,
         **_account_public_last_email(rec),
         **_account_world_client_fields(rec),
+        "lastEmailAt": max(
+            0, int((email_activity or {}).get("sent_at") or 0)),
+        "lastEmailStatus": clean_string(
+            (email_activity or {}).get("status") or "", 40).lower(),
     }
 
 
@@ -16616,6 +16726,19 @@ async def _account_users_directory(env, request):
     # A bucket label only, joined in from its own query so this function
     # body never handles the raw touch timestamp behind it.
     activity_buckets = await _world_user_activity_buckets(env)
+    email_activity = {}
+    try:
+        send_rows = await d1_all(
+            env,
+            "SELECT account_bi,status,sent_at FROM mailtrap_email_sends "
+            "ORDER BY sent_at DESC LIMIT 5000",
+        )
+        for send in send_rows or []:
+            account_bi = str(send.get("account_bi") or "")
+            if account_bi and account_bi not in email_activity:
+                email_activity[account_bi] = send
+    except Exception:
+        email_activity = {}
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
         if (not rec or _account_kind(rec) != "user"
@@ -16628,7 +16751,8 @@ async def _account_users_directory(env, request):
         seen.add(name)
         out.append(_account_chat_user_payload(
             rec, row.get("total_active_ms", 0),
-            activity_buckets.get(row.get("user_bi"), "")))
+            activity_buckets.get(row.get("user_bi"), ""),
+            email_activity.get(row.get("user_bi"))))
 
     # The campfire seats members in this same array order, one bench per
     # account for the session — so this is sorted by join date (oldest
@@ -25556,8 +25680,47 @@ MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
 FORKMESH_SITE_URL = "https://forkmesh.com/"
 
 
+async def _mailtrap_account_for_email(env, email):
+    try:
+        email_bi = await blind_index(
+            env, clean_string(email or "", 254).strip().lower())
+        if not email_bi:
+            return ""
+        row = await d1_first(
+            env, "SELECT user_bi FROM users WHERE email_bi=? LIMIT 1",
+            email_bi)
+        return str((row or {}).get("user_bi") or "")
+    except Exception:
+        return ""
+
+
+async def _record_mailtrap_send(
+        env, send_id, account_bi, kind, accepted, status=""):
+    if not send_id or not account_bi:
+        return
+    now = int(Date.now())
+    try:
+        await d1_run(
+            env,
+            "INSERT INTO mailtrap_email_sends "
+            "(send_id,account_bi,kind,sent_at,accepted,status,status_at,"
+            "message_id) VALUES(?,?,?,?,?,?,?,?)",
+            send_id,
+            account_bi,
+            clean_string(kind or "account", 40),
+            now,
+            1 if accepted else 0,
+            clean_string(status or (
+                "accepted" if accepted else "failed"), 40),
+            now,
+            "",
+        )
+    except Exception:
+        pass
+
+
 async def _send_email(env, to_email, subject, text, html=None,
-                      from_email=None, from_name=None):
+                      from_email=None, from_name=None, email_kind="account"):
     token = (getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()
     if not token or not to_email:
         return False
@@ -25591,6 +25754,14 @@ async def _send_email(env, to_email, subject, text, html=None,
         "subject": subject,
         "text": text,
     }
+    account_bi = await _mailtrap_account_for_email(env, to_email)
+    send_id = _ap_uuid() if account_bi else ""
+    if send_id:
+        payload["custom_variables"] = {
+            "forkmesh_send_id": send_id,
+            "forkmesh_account_bi": account_bi,
+            "forkmesh_kind": clean_string(email_kind or "account", 40),
+        }
     if html:
         payload["html"] = html
     try:
@@ -25606,9 +25777,136 @@ async def _send_email(env, to_email, subject, text, html=None,
             },
             CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS,
         )
-        return 200 <= int(getattr(resp, "status", 0)) < 300
+        accepted = 200 <= int(getattr(resp, "status", 0)) < 300
+        await _record_mailtrap_send(
+            env, send_id, account_bi, email_kind, accepted)
+        return accepted
     except Exception:
+        await _record_mailtrap_send(
+            env, send_id, account_bi, email_kind, False)
         return False
+
+
+MAILTRAP_WEBHOOK_EVENTS = {
+    "delivery",
+    "open",
+    "click",
+    "unsubscribe",
+    "spam",
+    "soft bounce",
+    "bounce",
+    "suspension",
+    "reject",
+}
+
+
+def _mailtrap_webhook_payload(raw):
+    raw = str(raw or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            parsed = parsed.get("events", [parsed])
+        return parsed if isinstance(parsed, list) else None
+    except Exception:
+        events = []
+        for line in raw.splitlines():
+            try:
+                event = json.loads(line)
+            except Exception:
+                return None
+            if not isinstance(event, dict):
+                return None
+            events.append(event)
+        return events
+
+
+async def mailtrap_webhook_handler(env, request):
+    if method_name(request) != "POST":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            extra_headers={"allow": "POST"})
+    secret = str(
+        getattr(env, "MAILTRAP_WEBHOOK_SECRET", "") or "").strip()
+    if not secret:
+        return json_response(
+            {"error": "mailtrap_webhook_not_configured"}, status=503)
+    try:
+        raw = await request.text()
+    except Exception:
+        return json_response({"error": "invalid_payload"}, status=400)
+    if len(raw.encode("utf-8")) > 1024 * 1024:
+        return json_response({"error": "payload_too_large"}, status=413)
+    presented = str(
+        request.headers.get("mailtrap-signature") or "").strip().lower()
+    expected = hmac.new(
+        secret.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not presented or not hmac.compare_digest(presented, expected):
+        return json_response({"error": "invalid_signature"}, status=401)
+    events = _mailtrap_webhook_payload(raw)
+    if events is None or len(events) > 500:
+        return json_response({"error": "invalid_payload"}, status=400)
+    await ensure_schema(env)
+    accepted = 0
+    now = int(Date.now())
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_id = clean_string(
+            event.get("event_id") or event.get("id") or "", 160)
+        status = clean_string(
+            event.get("event") or event.get("type") or "", 40).lower()
+        variables = event.get("custom_variables")
+        if not isinstance(variables, dict):
+            variables = event.get("customVariables")
+        variables = variables if isinstance(variables, dict) else {}
+        send_id = clean_string(
+            variables.get("forkmesh_send_id") or "", 64).lower()
+        account_bi = clean_string(
+            variables.get("forkmesh_account_bi") or "", 128)
+        if not event_id or status not in MAILTRAP_WEBHOOK_EVENTS:
+            continue
+        prior = await d1_first(
+            env,
+            "SELECT event_id FROM mailtrap_webhook_events WHERE event_id=?",
+            event_id)
+        if prior:
+            accepted += 1
+            continue
+        try:
+            await d1_run(
+                env,
+                "INSERT INTO mailtrap_webhook_events(event_id,received_at) "
+                "VALUES(?,?)",
+                event_id, now)
+        except Exception:
+            continue
+        if send_id and account_bi:
+            await d1_run(
+                env,
+                "UPDATE mailtrap_email_sends SET status=?,status_at=?,"
+                "message_id=? WHERE send_id=? AND account_bi=?",
+                status,
+                now,
+                clean_string(event.get("message_id") or "", 160),
+                send_id,
+                account_bi,
+            )
+        accepted += 1
+    cutoff = now - 90 * 24 * 60 * 60 * 1000
+    await d1_run(
+        env, "DELETE FROM mailtrap_webhook_events WHERE received_at<?", cutoff)
+    await d1_run(
+        env, "DELETE FROM mailtrap_email_sends WHERE sent_at<?", cutoff)
+    try:
+        await js_caches.default.delete(USERS_DIRECTORY_CACHE_KEY)
+    except Exception:
+        pass
+    return json_response(
+        {"ok": True, "accepted": accepted},
+        cache_control="no-store, max-age=0")
 
 
 # --- Account email activity ---------------------------------------------------
@@ -34959,7 +35257,7 @@ async def repo_pending_counts_handler(env, request, owner, repo):
             "pulls": counts.get("pulls", 0),
             "discussions": counts.get("discussions", 0),
         },
-    }, cache_seconds=30)
+    }, cache_control="no-store, max-age=0, must-revalidate")
 
 
 async def sync_handler(env, request):
@@ -45718,6 +46016,8 @@ class Default(WorkerEntrypoint):
             return await accounts_handler(self.env, request)
 
         # --- Organizations + teams (issue #388) --------------------------
+        if MAILTRAP_WEBHOOK_RE.match(url.path):
+            return await mailtrap_webhook_handler(self.env, request)
         if BOT_SESSION_RE.match(url.path):
             return await bot_session_handler(self.env, request)
         if ORGS_RE.match(url.path):
