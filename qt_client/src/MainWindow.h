@@ -6966,19 +6966,17 @@ private:
                           const QString &newPath, const QString &newContents);
     // Extension-style transcript for Claude Code sessions: claude runs in
     // stream-json mode (ClaudeStreamSession) and the events render as native
-    // cards (ClaudeTranscriptView, output stack page 2). A header toggle flips
-    // to the raw process output (page 0) for debugging.
+    // cards (ClaudeTranscriptView, output stack page 2). The Transcript/Raw pair
+    // in the detail header flips to the raw process output (page 0) for
+    // debugging; both are rail-style tiles beside the session actions (adhoc
+    // #224) and are hidden for sessions that have no transcript at all.
     ClaudeTranscriptView *m_agentTranscript = nullptr;
     QPushButton *m_transcriptModeButton = nullptr;
     QPushButton *m_terminalModeButton = nullptr;
-    QWidget *m_agentOutputToggle = nullptr;
-    // The transcript-only half of that toolbar (the search box): hidden for
-    // log/terminal sessions while the toolbar's session action buttons stay put
-    // (adhoc #35).
-    QWidget *m_agentTranscriptTools = nullptr;
-    // adhoc #201: search-the-transcript box in the output toggle row, with a
-    // "3/12" match counter; Enter walks the highlighted hits (adhoc #51 dropped
-    // the prev/next steppers).
+    // adhoc #201: the transcript's search query and "3/12" match counter. Both
+    // are off-screen since adhoc #224 removed the detail pane's own search box —
+    // the window's top-bar search mirrors into this line edit, which is what
+    // drives the highlighting (see syncAgentPageSearchFromGlobal).
     QLineEdit *m_transcriptSearch = nullptr;
     QLabel *m_transcriptSearchCount = nullptr;
     QListWidget *m_agentFilesList = nullptr;     // files edited in this session
