@@ -115,7 +115,7 @@ def test_music_playbar_reuses_the_local_one_hertz_diagnostics_sample():
 
 def test_mobile_renderer_has_low_memory_and_page_lifecycle_recovery():
     assert 'window.matchMedia?.("(pointer: coarse)")?.matches' in SCENE
-    assert "antialias: !compactRenderer" in SCENE
+    assert "antialias: !memoryConstrainedRenderer" in SCENE
     assert "stencil: false" in SCENE
     assert 'powerPreference: compactRenderer ? "default" : "high-performance"' in SCENE
     assert "compactRenderer ? 1" in SCENE
@@ -131,6 +131,20 @@ def test_mobile_renderer_has_low_memory_and_page_lifecycle_recovery():
     assert "event?.persisted === true" in APP
     assert "RENDERER_RECOVERY_DELAY_MS" in APP
     assert "data-world-renderer-recovery" in APP
+
+
+def test_renderer_caps_total_raster_memory_without_removing_world_content():
+    assert "const RENDER_PIXEL_BUDGET = 1920 * 1080;" in SCENE
+    assert "requestedSurfacePixels > RENDER_PIXEL_BUDGET" in SCENE
+    assert "const pixelBudgetRatio = Math.sqrt(" in SCENE
+    assert "RENDER_PIXEL_BUDGET / Math.max(1, width * height)" in SCENE
+    assert "Math.min(densityRatio, pixelBudgetRatio)" in SCENE
+    # Oversized screens use low-memory raster allocations, but decorative
+    # population counts remain tied only to true compact/mobile mode.
+    assert "canvasTextureScale = memoryConstrainedRenderer ? 0.5 : 1;" in SCENE
+    assert "starCount: compactRenderer ? 700 : 1100" in SCENE
+    assert "memoryConstrainedRenderer," in SCENE
+    assert "pixelBudget: RENDER_PIXEL_BUDGET," in SCENE
 
 
 def test_local_point_lights_are_budgeted_and_reported_separately():
