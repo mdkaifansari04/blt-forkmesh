@@ -1324,14 +1324,19 @@ QWidget *MainWindow::buildAgentsTab()
     // The m_agentCompose* members stay nullptr; every reader is null-guarded.
 
     // Free-text filter over the session list (issue #82): type to narrow the
-    // table to sessions whose issue number/title, agent, status or PR match.
+    // table to sessions whose issue number/title, agent, status or PR match — or
+    // whose transcript does, which is scanned in the background as you type.
     m_agentSearch = new QLineEdit;
     m_agentSearch->setObjectName("issueSearch");
-    m_agentSearch->setPlaceholderText(
-        QString::fromUtf8("Search agents by issue, agent, status or PR\xE2\x80\xA6"));
+    m_agentSearch->setPlaceholderText(QString::fromUtf8(
+        "Search agents and transcripts by issue, agent, status or PR\xE2\x80\xA6"));
     m_agentSearch->setClearButtonEnabled(true);
-    connect(m_agentSearch, &QLineEdit::textChanged, this,
-            [this] { refreshAgentTable(); });
+    connect(m_agentSearch, &QLineEdit::textChanged, this, [this] {
+        // Narrow on what is already in memory immediately; the transcript scan
+        // widens the result a beat later, once its off-thread reads land.
+        refreshAgentTable();
+        scheduleAgentTranscriptSearch();
+    });
 
     // "Delete all merged" sits on top of the list and wipes every merged session's
     // worktree, branch and agent in one batch (adhoc #235). It shares the search
@@ -4917,6 +4922,152 @@ void MainWindow::refreshAgentDotMatrix()
     m_agentDotMatrix->setToolTip(tip);
 }
 
+// What the Agents list is filtered by right now. The top bar's box mirrors into
+// this one while the page is on screen (syncAgentPageSearch), so reading it here
+// covers both places a query can be typed.
+QString MainWindow::agentFilterQuery() const
+{
+    return m_agentSearch ? m_agentSearch->text().trimmed() : QString();
+}
+
+// The repository whose sessions a scan covers ("owner/name", empty off a repo).
+QString MainWindow::agentTranscriptSearchRepoKey() const
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return QString();
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    return repo.owner + QLatin1Char('/') + repo.name;
+}
+
+// What the transcripts are being scanned for. The Agents page's own box wins
+// while it holds something, so a filter typed on the page searches transcripts
+// too; otherwise it follows the top bar, which is what lets the dropdown offer
+// transcript matches from anywhere in the app.
+QString MainWindow::agentTranscriptQuery() const
+{
+    const QString page = agentFilterQuery();
+    if (!page.isEmpty())
+        return page;
+    return m_globalSearch ? m_globalSearch->text().trimmed() : QString();
+}
+
+MainWindow::AgentTranscriptHit MainWindow::agentTranscriptHit(int sessionId) const
+{
+    // Hits belong to the query they were scanned for. Mid-typing the newest scan
+    // has not landed yet, and showing the previous query's hits would leave rows
+    // in the list that no longer match anything the user can see.
+    if (m_agentTranscriptSearchQuery.isEmpty() ||
+        m_agentTranscriptSearchQuery != agentTranscriptQuery())
+        return AgentTranscriptHit();
+    return m_agentTranscriptHits.value(sessionId);
+}
+
+// Restart the debounce behind the transcript scan. Each keystroke retriggers it,
+// so the disk pass runs once the typing pauses rather than per character.
+void MainWindow::scheduleAgentTranscriptSearch()
+{
+    const QString query = agentTranscriptQuery();
+    // An emptied box drops back to the plain title filter straight away — no scan
+    // to wait for, and leaving hits behind would keep unrelated rows on screen.
+    if (query.isEmpty()) {
+        if (m_agentTranscriptSearchTimer)
+            m_agentTranscriptSearchTimer->stop();
+        ++m_agentTranscriptSearchGen; // discard whatever is still in flight
+        if (!m_agentTranscriptSearchQuery.isEmpty() ||
+            !m_agentTranscriptHits.isEmpty()) {
+            m_agentTranscriptSearchQuery.clear();
+            m_agentTranscriptSearchRepo.clear();
+            m_agentTranscriptHits.clear();
+            refreshAgentTable();
+        }
+        return;
+    }
+    // Single characters match nearly every transcript, so the scan would only
+    // read every session's tail to widen the list to all of it.
+    if (query.size() < 2)
+        return;
+    // Already scanned, for this repo — nothing to redo. This is what keeps the
+    // page-change trigger (syncAgentPageSearch) from rescanning on every rail
+    // update while a query sits in the box.
+    if (query == m_agentTranscriptSearchQuery &&
+        agentTranscriptSearchRepoKey() == m_agentTranscriptSearchRepo)
+        return;
+    if (!m_agentTranscriptSearchTimer) {
+        m_agentTranscriptSearchTimer = new QTimer(this);
+        m_agentTranscriptSearchTimer->setSingleShot(true);
+        m_agentTranscriptSearchTimer->setInterval(180);
+        connect(m_agentTranscriptSearchTimer, &QTimer::timeout, this,
+                &MainWindow::runAgentTranscriptSearch);
+    }
+    m_agentTranscriptSearchTimer->start();
+}
+
+// Scan this repo's sessions for the typed query and remember which transcripts
+// hold it. Every input is copied before the worker starts (the store, the session
+// list, the query): nothing here may touch GUI-thread state, and a queued reload
+// can replace m_agentSessions while the reads are running.
+void MainWindow::runAgentTranscriptSearch()
+{
+    const QString query = agentTranscriptQuery();
+    if (!m_agentStore || query.size() < 2)
+        return;
+    QString owner, name;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        owner = m_repositories.at(m_repoDetailIndex).owner;
+        name = m_repositories.at(m_repoDetailIndex).name;
+    }
+    QList<AgentSession> sessions;
+    for (const AgentSession &session : std::as_const(m_agentSessions))
+        if (session.owner == owner && session.name == name)
+            sessions.append(session);
+    const int generation = ++m_agentTranscriptSearchGen;
+    const QString repoKey = agentTranscriptSearchRepoKey();
+    if (sessions.isEmpty()) {
+        // Nothing to read, but the state still has to say "this query, this repo"
+        // — otherwise the guard in scheduleAgentTranscriptSearch never settles and
+        // every page change re-arms the debounce, and hits from the repo we just
+        // left would stay behind.
+        m_agentTranscriptSearchQuery = query;
+        m_agentTranscriptSearchRepo = repoKey;
+        if (!m_agentTranscriptHits.isEmpty()) {
+            m_agentTranscriptHits.clear();
+            refreshAgentTable();
+        }
+        return;
+    }
+    const AgentStore store = *m_agentStore;
+    runOffThread<QHash<int, AgentTranscriptHit>>(
+        [store, sessions, query] {
+            const forkmesh::BackgroundScope activity(
+                QStringLiteral("agents"),
+                QStringLiteral("search agent transcripts"),
+                forkmesh::ActionTelemetry::Execution::Worker);
+            QHash<int, AgentTranscriptHit> hits;
+            for (const AgentSession &session : sessions) {
+                AgentTranscriptHit hit;
+                hit.count = store.searchTranscript(session, query, &hit.snippet);
+                if (hit.count > 0)
+                    hits.insert(session.id, hit);
+            }
+            return hits;
+        },
+        [this, generation, query, repoKey](QHash<int, AgentTranscriptHit> hits) {
+            // A newer scan (or a cleared box) already owns the list.
+            if (generation != m_agentTranscriptSearchGen ||
+                query != agentTranscriptQuery())
+                return;
+            m_agentTranscriptSearchQuery = query;
+            m_agentTranscriptSearchRepo = repoKey;
+            m_agentTranscriptHits = std::move(hits);
+            refreshAgentTable();
+            // The dropdown lists sessions by transcript match too, and it was
+            // built before this scan finished — redraw it so the hits appear
+            // without waiting for the next keystroke.
+            if (m_globalSearchPopup && m_globalSearchPopup->isVisible())
+                rebuildGlobalSearchResults();
+        });
+}
+
 void MainWindow::refreshAgentTable()
 {
     if (!m_agentTable)
@@ -4962,9 +5113,11 @@ void MainWindow::refreshAgentTable()
             agentBase = m_repoBranch;
     }
     // Free-text filter (issue #82): substring-match the query against each
-    // session's issue number/title, agent, status and PR number.
-    const QString query =
-        m_agentSearch ? m_agentSearch->text().trimmed() : QString();
+    // session's issue number/title, agent, status and PR number — and, once the
+    // background scan lands, against the transcripts themselves.
+    const QString query = agentFilterQuery();
+    const bool transcriptHitsCurrent =
+        !query.isEmpty() && m_agentTranscriptSearchQuery == query;
     // Iterate a snapshot: GitKeepAlive's pump can run a queued reloadAgents() that
     // reassigns m_agentSessions mid-loop; the implicitly-shared (COW) copy keeps
     // this iterator valid even if the member vector is replaced underneath us.
@@ -4983,8 +5136,10 @@ void MainWindow::refreshAgentTable()
             haystack << QStringLiteral("#%1").arg(session.issueNumber);
         if (session.prNumber > 0)
             haystack << QStringLiteral("#%1").arg(session.prNumber);
-        return haystack.join(QLatin1Char(' '))
-            .contains(query, Qt::CaseInsensitive);
+        if (haystack.join(QLatin1Char(' ')).contains(query, Qt::CaseInsensitive))
+            return true;
+        return transcriptHitsCurrent &&
+               m_agentTranscriptHits.contains(session.id);
     };
 
     // Revalidate cold Diff/Status data asynchronously. The worker compares
@@ -5235,11 +5390,25 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
                          session.id);
     // Issue-scoped sessions show "#<issue> <title>"; PR-scoped ones (e.g. the
     // conflict auto-fixer, issueNumber 0) just show their title.
-    plain(kAgentIssueColumn)
-        ->setText(session.issueNumber > 0 ? QStringLiteral("#%1 %2")
-                                                .arg(session.issueNumber)
-                                                .arg(session.issueTitle)
-                                          : session.issueTitle);
+    QString title = session.issueNumber > 0 ? QStringLiteral("#%1 %2")
+                                                  .arg(session.issueNumber)
+                                                  .arg(session.issueTitle)
+                                            : session.issueTitle;
+    QTableWidgetItem *issueCell = plain(kAgentIssueColumn);
+    // A row can be in the list purely because the search found the query inside
+    // its transcript, which reads as a bug when the title says nothing about it.
+    // Say how many times it was found, and show the first hit on hover.
+    const AgentTranscriptHit hit = agentFilterQuery().isEmpty()
+                                       ? AgentTranscriptHit()
+                                       : agentTranscriptHit(session.id);
+    if (hit.count > 0) {
+        title += QString::fromUtf8("   \xC2\xB7  %1 in transcript")
+                     .arg(hit.count);
+        issueCell->setToolTip(hit.snippet);
+    } else if (!issueCell->toolTip().isEmpty()) {
+        issueCell->setToolTip(QString()); // reused row, previous query's hit
+    }
+    issueCell->setText(title);
     // The "Updated" column is gone (adhoc #84): the most recent of
     // created/started/finished/merged now reads as the "#" cell's own text, with
     // the full timestamp in that cell's tooltip — see applyAgentStatusCell, which
@@ -5255,6 +5424,38 @@ AgentSession *MainWindow::findAgentSession(int sessionId)
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
+// Type into the top bar the way a user does: textChanged is what drives the live
+// page search, so a test must go through it rather than calling the sync itself.
+void MainWindow::testTypeGlobalSearch(const QString &text)
+{
+    if (m_globalSearch)
+        m_globalSearch->setText(text);
+}
+
+QString MainWindow::testAgentSearchText() const
+{
+    return m_agentSearch ? m_agentSearch->text() : QString();
+}
+
+QString MainWindow::testTranscriptSearchText() const
+{
+    return m_transcriptSearch ? m_transcriptSearch->text() : QString();
+}
+
+// The Agents list as it stands after the current filter, row by row, so a test
+// can prove what the search left on screen — and that a row kept only because
+// its transcript matched says why it is there.
+QStringList MainWindow::testAgentRowTitles() const
+{
+    QStringList titles;
+    if (!m_agentTable)
+        return titles;
+    for (int row = 0; row < m_agentTable->rowCount(); ++row)
+        if (QTableWidgetItem *cell = m_agentTable->item(row, kAgentIssueColumn))
+            titles << cell->text();
+    return titles;
+}
+
 QString MainWindow::testAgentDetailTitleText() const
 {
     return m_agentTitle ? m_agentTitle->text() : QString();

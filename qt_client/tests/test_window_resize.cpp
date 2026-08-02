@@ -3366,6 +3366,101 @@ int main(int argc, char *argv[])
                              "(issue #291)"));
     }
 
+    // The top bar's search box searches the page in front of you: on the Agents
+    // tab it narrows the session list as each character lands, matches sessions on
+    // what their transcripts say (not just their prompt), and drives the open
+    // session's transcript search so hits highlight in place.
+    {
+        window.testOpenRepository(repoIdx); // "me/r", the Agents tab's repo
+        window.testOpenAgentsOverview();
+        QApplication::processEvents();
+
+        AgentSession titled;
+        titled.id = 7401;
+        titled.owner = QStringLiteral("me");
+        titled.name = QStringLiteral("r");
+        titled.issueTitle =
+            QStringLiteral("only seeing recovery pings, want failure pings too");
+        titled.status = AgentStatus::Success;
+        window.testAddAgentSession(titled);
+
+        AgentSession quiet;
+        quiet.id = 7402;
+        quiet.owner = QStringLiteral("me");
+        quiet.name = QStringLiteral("r");
+        quiet.issueTitle = QStringLiteral("tidy the release checklist");
+        quiet.status = AgentStatus::Success;
+        window.testAddAgentSession(quiet);
+        // Only this session's transcript mentions the query; its title does not.
+        window.testAppendAgentTranscript(
+            quiet.id, QStringLiteral("checked the recovery ping path first"));
+
+        AgentSession silent;
+        silent.id = 7403;
+        silent.owner = QStringLiteral("me");
+        silent.name = QStringLiteral("r");
+        silent.issueTitle = QStringLiteral("bump the icon cache");
+        silent.status = AgentStatus::Success;
+        window.testAddAgentSession(silent);
+
+        // Typing up top filters the list below straight away — no Enter, and no
+        // waiting on the dropdown's debounce.
+        window.testTypeGlobalSearch(QStringLiteral("recovery"));
+        QApplication::processEvents();
+        check(window.testAgentSearchText() == QStringLiteral("recovery"),
+              QString("the top-bar search mirrors into the Agents page's own "
+                      "filter (got \"%1\")")
+                  .arg(window.testAgentSearchText()));
+        check(window.testTranscriptSearchText() == QStringLiteral("recovery"),
+              QString("the same query drives the open session's transcript "
+                      "search (got \"%1\")")
+                  .arg(window.testTranscriptSearchText()));
+        QStringList titles = window.testAgentRowTitles();
+        check(titles.size() == 1 && titles.first().contains(
+                  QStringLiteral("only seeing recovery pings")),
+              QString("the list is narrowed to the session whose title matches "
+                      "(rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+
+        // The transcript scan is debounced off the GUI thread; run it now and let
+        // its result land. The session that only ever said "recovery" mid-run
+        // joins the list, and says how many times it was found.
+        window.testRunAgentTranscriptSearch();
+        QElapsedTimer transcriptSearchTimer;
+        transcriptSearchTimer.start();
+        while (transcriptSearchTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            titles = window.testAgentRowTitles();
+            if (titles.size() == 2)
+                break;
+        }
+        const QString transcriptRow = titles.filter(
+            QStringLiteral("release checklist")).value(0);
+        check(titles.size() == 2 && !transcriptRow.isEmpty(),
+              QString("a session whose transcript holds the query stays in the "
+                      "list even though its title does not (rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+        check(transcriptRow.contains(QStringLiteral("1 in transcript")),
+              QString("the row says the match came from the transcript (got "
+                      "\"%1\")")
+                  .arg(transcriptRow));
+        check(!titles.join(QLatin1Char(' ')).contains(
+                  QStringLiteral("icon cache")),
+              QString("a session that matches neither title nor transcript stays "
+                      "filtered out (rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+
+        // Clearing the top bar hands the whole list back.
+        window.testTypeGlobalSearch(QString());
+        QApplication::processEvents();
+        titles = window.testAgentRowTitles();
+        check(window.testAgentSearchText().isEmpty() && titles.size() >= 3,
+              QString("clearing the top-bar search unfilters the session list "
+                      "(filter \"%1\", %2 rows)")
+                  .arg(window.testAgentSearchText())
+                  .arg(titles.size()));
+    }
+
     // adhoc #15: the network log renders only its newest segment up front, and
     // scrolling to the top loads the next older segment instead of capping
     // history at whatever first rendered.
