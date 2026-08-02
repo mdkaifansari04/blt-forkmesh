@@ -167,6 +167,17 @@ def test_local_point_lights_are_budgeted_and_reported_separately():
     assert "activePointLights" in APP
 
 
+def test_compact_renderer_reports_district_residency_and_gpu_limits():
+    assert "residency: compactDistrictDiagnostics()" in SCENE
+    assert "releasedGeometries" in SCENE
+    assert "releasedTextures" in SCENE
+    assert "maxTextureSize: Math.max" in SCENE
+    assert "maxTextures: Math.max" in SCENE
+    assert "residency: scene?.residency" in APP
+    assert "maxTextureSize: clampCount" in APP
+    assert "maxTextures: clampCount" in APP
+
+
 def test_build_marker_is_strictly_reduced_to_version_and_git_revision():
     build = _section(
         APP,

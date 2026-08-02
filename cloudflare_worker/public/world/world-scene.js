@@ -152,6 +152,41 @@ const SHADOW_MAP_UPDATE_MS = 10_000;
 const SHADOW_MAP_BUSY_RETRY_MS = 1_000;
 const SHADOW_MAP_STALL_COOLDOWN_MS = 10_000;
 const SCENE_LOD_SAMPLE_MS = 500;
+// Compact renderers keep only the district around the visitor resident on the
+// GPU. The enter/exit gap prevents a walker near a boundary from repeatedly
+// uploading and releasing the same buffers.
+const COMPACT_DISTRICT_RESIDENCY = Object.freeze({
+  repositories: Object.freeze({
+    x: REPOSITORY_ISLAND_CENTER_X,
+    z: 0,
+    enter: 100,
+    exit: 122,
+  }),
+  leaderboards: Object.freeze({
+    x: LEADERBOARD_ISLAND_CENTER_X,
+    z: 0,
+    enter: 100,
+    exit: 122,
+  }),
+  members: Object.freeze({
+    x: 0,
+    z: MEMBER_ISLAND_CENTER_Z,
+    enter: 100,
+    exit: 122,
+  }),
+  office: Object.freeze({
+    x: OFFICE_ISLAND_CENTER[0],
+    z: OFFICE_ISLAND_CENTER[2],
+    enter: 150,
+    exit: 175,
+  }),
+  beach: Object.freeze({
+    x: BEACH_CENTER_X,
+    z: BEACH_CENTER_Z,
+    enter: 120,
+    exit: 145,
+  }),
+});
 const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
 // setAnimationLoop follows the panel refresh rate. Rendering this procedural
 // scene at 120/144Hz spends twice the GPU work for almost no perceptible gain,
@@ -19089,6 +19124,181 @@ export function createWorldScene({
     : Math.PI;
   world.add(player);
   registerWorldElement("player-avatar", "Your avatar", "Avatars & bots", player);
+
+  // A hidden Object3D stops draw calls, but Three.js deliberately retains
+  // every buffer and texture it uploaded for that object. On unified-memory
+  // mobile GPUs, walking past several rich districts therefore used to retain
+  // the whole World until the browser reset the context. Compact mode gives
+  // each satellite district a residency boundary: cold roots are not drawn,
+  // and their reusable CPU-side geometry/canvas sources stay intact while the
+  // corresponding WebGL allocations are released. Re-entering a district
+  // lazily uploads only that district again.
+  const compactDistricts = new Map(
+    Object.entries(COMPACT_DISTRICT_RESIDENCY).map(([id, boundary]) => [
+      id,
+      {
+        ...boundary,
+        roots: new Set(),
+        resident: null,
+        distance: Infinity,
+        evictions: 0,
+        releasedGeometries: 0,
+        releasedTextures: 0,
+      },
+    ]),
+  );
+  const compactTextureSlots = [
+    "map",
+    "normalMap",
+    "roughnessMap",
+    "metalnessMap",
+    "aoMap",
+    "emissiveMap",
+    "bumpMap",
+    "alphaMap",
+    "envMap",
+    "lightMap",
+    "displacementMap",
+    "specularMap",
+    "matcap",
+    "gradientMap",
+  ];
+
+  function releaseCompactDistrictGpuResources(root) {
+    const geometries = new Set();
+    const textures = new Set();
+    root?.traverse?.((child) => {
+      if (child.geometry?.isBufferGeometry) geometries.add(child.geometry);
+      const materials = Array.isArray(child.material)
+        ? child.material
+        : child.material
+          ? [child.material]
+          : [];
+      materials.forEach((material) => {
+        compactTextureSlots.forEach((slot) => {
+          const texture = material?.[slot];
+          if (texture?.isTexture) textures.add(texture);
+        });
+      });
+    });
+    geometries.forEach((geometry) => geometry.dispose());
+    textures.forEach((texture) => texture.dispose());
+    return { geometries: geometries.size, textures: textures.size };
+  }
+
+  function syncCompactDistrictRoot(district, root) {
+    if (!root) return;
+    const resident = district.resident !== false;
+    root.visible = resident;
+    root.userData.compactDistrictResident = resident;
+    if (resident) return;
+    const released = releaseCompactDistrictGpuResources(root);
+    district.releasedGeometries += released.geometries;
+    district.releasedTextures += released.textures;
+  }
+
+  function registerCompactDistrictRoot(id, roots) {
+    if (!compactRenderer) return;
+    const district = compactDistricts.get(id);
+    if (!district) return;
+    (Array.isArray(roots) ? roots : [roots]).filter(Boolean).forEach((root) => {
+      if (district.roots.has(root)) return;
+      district.roots.add(root);
+      syncCompactDistrictRoot(district, root);
+    });
+  }
+
+  function unregisterCompactDistrictRoot(id, root) {
+    compactDistricts.get(id)?.roots.delete(root);
+  }
+
+  function updateCompactDistrictResidency(force = false) {
+    if (!compactRenderer) return;
+    compactDistricts.forEach((district, id) => {
+      district.distance = Math.hypot(
+        player.position.x - district.x,
+        player.position.z - district.z,
+      );
+      // The active Office floor must remain resident even if an unusual saved
+      // pose temporarily lies beyond the outdoor boundary.
+      const required = id === "office" && officeSceneMode !== "town";
+      const nextResident =
+        required || district.resident === true
+          ? required || district.distance <= district.exit
+          : district.distance <= district.enter;
+      if (!force && district.resident === nextResident) {
+        // Floor/zoom synchronization and an administrator toggling an element
+        // can legitimately change root.visible between residency samples.
+        // Reassert the cold boundary without re-disposing an untouched root.
+        district.roots.forEach((root) => {
+          if (root.visible !== nextResident) {
+            syncCompactDistrictRoot(district, root);
+          }
+        });
+        return;
+      }
+      if (district.resident === true && !nextResident) district.evictions += 1;
+      district.resident = nextResident;
+      district.roots.forEach((root) => syncCompactDistrictRoot(district, root));
+    });
+  }
+
+  function compactDistrictDiagnostics() {
+    if (!compactRenderer) {
+      return {
+        enabled: false,
+        resident: 0,
+        total: 0,
+        evictions: 0,
+        releasedGeometries: 0,
+        releasedTextures: 0,
+        active: [],
+      };
+    }
+    const districts = [...compactDistricts.entries()].filter(
+      ([, district]) => district.roots.size > 0,
+    );
+    return {
+      enabled: true,
+      resident: districts.filter(([, district]) => district.resident === true)
+        .length,
+      total: districts.length,
+      evictions: districts.reduce(
+        (total, [, district]) => total + district.evictions,
+        0,
+      ),
+      releasedGeometries: districts.reduce(
+        (total, [, district]) => total + district.releasedGeometries,
+        0,
+      ),
+      releasedTextures: districts.reduce(
+        (total, [, district]) => total + district.releasedTextures,
+        0,
+      ),
+      active: districts
+        .filter(([, district]) => district.resident === true)
+        .map(([id]) => id)
+        .slice(0, 5),
+    };
+  }
+
+  registerCompactDistrictRoot(
+    "repositories",
+    landmarkObjects.get("repositories"),
+  );
+  registerCompactDistrictRoot("leaderboards", leaderboardDistrict);
+  registerCompactDistrictRoot("members", [campfire, startHereBoard]);
+  registerCompactDistrictRoot("office", [
+    landmarkObjects.get("office"),
+    officeLandscaping,
+  ]);
+  registerCompactDistrictRoot("beach", [
+    beachFoundation,
+    beachSand,
+    beachWater,
+    beachHorizon,
+    ...carStates.map((state) => state.car),
+  ]);
   // The camera used to start at CAMERA_OFFSET relative to the world origin
   // even though the avatar starts elsewhere. It then spent the first visible
   // second easing across the map, which made the first movement input feel
@@ -19344,6 +19554,7 @@ export function createWorldScene({
   registerWorldElement(
     "office-interior", "Office interior", "Districts", officeInterior,
   );
+  registerCompactDistrictRoot("office", officeInterior);
 
   const officeInteriorAccents = [
     "#67efb1",
@@ -21148,6 +21359,7 @@ export function createWorldScene({
     "instance-booth", "Instance launcher booth", "Boards & kiosks",
     instanceBooth,
   );
+  registerCompactDistrictRoot("office", instanceBooth);
   let instanceBoothOccupied = false;
 
   // Landscaped arrival garden between the bridge and glass office.
@@ -21283,6 +21495,7 @@ export function createWorldScene({
   registerWorldElement(
     "office-garden", "Office front garden", "Scenery", officeFrontGarden,
   );
+  registerCompactDistrictRoot("office", officeFrontGarden);
 
   // Public lobby Link Lab: a physical, accessible entry point for members to
   // submit public campaign/community links and inspect the transparent reach
@@ -23046,6 +23259,7 @@ export function createWorldScene({
       cameraMode === "third-person" &&
       cameraZoom >= (compactRenderer ? 1.12 : 1.32);
     if (!force && farSceneDetail === far) {
+      updateCompactDistrictResidency();
       updateLocalPointLightBudget(far);
       return;
     }
@@ -23058,6 +23272,7 @@ export function createWorldScene({
     // every camera distance. Once a visitor enters, isolate the active floor
     // to avoid drawing every other floor through the one they are using.
     syncOfficeFloorVisibility();
+    updateCompactDistrictResidency(force);
 
     // A purely visual LOD helper must never be able to interrupt movement.
     // Fail it closed once if a future marker asset cannot be constructed; the
@@ -23074,10 +23289,9 @@ export function createWorldScene({
       }
     }
     updateLocalPointLightBudget(far);
-    // Distance may reduce expensive lighting work, but it must never remove
-    // World content. Repositories, organizations, fediverse displays, every
-    // public board, landscaping, and live repository layers remain visible at
-    // every zoom level so the aerial view is a faithful view of the World.
+    // Desktop keeps the complete aerial view. Compact devices retain the
+    // terrain and navigation markers but page satellite detail in by physical
+    // proximity so a mobile GPU never has to hold the entire World at once.
   }
 
   function updateWorldEnvironment() {
@@ -28548,6 +28762,7 @@ export function createWorldScene({
             { remote: true, scale: 0.88 },
           );
           world.add(figure);
+          registerCompactDistrictRoot("members", figure);
           loungeMembers.set(id, figure);
           // Directory figures are real accounts, so their chest tabs work the
           // same way a live peer's do.
@@ -28611,6 +28826,7 @@ export function createWorldScene({
       removeRemoteOrgTeamControl(figure, id);
       unregisterAvatarChestControls(figure);
       world.remove(figure);
+      unregisterCompactDistrictRoot("members", figure);
       disposeObject3D(figure);
       loungeMembers.delete(id);
     });
@@ -29994,6 +30210,7 @@ export function createWorldScene({
     ) {
       return;
     }
+    unregisterCompactDistrictRoot("repositories", previousCatalog);
     removeGeneratedLayer(world, previousCatalog, interactive);
     world.userData.repositoryCatalogLayer = null;
     world.userData.repositorySizeLayer = null;
@@ -30489,6 +30706,7 @@ export function createWorldScene({
     });
 
     world.add(layer);
+    registerCompactDistrictRoot("repositories", layer);
     Object.values(materials).forEach((material) => {
       if (!usedMaterials.has(material)) material.dispose();
     });
@@ -34404,6 +34622,14 @@ export function createWorldScene({
       gpu: "",
       antialias: !compactRenderer,
       webgl2: renderer.capabilities?.isWebGL2 === true,
+      maxTextureSize: Math.max(
+        0,
+        Number(renderer.capabilities?.maxTextureSize) || 0,
+      ),
+      maxTextures: Math.max(
+        0,
+        Number(renderer.capabilities?.maxTextures) || 0,
+      ),
     };
     try {
       const gl = renderer.getContext();
@@ -34690,6 +34916,7 @@ export function createWorldScene({
       zoom: cameraMode === "first-person" ? firstPersonZoom : cameraZoom,
       paused: !running,
       sky: worldSky.getState(),
+      residency: compactDistrictDiagnostics(),
       sceneStats: diagnosticsSceneStats,
       output: {
         drawingBufferWidth: drawingBuffer.x,
@@ -34699,6 +34926,8 @@ export function createWorldScene({
         webgl2: contextInfo.webgl2,
         antialias: contextInfo.antialias,
         gpu: contextInfo.gpu,
+        maxTextureSize: contextInfo.maxTextureSize,
+        maxTextures: contextInfo.maxTextures,
         compactRenderer,
         memoryConstrainedRenderer,
         canvasTextureScale,
