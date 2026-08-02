@@ -551,6 +551,7 @@ QWidget *MainWindow::buildSourceControlPanel()
             [this] {
                 if (sourceControlShowsRange()) {
                     m_branchDiffLastValid = false;
+                    forgetBranchDiff(m_branchDiffBranch); // rescan means re-read
                     renderBranchScopeDiff();
                 } else {
                     refreshSourceControl(true);
@@ -650,6 +651,26 @@ QWidget *MainWindow::buildSourceControlPanel()
     root->addWidget(m_scmEmptyNote);
 
     return panel;
+}
+
+// Empty the CHANGES tree while a newly clicked branch's range is still being
+// read. Deliberately lighter than showRangeFilesInSourceControl(): no working
+// tree probe, since nothing here is being enabled — the composer's state is
+// settled by that function once the range's files actually land (adhoc #227).
+void MainWindow::clearRangeFilesInSourceControl()
+{
+    if (!m_scmTree)
+        return;
+    if (m_scmOutgoingPanel)
+        m_scmOutgoingPanel->hide();
+    m_scmStatusCache.clear(); // returning to main must rebuild its working tree
+    m_scmTree->clear();
+    if (m_scmEmptyNote)
+        m_scmEmptyNote->hide();
+    if (m_scmCountLabel)
+        m_scmCountLabel->clear();
+    if (m_scmViewedLabel)
+        m_scmViewedLabel->clear();
 }
 
 void MainWindow::showRangeFilesInSourceControl(const QStringList &paths,
@@ -900,6 +921,7 @@ void MainWindow::refreshSourceControl(bool force)
             m_scmOutgoingPanel->hide();
         if (force) {
             m_branchDiffLastValid = false;
+            forgetBranchDiff(m_branchDiffBranch); // rescan means re-read
             renderBranchScopeDiff();
         }
         return;
