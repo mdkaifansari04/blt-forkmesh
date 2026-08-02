@@ -2268,7 +2268,7 @@ int main(int argc, char *argv[])
                           "(got id %1)").arg(mirror1Id));
             check(!sawOffline,
                   QStringLiteral("offline mirror nodes are hidden while Online only is checked"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 1) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 2) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
             // Columns: Node, Owner, Latest commit, Message, Author, Synced,
