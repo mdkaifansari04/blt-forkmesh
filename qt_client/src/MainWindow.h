@@ -2297,10 +2297,29 @@ private:
     // Enqueue every workflow found at `commit` for owner/name whose `on:` matches
     // `trigger`. Shared by the push handler, the PR "Run checks" button, and the
     // Releases panel's "Publish release" action.
+    //
+    // Asynchronous: reading the workflows out of the served mirror is several
+    // git subprocesses (diff-tree, ls-tree, one `show` per file) and the
+    // repository-state digest behind them archives and hashes the whole tree.
+    // On the GUI thread that measured 4-5.6s in the stall log, so the reads run
+    // on a worker and only the queueing decisions come back here. No caller
+    // depends on runs existing by the time this returns.
     void queueWorkflowsForCommit(int repoIndex, const QString &owner,
                                  const QString &name, const QString &commit,
                                  const QString &ref,
                                  WorkflowTrigger trigger = WorkflowTrigger::Push);
+    // What the worker above reads out of the mirror for one commit.
+    struct WorkflowScan {
+        bool mirrorMissing = false;
+        // Every path in the pushed commit lives under a metadata folder
+        // (issues/PRs/commit comments), so there is no code change to build.
+        bool metadataOnly = false;
+        QList<QPair<QString, QString>> workflows; // .forkmesh/<file> -> content
+    };
+    // GUI-thread half of queueWorkflowsForCommit.
+    void applyWorkflowScan(const QString &owner, const QString &name,
+                           const QString &commit, const QString &ref,
+                           WorkflowTrigger trigger, const WorkflowScan &scan);
     void submitPullComment();                       // post a comment on the PR
     void sendPullRevisionToAgent();                 // re-queue the linked agent with revision feedback
     void submitPullReview(const QString &state);    // approve / request changes
