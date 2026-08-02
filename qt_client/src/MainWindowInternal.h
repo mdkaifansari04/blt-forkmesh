@@ -195,9 +195,6 @@
 #include <unistd.h>
 #endif
 
-#ifndef FORKMESH_VERSION
-#define FORKMESH_VERSION "dev"
-#endif
 #ifndef FORKMESH_SOURCE_DIR
 #define FORKMESH_SOURCE_DIR ""
 #endif
