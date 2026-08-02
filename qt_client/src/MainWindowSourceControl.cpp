@@ -924,6 +924,7 @@ void MainWindow::refreshSourceControl(bool force)
     if (force)
         refreshRepoSyncIndicators();
     if (sourceControlShowsRange()) {
+        ++m_scmStatusGeneration; // discard a working-tree scan for the old view
         if (m_scmOutgoingPanel)
             m_scmOutgoingPanel->hide();
         if (force) {
@@ -935,6 +936,9 @@ void MainWindow::refreshSourceControl(bool force)
     }
     const QString dir = sourceControlGitDir();
     const bool canWrite = !dir.isEmpty() && repoHasWorkingTree();
+    // Invalidate a previous detached status read even when this refresh finds
+    // no usable checkout (for example after switching to a mirror-only repo).
+    const quint64 generation = ++m_scmStatusGeneration;
     refreshSourceControlOutgoing();
     if (m_scmEmptyNote)
         m_scmEmptyNote->setVisible(!canWrite);
@@ -978,14 +982,19 @@ void MainWindow::refreshSourceControl(bool force)
         return;
     }
 
-    QByteArray out;
-    runGitCapture(dir, {"status", "--porcelain=v1", "-z"}, &out, nullptr);
-
-    // runGitCapture pumps the event loop. An agent's Branch click can therefore
-    // open and finish a range diff while this older working-tree scan is in
-    // flight. Never let that stale scan clear the range files that just landed.
-    if (sourceControlShowsRange())
-        return;
+    // `git status` walks the whole working tree and was one of the most frequent
+    // GUI-thread stalls in the log (up to eight seconds on a busy checkout).
+    // Keep the previous tree visible while its replacement is read off-thread.
+    // Both the repository path and generation are values: a late result must not
+    // repaint a different checkout selected while this process was running.
+    runGitDetached(
+        dir, {"status", "--porcelain=v1", "-z"},
+        [this, force, dir, generation](bool ok, const QByteArray &out) {
+            if (generation != m_scmStatusGeneration ||
+                sourceControlShowsRange() || !m_scmTree)
+                return;
+            if (!ok)
+                return; // retain the last known-good tree on a failed scan
 
     // Skip the full rebuild when the working tree is unchanged since the last
     // scan: we rescan on tab focus / window activation, and without this every
@@ -1242,6 +1251,7 @@ void MainWindow::refreshSourceControl(bool force)
             }
         }
     }
+        });
 }
 
 // Commit row vs. Sync Changes. Outgoing commits alone hand the row to Sync, but
