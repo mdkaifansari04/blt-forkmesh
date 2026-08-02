@@ -2201,6 +2201,43 @@ int main(int argc, char *argv[])
                           "m_catalogPublishConsecutiveFailures.remove(publishKey)")),
                   "consecutive publish failures are counted, escalated, and cleared on success");
 
+            // The sticky "Viewed" fade installs a QGraphicsOpacityEffect on the
+            // button, and setGraphicsEffect() deletes whichever effect is
+            // already installed. Dropping it with setGraphicsEffect(nullptr)
+            // and then calling deleteLater() on the same pointer freed it twice
+            // and crashed inside QObject::deleteLater (adhoc #52), so the
+            // handler must delete once and hold the effect by QPointer.
+            QFile scmFile(QFileInfo(QString::fromUtf8(__FILE__))
+                              .absoluteDir()
+                              .filePath(QStringLiteral(
+                                  "../src/MainWindowSourceControl.cpp")));
+            const bool scmOpened = scmFile.open(QIODevice::ReadOnly);
+            const QString scmSource =
+                scmOpened ? QString::fromUtf8(scmFile.readAll()) : QString();
+            const int fadeStart = scmSource.indexOf(QStringLiteral(
+                "new QGraphicsOpacityEffect(m_scmStickyViewed)"));
+            const int fadeEnd =
+                scmSource.indexOf(QStringLiteral("animation->start("), fadeStart);
+            QString fadeHandler;
+            if (fadeStart >= 0 && fadeEnd > fadeStart) {
+                // Comment lines describe the old double-delete, so match the
+                // code alone.
+                const QStringList fadeLines =
+                    scmSource.mid(fadeStart, fadeEnd - fadeStart)
+                        .split(QLatin1Char('\n'));
+                for (const QString &line : fadeLines) {
+                    if (!line.trimmed().startsWith(QLatin1String("//")))
+                        fadeHandler += line + QLatin1Char('\n');
+                }
+            }
+            check(scmOpened && !fadeHandler.isEmpty() &&
+                      !fadeHandler.contains(QStringLiteral("deleteLater()")) &&
+                      fadeHandler.contains(QStringLiteral(
+                          "QPointer<QGraphicsEffect>(effect)")) &&
+                      fadeHandler.contains(QStringLiteral(
+                          "button->graphicsEffect() == faded")),
+                  "sticky Viewed fade deletes its opacity effect once, guarded by QPointer");
+
             RepoContributionPublicationCache scanCapacityCache(8, 2);
             check(scanCapacityCache.begin(contributionCacheKey, false) ==
                           CacheBegin::Started &&
@@ -6660,15 +6697,12 @@ int main(int argc, char *argv[])
               "nothing is pruned under the limit, and keep=0 still spares the "
               "newest snapshot");
 
-        // The hourly toggle's unset-default follows the Cloudflare API token:
-        // only a control node backs itself up without being asked, because
-        // every other install (desktop or VPS) would rather not spend a day of
-        // ~1GB tarballs it never opted into.
-        check(forkmesh::autoBackupDefault(QStringLiteral("cf-token")) &&
+        // Credentials never opt a machine into recurring multi-gigabyte disk
+        // writes. Every node starts off until its operator explicitly opts in.
+        check(!forkmesh::autoBackupDefault(QStringLiteral("cf-token")) &&
                   !forkmesh::autoBackupDefault(QString()) &&
                   !forkmesh::autoBackupDefault(QStringLiteral("   ")),
-              "hourly backups default on only for control nodes, and a blank "
-              "token is not one");
+              "hourly backups require an explicit opt-in on every node");
 
         const QDateTime now =
             QDateTime::fromString(QStringLiteral("2026-07-28T10:00:00"),

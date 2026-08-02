@@ -1393,16 +1393,24 @@ void MainWindow::setupScmDiffPane()
         // so the state change is noticeable without shifting the header.
         auto *effect = new QGraphicsOpacityEffect(m_scmStickyViewed);
         effect->setOpacity(0.55);
+        // setGraphicsEffect() owns and *deletes* whichever effect is already
+        // installed, so it is the single delete for this one too: dropping it
+        // with setGraphicsEffect(nullptr) below and then calling deleteLater()
+        // on the same pointer was a use-after-free that crashed on the next
+        // click (adhoc #52). Clicking again inside the 180ms fade likewise
+        // destroys this effect early, so hold it (and the button) by QPointer
+        // and only clear the effect that is still ours.
         m_scmStickyViewed->setGraphicsEffect(effect);
         auto *animation =
             new QPropertyAnimation(effect, "opacity", m_scmStickyViewed);
         animation->setDuration(180);
         animation->setStartValue(0.55);
         animation->setEndValue(1.0);
-        connect(animation, &QPropertyAnimation::finished,
-                m_scmStickyViewed, [button = m_scmStickyViewed, effect] {
-                    button->setGraphicsEffect(nullptr);
-                    effect->deleteLater();
+        connect(animation, &QPropertyAnimation::finished, m_scmStickyViewed,
+                [button = QPointer<QPushButton>(m_scmStickyViewed),
+                 faded = QPointer<QGraphicsEffect>(effect)] {
+                    if (button && faded && button->graphicsEffect() == faded)
+                        button->setGraphicsEffect(nullptr); // deletes `faded`
                 });
         animation->start(QAbstractAnimation::DeleteWhenStopped);
         renderScmCombinedDiff();

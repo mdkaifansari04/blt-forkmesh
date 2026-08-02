@@ -3,6 +3,9 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcess>
 #include <QTemporaryDir>
 
@@ -44,8 +47,25 @@ int main(int argc, char **argv)
     if (first.isEmpty() || first.last().files != 1 || first.last().lines != 2 ||
         !QFileInfo::exists(QDir(tmp.path()).filePath(
             QStringLiteral(".forkmesh/stats/repository.json")))) return 1;
+    QFile stats(QDir(tmp.path()).filePath(
+        QStringLiteral(".forkmesh/stats/repository.json")));
+    if (!stats.open(QIODevice::ReadOnly)) return 1;
+    QJsonObject legacyStats = QJsonDocument::fromJson(stats.readAll()).object();
+    stats.close();
+    legacyStats.insert(QStringLiteral("ratchet"), true);
+    if (!stats.open(QIODevice::WriteOnly | QIODevice::Truncate)) return 1;
+    stats.write(QJsonDocument(legacyStats).toJson(QJsonDocument::Indented));
+    stats.close();
+    if (!RepoStatsStore::ratchetEnabled(tmp.path()) ||
+        !stats.open(QIODevice::ReadOnly)) return 1;
+    const QByteArray statsBeforeToggle = stats.readAll();
+    stats.close();
     if (!RepoStatsStore::setRatchetEnabled(tmp.path(), true, &error) ||
+        !RepoStatsStore::ratchetEnabled(tmp.path()) ||
         RepoStatsStore::agentGuidance(tmp.path()).isEmpty()) return 1;
+    if (!stats.open(QIODevice::ReadOnly) || stats.readAll() != statsBeforeToggle)
+        return 1;
+    stats.close();
 
     // Growing the repository is refused, and the refusal talks about size.
     QString reason;
@@ -53,6 +73,22 @@ int main(int argc, char **argv)
     run(tmp.path(), {QStringLiteral("add"), QStringLiteral("source.cpp")});
     if (RepoStatsStore::stagedCommitAllowed(tmp.path(), &reason) ||
         !reason.contains(QStringLiteral("ceiling"))) return 1;
+
+    // Disabling is immediate and local: it overrides any legacy committed state,
+    // clears that same refusal, and must not create a repository change that
+    // itself needs a commit.
+    if (!RepoStatsStore::setRatchetEnabled(tmp.path(), false, &error) ||
+        RepoStatsStore::ratchetEnabled(tmp.path()) ||
+        !RepoStatsStore::agentGuidance(tmp.path()).isEmpty() ||
+        !RepoStatsStore::stagedCommitAllowed(tmp.path(), &reason)) return 1;
+    if (!stats.open(QIODevice::ReadOnly) || stats.readAll() != statsBeforeToggle)
+        return 1;
+    stats.close();
+
+    // Re-arm on the original content, so the ceiling is that tree's size again.
+    write(source, "one\ntwo\n");
+    run(tmp.path(), {QStringLiteral("add"), QStringLiteral("source.cpp")});
+    if (!RepoStatsStore::setRatchetEnabled(tmp.path(), true, &error)) return 1;
 
     // More lines than before but fewer bytes: allowed, because the ratchet
     // measures repository size rather than lines of code.

@@ -21,9 +21,10 @@ public:
                                                  QString *error = nullptr);
     static QVector<RepoStatsSample> load(const QString &repoDir,
                                          QString *error = nullptr);
-    // Ratchet state lives outside the work tree (in the shared git dir): every
-    // worktree sees the same switch, and no checkout, merge or branch swap can
-    // resurrect a setting the user turned off.
+    // Ratchet enforcement is a local repository preference in .git/config, not a
+    // tracked file: toggling it dirties nothing, every worktree of the repository
+    // sees the same switch, and no checkout, merge or branch swap can resurrect a
+    // setting the user turned off.
     static bool ratchetEnabled(const QString &repoDir);
     static bool setRatchetEnabled(const QString &repoDir, bool enabled,
                                   QString *error = nullptr);
@@ -39,5 +40,4 @@ private:
     static qint64 ceilingBytes(const QString &repoDir, const RepoStatsSample &now,
                                bool refreshStaleDay);
     static QString statsPath(const QString &repoDir);
-    static QString statePath(const QString &repoDir);
 };

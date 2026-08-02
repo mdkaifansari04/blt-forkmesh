@@ -14,6 +14,9 @@
 namespace {
 const int kHistoryDays = 30;
 const char kStatsSkip[] = ".forkmesh/stats/";
+const QString kRatchetEnabled = QStringLiteral("forkmesh.ratchet.enabled");
+const QString kRatchetCeilingDay = QStringLiteral("forkmesh.ratchet.ceilingDay");
+const QString kRatchetCeilingBytes = QStringLiteral("forkmesh.ratchet.ceilingBytes");
 
 QJsonObject readDocument(const QString &path)
 {
@@ -51,28 +54,6 @@ QByteArray git(const QString &repo, const QStringList &args, bool *ok = nullptr)
     return success ? process.readAllStandardOutput() : QByteArray();
 }
 
-// The directory shared by every worktree of a repository ("…/.git" for a normal
-// clone). Linked worktrees each carry their own checkout of the tracked stats
-// file, so a per-repository setting has to live here instead.
-QString commonGitDir(const QString &repoDir)
-{
-    static QHash<QString, QString> cache;
-    const auto cached = cache.constFind(repoDir);
-    if (cached != cache.constEnd()) return *cached;
-    bool ok = false;
-    QString path = QString::fromUtf8(
-                       git(repoDir, {QStringLiteral("rev-parse"),
-                                     QStringLiteral("--git-common-dir")}, &ok))
-                       .trimmed();
-    if (!ok || path.isEmpty())
-        path = QDir(repoDir).filePath(QStringLiteral(".git"));
-    else if (QDir::isRelativePath(path))
-        path = QDir(repoDir).filePath(path);
-    path = QDir(path).absolutePath();
-    cache.insert(repoDir, path);
-    return path;
-}
-
 QString humanSize(qint64 bytes)
 {
     return QLocale().formattedDataSize(bytes);
@@ -98,20 +79,61 @@ RepoStatsSample treeSample(const QString &repoDir, const QString &sha)
     }
     return sample;
 }
+
+bool readLocalConfig(const QString &repo, const QString &key, QString *value)
+{
+    bool ok = false;
+    const QByteArray output = git(repo, {QStringLiteral("config"),
+                                         QStringLiteral("--local"),
+                                         QStringLiteral("--get"), key}, &ok);
+    if (!ok) return false;
+    if (value) *value = QString::fromUtf8(output).trimmed();
+    return true;
+}
+
+bool writeLocalConfig(const QString &repo, const QString &key,
+                      const QString &value, QString *error)
+{
+    bool ok = false;
+    git(repo, {QStringLiteral("config"), QStringLiteral("--local"), key, value}, &ok);
+    if (!ok && error)
+        *error = QStringLiteral("Could not write the repository's local Git config.");
+    return ok;
+}
+
+bool localConfigBool(const QString &repo, const QString &key, bool *found)
+{
+    QString value;
+    const bool present = readLocalConfig(repo, key, &value);
+    if (found) *found = present;
+    if (!present) return false;
+    value = value.toLower();
+    return value == QStringLiteral("true") || value == QStringLiteral("yes") ||
+           value == QStringLiteral("on") || value == QStringLiteral("1");
+}
+
+qint64 localConfigInteger(const QString &repo, const QString &key,
+                          qint64 fallback)
+{
+    QString value;
+    if (!readLocalConfig(repo, key, &value)) return fallback;
+    bool ok = false;
+    const qint64 parsed = value.toLongLong(&ok);
+    return ok ? parsed : fallback;
+}
+
+bool writeRatchetCeiling(const QString &repo, const RepoStatsSample &sample,
+                         QString *error)
+{
+    return writeLocalConfig(repo, kRatchetCeilingDay, sample.day, error) &&
+           writeLocalConfig(repo, kRatchetCeilingBytes,
+                            QString::number(sample.bytes), error);
+}
 }
 
 QString RepoStatsStore::statsPath(const QString &repoDir)
 {
-    const QDir gitDir(commonGitDir(repoDir));
-    const QString root = gitDir.dirName() == QLatin1String(".git")
-                             ? QFileInfo(gitDir.absolutePath()).absolutePath()
-                             : gitDir.absolutePath();
-    return QDir(root).filePath(QStringLiteral(".forkmesh/stats/repository.json"));
-}
-
-QString RepoStatsStore::statePath(const QString &repoDir)
-{
-    return QDir(commonGitDir(repoDir)).filePath(QStringLiteral("forkmesh-ratchet.json"));
+    return QDir(repoDir).filePath(QStringLiteral(".forkmesh/stats/repository.json"));
 }
 
 RepoStatsSample RepoStatsStore::measure(const QString &repoDir, QString *error)
@@ -252,49 +274,61 @@ QVector<RepoStatsSample> RepoStatsStore::captureDaily(const QString &repoDir,
                                    {QStringLiteral("lines"), double(sample.lines)},
                                    {QStringLiteral("files"), double(sample.files)}});
     root.insert(QStringLiteral("days"), encoded);
-    // Each new day re-bases the ceiling on the repository's size right now. It
-    // never rises again during that day while Ratchet Mode remains enabled.
-    if (ratchetEnabled(repoDir)) ceilingBytes(repoDir, current, true);
+    // Each new day re-bases the ceiling on the repository's size right now; it
+    // never rises again that day while Ratchet Mode is on. Enforcement state is
+    // local-only, so the ceiling rides .git/config beside the toggle rather than
+    // the tracked trend document.
+    if (ratchetEnabled(repoDir) && !writeRatchetCeiling(repoDir, current, error))
+        return {};
     if (!writeDocument(statsPath(repoDir), root, error)) return {};
     return days;
 }
 
 bool RepoStatsStore::ratchetEnabled(const QString &repoDir)
 {
-    return readDocument(statePath(repoDir)).value(QStringLiteral("ratchet")).toBool();
+    bool found = false;
+    const bool enabled = localConfigBool(repoDir, kRatchetEnabled, &found);
+    if (found) return enabled;
+    // Compatibility only: old versions committed this switch into the stats
+    // document. The first local toggle overrides it without editing that file.
+    return readDocument(statsPath(repoDir)).value(QStringLiteral("ratchet")).toBool();
 }
 
 bool RepoStatsStore::setRatchetEnabled(const QString &repoDir, bool enabled,
                                        QString *error)
 {
-    QJsonObject state = readDocument(statePath(repoDir));
-    state.insert(QStringLiteral("ratchet"), enabled);
-    // Turning it off clears the ceiling: nothing is left that a later toggle,
-    // checkout or merge could read back as an active limit.
-    state.remove(QStringLiteral("ceilingDay"));
-    state.remove(QStringLiteral("ceilingBytes"));
     if (enabled) {
         const RepoStatsSample now = measure(repoDir, error);
         if (now.day.isEmpty()) return false;
-        state.insert(QStringLiteral("ceilingDay"), now.day);
-        state.insert(QStringLiteral("ceilingBytes"), double(now.bytes));
+        if (!writeRatchetCeiling(repoDir, now, error)) return false;
+    } else {
+        // Drop the ceiling outright, so nothing is left that a later toggle
+        // could read back as an already-active limit.
+        git(repoDir, {QStringLiteral("config"), QStringLiteral("--local"),
+                      QStringLiteral("--unset"), kRatchetCeilingDay});
+        git(repoDir, {QStringLiteral("config"), QStringLiteral("--local"),
+                      QStringLiteral("--unset"), kRatchetCeilingBytes});
     }
-    return writeDocument(statePath(repoDir), state, error);
+    // Always persist false as an explicit local override. Otherwise an older
+    // committed `ratchet: true` value would turn enforcement back on.
+    return writeLocalConfig(repoDir, kRatchetEnabled,
+                            enabled ? QStringLiteral("true")
+                                    : QStringLiteral("false"),
+                            error);
 }
 
-// Today's byte ceiling. A ceiling left over from an earlier day is stale — the
-// ratchet resets every day — so it is re-based on the current size on request.
+// Today's byte ceiling. One left over from an earlier day is stale — the ratchet
+// resets daily — so it is re-based on the current size on request.
 qint64 RepoStatsStore::ceilingBytes(const QString &repoDir, const RepoStatsSample &now,
                                     bool refreshStaleDay)
 {
-    QJsonObject state = readDocument(statePath(repoDir));
-    const qint64 stored = qint64(state.value(QStringLiteral("ceilingBytes")).toDouble());
-    if (state.value(QStringLiteral("ceilingDay")).toString() == now.day && stored > 0)
+    QString day;
+    const qint64 stored = localConfigInteger(repoDir, kRatchetCeilingBytes, 0);
+    if (readLocalConfig(repoDir, kRatchetCeilingDay, &day) && day == now.day &&
+        stored > 0)
         return stored;
     if (!refreshStaleDay) return stored;
-    state.insert(QStringLiteral("ceilingDay"), now.day);
-    state.insert(QStringLiteral("ceilingBytes"), double(now.bytes));
-    writeDocument(statePath(repoDir), state, nullptr);
+    writeRatchetCeiling(repoDir, now, nullptr);
     return now.bytes;
 }
 
