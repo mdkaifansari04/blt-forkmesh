@@ -152,6 +152,7 @@
 #include <QStringList>
 #include <QStringListModel>
 #include <QStyle>
+#include <QStylePainter>
 #include <QStyledItemDelegate>
 #include <QStyleHints>
 #include <QStyleOptionComboBox>
@@ -3487,6 +3488,73 @@ private:
     QString m_hintedText;
 };
 
+// Compact composer controls whose closed state is just the selected icon. The
+// popup still uses the normal combo model, so opening it reveals the full icon
+// + label rows (Auto / Ask / Plan / Edit or the effort ladder). This keeps the
+// prompt chrome quiet without making the choices cryptic once clicked.
+class IconOnlyFullPopupComboBox : public FullPopupComboBox {
+public:
+    explicit IconOnlyFullPopupComboBox(QWidget *parent = nullptr)
+        : FullPopupComboBox(parent)
+    {
+        setIconSize(QSize(22, 22));
+        setFixedWidth(30);
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    }
+
+    QSize sizeHint() const override
+    {
+        return QSize(30, qMax(26, FullPopupComboBox::sizeHint().height()));
+    }
+
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QStylePainter painter(this);
+        QStyleOptionComboBox option;
+        initStyleOption(&option);
+        option.currentText.clear();
+        option.iconSize = iconSize();
+        painter.drawComplexControl(QStyle::CC_ComboBox, option);
+        painter.drawControl(QStyle::CE_ComboBoxLabel, option);
+    }
+};
+
+// Named transparent assets keep the source artwork inspectable and reusable
+// outside this control. Cache the QIcons because the combined menu is rebuilt
+// whenever a live provider catalog changes.
+inline QIcon agentControlIcon(int index)
+{
+    static const char *const paths[] = {
+        ":/agent-ui/icons/model-starburst.png",
+        ":/agent-ui/icons/model-book-quill.png",
+        ":/agent-ui/icons/model-feather.png",
+        ":/agent-ui/icons/model-mountain-blossom.png",
+        ":/agent-ui/icons/model-sun.png",
+        ":/agent-ui/icons/model-globe-leaf.png",
+        ":/agent-ui/icons/model-crescent-moon.png",
+        ":/agent-ui/icons/mode-auto.png",
+        ":/agent-ui/icons/mode-ask.png",
+        ":/agent-ui/icons/mode-plan.png",
+        ":/agent-ui/icons/mode-edit.png",
+        ":/agent-ui/icons/effort-low.png",
+        ":/agent-ui/icons/effort-medium.png",
+        ":/agent-ui/icons/effort-high.png",
+        ":/agent-ui/icons/effort-ultra.png",
+        ":/agent-ui/icons/effort-max.png",
+    };
+    if (index < 0 || index >= 16)
+        return QIcon();
+    static QHash<int, QIcon> cache;
+    if (const auto cached = cache.constFind(index); cached != cache.cend())
+        return cached.value();
+    const QIcon icon(QString::fromLatin1(paths[index]));
+    cache.insert(index, icon);
+    return icon;
+}
+
 // "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript
 // launcher routes each task: a free local heuristic pass first, then a triage
 // ladder that asks Haiku whether it can handle the task and escalates through
@@ -3620,6 +3688,10 @@ inline void populateClaudeModelCombo(QComboBox *combo)
     combo->setEditable(false);
     combo->setProperty("allowAutoModel", true);
     combo->addItem(QStringLiteral("Auto"), kClaudeAutoModelId);
+    // Offline/API-key users still need a concrete model list. A live OAuth
+    // catalog replaces these entries later via mergeLiveClaudeModels().
+    for (const ClaudeAutoRung &rung : claudeAutoLadder())
+        combo->addItem(rung.label, rung.id);
 }
 
 inline QString codexChatGptModelId(const QString &model)
