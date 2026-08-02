@@ -148,6 +148,16 @@ const SHADOW_MAP_BUSY_RETRY_MS = 1_000;
 const SHADOW_MAP_STALL_COOLDOWN_MS = 10_000;
 const SCENE_LOD_SAMPLE_MS = 500;
 const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
+// setAnimationLoop follows the panel refresh rate. Rendering this procedural
+// scene at 120/144Hz spends twice the GPU work for almost no perceptible gain,
+// so simulation and presentation share a stable 60Hz ceiling. Slower displays
+// still present every callback they provide.
+const RENDER_FRAME_INTERVAL_MS = 1000 / 60;
+const RENDER_FRAME_EARLY_TOLERANCE_MS = 0.75;
+// A DPR-only cap still lets a large desktop allocate six to ten million
+// colour/depth samples per frame. Bound the actual drawing buffer to roughly
+// 1200p while retaining native resolution on ordinary 1080p displays.
+const DESKTOP_RENDER_PIXEL_BUDGET = 2_500_000;
 // Backstop for the Debug tab's per-object walk so a pathological scene can
 // never build a million-entry array on the main thread.
 const SCENE_OBJECT_WALK_LIMIT = 5_000;
@@ -529,6 +539,18 @@ const REPOSITORY_EDGE_RADIUS = 68;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function worldRendererPixelRatio(width, height, devicePixelRatio, compact) {
+  const cssWidth = Math.max(1, Number(width) || 1);
+  const cssHeight = Math.max(1, Number(height) || 1);
+  const dpr = Math.max(0.25, Number(devicePixelRatio) || 1);
+  if (compact) return Math.min(dpr, 1);
+  const densityCap = cssWidth < 700 ? 1.1 : 1.25;
+  const pixelBudgetRatio = Math.sqrt(
+    DESKTOP_RENDER_PIXEL_BUDGET / (cssWidth * cssHeight),
+  );
+  return Math.min(dpr, densityCap, pixelBudgetRatio);
 }
 
 function hashNumber(value) {
@@ -15794,6 +15816,7 @@ export function createWorldScene({
     resize();
     running = true;
     lastFrame = performance.now();
+    nextRenderFrameAt = 0;
     lastVisualAnimationAt = lastFrame;
     nextVisualAnimationAt = 0;
     renderer.setAnimationLoop(animate);
@@ -22484,6 +22507,7 @@ export function createWorldScene({
   let running = true;
   let disposed = false;
   let lastFrame = performance.now();
+  let nextRenderFrameAt = 0;
   let lastVisualAnimationAt = lastFrame;
   let nextVisualAnimationAt = 0;
   let diagnosticsSampleAt = lastFrame;
@@ -33422,13 +33446,16 @@ export function createWorldScene({
       }
       viewportRect.width = width;
       viewportRect.height = height;
-      // Keep the drawing buffer deliberately modest. The previous 1.75 cap made
-      // the GPU shade over three times as many pixels as a 1x canvas on dense
-      // displays, which showed up as movement hitching.
+      // Bound the real buffer area as well as DPR. A 1.35 ratio is modest on a
+      // laptop but still asks a 4K window to shade more than 15 million samples
+      // once colour and depth are counted. Resolution scaling keeps that cost
+      // stable across displays while DOM labels remain native-resolution.
       renderer.setPixelRatio(
-        Math.min(
+        worldRendererPixelRatio(
+          width,
+          height,
           window.devicePixelRatio || 1,
-          compactRenderer ? 1 : width < 700 ? 1.1 : 1.35,
+          compactRenderer,
         ),
       );
       renderer.setSize(width, height, false);
@@ -33529,6 +33556,17 @@ export function createWorldScene({
 
   function animate(time) {
     if (!running || disposed) return;
+    if (
+      nextRenderFrameAt > 0 &&
+      time + RENDER_FRAME_EARLY_TOLERANCE_MS < nextRenderFrameAt
+    ) {
+      return;
+    }
+    nextRenderFrameAt =
+      nextRenderFrameAt <= 0 ||
+      time - nextRenderFrameAt > RENDER_FRAME_INTERVAL_MS * 2
+        ? time + RENDER_FRAME_INTERVAL_MS
+        : nextRenderFrameAt + RENDER_FRAME_INTERVAL_MS;
     const frameWorkStartedAt = performance.now();
     if (time >= nextEnvironmentCheckAt) {
       nextEnvironmentCheckAt = time + 15_000;
@@ -34138,6 +34176,7 @@ export function createWorldScene({
     running = !paused;
     if (running) {
       lastFrame = performance.now();
+      nextRenderFrameAt = 0;
       lastVisualAnimationAt = lastFrame;
       nextVisualAnimationAt = 0;
       renderer.setAnimationLoop(animate);
