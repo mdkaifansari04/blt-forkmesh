@@ -27,6 +27,7 @@ def _load(pings_enabled=True):
         "_record_status_monitor_transitions",
         "_enqueue_operational_alert_pings",
         "_record_operational_alert_pings_sent",
+        "_status_recovery_ping_body",
     }
     selected = []
     for node in ast.parse(ENTRY_TEXT, filename=str(ENTRY)).body:
@@ -70,10 +71,18 @@ def _load(pings_enabled=True):
             return None
         return None
 
+    # Flipped by the test that models an incident taking the notification
+    # write down with everything else it broke.
+    control = SimpleNamespace(enqueue_ok=True)
+
     async def enqueue_notification(_env, recipient, kind, title, **kwargs):
+        if not control.enqueue_ok:
+            raise RuntimeError("D1 unavailable")
         pings.append({
             "recipient": recipient, "kind": kind, "title": title,
             "dedupe": kwargs.get("dedupe", ""),
+            "body": kwargs.get("body", ""),
+            "ts": kwargs.get("ts", 0),
             "state": (kwargs.get("meta") or {}).get("state", ""),
         })
         return True
@@ -99,6 +108,7 @@ def _load(pings_enabled=True):
         "STATUS_MIRROR_PREFIX": "mirror:",
         "_status_alert_pings_enabled": _status_alert_pings_enabled,
         "_status_alert_emails_enabled": _status_alert_emails_enabled,
+        "_test_control": control,
     }
     module = ast.fix_missing_locations(
         ast.Module(body=selected, type_ignores=[]))
@@ -143,6 +153,63 @@ def test_one_ping_per_transition_in_both_directions():
         _sample(namespace, tick * minute)
     assert len(pings) == 2
     assert len({ping["dedupe"] for ping in pings}) == 2
+
+
+def test_a_lost_outage_ping_is_backfilled_when_the_recovery_lands():
+    # The failure ping rides the platform the probe just found broken, so it is
+    # the half of the pair most likely to be lost — which left administrators
+    # reading a stream of "recovered" pings for outages they were never told
+    # about.
+    namespace, monitors, pings = _load()
+    control = namespace["_test_control"]
+    minute = 60_000
+
+    _sample(namespace, 10 * minute)
+    control.enqueue_ok = False
+    _sample(namespace, 11 * minute, down=("edge_api",), reason="502 from edge")
+    assert pings == []
+    assert monitors["status:edge_api"]["pinged_state"] == ""
+
+    control.enqueue_ok = True
+    _sample(namespace, 13 * minute)
+    assert [(ping["state"], ping["title"]) for ping in pings] == [
+        ("down", "Edge API needs attention"),
+        ("up", "Edge API recovered"),
+    ]
+    # Backfilled at the start of the outage, carrying the failure reason the
+    # green sample no longer has, and deduplicated exactly like the live ping
+    # so a delivery that only half-failed cannot produce two rows.
+    assert pings[0]["ts"] == 11 * minute
+    assert "502 from edge" in pings[0]["body"]
+    assert pings[0]["dedupe"] == "operational-status:edge_api:down:%d" % (
+        11 * minute)
+    assert "Down for 2 minutes" in pings[1]["body"]
+
+    # And it stays a one-shot: later green samples add nothing.
+    _sample(namespace, 14 * minute)
+    assert len(pings) == 2
+
+
+def test_a_resent_recovery_ping_does_not_report_uptime_as_downtime():
+    # An undelivered recovery is retried by every later green sample. Those
+    # samples are not transitions, so they know no outage window: the duration
+    # must come from the flip itself, never from "time since the recovery".
+    namespace, monitors, pings = _load()
+    control = namespace["_test_control"]
+    minute = 60_000
+
+    _sample(namespace, 10 * minute)
+    _sample(namespace, 11 * minute, down=("edge_api",), reason="502 from edge")
+    assert monitors["status:edge_api"]["pinged_state"] == "down"
+
+    control.enqueue_ok = False
+    _sample(namespace, 12 * minute)
+    control.enqueue_ok = True
+    _sample(namespace, 20 * minute)
+
+    recoveries = [ping for ping in pings if ping["state"] == "up"]
+    assert len(recoveries) == 1
+    assert "Down for" not in recoveries[0]["body"]
 
 
 def test_ping_state_is_only_recorded_once_delivered():

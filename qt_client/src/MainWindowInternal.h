@@ -1094,11 +1094,17 @@ private:
 // (adhoc #17). Kept header-only (no Q_OBJECT) like the other Internal.h mini-
 // charts; the click hook is a std::function so a left-click can still open
 // the stall dialog.
+// The side of one resource square. The window chrome's live CPU/MEM/DISK
+// squares and the repo mode row's SIZE/LOC/FILES day trends share it (adhoc
+// #421) so both rows of cards are the same size.
+constexpr int kResourceSparklineSide = 34;
+
 class ResourceSparkline : public QWidget
 {
 public:
     explicit ResourceSparkline(const QString &label, QWidget *parent = nullptr,
-                               int side = 34, int maxPoints = 60)
+                               int side = kResourceSparklineSide,
+                               int maxPoints = 60)
         : QWidget(parent), m_label(label), m_maxPoints(qMax(2, maxPoints))
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
@@ -7138,23 +7144,82 @@ private:
     QString m_fullText;
 };
 
+// A one-line, muted status label that sits beside a busy button and carries the
+// live "what is it doing right now" note (the sync button's git/seal progress).
+// It never widens its row: the size hint stays at zero width and the layout
+// hands it whatever space is left, so a long progress line elides instead of
+// pushing the button around. The untruncated text is kept for the tooltip and
+// so a resize re-elides the original rather than an already-cut string.
+class ElidingStatusLabel : public QLabel
+{
+public:
+    explicit ElidingStatusLabel(QWidget *parent = nullptr) : QLabel(parent)
+    {
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        setTextInteractionFlags(Qt::NoTextInteraction);
+    }
+
+    void setFullText(const QString &text)
+    {
+        const QString line = text.simplified();
+        if (line == m_fullText)
+            return;
+        m_fullText = line;
+        setToolTip(line);
+        applyElide();
+    }
+    QString fullText() const { return m_fullText; }
+
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QLabel::minimumSizeHint();
+        hint.setWidth(0);
+        return hint;
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QLabel::resizeEvent(event);
+        applyElide();
+    }
+
+private:
+    void applyElide()
+    {
+        const QString elided = fontMetrics().elidedText(
+            m_fullText, Qt::ElideRight, qMax(0, width()));
+        if (elided != text())
+            QLabel::setText(elided);
+    }
+
+    QString m_fullText;
+};
+
 // A push button that stacks its octicon above a small caption — the same
 // icon-over-words form as the activity rail's entries (adhoc #91) — but driven
 // by the button's live text(), so the existing "Issues (60)" / "Fork 0" count
-// updates keep working. Two forms: Tab paints the repo tabs' checked underline,
-// Action paints the repoAction pill's fill and border. Fully custom-painted
-// (like ActivityRailButton), so the QPushButton QSS box — including
-// #repoAction's max-height, which would squash the stacked layout — never
-// shapes what's drawn.
+// updates keep working. Three forms: Tab paints the repo tabs' checked
+// underline, Action paints the repoAction pill's fill and border, and Bare
+// paints neither — just the rail's own icon over caption, resting grey and
+// brightening under the pointer (adhoc #59). Fully custom-painted (like
+// ActivityRailButton), so the QPushButton QSS box — including #repoAction's
+// max-height, which would squash the stacked layout — never shapes what's
+// drawn.
 class VerticalIconButton : public QPushButton
 {
 public:
-    enum Form { Action, Tab };
+    enum Form { Action, Tab, Bare };
     explicit VerticalIconButton(const QString &text, Form form,
                                 QWidget *parent = nullptr)
         : QPushButton(text, parent), m_form(form)
     {
         setCursor(Qt::PointingHandCursor);
+        setFlat(true);
+        // Nothing here is styled by QSS, so Qt doesn't set WA_Hover for us —
+        // without it underMouse() would only be re-read on some unrelated
+        // repaint and the hover brightening would come and go at random.
+        setAttribute(Qt::WA_Hover, true);
     }
 
     QSize sizeHint() const override
@@ -7179,6 +7244,18 @@ public:
     }
     qint64 badgeCount() const { return m_badge; }
 
+    // Name the octicon instead of handing over a finished QIcon, and the glyph
+    // is re-tinted to the live caption colour on every repaint — exactly how
+    // ActivityRailButton does it, so a Bare tile's icon greys and brightens
+    // with its caption rather than sitting at one fixed contrast.
+    void setOcticonName(const QString &name)
+    {
+        if (m_iconName == name)
+            return;
+        m_iconName = name;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -7187,11 +7264,14 @@ protected:
         const bool dark = currentThemeIsDark();
         const bool hovered = isEnabled() && underMouse();
         QColor fg;
-        if (m_form == Tab)
+        // Tab and Bare both rest in the rail's grey and brighten under the
+        // pointer; Action sits inside a pill that already separates it from the
+        // page, so it stays at full contrast.
+        if (m_form == Action)
+            fg = dark ? QColor("#e6edf3") : QColor("#1f2328");
+        else
             fg = dark ? QColor(isChecked() || hovered ? "#e6edf3" : "#8b949e")
                       : QColor(isChecked() || hovered ? "#1f2328" : "#656d76");
-        else
-            fg = dark ? QColor("#e6edf3") : QColor("#1f2328");
         if (!isEnabled())
             fg = QColor("#6e7681");
 
@@ -7201,14 +7281,18 @@ protected:
                                    : (hovered ? "#d0d7de" : "#eaeef2")));
             p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6,
                               6);
-        } else if (isChecked()) {
+        } else if (m_form == Tab && isChecked()) {
             p.fillRect(QRect(0, height() - 2, width(), 2),
                        QColor(dark ? "#2ea043" : "#1f883d"));
         }
 
         const QRect iconRect((width() - kIconPx) / 2, 6, kIconPx, kIconPx);
-        icon().paint(&p, iconRect, Qt::AlignCenter,
-                     isEnabled() ? QIcon::Normal : QIcon::Disabled);
+        if (m_iconName.isEmpty())
+            icon().paint(&p, iconRect, Qt::AlignCenter,
+                         isEnabled() ? QIcon::Normal : QIcon::Disabled);
+        else
+            p.drawPixmap(iconRect.topLeft(),
+                         tintedOcticonPixmap(m_iconName, fg, kIconPx));
 
         QFont f = font();
         f.setPixelSize(10);
@@ -7247,6 +7331,99 @@ private:
     static constexpr int kHeight = 44;
     Form m_form;
     qint64 m_badge = 0;
+    QString m_iconName; // empty: paint the QIcon set by setOcticon instead
+};
+
+// The repository Ratchet toggle at the right end of the mode row (adhoc #421).
+// It takes the same icon-over-caption shape as every other button on that line,
+// but unlike a tab it has to read as a *state*, not a destination: a plain
+// checkable QToolButton showed no difference between armed and idle. On, the
+// pill fills green and the glyph is a closed padlock; off, it is a hollow
+// outline with an open padlock and the muted caption colour. Kept a QToolButton
+// subclass so the checkable/toggled API and existing lookups are unchanged.
+class RatchetToggleButton : public QToolButton
+{
+public:
+    explicit RatchetToggleButton(QWidget *parent = nullptr)
+        : QToolButton(parent)
+    {
+        setText(QStringLiteral("Ratchet"));
+        setCheckable(true);
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    QSize sizeHint() const override
+    {
+        QFont f = font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        const int textW = QFontMetrics(f).horizontalAdvance(text());
+        return QSize(qMax(48, qMax(kIconPx, textW) + 16), kHeight);
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const bool hovered = isEnabled() && underMouse();
+        const bool on = isChecked();
+
+        // Filled green when armed, hollow when idle — the whole point is that
+        // the two states cannot be confused at a glance.
+        const QColor accent(dark ? "#2ea043" : "#1f883d");
+        QRectF pill = QRectF(rect()).adjusted(0.5, 3.5, -0.5, -3.5);
+        if (on) {
+            QColor fill = accent;
+            if (hovered)
+                fill = fill.lighter(112);
+            p.setPen(QPen(accent.darker(115), 1));
+            p.setBrush(fill);
+        } else {
+            p.setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 1));
+            p.setBrush(hovered ? QColor(dark ? "#21262d" : "#eaeef2")
+                               : QColor(Qt::transparent));
+        }
+        p.drawRoundedRect(pill, 6, 6);
+
+        const QColor fg =
+            !isEnabled() ? QColor("#6e7681")
+            : on         ? QColor("#ffffff")
+                         : (dark ? QColor(hovered ? "#e6edf3" : "#8b949e")
+                                 : QColor(hovered ? "#1f2328" : "#656d76"));
+        const QRect iconRect((width() - kIconPx) / 2, int(pill.top()) + 5,
+                             kIconPx, kIconPx);
+        p.drawPixmap(iconRect.topLeft(),
+                     tintedOcticonPixmap(on ? QStringLiteral("lock")
+                                            : QStringLiteral("unlock"),
+                                         fg, kIconPx));
+
+        QFont f = font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        p.setFont(f);
+        p.setPen(fg);
+        p.drawText(QRect(2, iconRect.bottom() + 2, width() - 4, 12),
+                   Qt::AlignHCenter | Qt::AlignTop,
+                   QFontMetrics(f).elidedText(text(), Qt::ElideRight,
+                                              width() - 4));
+    }
+    void enterEvent(QEnterEvent *e) override
+    {
+        update();
+        QToolButton::enterEvent(e);
+    }
+    void leaveEvent(QEvent *e) override
+    {
+        update();
+        QToolButton::leaveEvent(e);
+    }
+
+private:
+    static constexpr int kIconPx = 16;
+    static constexpr int kHeight = 44;
 };
 
 // Width and height of one activity-rail entry, and the width of the rail
@@ -7258,7 +7435,10 @@ private:
 // longest caption and the rail only adds its own slim 6px scrollbar (see the
 // #appNavigationRail QScrollBar rule in Theme.h).
 constexpr int kRailItemWidth = 42;
-constexpr int kRailItemHeight = 44; // 20px icon + 10px caption + breathing room
+constexpr int kRailItemHeight = 44; // 16px icon + 10px caption + breathing room
+// Matches VerticalIconButton's kIconPx so the rail and the repo tab row draw
+// their glyphs at one size (adhoc #421).
+constexpr int kRailIconPx = 16;
 
 // The 42px floor fits every rail caption in each of main()'s preferred UI
 // families (Inter/SF/Segoe/Roboto/Noto/Ubuntu/Cantarell measure "Network",
@@ -7419,7 +7599,12 @@ protected:
         if (isChecked())
             p.fillRect(QRectF(0, 4, 2, height() - 8), QColor("#2ea043"));
 
-        const int iconPx = 20;
+        // 16px, the repo tab row's icon size, not the 20px the rail used to
+        // draw (adhoc #421): side by side the rail glyphs read a size up from
+        // the tabs they sit beside. Same top inset and caption gap as
+        // VerticalIconButton, so a rail item and a tab painted at the same y
+        // put their icon and their word on exactly the same two lines.
+        const int iconPx = kRailIconPx;
         const QRect iconRect((width() - iconPx) / 2,
                              showLabel ? 6 : (height() - iconPx) / 2,
                              iconPx, iconPx);
