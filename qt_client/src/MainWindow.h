@@ -891,6 +891,19 @@ public:
     {
         return markAgentSessionsMerged(0, branch, mergeVerified);
     }
+    // The "Merge & clean up" buttons (Branches, Worktrees and the agent detail
+    // rail): merge the branch into the default branch, then delete its worktree,
+    // its branch and the agent session(s) that produced it.
+    bool testMergeBranchAndCleanUp(const QString &branch)
+    {
+        return mergeWorktreeIntoMain(branch,
+                                     worktreePathForBranch(repoGitDir(), branch),
+                                     /*deleteAgent=*/true);
+    }
+    bool testHasAgentSession(int sessionId)
+    {
+        return findAgentSession(sessionId) != nullptr;
+    }
     void testRefreshAgentMergeState() { refreshAgentMergeState(); }
     bool testAgentMergeStateRefreshing() const { return m_agentMergeStateRefreshing; }
     QString testAgentStatusCellText(int sessionId) const;
@@ -3094,6 +3107,10 @@ private:
     void clearRepoDetail();
     void openRepositoryWebsite(); // open the current repo's page in the browser
     void forkCurrentRepo();       // clone the open repo into your own node
+    // Persist and apply the source side of a fork's split origin remote. Used
+    // both after a new checkout and to repair forks made by older clients.
+    bool configureForkSource(int index, const QString &sourceUrl,
+                             bool notifyOnError = true);
     void downloadCurrentRepoZip();
     void setRepoDetailNotice(const QString &message, bool error = false);
     void refreshOpenRepoDetail(); // re-read the open repo after its mirror changes
@@ -3984,6 +4001,7 @@ private:
     void openCommitsForContributor(const QString &author);
     void setRepoBranch(const QString &branch);
     QString repoHeadBranch() const;          // the checked-out branch (HEAD)
+    void updateCommitsBranchButtonLabel();   // branch + current worktree identity
     void refreshCommitsBranchButton();       // commits-page branch indicator/menu
     void createAndCheckoutBranch();          // "Create new branch…"
     QString currentRef() const;
@@ -4585,6 +4603,8 @@ private:
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
     void queueTopMessage(const QString &text, bool error,
                          const QString &clickHref = QString()); // park one behind the current toast
+    void appendTopMessageToPrompt(const QString &text);
+    void dismissQueuedTopMessage(quint64 id);
     void renderTopMessageQueue(); // repaint the visible stack of queued notifications
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
@@ -5086,12 +5106,14 @@ private:
     // advanceTopMessageQueue). Each entry carries its own error flag so a
     // queued event keeps its colour.
     struct TopMessageQueueEntry {
+        quint64 id = 0;
         QString text;
         bool error = false;
         QString clickHref;
         int durationSeconds = 0; // its full countdown starts when it reaches the top
     };
     QList<TopMessageQueueEntry> m_topMessageQueue;
+    quint64 m_nextTopMessageQueueId = 1;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageHovering = false;    // pauses the countdown while reading/actions
     bool m_topMessageIsPromptBubble = false; // submitted prompt gets a fuller, animated treatment
@@ -5844,6 +5866,8 @@ private:
     // In the bottom status bar: the git identity (name <email>) configured for
     // the repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
+    // The linked/main checkout whose working tree the Git workspace is showing.
+    QLabel *m_footerWorktreeInfo = nullptr;
     // Next to it: the commit the browsed branch currently points at (date,
     // subject and author), so the strip says where the branch sits, not just
     // which branch is open.
@@ -6388,7 +6412,6 @@ private:
     QTextBrowser *m_scmDiff = nullptr;
     QLabel *m_scmCountLabel = nullptr;
     QLabel *m_scmViewedLabel = nullptr;  // "3 of 26 files viewed"
-    QPushButton *m_scmAutoViewedButton = nullptr; // auto-mark-viewed-on-scroll
     QPushButton *m_scmGenerateButton = nullptr;
     QComboBox *m_scmGenModel = nullptr;       // AI model for inline generation
     QComboBox *m_scmGenKind = nullptr;        // "Commit message" vs "X post"
@@ -6469,6 +6492,9 @@ private:
     QPushButton *m_scmStickyViewed = nullptr;
     QString m_scmStickySection;      // section key shown in the sticky header
     QTimer *m_scmAutoViewedDebounce = nullptr;
+    int m_scmLastAutoViewedScrollValue = 0;
+    int m_scmAutoViewedScrollDirection = 1; // +1 down, -1 back up
+    bool m_scmApplyingAutoViewed = false; // ignore render/anchor scroll signals
     // Set while the tree selection is following the diff scroll, so
     // currentItemChanged doesn't bounce the diff back to the file header.
     bool m_scmSuppressFileScroll = false;

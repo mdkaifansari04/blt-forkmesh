@@ -10,6 +10,7 @@
 #include "MainWindowInternal.h"
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
+#include "UpstreamCheckoutSync.h"
 
 #include <QSignalBlocker>
 
@@ -1135,6 +1136,12 @@ void MainWindow::forkCurrentRepo()
     fork.owner = owner;
     fork.name = name;
     fork.description = src.description;
+    // Preserve the source URL as the fetch side of the fork's origin. The
+    // working copy pushes to its own mirror, but pulls must continue to follow
+    // the repository selected in the Repos tab.
+    fork.cloneUrl = src.cloneUrl.trimmed().isEmpty()
+                        ? repositorySource(src)
+                        : src.cloneUrl.trimmed();
     fork.solanaAddress = savedSolanaAddress();
     fork.publishToNetwork = true;
     fork.actionsEnabled = src.actionsEnabled;
@@ -1144,9 +1151,9 @@ void MainWindow::forkCurrentRepo()
     fork.mirrorPath = repositoryMirrorRoot() + "/" +
                       repoSegment(owner, QStringLiteral("owner")) + "-" +
                       repoSegment(name, QStringLiteral("repository")) + ".git";
-    // The chosen folder is the fork's working directory; its origin points at our
-    // own mirror (set up below), so it never auto-syncs from upstream — pushes to
-    // it keep the branches you publish.
+    // The chosen folder is the fork's working directory. Its origin fetches from
+    // the selected source repository and pushes to our own mirror (set up below),
+    // so pulls receive upstream work without publishing commits back upstream.
     fork.localPath = targetDir;
 
     m_repositories.append(fork);
@@ -1193,8 +1200,9 @@ void MainWindow::forkCurrentRepo()
                 refreshRepositoryList();
                 logSystem(QStringLiteral("Forked into %1/%2.").arg(owner, name));
 
-                // Check the fork out into the folder the user picked. Its origin
-                // is the local mirror, so commits pushed here update the fork.
+                // Check the fork out into the folder the user picked. Once the
+                // clone completes, origin is split so fetches use the source and
+                // pushes update this fork's local mirror.
                 const QString mirrorPath = f.mirrorPath;
                 QDir().mkpath(QFileInfo(targetDir).absolutePath());
                 auto *checkout = new QProcess(this);
@@ -1220,6 +1228,8 @@ void MainWindow::forkCurrentRepo()
                             m_repositories[i].localPath.clear();
                             saveRepositories();
                         } else {
+                            configureForkSource(i, QString(), true);
+                            ensurePushHook(m_repositories.at(i));
                             logSystem(QStringLiteral("Checked out %1/%2 into %3.")
                                           .arg(owner, name,
                                                QDir::toNativeSeparators(targetDir)));
@@ -1235,6 +1245,43 @@ void MainWindow::forkCurrentRepo()
     process->start(QStringLiteral("git"),
                    {QStringLiteral("clone"), QStringLiteral("--mirror"), source,
                     fork.mirrorPath});
+}
+
+bool MainWindow::configureForkSource(int index, const QString &sourceUrl,
+                                     bool notifyOnError)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return false;
+    RepositoryRecord &fork = m_repositories[index];
+    const QString source = sourceUrl.trimmed().isEmpty()
+                               ? fork.cloneUrl.trimmed()
+                               : sourceUrl.trimmed();
+    if (source.isEmpty() || fork.localPath.trimmed().isEmpty() ||
+        fork.mirrorPath.trimmed().isEmpty())
+        return false;
+
+    const bool sourceChanged = fork.cloneUrl.trimmed() != source;
+    if (sourceChanged) {
+        fork.cloneUrl = source;
+        saveRepositories();
+    }
+
+    QString error;
+    if (!forkmesh::upstream::configureForkCheckoutRemote(
+            fork.localPath, source, fork.mirrorPath, &error)) {
+        logSystem(QStringLiteral("Fork: could not configure %1/%2 to pull from %3: %4")
+                      .arg(fork.owner, fork.name, source, error));
+        if (notifyOnError)
+            flashMessage(QStringLiteral("The fork was created, but its source remote "
+                                        "could not be configured: %1")
+                             .arg(error),
+                         true);
+        return false;
+    }
+    if (sourceChanged)
+        logSystem(QStringLiteral("Fork: %1/%2 now pulls from %3 and pushes to its local mirror.")
+                      .arg(fork.owner, fork.name, source));
+    return true;
 }
 
 void MainWindow::downloadCurrentRepoZip()
@@ -8299,6 +8346,7 @@ void MainWindow::setRepoBranch(const QString &branch)
     m_repoBranch = branch;
     if (m_branchButton)
         m_branchButton->setText(branch);
+    updateCommitsBranchButtonLabel();
     updateFooterCommitInfo(); // the strip's commit line follows the browsed branch
     loadRepoOverview(QString());
     loadCommits(); // also refreshes the Insights counts when that tab is on screen
@@ -8333,11 +8381,24 @@ void MainWindow::refreshCommitsBranchButton()
     const QString browsed = m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
     const QString label =
         browsed.isEmpty() ? QStringLiteral("(detached)") : browsed;
-    // The button elides, so the untruncated ref belongs on the tooltip.
+    const QString dir = repoGitDir();
+    QString worktreeName;
+    if (repoHasWorkingTree()) {
+        worktreeName = QFileInfo(QDir(dir).absolutePath()).fileName();
+        if (worktreeName.isEmpty())
+            worktreeName = QDir::toNativeSeparators(dir);
+    }
+    const QString displayLabel =
+        worktreeName.isEmpty()
+            ? label
+            : QString::fromUtf8("%1 \xC2\xB7 %2").arg(label, worktreeName);
+    // The button elides, so the untruncated ref and worktree belong on the
+    // tooltip. Showing both here keeps the history graph tied to the checkout
+    // whose working-tree changes occupy the pane above it.
     if (auto *elider = dynamic_cast<ElidingPushButton *>(m_commitsBranchButton))
-        elider->setFullText(label);
+        elider->setFullText(displayLabel);
     else
-        m_commitsBranchButton->setText(label);
+        m_commitsBranchButton->setText(displayLabel);
     m_commitsBranchButton->setToolTip(
         QString::fromUtf8("%1 \xE2\x80\x94 click to open another branch (its "
                           "history here, its diff against the base on the "
@@ -8580,6 +8641,7 @@ void MainWindow::loadBranchesAndTags()
             m_repoBranch.isEmpty() ? QStringLiteral("HEAD") : m_repoBranch);
         m_branchButton->setToolTip(QStringLiteral("Switch branch"));
     }
+    updateCommitsBranchButtonLabel();
 
     // Only refresh the Branches / Releases panels if one is actually on screen.
     // They run a git command per branch/tag, so eagerly refreshing them on every
@@ -9589,6 +9651,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     // --- Page 0: the commit list.
     auto *listPage = new QWidget;
+    listPage->setObjectName(QStringLiteral("gitHistoryListPage"));
     // VS-Code-style graph list: just the graph gutter and the summary line (the
     // summary carries the author at its right edge; author / date / hash /
     // files / adds / dels moved into the summary's hover box). The metadata
@@ -9789,7 +9852,9 @@ QWidget *MainWindow::buildRepoCommitsTab()
             });
 
     auto *listLayout = new QVBoxLayout(listPage);
-    listLayout->setContentsMargins(16, 12, 16, 16);
+    // Match the compact source-control half above: this list already has a
+    // splitter edge and does not need a second wide inset around its graph.
+    listLayout->setContentsMargins(6, 4, 4, 4);
     // The unsynced banner sits in normal flow between the search row and the
     // table: as a real laid-out widget it pushes the rows down instead of
     // floating over them, so it can never hide the very (newest, top) commits it
@@ -10102,9 +10167,14 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
 
     auto *workspaceSplit = new QSplitter(Qt::Horizontal);
-    workspaceSplit->setChildrenCollapsible(false);
+    workspaceSplit->setObjectName(QStringLiteral("gitWorkspaceSplit"));
+    workspaceSplit->setChildrenCollapsible(true);
     workspaceSplit->addWidget(leftSplit);
     workspaceSplit->addWidget(m_commitsStack);
+    // Keep the navigation column available, but let the large detail/diff
+    // surface collapse completely when the user wants the history graph wide.
+    workspaceSplit->setCollapsible(0, false);
+    workspaceSplit->setCollapsible(1, true);
     workspaceSplit->setStretchFactor(0, 0);
     workspaceSplit->setStretchFactor(1, 1);
     workspaceSplit->setSizes({430, 950});

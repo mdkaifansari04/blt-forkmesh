@@ -19,12 +19,14 @@
 #include <QJsonObject>
 #include <QImage>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QFileInfo>
 #include <QImage>
 #include <QPointer>
+#include <QPlainTextEdit>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QSemaphore>
@@ -35,6 +37,7 @@
 #include <QToolButton>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QSplitter>
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTemporaryDir>
@@ -538,6 +541,9 @@ int main(int argc, char *argv[])
             check(statusBar->findChild<QLabel *>(
                       QStringLiteral("footerCommitInfo")) != nullptr,
                   QStringLiteral("branch commit info sits in the status bar"));
+            check(statusBar->findChild<QLabel *>(
+                      QStringLiteral("footerWorktreeInfo")) != nullptr,
+                  QStringLiteral("current worktree has a place in the status bar"));
             QLabel *appPath =
                 statusBar->findChild<QLabel *>(QStringLiteral("statusAppPath"));
             check(appPath && !appPath->text().isEmpty() &&
@@ -1461,6 +1467,88 @@ int main(int argc, char *argv[])
                              "details (hash, author, changes): ") +
                   tip);
     }
+
+    // Git workspace follow-up: dense edge margins, a framed commit draft,
+    // shorter commit actions, no auto-view eye, a fully collapsible right pane,
+    // and the worktree identity beside both history and the footer branch.
+    {
+        QWidget *scmPanel =
+            window.findChild<QWidget *>(QStringLiteral("sourceControlPanel"));
+        QMargins scmMargins;
+        if (scmPanel && scmPanel->layout())
+            scmMargins = scmPanel->layout()->contentsMargins();
+        check(scmPanel && scmMargins.left() <= 6 && scmMargins.right() <= 6,
+              QStringLiteral("source-control controls sit close to both pane edges"));
+
+        QPlainTextEdit *draft = window.findChild<QPlainTextEdit *>(
+            QStringLiteral("scmMessageInput"));
+        check(draft && qApp->styleSheet().contains(
+                           QStringLiteral("#scmMessageInput")),
+              QStringLiteral("commit message draft owns a thin framed input style"));
+
+        QWidget *controls =
+            window.findChild<QWidget *>(QStringLiteral("scmControlsPanel"));
+        bool compactActions = controls != nullptr;
+        if (controls) {
+            const QList<QPushButton *> buttons = controls->findChildren<QPushButton *>();
+            compactActions = buttons.size() == 3;
+            for (QPushButton *button : buttons)
+                compactActions =
+                    compactActions && button->property("buttonSize") == "xs";
+        }
+        check(compactActions,
+              QStringLiteral("the three commit actions use the shorter compact size"));
+
+        bool hasAutoViewEye = false;
+        if (scmPanel) {
+            for (QPushButton *button : scmPanel->findChildren<QPushButton *>()) {
+                if (button->toolTip().contains(
+                        QStringLiteral("Automatically mark files as viewed"))) {
+                    hasAutoViewEye = true;
+                    break;
+                }
+            }
+        }
+        check(!hasAutoViewEye,
+              QStringLiteral("working-tree auto-view is enabled without an eye toggle"));
+
+        QWidget *history =
+            window.findChild<QWidget *>(QStringLiteral("gitHistoryListPage"));
+        QMargins historyMargins;
+        if (history && history->layout())
+            historyMargins = history->layout()->contentsMargins();
+        check(history && historyMargins.left() <= 6 &&
+                  historyMargins.right() <= 6,
+              QStringLiteral("commit graph sits close to both pane edges"));
+
+        QSplitter *gitSplit =
+            window.findChild<QSplitter *>(QStringLiteral("gitWorkspaceSplit"));
+        check(gitSplit && !gitSplit->isCollapsible(0) &&
+                  gitSplit->isCollapsible(1),
+              QStringLiteral("Git right-hand detail pane can collapse all the way"));
+
+        QLabel *worktree = window.findChild<QLabel *>(
+            QStringLiteral("footerWorktreeInfo"));
+        check(worktree && !worktree->isHidden() &&
+                  worktree->text().contains(QFileInfo(repoDir.path()).fileName()) &&
+                  worktree->toolTip().contains(repoDir.path()),
+              QStringLiteral("status bar names the current worktree and its path"));
+        bool historyNamesWorktree = false;
+        for (QPushButton *button : window.findChildren<QPushButton *>()) {
+            if (button->toolTip().contains(
+                    QStringLiteral("Current worktree: ") + repoDir.path())) {
+                historyNamesWorktree = true;
+                break;
+            }
+        }
+        check(historyNamesWorktree,
+              QStringLiteral("commit history header identifies its current worktree"));
+    }
+
+    // Automatic Viewed state is a reversible scroll frontier: passing the end
+    // marks files, returning to the top expands/unviews them again.
+    check(window.testScmAutoViewedRoundTrip(),
+          QStringLiteral("working-tree auto-view marks down and unmarks back up"));
 
     // Repository detail is intentionally built on first navigation. Verify the
     // real PR and Agents controls only after taking that user-visible path,
@@ -4362,6 +4450,74 @@ int main(int argc, char *argv[])
                                  "instead of opening the full Log"));
         }
         window.testResetNetworkLog();
+    }
+
+    // "Merge & clean up" must leave nothing of the run behind: the branch's work
+    // lands in main, and its branch *and* its Agent entry go with the cleanup.
+    // Keeping the session listed was reported as "the agent entry is still around".
+    // Runs last: it opens a repository of its own and deletes sessions from the
+    // shared agent store, so it must not hand either on to another block.
+    QTemporaryDir cleanupRepo;
+    if (initGitRepo(cleanupRepo)) {
+        const QString cleanBranch = QStringLiteral("agent/adhoc-1304-clean");
+        runGitChecked(cleanupRepo.path(), {"checkout", "-q", "-b", cleanBranch});
+        {
+            QFile landed(cleanupRepo.path() + QStringLiteral("/landed.txt"));
+            landed.open(QIODevice::WriteOnly);
+            landed.write("agent work\n");
+            landed.close();
+        }
+        runGitChecked(cleanupRepo.path(), {"add", "landed.txt"});
+        runGitChecked(cleanupRepo.path(), {"commit", "-m", "agent work"});
+        runGitChecked(cleanupRepo.path(), {"checkout", "-q", "main"});
+        const int cleanupIdx =
+            window.testAddLocalRepository("me", "cleanrepo", cleanupRepo.path());
+        window.testOpenRepository(cleanupIdx);
+        QApplication::processEvents();
+
+        AgentSession ran;
+        ran.id = 13040;
+        ran.owner = QStringLiteral("me");
+        ran.name = QStringLiteral("cleanrepo");
+        ran.branchName = cleanBranch;
+        ran.issueTitle = QStringLiteral("clean up after the merge");
+        ran.baseBranch = QStringLiteral("main");
+        ran.status = AgentStatus::Success;
+        window.testAddAgentSession(ran);
+        // The provenance-only record a manual PR leaves behind documents this same
+        // branch, so it can't outlive the branch either.
+        AgentSession provenance = ran;
+        provenance.id = 13041;
+        provenance.associationOnly = true;
+        provenance.prNumber = 1304;
+        window.testAddAgentSession(provenance);
+        // A session on another branch is untouched by this cleanup.
+        AgentSession other = ran;
+        other.id = 13042;
+        other.branchName = QStringLiteral("agent/adhoc-1304-other");
+        other.associationOnly = false;
+        other.prNumber = 0;
+        window.testAddAgentSession(other);
+
+        check(window.testMergeBranchAndCleanUp(cleanBranch),
+              QStringLiteral("\"Merge & clean up\" lands the agent branch in the "
+                             "default branch"));
+        check(gitOutput(cleanupRepo.path(), {"branch", "--list", cleanBranch})
+                  .isEmpty(),
+              QStringLiteral("\"Merge & clean up\" deletes the merged branch"));
+        check(!window.testHasAgentSession(13040),
+              QStringLiteral("\"Merge & clean up\" deletes the agent entry that "
+                             "produced the merged branch"));
+        check(!window.testHasAgentSession(13041),
+              QStringLiteral("\"Merge & clean up\" deletes the branch's "
+                             "provenance-only Agent record too"));
+        check(window.testHasAgentSession(13042),
+              QStringLiteral("\"Merge & clean up\" keeps agent entries for other "
+                             "branches"));
+        check(window.testAgentStatusCellText(13040).isEmpty(),
+              QString("the cleaned-up agent session leaves no row behind "
+                      "(cell = %1)")
+                  .arg(window.testAgentStatusCellText(13040)));
     }
 
     stopChildProcesses(window);

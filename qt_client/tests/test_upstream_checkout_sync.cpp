@@ -232,6 +232,60 @@ int main(int argc, char *argv[])
         root.filePath(QStringLiteral("nowhere")), upstream);
     check(!notRepo.error.isEmpty(), "missing checkout rejected");
 
+    // A desktop fork has one split origin: pull from its source, push to the
+    // locally served fork mirror. This is the layout created from the Repos tab.
+    const QString forkMirror = root.filePath(QStringLiteral("fork.git"));
+    const QString forkCheckout = root.filePath(QStringLiteral("fork-checkout"));
+    check(git(temp.path(), {QStringLiteral("clone"), QStringLiteral("-q"),
+                            QStringLiteral("--mirror"), upstream, forkMirror}),
+          "clone fork mirror");
+    check(git(forkMirror, {QStringLiteral("remote"), QStringLiteral("remove"),
+                           QStringLiteral("origin")}),
+          "detach fork mirror from source");
+    check(git(temp.path(), {QStringLiteral("clone"), QStringLiteral("-q"),
+                            forkMirror, forkCheckout}),
+          "clone fork checkout");
+    QString forkRemoteError;
+    check(forkmesh::upstream::configureForkCheckoutRemote(
+              forkCheckout, upstream, forkMirror, &forkRemoteError),
+          "configure fork split origin");
+    QByteArray fetchUrl;
+    QByteArray pushUrl;
+    check(git(forkCheckout,
+              {QStringLiteral("remote"), QStringLiteral("get-url"),
+               QStringLiteral("origin")},
+              &fetchUrl) &&
+              QString::fromUtf8(fetchUrl).trimmed() == upstream,
+          "fork origin fetches from source");
+    check(git(forkCheckout,
+              {QStringLiteral("remote"), QStringLiteral("get-url"),
+               QStringLiteral("--push"), QStringLiteral("origin")},
+              &pushUrl) &&
+              QString::fromUtf8(pushUrl).trimmed() == forkMirror,
+          "fork origin pushes to fork mirror");
+
+    check(commitFile(upstream, QStringLiteral("upstream-new.txt"),
+                     QByteArrayLiteral("new upstream work\n"),
+                     QStringLiteral("source advances after fork")),
+          "advance source after fork");
+    check(git(forkCheckout, {QStringLiteral("pull"), QStringLiteral("--ff-only")}),
+          "plain pull receives source update");
+    check(revParse(forkCheckout, QStringLiteral("main")) ==
+              revParse(upstream, QStringLiteral("main")),
+          "fork main fast-forwards to source");
+    check(commitFile(forkCheckout, QStringLiteral("fork-only.txt"),
+                     QByteArrayLiteral("fork work\n"),
+                     QStringLiteral("work in fork")),
+          "commit fork-only work");
+    check(git(forkCheckout, {QStringLiteral("push")}),
+          "plain push writes to fork mirror");
+    check(revParse(forkMirror, QStringLiteral("main")) ==
+              revParse(forkCheckout, QStringLiteral("main")),
+          "fork mirror receives fork work");
+    check(revParse(upstream, QStringLiteral("main")) !=
+              revParse(forkCheckout, QStringLiteral("main")),
+          "fork push does not modify source");
+
     if (failures == 0)
         std::printf("test_upstream_checkout_sync: all checks passed\n");
     return failures == 0 ? 0 : 1;
