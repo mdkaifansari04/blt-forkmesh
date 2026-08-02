@@ -4534,7 +4534,9 @@ private:
                       const QString &clickHref = QString());
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
-    void queueTopMessage(const QString &text, bool error); // park one behind the current toast
+    void queueTopMessage(const QString &text, bool error,
+                         const QString &clickHref = QString()); // park one behind the current toast
+    void renderTopMessageQueue(); // repaint the visible stack of queued notifications
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
@@ -5004,6 +5006,12 @@ private:
     QLabel *m_adminCrownBadge = nullptr;
     QLabel *m_topMessage = nullptr;       // prompt-anchored success/failure bubble text
     QFrame *m_topMessageContainer = nullptr; // floating bubble wrapping text + actions
+    // Queued notifications are visible beneath the active bubble. As new ones
+    // arrive, this stack grows from the composer upwards rather than hiding
+    // messages behind a "+N more" counter.
+    QScrollArea *m_topMessageQueueScroll = nullptr;
+    QWidget *m_topMessageQueueContent = nullptr;
+    QVBoxLayout *m_topMessageQueueLayout = nullptr;
     // The text always shows in full (wrapped, full bubble width). The scroll area
     // only ever kicks in for a message too tall for the window, so nothing is
     // hidden even then.
@@ -5023,12 +5031,16 @@ private:
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast slides away
     // Pending messages that arrived while another toast was already counting
-    // down. A burst (retries, or the run of events the Pings page now mirrors
-    // here) would otherwise stomp each other before any could be read; queuing
-    // gives each its own full countdown once the current one finishes (see
+    // down. They form the visible stack beneath the active toast, then each gets
+    // its own full countdown when it becomes active (see
     // advanceTopMessageQueue). Each entry carries its own error flag so a
     // queued event keeps its colour.
-    QList<QPair<QString, bool>> m_topMessageQueue;
+    struct TopMessageQueueEntry {
+        QString text;
+        bool error = false;
+        QString clickHref;
+    };
+    QList<TopMessageQueueEntry> m_topMessageQueue;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageHovering = false;    // pauses the countdown while reading/actions
     bool m_topMessageIsPromptBubble = false; // submitted prompt gets a fuller, animated treatment
