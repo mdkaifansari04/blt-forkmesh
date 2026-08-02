@@ -4796,6 +4796,8 @@ class ForkMeshWorld extends HTMLElement {
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.buildBoardTimer = 0;
     this.buildBoardLoad = null;
+    this.buildBoardFailureCount = 0;
+    this.buildBoardRetryAt = 0;
     this.orgAgentTimer = 0;
     this.sessionWatchTimer = 0;
     this.sessionWatchActive = false;
@@ -6260,16 +6262,25 @@ class ForkMeshWorld extends HTMLElement {
 
   async refreshBuildBoard({ quiet = false } = {}) {
     if (this.buildBoardLoad) return this.buildBoardLoad;
+    if (quiet && Date.now() < this.buildBoardRetryAt) return null;
     this.world?.setBuildBoardLoading?.(true);
     this.buildBoardLoad = (async () => {
       try {
       const payload = await this.fetchJSON("/api/world/build-board", {
         timeout: 12_000,
-        cache: "no-store",
+        maxAge: WORLD_BUILD_BOARD_POLL_MS,
+        backoff: true,
+        staleIfError: true,
       });
       const tree = await this.fetchJSON(
         "/api/repo/forkmesh/forkmesh/tree?path=.forkmesh%2Fissues%2Fopen",
-        { auth: false, timeout: 12_000, cache: "no-store" },
+        {
+          auth: false,
+          timeout: 12_000,
+          maxAge: WORLD_BUILD_BOARD_POLL_MS,
+          backoff: true,
+          staleIfError: true,
+        },
       );
       const numbers = (Array.isArray(tree?.entries) ? tree.entries : [])
         .filter(
@@ -6290,7 +6301,13 @@ class ForkMeshWorld extends HTMLElement {
           .join("&");
         const blobs = await this.fetchJSON(
           `/api/repo/forkmesh/forkmesh/blobs?${query}`,
-          { auth: false, timeout: 12_000, cache: "no-store" },
+          {
+            auth: false,
+            timeout: 12_000,
+            maxAge: WORLD_BUILD_BOARD_POLL_MS,
+            backoff: true,
+            staleIfError: true,
+          },
         );
         const assigned = new Set(
           (Array.isArray(payload?.assignedIssues)
@@ -6326,8 +6343,21 @@ class ForkMeshWorld extends HTMLElement {
           .filter(Boolean);
       }
       this.world?.updateBuildBoard?.(payload);
+      this.buildBoardFailureCount = 0;
+      this.buildBoardRetryAt = 0;
       return payload;
       } catch (_) {
+        this.buildBoardFailureCount = Math.min(
+          8,
+          this.buildBoardFailureCount + 1,
+        );
+        this.buildBoardRetryAt =
+          Date.now() +
+          Math.min(
+            15 * 60_000,
+            WORLD_BUILD_BOARD_POLL_MS *
+              (2 ** (this.buildBoardFailureCount - 1)),
+          );
         if (!quiet) {
           this.toast("The shared build board is temporarily unavailable.");
         }
@@ -21207,7 +21237,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=1c0fd1536811";
+    script.src = "/dashboard-chat.js?v=3bc94cf64d85";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {

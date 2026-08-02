@@ -52,6 +52,13 @@ def test_renderer_exposes_bounded_on_demand_frame_and_draw_diagnostics():
     assert "renderer.info?.render?.triangles" in SCENE
 
 
+def test_render_stall_console_warnings_are_exceptional_and_heavily_cooled():
+    assert "const RENDER_STALL_THRESHOLD_MS = 500;" in SCENE
+    assert "const RENDER_STALL_LOG_COOLDOWN_MS = 5 * 60_000;" in SCENE
+    assert "suppressedRenderStalls += 1;" in SCENE
+    assert "renderStallWarningTimer" in SCENE
+
+
 def test_socket_diagnostics_use_existing_frames_and_one_hertz_ui_sampling():
     assert "const WORLD_DIAGNOSTICS_INTERVAL_MS = 1000;" in APP
     assert "this.startDiagnostics();" in APP

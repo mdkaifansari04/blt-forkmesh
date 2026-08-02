@@ -163,6 +163,9 @@ def test_two_clickable_bikes_use_normal_movement_and_collision():
         "hit.object.userData.bikeIndex",
         "circularRideCameraYaw(",
         "const previousBikeHeading = state.bike.rotation.y",
+        '"RIDE BIKE"',
+        '"CLICK OR E · W/S PEDAL · A/D STEER"',
+        "state.hint.visible = false",
     ):
         assert contract in scene
 
@@ -183,6 +186,20 @@ def test_clickable_quadcopter_flies_on_three_axes_to_a_bounded_high_altitude():
         "prepareRoofParachute()",
         "QUADCOPTER_RIDING_ACTIVITY",
         "getQuadcopterState:",
+        '"FLY QUADCOPTER"',
+        '"CLICK OR E · WASD · SPACE UP · C DOWN"',
+    ):
+        assert contract in scene
+
+
+def test_car_and_quadcopter_hints_explain_directional_controls_nearby():
+    scene = source()
+    for contract in (
+        '"forkmesh-beach-road-car-control-hint"',
+        '"CLICK TO ENTER · WASD DRIVE · SHIFT BOOST"',
+        '"forkmesh-world-quadcopter-control-hint"',
+        "state.hint.visible = false",
+        "if (state?.hint) state.hint.visible = true",
     ):
         assert contract in scene
 

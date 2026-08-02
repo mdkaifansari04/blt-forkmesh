@@ -35,6 +35,8 @@ def test_jetpack_is_wearable_and_flies_on_all_three_axes():
         "toggleJetpack,",
         "setJetpackEquipped,",
         "setJetpackVertical,",
+        '"forkmesh-jetpack-control-hint"',
+        '"WASD MOVE · SPACE UP · C DOWN · SHIFT BOOST"',
     ):
         assert contract in SCENE
     assert '.world-avatar-actions [data-world-jetpack-toggle]' in CSS

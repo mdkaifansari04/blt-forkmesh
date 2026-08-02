@@ -302,6 +302,8 @@ function mountForkMeshDashboardChat() {
   let inboundFrameQueue = Promise.resolve();
   const DISCORD_REFRESH_MS = 60_000;
   const DISCORD_REFRESH_JITTER_MS = 15_000;
+  const DISCORD_BACKOFF_BASE_MS = 60_000;
+  const DISCORD_BACKOFF_MAX_MS = 15 * 60_000;
   const DISCORD_MAX_ORGANIZATIONS = 3;
   const DISCORD_MAX_CHANNELS = 5;
   const DISCORD_MAX_INITIAL_MESSAGES = 40;
@@ -310,6 +312,7 @@ function mountForkMeshDashboardChat() {
   let discordInitialMessagesLoaded = false;
   let discordSources = null;
   let discordBackoffUntil = 0;
+  let discordFailureCount = 0;
   // messageId -> Map(emoji -> Map(reactorId -> reactorName)); identical to
   // the full web/Qt protocol shape so reactions converge across every client.
   const reactions = new Map();
@@ -628,25 +631,51 @@ function mountForkMeshDashboardChat() {
     return headers;
   }
 
+  function discordRetryAfterMs(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return 0;
+    const seconds = Number(raw);
+    if (Number.isFinite(seconds)) {
+      return Math.max(0, Math.min(DISCORD_BACKOFF_MAX_MS, seconds * 1000));
+    }
+    const retryAt = Date.parse(raw);
+    return Number.isFinite(retryAt)
+      ? Math.max(0, Math.min(DISCORD_BACKOFF_MAX_MS, retryAt - Date.now()))
+      : 0;
+  }
+
+  function deferDiscordRefresh(retryAfter = "") {
+    discordFailureCount = Math.min(8, discordFailureCount + 1);
+    const exponential = Math.min(
+      DISCORD_BACKOFF_MAX_MS,
+      DISCORD_BACKOFF_BASE_MS * (2 ** (discordFailureCount - 1)),
+    );
+    const retryAfterMs = discordRetryAfterMs(retryAfter);
+    discordBackoffUntil = Math.max(
+      discordBackoffUntil,
+      Date.now() + Math.max(exponential, retryAfterMs),
+    );
+  }
+
   async function discordJson(path) {
-    const response = await fetch(path, {
-      headers: discordRequestHeaders(),
-      credentials: "same-origin",
-      cache: "no-store",
-    });
+    let response;
+    try {
+      response = await fetch(path, {
+        headers: discordRequestHeaders(),
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+    } catch (error) {
+      deferDiscordRefresh();
+      throw error;
+    }
     if (!response.ok) {
       const error = new Error(`Discord source unavailable (${response.status})`);
-      const retrySeconds = Math.max(
-        0,
-        Number(response.headers.get("retry-after")) || 0,
+      error.status = response.status;
+      error.retryAfterMs = discordRetryAfterMs(
+        response.headers.get("retry-after"),
       );
-      error.retryAfterMs = Math.min(3_600_000, retrySeconds * 1000);
-      if (error.retryAfterMs) {
-        discordBackoffUntil = Math.max(
-          discordBackoffUntil,
-          Date.now() + error.retryAfterMs,
-        );
-      }
+      deferDiscordRefresh(response.headers.get("retry-after"));
       throw error;
     }
     return response.json();
@@ -657,13 +686,16 @@ function mountForkMeshDashboardChat() {
     const catalog = await discordJson("/api/orgs");
     const organizations = (Array.isArray(catalog?.orgs) ? catalog.orgs : [])
       .slice(0, DISCORD_MAX_ORGANIZATIONS);
-    const statuses = await Promise.allSettled(organizations.map(async (record) => {
+    const sources = [];
+    // Provider rate limits are shared. Discover organizations one at a time so
+    // opening the World never creates its own burst of connector requests.
+    for (const record of organizations) {
       const organization = String(record?.name || "").trim();
-      if (!organization) return [];
+      if (!organization) continue;
       const status = await discordJson(
         `/api/orgs/${encodeURIComponent(organization)}/discord`,
       );
-      if (!status?.configured || status?.state !== "configured") return [];
+      if (!status?.configured || status?.state !== "configured") continue;
       const channelIds = Array.isArray(status?.connector?.channelIds)
         ? status.connector.channelIds
         : [];
@@ -673,14 +705,13 @@ function mountForkMeshDashboardChat() {
           String(channel?.name || ""),
         ]),
       );
-      return channelIds.slice(0, DISCORD_MAX_CHANNELS).map((channelId) => ({
+      sources.push(...channelIds.slice(0, DISCORD_MAX_CHANNELS).map((channelId) => ({
         organization,
         channelId: String(channelId || ""),
         channelName: channelNames.get(String(channelId || "")) || "",
-      })).filter((source) => source.channelId);
-    }));
-    discordSources = statuses.flatMap((result) =>
-      result.status === "fulfilled" ? result.value : []);
+      })).filter((source) => source.channelId));
+    }
+    discordSources = sources;
     return discordSources;
   }
 
@@ -694,35 +725,57 @@ function mountForkMeshDashboardChat() {
     discordRefreshRunning = true;
     try {
       const sources = await discoverDiscordSources();
-      const results = await Promise.allSettled(sources.map(async (source) => {
+      const messages = [];
+      let refreshFailed = false;
+      // Fetch channels serially and stop after the first failure. A 429 from
+      // one channel normally applies to the shared Discord connector, so
+      // continuing would only add more red requests and extend the limit.
+      for (const source of sources) {
         const path =
           `/api/orgs/${encodeURIComponent(source.organization)}` +
           `/discord/messages?channelId=${encodeURIComponent(source.channelId)}`;
-        const payload = await discordJson(path);
-        const channelName = String(
-          payload?.channel?.name || source.channelName || source.channelId,
-        ).trim();
-        return (Array.isArray(payload?.messages) ? payload.messages : []).map(
-          (message) => ({
-            ...message,
-            organization: source.organization,
-            channelName,
-          }),
-        );
-      }));
-      const messages = results
-        .flatMap((result) => result.status === "fulfilled" ? result.value : [])
+        try {
+          const payload = await discordJson(path);
+          const channelName = String(
+            payload?.channel?.name || source.channelName || source.channelId,
+          ).trim();
+          messages.push(
+            ...(Array.isArray(payload?.messages) ? payload.messages : []).map(
+              (message) => ({
+                ...message,
+                organization: source.organization,
+                channelName,
+              }),
+            ),
+          );
+        } catch (error) {
+          refreshFailed = true;
+          console.info("[ForkMesh chat] Discord refresh cooling down", {
+            status: Number(error?.status) || 0,
+            retryInSeconds: Math.max(
+              1,
+              Math.ceil((discordBackoffUntil - Date.now()) / 1000),
+            ),
+          });
+          break;
+        }
+      }
+      const orderedMessages = messages
         .filter((message) => message?.id && String(message?.content || "").trim())
         .sort((left, right) =>
           Date.parse(left?.createdAt || "") - Date.parse(right?.createdAt || ""));
       const visibleMessages = discordInitialMessagesLoaded
-        ? messages
-        : messages.slice(-DISCORD_MAX_INITIAL_MESSAGES);
+        ? orderedMessages
+        : orderedMessages.slice(-DISCORD_MAX_INITIAL_MESSAGES);
       let appended = 0;
       for (const message of visibleMessages) {
         if (appendDiscordMessage(message)) appended += 1;
       }
       discordInitialMessagesLoaded = true;
+      if (!refreshFailed) {
+        discordFailureCount = 0;
+        discordBackoffUntil = 0;
+      }
       if (appended) {
         console.info("[ForkMesh chat] Discord messages refreshed", {
           sources: sources.length,

@@ -55,6 +55,14 @@ def test_discord_refresh_is_foreground_only_and_rate_bounded():
     assert "scheduleDiscordMessageRefresh()" in refresh
     assert 'document.addEventListener("visibilitychange"' in refresh
     assert "stopDiscordMessageRefresh()" in refresh
+    assert "DISCORD_BACKOFF_BASE_MS" in CHAT
+    assert "DISCORD_BACKOFF_MAX_MS" in CHAT
+    assert "function discordRetryAfterMs(" in CHAT
+    assert "function deferDiscordRefresh(" in CHAT
+    assert "for (const source of sources)" in CHAT
+    assert "break;" in CHAT
+    assert "Promise.allSettled(sources.map" not in CHAT
+    assert "discordFailureCount = 0;" in CHAT
 
 
 def test_provider_bodies_remain_out_of_d1_and_channel_label_is_projected():

@@ -94,6 +94,12 @@ def test_build_board_refreshes_on_approach_with_a_scene_native_spinner():
     ]
     assert "this.world?.setBuildBoardLoading?.(true);" in refresh
     assert "this.world?.setBuildBoardLoading?.(false);" in refresh
+    assert "Date.now() < this.buildBoardRetryAt" in refresh
+    assert "this.buildBoardFailureCount" in refresh
+    assert "this.buildBoardRetryAt" in refresh
+    assert refresh.count("backoff: true") == 3
+    assert refresh.count("staleIfError: true") == 3
+    assert refresh.count("maxAge: WORLD_BUILD_BOARD_POLL_MS") == 3
     assert "location.reload()" not in refresh
 
 
