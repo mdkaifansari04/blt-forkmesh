@@ -38,6 +38,7 @@ def test_worker_footprint_asset_matches_current_source_tree():
     assert "world/world-office.js" not in data["initialWorldModules"]
     assert "world/world-office-meeting.js" not in data["initialWorldModules"]
     assert "world/world-office-tasks.js" not in data["initialWorldModules"]
+    assert "world/world-discord-panel.js" not in data["initialWorldModules"]
     assert any(
         item["name"] == "repository_imports.py"
         and item["phase"] == "on-demand"

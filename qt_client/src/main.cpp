@@ -9,6 +9,7 @@
 #include "PublicMirrorRuntime.h"
 #include "ServerNode.h"
 #include "SingleInstance.h"
+#include "SystemStats.h"
 #include "Theme.h"
 
 #if __has_include("ForkMeshVersion.h")
@@ -558,6 +559,16 @@ int main(int argc, char *argv[])
         if (qstrcmp(argv[i], "--size-map-scan") == 0)
             return runSizeMapScan(QString::fromLocal8Bit(argv[i + 1]));
     }
+
+    // Descriptors before anything can open one: most distributions still ship a
+    // 1024 soft cap against a hard cap in the hundreds of thousands, and a node
+    // that holds relay sockets, git child pipes, watches and a wakeup pipe per
+    // thread can reach it. Hitting it is not a graceful failure — glib's
+    // g_wakeup_new() calls g_error() when the pipe fails, so the next thread
+    // start aborts the whole app with SIGTRAP inside
+    // g_main_context_new_with_flags (the v0.7.9 crash report). Raising the soft
+    // cap to the hard one removes that cliff.
+    SystemStats::raiseOpenFileLimit();
 
     // First thing, before anything can fault: install the crash handlers so an
     // unexpected exit/crash leaves a record in the network log. A compact signal
