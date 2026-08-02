@@ -32,6 +32,17 @@
     return true;
   }
 
+  // Open/closed over the whole catalog, counted with the same test the desktop
+  // app's badge uses (openOrganizationTaskCount in MainWindowTasks.cpp), so the
+  // two surfaces never disagree about how many tasks are open (adhoc #56).
+  function taskStateCounts() {
+    let open = 0;
+    for (const task of state.tasksView.items) {
+      if (!(task.completedAt > 0 || task.status === "done")) open += 1;
+    }
+    return { open, closed: state.tasksView.items.length - open };
+  }
+
   function filteredTasks() {
     const query = String(state.tasksView.query || "").trim().toLowerCase();
     return state.tasksView.items.filter((task) => {
@@ -101,7 +112,11 @@
         ? `<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">${loadingHtml("Loading organization tasks...")}</div>`
         : `<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">${escapeHtml(state.tasksView.error)}</div>`;
       if (summary) summary.textContent = "";
-      if (count) count.textContent = state.tasksView.loading ? "Loading" : "0";
+      if (count) {
+        count.textContent = state.tasksView.loading
+          ? "Loading"
+          : "0 open · 0 closed";
+      }
       if (pageList) pageList.innerHTML = "";
       for (const button of [prev, next]) {
         if (!button) continue;
@@ -120,13 +135,15 @@
     list.innerHTML = matches.length
       ? matches.slice(start, end).map(taskRowHtml).join("")
       : '<div class="px-4 sm:px-5 py-8 text-sm text-muted-foreground">No tasks match this filter.</div>';
+    const counts = taskStateCounts();
     if (count) {
-      count.textContent = `${formatCount(state.tasksView.items.length)} total`;
+      count.textContent = `${formatCount(counts.open)} open · ${formatCount(counts.closed)} closed`;
     }
     if (summary) {
+      const totals = `${formatCount(counts.open)} open · ${formatCount(counts.closed)} closed`;
       summary.textContent = matches.length
-        ? `Showing ${start + 1}-${end} of ${formatCount(matches.length)} tasks · page ${state.tasksView.page} of ${pages}`
-        : "No tasks match this filter";
+        ? `${totals} · showing ${start + 1}-${end} of ${formatCount(matches.length)} · page ${state.tasksView.page} of ${pages}`
+        : `${totals} · no tasks match this filter`;
     }
     if (prev) {
       prev.disabled = state.tasksView.page <= 1;

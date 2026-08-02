@@ -1408,24 +1408,26 @@ int main(int argc, char *argv[])
     // real PR and Agents controls only after taking that user-visible path,
     // keeping the startup performance contract intact.
     // adhoc #7: the PR header's conflict action is a plain "Fix" that fills the
-    // prompt box — no provider dropdown to pick a resolver from — and the whole
-    // header row wears the same flat rail style (no filled primary pills).
+    // prompt box — no provider dropdown to pick a resolver from. adhoc #59: the
+    // whole header row is icon-over-caption rail tiles ("repoActionStack"), the
+    // same form as the activity rail, instead of a mix of pill shapes.
     bool prFixButtonFound = false;
     bool prHeaderStyleUniform = true;
     for (QPushButton *b : window.findChildren<QPushButton *>()) {
         if (b->text() == QStringLiteral("Fix") && !b->menu())
             prFixButtonFound = true;
-        if (b->text() == QStringLiteral("Review with AI") ||
-            b->text() == QStringLiteral("Fix all with AI") ||
+        if (b->text() == QStringLiteral("AI review") ||
+            b->text() == QStringLiteral("Fix all") ||
             b->text() == QStringLiteral("Merge") ||
-            b->text() == QStringLiteral("Fix conflicts with agent"))
-            prHeaderStyleUniform &= b->objectName() == QStringLiteral("ghostButton");
+            b->text() == QStringLiteral("Agent fix"))
+            prHeaderStyleUniform &=
+                b->objectName() == QStringLiteral("repoActionStack");
     }
     check(prFixButtonFound,
           QStringLiteral("PR header offers a plain 'Fix' button with no provider "
                          "dropdown after repository navigation"));
     check(prHeaderStyleUniform,
-          QStringLiteral("PR header actions all use the flat ghostButton style"));
+          QStringLiteral("PR header actions all use the rail-style icon tile"));
     // The Agents tab is built when it's first opened, and a repo no longer opens
     // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
     // before reading its list back. This also proves that route works for a repo
@@ -1573,6 +1575,13 @@ int main(int argc, char *argv[])
                   .arg(looperGap)
                   .arg(looperAligned)
                   .arg(navTrailingGap));
+        // Adhoc #421: the left rail's first icon sits on the tab row's icon
+        // line, so the two rows of glyphs read as one horizontal band.
+        const int railSkew = window.testRailTabIconLineSkew();
+        check(qAbs(railSkew) <= 1,
+              QString("the activity rail's icons line up with the repo tab "
+                      "row's (skew=%1px)")
+                  .arg(railSkew));
 
     // Issue #207: the commit detail page must expose a restore/revert action
     // beside the destructive delete-history action.
@@ -2405,6 +2414,67 @@ int main(int argc, char *argv[])
                       "(branch = %1, page = %2)")
                   .arg(window.testBrowsedBranch())
                   .arg(window.testCommitWorkspacePage()));
+
+        // adhoc #50: the trail reaches below the tab bar. A commit's diff and an
+        // open file are places of their own, so Back returns to the list they
+        // were opened from instead of jumping a whole tab away.
+        const QString navCommit =
+            gitOutput(wtRepo.path(), {"rev-parse", "main"}).trimmed();
+        window.testShowCommit(navCommit);
+        QApplication::processEvents();
+        check(window.testOpenCommitHash() == navCommit,
+              QStringLiteral("opening a commit shows its diff in the Git view"));
+        check(window.testNavBackToolTip().contains(QStringLiteral("Git · main")),
+              QString("Back out of a commit is identified as the Git view it came "
+                      "from (%1)")
+                  .arg(window.testNavBackToolTip()));
+        window.testNavigateBack();
+        QApplication::processEvents();
+        check(window.testOpenCommitHash().isEmpty() &&
+                  window.testCommitWorkspacePage() == 0,
+              QString("Back steps out of a commit diff to the Git view "
+                      "(commit = %1, page = %2)")
+                  .arg(window.testOpenCommitHash())
+                  .arg(window.testCommitWorkspacePage()));
+        check(window.testNavForwardToolTip().contains(navCommit.left(7)),
+              QString("Forward names the commit it would reopen (%1)")
+                  .arg(window.testNavForwardToolTip()));
+        window.testNavigateForward();
+        QApplication::processEvents();
+        check(window.testOpenCommitHash() == navCommit,
+              QString("Forward reopens the commit's diff (commit = %1)")
+                  .arg(window.testOpenCommitHash()));
+
+        window.testOpenRepoFile(QStringLiteral("base-delete.txt"));
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 1 &&
+                  window.testOpenRepoFilePath() ==
+                      QStringLiteral("base-delete.txt"),
+              QString("opening a file shows it in the Code editor (page = %1, "
+                      "file = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenRepoFilePath()));
+        check(window.testNavBackToolTip().contains(navCommit.left(7)),
+              QString("Back from an open file returns to the commit it was "
+                      "opened from (%1)")
+                  .arg(window.testNavBackToolTip()));
+        window.testNavigateBack();
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 0 &&
+                  window.testOpenCommitHash() == navCommit,
+              QString("Back leaves the file editor for the previous place "
+                      "(page = %1, commit = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenCommitHash()));
+        window.testNavigateForward();
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 1 &&
+                  window.testOpenRepoFilePath() ==
+                      QStringLiteral("base-delete.txt"),
+              QString("Forward reopens the file that was on screen (page = %1, "
+                      "file = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenRepoFilePath()));
         QFile::remove(livePath);
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
@@ -2846,10 +2916,14 @@ int main(int argc, char *argv[])
         auto *repoLinesChart = seeded.findChild<QWidget *>(QStringLiteral("repoLinesChart"));
         auto *repoFilesChart = seeded.findChild<QWidget *>(QStringLiteral("repoFilesChart"));
         auto *ratchet = seeded.findChild<QToolButton *>(QStringLiteral("repoRatchetButton"));
+        // Adhoc #421: the day trends are drawn at the same 34px side as the
+        // window chrome's CPU/MEM/DISK squares instead of a size larger, and
+        // the Ratchet toggle reads "Ratchet" under an icon.
         check(repoSizeChart && repoLinesChart && repoFilesChart && ratchet &&
-                  repoSizeChart->width() > 34 && repoLinesChart->width() > 34 &&
-                  repoFilesChart->width() > 34 && ratchet->isCheckable(),
-              QStringLiteral("repository trends and Ratchet Mode live in the top bar"));
+                  repoSizeChart->width() == 34 && repoLinesChart->width() == 34 &&
+                  repoFilesChart->width() == 34 && ratchet->isCheckable() &&
+                  ratchet->text() == QStringLiteral("Ratchet"),
+              QStringLiteral("repository trends and Ratchet live in the top bar"));
         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.
@@ -3364,6 +3438,101 @@ int main(int argc, char *argv[])
                   QStringLiteral("agent/issue-291-unrelated")),
               QStringLiteral("merging an unrelated branch flags no agent session "
                              "(issue #291)"));
+    }
+
+    // The top bar's search box searches the page in front of you: on the Agents
+    // tab it narrows the session list as each character lands, matches sessions on
+    // what their transcripts say (not just their prompt), and drives the open
+    // session's transcript search so hits highlight in place.
+    {
+        window.testOpenRepository(repoIdx); // "me/r", the Agents tab's repo
+        window.testOpenAgentsOverview();
+        QApplication::processEvents();
+
+        AgentSession titled;
+        titled.id = 7401;
+        titled.owner = QStringLiteral("me");
+        titled.name = QStringLiteral("r");
+        titled.issueTitle =
+            QStringLiteral("only seeing recovery pings, want failure pings too");
+        titled.status = AgentStatus::Success;
+        window.testAddAgentSession(titled);
+
+        AgentSession quiet;
+        quiet.id = 7402;
+        quiet.owner = QStringLiteral("me");
+        quiet.name = QStringLiteral("r");
+        quiet.issueTitle = QStringLiteral("tidy the release checklist");
+        quiet.status = AgentStatus::Success;
+        window.testAddAgentSession(quiet);
+        // Only this session's transcript mentions the query; its title does not.
+        window.testAppendAgentTranscript(
+            quiet.id, QStringLiteral("checked the recovery ping path first"));
+
+        AgentSession silent;
+        silent.id = 7403;
+        silent.owner = QStringLiteral("me");
+        silent.name = QStringLiteral("r");
+        silent.issueTitle = QStringLiteral("bump the icon cache");
+        silent.status = AgentStatus::Success;
+        window.testAddAgentSession(silent);
+
+        // Typing up top filters the list below straight away — no Enter, and no
+        // waiting on the dropdown's debounce.
+        window.testTypeGlobalSearch(QStringLiteral("recovery"));
+        QApplication::processEvents();
+        check(window.testAgentSearchText() == QStringLiteral("recovery"),
+              QString("the top-bar search mirrors into the Agents page's own "
+                      "filter (got \"%1\")")
+                  .arg(window.testAgentSearchText()));
+        check(window.testTranscriptSearchText() == QStringLiteral("recovery"),
+              QString("the same query drives the open session's transcript "
+                      "search (got \"%1\")")
+                  .arg(window.testTranscriptSearchText()));
+        QStringList titles = window.testAgentRowTitles();
+        check(titles.size() == 1 && titles.first().contains(
+                  QStringLiteral("only seeing recovery pings")),
+              QString("the list is narrowed to the session whose title matches "
+                      "(rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+
+        // The transcript scan is debounced off the GUI thread; run it now and let
+        // its result land. The session that only ever said "recovery" mid-run
+        // joins the list, and says how many times it was found.
+        window.testRunAgentTranscriptSearch();
+        QElapsedTimer transcriptSearchTimer;
+        transcriptSearchTimer.start();
+        while (transcriptSearchTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            titles = window.testAgentRowTitles();
+            if (titles.size() == 2)
+                break;
+        }
+        const QString transcriptRow = titles.filter(
+            QStringLiteral("release checklist")).value(0);
+        check(titles.size() == 2 && !transcriptRow.isEmpty(),
+              QString("a session whose transcript holds the query stays in the "
+                      "list even though its title does not (rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+        check(transcriptRow.contains(QStringLiteral("1 in transcript")),
+              QString("the row says the match came from the transcript (got "
+                      "\"%1\")")
+                  .arg(transcriptRow));
+        check(!titles.join(QLatin1Char(' ')).contains(
+                  QStringLiteral("icon cache")),
+              QString("a session that matches neither title nor transcript stays "
+                      "filtered out (rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+
+        // Clearing the top bar hands the whole list back.
+        window.testTypeGlobalSearch(QString());
+        QApplication::processEvents();
+        titles = window.testAgentRowTitles();
+        check(window.testAgentSearchText().isEmpty() && titles.size() >= 3,
+              QString("clearing the top-bar search unfilters the session list "
+                      "(filter \"%1\", %2 rows)")
+                  .arg(window.testAgentSearchText())
+                  .arg(titles.size()));
     }
 
     // adhoc #15: the network log renders only its newest segment up front, and
