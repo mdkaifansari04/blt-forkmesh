@@ -862,10 +862,10 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     refreshRepositoryList();
     updateHomeStats();
     updateConnectionStatus();
-    // Top-bar radar: refresh its node blips from this roster. Cheap (no git),
-    // and unlike the Mirror nodes panel below it doesn't need a repo open or a
-    // built page, so the dish keeps reporting node status everywhere (adhoc #44).
-    refreshRelayRadarBlips();
+    // Chrome-line node dots: refresh them from this roster. Cheap (no git), and
+    // unlike the Mirror nodes panel below they don't need a repo open or a built
+    // page, so the dots keep reporting node status everywhere (adhoc #44).
+    refreshNodeDotMatrix();
     // Keep the open repo's Mirror nodes view (and its tab count) live as peers
     // come and go or re-advertise fresher mirrors. Coalesced: the rebuild runs
     // ~10 synchronous git reads plus per-row lookups, and roster updates arrive
