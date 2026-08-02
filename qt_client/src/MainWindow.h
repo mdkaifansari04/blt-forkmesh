@@ -769,6 +769,13 @@ public:
     // Paths rendered in the universal CHANGES tree, so branch tests can prove
     // the range's files appear without swapping to a second navigator.
     QStringList testSourceControlPaths() const;
+    // "commit=… commitPush=… stagePush=… sync=…", each hidden/disabled/enabled,
+    // so a test can prove a waiting commit keeps its buttons on screen even while
+    // outgoing commits are pending (adhoc #66).
+    QString testScmCommitControlsState() const;
+    // Rescan the working tree the way the panel's Refresh button does, so a test
+    // doesn't have to wait out the 10s change-badge poll.
+    void testRefreshSourceControl() { refreshSourceControl(/*force=*/true); }
     // Select a CHANGES row and report whether the right-hand diff navigation
     // targeted that exact file.
     bool testClickSourceControlPath(const QString &path);
@@ -1222,6 +1229,10 @@ private:
     // Source-control's compact Outgoing Changes group. It counts commits ahead
     // of the served mirror/upstream and drives the one-click safe publish path.
     void refreshSourceControlOutgoing();
+    // Decide whether the commit row or the Sync Changes action (or both) is on
+    // screen, from the two inputs that matter: whether commits are waiting to
+    // sync and whether the working tree still has something to commit.
+    void updateScmCommitControlVisibility();
     void pushCurrentRepoUpstream();
     // Launch the async `git push` for a repo whose secret scan has completed and
     // been approved (see pushCurrentRepoUpstream). The repo must already be marked
