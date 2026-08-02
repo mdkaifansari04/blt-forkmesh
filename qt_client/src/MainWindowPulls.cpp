@@ -28,18 +28,19 @@ constexpr int kCommitCopyShaRole = Qt::UserRole + 2;
 constexpr int kPullFileAgentRole = Qt::UserRole + 1;
 
 // Every pull-request action is an icon-over-caption tile — the same form as the
-// activity rail, the repo tab row and the repo action cluster (adhoc #59), so
-// the three bars on this page read as one visual language instead of three.
-// Captions stay short because the full sentence belongs in the tooltip, and any
-// count rides the icon's corner as a badge (setBadgeCount) rather than being
-// spelled into the caption.
+// activity rail and the repo tab row (adhoc #59), so the three bars on this page
+// read as one visual language instead of three. Bare, not Action: no pill fill
+// or border, just the glyph over its caption resting in the rail's grey and
+// brightening together under the pointer. Captions stay short because the full
+// sentence belongs in the tooltip, and any count rides the icon's corner as a
+// badge (setBadgeCount) rather than being spelled into the caption.
 VerticalIconButton *pullActionButton(const QString &caption, const char *icon,
                                      const QString &tooltip = QString())
 {
-    auto *b = new VerticalIconButton(caption, VerticalIconButton::Action);
+    auto *b = new VerticalIconButton(caption, VerticalIconButton::Bare);
     b->setObjectName("repoActionStack");
     b->setCursor(Qt::PointingHandCursor);
-    setOcticon(b, QString::fromLatin1(icon), 16);
+    b->setOcticonName(QString::fromLatin1(icon));
     if (!tooltip.isEmpty())
         b->setToolTip(tooltip);
     return b;
@@ -135,7 +136,9 @@ QWidget *MainWindow::buildPullsTab()
             &MainWindow::importPatchAsPull);
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
-    toolbar->setSpacing(6);
+    // Frameless tiles need the gap the pill's border used to provide; this is
+    // the same rhythm as the repository tab row.
+    toolbar->setSpacing(10);
     toolbar->addWidget(m_pullNewButton, 0, Qt::AlignTop);
     toolbar->addWidget(m_pullChooseDirButton, 0, Qt::AlignTop);
     toolbar->addWidget(m_pullImportButton, 0, Qt::AlignTop);
@@ -341,7 +344,7 @@ QWidget *MainWindow::buildPullsTab()
     // row below packs left (trailing stretch) so it reads as a toolbar.
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
-    pullHeaderRow->setSpacing(6);
+    pullHeaderRow->setSpacing(10);
     pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
     // The AI review pair leads the toolbar so it reads as the page's headline
     // action (adhoc #82).
