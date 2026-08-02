@@ -724,6 +724,7 @@ public:
         }
         m_agentSessions.append(session);
     }
+    void testRefreshAgentQueueControls() { refreshAgentQueueControls(); }
     int testAgentSessionForPullId(int prNumber, const QString &headBranch) const
     {
         const AgentSession *session = agentSessionForPull(prNumber, headBranch);
