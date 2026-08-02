@@ -9605,8 +9605,8 @@ void MainWindow::updateRepoActivityRail()
         m_agentsNavButton->setChecked(onAgents);
     // The Git page has no search box of its own: the top bar's field is the one
     // place to search from, and here it searches this repo's history, so say so.
-    // The Agents page has its own box, but the top-bar one drives it too, so it
-    // says what typing up there will do to the page below.
+    // The Agents page uses the top-bar box to filter the visible session list,
+    // so say what typing here will do below.
     if (m_globalSearch)
         m_globalSearch->setPlaceholderText(
             onChanges ? QString::fromUtf8("Search commits\xE2\x80\xA6")
@@ -9637,22 +9637,15 @@ void MainWindow::syncGitCommitFilter()
     m_commitSearch->setText(query); // textChanged -> filterCommits
 }
 
-// Mirror the top-bar search into the Agents page while it is on screen, so that
-// box searches what is in front of you as you type: the session list narrows on
-// every keystroke (title, agent, status, PR — and, once the background scan
-// lands, the transcripts themselves) and the open session's transcript runs the
-// same query, so its matches highlight in place.
-//
-// The page keeps its own two boxes, and a query typed straight into one of them
-// is the user's, not ours: the mirror only overwrites a box while it still holds
-// exactly what the mirror last put there. That is what m_agentPageSearchMirror
-// remembers, and it is why clearing the top bar clears the page's boxes but
-// never a filter the user typed on the page itself.
+// The top-bar search filters the Agents list directly while it is on screen.
+// Keep the open transcript's own search box in step too, so its matches still
+// highlight in place.  The mirror only takes back a transcript query it placed
+// itself, which is what m_agentPageSearchMirror remembers.
 void MainWindow::syncAgentPageSearch()
 {
-    // The Agents tab builds lazily, so both boxes can still be null here; the
-    // mirror below no-ops on them and the transcript scan (which the dropdown
-    // needs either way) still runs.
+    // The Agents tab builds lazily, so the transcript box can still be null;
+    // the mirror then no-ops while the transcript scan still serves the
+    // global-search dropdown.
     const bool onHome = !m_sectionStack || m_sectionStack->currentIndex() == 0;
     const bool onAgents = onHome && m_repoDetailStack &&
                           m_repoDetailStack->currentIndex() == kRepoAgentsTab;
@@ -9665,11 +9658,13 @@ void MainWindow::syncAgentPageSearch()
         // is still showing our own query.
         if (query.isEmpty() && box->text() != m_agentPageSearchMirror)
             return;
-        box->setText(query); // textChanged -> list filter / transcript highlight
+        box->setText(query); // textChanged -> transcript highlight
     };
-    mirror(m_agentSearch);
     mirror(m_transcriptSearch);
+    const bool listQueryChanged = m_agentPageSearchMirror != query;
     m_agentPageSearchMirror = query;
+    if (listQueryChanged)
+        refreshAgentTable();
     // Scan even off the Agents page: the dropdown lists sessions by what their
     // transcripts say, so the hits have to be there before the page is opened.
     // A no-op once this query has been scanned for this repo.
