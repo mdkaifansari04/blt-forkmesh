@@ -787,9 +787,9 @@ public:
     // selected, every Code-only chrome band is hidden, and no registered diff
     // viewer outside the Git stack is visible.
     bool testGitWorkspaceIsExclusive() const;
-    // Git keeps only a compact, notification-width prompt footer: the live log
-    // and background queue are absent until the user leaves the workspace.
-    bool testGitFooterIsCompact() const;
+    // Git keeps only the prompt footer: the live log and background queue are
+    // absent, and the prompt fills the space they would have occupied.
+    bool testGitFooterShowsPromptOnly() const;
     // Follow a branch link and read back the branch the table landed on right
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
@@ -834,6 +834,10 @@ public:
     // so a test can prove a waiting commit keeps its buttons on screen even while
     // outgoing commits are pending (adhoc #66).
     QString testScmCommitControlsState() const;
+    // The checkout that Git-page commit actions operate on. While reviewing a
+    // linked branch this must be that branch's worktree, never the primary
+    // checkout, or an apparently local commit would land on the wrong branch.
+    QString testSourceControlGitDir() const { return sourceControlGitDir(); }
     // Rescan the working tree the way the panel's Refresh button does, so a test
     // doesn't have to wait out the 10s change-badge poll.
     void testRefreshSourceControl() { refreshSourceControl(/*force=*/true); }
@@ -844,6 +848,9 @@ public:
     // universal source-control panel and commit graph for every diff kind.
     int testGitFilesSlotPage() const;
     int testGitHistorySlotPage() const;
+    // Exercise the working-tree review frontier in both directions: a down pass
+    // must mark files and an up pass must remove those automatic marks again.
+    bool testScmAutoViewedRoundTrip();
     // The base end of the "<branch> \xE2\x86\x92 <base>" compare indicator beside
     // the graph's branch button, or empty while it's hidden — so a test can
     // prove browsing a branch shows what it is being compared against, and that
@@ -2216,13 +2223,9 @@ private:
     // pending entry) and kick off the drain if it's idle. Lets the merge-status
     // path defer a cold-cache check instead of blocking the GUI on it.
     void queuePullConflictCheck(int number, const QString &fingerprint);
-    // Set/clear the conflict badge on a single pull-list row, in place, so async
-    // badge updates don't rebuild (and flicker) the whole table.
+    // Conflict checks still drive the selected pull's detail actions, but no
+    // longer occupy a separate marker in the compact pull list.
     void setPullConflictBadge(int number, bool conflict);
-    // Tooltip for a PR's conflict badge: the "why" behind the flag — the files
-    // whose patch no longer applies, pulled from m_pullConflictCache. Falls back
-    // to the bare "has merge conflicts" line when the file list isn't cached.
-    QString pullConflictBadgeTooltip(int number) const;
     void refreshPullList();
     void showPull(int number);
     // Files-changed authorship filter: show only agent- or human-authored files
@@ -5173,7 +5176,6 @@ private:
     // every workspace, including Git, so users can prompt an agent from a diff.
     QWidget *m_footerDock = nullptr;
     QWidget *m_footerLeftRegion = nullptr;
-    QWidget *m_footerGitPromptSpacer = nullptr;
     // Background-activity strip, wedged between the live log and the prompt. One
     // row per open *kind* of work, not per ticket: dozens of concurrent git reads
     // collapse into a single "git ×12" line, so the strip stays readable and the
