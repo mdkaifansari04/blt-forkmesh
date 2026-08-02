@@ -4675,8 +4675,9 @@ void MainWindow::showBranchDiff(const QString &branch, int agentSessionId)
     // off the default branch (adhoc #16).
     const QString base = branchCompareBase();
     if (branch == base) {
+        // No range to empty here: selecting the base itself routes the workspace
+        // back to the working-tree page, which owns the CHANGES list.
         m_branchDiffPendingFade = false;
-        clearRangeFilesInSourceControl();
         setDiffHtml(m_branchDiffView,
             QStringLiteral("<p style='color:#8b949e'>%1 is the branch being "
                            "compared against.</p>")
@@ -4840,6 +4841,7 @@ void MainWindow::clearBranchDiffCache()
     m_branchDiffCacheBytes = 0;
 }
 
+#ifdef FORKMESH_WINDOW_TESTS
 QString MainWindow::testBranchDiffText() const
 {
     return m_branchDiffView ? m_branchDiffView->toPlainText() : QString();
@@ -4850,6 +4852,7 @@ bool MainWindow::testBranchDiffCached(const QString &branch) const
     const QString key = branchDiffCacheKey(branch, branchWorkDir(branch));
     return !key.isEmpty() && m_branchDiffCache.contains(key);
 }
+#endif
 
 void MainWindow::renderBranchScopeDiff()
 {
