@@ -100,6 +100,9 @@ function mountForkMeshDashboardChat() {
   const fullLog = document.querySelector("#fullChatMessages");
   const sideLog = document.querySelector("#sideChatMessages");
   const fullInput = document.querySelector("#fullChatInput");
+  const fullInputResizeHandle = document.querySelector(
+    "[data-dashboard-chat-input-resize-handle]",
+  );
   const sideInput = document.querySelector("#sideChatInput");
   const fullSend = document.querySelector("#fullChatSend");
   const fullTaskSend = document.querySelector("#fullChatTaskSend");
@@ -143,6 +146,74 @@ function mountForkMeshDashboardChat() {
 
   let pendingWorldComposerPrefill = null;
   const seenParentNotifications = new Set();
+  let fullInputManualHeight = 0;
+
+  function defaultFullInputHeight() {
+    if (!fullInput) return 48;
+    const minHeight = Number.parseFloat(getComputedStyle(fullInput).minHeight);
+    return Number.isFinite(minHeight) ? minHeight : 48;
+  }
+
+  function maxFullInputHeight() {
+    return Math.max(
+      defaultFullInputHeight(),
+      Math.min(480, Math.round(window.innerHeight * 0.6)),
+    );
+  }
+
+  function setFullInputManualHeight(height) {
+    if (!fullInput) return;
+    const minimum = defaultFullInputHeight();
+    const nextHeight = Math.min(maxFullInputHeight(), Math.max(minimum, height));
+    if (nextHeight <= minimum) {
+      fullInputManualHeight = 0;
+      fullInput.style.height = "";
+    } else {
+      fullInputManualHeight = nextHeight;
+      fullInput.style.height = `${nextHeight}px`;
+    }
+    fullInputResizeHandle?.setAttribute(
+      "aria-valuenow",
+      String(Math.round(fullInputManualHeight || minimum)),
+    );
+  }
+
+  function wireFullInputResizeHandle() {
+    if (!fullInput || !fullInputResizeHandle) return;
+    let drag = null;
+    fullInputResizeHandle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      drag = {
+        pointerId: event.pointerId,
+        startY: event.clientY,
+        startHeight: fullInput.getBoundingClientRect().height,
+      };
+      fullInputResizeHandle.setPointerCapture(event.pointerId);
+    });
+    fullInputResizeHandle.addEventListener("pointermove", (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      setFullInputManualHeight(drag.startHeight + drag.startY - event.clientY);
+    });
+    const finishDrag = (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      if (fullInputResizeHandle.hasPointerCapture(event.pointerId)) {
+        fullInputResizeHandle.releasePointerCapture(event.pointerId);
+      }
+      drag = null;
+    };
+    fullInputResizeHandle.addEventListener("pointerup", finishDrag);
+    fullInputResizeHandle.addEventListener("pointercancel", finishDrag);
+    fullInputResizeHandle.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      event.preventDefault();
+      const currentHeight = fullInput.getBoundingClientRect().height;
+      const step = event.shiftKey ? 48 : 16;
+      setFullInputManualHeight(
+        currentHeight + (event.key === "ArrowUp" ? step : -step),
+      );
+    });
+  }
 
   function fileFromWorldComposerAttachment(value) {
     if (!value || typeof value !== "object") return null;
@@ -4447,6 +4518,12 @@ function mountForkMeshDashboardChat() {
     inputEl.addEventListener("input", () => updateMentionSuggest(inputEl));
     inputEl.addEventListener("input", () => {
       if (inputEl !== fullInput) return;
+      if (fullInputManualHeight) {
+        setFullInputManualHeight(
+          Math.max(fullInputManualHeight, inputEl.scrollHeight),
+        );
+        return;
+      }
       inputEl.style.height = "auto";
       inputEl.style.height = `${Math.min(inputEl.scrollHeight, 128)}px`;
     });
@@ -4661,6 +4738,7 @@ function mountForkMeshDashboardChat() {
       });
     void loadComposerRepositories();
     void loadTaskRouting();
+    wireFullInputResizeHandle();
     wireInput(fullInput, fullSend);
     wireTaskSend();
     wireInput(sideInput, sideSend);
