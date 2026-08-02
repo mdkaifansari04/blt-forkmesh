@@ -9048,6 +9048,64 @@ inline QString gitBlockingCrumb(const QProcess &process)
     return cmd;
 }
 
+// The full command line of a git subprocess, uncapped, for error text a reader
+// is meant to understand or paste back into a terminal ("git -C <repo> diff
+// --binary --cached <base>"). gitBlockingCrumb is the short form for log lines.
+inline QString gitCommandLine(const QProcess &process)
+{
+    return (process.program() + QLatin1Char(' ') +
+            process.arguments().join(QLatin1Char(' ')))
+        .simplified();
+}
+
+// Kill a stalled git subprocess and describe the failure with everything the
+// caller can act on: which command stalled, for how long, and whatever it had
+// already written to stderr/stdout before the kill. A bare "git timed out"
+// leaves the UI showing a dead end (adhoc #1384).
+inline QString gitTimeoutError(QProcess &process, int waitedMs)
+{
+    const QString command = gitCommandLine(process);
+    process.kill();
+    process.waitForFinished(200); // reap so the child's pipes flush
+    QString output = QString::fromUtf8(process.readAllStandardError()).trimmed();
+    const QString stdOut =
+        QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+    if (!stdOut.isEmpty())
+        output += (output.isEmpty() ? QString() : QStringLiteral("\n")) + stdOut;
+    constexpr int kMaxOutput = 4000;
+    if (output.size() > kMaxOutput)
+        output = output.left(kMaxOutput) + QStringLiteral("\n… (output truncated)");
+    QString err = QStringLiteral("git timed out after %1s: %2")
+                      .arg(waitedMs / 1000)
+                      .arg(command);
+    if (!output.isEmpty())
+        err += QLatin1Char('\n') + output;
+    return err;
+}
+
+// True for git failures worth one more attempt: a timeout (the machine was busy,
+// or another git held things up), a contended index/ref lock, or a snapshot taken
+// while an agent worktree was being rewritten under us. Deterministic errors
+// ("unknown revision", "not a git repository") are deliberately excluded — a
+// retry there only makes the user wait longer for the same message.
+inline bool isTransientGitError(const QString &err)
+{
+    static const char *const kMarkers[] = {
+        "timed out",
+        "index.lock",
+        "unable to create",
+        "cannot lock ref",
+        "unable to stat",
+        "no such file",
+        "resource temporarily unavailable",
+        "resource deadlock",
+    };
+    for (const char *marker : kMarkers)
+        if (err.contains(QLatin1String(marker), Qt::CaseInsensitive))
+            return true;
+    return false;
+}
+
 // Wait up to 8s for a git subprocess. On the GUI thread, poll in short slices
 // and service the GUI between them so the window stays responsive and spinners
 // animate; off-thread there is no window to keep painted (and pumping would
@@ -9081,9 +9139,9 @@ inline bool waitForGit(QProcess &process, QString *err)
     if (!onGuiThread) {
         if (process.waitForFinished(8000))
             return true;
-        process.kill();
+        const QString message = gitTimeoutError(process, 8000);
         if (err)
-            *err = QStringLiteral("git timed out");
+            *err = message;
         return false;
     }
     // A burst of individually fast (<40ms) git reads — refreshAgentTable shells two
@@ -9100,9 +9158,9 @@ inline bool waitForGit(QProcess &process, QString *err)
         if (process.state() == QProcess::NotRunning)
             return true; // exited between polls; caller inspects the exit code
         if (timer.hasExpired(8000)) {
-            process.kill();
+            const QString message = gitTimeoutError(process, 8000);
             if (err)
-                *err = QStringLiteral("git timed out");
+                *err = message;
             return false;
         }
         pumpKeepAlive();
