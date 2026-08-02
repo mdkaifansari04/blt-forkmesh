@@ -1720,6 +1720,64 @@ int main(int argc, char *argv[])
                   .arg(localRef)
                   .arg(remoteRef)
                   .arg(mergeLoop));
+
+        // adhoc #66: those same outgoing commits used to swap the whole commit
+        // row out for Sync Changes, so a staged change with a typed message had
+        // no button left to record it. Stage one now and the commit actions must
+        // come back — alongside Sync, not instead of it.
+        {
+            QFile waiting(upstreamRepo.path() +
+                          QStringLiteral("/commit-waiting.txt"));
+            waiting.open(QIODevice::WriteOnly);
+            waiting.write("staged and waiting on a commit\n");
+            waiting.close();
+        }
+        const bool stagedWaiting =
+            runGitChecked(upstreamRepo.path(), {"add", "commit-waiting.txt"});
+        window.testRefreshSourceControl();
+        QElapsedTimer waitingTimer;
+        waitingTimer.start();
+        while (waitingTimer.elapsed() < 5000 &&
+               !window.testSourceControlPaths().contains(
+                   QStringLiteral("commit-waiting.txt")))
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        const QString controls = window.testScmCommitControlsState();
+        check(stagedWaiting &&
+                  window.testSourceControlPaths().contains(
+                      QStringLiteral("commit-waiting.txt")) &&
+                  controls.contains(QStringLiteral("commit=enabled")) &&
+                  controls.contains(QStringLiteral("commitPush=enabled")) &&
+                  controls.contains(QStringLiteral("stagePush=enabled")) &&
+                  !controls.contains(QStringLiteral("sync=hidden")),
+              QString("a staged change waiting to be committed keeps the commit "
+                      "buttons on screen while outgoing commits are pending "
+                      "(staged=%1 files=%2 controls=%3)")
+                  .arg(stagedWaiting)
+                  .arg(window.testSourceControlPaths().join(QStringLiteral(", ")),
+                       controls));
+
+        // …and once that change is committed the row hands itself back to Sync,
+        // which is the behaviour the swap was there for in the first place.
+        const bool committedWaiting =
+            runGitChecked(upstreamRepo.path(),
+                          {"commit", "-m", "commit the waiting change"});
+        window.testRefreshSourceControl();
+        QElapsedTimer cleanTimer;
+        cleanTimer.start();
+        while (cleanTimer.elapsed() < 5000 &&
+               !window.testScmCommitControlsState().contains(
+                   QStringLiteral("commit=hidden")))
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        const QString cleanControls = window.testScmCommitControlsState();
+        check(committedWaiting &&
+                  cleanControls.contains(QStringLiteral("commit=hidden")) &&
+                  cleanControls.contains(QStringLiteral("commitPush=hidden")) &&
+                  cleanControls.contains(QStringLiteral("stagePush=hidden")) &&
+                  !cleanControls.contains(QStringLiteral("sync=hidden")),
+              QString("a clean working tree still gives the row to Sync Changes "
+                      "(committed=%1 controls=%2)")
+                  .arg(committedWaiting)
+                  .arg(cleanControls));
     }
 
     // issue #272: clicking "Update from main" rebuilds the worktrees panel. The

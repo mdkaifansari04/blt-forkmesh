@@ -436,8 +436,9 @@ QWidget *MainWindow::buildSourceControlPanel()
     // Three small buttons on a single line. The FlowLayout stays so a column
     // dragged really narrow wraps instead of clipping, but at any normal width
     // the row reads as one line of commit actions. When local commits are
-    // waiting to sync, this row instead presents the blocking Sync Changes
-    // action; publishing must be resolved before another commit can be made.
+    // waiting to sync, Sync Changes joins the row — and takes it over entirely
+    // once the working tree is clean and committing is no longer on the table
+    // (see updateScmCommitControlVisibility).
     m_scmControlsPanel = new QWidget;
     auto *controlsRow = new FlowLayout(m_scmControlsPanel, 0, 6, 6);
     controlsRow->addWidget(m_scmCommitButton);
@@ -834,7 +835,14 @@ void MainWindow::refreshRepoChangeBadge()
                        if (!ok || !m_railGitButton ||
                            m_repoDetailIndex != forIndex)
                            return;
-                       m_railGitButton->setBadgeCount(scmChangeCount(out));
+                       const int changed = scmChangeCount(out);
+                       m_railGitButton->setBadgeCount(changed);
+                       // The commit row hides itself for outgoing commits only
+                       // while the tree is clean, and the rebuild below is
+                       // skipped whenever the tree hasn't moved — so refresh
+                       // that input from this poll rather than from the panel.
+                       m_scmPendingChangeCount = changed;
+                       updateScmCommitControlVisibility();
                        // Rebuild the panel only when it's on screen *and* the
                        // tree actually moved: the rebuild drops the open diff
                        // and the selection, so it must never run speculatively.
@@ -901,6 +909,8 @@ void MainWindow::refreshSourceControl(bool force)
             m_scmViewedLabel->clear();
         if (m_railGitButton)
             m_railGitButton->setBadgeCount(0);
+        m_scmPendingChangeCount = 0;
+        updateScmCommitControlVisibility();
         if (m_scmCommitButton)
             m_scmCommitButton->setEnabled(false);
         if (m_scmCommitPushButton)
@@ -1134,6 +1144,10 @@ void MainWindow::refreshSourceControl(bool force)
     if (m_railGitButton)
         m_railGitButton->setBadgeCount(total);
     const bool anything = total > 0;
+    // refreshSourceControlOutgoing() ran before this rebuild, so re-apply the
+    // commit-row visibility now that the real change count is known.
+    m_scmPendingChangeCount = total;
+    updateScmCommitControlVisibility();
     if (m_scmCommitButton)
         m_scmCommitButton->setEnabled(anything);
     if (m_scmCommitPushButton)
@@ -1174,18 +1188,29 @@ void MainWindow::refreshSourceControl(bool force)
     }
 }
 
+// Commit row vs. Sync Changes. Outgoing commits alone hand the row to Sync, but
+// a working tree that still has something to commit always keeps the commit
+// buttons on screen next to it: hiding them behind Sync stranded staged changes
+// with a typed message and no way to record them (adhoc #66).
+void MainWindow::updateScmCommitControlVisibility()
+{
+    const bool showCommit = !m_scmOutgoingBlocking || m_scmPendingChangeCount > 0;
+    for (QPushButton *button : {m_scmCommitButton, m_scmCommitPushButton,
+                                m_scmStageCommitPushButton}) {
+        if (button)
+            button->setVisible(showCommit);
+    }
+    if (m_scmSyncButton)
+        m_scmSyncButton->setVisible(m_scmOutgoingBlocking);
+}
+
 void MainWindow::refreshSourceControlOutgoing()
 {
     if (!m_scmOutgoingPanel || !m_scmOutgoingLabel || !m_scmSyncButton)
         return;
     auto showCommitControls = [this](bool show) {
-        for (QPushButton *button : {m_scmCommitButton, m_scmCommitPushButton,
-                                    m_scmStageCommitPushButton}) {
-            if (button)
-                button->setVisible(show);
-        }
-        if (m_scmSyncButton)
-            m_scmSyncButton->setVisible(!show);
+        m_scmOutgoingBlocking = !show;
+        updateScmCommitControlVisibility();
     };
     const bool showOutgoingPanel =
         !sourceControlShowsRange() && m_scmPanel && m_scmPanel->isVisible();

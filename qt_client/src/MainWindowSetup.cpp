@@ -814,6 +814,25 @@ QStringList MainWindow::testSourceControlPaths() const
     return paths;
 }
 
+QString MainWindow::testScmCommitControlsState() const
+{
+    QStringList parts;
+    const auto describe = [&parts](const QString &name, QPushButton *button) {
+        parts << QStringLiteral("%1=%2").arg(
+            name,
+            !button ? QStringLiteral("missing")
+                    : !button->isVisibleTo(button->window())
+                          ? QStringLiteral("hidden")
+                          : button->isEnabled() ? QStringLiteral("enabled")
+                                                : QStringLiteral("disabled"));
+    };
+    describe(QStringLiteral("commit"), m_scmCommitButton);
+    describe(QStringLiteral("commitPush"), m_scmCommitPushButton);
+    describe(QStringLiteral("stagePush"), m_scmStageCommitPushButton);
+    describe(QStringLiteral("sync"), m_scmSyncButton);
+    return parts.join(QLatin1Char(' '));
+}
+
 bool MainWindow::testClickSourceControlPath(const QString &path)
 {
     if (!m_scmTree)
