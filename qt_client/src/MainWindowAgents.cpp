@@ -1844,8 +1844,8 @@ QWidget *MainWindow::buildAgentsTab()
     // left to remove, which used to leave the entry undeletable.
     m_agentDeleteAllButton = railActionButton(
         QStringLiteral("trash"), QStringLiteral("Delete"),
-        "Delete this agent session, along with its worktree folder and branch "
-        "when it still has them");
+        "Delete this agent session and any attached pull request, along with its "
+        "worktree folder and branch when it still has them");
     connect(m_agentDeleteAllButton, &QPushButton::clicked, this, [this] {
         if (isExternalSession(m_selectedAgentSessionId)) {
             deleteSelectedAgentSession();
@@ -2370,7 +2370,8 @@ QWidget *MainWindow::buildAgentsTab()
     });
     m_agentWtDeleteButton = railActionButton(
         QStringLiteral("trash"), QStringLiteral("Delete"),
-        "Remove this session's worktree, delete its branch and its agent session");
+        "Remove this session's worktree, branch, attached pull request and agent "
+        "session");
     connect(m_agentWtDeleteButton, &QPushButton::clicked, this, [this] {
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
         if (!s || s->branchName.isEmpty())
@@ -8217,6 +8218,47 @@ bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree,
                                   : QStringLiteral("The agent session was closed "
                                                    "on the desktop."));
 
+    // An Agent record owns the PR it opened (or, for association-only records,
+    // the PR/branch provenance it represents).  Keep all delete entry points in
+    // agreement: deleting an agent from its detail, branch, or worktree must not
+    // leave an orphaned pull request behind.  Do this only after every earlier
+    // guard has accepted the session deletion, so a running session or an issue
+    // we cannot clear leaves its PR untouched.
+    if (snapshot.prNumber > 0) {
+        if (repoIndex < 0) {
+            flashMessage(
+                QStringLiteral("Couldn't delete PR #%1 because its repository is "
+                               "no longer available locally.")
+                    .arg(snapshot.prNumber),
+                true);
+            return false;
+        }
+        const RepositoryRecord repo = m_repositories.at(repoIndex);
+        PullStore pullStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
+                            m_userName);
+        QString pullError;
+        if (!pullStore.deletePull(snapshot.prNumber, /*rewriteHistory=*/false,
+                                  &pullError)
+            // A PR that was already removed satisfies the invariant too.  Let
+            // its stale Agent record finish deleting rather than stranding it.
+            && !pullError.contains(QStringLiteral("not found"),
+                                   Qt::CaseInsensitive)) {
+            flashMessage(
+                pullError.isEmpty()
+                    ? QStringLiteral("Could not delete attached PR #%1.")
+                          .arg(snapshot.prNumber)
+                    : QStringLiteral("Could not delete attached PR #%1: %2")
+                          .arg(snapshot.prNumber)
+                          .arg(pullError),
+                true);
+            return false;
+        }
+        logSystem(QStringLiteral("Deleted attached pull request #%1 for agent "
+                                 "session #%2.")
+                      .arg(snapshot.prNumber)
+                      .arg(snapshot.id));
+    }
+
     if (!m_agentStore->deleteSession(snapshot)) {
         flashMessage("Could not delete the agent session.", true);
         return false;
@@ -12378,16 +12420,18 @@ void MainWindow::updateAgentActionState()
     // Block deleting the session whose working-tree git-am the in-flight AI fix is
     // still holding open.
     const bool aiFixBusy = m_aiFix && m_aiFix->sessionId == m_selectedAgentSessionId;
-    // "Delete" also nukes the worktree + branch when the session still has them,
-    // so it needs a real stored session — but NOT a branch: a run that never got
-    // one (or whose repo has since gone away) deletes its entry alone, and gating
-    // on the branch left those rows stuck in the list with a dead button. On an
-    // external watch-only row it drops just the mirrored session (adhoc #51).
+    // "Delete" also nukes the worktree + branch and any attached PR when the
+    // session still has them.  It needs a real stored session — but NOT a branch:
+    // a run that never got one (or whose repo has since gone away) deletes its
+    // entry alone, and gating on the branch left those rows stuck in the list with
+    // a dead button. Association-only PR provenance records take this same path,
+    // which makes the detail-page Delete button usable for them too. On an external
+    // watch-only row it drops just the mirrored session (adhoc #51).
     if (m_agentDeleteAllButton)
         m_agentDeleteAllButton->setEnabled(
             !aiFixBusy
             && (externalSelected
-                || (selected && session && !session->associationOnly)));
+                || (selected && session)));
     updateQuickAddEnterTarget();
 }
 
