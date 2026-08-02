@@ -614,6 +614,36 @@ QPushButton#memberDeleteButton:hover {
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 6px;
 }
+#agentQueueOverlay {
+    background-color: rgba(22,27,34,238);
+    border: 1px solid rgba(88,166,255,0.62);
+    border-radius: 12px;
+}
+#agentQueueOverlay QLabel { background: transparent; }
+QPushButton#agentQueueIcon {
+    background: transparent; border: none; padding: 0;
+}
+QPushButton#agentQueueLimitDecreaseButton,
+QPushButton#agentQueueLimitIncreaseButton {
+    background-color: rgba(88,166,255,0.12);
+    border: 1px solid rgba(88,166,255,0.48);
+    border-radius: 8px;
+    padding: 0;
+}
+QPushButton#agentQueueLimitDecreaseButton:hover,
+QPushButton#agentQueueLimitIncreaseButton:hover {
+    background-color: rgba(88,166,255,0.28);
+    border-color: #58a6ff;
+}
+QPushButton#agentQueueLimitDecreaseButton:disabled {
+    background-color: transparent;
+    border-color: #30363d;
+}
+#agentQueueStatusLabel {
+    color: #e6edf3;
+    font-size: 12px;
+    font-weight: 700;
+}
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -1945,6 +1975,36 @@ QPushButton#memberDeleteButton:hover {
     background-color: #ffffff;
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 6px;
+}
+#agentQueueOverlay {
+    background-color: rgba(255,255,255,242);
+    border: 1px solid rgba(9,105,218,0.48);
+    border-radius: 12px;
+}
+#agentQueueOverlay QLabel { background: transparent; }
+QPushButton#agentQueueIcon {
+    background: transparent; border: none; padding: 0;
+}
+QPushButton#agentQueueLimitDecreaseButton,
+QPushButton#agentQueueLimitIncreaseButton {
+    background-color: rgba(9,105,218,0.08);
+    border: 1px solid rgba(9,105,218,0.34);
+    border-radius: 8px;
+    padding: 0;
+}
+QPushButton#agentQueueLimitDecreaseButton:hover,
+QPushButton#agentQueueLimitIncreaseButton:hover {
+    background-color: rgba(9,105,218,0.16);
+    border-color: #0969da;
+}
+QPushButton#agentQueueLimitDecreaseButton:disabled {
+    background-color: transparent;
+    border-color: #d0d7de;
+}
+#agentQueueStatusLabel {
+    color: #1f2328;
+    font-size: 12px;
+    font-weight: 700;
 }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
