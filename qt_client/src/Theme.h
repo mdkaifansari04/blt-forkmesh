@@ -289,6 +289,9 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 /* Per-row size bar in the Code overview. */
 #sizeBarTrack { background-color: #21262d; border-radius: 3px; }
 #sizeBarFill { background-color: #3fb950; border-radius: 3px; }
+#overviewMetricTrack { background-color: #21262d; border-radius: 2px; }
+#overviewMetricFill { background-color: #3fb950; border-radius: 2px; }
+#overviewUpdatedTime { color: #8b949e; font-size: 10px; }
 #readmeView {
     background: transparent; border: none; padding: 0; color: #e6edf3;
 }
@@ -1634,6 +1637,9 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 /* Per-row size bar in the Code overview. */
 #sizeBarTrack { background-color: #eaeef2; border-radius: 3px; }
 #sizeBarFill { background-color: #2da44e; border-radius: 3px; }
+#overviewMetricTrack { background-color: #eaeef2; border-radius: 2px; }
+#overviewMetricFill { background-color: #2da44e; border-radius: 2px; }
+#overviewUpdatedTime { color: #656d76; font-size: 10px; }
 #readmeView {
     background: transparent; border: none; padding: 0; color: #1f2328;
 }
