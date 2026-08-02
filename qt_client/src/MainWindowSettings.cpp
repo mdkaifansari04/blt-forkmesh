@@ -4437,11 +4437,19 @@ static constexpr int kToastMaxChars = 160;
 // Auto-dismiss windows for the top toast. Every toast counts down visibly so the
 // notification area never flashes a message away unannounced. Success
 // confirmations clear quickly; errors linger far longer (but still show a
-// countdown) so a failure can be read and copied before it fades — its full text
+// countdown) so a failure can be read and copied before it leaves — its full text
 // is also preserved in the network log regardless.
 static constexpr int kToastSuccessSeconds = 5;
 static constexpr int kToastErrorSeconds = 20;
 static constexpr int kPromptBubbleSeconds = 8;
+
+// How long the bubble takes to glide off the right edge once its countdown
+// finishes. It stays fully opaque throughout — the exit is the motion, not a fade
+// (adhoc #226), so the message is legible right up to the moment it leaves.
+static constexpr int kToastSlideOutMs = 320;
+// The composer-to-bubble arrival, restored on the shared geometry animation
+// whenever a new bubble is shown (the slide-out retunes it).
+static constexpr int kToastFlightMs = 260;
 
 // Cap on how many error toasts can back up in m_topMessageQueue; a runaway
 // retry loop firing errors faster than they can be read shouldn't grow this
@@ -4568,12 +4576,15 @@ void MainWindow::positionTopMessageBubble()
 {
     if (!m_topMessageContainer)
         return;
+    if (m_topMessageSlidingOut)
+        return; // the exit animation owns the geometry until it lands
     m_topMessageContainer->setGeometry(topMessageBubbleRect());
     m_topMessageContainer->raise();
 }
 
 // A hovered bubble should remain completely stable: stop the visible seconds
-// countdown as well as the opacity animation, then continue both on leave.
+// countdown, then continue it on leave. Nothing else moves while it is up — the
+// bubble only travels once the countdown has run out (slideTopMessageOut).
 void MainWindow::setTopMessagePaused(bool paused)
 {
     if (m_topMessageHovering == paused)
@@ -4582,18 +4593,44 @@ void MainWindow::setTopMessagePaused(bool paused)
     if (paused) {
         if (m_topMessageTimer && m_topMessageTimer->isActive())
             m_topMessageTimer->stop();
-        if (m_topMessageFade &&
-            m_topMessageFade->state() == QAbstractAnimation::Running)
-            m_topMessageFade->pause();
     } else if (m_topMessageContainer && m_topMessageContainer->isVisible() &&
-               !m_loadStatusShowing && m_topMessageSecondsLeft > 0) {
+               !m_loadStatusShowing && !m_topMessageSlidingOut &&
+               m_topMessageSecondsLeft > 0) {
         if (m_topMessageTimer)
             m_topMessageTimer->start(1000);
-        if (m_topMessageFade &&
-            m_topMessageFade->state() == QAbstractAnimation::Paused)
-            m_topMessageFade->resume();
     }
     renderTopMessageCountdown();
+}
+
+// The countdown reached zero: instead of dimming the text away, keep it fully
+// opaque and glide the whole bubble off the right edge (the parent clips it), then
+// hand over to the next queued message. Called only from the countdown tick — an
+// explicit dismiss (✕) still closes immediately.
+void MainWindow::slideTopMessageOut()
+{
+    if (m_topMessageTimer)
+        m_topMessageTimer->stop();
+    m_topMessageSecondsLeft = 0;
+    if (!m_topMessageContainer || !m_topMessageContainer->isVisible() ||
+        !m_topMessageFlight) {
+        advanceTopMessageQueue();
+        return;
+    }
+    if (m_topMessageSlidingOut)
+        return; // already on its way out
+    m_topMessageSlidingOut = true;
+    // Drop the seconds suffix as it leaves, so the last thing on screen is the
+    // message itself rather than a stale "· 0s".
+    if (m_topMessage)
+        m_topMessage->setText(m_topMessageBaseHtml);
+    const QRect from = m_topMessageContainer->geometry();
+    const QRect to(width() + 12, from.y(), from.width(), from.height());
+    m_topMessageFlight->stop();
+    m_topMessageFlight->setDuration(kToastSlideOutMs);
+    m_topMessageFlight->setEasingCurve(QEasingCurve::InCubic);
+    m_topMessageFlight->setStartValue(from);
+    m_topMessageFlight->setEndValue(to);
+    m_topMessageFlight->start();
 }
 
 // After a footer send clears the editor, leave a copy of the exact prompt in a
@@ -4631,28 +4668,22 @@ void MainWindow::showPromptBubble(const QString &prompt)
     m_topMessageContainer->raise();
     if (m_topMessageFlight) {
         m_topMessageFlight->stop();
+        m_topMessageSlidingOut = false;
+        m_topMessageFlight->setDuration(kToastFlightMs);
+        m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
         m_topMessageFlight->setStartValue(source);
         m_topMessageFlight->setEndValue(target);
         m_topMessageFlight->start();
     }
 
     m_topMessageSecondsLeft = kPromptBubbleSeconds;
-    if (m_topMessageOpacity)
-        m_topMessageOpacity->setOpacity(1.0);
-    if (m_topMessageFade) {
-        m_topMessageFade->stop();
-        m_topMessageFade->setDuration(kPromptBubbleSeconds * 1000);
-        m_topMessageFade->setStartValue(1.0);
-        m_topMessageFade->setEndValue(0.0);
-        m_topMessageFade->start();
-    }
     if (!m_topMessageTimer) {
         m_topMessageTimer = new QTimer(this);
         connect(m_topMessageTimer, &QTimer::timeout, this, [this] {
             if (!m_topMessage)
                 return;
             if (--m_topMessageSecondsLeft <= 0) {
-                advanceTopMessageQueue();
+                slideTopMessageOut();
                 return;
             }
             renderTopMessageCountdown();
@@ -4718,10 +4749,11 @@ void MainWindow::flashMessage(const QString &text, bool error,
     renderTopMessage();
     m_topMessage->show();
     if (m_topMessageContainer) {
+        // A previous bubble may have been mid-slide; cancel it and put this one
+        // back at the anchored position at full opacity.
         if (m_topMessageFlight)
             m_topMessageFlight->stop();
-        if (m_topMessageOpacity)
-            m_topMessageOpacity->setOpacity(1.0);
+        m_topMessageSlidingOut = false;
         positionTopMessageBubble();
         m_topMessageContainer->show();
         m_topMessageContainer->raise();
@@ -4729,14 +4761,14 @@ void MainWindow::flashMessage(const QString &text, bool error,
 
     if (!m_topMessageTimer) {
         // Ticks once a second so the countdown is visible; when the count runs out
-        // it dismisses the whole toast (label plus any Copy / ✕ / Expand
-        // affordances) rather than firing a single timeout.
+        // the whole toast (label plus any Copy / ✕ / Expand affordances) slides
+        // off to the right rather than firing a single timeout.
         m_topMessageTimer = new QTimer(this);
         connect(m_topMessageTimer, &QTimer::timeout, this, [this] {
             if (!m_topMessage)
                 return;
             if (--m_topMessageSecondsLeft <= 0) {
-                advanceTopMessageQueue();
+                slideTopMessageOut();
                 return;
             }
             renderTopMessageCountdown();
@@ -4757,13 +4789,6 @@ void MainWindow::flashMessage(const QString &text, bool error,
             m_topMessageClose->show();
         m_topMessageSecondsLeft = kToastSuccessSeconds;
     }
-    if (m_topMessageFade) {
-        m_topMessageFade->stop();
-        m_topMessageFade->setDuration(m_topMessageSecondsLeft * 1000);
-        m_topMessageFade->setStartValue(1.0);
-        m_topMessageFade->setEndValue(0.0);
-        m_topMessageFade->start();
-    }
     renderTopMessageCountdown();
     m_topMessageTimer->start(1000);
     // The Expand affordance appears only when the message was truncated, so the
@@ -4777,12 +4802,14 @@ void MainWindow::renderTopMessageCountdown()
 {
     if (!m_topMessage)
         return;
+    if (m_topMessageSlidingOut)
+        return; // it already dropped its suffix and is on its way off-screen
     // "·" is a byte-escaped glyph, so it must go through fromUtf8 (QStringLiteral
     // would mangle the multibyte sequence).
     const QString suffix =
         QString::fromUtf8(" <span style='color:#6e7681'>\xC2\xB7 %1s</span>")
             .arg(m_topMessageSecondsLeft);
-    // Tell the user more errors are waiting behind this one, so a fading toast
+    // Tell the user more errors are waiting behind this one, so a departing toast
     // doesn't feel like it silently dropped the rest of a quick burst.
     QString queuedSuffix;
     if (!m_topMessageQueue.isEmpty())
@@ -4808,10 +4835,9 @@ void MainWindow::dismissTopMessage()
     m_topMessageQueue.clear();
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
-    if (m_topMessageFade)
-        m_topMessageFade->stop();
     if (m_topMessageFlight)
         m_topMessageFlight->stop();
+    m_topMessageSlidingOut = false;
     if (m_topMessage) {
         m_topMessage->hide();
         m_topMessage->setWordWrap(false); // back to a one-liner for the next toast
@@ -4829,10 +4855,11 @@ void MainWindow::dismissTopMessage()
 }
 
 // Show the next queued message (its own full countdown, per flashMessage), or
-// fully dismiss the toast if nothing is waiting. Called when the current
-// toast's countdown runs out or the user dismisses it early.
+// fully dismiss the toast if nothing is waiting. Called once the current toast
+// has finished sliding out, or when the user dismisses it early.
 void MainWindow::advanceTopMessageQueue()
 {
+    m_topMessageSlidingOut = false;
     if (m_topMessageQueue.isEmpty()) {
         dismissTopMessage();
         return;
