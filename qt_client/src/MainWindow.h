@@ -117,10 +117,12 @@ class AgentDotMatrix;
 class NodeDotMatrix;
 class RelaySpeedDot;
 class ActionRunStrip;
+class ElidingStatusLabel;
 }
 using forkmesh::ui::ActionRunStrip;
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
+using forkmesh::ui::ElidingStatusLabel;
 using forkmesh::ui::NodeDotMatrix;
 using forkmesh::ui::RelaySpeedDot;
 class PacmanProgress;
@@ -6033,7 +6035,30 @@ private:
     QWidget *m_scmOutgoingPanel = nullptr;
     QLabel *m_scmOutgoingLabel = nullptr; // branch + pending commit count
     QPushButton *m_scmSyncButton = nullptr; // publish/push pending commits
+    // The sync button and its live status line share one row so the note sits
+    // beside the button and the pair hides/shows as a unit.
+    QWidget *m_scmSyncRow = nullptr;
+    ElidingStatusLabel *m_scmSyncStatus = nullptr; // "Writing objects: 62%" …
     int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
+    // Latest one-line progress note per syncing/pushing repository row, keyed
+    // the same way m_syncingRepos/m_pushingRepos are. Only the open repo's note
+    // is painted; the rest are kept so switching back mid-sync still shows one.
+    QHash<int, QString> m_repoSyncActivity;
+    // Publish/clear that note. Safe to call for any repo: a note for a row that
+    // is not on screen is simply remembered. Must run on the GUI thread.
+    void setRepoSyncActivity(int index, const QString &line);
+    void clearRepoSyncActivity(int index);
+    // Feed a subprocess's stderr into the note: git writes its progress there
+    // ("Enumerating objects…", "Writing objects: 62%"), one \r-separated frame
+    // at a time. Returns the accumulated stderr so the finished handler can
+    // still report the failure text it would have read at the end.
+    std::shared_ptr<QString> streamGitProgressActivity(QProcess *process,
+                                                       int index,
+                                                       const QString &prefix);
+    // Strip git's counter frames back out of a captured stderr stream so a
+    // failure is still logged as its actual message, not as the tail of
+    // "Receiving objects:  98%".
+    static QString gitErrorsWithoutProgress(const QString &text);
     // Stage all / Unstage all / Discard all have no buttons of their own in the
     // panel any more — the CHANGES group headers carry those three actions.
     QPushButton *m_scmRefreshButton = nullptr;
