@@ -7412,10 +7412,14 @@ bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree)
         return true; // already gone — nothing to delete
 
     const AgentSession snapshot = *session;
-    if (snapshot.associationOnly && snapshot.prNumber > 0) {
-        flashMessage(QStringLiteral("This Agent record is retained while PR #%1 "
-                                    "exists.")
-                         .arg(snapshot.prNumber));
+    if (snapshot.associationOnly) {
+        flashMessage(
+            snapshot.prNumber > 0
+                ? QStringLiteral("This durable Agent record is retained while PR "
+                                 "#%1 exists.")
+                      .arg(snapshot.prNumber)
+                : QStringLiteral("This durable Agent record is retained with its "
+                                 "branch provenance."));
         return false;
     }
     if (AgentRunner *runner = runnerForSession(snapshot.id)) {
@@ -11659,7 +11663,8 @@ void MainWindow::updateAgentActionState()
         m_agentDeleteAllButton->setEnabled(
             !aiFixBusy
             && (externalSelected
-                || (selected && session && !session->branchName.isEmpty())));
+                || (selected && session && !session->associationOnly &&
+                    !session->branchName.isEmpty())));
     updateQuickAddEnterTarget();
 }
 
