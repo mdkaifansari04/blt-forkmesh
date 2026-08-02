@@ -1598,8 +1598,8 @@ int main(int argc, char *argv[])
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
-    // The fleet toolbar shows the live queue plus concurrent-agent limit beside
-    // Start all, and lets the common capacity adjustment happen in one click.
+    // The queue floats over the list's lower-right corner, preserving the rows
+    // behind it while keeping the common capacity adjustment one click away.
     {
         QLabel *queueStatus = window.findChild<QLabel *>(
             QStringLiteral("agentQueueStatusLabel"));
@@ -1609,10 +1609,19 @@ int main(int argc, char *argv[])
             QStringLiteral("agentQueueLimitIncreaseButton"));
         QLineEdit *settingsLimit = window.findChild<QLineEdit *>(
             QStringLiteral("maxRunningAgentsEdit"));
-        check(queueStatus && decrease && increase && settingsLimit &&
+        QWidget *queueOverlay = window.findChild<QWidget *>(
+            QStringLiteral("agentQueueOverlay"));
+        check(queueStatus && decrease && increase && settingsLimit && queueOverlay &&
+                  queueOverlay->parentWidget() &&
+                  queueOverlay->parentWidget()->parentWidget() &&
+                  queueOverlay->parentWidget()->parentWidget()->objectName() ==
+                      QStringLiteral("issueTable") &&
+                  queueOverlay->isVisible() &&
+                  queueOverlay->x() + queueOverlay->width() + 12 ==
+                      queueOverlay->parentWidget()->width() &&
                   queueStatus->text() == QStringLiteral("Queue: 0 / 5"),
-              QStringLiteral("Agents toolbar shows the queued count and run limit "
-                             "beside Start all"));
+              QStringLiteral("Agents queue floats over the list viewport with its "
+                             "queued count and run limit"));
         if (queueStatus && decrease && increase && settingsLimit) {
             increase->click();
             check(QSettings().value(QStringLiteral("agents/maxRunning")).toInt() == 6 &&
@@ -3302,18 +3311,14 @@ int main(int argc, char *argv[])
                   !genieButton->toolTip().contains(QStringLiteral("agent"),
                                                    Qt::CaseInsensitive),
               QStringLiteral("the composer task button files a General task"));
-        auto *repoSizeChart = seeded.findChild<QWidget *>(QStringLiteral("repoSizeChart"));
-        auto *repoLinesChart = seeded.findChild<QWidget *>(QStringLiteral("repoLinesChart"));
-        auto *repoFilesChart = seeded.findChild<QWidget *>(QStringLiteral("repoFilesChart"));
+        auto *repoTrendChart = seeded.findChild<QWidget *>(QStringLiteral("repoTrendChart"));
         auto *ratchet = seeded.findChild<QToolButton *>(QStringLiteral("repoRatchetButton"));
-        // Adhoc #421: the day trends are drawn at the same 34px side as the
-        // window chrome's CPU/MEM/DISK squares instead of a size larger, and
-        // the Ratchet toggle reads "Ratchet" under an icon.
-        check(repoSizeChart && repoLinesChart && repoFilesChart && ratchet &&
-                  repoSizeChart->width() == 34 && repoLinesChart->width() == 34 &&
-                  repoFilesChart->width() == 34 && ratchet->isCheckable() &&
+        check(repoTrendChart && ratchet && repoTrendChart->width() == 24 &&
+                  repoTrendChart->height() == 24 &&
+                  repoTrendChart->accessibleName() == QStringLiteral("Repository trends") &&
+                  ratchet->isCheckable() &&
                   ratchet->text() == QStringLiteral("Ratchet"),
-              QStringLiteral("repository trends and Ratchet live in the top bar"));
+              QStringLiteral("repository trends use one compact vertical meter group"));
         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.

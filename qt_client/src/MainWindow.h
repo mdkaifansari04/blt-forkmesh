@@ -5900,12 +5900,10 @@ private:
     QPushButton *m_footerDiagnostics = nullptr;
     // Live one-per-second moving sparklines for CPU, host memory, swap and disk
     // usage (adhoc #17), shown in the footer beside the diagnostics. Held as
-    // QWidget* and poked via static_cast since ResourceSparkline is private to
-    // MainWindowChat.cpp.
+    // QWidget* and poked via static_cast since the compact chart widgets live
+    // in MainWindowInternal.h.
     QWidget *m_cpuChart = nullptr;
-    QWidget *m_repoSizeChart = nullptr;
-    QWidget *m_repoLinesChart = nullptr;
-    QWidget *m_repoFilesChart = nullptr;
+    QWidget *m_repoTrendChart = nullptr;
     QToolButton *m_repoRatchetButton = nullptr;
     qint64 m_repoStatsLastRefreshMs = 0;
     QWidget *m_memChart = nullptr;
@@ -6324,10 +6322,8 @@ private:
     QLineEdit *m_globalSearch = nullptr;
     QListWidget *m_globalSearchPopup = nullptr;
     QTimer *m_globalSearchTimer = nullptr;     // debounce keystrokes before rebuilding
-    // The query syncAgentPageSearch last pushed into the Agents page's own search
-    // boxes. A box holding anything else was typed on the page itself, and the
-    // mirror leaves it alone rather than clearing someone's filter out from under
-    // them when the top bar is emptied.
+    // The query syncAgentPageSearch last pushed into the Agent transcript box.
+    // The session list itself now follows the top bar directly.
     QString m_agentPageSearchMirror;
     // Back / forward navigation trail (left of the search box). Each entry is a
     // place we landed on: section, repository, repo tab, and—inside Git—the
@@ -7113,17 +7109,12 @@ private:
     // agentEdit mode).
     void fixCurrentPullFindingsWithAgent();
     QTableWidget *m_agentTable = nullptr;
-    // Free-text filter over the session list: matches issue number/title,
-    // provider, status and PR, plus anything in a session's transcript (see
-    // m_agentTranscriptHits). Empty shows everything (issue #82).
-    QLineEdit *m_agentSearch = nullptr;
-    // Live transcript search behind that filter — and behind the top bar's box,
-    // which mirrors into it on this page. A session whose transcript contains the
-    // query stays in the list even when its title says nothing about it, with the
-    // hit count and the text around the first hit shown on the row. The scan is
-    // debounced and runs off the GUI thread (it reads every session's transcript
-    // tail), so it lands a beat after the in-memory title filter rather than
-    // stalling the keystroke.
+    // Live transcript search behind the top-bar filter. A session whose
+    // transcript contains the query stays in the list even when its title says
+    // nothing about it, with the hit count and the text around the first hit
+    // shown on the row. The scan is debounced and runs off the GUI thread (it
+    // reads every session's transcript tail), so it lands a beat after the
+    // in-memory title filter rather than stalling the keystroke.
     struct AgentTranscriptHit {
         int count = 0;
         QString snippet;
@@ -7143,8 +7134,8 @@ private:
     // The hit for a session, or a zero hit when the scan is for another query.
     AgentTranscriptHit agentTranscriptHit(int sessionId) const;
     QString agentTranscriptSearchRepoKey() const;
-    // What the Agents list is currently filtered by (the page's own box), and
-    // what the transcripts are scanned for (that box, or the top bar's).
+    // What the Agents list is currently filtered by, and what the transcripts
+    // are scanned for (both use the top bar; the latter also works off-page).
     QString agentFilterQuery() const;
     QString agentTranscriptQuery() const;
     // Attachment thumbnails in the sessions list (adhoc #222): a session started
