@@ -3693,10 +3693,22 @@ int main(int argc, char *argv[])
                       "worktree/PR lands (issue #291, cell = %1)")
                   .arg(window.testAgentStatusCellText(2910)));
 
-        // Merging the session's branch into the base flags it.
-        check(window.testMarkAgentBranchMerged(
+        // A completed agent cannot claim that its branch landed merely by naming
+        // it. Only a merge path that already proved the Git/PullStore operation
+        // succeeded may set the durable merged state.
+        check(!window.testMarkAgentBranchMerged(
                   QStringLiteral("agent/issue-291-merge-note")),
-              QStringLiteral("merging an agent task's branch flags its session "
+              QStringLiteral("an unverified agent branch cannot mark its session "
+                             "merged (issue #291)"));
+        check(!window.testAgentSessionMerged(2910) &&
+                  window.testAgentStatusCellText(2910) == QStringLiteral("Success"),
+              QStringLiteral("a rejected merge claim leaves the run status intact "
+                             "(issue #291)"));
+
+        check(window.testMarkAgentBranchMerged(
+                  QStringLiteral("agent/issue-291-merge-note"),
+                  /*mergeVerified=*/true),
+              QStringLiteral("a verified branch merge flags its agent session "
                              "(issue #291)"));
 
         // The Status column now reads "merged" and the flag is persisted, so both
@@ -3736,6 +3748,100 @@ int main(int argc, char *argv[])
                   QStringLiteral("agent/issue-291-unrelated")),
               QStringLiteral("merging an unrelated branch flags no agent session "
                              "(issue #291)"));
+    }
+
+    // A branch is mutable after an agent starts. In particular, an agent that
+    // resets it to an advanced main must not be read as having merged its work:
+    // the commits after baseRef belong to main, not to the agent. The background
+    // detector instead needs a tip it observed while that tip was outside main.
+    {
+        QTemporaryDir mergeDetectionRepo;
+        if (initGitRepo(mergeDetectionRepo)) {
+            const int mergeDetectionRepoIdx = window.testAddLocalRepository(
+                "me", "merge-detection", mergeDetectionRepo.path());
+            window.testOpenRepository(mergeDetectionRepoIdx);
+            QElapsedTimer idleTimer;
+            idleTimer.start();
+            while (window.testAgentMergeStateRefreshing() && idleTimer.elapsed() < 5000)
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+
+            const QString baseRef =
+                gitOutput(mergeDetectionRepo.path(), {"rev-parse", "main"});
+            const QString resetBranch =
+                QStringLiteral("agent/issue-291-reset-to-main");
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "-b", resetBranch});
+            QFile resetFile(mergeDetectionRepo.path() + QStringLiteral("/reset.txt"));
+            if (resetFile.open(QIODevice::WriteOnly)) {
+                resetFile.write("discarded agent draft\n");
+                resetFile.close();
+            }
+            runGitChecked(mergeDetectionRepo.path(), {"add", "reset.txt"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"commit", "-m", "temporary agent draft"});
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "main"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"commit", "--allow-empty", "-m", "advance main"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"branch", "-f", resetBranch, "main"});
+
+            AgentSession resetSession;
+            resetSession.id = 2911;
+            resetSession.owner = QStringLiteral("me");
+            resetSession.name = QStringLiteral("merge-detection");
+            resetSession.branchName = resetBranch;
+            resetSession.baseRef = baseRef;
+            resetSession.baseBranch = QStringLiteral("main");
+            resetSession.status = AgentStatus::Success;
+            window.testAddAgentSession(resetSession);
+            window.testRefreshAgentMergeState();
+            QElapsedTimer resetScanTimer;
+            resetScanTimer.start();
+            while (window.testAgentMergeStateRefreshing() &&
+                   resetScanTimer.elapsed() < 5000)
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+            check(!window.testAgentMergeStateRefreshing() &&
+                      !window.testAgentSessionMerged(resetSession.id),
+                  QStringLiteral("resetting an agent branch to an advanced main does "
+                                 "not self-report a merge (issue #291)"));
+
+            const QString landedBranch =
+                QStringLiteral("agent/issue-291-observed-tip");
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "-b", landedBranch});
+            QFile landedFile(mergeDetectionRepo.path() + QStringLiteral("/landed.txt"));
+            if (landedFile.open(QIODevice::WriteOnly)) {
+                landedFile.write("agent work that landed\n");
+                landedFile.close();
+            }
+            runGitChecked(mergeDetectionRepo.path(), {"add", "landed.txt"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"commit", "-m", "agent change"});
+            const QString observedHead =
+                gitOutput(mergeDetectionRepo.path(), {"rev-parse", landedBranch});
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "main"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"merge", "--no-ff", landedBranch, "-m", "merge agent work"});
+
+            AgentSession landedSession;
+            landedSession.id = 2912;
+            landedSession.owner = QStringLiteral("me");
+            landedSession.name = QStringLiteral("merge-detection");
+            landedSession.branchName = landedBranch;
+            landedSession.baseBranch = QStringLiteral("main");
+            landedSession.mergeCandidateHead = observedHead;
+            landedSession.status = AgentStatus::Success;
+            window.testAddAgentSession(landedSession);
+            window.testRefreshAgentMergeState();
+            QElapsedTimer landedScanTimer;
+            landedScanTimer.start();
+            while (window.testAgentMergeStateRefreshing() &&
+                   landedScanTimer.elapsed() < 5000)
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+            check(!window.testAgentMergeStateRefreshing() &&
+                      window.testAgentSessionMerged(landedSession.id),
+                  QStringLiteral("an observed agent tip is marked merged only after "
+                                 "Git proves it reached main (issue #291)"));
+            window.testOpenRepository(repoIdx);
+        }
     }
 
     // The top bar's search box searches the page in front of you: on the Agents

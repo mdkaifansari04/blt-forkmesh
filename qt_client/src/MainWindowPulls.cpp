@@ -4625,7 +4625,7 @@ void MainWindow::mergeCurrentPull()
     reloadPulls();
     // Issue #291: flag the agent session behind this PR as landed in main (after
     // reloadPulls so the agent table's PR column also reflects the merge).
-    markAgentSessionsMerged(current.number, current.head);
+    markAgentSessionsMerged(current.number, current.head, /*mergeVerified=*/true);
     // Adhoc #110: only push the merge (closed PR + any linked issue closes) to the
     // mirror and notify peers when the owner has opted into auto-sync-on-merge.
     // Off by default: the merge stays local, refreshSourceControl above has
@@ -7544,7 +7544,7 @@ void MainWindow::mergeAndDeleteCurrentPull()
     refreshSourceControl(true);
     // Issue #291: flag the agent session behind this PR before its branch/record
     // are deleted below (after which it can no longer be detected on reload).
-    markAgentSessionsMerged(m_currentPullNumber, head);
+    markAgentSessionsMerged(m_currentPullNumber, head, /*mergeVerified=*/true);
 
     // Now delete the merged PR and its branch. Adhoc #110: only propagate the
     // merge (and the PR's removal) to peers when auto-sync-on-merge is on;

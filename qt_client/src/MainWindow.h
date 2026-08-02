@@ -877,15 +877,14 @@ public:
     }
     bool testBranchPullEnabled() const;
     bool testClickBranchPull();
-    // issue #291: when an agent task's worktree/PR lands in the base branch the
-    // session is flagged "merged" on its Status column and detail page. Drive the
-    // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
-    // take) for `branch`, then read back the rendered Status-cell text and the
-    // persisted merged flag, so a test can prove the note appears.
-    bool testMarkAgentBranchMerged(const QString &branch)
+    // issue #291: exercise the trusted in-app merge hand-off. An unverified
+    // call must not let an agent claim its own branch was merged.
+    bool testMarkAgentBranchMerged(const QString &branch, bool mergeVerified = false)
     {
-        return markAgentSessionsMerged(0, branch);
+        return markAgentSessionsMerged(0, branch, mergeVerified);
     }
+    void testRefreshAgentMergeState() { refreshAgentMergeState(); }
+    bool testAgentMergeStateRefreshing() const { return m_agentMergeStateRefreshing; }
     QString testAgentStatusCellText(int sessionId) const;
     QString testAgentDetailTitleText() const;
     bool testAgentDetailTitleWraps() const;
@@ -2520,13 +2519,13 @@ private:
     // PR association without inventing an Agent for a manual branch.
     bool bindAgentSessionsToPull(int prNumber, const QString &headBranch);
     // Issue #291: flag agent sessions whose worktree/PR has landed in the base
-    // branch. markAgentSessionsMerged() records it eagerly when ForkMesh merges
-    // a PR/worktree; refreshAgentMergeState() is the catch-all run on reload (it
-    // also picks up merges synced from peers or done by hand) — its per-branch
-    // git reads run on a worker thread, and markAgentSessionsLanded() applies
-    // the verdicts (by session id) back on the main thread.
-    bool markAgentSessionsMerged(int prNumber, const QString &branch);
+    // branch. The eager path accepts only a merge operation that already proved
+    // it landed; refreshAgentMergeState() independently verifies an exact
+    // previously observed source commit. Its git reads run on a worker thread.
+    bool markAgentSessionsMerged(int prNumber, const QString &branch,
+                                 bool mergeVerified);
     void refreshAgentMergeState();
+    void updateAgentMergeCandidates(const QHash<int, QString> &heads);
     void markAgentSessionsLanded(const QList<int> &sessionIds, bool refreshUi);
     void assignIssueToAgent(const QString &provider, const QString &model = QString());
     // Core of assignIssueToAgent, factored out so the issue looper can drive it

@@ -1992,6 +1992,7 @@ QWidget *MainWindow::buildAgentsTab()
                     as->status = AgentStatus::Running;
                     as->finishedAtMs = 0;
                     as->lastError.clear();
+                    as->mergeCandidateHead.clear();
                     if (m_agentStore)
                         m_agentStore->saveSession(*as);
                     updateAgentStatusCell(sid);
@@ -2468,6 +2469,7 @@ void MainWindow::sendPromptToAgentSession(int sessionId, const QString &prompt)
             as->status = AgentStatus::Running;
             as->finishedAtMs = 0;
             as->lastError.clear();
+            as->mergeCandidateHead.clear();
             if (m_agentStore)
                 m_agentStore->saveSession(*as);
             updateAgentStatusCell(sid);
@@ -6090,32 +6092,37 @@ bool MainWindow::bindAgentSessionsToPull(int prNumber,
     return changed;
 }
 
-// Issue #291: has this branch's work landed in the repo's base branch? The
-// branch must still exist locally, and every commit the run added since its
-// fork point must now be contained in the base branch — i.e. the work merged,
-// not merely that an empty branch trivially shares history. Pure git reads over
-// value-captured strings, so refreshAgentMergeState() can run it on a worker
-// thread (off the GUI thread runGitCapture blocks without pumping).
-static bool agentBranchLandedInBase(const QString &dir, const QString &branch,
-                                    const QString &baseRef, const QString &base)
+// Is this exact, previously observed source commit now part of the base branch?
+// Never infer this from the mutable branch name: an agent can reset its branch to
+// main, which makes the base's own commits look like work that the agent landed.
+// Pure git reads over value-captured strings, so refreshAgentMergeState() can run
+// this on a worker thread (off the GUI thread runGitCapture blocks without pumping).
+static bool agentCommitLandedInBase(const QString &dir, const QString &commit,
+                                    const QString &base)
 {
-    // The branch must still exist locally to reason about it.
+    if (commit.isEmpty() || base.isEmpty())
+        return false;
+    return runGitCapture(dir,
+                         {"merge-base", "--is-ancestor", commit, base},
+                         nullptr, nullptr);
+}
+
+// Return the branch tip only while it represents work not already in base. This
+// is the evidence retained for a later refresh after the branch has been merged
+// and deleted.
+static QString agentBranchHeadOutsideBase(const QString &dir, const QString &branch,
+                                          const QString &base)
+{
+    if (branch.isEmpty() || base.isEmpty())
+        return {};
+    QByteArray out;
     if (!runGitCapture(dir,
                        {"rev-parse", "--verify", "--quiet",
                         QStringLiteral("refs/heads/%1").arg(branch)},
-                       nullptr, nullptr))
-        return false;
-    auto count = [&](const QString &range) -> int {
-        QByteArray out;
-        if (!runGitCapture(dir, {"rev-list", "--count", range}, &out, nullptr))
-            return -1;
-        return QString::fromUtf8(out).trimmed().toInt();
-    };
-    // The run must have produced commits since it forked …
-    if (count(QStringLiteral("%1..%2").arg(baseRef, branch)) <= 0)
-        return false;
-    // … and all of them must now be reachable from base (nothing left outside).
-    return count(QStringLiteral("%1..%2").arg(base, branch)) == 0;
+                       &out, nullptr))
+        return {};
+    const QString head = QString::fromUtf8(out).trimmed();
+    return agentCommitLandedInBase(dir, head, base) ? QString() : head;
 }
 
 // Issue #170: the files-changed + branch ahead/behind figures behind a session's
@@ -6138,9 +6145,14 @@ AgentDiffStat MainWindow::agentDiffStat(const AgentSession &session,
 // the status cell / detail page. Called from the in-app merge flows so the note
 // appears even when the PR/branch is about to be deleted. Returns whether any
 // session was newly marked.
-bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
+bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch,
+                                         bool mergeVerified)
 {
-    if (!m_agentStore || m_repoDetailIndex < 0 ||
+    // This is deliberately not a generic session-state setter. Its callers are
+    // the successful PR/branch merge paths, which pass their Git/PullStore
+    // proof. In particular, agent output must never be able to turn a completed
+    // run into a claimed merge merely by naming its branch.
+    if (!mergeVerified || !m_agentStore || m_repoDetailIndex < 0 ||
         m_repoDetailIndex >= m_repositories.size())
         return false;
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
@@ -6187,10 +6199,9 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
 //
 // PR-backed sessions are decided here from the loaded pull's status (so a PR
 // merged here, or synced from a peer as merged, both count — no git needed).
-// Branch-only sessions need git (rev-parse + two rev-lists each), which inline
-// blocked the GUI thread for the length of every subprocess even under the
-// GitKeepAlive pump. Those reads run on a worker thread over value-captured
-// (id, branch, fork point) snapshots, applied by id in markAgentSessionsLanded().
+// Branch-only sessions need Git. We first remember an exact unmerged branch tip,
+// then mark landed only after that immutable commit reaches base. The reads run
+// on a worker thread over value-captured snapshots.
 void MainWindow::refreshAgentMergeState()
 {
     if (!m_agentStore)
@@ -6221,7 +6232,7 @@ void MainWindow::refreshAgentMergeState()
     struct Candidate {
         int id;
         QString branch;
-        QString baseRef;
+        QString mergeHead;
     };
     QList<Candidate> candidates;
     QList<int> mergedFromPulls;
@@ -6245,15 +6256,14 @@ void MainWindow::refreshAgentMergeState()
                 continue; // an open/closed PR settles it; no git fallback needed
             }
         }
-        if (dir.isEmpty() || s.branchName.isEmpty())
+        if (dir.isEmpty())
             continue;
-        if (!base.isEmpty() && s.branchName == base)
+        if (s.mergeCandidateHead.isEmpty() && s.branchName.isEmpty())
             continue;
-        // Without a recorded fork point we can't distinguish a merged branch
-        // from an un-started one that shares the base's history, so don't guess.
-        if (s.baseRef.isEmpty())
+        if (!base.isEmpty() && s.mergeCandidateHead.isEmpty() &&
+            s.branchName == base)
             continue;
-        candidates.append({s.id, s.branchName, s.baseRef});
+        candidates.append({s.id, s.branchName, s.mergeCandidateHead});
     }
     // reloadAgents() refreshes the table right after this returns, so the
     // pull-status verdicts don't need a refresh of their own.
@@ -6262,9 +6272,10 @@ void MainWindow::refreshAgentMergeState()
         return;
     m_agentMergeStateRefreshing = true;
     auto landed = std::make_shared<QList<int>>();
+    auto observedHeads = std::make_shared<QHash<int, QString>>();
     const QString checkedOut = m_repoBranch;
     QThread *worker = QThread::create(
-        [dir, base, configuredBase, checkedOut, candidates, landed]() {
+        [dir, base, configuredBase, checkedOut, candidates, landed, observedHeads]() {
         const forkmesh::BackgroundScope activity(
             QStringLiteral("agents"),
             QStringLiteral("detect branches landed in base"),
@@ -6275,17 +6286,47 @@ void MainWindow::refreshAgentMergeState()
                 : base;
         if (resolvedBase.isEmpty())
             return;
-        for (const Candidate &c : candidates)
-            if (c.branch != resolvedBase &&
-                agentBranchLandedInBase(dir, c.branch, c.baseRef, resolvedBase))
+        for (const Candidate &c : candidates) {
+            const QString head =
+                agentBranchHeadOutsideBase(dir, c.branch, resolvedBase);
+            // The branch may have new, unmerged work after a previously observed
+            // tip landed. Refresh that evidence first; a partial merge must not
+            // make the still-active session read as fully merged.
+            if (!head.isEmpty()) {
+                observedHeads->insert(c.id, head);
+                continue;
+            }
+            if (!c.mergeHead.isEmpty() &&
+                agentCommitLandedInBase(dir, c.mergeHead, resolvedBase))
                 landed->append(c.id);
+        }
     });
-    connect(worker, &QThread::finished, this, [this, worker, landed]() {
+    connect(worker, &QThread::finished, this,
+            [this, worker, landed, observedHeads]() {
         m_agentMergeStateRefreshing = false;
         worker->deleteLater();
+        updateAgentMergeCandidates(*observedHeads);
         markAgentSessionsLanded(*landed, /*refreshUi=*/true);
     });
     worker->start();
+}
+
+// Keep an exact source tip only while it is still outside the base branch. This
+// is intentionally a separate persistence step from marking it merged: a branch
+// reset to base has no candidate and therefore cannot self-report as landed.
+void MainWindow::updateAgentMergeCandidates(const QHash<int, QString> &heads)
+{
+    if (!m_agentStore || heads.isEmpty())
+        return;
+    for (AgentSession &s : m_agentSessions) {
+        const auto it = heads.constFind(s.id);
+        if (it == heads.constEnd() || s.merged ||
+            s.status == AgentStatus::Queued || s.status == AgentStatus::Running ||
+            s.mergeCandidateHead == it.value())
+            continue;
+        s.mergeCandidateHead = it.value();
+        m_agentStore->saveSession(s);
+    }
 }
 
 // Apply "landed in base" verdicts by session id (issue #291): records the merge
@@ -7778,6 +7819,7 @@ void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
     // running instead of stuck on the stale merged badge.
     session->merged = false;
     session->mergedAtMs = 0;
+    session->mergeCandidateHead.clear();
     m_agentStore->saveSession(*session);
     m_agentStore->appendLog(
         *session,
@@ -8619,6 +8661,7 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    session.mergeCandidateHead.clear();
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
@@ -9212,6 +9255,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    session.mergeCandidateHead.clear();
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
@@ -10481,6 +10525,7 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     s->finishedAtMs = 0;
     s->merged = false;
     s->mergedAtMs = 0;
+    s->mergeCandidateHead.clear();
     if (s->startedAtMs <= 0)
         s->startedAtMs = QDateTime::currentMSecsSinceEpoch();
     if (m_agentStore && !isExternalSession(sessionId))
