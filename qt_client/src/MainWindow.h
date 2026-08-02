@@ -6109,6 +6109,11 @@ private:
     QWidget *m_scmSyncRow = nullptr;
     ElidingStatusLabel *m_scmSyncStatus = nullptr; // "Writing objects: 62%" …
     int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
+    // Inputs to updateScmCommitControlVisibility(). Commits waiting to sync used
+    // to swap the commit row out for Sync Changes unconditionally, which stranded
+    // a staged change with a typed message and no button to land it.
+    bool m_scmOutgoingBlocking = false; // commits ahead, or a sync in flight
+    int m_scmPendingChangeCount = 0;    // working-tree rows the panel would list
     // Latest one-line progress note per syncing/pushing repository row, keyed
     // the same way m_syncingRepos/m_pushingRepos are. Only the open repo's note
     // is painted; the rest are kept so switching back mid-sync still shows one.
