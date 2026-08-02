@@ -48,6 +48,17 @@ namespace forkmesh::ui {
 // compositor may ignore — several put the main window over the splash the
 // instant it maps — whereas a child widget is simply part of the window and can
 // never be shuffled behind it.
+//
+// It stays up until startup is actually over. The first frame of the main
+// window used to end it, but that frame is only halfway: MainWindow's
+// constructor is followed by runDeferredStartup(), which signs in, opens the
+// last repository, resumes agent sessions and starts the mesh session — seconds
+// of work the splash was no longer narrating, so the card announced "Ready" and
+// faded onto an app that was still visibly loading. noteHostPainted() records
+// the first frame as just another step, and finish() now comes from the end of
+// deferred startup. Two backstops keep a wedged launch from trapping the card:
+// an idle timeout (nothing announced for kIdleTimeoutMs) and the absolute
+// deadline, plus click-anywhere-to-skip, which the footer advertises.
 class StartupSplash : public QWidget
 {
 public:
@@ -68,6 +79,13 @@ public:
     void completeCurrentStep();
     // Close the running step as failed and leave the reason on screen.
     void failCurrentStep(const QString &reason);
+    // The host window painted its first frame. A completed step like any other
+    // — startup continues behind it — except that it must never repaint
+    // synchronously: the call comes from inside the host's own paintEvent, and
+    // painting a child from there re-enters the window's paint on the same
+    // backing store. It also unlocks synchronous pumps for everything after it
+    // (see pump()).
+    void noteHostPainted(const QString &label);
     // Last step, then hold on the completed list for a beat and fade out.
     void finish(const QString &label);
     // Fade skipped: leave the screen immediately (a bail-out path — a second
@@ -141,6 +159,13 @@ private:
                        qint64 now) const;
     void paintFooter(QPainter &p, const QRectF &card) const;
 
+    // finish(), plus the choice of whether this launch is worth calibrating the
+    // next one's progress bar against. The idle backstop fades out on a launch
+    // that never reported finishing, whose elapsed time means nothing.
+    void finishInternal(const QString &label, bool calibrate);
+    // Something was announced: reset the idle backstop.
+    void noteActivity();
+
     qreal rowHeight(const Row &row) const;
     qreal contentHeight() const;
     // 0..1, eased toward the live estimate so it never jumps or stalls.
@@ -160,10 +185,20 @@ private:
     QVector<Row> m_rows;
     int m_runningRow = -1;
     int m_completedSteps = 0;
+    // Set only for the duration of the noteHostPainted() call, which arrives
+    // from inside the host's paintEvent and so must not repaint synchronously.
+    bool m_hostPainting = false;
+    // True once the host has painted. Before it, an attached splash can only
+    // post repaints; after it, work on the GUI thread can block for seconds at
+    // a time and a posted update would not be delivered until it ended.
+    bool m_hostPainted = false;
+    // Clock reading of the last announced step/detail, for the idle backstop.
+    qint64 m_lastActivityMs = 0;
     // Adaptive progress: the previous launch's totals, so a second run's bar
-    // tracks reality instead of a guess. Seeded with a sane default.
-    int m_expectedSteps = 30;
-    qint64 m_expectedMs = 2500;
+    // tracks reality instead of a guess. Seeded for a whole launch — window
+    // plus deferred startup — rather than the constructor alone.
+    int m_expectedSteps = 45;
+    qint64 m_expectedMs = 9000;
     // Wall clock shared by every animated value, started at construction.
     QElapsedTimer m_clock;
     qint64 m_finishAtMs = -1;   // when finish() was called, else -1
@@ -196,6 +231,8 @@ void attachStartupSplashTo(QWidget *host);
 void startupStep(const QString &label);
 void startupDetail(const QString &text);
 void startupStepFailed(const QString &reason);
+// See StartupSplash::noteHostPainted. Call from the host's first paintEvent.
+void startupWindowPainted(const QString &label);
 // Final step, then fade out. Idempotent.
 void finishStartupSplash(const QString &label = QString());
 // Immediate teardown for the paths that exit or show a dialog instead.

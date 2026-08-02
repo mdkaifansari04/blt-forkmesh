@@ -52,6 +52,15 @@ constexpr qint64 kFinishFadeMs = 340;
 // Absolute backstop: however wedged startup gets, the splash leaves.
 constexpr int kDeadlineMs = 45000;
 
+// Idle backstop. The splash now lives until deferred startup says it is done,
+// which makes a missed finish() call — a startup path that returns early, an
+// exception, a step that parks forever — a card that never leaves. A launch
+// that announces nothing at all for this long has stopped narrating itself, so
+// fade out and let the user at the app. Comfortably longer than the slowest
+// single step anyone has seen (a cold openRepoDetail is a few seconds, and it
+// reports sub-lines while it runs).
+constexpr qint64 kIdleTimeoutMs = 15000;
+
 constexpr qreal kDegToRad = 3.14159265358979323846 / 180.0;
 // Qt's arc angles are sixteenths of a degree, counter-clockwise from 3 o'clock.
 constexpr int kArcUnit = 16;
@@ -144,6 +153,15 @@ StartupSplash::StartupSplash(bool dark, const QString &version,
     m_animation = new QTimer(this);
     m_animation->setInterval(16);
     QObject::connect(m_animation, &QTimer::timeout, this, [this] {
+        if (m_finishAtMs < 0 &&
+            m_clock.elapsed() - m_lastActivityMs > kIdleTimeoutMs) {
+            // Nothing has been announced in a long time; startup is either
+            // wedged or finished without saying so. Leave, without calibrating
+            // the next launch against a time that measures neither.
+            finishInternal(QStringLiteral("Startup went quiet — hiding this"),
+                           false);
+            return;
+        }
         if (m_finishAtMs >= 0) {
             const qint64 since = m_clock.elapsed() - m_finishAtMs;
             if (since > kFinishHoldMs) {
@@ -242,10 +260,16 @@ bool StartupSplash::eventFilter(QObject *watched, QEvent *event)
 
 // --- Step model
 
+void StartupSplash::noteActivity()
+{
+    m_lastActivityMs = m_clock.elapsed();
+}
+
 void StartupSplash::beginStep(const QString &label)
 {
     if (m_finishAtMs >= 0)
         return;
+    noteActivity();
     completeCurrentStep();
     Row row;
     row.text = label;
@@ -260,6 +284,7 @@ void StartupSplash::addDetail(const QString &text)
 {
     if (m_finishAtMs >= 0)
         return;
+    noteActivity();
     Row row;
     row.text = text;
     row.state = RowState::Detail;
@@ -273,6 +298,7 @@ void StartupSplash::completeCurrentStep()
 {
     if (m_runningRow < 0 || m_runningRow >= m_rows.size())
         return;
+    noteActivity();
     Row &row = m_rows[m_runningRow];
     row.state = RowState::Done;
     row.endedMs = m_clock.elapsed();
@@ -286,6 +312,7 @@ void StartupSplash::completeCurrentStep()
 
 void StartupSplash::failCurrentStep(const QString &reason)
 {
+    noteActivity();
     if (m_runningRow >= 0 && m_runningRow < m_rows.size()) {
         Row &row = m_rows[m_runningRow];
         row.state = RowState::Failed;
@@ -304,7 +331,27 @@ void StartupSplash::failCurrentStep(const QString &reason)
     pump();
 }
 
+void StartupSplash::noteHostPainted(const QString &label)
+{
+    if (m_finishAtMs >= 0)
+        return;
+    // Every pump() between here and the end of this call posts rather than
+    // repaints: we are inside the host window's paintEvent.
+    m_hostPainting = true;
+    beginStep(label);
+    completeCurrentStep();
+    m_hostPainting = false;
+    // From here on there is a frame behind us and the GUI thread goes back to
+    // blocking work (deferred startup), so pumps become synchronous again.
+    m_hostPainted = true;
+}
+
 void StartupSplash::finish(const QString &label)
+{
+    finishInternal(label, true);
+}
+
+void StartupSplash::finishInternal(const QString &label, bool calibrate)
 {
     if (m_finishAtMs >= 0)
         return;
@@ -322,9 +369,11 @@ void StartupSplash::finish(const QString &label)
     m_shownProgress = 1.0;
 
     // Calibrate the next launch's progress bar against this one.
-    QSettings settings;
-    settings.setValue(kLastStepCountSetting, m_completedSteps);
-    settings.setValue(kLastDurationSetting, m_finishAtMs);
+    if (calibrate) {
+        QSettings settings;
+        settings.setValue(kLastStepCountSetting, m_completedSteps);
+        settings.setValue(kLastDurationSetting, m_finishAtMs);
+    }
 
     if (m_deadline)
         m_deadline->stop();
@@ -369,20 +418,31 @@ void StartupSplash::pump()
 {
     if (!isVisible())
         return;
-    if (m_host) {
-        // Attached, the reason for a synchronous repaint is gone — the handover
-        // happens after the constructor, so there is an event loop to deliver a
-        // posted update — and doing one would be actively wrong: the finish()
-        // handover is called from inside MainWindow's own paintEvent, and
-        // repainting a child from there re-enters the window's paint on the
-        // same backing store. Post it, and only for the card: everything
-        // outside it is a static scrim.
+    if (m_hostPainting) {
+        // Inside the host's own paintEvent (noteHostPainted). Repainting a
+        // child from there re-enters the window's paint on the same backing
+        // store, so post it instead — and only for the card: everything outside
+        // it is a static scrim.
         update(damageRect());
         return;
     }
-    // repaint(), not update(): update() only posts an event, and during the
-    // MainWindow constructor nothing is ever going to deliver it.
-    repaint();
+    if (m_host && !m_hostPainted) {
+        // Attached but the window has not painted yet: still inside the
+        // constructor-to-first-frame stretch, where Qt is about to paint
+        // everything anyway. A posted update coalesces into that.
+        update(damageRect());
+        return;
+    }
+    // repaint(), not update(): update() only posts an event, and the two
+    // stretches that reach this line — the MainWindow constructor before the
+    // event loop exists, and deferred startup, which blocks the GUI thread for
+    // seconds at a time — both leave that event undelivered until the work they
+    // are announcing has already finished. Attached, only the card can change,
+    // so repaint that rather than dragging the whole window through a paint.
+    if (m_host)
+        repaint(damageRect());
+    else
+        repaint();
     // Deliver events posted to the splash itself (deferred update/resize work
     // Qt queued during that paint). Scoped to this object on purpose — a full
     // processEvents() here would hand the constructor's own zero-delay
@@ -394,10 +454,7 @@ void StartupSplash::pumpEvents()
 {
     if (!isVisible())
         return;
-    if (m_host)
-        update(damageRect()); // never synchronously; see pump()
-    else
-        repaint();
+    pump(); // picks posted vs synchronous by where we are in the launch
     QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 4);
 }
 
@@ -933,6 +990,14 @@ void StartupSplash::paintFooter(QPainter &p, const QRectF &card) const
                                         : QStringLiteral("v") + m_version;
     if (!m_commit.isEmpty() && m_commit != QLatin1String("unknown"))
         build += QStringLiteral(" · ") + m_commit;
+    // The card now stays up for the whole of startup, deferred phases included,
+    // so the way out has to be visible rather than folklore. mousePressEvent()
+    // dismisses on a click anywhere.
+    if (m_finishAtMs < 0) {
+        const QString skip = QStringLiteral("Click anywhere to skip");
+        build = build.isEmpty() ? skip
+                                : skip + QStringLiteral(" · ") + build;
+    }
 
     p.setFont(m_metaFont);
     const QFontMetricsF metrics(m_metaFont);
@@ -1012,6 +1077,12 @@ void startupStepFailed(const QString &reason)
 {
     if (g_splash)
         g_splash->failCurrentStep(reason);
+}
+
+void startupWindowPainted(const QString &label)
+{
+    if (g_splash)
+        g_splash->noteHostPainted(label);
 }
 
 void finishStartupSplash(const QString &label)
