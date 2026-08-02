@@ -713,12 +713,20 @@ def test_tower_is_five_stories_and_about_ten_times_the_old_width():
     assert "forkmesh-office-executive-strategy-table" not in scene
 
 
-def test_aerial_lod_never_removes_world_sections_and_sol_sign_is_attached():
+def test_aerial_lod_pages_mobile_districts_and_keeps_navigation_visible():
     scene = source(SCENE_PATH)
     assert "const detailTargets = [" not in scene
     assert "setFarDetailVisible(" not in scene
     assert "farDetailVisibility" not in scene
-    assert "Repositories, organizations, fediverse displays, every" in scene
+    assert "const COMPACT_DISTRICT_RESIDENCY = Object.freeze" in scene
+    assert "function updateCompactDistrictResidency(force = false)" in scene
+    assert "if (!compactRenderer) return;" in scene
+    assert "district.distance <= district.enter" in scene
+    assert "district.distance <= district.exit" in scene
+    assert "releaseCompactDistrictGpuResources(root)" in scene
+    assert "geometry.dispose()" in scene
+    assert "texture.dispose()" in scene
+    assert "terrain and navigation markers" in scene
     assert "officeInterior.visible = true" in scene
     assert 'officeSceneMode === "town" || floorId === officeCurrentFloorId' in scene
     assert "const showOfficeInterior" not in scene

@@ -6,7 +6,7 @@ jobs:
       # Each suite gets its own Actions scope. Keeping the compiler and pytest
       # in one scope starves the test runner and leaves its shell vulnerable to
       # a process-group SIGTERM before either suite can report a useful result.
-      - name: Cloudflare Worker test suite
+      - name: Critical Cloudflare Worker contracts
         run: |
           set -eu
           ci_tmp="$PWD/.forkmesh-ci-tmp"
@@ -37,11 +37,12 @@ jobs:
               )
               raise SystemExit(2)
           PY
-          # Main currently carries a bounded, explicit set of historical red
-          # tests. CI still executes them as xfails, while any failure outside
-          # that reviewed list remains fatal.
-          FORKMESH_CI_KNOWN_FAILURES=1 \
-            python3 -m pytest -q cloudflare_worker/tests
+          python3 tools/run_critical_tests.py worker
+
+      - name: Critical virtual World contracts
+        run: |
+          set -eu
+          python3 tools/run_critical_tests.py world
 
       - name: Worker syntax + config
         run: |
@@ -49,7 +50,7 @@ jobs:
           python3 -c "import ast; ast.parse(open('cloudflare_worker/src/entry.py').read()); print('entry.py OK')"
           python3 -c "import tomllib; tomllib.load(open('cloudflare_worker/wrangler.toml','rb')); print('wrangler.toml OK')"
 
-      - name: Qt client tests
+      - name: Critical Qt client contracts
         run: |
           set -eu
           ci_tmp="$PWD/.forkmesh-ci-tmp"
@@ -58,5 +59,7 @@ jobs:
           rm -rf "$ci_tmp"
           mkdir -p "$CCACHE_DIR"
           cmake -S qt_client -B qt_client/build-ci -DCMAKE_BUILD_TYPE=Release -DFORKMESH_BUILD_TESTS=ON
-          cmake --build qt_client/build-ci -j "${FORKMESH_ACTIONS_CPUS:-2}" --target forkmesh-tests
-          ./qt_client/build-ci/forkmesh-tests
+          cmake --build qt_client/build-ci -j "${FORKMESH_ACTIONS_CPUS:-2}" \
+            --target forkmesh-control-tests forkmesh-private-mirror-tests \
+                     forkmesh-public-mirror-tests forkmesh-codex-tests
+          python3 tools/run_critical_tests.py qt --build-dir qt_client/build-ci

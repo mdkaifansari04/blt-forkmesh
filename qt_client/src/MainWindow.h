@@ -4639,13 +4639,11 @@ private:
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
-    void positionTopMessageBubble(); // size + anchor the bubble above the prompt
-    QRect topMessageBubbleRect(); // calculates the prompt-relative bubble geometry
+    void positionTopMessageBubble(); // size + anchor the bubble in the bottom-right stack
+    QRect topMessageBubbleRect(); // calculates the bottom-right stack geometry
     void setTopMessagePaused(bool paused); // hover pauses the countdown
     void slideTopMessageOut(); // countdown finished: ease the bubble off the right edge, then advance
     void showPromptBubble(const QString &prompt); // animate a submitted prompt into a bubble
-    // True when the footer composer is visible and can anchor notification bubbles.
-    bool topMessageDockVisible() const;
     MessageRow *addMessageRow(const ChatMessage &message);
     MessageRow *createMessageRow(const ChatMessage &message,
                                  bool threadContext = false);
@@ -5103,10 +5101,10 @@ private:
     // Little crown badge painted over the top-left of the same avatar, shown
     // only while this node is an admin (see updateAdminCrownBadge()).
     QLabel *m_adminCrownBadge = nullptr;
-    QLabel *m_topMessage = nullptr;       // prompt-anchored success/failure bubble text
+    QLabel *m_topMessage = nullptr;       // bottom-right success/failure bubble text
     QFrame *m_topMessageContainer = nullptr; // floating bubble wrapping text + actions
     // Queued notifications are visible beneath the active bubble. As new ones
-    // arrive, this stack grows from the composer upwards rather than hiding
+    // arrive, this stack grows from the bottom-right corner upwards rather than hiding
     // messages behind a "+N more" counter.
     QScrollArea *m_topMessageQueueScroll = nullptr;
     QWidget *m_topMessageQueueContent = nullptr;
@@ -6448,10 +6446,11 @@ private:
     QWidget *m_scmOutgoingPanel = nullptr;
     QLabel *m_scmOutgoingLabel = nullptr; // branch + pending commit count
     QPushButton *m_scmSyncButton = nullptr; // publish/push pending commits
-    // The sync button and its live status line share one row so the note sits
-    // beside the button and the pair hides/shows as a unit.
+    // The sync button and its live status line share one column so the note sits
+    // below the button and the pair hides/shows as a unit.
     QWidget *m_scmSyncRow = nullptr;
-    ElidingStatusLabel *m_scmSyncStatus = nullptr; // "Writing objects: 62%" …
+    ElidingStatusLabel *m_scmSyncStatus = nullptr; // below button:
+                                                    // "Writing objects: 62%" …
     int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
     quint64 m_scmStatusGeneration = 0; // rejects late `git status` callbacks
     // Inputs to updateScmCommitControlVisibility(). Commits waiting to sync used
@@ -6580,6 +6579,7 @@ private:
     QString m_overviewSortKey = QStringLiteral("name");
     bool m_overviewSortDesc = false;
     void populateOverviewTree(); // (re)fill m_overviewList from m_overviewRows
+    void showOverviewLoadingPlaceholders();
     QTextBrowser *m_readmeView = nullptr;
     QTreeWidget *m_repoFileTree = nullptr;
     QTabWidget *m_repoFileTabs = nullptr;

@@ -8885,6 +8885,7 @@ class ForkMeshWorld extends HTMLElement {
     const renderer = snapshot?.renderer;
     const output = snapshot?.output;
     const complexity = snapshot?.complexity;
+    const residency = snapshot?.residency;
     const memory =
       typeof performance.memory === "object" ? performance.memory : null;
     const record = {
@@ -8943,6 +8944,22 @@ class ForkMeshWorld extends HTMLElement {
       canvasTextureScale: output
         ? Number(output.canvasTextureScale) || 1
         : 1,
+      residentDistricts: residency ? Math.round(residency.resident) : -1,
+      totalDistricts: residency ? Math.round(residency.total) : -1,
+      districtEvictions: residency ? Math.round(residency.evictions) : -1,
+      releasedGeometries: residency
+        ? Math.round(residency.releasedGeometries)
+        : -1,
+      releasedTextures: residency
+        ? Math.round(residency.releasedTextures)
+        : -1,
+      activeDistricts: (Array.isArray(residency?.active)
+        ? residency.active
+        : [])
+        .slice(0, 5)
+        .map((id) => String(id || "").slice(0, 24)),
+      maxTextureSize: output ? Math.round(output.maxTextureSize) : -1,
+      maxTextures: output ? Math.round(output.maxTextures) : -1,
       topElements: (Array.isArray(complexity?.topElements)
         ? complexity.topElements
         : []
@@ -9012,6 +9029,8 @@ class ForkMeshWorld extends HTMLElement {
       `renderer ${rendererModeLabel(record)} webgl${record.webgl2 === true ? "2" : "1"}`,
       `canvas raster ${Math.round((Number(record.canvasTextureScale) || 1) * 100)}%`,
       `safe mode ${record.safeMode === true ? "on" : "off"}`,
+      `districts resident ${describe(record.residentDistricts)}/${describe(record.totalDistricts)} active ${(Array.isArray(record.activeDistricts) ? record.activeDistricts : []).join(",") || "none"} evictions ${describe(record.districtEvictions)} released ${describe(record.releasedGeometries)}g/${describe(record.releasedTextures)}t`,
+      `GPU limits texture ${describe(record.maxTextureSize)} units ${describe(record.maxTextures)}`,
       `estimated GPU resources textures ${coarseCrashLabel(record.textureMb, "MB")} geometries ${coarseCrashLabel(record.geometryMb, "MB")} targets ${coarseCrashLabel(record.renderTargetMb, "MB")}`,
       `scene objects ${coarseCrashLabel(record.objects)} meshes ${coarseCrashLabel(record.meshes)} materials ${coarseCrashLabel(record.materials)}`,
       `textures resident/live ${coarseCrashLabel(record.textures)}/${coarseCrashLabel(record.liveTextures)}`,
@@ -9110,6 +9129,7 @@ class ForkMeshWorld extends HTMLElement {
       const output = snapshot?.output;
       const complexity = snapshot?.complexity;
       const memory = snapshot?.memory;
+      const residency = snapshot?.residency;
       const highWater = this.rendererDiagnosticsHighWater;
       const uptimeS = Math.max(
         0,
@@ -9127,6 +9147,8 @@ class ForkMeshWorld extends HTMLElement {
         `device ${device.touch ? "touch" : "pointer"} ${device.screen || "unknown"} screen`,
         ...(gpu ? [`gpu ${gpu}`] : []),
         `renderer ${rendererModeLabel(output)} webgl${output?.webgl2 === true ? "2" : "1"} antialias ${output?.antialias === true ? "on" : "off"}`,
+        `districts resident ${coarseCrashLabel(residency?.resident)}/${coarseCrashLabel(residency?.total)} active ${(Array.isArray(residency?.active) ? residency.active : []).join(",") || "none"} evictions ${coarseCrashLabel(residency?.evictions)} released ${coarseCrashLabel(residency?.releasedGeometries)}g/${coarseCrashLabel(residency?.releasedTextures)}t`,
+        `GPU limits texture ${coarseCrashLabel(output?.maxTextureSize)} units ${coarseCrashLabel(output?.maxTextures)}`,
         `shadows ${renderer?.shadowsEnabled === true ? "on" : "off"} visibility ${String(document.visibilityState || "unknown").slice(0, 16)}`,
         `buffer ${buffer} css ${coarseCrashLabel(output?.cssWidth)}x${coarseCrashLabel(output?.cssHeight)} at dpr ${renderer ? Number(renderer.pixelRatio) || 0 : 0}`,
         `fps ${coarseCrashLabel(renderer?.fps)}`,
@@ -27442,6 +27464,23 @@ class ForkMeshWorld extends HTMLElement {
               })),
           }
         : null,
+      residency: scene?.residency
+        ? {
+            enabled: scene.residency.enabled === true,
+            resident: clampCount(scene.residency.resident, 32),
+            total: clampCount(scene.residency.total, 32),
+            evictions: clampCount(scene.residency.evictions),
+            releasedGeometries: clampCount(
+              scene.residency.releasedGeometries,
+            ),
+            releasedTextures: clampCount(scene.residency.releasedTextures),
+            active: (Array.isArray(scene.residency.active)
+              ? scene.residency.active
+              : [])
+              .slice(0, 5)
+              .map((id) => String(id || "").slice(0, 24)),
+          }
+        : null,
       output: sceneOutput
         ? {
             drawingBufferWidth: clampCount(
@@ -27456,6 +27495,8 @@ class ForkMeshWorld extends HTMLElement {
             cssHeight: clampCount(sceneOutput.cssHeight, 32_768),
             webgl2: sceneOutput.webgl2 === true,
             antialias: sceneOutput.antialias === true,
+            maxTextureSize: clampCount(sceneOutput.maxTextureSize, 131_072),
+            maxTextures: clampCount(sceneOutput.maxTextures, 1_024),
             compactRenderer: sceneOutput.compactRenderer === true,
             memoryConstrainedRenderer:
               sceneOutput.memoryConstrainedRenderer === true,
