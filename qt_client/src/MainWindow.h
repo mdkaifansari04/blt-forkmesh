@@ -311,6 +311,12 @@ public:
     // by the URL parser and entered in the focused session-only local field.
     void openCloudflareSetupFromSystemLink(const QString &target = {});
 
+    // Records a qDebug/qInfo/qWarning line that installPlatformLogFilter()
+    // captured as a Log entry, so the app's own progress lines and Qt's own
+    // warnings land where the user can read them instead of in the terminal.
+    // GUI thread only — main.cpp's sink marshals worker-thread messages here.
+    void logCapturedMessage(QtMsgType type, const QString &text);
+
     // Apply the saved theme (system/dark/light) to the whole application.
     static void applyTheme();
     void refreshThemedIcons();
