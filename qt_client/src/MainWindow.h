@@ -3107,6 +3107,10 @@ private:
     void clearRepoDetail();
     void openRepositoryWebsite(); // open the current repo's page in the browser
     void forkCurrentRepo();       // clone the open repo into your own node
+    // Persist and apply the source side of a fork's split origin remote. Used
+    // both after a new checkout and to repair forks made by older clients.
+    bool configureForkSource(int index, const QString &sourceUrl,
+                             bool notifyOnError = true);
     void downloadCurrentRepoZip();
     void setRepoDetailNotice(const QString &message, bool error = false);
     void refreshOpenRepoDetail(); // re-read the open repo after its mirror changes
