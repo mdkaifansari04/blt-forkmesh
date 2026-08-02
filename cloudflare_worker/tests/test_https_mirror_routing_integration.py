@@ -1061,7 +1061,9 @@ def test_public_proxy_preserves_verified_org_alias_for_gateway_bytes():
     proxy = _function_source("_https_mirror_proxy")
     proof = _function_source("_https_mirror_repository_proof")
     assert 'context["routeOwner"] = route_owner' in proxy
-    assert "await _org_repo_node(" in proxy
+    assert 'route_owner != owner' in proxy
+    assert 'env, route_owner, route_repo) == owner' in proxy
+    assert '== context["owner"]' not in proxy
     assert 'context.get("routeOwner") or context["owner"]' in proxy
     assert 'route_owner = context.get("routeOwner") or context["owner"]' in proof
     assert '"&owner=" + quote(route_owner)' in proof
