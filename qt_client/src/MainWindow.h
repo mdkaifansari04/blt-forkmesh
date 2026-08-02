@@ -6447,10 +6447,11 @@ private:
     QWidget *m_scmOutgoingPanel = nullptr;
     QLabel *m_scmOutgoingLabel = nullptr; // branch + pending commit count
     QPushButton *m_scmSyncButton = nullptr; // publish/push pending commits
-    // The sync button and its live status line share one row so the note sits
-    // beside the button and the pair hides/shows as a unit.
+    // The sync button and its live status line share one column so the note sits
+    // below the button and the pair hides/shows as a unit.
     QWidget *m_scmSyncRow = nullptr;
-    ElidingStatusLabel *m_scmSyncStatus = nullptr; // "Writing objects: 62%" …
+    ElidingStatusLabel *m_scmSyncStatus = nullptr; // below button:
+                                                    // "Writing objects: 62%" …
     int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
     quint64 m_scmStatusGeneration = 0; // rejects late `git status` callbacks
     // Inputs to updateScmCommitControlVisibility(). Commits waiting to sync used

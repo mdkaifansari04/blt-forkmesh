@@ -7625,7 +7625,7 @@ private:
     QString m_glyph;
 };
 
-// A one-line, muted status label that sits beside a busy button and carries the
+// A one-line, muted status label that sits beneath a busy button and carries the
 // live "what is it doing right now" note (the sync button's git/seal progress).
 // It never widens its row: the size hint stays at zero width and the layout
 // hands it whatever space is left, so a long progress line elides instead of
