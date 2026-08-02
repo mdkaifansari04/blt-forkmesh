@@ -1316,8 +1316,20 @@ export function createWorldOfficeTasksController({
       taskCount.hidden = !authorized || tasks.length < 1;
     });
     if (organizationHeading) {
+      // Open/closed over the whole catalog, counted the way the desktop app
+      // and the dashboard count it, so all three surfaces report the same
+      // "84 open" (adhoc #56). The narrowed count only shows when a filter or
+      // a search is actually hiding something.
+      const openCount = tasks.reduce(
+        (sum, task) => sum + (task.status === "done" ? 0 : 1),
+        0,
+      );
+      const narrowed =
+        visibleTasks.length === tasks.length
+          ? ""
+          : ` · ${visibleTasks.length} shown`;
       organizationHeading.textContent =
-        `Tasks · ${visibleTasks.length} of ${tasks.length}`;
+        `Tasks · ${openCount} open · ${tasks.length - openCount} closed${narrowed}`;
     }
     if (workList) {
       workList.innerHTML = loading

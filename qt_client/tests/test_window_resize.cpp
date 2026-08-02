@@ -1408,24 +1408,26 @@ int main(int argc, char *argv[])
     // real PR and Agents controls only after taking that user-visible path,
     // keeping the startup performance contract intact.
     // adhoc #7: the PR header's conflict action is a plain "Fix" that fills the
-    // prompt box — no provider dropdown to pick a resolver from — and the whole
-    // header row wears the same flat rail style (no filled primary pills).
+    // prompt box — no provider dropdown to pick a resolver from. adhoc #59: the
+    // whole header row is icon-over-caption rail tiles ("repoActionStack"), the
+    // same form as the activity rail, instead of a mix of pill shapes.
     bool prFixButtonFound = false;
     bool prHeaderStyleUniform = true;
     for (QPushButton *b : window.findChildren<QPushButton *>()) {
         if (b->text() == QStringLiteral("Fix") && !b->menu())
             prFixButtonFound = true;
-        if (b->text() == QStringLiteral("Review with AI") ||
-            b->text() == QStringLiteral("Fix all with AI") ||
+        if (b->text() == QStringLiteral("AI review") ||
+            b->text() == QStringLiteral("Fix all") ||
             b->text() == QStringLiteral("Merge") ||
-            b->text() == QStringLiteral("Fix conflicts with agent"))
-            prHeaderStyleUniform &= b->objectName() == QStringLiteral("ghostButton");
+            b->text() == QStringLiteral("Agent fix"))
+            prHeaderStyleUniform &=
+                b->objectName() == QStringLiteral("repoActionStack");
     }
     check(prFixButtonFound,
           QStringLiteral("PR header offers a plain 'Fix' button with no provider "
                          "dropdown after repository navigation"));
     check(prHeaderStyleUniform,
-          QStringLiteral("PR header actions all use the flat ghostButton style"));
+          QStringLiteral("PR header actions all use the rail-style icon tile"));
     // The Agents tab is built when it's first opened, and a repo no longer opens
     // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
     // before reading its list back. This also proves that route works for a repo
@@ -2412,6 +2414,67 @@ int main(int argc, char *argv[])
                       "(branch = %1, page = %2)")
                   .arg(window.testBrowsedBranch())
                   .arg(window.testCommitWorkspacePage()));
+
+        // adhoc #50: the trail reaches below the tab bar. A commit's diff and an
+        // open file are places of their own, so Back returns to the list they
+        // were opened from instead of jumping a whole tab away.
+        const QString navCommit =
+            gitOutput(wtRepo.path(), {"rev-parse", "main"}).trimmed();
+        window.testShowCommit(navCommit);
+        QApplication::processEvents();
+        check(window.testOpenCommitHash() == navCommit,
+              QStringLiteral("opening a commit shows its diff in the Git view"));
+        check(window.testNavBackToolTip().contains(QStringLiteral("Git · main")),
+              QString("Back out of a commit is identified as the Git view it came "
+                      "from (%1)")
+                  .arg(window.testNavBackToolTip()));
+        window.testNavigateBack();
+        QApplication::processEvents();
+        check(window.testOpenCommitHash().isEmpty() &&
+                  window.testCommitWorkspacePage() == 0,
+              QString("Back steps out of a commit diff to the Git view "
+                      "(commit = %1, page = %2)")
+                  .arg(window.testOpenCommitHash())
+                  .arg(window.testCommitWorkspacePage()));
+        check(window.testNavForwardToolTip().contains(navCommit.left(7)),
+              QString("Forward names the commit it would reopen (%1)")
+                  .arg(window.testNavForwardToolTip()));
+        window.testNavigateForward();
+        QApplication::processEvents();
+        check(window.testOpenCommitHash() == navCommit,
+              QString("Forward reopens the commit's diff (commit = %1)")
+                  .arg(window.testOpenCommitHash()));
+
+        window.testOpenRepoFile(QStringLiteral("base-delete.txt"));
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 1 &&
+                  window.testOpenRepoFilePath() ==
+                      QStringLiteral("base-delete.txt"),
+              QString("opening a file shows it in the Code editor (page = %1, "
+                      "file = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenRepoFilePath()));
+        check(window.testNavBackToolTip().contains(navCommit.left(7)),
+              QString("Back from an open file returns to the commit it was "
+                      "opened from (%1)")
+                  .arg(window.testNavBackToolTip()));
+        window.testNavigateBack();
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 0 &&
+                  window.testOpenCommitHash() == navCommit,
+              QString("Back leaves the file editor for the previous place "
+                      "(page = %1, commit = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenCommitHash()));
+        window.testNavigateForward();
+        QApplication::processEvents();
+        check(window.testFilesStackPage() == 1 &&
+                  window.testOpenRepoFilePath() ==
+                      QStringLiteral("base-delete.txt"),
+              QString("Forward reopens the file that was on screen (page = %1, "
+                      "file = %2)")
+                  .arg(window.testFilesStackPage())
+                  .arg(window.testOpenRepoFilePath()));
         QFile::remove(livePath);
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();

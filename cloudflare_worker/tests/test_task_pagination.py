@@ -103,6 +103,49 @@ def test_dashboard_tasks_page_reads_the_private_catalog_and_pages_it():
         assert marker in js, marker
 
 
+def test_every_surface_reports_the_same_open_and_closed_counts():
+    # adhoc #56: the desktop said "84 open" while the web only ever said how
+    # many rows the current page held, which read as two different catalogs.
+    # All three surfaces now state open, closed, and the page they are on, and
+    # they count "done" the same way (the relay forces status='done' whenever
+    # completed_at > 0, so a status test alone is enough on the World board).
+    js = assembled_dashboard_js()
+    assert "function taskStateCounts()" in js
+    assert 'task.completedAt > 0 || task.status === "done"' in js
+    assert "${formatCount(counts.open)} open · ${formatCount(counts.closed)} closed" in js
+    assert "· page ${state.tasksView.page} of ${pages}" in js
+    assert "Tasks · ${openCount} open · ${tasks.length - openCount} closed${narrowed}" in WORLD_TASKS
+    assert '"%1 open \\xC2\\xB7 %2 closed%3"' in QT_TASKS
+
+
+def test_qt_task_list_is_a_headerless_icon_strip():
+    # No table header, no grid, no banding: one column, and a delegate that
+    # paints status / department / repository / assignee / QA as glyphs on the
+    # left with the title on the right (adhoc #56).
+    assert "class OrganizationTaskRowDelegate : public QStyledItemDelegate" in QT_TASKS
+    assert "m_organizationTasksTable = new QTableWidget(0, 1);" in QT_TASKS
+    assert "m_organizationTasksTable->horizontalHeader()->hide();" in QT_TASKS
+    assert "m_organizationTasksTable->setShowGrid(false);" in QT_TASKS
+    assert "m_organizationTasksTable->setAlternatingRowColors(false);" in QT_TASKS
+    assert "m_organizationTasksTable->setFrameShape(QFrame::NoFrame);" in QT_TASKS
+    for role in (
+        "kTaskStatusRole",
+        "kTaskDepartmentRole",
+        "kTaskRepositoryRole",
+        "kTaskAssigneeKindRole",
+        "kTaskQaRole",
+    ):
+        assert "item->setData(%s," % role in QT_TASKS, role
+    # The columns carried the only labels, so the row tooltip now spells the
+    # whole strip out.
+    assert 'QStringLiteral("Department: %1")' in QT_TASKS
+    # Priority and assignee lost their in-row editors with the columns; the
+    # edit dialog is reachable from the row itself instead.
+    assert "&QTableWidget::itemDoubleClicked" in QT_TASKS
+    theme = (QT_SRC / "Theme.h").read_text(encoding="utf-8")
+    assert theme.count("#organizationTasksTable {") == 2  # dark + light
+
+
 def test_dashboard_tasks_page_never_renders_private_task_text_unescaped():
     js = assembled_dashboard_js()
     body = js[js.index("function taskRowHtml("):js.index("function renderTasksPage(")]
