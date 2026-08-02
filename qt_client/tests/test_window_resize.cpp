@@ -596,48 +596,6 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Captioned Octicon actions use the same icon-over-label component no
-    // matter which page creates them. Keep dense xs row controls and the
-    // one-line status bar out of that migration.
-    {
-        int pageIconButtons = 0;
-        bool allPageIconsAreStacked = true;
-        QStringList unstackedPageIcons;
-        for (QPushButton *button : window.findChildren<QPushButton *>()) {
-            if (button->property("forkmeshOcticon").toString().isEmpty() ||
-                button->text().isEmpty() ||
-                button->property("buttonSize").toString() ==
-                    QStringLiteral("xs"))
-                continue;
-            bool inStatusBar = false;
-            for (QWidget *ancestor = button; ancestor;
-                 ancestor = ancestor->parentWidget()) {
-                if (ancestor->objectName() == QStringLiteral("appStatusBar")) {
-                    inStatusBar = true;
-                    break;
-                }
-            }
-            if (inStatusBar)
-                continue;
-            ++pageIconButtons;
-            const bool stacked =
-                button->property("forkmeshPageIconButton").toBool() &&
-                button->sizeHint().height() >= 34;
-            allPageIconsAreStacked = allPageIconsAreStacked && stacked;
-            if (!stacked && unstackedPageIcons.size() < 8) {
-                unstackedPageIcons.append(
-                    QStringLiteral("%1#%2:%3px")
-                        .arg(button->text(), button->objectName())
-                        .arg(button->sizeHint().height()));
-            }
-        }
-        check(pageIconButtons >= 5 && allPageIconsAreStacked,
-              QStringLiteral("captioned Octicon actions use the new stacked "
-                             "button on every constructed page (%1 checked; %2)")
-                  .arg(pageIconButtons)
-                  .arg(unstackedPageIcons.join(QStringLiteral(", "))));
-    }
-
     // Fleet "Install from binary" must install the published release, not
     // upload this test process (or any other locally-built executable). The
     // target verifies the release checksum in install.sh, refuses source

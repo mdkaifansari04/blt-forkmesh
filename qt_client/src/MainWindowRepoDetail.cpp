@@ -7143,12 +7143,6 @@ void MainWindow::updateDiffSplitButton(QPushButton *button)
     const bool split = diffSplitPref();
     button->setText(split ? QStringLiteral("Side-by-side")
                           : QStringLiteral("Unified"));
-    // These toggles are created icon-first and receive their live caption only
-    // here. Re-apply the stored Octicon once text exists so ordinary commit
-    // toggles join the app-wide icon-over-caption button system too.
-    if (!button->property("forkmeshOcticon").toString().isEmpty() &&
-        !button->property("forkmeshPageIconButton").toBool())
-        applyStoredOcticon(button);
     button->setToolTip(split
                            ? QString::fromUtf8("Showing a side-by-side diff \xE2\x80\x94 "
                                             "click for a unified diff")
