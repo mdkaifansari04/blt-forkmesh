@@ -25,6 +25,7 @@
 #include <QBrush>
 #include <QCryptographicHash>
 #include <QDialog>
+#include <QElapsedTimer>
 #include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
 #include <QInputDialog>
@@ -15335,6 +15336,15 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
 void MainWindow::finishVultrProvision(bool ok, const QString &message)
 {
     m_vultrProvisionActive = false;
+    // A knock still in flight would otherwise outlive the run it belongs to.
+    if (m_vultrSshProbeProcess) {
+        QProcess *probe = m_vultrSshProbeProcess;
+        m_vultrSshProbeProcess = nullptr;
+        probe->disconnect(this);
+        if (probe->state() != QProcess::NotRunning)
+            probe->kill();
+        probe->deleteLater();
+    }
     if (m_vultrCreateButton)
         m_vultrCreateButton->setEnabled(true);
     if (m_vultrStatus)
@@ -15912,6 +15922,7 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
+    m_vultrSshWaitCount = 0;
     // A brand-new instance is nobody's mirror yet, so the installer's default
     // relay-download path has no online node to clone from and dies with "No
     // online ForkMesh node is currently mirroring 'forkmesh'". Start straight
@@ -16187,14 +16198,157 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             // the hostname with the required proxied CNAME. Creating a direct
             // A record here races/conflicts with that record and can leave the
             // node installed but permanently outside live routing.
-            if (m_vultrStatus)
-                m_vultrStatus->setText(QString::fromUtf8(
-                    "Giving SSH a moment to come up\xE2\x80\xA6"));
-            QTimer::singleShot(
-                15000, this, [this, node, ip, identityFile] {
-                    startVultrHostInstall(node, ip, identityFile);
-                });
+            //
+            // Vultr reports "active" well before sshd answers, so knock with a
+            // trivial command until it does rather than opening the install
+            // (and its whole-binary upload) against a closed port (adhoc #48).
+            m_vultrSshWaitCount = 0;
+            waitForVultrSshReady(node, ip, identityFile);
         });
+}
+
+void MainWindow::waitForVultrSshReady(const QString &node, const QString &ip,
+                                      const QString &identityFile)
+{
+    // One knock a minute for twenty minutes: far longer than a Debian image
+    // takes to open port 22, and each probe costs one short-lived ssh instead
+    // of a multi-megabyte upload.
+    constexpr int kMaxSshProbes = 20;
+    constexpr int kSshProbeIntervalMs = 60000;
+    if (!m_vultrProvisionActive)
+        return;
+    if (m_vultrSshProbeProcess &&
+        m_vultrSshProbeProcess->state() != QProcess::NotRunning)
+        return;
+
+    // An address outside the routable internet will never answer this probe
+    // any more than it would answer the install (adhoc #342).
+    const QString unroutable = forkmesh::control::nonRoutableAddressNote(ip);
+    if (!unroutable.isEmpty()) {
+        finishVultrProvision(false, QString::fromUtf8(
+            "%1 is in %2, so SSH from this machine can never reach it. Give "
+            "the instance a public address (or run the install from the "
+            "network that owns that range); it is saved under Hosts "
+            "\xE2\x80\x94 fix the address there and click Update.")
+            .arg(ip, unroutable));
+        return;
+    }
+
+    QString sshError;
+    const forkmesh::control::HostSshCommand ssh =
+        forkmesh::control::buildHostSshCommand(
+            ip, QStringLiteral("root"), QString(),
+            forkmesh::control::vultrSshProbeRemoteCommand(), &sshError,
+            identityFile);
+    if (ssh.program.isEmpty()) {
+        finishVultrProvision(false, sshError);
+        return;
+    }
+
+    ++m_vultrSshWaitCount;
+    if (m_vultrStatus)
+        m_vultrStatus->setText(
+            QString::fromUtf8("Waiting for SSH on %1 (knock %2 of %3)"
+                              "\xE2\x80\xA6")
+                .arg(ip)
+                .arg(m_vultrSshWaitCount)
+                .arg(kMaxSshProbes));
+
+    auto *probe = new QProcess(this);
+    m_vultrSshProbeProcess = probe;
+    probe->setProcessChannelMode(QProcess::MergedChannels);
+    probe->setProcessEnvironment(ssh.environment);
+    auto output = std::make_shared<QByteArray>();
+    // A knock that hangs until ssh's ConnectTimeout has already burned part of
+    // the minute, so the next one is scheduled against the elapsed time rather
+    // than a flat sleep — the cadence stays one probe a minute either way.
+    auto started = std::make_shared<QElapsedTimer>();
+    started->start();
+    connect(probe, &QProcess::readyReadStandardOutput, probe,
+            [probe, output] { output->append(probe->readAllStandardOutput()); });
+    // A missing ssh never emits finished(), so the knock loop would wait
+    // forever on a machine without it: fail the run instead.
+    connect(probe, &QProcess::errorOccurred, this,
+            [this, probe, program = ssh.program](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                if (m_vultrSshProbeProcess == probe)
+                    m_vultrSshProbeProcess = nullptr;
+                probe->disconnect(this);
+                probe->deleteLater();
+                if (!m_vultrProvisionActive)
+                    return;
+                finishVultrProvision(false, QStringLiteral(
+                    "\"%1\" could not be started on this machine, so the new "
+                    "instance cannot be reached. Install it and click Update "
+                    "on the host saved under Hosts.").arg(program));
+            });
+    connect(probe, &QProcess::finished, this,
+            [this, probe, output, started, node, ip, identityFile](
+                int code, QProcess::ExitStatus status) {
+                if (m_vultrSshProbeProcess == probe)
+                    m_vultrSshProbeProcess = nullptr;
+                output->append(probe->readAllStandardOutput());
+                probe->deleteLater();
+                if (!m_vultrProvisionActive)
+                    return;
+                const int exitCode =
+                    status == QProcess::NormalExit ? code : 255;
+                const QString tail = forkmesh::control::redactProcessOutput(
+                    QString::fromUtf8(output->right(2048)));
+                if (forkmesh::control::vultrSshProbeReady(exitCode, tail)) {
+                    appendHostInstallLog(
+                        QStringLiteral("SSH answered on %1 after %2 %3.\n")
+                            .arg(ip)
+                            .arg(m_vultrSshWaitCount)
+                            .arg(m_vultrSshWaitCount == 1
+                                     ? QStringLiteral("knock")
+                                     : QStringLiteral("knocks")));
+                    startVultrHostInstall(node, ip, identityFile);
+                    return;
+                }
+                // A key this account cannot use will not start working on the
+                // next minute — say so rather than knocking for twenty of
+                // them. Only after a few knocks, though: sshd can briefly
+                // answer before the image has installed the injected key.
+                if (m_vultrSshWaitCount >= 3 &&
+                    forkmesh::control::sshFailureNeedsPassword(exitCode,
+                                                               tail)) {
+                    appendHostInstallLog(
+                        QStringLiteral("SSH probe: %1\n")
+                            .arg(forkmesh::control::sshFailureSummary(exitCode,
+                                                                      tail)));
+                    finishVultrProvision(false, QString::fromUtf8(
+                        "The new instance refused the managed SSH key. It is "
+                        "saved under Hosts \xE2\x80\x94 fix its credentials "
+                        "there and click Update to finish the install."));
+                    return;
+                }
+                if (m_vultrSshWaitCount >= kMaxSshProbes) {
+                    appendHostInstallLog(
+                        QStringLiteral("SSH probe: %1\n")
+                            .arg(forkmesh::control::sshFailureSummary(exitCode,
+                                                                      tail)));
+                    finishVultrProvision(false, QString::fromUtf8(
+                        "SSH on %1 never answered (%2 attempts over %3 "
+                        "minutes). The instance is saved under Hosts "
+                        "\xE2\x80\x94 click Update there once it is "
+                        "reachable.")
+                        .arg(ip)
+                        .arg(kMaxSshProbes)
+                        .arg(kMaxSshProbes));
+                    return;
+                }
+                const qint64 elapsed = started->elapsed();
+                const int wait = static_cast<int>(qBound<qint64>(
+                    0, qint64(kSshProbeIntervalMs) - elapsed,
+                    qint64(kSshProbeIntervalMs)));
+                QTimer::singleShot(
+                    wait, this, [this, node, ip, identityFile] {
+                        waitForVultrSshReady(node, ip, identityFile);
+                    });
+            });
+    probe->start(ssh.program, ssh.arguments);
 }
 
 void MainWindow::appendVultrAttemptHistory()
@@ -16210,7 +16364,12 @@ void MainWindow::appendVultrAttemptHistory()
 void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                                        const QString &identityFile)
 {
-    constexpr int kMaxInstallAttempts = 6;
+    // Two attempts, not a ladder of them: waitForVultrSshReady has already
+    // proven the host answers, so "not reachable yet" is no longer a reason to
+    // repeat a whole-binary upload (adhoc #48). The one retry left is the
+    // switch to uploading this app's own binary when the relay download turns
+    // out to have nothing to serve.
+    constexpr int kMaxInstallAttempts = 2;
     if (!m_vultrProvisionActive)
         return;
     // Hand off to the shared install path through the form it reads; the
@@ -16233,8 +16392,8 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                  QDateTime::currentDateTime().toString(
                      QStringLiteral("hh:mm:ss")));
     // Keep every attempt's output in the window rather than clearing the log
-    // on each retry (adhoc #342) — a run that fails six times is exactly when
-    // the earlier transcripts matter.
+    // on each retry (adhoc #342) — a run that fails twice is exactly when the
+    // earlier transcripts matter.
     // The banner is set for the first attempt too, so the provisioning
     // preamble above it (instance id, address, DNS record) survives as well.
     m_hostInstallAttemptBanner = attemptLabel;
@@ -16247,9 +16406,9 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
                     : "Installing ForkMesh (attempt %1 of %2)\xE2\x80\xA6")
                 .arg(m_vultrInstallAttempts)
                 .arg(kMaxInstallAttempts));
-    // A fresh instance often refuses SSH for a short while after Vultr
-    // reports it active, so an early attempt failing is expected, not a
-    // real failure — only the last attempt should report "Install failed".
+    // A first attempt can still fail its way into the local-binary switch
+    // below, which is a retry with a different plan rather than a real
+    // failure — only the last attempt should report "Install failed".
     const bool isFinalAttempt = m_vultrInstallAttempts >= kMaxInstallAttempts;
     runHostInstall(m_vultrInstallUseLocalBinary, [this, node, ip, identityFile,
                            attemptLabel, isFinalAttempt](bool ok) {
@@ -16322,8 +16481,7 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
         // Switch this and every later attempt this run to uploading this app's
         // own release binary directly over the SSH session instead — that needs
         // neither an online mirror nor a published release — and retry right
-        // away rather than waiting out the "host not reachable yet" backoff
-        // below, since SSH clearly worked.
+        // away, since SSH clearly worked.
         if (!m_vultrInstallUseLocalBinary && !isFinalAttempt &&
             forkmesh::control::vultrInstallNeedsLocalBinary(
                 m_hostInstallRawTail)) {
@@ -16338,25 +16496,14 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
             });
             return;
         }
-        if (m_vultrInstallAttempts >= kMaxInstallAttempts) {
-            appendVultrAttemptHistory();
-            finishVultrProvision(false, QString::fromUtf8(
-                "Install did not succeed after %1 attempts. The instance is "
-                "saved under Hosts \xE2\x80\x94 click Update there to retry.")
-                .arg(kMaxInstallAttempts));
-            return;
-        }
-        // A fresh instance often refuses SSH for a short while after it
-        // reports active; back off and retry.
-        if (m_vultrStatus)
-            m_vultrStatus->setText(QString::fromUtf8(
-                "Attempt %1 of %2 failed \xE2\x80\x94 host not reachable yet, "
-                "retrying in 30 seconds\xE2\x80\xA6")
-                .arg(m_vultrInstallAttempts)
-                .arg(kMaxInstallAttempts));
-        QTimer::singleShot(30000, this, [this, node, ip, identityFile] {
-            startVultrHostInstall(node, ip, identityFile);
-        });
+        // Nothing is left to retry: SSH was proven reachable before this ran,
+        // so a failure here is the install itself failing, and repeating the
+        // same upload against the same host would only fail the same way.
+        appendVultrAttemptHistory();
+        finishVultrProvision(false, QString::fromUtf8(
+            "Install did not succeed. The instance is saved under Hosts "
+            "\xE2\x80\x94 the transcript above shows why; click Update there "
+            "to retry."));
     }, /*reinstall=*/false, /*fromSource=*/false,
     /*suppressFailureStatus=*/!isFinalAttempt);
 }

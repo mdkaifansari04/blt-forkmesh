@@ -1234,6 +1234,26 @@ int main(int argc, char **argv)
           "an install that found nothing to download escalates to the "
           "direct upload, an unreachable host does not");
 
+    // --- Waiting for a fresh instance's SSH (adhoc #48) --------------------
+    const QString sshProbe = forkmesh::control::vultrSshProbeRemoteCommand();
+    check(!sshProbe.trimmed().isEmpty() &&
+              !sshProbe.contains(QLatin1Char(';')) &&
+              !sshProbe.contains(QLatin1Char('&')) &&
+              !sshProbe.contains(QLatin1Char('>')),
+          "the reachability knock is a single side-effect-free command");
+    // What the remote shell echoes back: the knock's own last word.
+    const QString sshProbeEcho =
+        sshProbe.section(QLatin1Char(' '), -1) + QLatin1Char('\n');
+    check(forkmesh::control::vultrSshProbeReady(0, sshProbeEcho) &&
+              !forkmesh::control::vultrSshProbeReady(
+                  255, QStringLiteral("ssh: connect to host 203.0.113.10 port "
+                                      "22: Connection refused")) &&
+              !forkmesh::control::vultrSshProbeReady(
+                  0, QStringLiteral("Debian GNU/Linux banner\n")) &&
+              !forkmesh::control::vultrSshProbeReady(255, sshProbeEcho),
+          "SSH counts as ready only when the knock exits 0 and its marker "
+          "comes back, so a banner-only session never opens the upload");
+
     // --- Agent CLIs on a fresh mirror (adhoc #418) -------------------------
     forkmesh::control::AgentCliCredentials agentCredentials;
     check(forkmesh::control::agentCliCredentialsAreEmpty(agentCredentials) &&

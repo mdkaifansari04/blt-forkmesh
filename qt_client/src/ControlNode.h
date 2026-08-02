@@ -482,6 +482,23 @@ QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
 // (adhoc #408).
 bool vultrInstallNeedsLocalBinary(const QString &installOutput);
 
+// --- Waiting for a fresh instance's SSH (adhoc #48) -------------------------
+// Vultr reports an instance "active" well before sshd answers, and the install
+// itself uploads this app's whole binary — so a too-early attempt wastes a
+// multi-megabyte upload just to learn the port is closed. The provisioner
+// therefore knocks with this trivial command once a minute until it answers,
+// and only then starts the install.
+
+// The remote command a reachability probe runs: it must be free of side
+// effects, need no ForkMesh state, and echo a marker back so a connection that
+// dies right after the banner is not mistaken for a working login.
+QString vultrSshProbeRemoteCommand();
+
+// True when a probe proves the host is ready to be installed on: ssh exited 0
+// AND the marker came back, so a local-side ssh success (or a truncated
+// session) never opens the upload.
+bool vultrSshProbeReady(int exitCode, const QString &outputTail);
+
 // --- Destroying a Vultr mirror (adhoc #24) ---------------------------------
 // The Hosts page's "Destroy" button deletes the VPS itself on the user's Vultr
 // account (billing stops), unlike Uninstall (wipes ForkMesh, keeps the server)

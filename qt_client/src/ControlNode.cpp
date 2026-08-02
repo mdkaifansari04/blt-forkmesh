@@ -2219,6 +2219,23 @@ bool vultrInstallNeedsLocalBinary(const QString &installOutput)
     return false;
 }
 
+namespace {
+// The token the probe echoes. Deliberately not a word the installer or an SSH
+// banner would ever print on its own.
+const char kVultrSshProbeMarker[] = "forkmesh-ssh-ready";
+} // namespace
+
+QString vultrSshProbeRemoteCommand()
+{
+    return QLatin1String("echo ") + QLatin1String(kVultrSshProbeMarker);
+}
+
+bool vultrSshProbeReady(int exitCode, const QString &outputTail)
+{
+    return exitCode == 0 &&
+           outputTail.contains(QLatin1String(kVultrSshProbeMarker));
+}
+
 QString savedHostVultrInstanceId(const QJsonObject &host)
 {
     const QString provider =
