@@ -7821,8 +7821,21 @@ class ForkMeshWorld extends HTMLElement {
         assigned: assigned.has(issue.key),
       }));
       this.world?.updateBuildBoard?.(payload);
+      this.buildBoardFailureCount = 0;
+      this.buildBoardRetryAt = 0;
       return payload;
       } catch (_) {
+        this.buildBoardFailureCount = Math.min(
+          8,
+          this.buildBoardFailureCount + 1,
+        );
+        this.buildBoardRetryAt =
+          Date.now() +
+          Math.min(
+            15 * 60_000,
+            WORLD_BUILD_BOARD_POLL_MS *
+              (2 ** (this.buildBoardFailureCount - 1)),
+          );
         if (!quiet) {
           this.toast("The shared build board is temporarily unavailable.");
         }
