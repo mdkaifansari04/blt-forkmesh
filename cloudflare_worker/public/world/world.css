@@ -6957,16 +6957,30 @@ forkmesh-world.world-office-active .world-quick-dock {
   outline: none;
 }
 
+/* A fieldset sizes itself to min-content by default, which lets the table push
+   the whole panel sideways instead of scrolling inside it. */
+.world-settings-pane[data-world-settings-pane="elements"] .world-setting-group {
+  min-width: 0;
+}
+
 .world-element-table {
   margin-top: 10px;
+  /* Names carry the tree once rows open into their pieces, so a narrow panel
+     scrolls sideways rather than squeezing every label down to nothing. */
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .world-element-head,
-.world-element-row {
+.world-element-row,
+.world-element-subhead,
+.world-element-part {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 96px 50px 54px 44px;
+  grid-template-columns: 22px minmax(140px, 1fr) 96px 50px 54px 44px;
   align-items: center;
   gap: 8px;
+  min-width: max-content;
 }
 
 .world-element-head {
@@ -7001,7 +7015,6 @@ forkmesh-world.world-office-active .world-quick-dock {
   min-height: 26px;
   border-top: 1px solid var(--world-line);
   padding: 2px 0;
-  cursor: pointer;
 }
 
 .world-element-row:first-of-type {
@@ -7012,9 +7025,52 @@ forkmesh-world.world-office-active .world-quick-dock {
   width: 16px;
   height: 16px;
   accent-color: var(--world-mint);
+  cursor: pointer;
 }
 
-.world-element-row strong {
+/* The name is the drill-down control: the checkbox switches the element off,
+   clicking the name opens what is inside it. */
+.world-element-name {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  padding: 2px 0 2px calc(var(--world-part-depth, 0) * 12px);
+  border: 0;
+  background: none;
+  text-align: left;
+}
+
+button.world-element-name {
+  cursor: pointer;
+}
+
+button.world-element-name:hover strong,
+button.world-element-name:focus-visible strong {
+  color: var(--world-mint);
+}
+
+button.world-element-name:focus-visible {
+  outline: 1px solid var(--world-mint);
+  outline-offset: 1px;
+}
+
+.world-element-twisty {
+  flex: 0 0 auto;
+  width: 9px;
+  color: var(--world-muted);
+  font-size: 0.6rem;
+  line-height: 1;
+}
+
+button.world-element-name:hover .world-element-twisty {
+  color: var(--world-mint);
+}
+
+.world-element-row strong,
+.world-element-part strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7047,6 +7103,78 @@ forkmesh-world.world-office-active .world-quick-dock {
 .world-element-row[data-enabled="false"] strong {
   color: var(--world-muted);
   text-decoration: line-through;
+}
+
+.world-element-row[data-enabled="true"][data-expanded="true"] strong {
+  color: var(--world-mint);
+}
+
+/* Everything below an opened element: its own sortable header, then one row
+   per piece, tinted and indented so the tree reads at a glance. */
+.world-element-subhead,
+.world-element-part {
+  border-top: 1px solid var(--world-line);
+  background: rgba(10, 25, 21, 0.55);
+}
+
+.world-element-subhead {
+  min-height: 22px;
+}
+
+.world-element-subhead button {
+  padding: 3px 0;
+  border: 0;
+  background: none;
+  color: var(--world-muted);
+  cursor: pointer;
+  text-align: left;
+  font: 700 0.54rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.world-element-subhead button:first-of-type {
+  padding-left: calc(var(--world-part-depth, 0) * 12px);
+}
+
+.world-element-subhead button:nth-of-type(n + 3) {
+  text-align: right;
+}
+
+.world-element-subhead button:hover,
+.world-element-subhead button:focus-visible {
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-element-subhead button[aria-sort="ascending"],
+.world-element-subhead button[aria-sort="descending"] {
+  color: var(--world-copy);
+}
+
+.world-element-part {
+  min-height: 22px;
+  padding: 1px 0;
+}
+
+.world-element-part strong {
+  font-size: 0.68rem;
+  font-weight: 500;
+}
+
+.world-element-part[data-visible="false"] strong {
+  color: var(--world-muted);
+  font-style: italic;
+}
+
+.world-element-part-note {
+  margin: 0;
+  padding: 3px 0 3px calc(var(--world-part-depth, 0) * 12px + 30px);
+  border-top: 1px solid var(--world-line);
+  background: rgba(10, 25, 21, 0.55);
+  color: var(--world-muted);
+  font-size: 0.6rem;
 }
 
 .world-object-table {

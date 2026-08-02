@@ -159,6 +159,19 @@ const DISABLED_ELEMENTS_KEY = "forkmesh.world.disabledElements.v1";
 // the current sort are painted so a busy scene cannot stall the panel.
 const WORLD_OBJECT_NUMERIC_KEYS = new Set(["triangles", "instances"]);
 const WORLD_OBJECT_ROW_LIMIT = 300;
+// Expanding an element row in the Elements tab walks one level further into
+// its subtree: the cabinets inside Mirror node cabinets, the portals on the
+// ring, the desks inside Office interior. Each opened level carries its own
+// sort, and the depth limit stops a pathological rig from nesting forever.
+const WORLD_ELEMENT_PART_COLUMNS = [
+  { key: "label", heading: "Piece" },
+  { key: "type", heading: "Kind" },
+  { key: "drawables", heading: "Drawn" },
+  { key: "triangles", heading: "Tri" },
+  { key: "interactives", heading: "Click" },
+];
+const WORLD_ELEMENT_PART_TEXT_KEYS = new Set(["label", "type"]);
+const WORLD_ELEMENT_PART_DEPTH_LIMIT = 12;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 // Everything a fresh page load pulls in — the relayed chat backlog, the first
@@ -5219,7 +5232,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 and its per-frame work stops — then watch the Debug tab to see
                 what it was costing. Switch it back on to restore it. Choices
                 apply to this browser only; every other visitor still sees the
-                full world.
+                full world. Click an element name to open it up: every piece
+                inside — each mirror node cabinet, each portal on the ring,
+                each fitting in the office — with its own counts, its own
+                sortable columns, and its own pieces below that.
               </p>
               <div class="world-element-master">
                 <button type="button" data-world-element-master="on">Everything on</button>
@@ -5682,6 +5698,11 @@ class ForkMeshWorld extends HTMLElement {
     this.disabledWorldElements = storedDisabledWorldElements();
     this.worldElementSort = "drawables";
     this.worldElementSortAscending = false;
+    // Expanded rows in the Elements tab, keyed by element id plus the child
+    // path below it ("node-cabinets", then "node-cabinets/2"), and the sort
+    // each expanded level carries — every open list sorts on its own.
+    this.expandedWorldElements = new Set();
+    this.worldElementPartSorts = new Map();
     // Per-object triangle table in the Debug tab: sort key and the last
     // scene walk, kept until the tab is reopened or Re-walk is pressed.
     this.worldObjectSort = "triangles";
@@ -10881,6 +10902,21 @@ class ForkMeshWorld extends HTMLElement {
           this.worldElementSortAscending = key === "label" || key === "category";
         }
         this.renderWorldElementsPane();
+        return;
+      }
+      const elementExpand = event.target.closest("[data-world-element-expand]");
+      if (elementExpand) {
+        this.toggleWorldElementExpanded(
+          elementExpand.dataset.worldElementExpand,
+        );
+        return;
+      }
+      const partSort = event.target.closest("[data-world-element-part-sort]");
+      if (partSort) {
+        this.sortWorldElementParts(
+          partSort.dataset.worldElementPartScope,
+          partSort.dataset.worldElementPartSort,
+        );
         return;
       }
       if (event.target.closest("[data-world-object-refresh]")) {
@@ -23856,27 +23892,199 @@ class ForkMeshWorld extends HTMLElement {
       .map((element) => {
         const count = (value) =>
           element.system ? "—" : compactCountLabel(value);
-        return `
-        <label
+        const parts = Number(element.parts) || 0;
+        const expanded = this.expandedWorldElements.has(element.id);
+        const name = parts
+          ? `
+          <button
+            type="button"
+            class="world-element-name"
+            data-world-element-expand="${escapeHTML(element.id)}"
+            aria-expanded="${expanded}"
+            title="${escapeHTML(
+              `${element.label} — ${parts.toLocaleString()} piece${
+                parts === 1 ? "" : "s"
+              } inside`,
+            )}"
+          >
+            <span class="world-element-twisty" aria-hidden="true">${
+              expanded ? "▾" : "▸"
+            }</span>
+            <strong>${escapeHTML(element.label)}</strong>
+          </button>`
+          : `<span class="world-element-name" data-world-element-leaf>
+            <span class="world-element-twisty" aria-hidden="true"></span>
+            <strong>${escapeHTML(element.label)}</strong>
+          </span>`;
+        return (
+          `
+        <div
           class="world-element-row"
           role="row"
           data-enabled="${element.enabled}"
+          data-expanded="${expanded}"
           ${element.system ? 'title="Per-frame system — no geometry of its own"' : ""}
         >
           <input
             type="checkbox"
+            aria-label="${escapeHTML(`Keep ${element.label} in the world`)}"
             data-world-element-toggle="${escapeHTML(element.id)}"
             ${element.enabled ? "checked" : ""}
           />
-          <strong>${escapeHTML(element.label)}</strong>
+          ${name}
           <span class="world-element-group">${escapeHTML(element.category)}</span>
           <span class="world-element-count">${escapeHTML(count(element.drawables))}</span>
           <span class="world-element-count">${escapeHTML(count(element.triangles))}</span>
           <span class="world-element-count">${escapeHTML(count(element.interactives))}</span>
-        </label>`;
+        </div>` + this.renderWorldElementParts(element.id, [], 1)
+        );
       })
       .join("");
     list.innerHTML = header + rows;
+  }
+
+  worldElementPartScope(elementId, path) {
+    return path.length ? `${elementId}/${path.join(".")}` : String(elementId);
+  }
+
+  // An expanded list keeps its own sort. Opening one for the first time picks
+  // up whatever the element table is sorted by — heaviest first, usually — so
+  // the drill-down starts where the eye already is, and every later click on a
+  // sub-header only moves that one list.
+  worldElementPartSortFor(scope) {
+    const stored = this.worldElementPartSorts.get(scope);
+    if (stored) return stored;
+    return WORLD_ELEMENT_PART_COLUMNS.some(
+      (column) => column.key === this.worldElementSort,
+    )
+      ? {
+          key: this.worldElementSort,
+          ascending: this.worldElementSortAscending === true,
+        }
+      : { key: "drawables", ascending: false };
+  }
+
+  sortWorldElementParts(scope, key) {
+    if (!scope || !key) return;
+    const current = this.worldElementPartSortFor(scope);
+    this.worldElementPartSorts.set(
+      scope,
+      current.key === key
+        ? { key, ascending: current.ascending !== true }
+        : { key, ascending: WORLD_ELEMENT_PART_TEXT_KEYS.has(key) },
+    );
+    this.renderWorldElementsPane();
+  }
+
+  toggleWorldElementExpanded(scope) {
+    const key = String(scope || "");
+    if (!key) return;
+    if (this.expandedWorldElements.has(key)) {
+      this.expandedWorldElements.delete(key);
+    } else {
+      this.expandedWorldElements.add(key);
+    }
+    this.renderWorldElementsPane();
+  }
+
+  // One expanded level: its own sortable sub-header, one row per piece, and a
+  // recursive call for any piece the visitor has opened in turn. The scene is
+  // re-read on every render, so a rebuilt cabinet or a despawned avatar is
+  // reflected the moment anything in this panel changes.
+  renderWorldElementParts(elementId, path, depth) {
+    const scope = this.worldElementPartScope(elementId, path);
+    if (
+      !this.expandedWorldElements.has(scope) ||
+      depth > WORLD_ELEMENT_PART_DEPTH_LIMIT
+    ) {
+      return "";
+    }
+    const walk = this.world?.listWorldElementParts?.(elementId, path) || {};
+    const parts = Array.isArray(walk.parts) ? walk.parts : [];
+    const indent = `style="--world-part-depth:${depth}"`;
+    if (!parts.length) {
+      return `<p class="world-element-part-note" ${indent}>This piece has nothing inside it — it is a single object.</p>`;
+    }
+    const sort = this.worldElementPartSortFor(scope);
+    const textSort = WORLD_ELEMENT_PART_TEXT_KEYS.has(sort.key);
+    const comparePart = (left, right) => {
+      const delta = textSort
+        ? String(left[sort.key]).localeCompare(String(right[sort.key]))
+        : Number(right[sort.key]) - Number(left[sort.key]);
+      return (
+        (textSort === sort.ascending ? delta : -delta) ||
+        left.label.localeCompare(right.label)
+      );
+    };
+    const subhead = `
+      <div class="world-element-subhead" role="row" ${indent}>
+        <span aria-hidden="true"></span>
+        ${WORLD_ELEMENT_PART_COLUMNS.map((column) => {
+          const active = column.key === sort.key;
+          return `
+          <button
+            type="button"
+            role="columnheader"
+            data-world-element-part-scope="${escapeHTML(scope)}"
+            data-world-element-part-sort="${column.key}"
+            aria-sort="${active ? (sort.ascending ? "ascending" : "descending") : "none"}"
+          >${column.heading}${active ? (sort.ascending ? " ▲" : " ▼") : ""}</button>`;
+        }).join("")}
+      </div>`;
+    const rows = [...parts]
+      .sort(comparePart)
+      .map((part) => {
+        const partScope = this.worldElementPartScope(elementId, part.path);
+        const open = this.expandedWorldElements.has(partScope);
+        const detail = [
+          part.geometry,
+          part.instances ? `${part.instances.toLocaleString()} instances` : "",
+          `${part.objects.toLocaleString()} objects`,
+          part.visible ? "" : "hidden",
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        const name = part.parts
+          ? `
+          <button
+            type="button"
+            class="world-element-name"
+            data-world-element-expand="${escapeHTML(partScope)}"
+            aria-expanded="${open}"
+          >
+            <span class="world-element-twisty" aria-hidden="true">${open ? "▾" : "▸"}</span>
+            <strong>${escapeHTML(part.label)}</strong>
+          </button>`
+          : `<span class="world-element-name" data-world-element-leaf>
+            <span class="world-element-twisty" aria-hidden="true"></span>
+            <strong>${escapeHTML(part.label)}</strong>
+          </span>`;
+        return (
+          `
+        <div
+          class="world-element-part"
+          role="row"
+          data-visible="${part.visible}"
+          data-expanded="${open}"
+          ${indent}
+          title="${escapeHTML(`${part.label} · ${detail}`)}"
+        >
+          <span aria-hidden="true"></span>
+          ${name}
+          <span class="world-element-group">${escapeHTML(part.type)}</span>
+          <span class="world-element-count">${escapeHTML(compactCountLabel(part.drawables))}</span>
+          <span class="world-element-count">${escapeHTML(compactCountLabel(part.triangles))}</span>
+          <span class="world-element-count">${escapeHTML(compactCountLabel(part.interactives))}</span>
+        </div>` + this.renderWorldElementParts(elementId, part.path, depth + 1)
+        );
+      })
+      .join("");
+    const total = Number(walk.total) || parts.length;
+    const trimmed =
+      total > parts.length
+        ? `<p class="world-element-part-note" ${indent}>Showing ${parts.length.toLocaleString()} of ${total.toLocaleString()} pieces.</p>`
+        : "";
+    return subhead + rows + trimmed;
   }
 
   // The Debug tab's per-object triangle table. The scene walk is explicit —
