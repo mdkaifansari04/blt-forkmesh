@@ -1689,24 +1689,46 @@ QWidget *MainWindow::buildAgentsTab()
     // Delete the agent together with its worktree folder and branch in one action.
     // adhoc #51 folded the session-only "Delete" that sat beside it into this one
     // button, so watch-only rows (no branch of ours to clean up) go down the
-    // session-only path from here.
+    // session-only path from here — as does any row with no worktree or branch
+    // left to remove, which used to leave the entry undeletable.
     m_agentDeleteAllButton = railActionButton(
         QStringLiteral("trash"), QStringLiteral("Delete"),
-        "Delete this agent session, its worktree folder and its branch");
+        "Delete this agent session, along with its worktree folder and branch "
+        "when it still has them");
     connect(m_agentDeleteAllButton, &QPushButton::clicked, this, [this] {
         if (isExternalSession(m_selectedAgentSessionId)) {
             deleteSelectedAgentSession();
             return;
         }
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
-        if (!s || s->branchName.isEmpty())
+        if (!s)
             return;
         const int repoIndex = repoIndexFor(s->owner, s->name);
-        if (repoIndex < 0)
-            return;
         const int sessionId = s->id;
         const QString branch = s->branchName;
-        const QString repoPath = m_repositories.at(repoIndex).localPath;
+        const QString repoPath =
+            repoIndex >= 0 ? m_repositories.at(repoIndex).localPath : QString();
+        // Nothing of ours left to clean up: the run never got as far as stamping
+        // a branch on itself, or the repository it ran in is no longer on this
+        // machine. Take the entry out on its own instead of bailing — the
+        // combined teardown below keys everything off the branch and the open
+        // checkout, so it would quietly do nothing and the row would sit in the
+        // list undeletable forever.
+        if (branch.isEmpty() || repoPath.isEmpty()) {
+            deleteAgentSessionEntry(sessionId);
+            return;
+        }
+        // Same cross-repo bind the Files tab's Delete needs: the teardown resolves
+        // the checkout from the repo the detail view holds, not from the session,
+        // and the Agents tab is global. Without this a session belonging to any
+        // other repo matches nothing and the click is a silent no-op. Snapshotted
+        // above first — the bind pumps the event loop and can reallocate both
+        // lists (git-pump UAF family). If it fails there is no checkout to clean
+        // against, so drop the entry rather than leaving it stuck.
+        if (!bindRepoDetailToRepo(repoIndex)) {
+            deleteAgentSessionEntry(sessionId);
+            return;
+        }
         // Every step of the teardown — looking the worktree up, clearing the
         // issue, dropping the stored session, the reloads — is synchronous git,
         // so the click used to sit there for seconds with nothing to show it
@@ -7810,13 +7832,18 @@ void MainWindow::fixAgentConflictsWithAgent(int sessionId)
 
 void MainWindow::deleteSelectedAgentSession()
 {
+    deleteAgentSessionEntry(m_selectedAgentSessionId);
+}
+
+void MainWindow::deleteAgentSessionEntry(int sessionId)
+{
     // External (watch-only) rows aren't in the store — Delete kills the real CLI
     // process it mirrors (if still running), then drops the temporary mirror.
-    if (isExternalSession(m_selectedAgentSessionId)) {
-        deleteExternalSession(m_selectedAgentSessionId);
+    if (isExternalSession(sessionId)) {
+        deleteExternalSession(sessionId);
         return;
     }
-    if (!deleteStoredAgentSession(m_selectedAgentSessionId))
+    if (!deleteStoredAgentSession(sessionId))
         return;
     reloadAgents();
     reloadIssues();
@@ -12082,15 +12109,16 @@ void MainWindow::updateAgentActionState()
     // Block deleting the session whose working-tree git-am the in-flight AI fix is
     // still holding open.
     const bool aiFixBusy = m_aiFix && m_aiFix->sessionId == m_selectedAgentSessionId;
-    // "Delete" also nukes the worktree + branch, so it needs a real stored session
-    // with a branch; on an external watch-only row it drops just the mirrored
-    // session instead (adhoc #51), which is always available.
+    // "Delete" also nukes the worktree + branch when the session still has them,
+    // so it needs a real stored session — but NOT a branch: a run that never got
+    // one (or whose repo has since gone away) deletes its entry alone, and gating
+    // on the branch left those rows stuck in the list with a dead button. On an
+    // external watch-only row it drops just the mirrored session (adhoc #51).
     if (m_agentDeleteAllButton)
         m_agentDeleteAllButton->setEnabled(
             !aiFixBusy
             && (externalSelected
-                || (selected && session && !session->associationOnly &&
-                    !session->branchName.isEmpty())));
+                || (selected && session && !session->associationOnly)));
     updateQuickAddEnterTarget();
 }
 

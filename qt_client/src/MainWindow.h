@@ -2587,6 +2587,13 @@ private:
     // agent session (adhoc #256's "Send issue context" action).
     void sendIssueContextToSelectedAgent();
     void deleteSelectedAgentSession();
+    // Remove one agent entry and nothing else — no worktree folder, no branch.
+    // The path for rows that have nothing else to clean up: external (watch-only)
+    // mirrors, and sessions whose branch was never stamped or whose repository is
+    // no longer on this machine. deleteWorktreeBranchAndAgentInBackground keys
+    // everything off the branch and the open checkout, so those rows can only be
+    // deleted from here.
+    void deleteAgentSessionEntry(int sessionId);
     // Promote the selected ad-hoc session (no issue) into a tracked issue, then
     // link the two so the detail header shows the issue (adhoc #189).
     void createLinkedIssueForSelectedSession();
