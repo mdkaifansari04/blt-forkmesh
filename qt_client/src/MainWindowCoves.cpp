@@ -71,19 +71,16 @@ QString MainWindow::coveRepoSettingsPrefix(int repoIndex) const
 
 QString MainWindow::rememberedCovePassword(int repoIndex) const
 {
-    QSettings settings;
-    const QString repoPw =
-        settings.value(coveRepoSettingsPrefix(repoIndex) + "/password").toString();
-    if (!repoPw.isEmpty())
-        return repoPw;
-    return settings.value(QStringLiteral("coves/global/password")).toString();
+    return QSettings()
+        .value(coveRepoSettingsPrefix(repoIndex) + "/password")
+        .toString();
 }
 
 bool MainWindow::coveAutoOpenEnabled(int repoIndex) const
 {
-    QSettings settings;
-    return settings.value(coveRepoSettingsPrefix(repoIndex) + "/autoOpen", false).toBool() ||
-           settings.value(QStringLiteral("coves/global/autoOpen"), false).toBool();
+    return QSettings()
+        .value(coveRepoSettingsPrefix(repoIndex) + "/autoOpen", false)
+        .toBool();
 }
 
 bool MainWindow::tryUnlockCove(Cove &cove, int repoIndex, QString *passwordOut) const
@@ -95,11 +92,6 @@ bool MainWindow::tryUnlockCove(Cove &cove, int repoIndex, QString *passwordOut) 
         QSettings().value(coveRepoSettingsPrefix(repoIndex) + "/password").toString();
     if (!repoPw.isEmpty())
         candidates << repoPw;
-    const QString globalPw =
-        QSettings().value(QStringLiteral("coves/global/password")).toString();
-    if (!globalPw.isEmpty())
-        candidates << globalPw;
-
     for (const QString &pw : std::as_const(candidates)) {
         if (pw.isEmpty())
             continue;
@@ -578,8 +570,7 @@ QWidget *MainWindow::buildCoveSection()
     layout->addLayout(pwRow);
 
     auto applyPw = [this] {
-        applyCovePasswordFromSettings(m_repoDetailIndex, false,
-                                      m_covePasswordEdit->text(), true);
+        applyCovePasswordFromSettings(m_repoDetailIndex, m_covePasswordEdit->text(), true);
     };
     connect(unlockBtn, &QPushButton::clicked, this, applyPw);
     connect(m_covePasswordEdit, &QLineEdit::returnPressed, this, applyPw);
@@ -672,19 +663,15 @@ void MainWindow::rebuildRepoCovesList()
     }
 }
 
-void MainWindow::applyCovePasswordFromSettings(int repoIndex, bool global,
-                                               const QString &password, bool remember)
+void MainWindow::applyCovePasswordFromSettings(int repoIndex, const QString &password,
+                                               bool remember)
 {
     if (password.isEmpty()) {
         flashMessage(QStringLiteral("Enter a cove password first."), true);
         return;
     }
-    if (remember) {
-        if (global)
-            QSettings().setValue(QStringLiteral("coves/global/password"), password);
-        else
-            QSettings().setValue(coveRepoSettingsPrefix(repoIndex) + "/password", password);
-    }
+    if (remember)
+        QSettings().setValue(coveRepoSettingsPrefix(repoIndex) + "/password", password);
 
     int unlocked = 0;
     const QList<Cove> coves = coveStoreForRepo(repoIndex).listCoves();
@@ -703,69 +690,4 @@ void MainWindow::applyCovePasswordFromSettings(int repoIndex, bool global,
     rebuildRepoCovesList();
     if (m_treeLoadedForIndex == m_repoDetailIndex)
         loadRepoFileTree();
-}
-
-// ---- Global Settings "Coves" section ---------------------------------------
-
-QWidget *MainWindow::buildCoveGlobalSection()
-{
-    auto *box = new QWidget;
-    auto *layout = new QVBoxLayout(box);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(8);
-
-    auto *heading = new QLabel(QStringLiteral("Coves"));
-    heading->setObjectName("sectionLabel");
-    layout->addWidget(heading);
-    auto *hint = new QLabel(QStringLiteral(
-        "A cove password entered here is tried against every repository's coves, so "
-        "you can unlock team vaults from one place."));
-    hint->setObjectName("statusLine");
-    hint->setWordWrap(true);
-    layout->addWidget(hint);
-
-    auto *pwRow = new QHBoxLayout;
-    m_coveGlobalPasswordEdit = new QLineEdit;
-    m_coveGlobalPasswordEdit->setEchoMode(QLineEdit::Password);
-    m_coveGlobalPasswordEdit->setText(
-        QSettings().value(QStringLiteral("coves/global/password")).toString());
-    m_coveGlobalPasswordEdit->setPlaceholderText(QStringLiteral("Global cove password"));
-    pwRow->addWidget(m_coveGlobalPasswordEdit, 1);
-    auto *saveBtn = new QPushButton(QStringLiteral("Save"));
-    saveBtn->setProperty("buttonSize", "sm");
-    saveBtn->setCursor(Qt::PointingHandCursor);
-    pwRow->addWidget(saveBtn);
-    auto *forgetBtn = new QPushButton(QStringLiteral("Forget"));
-    forgetBtn->setProperty("buttonSize", "sm");
-    forgetBtn->setCursor(Qt::PointingHandCursor);
-    pwRow->addWidget(forgetBtn);
-    layout->addLayout(pwRow);
-
-    connect(saveBtn, &QPushButton::clicked, this, [this] {
-        const QString pw = m_coveGlobalPasswordEdit->text();
-        QSettings().setValue(QStringLiteral("coves/global/password"), pw);
-        flashMessage(QStringLiteral("Saved the global cove password."));
-        if (m_repoDetailIndex >= 0)
-            rebuildRepoCovesList();
-    });
-    connect(forgetBtn, &QPushButton::clicked, this, [this] {
-        QSettings().remove(QStringLiteral("coves/global/password"));
-        if (m_coveGlobalPasswordEdit)
-            m_coveGlobalPasswordEdit->clear();
-        flashMessage(QStringLiteral("Forgot the global cove password."));
-        if (m_repoDetailIndex >= 0)
-            rebuildRepoCovesList();
-    });
-
-    m_coveGlobalAutoOpenCheck =
-        new QCheckBox(QStringLiteral("Auto-show unlocked coves without clicking"));
-    m_coveGlobalAutoOpenCheck->setCursor(Qt::PointingHandCursor);
-    m_coveGlobalAutoOpenCheck->setChecked(
-        QSettings().value(QStringLiteral("coves/global/autoOpen"), false).toBool());
-    connect(m_coveGlobalAutoOpenCheck, &QCheckBox::toggled, this, [this](bool on) {
-        QSettings().setValue(QStringLiteral("coves/global/autoOpen"), on);
-    });
-    layout->addWidget(m_coveGlobalAutoOpenCheck);
-
-    return box;
 }
