@@ -442,6 +442,8 @@ public:
     // test can pin the full catalog field set the page shows (adhoc #118).
     QStringList testNetworkRepoColumns() const;
     QString testNetworkRepoCellText(int row, const QString &header) const;
+    bool testNetworkRepoHasCommitSparkline(int row) const;
+    QString testNetworkRepoCommitActivitySummary(int row) const;
     // Badge riding the activity rail's Repos icon.
     int testReposNavBadgeCount() const;
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
