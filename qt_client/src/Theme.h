@@ -265,7 +265,7 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
     font-family: monospace; font-size: 12px;
 }
 #diffView {
-    background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    background-color: #0d1117; border: none; border-radius: 0;
     color: #e6edf3; font-family: monospace; font-size: 12px;
 }
 #pullReviewSummary {
@@ -1301,8 +1301,8 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
 }
 #diffView {
     background-color: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 6px;
+    border: none;
+    border-radius: 0;
     color: #e6edf3;
     font-family: monospace;
     font-size: 12px;
@@ -1555,7 +1555,7 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
     font-family: monospace; font-size: 12px;
 }
 #diffView {
-    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+    background-color: #ffffff; border: none; border-radius: 0;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
 #pullReviewSummary {
@@ -2587,8 +2587,8 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
 }
 #diffView {
     background-color: #ffffff;
-    border: 1px solid #d0d7de;
-    border-radius: 6px;
+    border: none;
+    border-radius: 0;
     color: #1f2328;
     font-family: monospace;
     font-size: 12px;

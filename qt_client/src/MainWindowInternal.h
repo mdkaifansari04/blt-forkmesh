@@ -7251,6 +7251,153 @@ private:
     QString m_fullText;
 };
 
+// A toolbar button that stacks its glyph over a small caption instead of setting
+// them side by side. A row of these reads as a bar of tools rather than a run of
+// sentences: the icon carries the recognition and the word underneath removes
+// the guesswork an icon-only bar leaves behind (adhoc #223).
+//
+// The label is painted verbatim, so an ampersand in a caption ("Merge & clean
+// up") stays an ampersand rather than being eaten as a mnemonic — which is what
+// the stock QPushButton painter did to that very button.
+//
+// Everything else is a plain QPushButton: setText() still sets the caption,
+// setOcticon()/setIcon() still set the glyph, and the QSS background/border for
+// #ghostButton / #primaryButton is drawn by the style exactly as before.
+class StackedIconButton : public QPushButton
+{
+public:
+    using QPushButton::QPushButton;
+
+    // Painted in the icon slot for buttons with no octicon of their own (the
+    // diff zoom −/+ pair, whose "icon" has always been a typographic glyph).
+    void setGlyph(const QString &glyph)
+    {
+        m_glyph = glyph;
+        updateGeometry();
+        update();
+    }
+
+    QSize sizeHint() const override
+    {
+        const QSize slot = iconSlotSize();
+        const QFontMetrics fm(captionFont());
+        const bool hasCaption = !text().isEmpty();
+        // +2 of slack: an exact fit rounds the wrong way often enough that the
+        // caption elides itself at its own natural width.
+        const int captionW = hasCaption ? fm.horizontalAdvance(text()) + 2 : 0;
+        const int captionH = hasCaption ? fm.height() + kGap : 0;
+        return QSize(qMax(slot.width(), captionW) + 2 * kPadH,
+                     slot.height() + captionH + 2 * kPadV);
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    // The theme sizes fonts from the style sheet, which lands on the widget
+    // after the first layout pass — without this the button keeps the geometry
+    // it hinted at under the default font and clips its own caption.
+    bool event(QEvent *e) override
+    {
+        switch (e->type()) {
+        case QEvent::FontChange:
+        case QEvent::StyleChange:
+        case QEvent::ApplicationFontChange:
+            updateGeometry();
+            break;
+        default:
+            break;
+        }
+        return QPushButton::event(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QStylePainter painter(this);
+        QStyleOptionButton opt;
+        initStyleOption(&opt);
+        // Draw the chrome only. Handing the style an empty label keeps the QSS
+        // background, border and hover/pressed states while leaving the content
+        // rect for us to fill.
+        const QIcon glyphIcon = opt.icon;
+        opt.text.clear();
+        opt.icon = QIcon();
+        opt.iconSize = QSize();
+        painter.drawControl(QStyle::CE_PushButton, opt);
+
+        const QSize slot = iconSlotSize();
+        const QFont caption = captionFont();
+        const QFontMetrics fm(caption);
+        const bool hasCaption = !text().isEmpty();
+        const int captionH = hasCaption ? fm.height() : 0;
+        const int blockH = slot.height() + (hasCaption ? kGap + captionH : 0);
+        int top = rect().top() + (height() - blockH) / 2;
+
+        const QRect slotRect((width() - slot.width()) / 2, top, slot.width(),
+                             slot.height());
+        if (!glyphIcon.isNull()) {
+            // themedOcticon only carries Off-state pixmaps; asking for On would
+            // fall back to it anyway, so name it explicitly.
+            glyphIcon.paint(&painter, slotRect, Qt::AlignCenter,
+                            isEnabled() ? QIcon::Normal : QIcon::Disabled,
+                            QIcon::Off);
+        } else if (!m_glyph.isEmpty()) {
+            QFont glyphFont = font();
+            glyphFont.setBold(true);
+            if (glyphFont.pixelSize() > 0)
+                glyphFont.setPixelSize(slot.height());
+            else
+                glyphFont.setPointSize(qMax(9, slot.height() - 3));
+            painter.setFont(glyphFont);
+            painter.setPen(labelColor(opt));
+            painter.drawText(slotRect, Qt::AlignCenter, m_glyph);
+        }
+
+        if (!hasCaption)
+            return;
+        const QRect captionRect(kPadH, top + slot.height() + kGap,
+                                qMax(0, width() - 2 * kPadH), captionH);
+        painter.setFont(caption);
+        painter.setPen(labelColor(opt));
+        painter.drawText(captionRect, Qt::AlignHCenter | Qt::AlignVCenter,
+                         fm.elidedText(text(), Qt::ElideRight, captionRect.width()));
+    }
+
+private:
+    static constexpr int kPadH = 8;
+    static constexpr int kPadV = 4;
+    static constexpr int kGap = 3; // between the glyph and its caption
+
+    QSize iconSlotSize() const
+    {
+        if (!icon().isNull() && iconSize().isValid())
+            return iconSize();
+        return QSize(16, 16);
+    }
+
+    // QSS `color:` lands on the widget palette when QStyleSheetStyle polishes
+    // the button, so the theme's ghost/primary foregrounds come through here.
+    QColor labelColor(const QStyleOptionButton &opt) const
+    {
+        return opt.palette.color(isEnabled() ? QPalette::Active
+                                             : QPalette::Disabled,
+                                 QPalette::ButtonText);
+    }
+
+    QFont captionFont() const
+    {
+        QFont f = font();
+        // The theme sizes fonts in pixels; fall back to points for any style
+        // that doesn't.
+        if (f.pixelSize() > 0)
+            f.setPixelSize(qMax(9, f.pixelSize() - 4));
+        else
+            f.setPointSize(qMax(7, f.pointSize() - 3));
+        f.setWeight(QFont::DemiBold);
+        return f;
+    }
+
+    QString m_glyph;
+};
+
 // A one-line, muted status label that sits beside a busy button and carries the
 // live "what is it doing right now" note (the sync button's git/seal progress).
 // It never widens its row: the size hint stays at zero width and the layout
