@@ -3399,21 +3399,28 @@ async def _record_status_monitor_transitions(
             notified, pinged,
         ])
 
-    n = len(status_systems)
-    await d1_run(
-        env,
-        "INSERT INTO repository_monitor_state "
-        "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
-        "notified_state,pinged_state) VALUES "
-        + ", ".join(["(?,?,?,?,?,?,?,?)"] * n) + " "
-        "ON CONFLICT(monitor_id) DO UPDATE SET "
-        "is_up=excluded.is_up,changed_at=excluded.changed_at,"
-        "outage_started_at=excluded.outage_started_at,"
-        "checked_at=excluded.checked_at,reason=excluded.reason,"
-        "notified_state=excluded.notified_state,"
-        "pinged_state=excluded.pinged_state",
-        *values,
-    )
+    # Eight parameters per system crosses D1's ~100-bound-parameter ceiling as
+    # soon as the public fleet grows beyond twelve rows. The status samples are
+    # intentionally persisted before this follow-up, so that failure looked
+    # like a healthy sampler with mysteriously absent outage pings. Keep each
+    # transition upsert to ten systems / eighty parameters.
+    for offset in range(0, len(values), 80):
+        batch = values[offset:offset + 80]
+        count = len(batch) // 8
+        await d1_run(
+            env,
+            "INSERT INTO repository_monitor_state "
+            "(monitor_id,is_up,changed_at,outage_started_at,checked_at,reason,"
+            "notified_state,pinged_state) VALUES "
+            + ", ".join(["(?,?,?,?,?,?,?,?)"] * count) + " "
+            "ON CONFLICT(monitor_id) DO UPDATE SET "
+            "is_up=excluded.is_up,changed_at=excluded.changed_at,"
+            "outage_started_at=excluded.outage_started_at,"
+            "checked_at=excluded.checked_at,reason=excluded.reason,"
+            "notified_state=excluded.notified_state,"
+            "pinged_state=excluded.pinged_state",
+            *batch,
+        )
     if ping_pending:
         try:
             if await _enqueue_operational_alert_pings(env, ping_pending, now):

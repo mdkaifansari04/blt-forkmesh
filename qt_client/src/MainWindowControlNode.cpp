@@ -1776,6 +1776,21 @@ void MainWindow::startDirectMirrorServices()
                         .arg(exitCode));
                 gateway->deleteLater();
                 refreshControlNode();
+                // An unattended desktop mirror must recover the local origin
+                // just as the packaged systemd service does. Respect the
+                // operator's auto-start/offline controls and delay the retry
+                // so a repeatedly failing child cannot become a tight loop.
+                QTimer::singleShot(5000, this, [this] {
+                    if (m_nodeOffline ||
+                        !QSettings()
+                             .value(
+                                 QStringLiteral(
+                                     "control/autoStartMirrorServices"),
+                                 true)
+                             .toBool())
+                        return;
+                    startDirectMirrorServices();
+                });
             });
         gateway->start(
             python,
@@ -1974,6 +1989,17 @@ void MainWindow::startDirectMirrorServices()
                     .arg(exitCode));
             tunnel->deleteLater();
             refreshControlNode();
+            QTimer::singleShot(5000, this, [this] {
+                if (m_nodeOffline ||
+                    !QSettings()
+                         .value(
+                             QStringLiteral(
+                                 "control/autoStartMirrorServices"),
+                             true)
+                         .toBool())
+                    return;
+                startDirectMirrorServices();
+            });
         });
     tunnel->start(
         cloudflared,
