@@ -1865,6 +1865,10 @@ QWidget *MainWindow::buildSettingsSection()
     addTab(buildDataSection(), "Data");
 
     m_settingsTabs = tabs;
+    // Each settings tab is its own destination on the Back/Forward trail
+    // (adhoc #50), so leaving one and coming back lands where you were.
+    connect(tabs, &QTabWidget::currentChanged, this,
+            [this](int) { scheduleNavRecord(); });
     layout->addWidget(tabs, 1);
     layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);
@@ -4344,6 +4348,29 @@ void MainWindow::saveNetworkLog()
     }
     f.close();
     m_networkLogDiskLines = m_networkLog.size();
+}
+
+void MainWindow::logCapturedMessage(QtMsgType type, const QString &text)
+{
+    QString line = text.trimmed();
+    if (line.isEmpty())
+        return;
+    // Qt's own warnings read as plain statements ("QProcess: Destroyed while
+    // process ("git") is still running."), so without a severity word nothing
+    // in the entry says it wasn't ordinary progress. Say it — "Error" also
+    // earns the red ERROR badge from networkLogStyleFor().
+    switch (type) {
+    case QtWarningMsg:
+        line = QStringLiteral("Warning: ") + line;
+        break;
+    case QtCriticalMsg:
+    case QtFatalMsg:
+        line = QStringLiteral("Error: ") + line;
+        break;
+    default:
+        break;
+    }
+    logSystem(line);
 }
 
 void MainWindow::logSystem(const QString &text)

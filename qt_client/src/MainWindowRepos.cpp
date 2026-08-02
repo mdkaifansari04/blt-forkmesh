@@ -5614,6 +5614,8 @@ void MainWindow::syncPrivateRepository(int index, bool quiet)
     if (PrivateMirrorStore::isOpaqueId(repo.privateReplicaId) &&
         repo.publishToNetwork) {
         m_syncingRepos.insert(index, quiet);
+        setRepoSyncActivity(
+            index, QStringLiteral("Verifying the collaborators' keys…"));
         refreshRepositoryList();
         requestPrivateRecipientBundles(
             repo, /*updateCollaboratorList=*/false,
@@ -5622,6 +5624,7 @@ void MainWindow::syncPrivateRepository(int index, bool quiet)
                                 QStringList, QString error) {
                 m_syncingRepos.remove(index);
                 if (!ready) {
+                    clearRepoSyncActivity(index);
                     logSystem(QStringLiteral(
                         "Private mirror: recipient-key verification blocked "
                         "the refresh; the previous encrypted epoch remains "
@@ -5651,6 +5654,7 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
         m_syncingRepos.contains(index))
         return;
     if (!m_profileIdentity.isValid() && !m_profileIdentity.load()) {
+        clearRepoSyncActivity(index);
         if (!quiet)
             flashMessage(
                 QStringLiteral("The local owner identity is required before a "
@@ -5661,6 +5665,7 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
     const QByteArray vaultSecret =
         privateIdentityVaultSecret(m_profileIdentity);
     if (vaultSecret.size() < 32) {
+        clearRepoSyncActivity(index);
         if (!quiet)
             flashMessage(QStringLiteral(
                              "Could not unlock the owner-only private-mirror vault."),
@@ -5709,6 +5714,8 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
 
     auto result = std::make_shared<PrivateSyncWorkerResult>();
     m_syncingRepos.insert(index, quiet);
+    setRepoSyncActivity(
+        index, QStringLiteral("Sealing the owner-only private replica…"));
     // Recompute publication state before encryption/migration; private
     // repository names remain absent from public presence and catalogs.
     startRepoHosts();
@@ -5777,6 +5784,7 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
             [this, worker, result, index, quiet, legacyMirrorPath] {
                 worker->deleteLater();
                 m_syncingRepos.remove(index);
+                clearRepoSyncActivity(index);
                 if (index < 0 || index >= m_repositories.size()) {
                     refreshRepositoryList();
                     return;
@@ -6330,6 +6338,8 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     }
 
     m_syncingRepos.insert(index, quiet);
+    setRepoSyncActivity(index,
+                        QStringLiteral("Preparing the encrypted mirror…"));
     refreshRepositoryList();
     logSystem(QStringLiteral(
         "Public mirror: sealing %1/%2 with official age encryption; "
@@ -6362,18 +6372,28 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     const QString vaultPath = publicIdentityVaultPath();
     const QString owner = repo.owner;
     const QString name = repo.name;
+    // Each seal stage announces itself from the worker thread; hop it back to
+    // the GUI thread, where the sync button's live status line lives.
+    PublicMirrorRuntime::Progress progress = [this, index](const QString &line) {
+        QMetaObject::invokeMethod(
+            this, [this, index, line] { setRepoSyncActivity(index, line); },
+            Qt::QueuedConnection);
+    };
     QThread *worker = QThread::create(
         [result, source, recoverySource, upstreamUrl, managedCheckoutSource,
-         archiveRoot, vaultPath,
+         archiveRoot, vaultPath, progress,
          mutableVaultSecret = std::move(vaultSecret), existingArchiveId,
          legacyMirrorPath, managedMirrorRoot]() mutable {
             if (!upstreamUrl.isEmpty()) {
+                progress(QStringLiteral("Fetching the managed checkout from "
+                                        "its upstream…"));
                 result->upstreamSummary =
                     forkmesh::upstream::refreshManagedCheckoutFromUpstream(
                         recoverySource, upstreamUrl)
                         .summary();
             }
             if (source.isEmpty()) {
+                progress(QStringLiteral("Opening the sealed archive…"));
                 result->metadata = PublicMirrorRuntime::readMetadata(
                     archiveRoot, existingArchiveId, &result->error);
                 if (result->metadata.isValid()) {
@@ -6407,11 +6427,13 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                         ? PublicMirrorRuntime::syncManagedCheckout(
                               sealSource, archiveRoot, vaultPath,
                               mutableVaultSecret, existingArchiveId,
-                              PublicMirrorRuntime::Tools(), &result->error)
+                              PublicMirrorRuntime::Tools(), &result->error,
+                              progress)
                         : PublicMirrorRuntime::syncSource(
                               sealSource, {}, archiveRoot, vaultPath,
                               mutableVaultSecret, existingArchiveId,
-                              PublicMirrorRuntime::Tools(), &result->error);
+                              PublicMirrorRuntime::Tools(), &result->error,
+                              progress);
                 qInfo().noquote()
                     << "Public mirror sync result:"
                     << (managedCheckoutSource ? "managed-origin" : "ordinary")
@@ -6475,6 +6497,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
          quiet] {
             worker->deleteLater();
             m_syncingRepos.remove(index);
+            clearRepoSyncActivity(index);
             if (!result->upstreamSummary.isEmpty())
                 logSystem(QStringLiteral("Mirror: %1/%2 %3")
                               .arg(owner, name, result->upstreamSummary));
@@ -6825,12 +6848,16 @@ void MainWindow::syncRepository(int index, bool quiet)
     // http.extraHeader=..." prefix (empty for public repos or non-mainnode sources)
     // generated fresh so the short-lived token never goes stale in stored config.
     const QStringList authArgs = viewAuthGitArgs(repo, source);
+    // --progress: git writes its transfer counters only when stderr is a
+    // terminal, and a QProcess pipe is not one. With it, the sync button's live
+    // status line follows the real fetch/clone instead of sitting on "Syncing".
     const QStringList args =
         authArgs +
-        (hasMirror ? QStringList{"-C", repo.mirrorPath, "fetch", "--prune",
-                                "origin"} +
+        (hasMirror ? QStringList{"-C", repo.mirrorPath, "fetch", "--progress",
+                                "--prune", "origin"} +
                         kStableRefspecs
-                  : QStringList{"clone", "--bare", source, repo.mirrorPath});
+                  : QStringList{"clone", "--progress", "--bare", source,
+                                repo.mirrorPath});
     const QString mirrorPath = repo.mirrorPath;
 
     // Flag the repo "syncing" and reflect it in the UI right away — before any git
@@ -6948,16 +6975,22 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                                 const QString &beforeHeadCommit)
 {
     auto *process = new QProcess(this);
+    setRepoSyncActivity(index, hasMirror
+                                   ? QStringLiteral("Fetching from the source…")
+                                   : QStringLiteral("Cloning the source…"));
+    auto fetchErrors = streamGitProgressActivity(process, index, QString());
     connect(process, &QProcess::finished, this,
             [this, process, index, quiet, beforeDigest, beforeHeadCommit,
-             hasMirror](
+             hasMirror, fetchErrors](
                 int exitCode, QProcess::ExitStatus) {
-                const QString errors =
-                    QString::fromUtf8(process->readAllStandardError()).trimmed();
+                fetchErrors->append(
+                    QString::fromUtf8(process->readAllStandardError()));
+                const QString errors = gitErrorsWithoutProgress(*fetchErrors);
                 process->deleteLater();
 
                 if (index < 0 || index >= m_repositories.size()) {
                     m_syncingRepos.remove(index);
+                    clearRepoSyncActivity(index);
                     refreshRepositoryList();
                     return;
                 }
@@ -6981,6 +7014,9 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                     // mirror.
                     const QString mirrorPath = repo.mirrorPath;
                     const QString localPath = repo.localPath;
+                    setRepoSyncActivity(
+                        index,
+                        QStringLiteral("Tidying the mirror's refs…"));
                     auto afterDigest = std::make_shared<QString>();
                     auto headBranch = std::make_shared<QString>();
                     auto headCommit = std::make_shared<QString>();
@@ -7000,6 +7036,7 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                              headCommit] {
                         worker->deleteLater();
                         m_syncingRepos.remove(index);
+                        clearRepoSyncActivity(index);
                         if (index < 0 || index >= m_repositories.size()) {
                             refreshRepositoryList();
                             return;
@@ -7088,6 +7125,7 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                     worker->start();
                 } else {
                     m_syncingRepos.remove(index);
+                    clearRepoSyncActivity(index);
                     refreshRepositoryList();
                     // HTTPS gateway hiccups (HTTP 5xx, RPC failed, connection
                     // resets) and truncated responses are transient: the
@@ -7123,6 +7161,7 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
             [this, process, index, quiet] {
                 process->deleteLater();
                 m_syncingRepos.remove(index);
+                clearRepoSyncActivity(index);
                 refreshRepositoryList();
                 if (!quiet)
                     flashMessage(
