@@ -7,7 +7,7 @@
     <title>ForkMesh - Git, team chat, and coding agents in one workspace</title>
     <meta
       name="description"
-      content="ForkMesh brings Git, team chat, Codex, and Claude Code into one open-source, local-first workspace. Turn conversation into agent work, review together, ship, and keep control of the code."
+      content="ForkMesh makes development a shared world for Git, team chat, Codex, and Claude Code. See who is building what, watch code ship, and keep it resilient across federated mirrors."
     />
     <meta name="theme-color" content="#070907" />
     <meta name="color-scheme" content="dark" />
@@ -28,7 +28,7 @@
     <meta property="og:title" content="Git. Team chat. Agents. One place to ship." />
     <meta
       property="og:description"
-      content="One local-first workspace where teams talk, turn context into agent work, review real Git, and ship from infrastructure they control."
+      content="Step into a shared developer world: talk by the fire, work with coding agents, watch Git hit the servers, and keep every project alive across federated mirrors."
     />
     <meta property="og:image" content="https://forkmesh.com/assets/blog/forkmesh-noise.webp" />
     <meta property="og:image:width" content="1200" />
@@ -61,7 +61,7 @@
             "applicationCategory": "DeveloperApplication",
             "applicationSubCategory": "Local-first Git forge",
             "operatingSystem": "macOS, Windows, Linux",
-            "description": "A local-first desktop workspace that unifies Git, team chat, coding agents, review, delivery, and independent repository mirrors.",
+            "description": "A local-first developer world that unifies Git, team chat, coding agents, review, delivery, and resilient federated repository mirrors.",
             "featureList": [
               "Parallel Codex and Claude Code sessions in isolated Git worktrees",
               "Team chat, multiplayer presence, tasks, and shared QA in World",
@@ -914,6 +914,257 @@
         font-size: 0.78rem;
       }
 
+      /* The World */
+      .world-section {
+        position: relative;
+        padding: 8rem 0;
+        overflow: hidden;
+        border-bottom: 1px solid var(--line);
+        background: #060908;
+      }
+
+      .world-section::before {
+        position: absolute;
+        inset: 10% auto auto 50%;
+        width: 55rem;
+        height: 30rem;
+        transform: translateX(-50%);
+        border-radius: 50%;
+        content: "";
+        background: rgba(80, 187, 210, 0.1);
+        filter: blur(90px);
+      }
+
+      .world-stage {
+        position: relative;
+        min-height: 44rem;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 1.5rem;
+        background: #0a1818;
+        box-shadow: 0 3rem 8rem rgba(0, 0, 0, 0.35);
+      }
+
+      .world-stage > img {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        filter: saturate(0.75) contrast(1.08);
+      }
+
+      .world-stage::after {
+        position: absolute;
+        inset: 0;
+        content: "";
+        background:
+          linear-gradient(90deg, rgba(4, 10, 10, 0.95) 0%, rgba(4, 10, 10, 0.66) 48%, rgba(4, 10, 10, 0.28) 100%),
+          linear-gradient(0deg, rgba(4, 8, 7, 0.86), transparent 52%);
+      }
+
+      .world-stage-grid {
+        position: relative;
+        z-index: 1;
+        display: grid;
+        grid-template-columns: 0.95fr 1.05fr;
+        align-items: center;
+        gap: 4rem;
+        min-height: 44rem;
+        padding: clamp(2rem, 5vw, 5rem);
+      }
+
+      .world-story h2 {
+        max-width: 9ch;
+        margin: 1.15rem 0 0;
+        font-family: var(--display);
+        font-size: clamp(3.5rem, 6.2vw, 7rem);
+        letter-spacing: -0.07em;
+        line-height: 0.86;
+      }
+
+      .world-story > p:not(.eyebrow) {
+        max-width: 35rem;
+        margin: 1.6rem 0 0;
+        color: rgba(245, 248, 242, 0.78);
+        font-size: 1rem;
+        line-height: 1.7;
+      }
+
+      .world-feed {
+        display: grid;
+        align-content: center;
+        gap: 0.75rem;
+        justify-self: end;
+        width: min(100%, 31rem);
+      }
+
+      .presence-bar,
+      .world-event,
+      .code-flight {
+        border: 1px solid rgba(255, 255, 255, 0.17);
+        background: rgba(6, 12, 11, 0.72);
+        box-shadow: 0 1rem 3rem rgba(0, 0, 0, 0.18);
+        backdrop-filter: blur(18px);
+      }
+
+      .presence-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-radius: 999px;
+        padding: 0.7rem 0.8rem 0.7rem 1rem;
+        font-family: var(--mono);
+        font-size: 0.62rem;
+        letter-spacing: 0.04em;
+      }
+
+      .presence-people {
+        display: flex;
+        align-items: center;
+      }
+
+      .presence-avatar {
+        display: grid;
+        width: 1.75rem;
+        height: 1.75rem;
+        margin-left: -0.32rem;
+        place-items: center;
+        border: 2px solid #0a100e;
+        border-radius: 50%;
+        background: var(--mint);
+        color: #06100a;
+        font-size: 0.55rem;
+        font-weight: 850;
+      }
+
+      .presence-avatar:first-child { margin-left: 0; background: var(--lime); }
+      .presence-avatar:nth-child(2) { background: var(--blue); }
+      .presence-avatar:nth-child(3) { background: #f2a865; }
+
+      .world-event {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        align-items: center;
+        gap: 0.8rem;
+        border-radius: 0.9rem;
+        padding: 0.95rem;
+      }
+
+      .event-icon {
+        display: grid;
+        width: 2.5rem;
+        height: 2.5rem;
+        place-items: center;
+        border-radius: 0.7rem;
+        background: rgba(185, 255, 102, 0.1);
+        color: var(--lime);
+        font-family: var(--mono);
+        font-size: 0.63rem;
+      }
+
+      .world-event strong,
+      .world-event small {
+        display: block;
+      }
+
+      .world-event strong { font-size: 0.78rem; }
+
+      .world-event small {
+        margin-top: 0.25rem;
+        color: rgba(245, 248, 242, 0.6);
+        font-size: 0.66rem;
+      }
+
+      .event-state {
+        color: var(--mint);
+        font-family: var(--mono);
+        font-size: 0.56rem;
+      }
+
+      .code-flight {
+        border-radius: 1rem;
+        padding: 1.1rem;
+      }
+
+      .flight-title {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        font-size: 0.75rem;
+        font-weight: 750;
+      }
+
+      .flight-title i {
+        width: 0.5rem;
+        height: 0.5rem;
+        border-radius: 50%;
+        background: var(--lime);
+        box-shadow: 0 0 1rem var(--lime);
+        animation: pulse 1.8s infinite;
+      }
+
+      .flight-track {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        margin-top: 1rem;
+      }
+
+      .flight-track::before {
+        position: absolute;
+        left: 8%;
+        right: 8%;
+        top: 0.32rem;
+        height: 1px;
+        content: "";
+        background: linear-gradient(90deg, var(--lime), var(--mint), var(--blue));
+      }
+
+      .flight-step {
+        position: relative;
+        z-index: 1;
+        text-align: center;
+      }
+
+      .flight-step::before {
+        display: block;
+        width: 0.65rem;
+        height: 0.65rem;
+        margin: 0 auto 0.6rem;
+        border: 2px solid #0d1411;
+        border-radius: 50%;
+        content: "";
+        background: var(--mint);
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.2);
+      }
+
+      .flight-step span,
+      .flight-step small { display: block; }
+      .flight-step span { font-family: var(--mono); font-size: 0.54rem; }
+      .flight-step small { margin-top: 0.22rem; color: var(--muted-2); font-size: 0.48rem; }
+
+      .world-values {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1px;
+        margin-top: 1px;
+        border: 1px solid var(--line);
+        border-radius: 1rem;
+        overflow: hidden;
+        background: var(--line);
+      }
+
+      .world-value {
+        min-height: 11rem;
+        padding: 1.5rem;
+        background: #080b09;
+      }
+
+      .world-value span { color: var(--lime); font-family: var(--mono); font-size: 0.58rem; }
+      .world-value h3 { margin: 1.4rem 0 0; font-family: var(--display); font-size: 1.3rem; }
+      .world-value p { margin: 0.65rem 0 0; color: var(--muted); font-size: 0.8rem; line-height: 1.6; }
+
       /* Product loop */
       .loop-section {
         position: relative;
@@ -1671,11 +1922,21 @@
         }
 
         .loop-heading,
+        .world-stage-grid,
         .audience-intro,
         .resilience-grid,
         .faq-grid {
           grid-template-columns: 1fr;
           gap: 2rem;
+        }
+
+        .world-stage-grid {
+          align-content: center;
+        }
+
+        .world-feed {
+          justify-self: stretch;
+          width: 100%;
         }
 
         .launch-grid {
@@ -1800,12 +2061,46 @@
         }
 
         .loop-section,
+        .world-section,
         .launch-section,
         .resilience,
         .audience,
         .final-cta,
         .faq {
           padding-block: 6rem;
+        }
+
+        .world-stage-grid {
+          min-height: auto;
+          padding: 2rem 1rem;
+        }
+
+        .world-stage {
+          min-height: auto;
+        }
+
+        .world-stage::after {
+          background: linear-gradient(0deg, rgba(4, 10, 10, 0.96), rgba(4, 10, 10, 0.6));
+        }
+
+        .world-story h2 {
+          font-size: clamp(3.4rem, 17vw, 5rem);
+        }
+
+        .world-values {
+          grid-template-columns: 1fr;
+        }
+
+        .world-value {
+          min-height: 9rem;
+        }
+
+        .world-event {
+          grid-template-columns: auto 1fr;
+        }
+
+        .event-state {
+          display: none;
         }
 
         .loop-grid {
@@ -1941,9 +2236,9 @@
               <span class="serif accent">Ship together.</span>
             </h1>
             <p class="hero-lede">
-              ForkMesh brings your repositories, team conversations, Codex, and
-              Claude Code into one local-first desktop workspace. Turn chat into
-              agent work, review real Git together, and ship from nodes you control.
+              ForkMesh makes development a place you can step into. Bring your
+              repositories, team chat, Codex, and Claude Code; see who's building
+              what, watch code hit servers, and keep it alive on federated mirrors.
             </p>
             <div class="hero-actions">
               <a class="btn btn-primary" href="/desktop">Install ForkMesh <span aria-hidden="true">↗</span></a>
@@ -2030,11 +2325,69 @@
 
         <div class="hero-proof">
           <div class="shell proof-grid">
-            <div class="proof-intro">One workspace.<br />The whole loop.</div>
-            <div><small>01 / TALK</small><strong>World + team chat</strong></div>
-            <div><small>02 / BUILD</small><strong>Codex + Claude</strong></div>
-            <div><small>03 / REVIEW</small><strong>Actual Git</strong></div>
-            <div><small>04 / SHIP</small><strong>Actions + releases</strong></div>
+            <div class="proof-intro">Development,<br />made alive.</div>
+            <div><small>01 / MEET</small><strong>World + fireside chat</strong></div>
+            <div><small>02 / BUILD</small><strong>People + agents</strong></div>
+            <div><small>03 / WATCH</small><strong>Code hit servers</strong></div>
+            <div><small>04 / FEDERATE</small><strong>Independent mirrors</strong></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="world-section" id="world" aria-labelledby="world-title">
+        <div class="shell">
+          <div class="world-stage">
+            <img src="/world/assets/beach-horizon-v1.webp" alt="A bright beach horizon inside ForkMesh World" />
+            <div class="world-stage-grid">
+              <div class="world-story reveal">
+                <p class="eyebrow">Development is a place now</p>
+                <h2 id="world-title">Go to the beach.<br /><span class="serif accent">Ship the code.</span></h2>
+                <p>
+                  ForkMesh turns the invisible work of software into a world your
+                  team can share. Meet by the fire, see who is working on what,
+                  hand a task to an agent, and watch the result move through Git,
+                  Actions, servers, and mirrors in real time.
+                </p>
+                <div class="hero-actions">
+                  <a class="btn btn-primary" href="/world">Enter the World <span aria-hidden="true">↗</span></a>
+                  <a class="btn btn-secondary" href="#mesh">See the federation</a>
+                </div>
+              </div>
+
+              <div class="world-feed reveal" aria-label="Live activity in ForkMesh World">
+                <div class="presence-bar">
+                  <span>FIRESIDE / 8 HERE</span>
+                  <div class="presence-people" aria-label="Jett, Kaif, Maya, and five more teammates online">
+                    <span class="presence-avatar">J</span><span class="presence-avatar">K</span><span class="presence-avatar">M</span><span class="presence-avatar">+5</span>
+                  </div>
+                </div>
+                <div class="world-event">
+                  <span class="event-icon">CHAT</span>
+                  <div><strong>Maya turned a fireside note into a task</strong><small>#release-planning · linked to forkmesh/forkmesh</small></div>
+                  <span class="event-state">JUST NOW</span>
+                </div>
+                <div class="world-event">
+                  <span class="event-icon">AI</span>
+                  <div><strong>Codex shared a branch back to the team</strong><small>agent/841 · 4 commits · ready for human review</small></div>
+                  <span class="event-state">READY</span>
+                </div>
+                <div class="code-flight">
+                  <p class="flight-title"><i aria-hidden="true"></i> commit 84fc1 is moving through the network</p>
+                  <div class="flight-track" aria-hidden="true">
+                    <div class="flight-step"><span>GIT</span><small>signed</small></div>
+                    <div class="flight-step"><span>QA</span><small>passed</small></div>
+                    <div class="flight-step"><span>SERVER</span><small>live</small></div>
+                    <div class="flight-step"><span>3 MIRRORS</span><small>verified</small></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="world-values reveal">
+            <article class="world-value"><span>01 / PRESENCE</span><h3>See the work happening.</h3><p>People, agents, tasks, QA, nodes, and releases become shared activity instead of tabs nobody else can see.</p></article>
+            <article class="world-value"><span>02 / PLAY</span><h3>Make building fun again.</h3><p>Walk the city, meet at the fireside, visit project spaces, and stay connected without turning collaboration into another meeting.</p></article>
+            <article class="world-value"><span>03 / FEDERATION</span><h3>One World, many owners.</h3><p>Every new instance can become a peer in a developer fediverse—sharing presence and preserving code without one company owning the whole place.</p></article>
           </div>
         </div>
       </section>
@@ -2054,7 +2407,7 @@
           </div>
 
           <div class="loop-grid">
-            <article class="loop-card reveal" id="world">
+            <article class="loop-card reveal">
               <span class="card-number">01 / TALK + CAPTURE</span>
               <h3>Your team shares one live context.</h3>
               <p>Meet in World, talk in repository rooms, and turn a message into an issue or agent task. People, discussion, code, and acceptance criteria stay attached.</p>
@@ -2129,12 +2482,12 @@
       <section class="resilience" id="mesh" aria-labelledby="mesh-title">
         <div class="shell resilience-grid">
           <div class="reveal">
-            <p class="eyebrow">Resilience is part of the workflow</p>
-            <h2 class="section-title" id="mesh-title">When one host disappears, the project <span class="serif accent">doesn't.</span></h2>
+            <p class="eyebrow">Federation makes resilience real</p>
+            <h2 class="section-title" id="mesh-title">One instance can disappear. The network <span class="serif accent">doesn't.</span></h2>
             <p class="section-lede">
-              Desktop and headless nodes keep real Git mirrors. ForkMesh checks
-              eligibility, freshness, health, and source-attested integrity before
-              routing public browse or clone traffic to an independent copy.
+              ForkMesh is bigger than any one host. People and teams can run their
+              own instances; desktop and headless nodes preserve real Git mirrors;
+              the federation routes work to healthy, integrity-matching peers.
             </p>
             <div class="resilience-list">
               <div><span>01</span><p><strong>Same clean URL.</strong> Clone and browse without learning which node is serving the repository.</p></div>
@@ -2195,8 +2548,8 @@
       <section class="final-cta" aria-labelledby="cta-title">
         <div class="shell reveal">
           <p class="eyebrow" style="justify-content:center">Your forge is ready</p>
-          <h2 id="cta-title">Own the loop.<br /><span class="serif accent">Ship the work.</span></h2>
-          <p>Install ForkMesh, bring an existing repository, invite your team into World, and turn the next conversation into reviewed code.</p>
+          <h2 id="cta-title">Enter the World.<br /><span class="serif accent">Ship the work.</span></h2>
+          <p>Bring a repository, invite your team to the fireside, and turn the next conversation into code you can watch move across the network.</p>
           <div class="hero-actions">
             <a class="btn btn-primary" href="/desktop">Download for desktop <span aria-hidden="true">↗</span></a>
             <a class="btn btn-secondary" href="/signup">Create an account</a>
