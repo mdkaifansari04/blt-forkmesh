@@ -854,6 +854,8 @@ void MainWindow::loadRepositories()
         repo.actionsEnabled =
             settings.value("actionsEnabled", repo.owner == accountOwner())
                 .toBool();
+        repo.actionsAutoApprove =
+            settings.value("actionsAutoApprove", true).toBool();
         repo.externallyManagedActions =
             settings.value("externallyManagedActions", false).toBool();
         repo.externalActionsSource =
@@ -992,6 +994,7 @@ void MainWindow::saveRepositories() const
         settings.setValue("publishToNetwork", repo.publishToNetwork);
         settings.setValue("isPrivate", repo.isPrivate);
         settings.setValue("actionsEnabled", repo.actionsEnabled);
+        settings.setValue("actionsAutoApprove", repo.actionsAutoApprove);
         settings.setValue("externallyManagedActions",
                           repo.externallyManagedActions);
         settings.setValue("externalActionsSource",
@@ -2750,10 +2753,21 @@ QWidget *MainWindow::buildRepoSettingsTab()
     m_settingsActionsCheck->setToolTip(
         "When a fork pushes to this repo's local mirror, run its .forkmesh/ "
         "workflows. Off by default for mirrored repos. Changed workflows still "
-        "require your approval before they run.");
+        "require your approval unless automatic approval is enabled below.");
     connect(m_settingsActionsCheck, &QCheckBox::toggled, this,
             [this](bool on) { setRepoActionsEnabled(on); });
     automationCol->addWidget(m_settingsActionsCheck);
+
+    m_settingsAutoApproveCheck =
+        new QCheckBox("Automatically approve workflow runs");
+    m_settingsAutoApproveCheck->setCursor(Qt::PointingHandCursor);
+    m_settingsAutoApproveCheck->setToolTip(
+        "Approve the exact pushed repository snapshot and start the workflow "
+        "without waiting for an approval click. Turn this off to review each "
+        "new snapshot before it can run.");
+    connect(m_settingsAutoApproveCheck, &QCheckBox::toggled, this,
+            [this](bool on) { setRepoActionsAutoApprove(on); });
+    automationCol->addWidget(m_settingsAutoApproveCheck);
 
     auto *actionsHint = new QLabel(
         "Mirrored repositories start with actions disabled. Enable this only for "
@@ -2859,6 +2873,42 @@ void MainWindow::setRepoActionsEnabled(bool on)
         QSignalBlocker block(m_settingsActionsCheck);
         m_settingsActionsCheck->setChecked(on);
     }
+}
+
+void MainWindow::setRepoActionsAutoApprove(bool on)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    if (m_repositories[m_repoDetailIndex].actionsAutoApprove == on)
+        return;
+    m_repositories[m_repoDetailIndex].actionsAutoApprove = on;
+    saveRepositories();
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    logSystem(QStringLiteral("Actions automatic approval %1 for %2/%3.")
+                  .arg(on ? "enabled" : "disabled", repo.owner, repo.name));
+    // Keep both toggles (Actions tab + Settings tab) in sync.
+    if (m_actionsAutoApproveCheck) {
+        QSignalBlocker block(m_actionsAutoApproveCheck);
+        m_actionsAutoApproveCheck->setChecked(on);
+    }
+    if (m_settingsAutoApproveCheck) {
+        QSignalBlocker block(m_settingsAutoApproveCheck);
+        m_settingsAutoApproveCheck->setChecked(on);
+    }
+    if (!on)
+        return;
+
+    const int resumed = autoApproveAwaitingRuns(repo);
+    if (resumed == 0)
+        return;
+    logSystem(QStringLiteral("Actions: queued %1 automatically approved pending "
+                             "run%2 for %3/%4.")
+                  .arg(resumed)
+                  .arg(resumed == 1 ? QString() : QStringLiteral("s"),
+                       repo.owner, repo.name));
+    refreshActionsTable();
+    updateNotificationButton();
+    processActionQueue();
 }
 
 void MainWindow::setRepoSecretScanningEnabled(bool on)
@@ -3025,6 +3075,12 @@ void MainWindow::refreshRepoSettings()
         m_settingsActionsCheck->setEnabled(haveRepo);
         m_settingsActionsCheck->setChecked(
             haveRepo && m_repositories.at(m_repoDetailIndex).actionsEnabled);
+    }
+    if (m_settingsAutoApproveCheck) {
+        QSignalBlocker block(m_settingsAutoApproveCheck);
+        m_settingsAutoApproveCheck->setEnabled(haveRepo);
+        m_settingsAutoApproveCheck->setChecked(
+            haveRepo && m_repositories.at(m_repoDetailIndex).actionsAutoApprove);
     }
     if (m_secretScanCheck) {
         QSignalBlocker block(m_secretScanCheck);
