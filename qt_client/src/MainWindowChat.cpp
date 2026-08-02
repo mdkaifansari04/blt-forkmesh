@@ -5512,6 +5512,25 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageContainer->setMouseTracking(true);
     m_topMessageContainer->installEventFilter(this);
 
+    // Pending notifications remain visible as a compact stack below the active
+    // toast. The scroll area means a large burst remains reachable without
+    // covering the entire window; the newest queued notification stays at the
+    // bottom, nearest to the composer.
+    m_topMessageQueueScroll = new QScrollArea(this);
+    m_topMessageQueueScroll->setObjectName("topMessageQueue");
+    m_topMessageQueueScroll->setFrameShape(QFrame::NoFrame);
+    m_topMessageQueueScroll->setWidgetResizable(false);
+    m_topMessageQueueScroll->setFocusPolicy(Qt::NoFocus);
+    m_topMessageQueueScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_topMessageQueueScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_topMessageQueueContent = new QWidget;
+    m_topMessageQueueContent->setObjectName("topMessageQueueContent");
+    m_topMessageQueueLayout = new QVBoxLayout(m_topMessageQueueContent);
+    m_topMessageQueueLayout->setContentsMargins(0, 0, 0, 0);
+    m_topMessageQueueLayout->setSpacing(8);
+    m_topMessageQueueScroll->setWidget(m_topMessageQueueContent);
+    m_topMessageQueueScroll->hide();
+
     // Only a message taller than the room above the composer ever scrolls; the
     // usual few-line toast shows entirely, with no scrollbar (topMessageBubbleRect
     // sizes this to the text).

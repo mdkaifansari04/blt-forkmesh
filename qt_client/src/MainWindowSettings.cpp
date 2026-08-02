@@ -4445,9 +4445,9 @@ static constexpr int kToastSlideOutMs = 320;
 // whenever a new bubble is shown (the slide-out retunes it).
 static constexpr int kToastFlightMs = 260;
 
-// Cap on how many error toasts can back up in m_topMessageQueue; a runaway
-// retry loop firing errors faster than they can be read shouldn't grow this
-// without bound. The oldest queued message is dropped once the cap is hit.
+// Cap the visible notification backlog. A runaway retry loop firing messages
+// faster than they can be read should not grow the queue without bound; the
+// oldest queued message is dropped once the cap is hit.
 static constexpr int kToastQueueLimit = 20;
 
 // The Git workspace hides the footer composer to give the diff the full window
@@ -4459,25 +4459,70 @@ bool MainWindow::topMessageDockVisible() const
 }
 
 // Park a message behind the toast that is currently counting down, dropping the
-// oldest once the queue is full. Used both by a burst of errors and by the
-// stream of pings this area mirrors (adhoc #77).
-void MainWindow::queueTopMessage(const QString &text, bool error)
+// oldest once the queue is full. The queue is rendered beneath the active toast
+// so every pending message remains visible and can be read before its turn.
+void MainWindow::queueTopMessage(const QString &text, bool error,
+                                 const QString &clickHref)
 {
     const QString trimmed = text.simplified();
     if (trimmed.isEmpty())
         return;
-    m_topMessageQueue.append(qMakePair(trimmed, error));
+    m_topMessageQueue.append({trimmed, error, clickHref});
     while (m_topMessageQueue.size() > kToastQueueLimit)
         m_topMessageQueue.removeFirst();
-    renderTopMessageCountdown(); // repaint the "(+N more)" suffix
+    renderTopMessageQueue();
+    positionTopMessageBubble(); // move the active bubble up above the new card
+    renderTopMessageCountdown();
+}
+
+// Unlike the previous "+N more" counter, queued notifications stay on screen
+// in their arrival order. The active toast sits immediately above this list, so
+// each incoming card pushes older notifications upward instead of covering them.
+void MainWindow::renderTopMessageQueue()
+{
+    if (!m_topMessageQueueLayout || !m_topMessageQueueContent ||
+        !m_topMessageQueueScroll)
+        return;
+
+    while (QLayoutItem *item = m_topMessageQueueLayout->takeAt(0)) {
+        delete item->widget();
+        delete item;
+    }
+
+    for (const auto &entry : m_topMessageQueue) {
+        auto *card = new QFrame(m_topMessageQueueContent);
+        card->setObjectName("topMessageQueueCard");
+        card->setAttribute(Qt::WA_StyledBackground, true);
+        auto *row = new QVBoxLayout(card);
+        row->setContentsMargins(12, 8, 10, 8);
+        row->setSpacing(0);
+
+        auto *label = new QLabel(card);
+        label->setObjectName("topMessageQueueText");
+        label->setTextFormat(Qt::RichText);
+        label->setWordWrap(true);
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        const QString color = entry.error ? QStringLiteral("#f85149")
+                                          : QStringLiteral("#3fb950");
+        const QString glyph = entry.error ? QString::fromUtf8("\xE2\x9C\x95")
+                                          : QString::fromUtf8("\xE2\x9C\x93");
+        label->setText(QStringLiteral("<span style='color:%1'>%2 %3</span>")
+                           .arg(color, glyph, entry.text.toHtmlEscaped()));
+        row->addWidget(label);
+        m_topMessageQueueLayout->addWidget(card);
+    }
+
+    m_topMessageQueueContent->adjustSize();
+    m_topMessageQueueScroll->setVisible(!m_topMessageQueue.isEmpty());
 }
 
 // True while a toast is on screen with its countdown still running: a new
 // background event must queue instead of stomping what is being read.
 bool MainWindow::topMessageBusy() const
 {
-    return m_topMessage && m_topMessage->isVisible() && m_topMessageTimer &&
-           m_topMessageTimer->isActive();
+    return m_topMessage && m_topMessage->isVisible() &&
+           ((m_topMessageTimer && m_topMessageTimer->isActive()) ||
+            m_topMessageSlidingOut);
 }
 
 // (Re)paint the prompt-anchored bubble from m_topMessageRaw. Every message is
@@ -4558,8 +4603,25 @@ QRect MainWindow::topMessageBubbleRect()
                       ? qBound(margin, anchor.right() - bubbleWidth + 1,
                                qMax(margin, width() - bubbleWidth - margin))
                       : qMax(margin, width() - bubbleWidth - margin);
-    const int above = hasPrompt ? anchor.top() - bubbleHeight - 10
-                                : height() - bubbleHeight - margin;
+    int queueHeight = 0;
+    if (m_topMessageQueueScroll && m_topMessageQueueContent &&
+        !m_topMessageQueue.isEmpty()) {
+        m_topMessageQueueContent->setFixedWidth(bubbleWidth);
+        if (m_topMessageQueueLayout)
+            m_topMessageQueueLayout->activate();
+        m_topMessageQueueContent->adjustSize();
+        const int queueRoom = qMax(0, roomForBubble - bubbleHeight - 8);
+        queueHeight = qMin(m_topMessageQueueContent->sizeHint().height(), queueRoom);
+        m_topMessageQueueScroll->setFixedWidth(bubbleWidth);
+        m_topMessageQueueScroll->setFixedHeight(queueHeight);
+        m_topMessageQueueScroll->setVisible(queueHeight > 0);
+    } else if (m_topMessageQueueScroll) {
+        m_topMessageQueueScroll->hide();
+    }
+    const int above = hasPrompt ? anchor.top() - bubbleHeight - queueHeight -
+                                    (queueHeight > 0 ? 18 : 10)
+                                : height() - bubbleHeight - queueHeight -
+                                      (queueHeight > 0 ? margin + 8 : margin);
     const int y = hasPrompt && above < margin
                       ? qMin(qMax(margin, height() - bubbleHeight - margin),
                              anchor.bottom() + 10)
@@ -4575,7 +4637,14 @@ void MainWindow::positionTopMessageBubble()
         return;
     if (m_topMessageSlidingOut)
         return; // the exit animation owns the geometry until it lands
-    m_topMessageContainer->setGeometry(topMessageBubbleRect());
+    const QRect bubble = topMessageBubbleRect();
+    m_topMessageContainer->setGeometry(bubble);
+    if (m_topMessageQueueScroll && m_topMessageQueueScroll->isVisible()) {
+        m_topMessageQueueScroll->move(bubble.left(), bubble.bottom() + 9);
+        if (auto *bar = m_topMessageQueueScroll->verticalScrollBar())
+            bar->setValue(bar->maximum()); // keep the newest queued card visible
+        m_topMessageQueueScroll->raise();
+    }
     m_topMessageContainer->raise();
 }
 
@@ -4705,10 +4774,6 @@ void MainWindow::flashMessage(const QString &text, bool error,
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
     m_loadStatusShowing = false;
-    // Carry an optional click target so the whole toast can act as a link (e.g. an
-    // "agent is waiting for you" toast jumps to that agent). Cleared by default so
-    // an ordinary toast is never left clickable from a previous message.
-    m_topMessageHref = clickHref;
     // Always keep a copy in the network log for history.
     logSystem(text);
     if (!m_topMessage)
@@ -4719,19 +4784,17 @@ void MainWindow::flashMessage(const QString &text, bool error,
         dismissTopMessage();
         return;
     }
-    // A second error arriving while one is already counting down would otherwise
-    // instantly replace it, so a burst of quick failures (retries, batched
-    // errors) could flash by unread. A sent-prompt bubble gets the same courtesy
-    // for ordinary follow-up notices, so its text remains readable as it flies.
-    if (error && m_topMessage->isVisible() && m_topMessageError &&
-        m_topMessageTimer && m_topMessageTimer->isActive()) {
-        queueTopMessage(trimmed, true);
+    // Keep every notification visible. A new arrival becomes the bottom card in
+    // the queue and moves the active toast up, rather than replacing a message
+    // that may still be being read.
+    if (topMessageBusy()) {
+        queueTopMessage(trimmed, error, clickHref);
         return;
     }
-    if (!error && m_topMessageIsPromptBubble && topMessageBusy()) {
-        queueTopMessage(trimmed, false);
-        return;
-    }
+    // Carry an optional click target so the whole toast can act as a link (e.g. an
+    // "agent is waiting for you" toast jumps to that agent). Cleared by default so
+    // an ordinary toast is never left clickable from a previous message.
+    m_topMessageHref = clickHref;
     m_topMessageError = error;
     m_topMessageIsPromptBubble = false;
     m_topMessageHovering = false;
@@ -4797,8 +4860,8 @@ void MainWindow::renderTopMessageCountdown()
     QStringList parts;
     if (m_topMessageSecondsLeft > 0)
         parts << QStringLiteral("%1s").arg(m_topMessageSecondsLeft);
-    // Tell the user more errors are waiting behind this one, so a departing toast
-    // doesn't feel like it silently dropped the rest of a quick burst.
+    // Keep the count alongside the visible stack so a departing toast makes the
+    // queue depth clear, even when the stack has to scroll for a large burst.
     if (!m_topMessageQueue.isEmpty())
         parts << QStringLiteral("+%1 more").arg(m_topMessageQueue.size());
     if (m_topMessageHovering)
@@ -4818,6 +4881,7 @@ void MainWindow::dismissTopMessage()
     m_topMessageIsPromptBubble = false;
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     m_topMessageQueue.clear();
+    renderTopMessageQueue();
     if (m_topMessageTimer)
         m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
     if (m_topMessageFlight)
@@ -4827,6 +4891,8 @@ void MainWindow::dismissTopMessage()
         m_topMessage->hide();
     if (m_topMessageContainer)
         m_topMessageContainer->hide();
+    if (m_topMessageQueueScroll)
+        m_topMessageQueueScroll->hide();
     if (m_topMessageMeta)
         m_topMessageMeta->clear();
     if (m_topMessageActions)
@@ -4849,14 +4915,15 @@ void MainWindow::advanceTopMessageQueue()
         dismissTopMessage();
         return;
     }
-    const QPair<QString, bool> next = m_topMessageQueue.takeFirst();
+    const TopMessageQueueEntry next = m_topMessageQueue.takeFirst();
+    renderTopMessageQueue();
     // Hide first: flashMessage would otherwise see a toast that is still
     // visible and queue this one straight back behind itself.
     if (m_topMessage)
         m_topMessage->hide();
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
-    flashMessage(next.first, next.second);
+    flashMessage(next.text, next.error, next.clickHref);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)
