@@ -20,6 +20,8 @@ public:
                                                  QString *error = nullptr);
     static QVector<RepoStatsSample> load(const QString &repoDir,
                                          QString *error = nullptr);
+    // Ratchet enforcement is a local repository preference stored in
+    // .git/config. Toggling it never modifies tracked repository files.
     static bool ratchetEnabled(const QString &repoDir);
     static bool setRatchetEnabled(const QString &repoDir, bool enabled,
                                   QString *error = nullptr);
