@@ -1099,7 +1099,7 @@
       row.dataset.viewed = selected ? "true" : "false";
       const icon = row.querySelector("[data-lucide]");
       if (icon) {
-        icon.setAttribute("data-lucide", selected ? "check-circle-2" : "circle");
+        icon.setAttribute("data-lucide", selected ? "check-circle-2" : "file");
         icon.classList.toggle("text-primary", selected);
         icon.classList.toggle("text-muted-foreground", !selected);
       }
@@ -1128,18 +1128,52 @@
 
   function renderRepoPullFiles(files, viewed = new Set()) {
     const rows = Array.isArray(files) ? files : [];
-    if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No committed patch file summary is available for this pull request.</div>';
-    return rows.slice(0, 100).map((file) => {
-      const path = file.path || "file";
-      const isViewed = viewed.has(path);
+    if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No changed files are available from this mirror.</div>';
+
+    // GitHub's file tree is substantially easier to scan than a flat list once
+    // a pull touches more than one directory. Build a small in-memory tree and
+    // keep the full path on each file button so it still targets the matching
+    // diff block on the right.
+    const root = { dirs: new Map(), files: [] };
+    rows.forEach((file) => {
+      const path = String(file?.path || "file");
+      const parts = path.split("/").filter(Boolean);
+      let node = root;
+      parts.slice(0, -1).forEach((part) => {
+        if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
+        node = node.dirs.get(part);
+      });
+      node.files.push({ ...file, path, name: parts.at(-1) || path });
+    });
+
+    const renderFile = (file) => {
+      const isViewed = viewed.has(file.path);
       return `
-      <button type="button" data-repo-pull-file="${escapeHtml(path)}" data-viewed="${isViewed ? "true" : "false"}" class="grid w-full grid-cols-[1rem_minmax(0,1fr)_auto_auto] items-center gap-2 border-t border-border px-3 py-2 text-left text-xs transition-colors hover:bg-secondary/50 first:border-t-0">
-        <i data-lucide="${isViewed ? "check-circle-2" : "circle"}" class="h-3.5 w-3.5 ${isViewed ? "text-primary" : "text-muted-foreground"}"></i>
-        <span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(file.path || "file")}</span>
-        <span class="font-mono text-primary">+${formatCount(file.adds || 0)}</span>
-        <span class="font-mono text-destructive">-${formatCount(file.dels || 0)}</span>
-      </button>`;
-    }).join("");
+        <button type="button" data-repo-pull-file="${escapeHtml(file.path)}" data-viewed="${isViewed ? "true" : "false"}" title="${escapeHtml(file.path)}" class="grid w-full grid-cols-[1rem_minmax(0,1fr)_auto_auto] items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary">
+          <i data-lucide="${isViewed ? "check-circle-2" : "file"}" class="h-3.5 w-3.5 ${isViewed ? "text-primary" : "text-muted-foreground"}"></i>
+          <span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(file.name)}</span>
+          <span class="font-mono text-[10px] text-primary">+${formatCount(file.adds || 0)}</span>
+          <span class="font-mono text-[10px] text-destructive">-${formatCount(file.dels || 0)}</span>
+        </button>`;
+    };
+    const renderNode = (node) => {
+      const directories = [...node.dirs.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, child]) => `
+          <details open class="group">
+            <summary class="flex cursor-pointer list-none items-center gap-1.5 rounded px-2 py-1.5 text-xs font-medium text-foreground hover:bg-secondary">
+              <i data-lucide="chevron-right" class="h-3 w-3 shrink-0 transition-transform group-open:rotate-90"></i>
+              <i data-lucide="folder" class="h-3.5 w-3.5 shrink-0 text-primary"></i>
+              <span class="min-w-0 truncate font-mono">${escapeHtml(name)}</span>
+            </summary>
+            <div class="ml-3 border-l border-border pl-1">${renderNode(child)}</div>
+          </details>`).join("");
+      const fileRows = [...node.files]
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .map(renderFile).join("");
+      return directories + fileRows;
+    };
+    return `<div data-repo-pull-file-tree class="grid gap-0.5 p-2">${renderNode(root)}</div>`;
   }
 
   // Pull-request badge (adhoc #44): a visual fingerprint of the PR. One tile
@@ -1359,11 +1393,11 @@
   }
 
   function renderRepoPullPatch(patch, viewed = new Set()) {
-    if (!String(patch || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">No textual patch is committed for this pull request. Branch-backed PRs are reconstructed by the desktop client.</div>';
+    if (!String(patch || "").trim()) return '<div class="px-4 py-3 text-sm text-muted-foreground">The diff is unavailable from the current mirror.</div>';
     return `<div data-repo-pull-patch>${renderDiffFiles(parseDiffFiles(patch), [], viewed)}</div>`;
   }
 
-  async function loadRepoPullPatch(repo, number, metadataCommit = "") {
+  async function loadRepoPullPatch(repo, number, metadataCommit = "", values = {}) {
     const patchPath = `pulls/${number}/changes.patch`;
     try {
       const commit = immutableGitCommit(metadataCommit)
@@ -1373,9 +1407,24 @@
         ref: commit,
       }));
       const patch = blobText(blob);
+      if (patch.trim()) return { patch, files: parsePatchStats(patch), unavailable: false };
+    } catch (_) {}
+
+    // Current branch-backed pull requests intentionally do not commit a large
+    // changes.patch to the collaboration branch. Reconstruct their immutable
+    // review diff from the creation OIDs through the mirror's bounded compare
+    // endpoint, the same endpoint used while opening a web pull request.
+    const base = immutableGitCommit(values.creationBaseOid);
+    const head = immutableGitCommit(values.creationHeadOid);
+    if (!base || !head) return { patch: "", files: [], unavailable: true };
+    try {
+      const comparison = await fetchRepoJson(repoLiveUrl(repo, "compare", {
+        base,
+        head,
+      }));
+      const patch = String(comparison?.patch || "");
       return { patch, files: parsePatchStats(patch), unavailable: false };
-    } catch (error) {
-      if (isMissingMirrorFolder(error)) return { patch: "", files: [], unavailable: true };
+    } catch (_) {
       return { patch: "", files: [], unavailable: true };
     }
   }
@@ -2324,8 +2373,8 @@
             <span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="files" class="h-3.5 w-3.5 text-primary"></i>${formatCount(pullPatch.files.length)} files changed</span>
             <span data-repo-pull-viewed-summary class="font-mono text-[10px] text-muted-foreground">${formatCount(pullViewed.size)} of ${formatCount(pullPatch.files.length)} viewed</span>
           </div>
-          <div class="grid min-w-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
-            <nav data-repo-pull-file-list aria-label="Changed files" class="max-h-[70vh] overflow-auto border-b border-border bg-secondary/20 lg:sticky lg:top-0 lg:border-b-0 lg:border-r">${renderRepoPullFiles(pullPatch.files, pullViewed)}</nav>
+          <div class="grid min-w-0 lg:grid-cols-[20rem_minmax(0,1fr)]">
+            <nav data-repo-pull-file-list aria-label="Changed files" class="max-h-[75vh] overflow-auto border-b border-border bg-secondary/20 lg:sticky lg:top-3 lg:self-start lg:border-b-0 lg:border-r">${renderRepoPullFiles(pullPatch.files, pullViewed)}</nav>
             <div data-repo-pull-diff-list class="min-w-0">${renderRepoPullPatch(pullPatch.patch, pullViewed)}</div>
           </div>
         </section>` : "";
@@ -2426,7 +2475,7 @@
           </p>
           ${recordTabs}
         </header>
-        <div class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
+        <div data-repo-record-layout class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_18rem]">
           <div class="grid min-w-0 gap-4">
             <div data-repo-record-panel="conversation" class="grid min-w-0 gap-4">
               ${isDiscussions ? discussionConversationSection : `
@@ -2544,7 +2593,7 @@
         ? issueDetailParsed(blobText(blob), number)
         : parseFrontMatter(blobText(blob));
       const pullPatch = kind === "pulls"
-        ? await loadRepoPullPatch(repo, number, pullMetadataCommit)
+        ? await loadRepoPullPatch(repo, number, pullMetadataCommit, parsed.values || {})
         : null;
       if (pullPatch) parsed.pullPatch = pullPatch;
       if (kind === "pulls") {
