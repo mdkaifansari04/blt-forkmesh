@@ -6164,6 +6164,7 @@ test("mobile refresh keeps a live low-memory renderer and recovers cached pages 
           "[data-world-diagnostics-summary] > span",
         ),
       ];
+      const diagnostics = shell.world.getDiagnostics();
       return {
         canvases: shell.querySelectorAll("[data-world-canvas-wrap] canvas")
           .length,
@@ -6179,6 +6180,7 @@ test("mobile refresh keeps a live low-memory renderer and recovers cached pages 
         frame: renderer.info.render.frame,
         pixel: [...pixel],
         coarse: matchMedia("(pointer: coarse)").matches,
+        residency: diagnostics.residency,
         compactDebugVisible:
           Boolean(summaryRect) &&
           compactItems.length === 9 &&
@@ -6214,12 +6216,48 @@ test("mobile refresh keeps a live low-memory renderer and recovers cached pages 
       shadows: false,
       contextLost: false,
       coarse: true,
+      residency: {
+        enabled: true,
+        resident: 0,
+        total: 5,
+        active: [],
+      },
       compactDebugVisible: true,
     });
     expect(renderer.frame).toBeGreaterThan(0);
     expect(renderer.pixel[0] + renderer.pixel[1] + renderer.pixel[2])
       .toBeGreaterThan(0);
   }
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setSpawn({ x: 130, y: 0.38, z: 0, heading: 0 });
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getDiagnostics().residency.active,
+    ),
+  ).toContain("repositories");
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setSpawn({ x: 0, y: 0.38, z: 0, heading: 0 });
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const residency = shell.world.getDiagnostics().residency;
+      return {
+        active: residency.active,
+        evictions: residency.evictions,
+      };
+    }),
+  ).toEqual({
+    active: [],
+    evictions: 1,
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const residency = shell.world.getDiagnostics().residency;
+      return residency.releasedGeometries + residency.releasedTextures;
+    }),
+  ).toBeGreaterThan(0);
 
   const frameBeforeCache = await page.locator("forkmesh-world").evaluate(
     (shell) => {
