@@ -4608,9 +4608,27 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
         return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QSettings settings;
-    auto apply = [&](bool weekly, const QJsonObject &window,
+    auto apply = [&](bool weekly, const QJsonValue &windowValue,
                      const QString &pctKey, const QString &resetKey,
                      const QString &anchorKey) {
+        // The app-server deliberately uses null for a window unavailable to the
+        // current account. Keep a previous account's percentage or reset from
+        // leaking into that empty gauge; an absent key, by contrast, is a
+        // partial update and must leave the last known window untouched.
+        if (windowValue.isNull()) {
+            settings.remove(pctKey);
+            settings.remove(resetKey);
+            settings.remove(anchorKey);
+            settings.setValue(
+                usageExhaustedSetting(QStringLiteral("codex"),
+                                      weekly ? QStringLiteral("weekly")
+                                             : QStringLiteral("5h")),
+                false);
+            return;
+        }
+        if (windowValue.isUndefined())
+            return;
+        const QJsonObject window = windowValue.toObject();
         if (window.isEmpty())
             return;
         const int used = qBound(0, window.value(QStringLiteral("usedPercent")).toInt(),
@@ -4650,22 +4668,24 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
                                          : QStringLiteral("5-hour"),
                                   knownReset);
         }
-        if (m_navCodexUsage) {
-            const qint64 remaining = resetMs - now;
-            static_cast<TokenUsageMiniChart *>(m_navCodexUsage)
-                ->setRemaining(weekly, 100 - used,
-                               remaining > 0
-                                   ? QStringLiteral("resets in %1")
-                                         .arg(humanizeRemaining(remaining))
-                                   : QString());
-        }
     };
-    apply(false, rateLimits.value(QStringLiteral("primary")).toObject(),
+    apply(false, rateLimits.value(QStringLiteral("primary")),
           kCodexUsage5hPctSetting, kCodexUsage5hResetSetting,
           kCodexLimit5hStartSetting);
-    apply(true, rateLimits.value(QStringLiteral("secondary")).toObject(),
+    apply(true, rateLimits.value(QStringLiteral("secondary")),
           kCodexUsageWeekPctSetting, kCodexUsageWeekResetSetting,
           kCodexLimitWeekStartSetting);
+    // Render from the complete cached state only after both windows are
+    // updated. This preserves an existing countdown on partial updates and
+    // derives the local countdown when Codex omits resetsAt.
+    refreshCodexUsageRemaining();
+    if (m_navCodexUsage) {
+        auto *chart = static_cast<TokenUsageMiniChart *>(m_navCodexUsage);
+        if (rateLimits.value(QStringLiteral("primary")).isNull())
+            chart->setRemaining(/*weekly=*/false, -1, QString());
+        if (rateLimits.value(QStringLiteral("secondary")).isNull())
+            chart->setRemaining(/*weekly=*/true, -1, QString());
+    }
     refreshAgentLimitLabel();
 }
 
