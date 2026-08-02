@@ -95,10 +95,15 @@ QStringList splitMboxPatches(const QString &mbox)
 
 PullAgentProvenance pullAgentProvenance(const PullRequest &pr)
 {
+    return pullAgentProvenanceIn(pr.commits);
+}
+
+PullAgentProvenance pullAgentProvenanceIn(const QString &commits)
+{
     PullAgentProvenance prov;
     // The trailer rides inside the signed commit series; the first commit that
     // carries it settles the tool/model for the whole PR.
-    const QString value = agentTrailerIn(pr.commits);
+    const QString value = agentTrailerIn(commits);
     if (value.isEmpty())
         return prov;
     prov.isAgent = true;

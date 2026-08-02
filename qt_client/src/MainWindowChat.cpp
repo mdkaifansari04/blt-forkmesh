@@ -797,6 +797,29 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddModeSelector->addItem(agentControlIcon(8), kAgentAskModeLabel, false);
     m_quickAddModeSelector->addItem(agentControlIcon(9), QStringLiteral("Plan"), false);
     m_quickAddModeSelector->addItem(agentControlIcon(10), QStringLiteral("Edit"), false);
+    // The four labels name the mode but not what it permits, and the closed
+    // control shows only an icon — so the permission each one grants is spelled
+    // out beside its label once the popup is open (adhoc #1204). The item text
+    // itself stays as-is: it is what kAgentModeSetting persists and what the
+    // launch paths compare against.
+    {
+        const QStringList permissions = {
+            QStringLiteral("run without asking"),
+            QStringLiteral("confirm every change"),
+            QStringLiteral("read-only, propose a plan"),
+            QStringLiteral("edit files, ask before commands"),
+        };
+        for (int i = 0; i < permissions.size() && i < m_quickAddModeSelector->count();
+             ++i) {
+            m_quickAddModeSelector->setItemData(i, permissions.at(i),
+                                                kAgentChoiceDescriptionRole);
+            m_quickAddModeSelector->setItemData(
+                i,
+                QStringLiteral("%1 — %2")
+                    .arg(m_quickAddModeSelector->itemText(i), permissions.at(i)),
+                Qt::ToolTipRole);
+        }
+    }
     m_quickAddModeSelector->view()->setIconSize(QSize(26, 26));
     m_quickAddModeSelector->setMaxVisibleItems(30);
     m_quickAddModeSelector->setToolTip(
@@ -2144,6 +2167,14 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // Build the one visible agent/model menu from the canonical hidden provider and
 // model controls. Each row stores provider in UserRole and model in UserRole+1,
 // allowing a single click to update both without changing the launch contract.
+//
+// Rows read as the bare model name (adhoc #1204): "Opus 5", not "Opus 5 · Claude
+// Code". Which CLI runs a model follows from the model, so the suffix was the
+// same handful of words repeated down the whole menu; the tooltip still carries
+// it. Models are ordered strongest-first by agentModelPowerRank(), and the
+// superseded/small-sibling ones agentModelIsMinorTier() flags are left out
+// entirely — except when one of them is the live selection, which must stay
+// visible or picking it once would make it unpickable again.
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -2159,14 +2190,27 @@ void MainWindow::refreshQuickAddAgentModelSelector()
     const QSignalBlocker blocker(m_quickAddAgentModelSelector);
     m_quickAddAgentModelSelector->clear();
 
-    auto addChoice = [this](const QIcon &icon, const QString &label,
-                            const QString &provider, const QString &model) {
-        const int row = m_quickAddAgentModelSelector->count();
-        m_quickAddAgentModelSelector->addItem(icon, label, provider);
-        m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
+    struct Choice {
+        QIcon icon;
+        QString label;
+        QString provider;
+        QString model;
+        QString agentName; // which CLI/API runs it, for the tooltip
+        int rank = 0;      // higher sorts nearer the top
+        bool minor = false;
     };
-    addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
-              QStringLiteral("manual"), QString());
+    QList<Choice> models;
+    auto addModel = [&models, selectedProvider, selectedModel](
+                        const QIcon &icon, const QString &label,
+                        const QString &provider, const QString &model,
+                        const QString &agentName) {
+        const bool isSelection =
+            provider == selectedProvider &&
+            (selectedModel.isEmpty() || model == selectedModel);
+        models.append(Choice{icon, label, provider, model, agentName,
+                             agentModelPowerRank(model, label),
+                             !isSelection && agentModelIsMinorTier(model, label)});
+    };
 
     QComboBox claudeModels;
     populateClaudeModelCombo(&claudeModels);
@@ -2184,26 +2228,57 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             icon = 2;
         else if (lower.contains(QLatin1String("haiku")))
             icon = 3;
-        addChoice(agentControlIcon(icon),
-                  QStringLiteral("%1 · Claude Code")
-                      .arg(compactModelName(claudeModels.itemText(i))),
-                  QStringLiteral("claude-code"), id);
+        addModel(agentControlIcon(icon),
+                 compactModelName(claudeModels.itemText(i)),
+                 QStringLiteral("claude-code"), id,
+                 QStringLiteral("Claude Code"));
     }
 
     QComboBox codexModels;
     populateCodexModelCombo(&codexModels);
     for (int i = 0; i < codexModels.count(); ++i) {
-        addChoice(agentControlIcon(4 + (i % 3)),
-                  QStringLiteral("%1 · Codex").arg(codexModels.itemText(i)),
-                  kCodexProvider, codexModels.itemData(i).toString());
+        addModel(agentControlIcon(4 + (i % 3)), codexModels.itemText(i),
+                 kCodexProvider, codexModels.itemData(i).toString(),
+                 QStringLiteral("Codex"));
+    }
+
+    // Strongest first. Rank ties (Opus 4.8 and Sonnet 5 score the same) keep the
+    // order the provider catalog listed them in, so the menu never reshuffles
+    // between two equally-ranked models from one refresh to the next.
+    std::stable_sort(models.begin(), models.end(),
+                     [](const Choice &a, const Choice &b) {
+                         return a.rank > b.rank;
+                     });
+
+    auto addChoice = [this](const QIcon &icon, const QString &label,
+                            const QString &provider, const QString &model,
+                            const QString &tooltip) {
+        const int row = m_quickAddAgentModelSelector->count();
+        m_quickAddAgentModelSelector->addItem(icon, label, provider);
+        m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
+        if (!tooltip.isEmpty())
+            m_quickAddAgentModelSelector->setItemData(row, tooltip,
+                                                      Qt::ToolTipRole);
+    };
+    addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
+              QStringLiteral("manual"), QString(),
+              QStringLiteral("File an issue from this prompt instead of "
+                             "starting an agent"));
+    for (const Choice &choice : models) {
+        if (choice.minor)
+            continue;
+        addChoice(choice.icon, choice.label, choice.provider, choice.model,
+                  QStringLiteral("%1 · %2").arg(choice.label, choice.agentName));
     }
 
     // These API agents do not expose a per-run model chooser in this composer,
     // but remain first-class choices in the combined menu.
     addChoice(agentControlIcon(4), QStringLiteral("OpenAI API"),
-              QStringLiteral("openai"), QString());
+              QStringLiteral("openai"), QString(),
+              QStringLiteral("Headless OpenAI API agent"));
     addChoice(agentControlIcon(2), QStringLiteral("Claude API"),
-              QStringLiteral("claude-api"), QString());
+              QStringLiteral("claude-api"), QString(),
+              QStringLiteral("Headless Claude API agent"));
 
     int selected = -1;
     for (int i = 0; i < m_quickAddAgentModelSelector->count(); ++i) {
@@ -2219,9 +2294,26 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         }
     }
     m_quickAddAgentModelSelector->setCurrentIndex(selected >= 0 ? selected : 0);
+    // The visible label is the bare model name now, so the accessible name and
+    // the control's tooltip carry the "which agent runs it" half that the row
+    // labels dropped.
+    const int current = m_quickAddAgentModelSelector->currentIndex();
+    const QString currentTip =
+        current >= 0
+            ? m_quickAddAgentModelSelector->itemData(current, Qt::ToolTipRole)
+                  .toString()
+            : QString();
     m_quickAddAgentModelSelector->setAccessibleName(
         QStringLiteral("Agent and model: %1")
-            .arg(m_quickAddAgentModelSelector->currentText()));
+            .arg(currentTip.isEmpty()
+                     ? m_quickAddAgentModelSelector->currentText()
+                     : currentTip));
+    m_quickAddAgentModelSelector->setToolTip(
+        currentTip.isEmpty()
+            ? QStringLiteral("Choose the agent and model that will handle this "
+                             "prompt.")
+            : QStringLiteral("%1. Click to choose a different agent or model.")
+                  .arg(currentTip));
 }
 
 // Ask the installed `claude` CLI which --effort values it accepts (adhoc #38)
@@ -3440,9 +3532,9 @@ void MainWindow::updateFooterDiagnostics()
                                       (1024 * 1024));
     }
 #endif
-    // Feed the three moving sparklines. CPU is this process's busy fraction of
-    // one core (the /proc/self/stat figure above); memory and disk are the
-    // host's used fraction, so all three plot on a 0..100% scale (adhoc #17).
+    // Feed the moving sparklines. CPU is this process's busy fraction of
+    // one core (the /proc/self/stat figure above); memory, swap and disk are the
+    // host's used fraction, so all four plot on a 0..100% scale (adhoc #17).
     const QString dash = QString::fromUtf8("\xE2\x80\x94"); // em dash
     if (auto *cpu = static_cast<ResourceSparkline *>(m_cpuChart)) {
         cpu->addSample(cpuPct >= 0 ? cpuPct : 0.0, 100.0,
@@ -3469,6 +3561,23 @@ void MainWindow::updateFooterDiagnostics()
                       .arg(SystemStats::formatBytes(total - avail),
                            SystemStats::formatBytes(total))
                 : QStringLiteral("Host memory in use"));
+    }
+    if (auto *swap = static_cast<ResourceSparkline *>(m_swapChart)) {
+        const qint64 total = SystemStats::totalSwapBytes();
+        const qint64 free = SystemStats::freeSwapBytes();
+        double pct = -1.0;
+        if (total > 0 && free >= 0 && free <= total)
+            pct = 100.0 * double(total - free) / double(total);
+        swap->addSample(pct >= 0 ? pct : 0.0, 100.0,
+                        pct >= 0 ? QStringLiteral("%1%").arg(pct, 0, 'f', 0)
+                                 : dash);
+        swap->setToolTip(
+            total > 0
+                ? QStringLiteral("Swap in use: %1 of %2 (%3 free)")
+                      .arg(SystemStats::formatBytes(total - free),
+                           SystemStats::formatBytes(total),
+                           SystemStats::formatBytes(free))
+                : QStringLiteral("Swap is disabled or unavailable"));
     }
 #ifndef FORKMESH_WINDOW_TESTS
     // Open once on the upward crossing. It rearms only after memory has fallen
@@ -3499,7 +3608,7 @@ void MainWindow::updateFooterDiagnostics()
                 : QStringLiteral("Drive space in use"));
     }
 
-    // The diagnostics indicator rides beside the CPU/MEM/DISK sparklines now
+    // The diagnostics indicator rides beside the CPU/MEM/SWAP/DISK sparklines now
     // (adhoc #145). Crisp octicons replace the old 🖥/⚠ emoji: a muted monitor
     // while the UI has stayed smooth, and an amber alert plus the running count
     // once a stall has been recorded so it reads as a real warning.
@@ -4587,40 +4696,44 @@ void MainWindow::showTreasuryDonateDialog()
                          QNetworkRequest::SameOriginRedirectPolicy);
     request.setTransferTimeout(15000);
     QNetworkReply *reply = m_networkAccess->get(request);
-    QEventLoop loop;
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    loop.exec();
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        constexpr qsizetype kMaximumPoolResponse = 1024 * 1024;
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QNetworkReply::NetworkError networkError = reply->error();
+        const QByteArray body = reply->read(kMaximumPoolResponse + 1);
+        reply->deleteLater();
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
+        const QJsonObject pool =
+            parseError.error == QJsonParseError::NoError && document.isObject()
+                ? document.object()
+                : QJsonObject();
+        const QString address = pool.value("address").toString().trimmed();
+        const bool validAddress =
+            forkmesh::rewards::decodeBase58(address, 32).size() == 32;
+        const bool externalSigner =
+            pool.value("custody").toString() ==
+                QLatin1String("external-local-signer") &&
+            pool.value("privateKeyStoredByWorker").isBool() &&
+            !pool.value("privateKeyStoredByWorker").toBool(true);
+        if (networkError != QNetworkReply::NoError || httpStatus != 200 ||
+            body.size() > kMaximumPoolResponse || !validAddress ||
+            !externalSigner) {
+            QMessageBox::information(
+                this, QStringLiteral("Community reward pool"),
+                QStringLiteral(
+                    "ForkMesh could not verify a non-custodial community-pool "
+                    "address from this server. No transfer has been requested."));
+            return;
+        }
+        showTreasuryDonateDialogForPool(pool);
+    });
+}
 
-    constexpr qsizetype kMaximumPoolResponse = 1024 * 1024;
-    const int httpStatus =
-        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    const QNetworkReply::NetworkError networkError = reply->error();
-    QByteArray body = reply->read(kMaximumPoolResponse + 1);
-    reply->deleteLater();
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
-    const QJsonObject resp =
-        parseError.error == QJsonParseError::NoError && document.isObject()
-            ? document.object()
-            : QJsonObject();
+void MainWindow::showTreasuryDonateDialogForPool(const QJsonObject &resp)
+{
     const QString address = resp.value("address").toString().trimmed();
-    const bool validAddress =
-        forkmesh::rewards::decodeBase58(address, 32).size() == 32;
-    const bool externalSigner =
-        resp.value("custody").toString() ==
-            QLatin1String("external-local-signer") &&
-        resp.value("privateKeyStoredByWorker").isBool() &&
-        !resp.value("privateKeyStoredByWorker").toBool(true);
-    if (networkError != QNetworkReply::NoError || httpStatus != 200 ||
-        body.size() > kMaximumPoolResponse || !validAddress ||
-        !externalSigner) {
-        QMessageBox::information(
-            this, QStringLiteral("Community reward pool"),
-            QStringLiteral(
-                "ForkMesh could not verify a non-custodial community-pool "
-                "address from this server. No transfer has been requested."));
-        return;
-    }
 
     // Only accept a Solana URI that visibly targets the verified public pool.
     // A bare URI is safer than following an unverified server-supplied target.
@@ -5321,8 +5434,11 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessage = new QLabel;
     m_topMessage->setObjectName("topMessageText");
     m_topMessage->setTextFormat(Qt::RichText);
-    // Keep the useful start visible when a narrow window clips a one-line bubble.
-    m_topMessage->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    // The message is never truncated: it wraps across the bubble's full width and
+    // the countdown/actions sit on their own row underneath it, so no part of a
+    // notification is ever hidden behind an ellipsis.
+    m_topMessage->setWordWrap(true);
+    m_topMessage->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     // Selectable, plus clickable links (e.g. the "jump to agent" notification).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                           Qt::LinksAccessibleByMouse);
@@ -5386,6 +5502,14 @@ QWidget *MainWindow::buildBreadcrumb()
         m_issueQuickAdd->setFocus();
     });
 
+    // Dim countdown / queue / paused text. It used to be appended to the message
+    // itself; on its own row it can never push the message into an ellipsis.
+    m_topMessageMeta = new QLabel;
+    m_topMessageMeta->setObjectName("topMessageMeta");
+    m_topMessageMeta->setTextFormat(Qt::PlainText);
+    m_topMessageMeta->setFocusPolicy(Qt::NoFocus);
+    m_topMessageMeta->setMinimumWidth(1);
+
     // A plain "x" to dismiss a bubble without copying it.
     m_topMessageClose = new QPushButton;
     m_topMessageClose->setObjectName("ghostButton");
@@ -5397,26 +5521,10 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageClose, &QPushButton::clicked, this,
             [this] { dismissTopMessage(); }); // always fully close, even if another error is queued
 
-    // Shown beside a long regular notification. Clicking it expands the full
-    // text in place (wrapped, growing the bubble)
-    // and toggles back to the elided one-liner — no modal pops up.
-    m_topMessageExpand = new QPushButton;
-    m_topMessageExpand->setObjectName("ghostButton");
-    m_topMessageExpand->setCursor(Qt::PointingHandCursor);
-    m_topMessageExpand->setToolTip(QStringLiteral("Show the full message"));
-    m_topMessageExpand->setFocusPolicy(Qt::NoFocus);
-    setOcticon(m_topMessageExpand, "chevron-down", 14);
-    m_topMessageExpand->hide();
-    connect(m_topMessageExpand, &QPushButton::clicked, this, [this] {
-        m_topMessageExpanded = !m_topMessageExpanded;
-        renderTopMessage();
-        positionTopMessageBubble();
-        // Keep the live countdown suffix if a success toast is still ticking.
-        if (m_topMessageTimer && m_topMessageTimer->isActive())
-            renderTopMessageCountdown();
-    });
-
     // A single floating unit keeps its text and actions together while it fades.
+    // The bubble stacks vertically: the whole message across the full width, then
+    // a full-width row carrying the countdown and the action buttons. Nothing
+    // competes with the text for horizontal room, so it never has to be elided.
     m_topMessageContainer = new QFrame(this);
     m_topMessageContainer->setObjectName("topMessage");
     m_topMessageContainer->setFocusPolicy(Qt::NoFocus);
@@ -5424,16 +5532,65 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     m_topMessageContainer->setMouseTracking(true);
     m_topMessageContainer->installEventFilter(this);
-    auto *topMessageRow = new QHBoxLayout(m_topMessageContainer);
-    topMessageRow->setContentsMargins(12, 7, 8, 7);
-    topMessageRow->setSpacing(4);
-    topMessageRow->addWidget(m_topMessage, 1);
-    topMessageRow->addWidget(m_topMessageExpand);
-    topMessageRow->addWidget(m_topMessageCopy);
-    topMessageRow->addWidget(m_topMessageSendToPrompt);
-    topMessageRow->addWidget(m_topMessageClose);
+
+    // Pending notifications remain visible as a compact stack below the active
+    // toast. The scroll area means a large burst remains reachable without
+    // covering the entire window; the newest queued notification stays at the
+    // bottom, nearest to the composer.
+    m_topMessageQueueScroll = new QScrollArea(this);
+    m_topMessageQueueScroll->setObjectName("topMessageQueue");
+    m_topMessageQueueScroll->setFrameShape(QFrame::NoFrame);
+    m_topMessageQueueScroll->setWidgetResizable(false);
+    m_topMessageQueueScroll->setFocusPolicy(Qt::NoFocus);
+    m_topMessageQueueScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_topMessageQueueScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_topMessageQueueContent = new QWidget;
+    m_topMessageQueueContent->setObjectName("topMessageQueueContent");
+    m_topMessageQueueLayout = new QVBoxLayout(m_topMessageQueueContent);
+    m_topMessageQueueLayout->setContentsMargins(0, 0, 0, 0);
+    m_topMessageQueueLayout->setSpacing(8);
+    m_topMessageQueueScroll->setWidget(m_topMessageQueueContent);
+    m_topMessageQueueScroll->hide();
+
+    // Only a message taller than the room above the composer ever scrolls; the
+    // usual few-line toast shows entirely, with no scrollbar (topMessageBubbleRect
+    // sizes this to the text).
+    m_topMessageScroll = new QScrollArea;
+    m_topMessageScroll->setObjectName("topMessageScroll");
+    m_topMessageScroll->setFrameShape(QFrame::NoFrame);
+    m_topMessageScroll->setWidgetResizable(true);
+    m_topMessageScroll->setFocusPolicy(Qt::NoFocus);
+    m_topMessageScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_topMessageScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_topMessageScroll->setWidget(m_topMessage);
+    // setWidget turns on the label's own background fill, which would paint a
+    // grey slab over the bubble's rounded, themed one.
+    m_topMessage->setAutoFillBackground(false);
+    m_topMessageScroll->viewport()->setAutoFillBackground(false);
+    m_topMessageScroll->viewport()->setObjectName("topMessageViewport");
+
+    m_topMessageActions = new QWidget;
+    m_topMessageActions->setObjectName("topMessageActions");
+    m_topMessageActions->setFocusPolicy(Qt::NoFocus);
+    auto *topMessageActionRow = new QHBoxLayout(m_topMessageActions);
+    topMessageActionRow->setContentsMargins(0, 0, 0, 0);
+    topMessageActionRow->setSpacing(4);
+    topMessageActionRow->addWidget(m_topMessageMeta);
+    topMessageActionRow->addStretch(1);
+    topMessageActionRow->addWidget(m_topMessageCopy);
+    topMessageActionRow->addWidget(m_topMessageSendToPrompt);
+    topMessageActionRow->addWidget(m_topMessageClose);
+
+    auto *topMessageColumn = new QVBoxLayout(m_topMessageContainer);
+    topMessageColumn->setContentsMargins(12, 8, 10, 8);
+    topMessageColumn->setSpacing(6);
+    topMessageColumn->addWidget(m_topMessageScroll, 1);
+    topMessageColumn->addWidget(m_topMessageActions);
     for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
-                            static_cast<QWidget *>(m_topMessageExpand),
+                            static_cast<QWidget *>(m_topMessageScroll),
+                            static_cast<QWidget *>(m_topMessageScroll->viewport()),
+                            static_cast<QWidget *>(m_topMessageActions),
+                            static_cast<QWidget *>(m_topMessageMeta),
                             static_cast<QWidget *>(m_topMessageCopy),
                             static_cast<QWidget *>(m_topMessageSendToPrompt),
                             static_cast<QWidget *>(m_topMessageClose)})
@@ -5711,7 +5868,7 @@ QWidget *MainWindow::buildBreadcrumb()
     });
 
     // UI-stall indicator (adhoc #117/#145): an octicon that sits beside the
-    // CPU/MEM/DISK sparklines on the window-chrome line and shows the count of
+    // CPU/MEM/SWAP/DISK sparklines on the window-chrome line and shows the count of
     // detected UI stalls. Click drafts a "fix these stalls" prompt in the
     // composer (adhoc #73); right-click still opens the read-only details.
     m_footerDiagnostics = new QPushButton;
@@ -5734,21 +5891,23 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_footerDiagnostics, &QWidget::customContextMenuRequested, this,
             [this](const QPoint &) { showDiagnosticsDialog(); });
 
-    // Three little button-sized squares on the window-chrome line, each plotting
-    // one resource — this app's CPU, the host's memory and its disk — as a moving
-    // sparkline fed one sample a second by updateFooterDiagnostics. Clicking the
-    // CPU or DISK square opens the same diagnostics dialog as the glyph; MEM
-    // opens the high-memory process panel.
+    // Four little button-sized squares on the window-chrome line, each plotting
+    // one resource — this app's CPU, the host's memory, swap and its disk — as a
+    // moving sparkline fed one sample a second by updateFooterDiagnostics.
+    // Clicking the CPU, SWAP or DISK square opens the same diagnostics dialog as
+    // the glyph; MEM opens the high-memory process panel.
     auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
     auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
+    auto *swapChart = new ResourceSparkline(QStringLiteral("SWAP"));
     auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
-    for (ResourceSparkline *chart : {cpuChart, diskChart})
+    for (ResourceSparkline *chart : {cpuChart, swapChart, diskChart})
         chart->onClicked = [this] { showDiagnosticsDialog(); };
     // The memory square goes straight to the culprit list instead: that panel is
     // what you want when the MEM curve spikes (adhoc #46).
     memChart->onClicked = [this] { showHighMemoryProcessPanel(); };
     m_cpuChart = cpuChart;
     m_memChart = memChart;
+    m_swapChart = swapChart;
     m_diskChart = diskChart;
 
     // The thirty-day SIZE/LOC/FILES repository trends and the Ratchet mode
@@ -5811,10 +5970,11 @@ QWidget *MainWindow::buildBreadcrumb()
     // The relay radar used to sit here too (adhoc #87); it is gone (adhoc
     // #124) — its colour moved to the dot above the instance logo and its
     // node blips to the node dots beside the agent fleet.
-    // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
+    // Live CPU/MEM/SWAP/DISK sparklines, moved up onto the window-chrome line next
     // to the minimize/maximize/close buttons (adhoc #33).
     chromeRow->addWidget(cpuChart);
     chromeRow->addWidget(memChart);
+    chromeRow->addWidget(swapChart);
     chromeRow->addWidget(diskChart);
     // Compact diagnostics stack: the stall indicator stays high on the chrome
     // line, its bare version number sits directly beneath it, and the opt-in

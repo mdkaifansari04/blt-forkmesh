@@ -8,6 +8,7 @@
 #include "IssueStore.h"
 #include "ProjectStore.h"
 #include "PullStore.h"
+#include "PullReviewModel.h"
 #include "CoveStore.h"
 #include "ActionStore.h"
 #include "ActionFile.h"
@@ -718,6 +719,10 @@ public:
         const AgentSession *session = agentSessionForPull(prNumber, headBranch);
         return session ? session->id : 0;
     }
+    QString testResolvablePullHead(PullRequest pr) const
+    {
+        return resolvablePullHead(std::move(pr));
+    }
     bool testBindAgentSessionsToPull(int prNumber, const QString &headBranch)
     {
         return bindAgentSessionsToPull(prNumber, headBranch);
@@ -873,14 +878,11 @@ public:
     }
     bool testBranchPullEnabled() const;
     bool testClickBranchPull();
-    // issue #291: when an agent task's worktree/PR lands in the base branch the
-    // session is flagged "merged" on its Status column and detail page. Drive the
-    // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
-    // take) for `branch`, then read back the rendered Status-cell text and the
-    // persisted merged flag, so a test can prove the note appears.
-    bool testMarkAgentBranchMerged(const QString &branch)
+    // issue #291: exercise the trusted in-app merge hand-off. An unverified
+    // call must not let an agent claim its own branch was merged.
+    bool testMarkAgentBranchMerged(const QString &branch, bool mergeVerified = false)
     {
-        return markAgentSessionsMerged(0, branch);
+        return markAgentSessionsMerged(0, branch, mergeVerified);
     }
     // The "Merge & clean up" buttons (Branches, Worktrees and the agent detail
     // rail): merge the branch into the default branch, then delete its worktree,
@@ -895,6 +897,8 @@ public:
     {
         return findAgentSession(sessionId) != nullptr;
     }
+    void testRefreshAgentMergeState() { refreshAgentMergeState(); }
+    bool testAgentMergeStateRefreshing() const { return m_agentMergeStateRefreshing; }
     QString testAgentStatusCellText(int sessionId) const;
     QString testAgentDetailTitleText() const;
     bool testAgentDetailTitleWraps() const;
@@ -2083,6 +2087,10 @@ private:
     // forkmesh-commit:SHA → commit) and forkmesh:// permalinks (issue/pull/commit);
     // anything else opens externally.
     void openBodyReference(const QString &href);
+    // Resolve links emitted by ClaudeTranscriptView. Repository-local branch and
+    // file targets stay inside ForkMesh; issue, PR, commit and web links reuse
+    // the conversation reference resolver above.
+    void openAgentTranscriptReference(const QString &href);
     // Copy a forkmesh://<kind>/<owner>/<repo>/<id> permalink for the open PR or
     // commit to the clipboard (owner/repo from the repo detail view). Pasting it
     // into a comment renders a link via autolinkReferences() (issue #154).
@@ -2278,6 +2286,10 @@ private:
     void showPullCheckLog(int runId);               // load a run's log into the panel
     QStringList pullCommitShas(const PullRequest &pr) const; // base..head SHAs
     QList<int> runIdsForPull(PullRequest pr) const; // matching action runs
+    // Resolve the signed historical head when it still exists, otherwise use
+    // the durable canonical pr/<n> branch materialized for this PR. Takes a
+    // value because the git probes pump the GUI event loop.
+    QString resolvablePullHead(PullRequest pr) const;
     // Everything a PR's base..head range walk yields, cached against the two
     // resolved SHAs. showPull() re-runs for the same PR on every pull reload —
     // and it is reached several times over per pass (the commit list, the checks
@@ -2310,10 +2322,29 @@ private:
     // Enqueue every workflow found at `commit` for owner/name whose `on:` matches
     // `trigger`. Shared by the push handler, the PR "Run checks" button, and the
     // Releases panel's "Publish release" action.
+    //
+    // Asynchronous: reading the workflows out of the served mirror is several
+    // git subprocesses (diff-tree, ls-tree, one `show` per file) and the
+    // repository-state digest behind them archives and hashes the whole tree.
+    // On the GUI thread that measured 4-5.6s in the stall log, so the reads run
+    // on a worker and only the queueing decisions come back here. No caller
+    // depends on runs existing by the time this returns.
     void queueWorkflowsForCommit(int repoIndex, const QString &owner,
                                  const QString &name, const QString &commit,
                                  const QString &ref,
                                  WorkflowTrigger trigger = WorkflowTrigger::Push);
+    // What the worker above reads out of the mirror for one commit.
+    struct WorkflowScan {
+        bool mirrorMissing = false;
+        // Every path in the pushed commit lives under a metadata folder
+        // (issues/PRs/commit comments), so there is no code change to build.
+        bool metadataOnly = false;
+        QList<QPair<QString, QString>> workflows; // .forkmesh/<file> -> content
+    };
+    // GUI-thread half of queueWorkflowsForCommit.
+    void applyWorkflowScan(const QString &owner, const QString &name,
+                           const QString &commit, const QString &ref,
+                           WorkflowTrigger trigger, const WorkflowScan &scan);
     void submitPullComment();                       // post a comment on the PR
     void sendPullRevisionToAgent();                 // re-queue the linked agent with revision feedback
     void submitPullReview(const QString &state);    // approve / request changes
@@ -2525,13 +2556,13 @@ private:
     // PR association without inventing an Agent for a manual branch.
     bool bindAgentSessionsToPull(int prNumber, const QString &headBranch);
     // Issue #291: flag agent sessions whose worktree/PR has landed in the base
-    // branch. markAgentSessionsMerged() records it eagerly when ForkMesh merges
-    // a PR/worktree; refreshAgentMergeState() is the catch-all run on reload (it
-    // also picks up merges synced from peers or done by hand) — its per-branch
-    // git reads run on a worker thread, and markAgentSessionsLanded() applies
-    // the verdicts (by session id) back on the main thread.
-    bool markAgentSessionsMerged(int prNumber, const QString &branch);
+    // branch. The eager path accepts only a merge operation that already proved
+    // it landed; refreshAgentMergeState() independently verifies an exact
+    // previously observed source commit. Its git reads run on a worker thread.
+    bool markAgentSessionsMerged(int prNumber, const QString &branch,
+                                 bool mergeVerified);
     void refreshAgentMergeState();
+    void updateAgentMergeCandidates(const QHash<int, QString> &heads);
     void markAgentSessionsLanded(const QList<int> &sessionIds, bool refreshUi);
     void assignIssueToAgent(const QString &provider, const QString &model = QString());
     // Core of assignIssueToAgent, factored out so the issue looper can drive it
@@ -2600,6 +2631,13 @@ private:
     // agent session (adhoc #256's "Send issue context" action).
     void sendIssueContextToSelectedAgent();
     void deleteSelectedAgentSession();
+    // Remove one agent entry and nothing else — no worktree folder, no branch.
+    // The path for rows that have nothing else to clean up: external (watch-only)
+    // mirrors, and sessions whose branch was never stamped or whose repository is
+    // no longer on this machine. deleteWorktreeBranchAndAgentInBackground keys
+    // everything off the branch and the open checkout, so those rows can only be
+    // deleted from here.
+    void deleteAgentSessionEntry(int sessionId);
     // Promote the selected ad-hoc session (no issue) into a tracked issue, then
     // link the two so the detail header shows the issue (adhoc #189).
     void createLinkedIssueForSelectedSession();
@@ -2858,6 +2896,9 @@ private:
     void removePushHook(const RepositoryRecord &repo) const;
     void installAllPushHooks() const;
     void scanActionSpool();              // read *.push/*.commit events, enqueue runs
+    // Set while a spool sweep that fired inside a keep-alive pump is waiting for
+    // a clean top-level stack (see deferredOutOfKeepAlivePump).
+    bool m_actionSpoolSweepPending = false;
     // Queue push-triggered workflows when the served mirror's own default branch
     // advances, whatever moved it. The post-receive hook only fires for a real
     // `git push` into that mirror, but everything this app does lands in the
@@ -3282,6 +3323,37 @@ private:
             return;
         }
         apply(std::move(result));
+    }
+    // The same protection for a heavy *timer* slot, which has no result to
+    // carry: returns true (and re-posts `work` for the next top-level turn of
+    // the event loop) when the GUI thread is currently inside a keep-alive pump,
+    // i.e. servicing events from within a blocking git wait rather than from the
+    // main event loop.
+    //
+    // A periodic sweep that happens to fire mid-wait otherwise runs its whole
+    // pass nested inside whatever render was already in flight, and the two
+    // durations add up into one freeze. That is the single most common shape in
+    // the stall log: 84 of 349 reports are an action-spool sweep (and the
+    // propagateRepoUpdate -> loadCommits rebuild hanging off it) landing inside
+    // someone else's git wait, the worst at 10s.
+    //
+    // `pending` collapses repeated deferrals of the same slot into one re-post,
+    // so a pump that keeps redelivering the timer can't queue a burst of them.
+    // It must be a member of this window: the lambda binds it by reference and
+    // is bound to `this`, so it is never touched after the window dies.
+    bool deferredOutOfKeepAlivePump(bool &pending, std::function<void()> work)
+    {
+        if (!forkmesh::ui::inKeepAlivePump())
+            return false;
+        if (pending)
+            return true; // already queued for the next clean turn
+        pending = true;
+        QTimer::singleShot(0, this,
+                           [&pending, work = std::move(work)]() mutable {
+                               pending = false;
+                               work();
+                           });
+        return true;
     }
     // Bumped on every loadWorktreesPanel() rebuild so the async per-row `git
     // status` callbacks can drop their result if the table was rebuilt meanwhile.
@@ -3824,7 +3896,27 @@ private:
     // If the commit list is on screen but stale (local tip or mirror tip moved),
     // rebuild it so the "waiting to sync" markers stay correct without a manual
     // tab switch. Cheap no-op when the list isn't visible or is already current.
+    //
+    // This runs off a background sweep, so the staleness *check* itself must not
+    // cost anything on the GUI thread: commitsListIsCurrent() shells a rev-parse
+    // and currentMirrorTip() adds mirrorHeadBranch()'s for-each-ref walk on top,
+    // and the stall log caught that probe alone at 4.6s. Instead this compares a
+    // filesystem-only fingerprint of both ref stores and, only when that moved,
+    // reads the two tips on a worker thread.
     void refreshCommitMarkersIfStale();
+    // The two tips refreshCommitMarkersIfStale() compares, read off-thread.
+    struct CommitMarkerProbe {
+        QString localTip;
+        QString mirrorTip;
+    };
+    // mtime+size fingerprint of the working copy's and the served mirror's ref
+    // storage. Empty when no repo is open. Same trick as refreshMirrorAdverts()'s
+    // input signature: asking git whether git has moved costs exactly what the
+    // probe is trying to avoid.
+    QString commitMarkerProbeSignature() const;
+    QString m_commitMarkerProbeSig;
+    qint64 m_commitMarkerProbedAtMs = 0;
+    bool m_commitMarkerProbeInFlight = false;
     // Full hashes of commits in the local working copy that the network mirror
     // doesn't have yet (i.e. ahead of the mirror, not yet synced). Empty for a
     // browse-only mirror, which only ever pulls.
@@ -4104,6 +4196,7 @@ private:
     // Show the transparent public community reward pool. The pool key is not
     // available to the Worker and user wallets always remain self-custodial.
     void showTreasuryDonateDialog();
+    void showTreasuryDonateDialogForPool(const QJsonObject &pool);
     void copyIssueToClipboard();
     void copyIssueThreadToClipboard();
     void askAiForCurrentIssue();
@@ -4482,7 +4575,9 @@ private:
                       const QString &clickHref = QString());
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
-    void queueTopMessage(const QString &text, bool error); // park one behind the current toast
+    void queueTopMessage(const QString &text, bool error,
+                         const QString &clickHref = QString()); // park one behind the current toast
+    void renderTopMessageQueue(); // repaint the visible stack of queued notifications
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
@@ -4952,6 +5047,18 @@ private:
     QLabel *m_adminCrownBadge = nullptr;
     QLabel *m_topMessage = nullptr;       // prompt-anchored success/failure bubble text
     QFrame *m_topMessageContainer = nullptr; // floating bubble wrapping text + actions
+    // Queued notifications are visible beneath the active bubble. As new ones
+    // arrive, this stack grows from the composer upwards rather than hiding
+    // messages behind a "+N more" counter.
+    QScrollArea *m_topMessageQueueScroll = nullptr;
+    QWidget *m_topMessageQueueContent = nullptr;
+    QVBoxLayout *m_topMessageQueueLayout = nullptr;
+    // The text always shows in full (wrapped, full bubble width). The scroll area
+    // only ever kicks in for a message too tall for the window, so nothing is
+    // hidden even then.
+    QScrollArea *m_topMessageScroll = nullptr;
+    QWidget *m_topMessageActions = nullptr; // full-width row beneath the text: countdown + buttons
+    QLabel *m_topMessageMeta = nullptr;   // dim "5s · +2 more · paused" on the left of that row
     QTimer *m_topMessageTimer = nullptr;  // auto-clears the bubble
     // Composer-to-bubble send motion, reused for the slide-off exit so only one
     // animation ever drives the bubble's geometry.
@@ -4960,18 +5067,21 @@ private:
     QPushButton *m_topMessageCopy = nullptr;
     QPushButton *m_topMessageSendToPrompt = nullptr;
     QPushButton *m_topMessageClose = nullptr;
-    QPushButton *m_topMessageExpand = nullptr;
     QString m_topMessageRaw;              // plain text of the current bubble, for copy/retry
-    QString m_topMessageBaseHtml;         // bubble HTML without the countdown suffix
+    QString m_topMessageBaseHtml;         // bubble HTML (the whole message; never elided)
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast slides away
     // Pending messages that arrived while another toast was already counting
-    // down. A burst (retries, or the run of events the Pings page now mirrors
-    // here) would otherwise stomp each other before any could be read; queuing
-    // gives each its own full countdown once the current one finishes (see
+    // down. They form the visible stack beneath the active toast, then each gets
+    // its own full countdown when it becomes active (see
     // advanceTopMessageQueue). Each entry carries its own error flag so a
     // queued event keeps its colour.
-    QList<QPair<QString, bool>> m_topMessageQueue;
+    struct TopMessageQueueEntry {
+        QString text;
+        bool error = false;
+        QString clickHref;
+    };
+    QList<TopMessageQueueEntry> m_topMessageQueue;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageHovering = false;    // pauses the countdown while reading/actions
     bool m_topMessageIsPromptBubble = false; // submitted prompt gets a fuller, animated treatment
@@ -4979,8 +5089,6 @@ private:
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
     QTimer *m_errorBorderTimer = nullptr;
-    bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
-    bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
     bool m_repoPinMismatch = false;       // true when the open repo's served refs no longer match the relay's pinned hash (adhoc #65)
     QHash<QString, qint64> m_repoPinAutoHealAtMs; // owner/name -> last automatic pin re-attest (rate-limits the source-of-truth auto-heal in refreshRepoPinBanner)
 
@@ -5483,6 +5591,9 @@ private:
     QLineEdit *m_previewCacheRootEdit = nullptr;
     // Settings -> Data tab: storage breakdown table and backup/cleanup status.
     QTableWidget *m_dataDirTable = nullptr;
+    // Bumped for each Settings > Data refresh so a slow recursive directory
+    // scan cannot overwrite a newer table after its worker finishes.
+    quint64 m_dataDirScanGeneration = 0;
     QLabel *m_dataStatus = nullptr;
     // Settings -> Data tab: the hourly backup panel.
     QTableWidget *m_backupTable = nullptr;
@@ -5732,7 +5843,7 @@ private:
     QLabel *m_statusAppPath = nullptr;
     // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
     QPushButton *m_footerDiagnostics = nullptr;
-    // Live one-per-second moving sparklines for CPU, host memory and disk
+    // Live one-per-second moving sparklines for CPU, host memory, swap and disk
     // usage (adhoc #17), shown in the footer beside the diagnostics. Held as
     // QWidget* and poked via static_cast since ResourceSparkline is private to
     // MainWindowChat.cpp.
@@ -5743,6 +5854,7 @@ private:
     QToolButton *m_repoRatchetButton = nullptr;
     qint64 m_repoStatsLastRefreshMs = 0;
     QWidget *m_memChart = nullptr;
+    QWidget *m_swapChart = nullptr;
     QWidget *m_diskChart = nullptr;
     StallWatchdog *m_stallWatchdog = nullptr;
     QTimer *m_diagTimer = nullptr;
@@ -6286,6 +6398,7 @@ private:
     QWidget *m_scmSyncRow = nullptr;
     ElidingStatusLabel *m_scmSyncStatus = nullptr; // "Writing objects: 62%" …
     int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
+    quint64 m_scmStatusGeneration = 0; // rejects late `git status` callbacks
     // Inputs to updateScmCommitControlVisibility(). Commits waiting to sync used
     // to swap the commit row out for Sync Changes unconditionally, which stranded
     // a staged change with a typed message and no button to land it.
@@ -6659,6 +6772,14 @@ private:
         QStringList conflictFiles;
     };
     QHash<int, PullConflictEntry> m_pullConflictCache;
+    // Agent attribution per PR, read from the ForkMesh-Agent trailer in the
+    // signed commit series. Computed once per load on a worker rather than
+    // inside refreshPullList(), which called pullAgentProvenance() for every
+    // visible row: a PR with no trailer scans its whole (multi-megabyte) mbox to
+    // the end before answering "no", and the stall log caught that table build
+    // at 1.15s. Missing entry simply means "no badge yet".
+    QHash<int, PullAgentProvenance> m_pullProvenance;
+    quint64 m_pullProvenanceGen = 0;
     // Generation counter: each reloadPulls() bumps it so any in-flight async
     // conflict pass aborts once the repo/list it was started for has changed.
     quint64 m_pullConflictGen = 0;
@@ -7001,13 +7122,12 @@ private:
     QPushButton *m_agentHideDetailButton = nullptr;
     bool m_agentDetailHidden = false;
     QLabel *m_agentTitle = nullptr;
-    QLabel *m_agentStatusPill = nullptr; // connected/working/done status
+    QToolButton *m_agentStatusPill = nullptr; // compact model + outcome control
     // The session's field list (agent/model/mode/repo/status/issue/PR/branch/
     // worktree/stats) and the popup it lives in — opened from the header's
-    // "Info" button instead of sitting open above the transcript (adhoc #61).
+    // status control instead of sitting open above the transcript (adhoc #61).
     QLabel *m_agentMeta = nullptr;
     QFrame *m_agentMetaPopup = nullptr;
-    QPushButton *m_agentInfoButton = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
     // "Create PR" — pull requests are user-driven (adhoc #2 follow-up): a run

@@ -8,7 +8,7 @@ compatibility_date = "2026-07-23"
 
 # Runs automatically before every deploy: applies the D1 schema (idempotent).
 [build]
-command = "python3 tools/build_dashboard_assets.py && ./migrate.sh"
+command = "python3 tools/build_dashboard_assets.py && python3 tools/build_worker_footprint.py && ./migrate.sh"
 
 
 [triggers]
