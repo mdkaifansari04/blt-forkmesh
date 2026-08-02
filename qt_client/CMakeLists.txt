@@ -299,6 +299,8 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowReleases.cpp
     src/MainWindowShortcuts.cpp
     src/MainWindowSearch.cpp
+    src/GlobalSearchMatch.h
+    src/GlobalSearchMatch.cpp
     src/MainWindowSettings.cpp
     src/MainWindowMcp.cpp
     src/MainWindowData.cpp
@@ -556,6 +558,8 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
+        src/GlobalSearchMatch.h
+        src/GlobalSearchMatch.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/UsageLimitCalendar.h
