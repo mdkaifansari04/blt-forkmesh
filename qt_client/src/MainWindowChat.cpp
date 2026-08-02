@@ -1015,6 +1015,7 @@ QWidget *MainWindow::buildNetworkLogDock()
             recordQuickAddHistory(typed);
         m_issueQuickAdd->clear();
         clearQuickAddImages();
+        showPromptBubble(prompt);
         sendPromptToSelectedAgent(prompt);
     });
 
@@ -1143,6 +1144,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // controls read as an overlay along the foot of the prompt input rather
     // than a separate strip above it.
     auto *promptWrapper = new QFrame;
+    m_promptWrapper = promptWrapper;
     promptWrapper->setObjectName("promptWrapper");
     // Horizontal split (adhoc #115): the text area + its bottom toolbar stack in
     // a left column, and the genie/add/new buttons form a full-height column down
@@ -1360,13 +1362,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *logPanelLayout = new QVBoxLayout(logPanel);
     logPanelLayout->setContentsMargins(1, 1, 1, 1);
     logPanelLayout->setSpacing(2);
-    // Errors and successes land at the very top of the mini-log, pushed against
-    // its first line rather than floating up in the window chrome: the toast and
-    // the log lines it summarises are read together. It is hidden by default and
-    // only borrows height from the log while a message is up — the footer's own
-    // height is fixed, so nothing else in the window moves (adhoc #14).
-    // buildBreadcrumb() runs before this dock is built, so the pill already exists.
-    logPanelLayout->addWidget(m_topMessageContainer, 0, Qt::AlignTop);
+    // Notifications deliberately do not live in this layout. They float over
+    // the composer instead, so a long error never steals a line from this log.
     logPanelLayout->addWidget(m_footerUpdateLog, 1);
 
     auto *leftRegion = new QWidget;
@@ -5178,34 +5175,20 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_notificationButton, &QPushButton::clicked, this,
             &MainWindow::showNotifications);
 
-    // Compact success/failure toast. Built here with the rest of the chrome, but
-    // it is docked into the footer's mini-log panel (see buildNetworkLogDock),
-    // pinned to the top of that panel: messages belong with the log they explain,
-    // not in the crowded window-chrome line (adhoc #14).
+    // Compact success/failure bubble. It is parented to the window rather than a
+    // layout, allowing notifications to float just above the composer without
+    // shifting the prompt or the live-log footer.
     m_topMessage = new QLabel;
     m_topMessage->setObjectName("topMessageText");
     m_topMessage->setTextFormat(Qt::RichText);
-    // Left-align the text itself: the toast as a whole still sits centered in the
-    // bar (via the stretches around it below), but when the window is too narrow
-    // to fit the full one-liner, Qt clips the label rather than eliding it, and a
-    // centered label clips from both ends — hiding the start of the message where
-    // the useful detail is. Left alignment keeps that start visible.
+    // Keep the useful start visible when a narrow window clips a one-line bubble.
     m_topMessage->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    // The pill's overall width is capped on m_topMessageContainer below (which
-    // also holds the Expand/Copy/✕ buttons); the label itself just fills it. The
-    // text is elided to one line in flashMessage regardless.
-    // Selectable like before, plus clickable links (e.g. the "jump to agent" toast).
+    // Selectable, plus clickable links (e.g. the "jump to agent" notification).
     m_topMessage->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                           Qt::LinksAccessibleByMouse);
-    // ...but never at the cost of the caret: setTextInteractionFlags() bumps a
-    // QLabel to ClickFocus, and the toast now sits right beside the agent prompt,
-    // so selecting an error would silently steal the keyboard from whatever the
-    // user was typing. Mouse selection and link clicks still work without focus.
+    // A bubble must never steal the caret from the prompt beneath it.
     m_topMessage->setFocusPolicy(Qt::NoFocus);
-    // A one-line QLabel reports its whole text width as its minimum, which would
-    // let a long error force the mini-log panel — and with it the window — wider.
-    // An explicit minimum overrides that hint, so the pill shrinks with the panel
-    // and clips (from the right, per the alignment above) instead.
+    // A one-line QLabel otherwise reports its entire text width as its minimum.
     m_topMessage->setMinimumWidth(1);
     connect(m_topMessage, &QLabel::linkActivated, this, [this](const QString &href) {
         if (href.startsWith(QLatin1String("fm:agent:"))) {
@@ -5220,24 +5203,50 @@ QWidget *MainWindow::buildBreadcrumb()
     });
     m_topMessage->hide();
 
-    // Copy button shown beside the toast for errors only. An error toast counts
-    // down for a long window (kToastErrorSeconds) and keeps this Copy / ✕ pair the
-    // whole time, so a failure can be read and grabbed for a bug report before it
-    // fades on its own.
+    // Every bubble can be copied. A notification is often the quickest useful
+    // context to paste into the next agent prompt, whether it is a failure or a
+    // successful result.
     m_topMessageCopy = new QPushButton(QStringLiteral("Copy"));
     m_topMessageCopy->setObjectName("ghostButton");
     m_topMessageCopy->setCursor(Qt::PointingHandCursor);
-    m_topMessageCopy->setToolTip(QStringLiteral("Copy this message and dismiss it"));
-    m_topMessageCopy->setFocusPolicy(Qt::NoFocus); // a toast never grabs the keyboard
+    m_topMessageCopy->setToolTip(QStringLiteral("Copy this bubble's text"));
+    m_topMessageCopy->setFocusPolicy(Qt::NoFocus);
     setOcticon(m_topMessageCopy, "copy", 14);
     m_topMessageCopy->hide();
     connect(m_topMessageCopy, &QPushButton::clicked, this, [this] {
         if (!m_topMessageRaw.isEmpty())
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
-        advanceTopMessageQueue(); // move on to the next queued error, if any
     });
-    // A plain "x" to dismiss an error toast without copying it — the octicon
-    // SVG, like the Copy/Expand glyphs beside it, not a text glyph.
+
+    m_topMessageSendToPrompt = new QPushButton(QStringLiteral("Send to prompt"));
+    m_topMessageSendToPrompt->setObjectName("topMessageAction");
+    m_topMessageSendToPrompt->setCursor(Qt::PointingHandCursor);
+    m_topMessageSendToPrompt->setToolTip(
+        QStringLiteral("Add this notification to the footer prompt"));
+    m_topMessageSendToPrompt->setFocusPolicy(Qt::NoFocus);
+    setOcticon(m_topMessageSendToPrompt, "paper-airplane", 13);
+    m_topMessageSendToPrompt->hide();
+    connect(m_topMessageSendToPrompt, &QPushButton::clicked, this, [this] {
+        if (!m_issueQuickAdd || m_topMessageRaw.isEmpty())
+            return;
+        QString draft = m_issueQuickAdd->toPlainText();
+        if (!draft.trimmed().isEmpty()) {
+            if (!draft.endsWith(QStringLiteral("\n\n"))) {
+                if (draft.endsWith(QLatin1Char('\n')))
+                    draft += QLatin1Char('\n');
+                else
+                    draft += QStringLiteral("\n\n");
+            }
+        } else {
+            draft.clear();
+        }
+        draft += m_topMessageRaw;
+        m_issueQuickAdd->setPlainText(draft);
+        m_issueQuickAdd->moveCursor(QTextCursor::End);
+        m_issueQuickAdd->setFocus();
+    });
+
+    // A plain "x" to dismiss a bubble without copying it.
     m_topMessageClose = new QPushButton;
     m_topMessageClose->setObjectName("ghostButton");
     setOcticon(m_topMessageClose, "x", 14);
@@ -5248,8 +5257,8 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageClose, &QPushButton::clicked, this,
             [this] { dismissTopMessage(); }); // always fully close, even if another error is queued
 
-    // Shown beside the toast when a message is too long to fit on one line.
-    // Clicking it expands the full message in place (wrapped, growing the toast)
+    // Shown beside a long regular notification. Clicking it expands the full
+    // text in place (wrapped, growing the bubble)
     // and toggles back to the elided one-liner — no modal pops up.
     m_topMessageExpand = new QPushButton;
     m_topMessageExpand->setObjectName("ghostButton");
@@ -5261,52 +5270,44 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageExpand, &QPushButton::clicked, this, [this] {
         m_topMessageExpanded = !m_topMessageExpanded;
         renderTopMessage();
+        positionTopMessageBubble();
         // Keep the live countdown suffix if a success toast is still ticking.
         if (m_topMessageTimer && m_topMessageTimer->isActive())
             renderTopMessageCountdown();
     });
 
-    // Wrap the text and its Expand/Copy/✕ affordances in one bordered pill so
-    // they render (and hit-test) as a single contained unit instead of the
-    // buttons floating loose beside the box, which could leave them squeezed
-    // to almost nothing — and effectively unclickable — once the rest of the
-    // crowded top bar ran short on room (adhoc #16).
-    m_topMessageContainer = new QFrame;
+    // A single floating unit keeps its text and actions together while it fades.
+    m_topMessageContainer = new QFrame(this);
     m_topMessageContainer->setObjectName("topMessage");
     m_topMessageContainer->setFocusPolicy(Qt::NoFocus);
-    // The pill fills the mini-log panel it now lives in, so a long error gets
-    // every pixel the log has; the cap only stops it sprawling on a very wide
-    // window. It can never widen the window itself — see the label's minimum above.
-    m_topMessageContainer->setMaximumWidth(900);
-    m_topMessageContainer->setSizePolicy(QSizePolicy::Preferred,
-                                         QSizePolicy::Fixed);
+    m_topMessageContainer->setAttribute(Qt::WA_StyledBackground, true);
+    m_topMessageContainer->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    m_topMessageContainer->setMouseTracking(true);
+    m_topMessageContainer->installEventFilter(this);
     auto *topMessageRow = new QHBoxLayout(m_topMessageContainer);
-    topMessageRow->setContentsMargins(12, 2, 6, 2);
+    topMessageRow->setContentsMargins(12, 7, 8, 7);
     topMessageRow->setSpacing(4);
     topMessageRow->addWidget(m_topMessage, 1);
     topMessageRow->addWidget(m_topMessageExpand);
     topMessageRow->addWidget(m_topMessageCopy);
+    topMessageRow->addWidget(m_topMessageSendToPrompt);
     topMessageRow->addWidget(m_topMessageClose);
-    m_topMessageContainer->hide();
+    for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
+                            static_cast<QWidget *>(m_topMessageExpand),
+                            static_cast<QWidget *>(m_topMessageCopy),
+                            static_cast<QWidget *>(m_topMessageSendToPrompt),
+                            static_cast<QWidget *>(m_topMessageClose)})
+        widget->installEventFilter(this);
 
-    // The expanded full text lives in this floating panel, parented to the window
-    // (not to any layout) and raised above everything when shown. Revealing it
-    // therefore overlays the UI on top instead of growing the inline toast, so it
-    // never shifts the top bar or the layout below it. See renderTopMessage.
-    m_topMessageOverlay = new QFrame(this);
-    m_topMessageOverlay->setObjectName("topMessageOverlay");
-    m_topMessageOverlay->setFocusPolicy(Qt::NoFocus);
-    auto *overlayLayout = new QVBoxLayout(m_topMessageOverlay);
-    overlayLayout->setContentsMargins(12, 10, 12, 10);
-    m_topMessageOverlayText = new QLabel;
-    m_topMessageOverlayText->setObjectName("topMessageOverlayText");
-    m_topMessageOverlayText->setTextFormat(Qt::RichText);
-    m_topMessageOverlayText->setWordWrap(true);
-    m_topMessageOverlayText->setTextInteractionFlags(Qt::TextSelectableByMouse |
-                                                     Qt::LinksAccessibleByMouse);
-    m_topMessageOverlayText->setFocusPolicy(Qt::NoFocus);
-    overlayLayout->addWidget(m_topMessageOverlayText);
-    m_topMessageOverlay->hide();
+    m_topMessageOpacity = new QGraphicsOpacityEffect(m_topMessageContainer);
+    m_topMessageOpacity->setOpacity(1.0);
+    m_topMessageContainer->setGraphicsEffect(m_topMessageOpacity);
+    m_topMessageFade = new QPropertyAnimation(m_topMessageOpacity, "opacity", this);
+    m_topMessageFade->setEasingCurve(QEasingCurve::Linear);
+    m_topMessageFlight = new QPropertyAnimation(m_topMessageContainer, "geometry", this);
+    m_topMessageFlight->setDuration(260);
+    m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
+    m_topMessageContainer->hide();
 
     // User avatar, the rail's bottom-most Account item. Clicking it opens
     // Settings for the current user. Sized to sit flush with the rail's 20px
