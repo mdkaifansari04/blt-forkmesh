@@ -4450,9 +4450,8 @@ static constexpr int kToastFlightMs = 260;
 // oldest queued message is dropped once the cap is hit.
 static constexpr int kToastQueueLimit = 20;
 
-// The Git workspace hides the footer composer to give the diff the full window
-// height. Keep the bubble usable there by falling back to the lower-right
-// corner instead of anchoring to a hidden prompt.
+// The footer composer remains visible in the Git workspace, so notification
+// bubbles always have a prompt to anchor to.
 bool MainWindow::topMessageDockVisible() const
 {
     return m_promptWrapper && m_promptWrapper->isVisible();
