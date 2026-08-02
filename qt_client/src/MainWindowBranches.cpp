@@ -4815,36 +4815,6 @@ bool MainWindow::testBranchDiffCached(const QString &branch) const
 }
 #endif
 
-// The failure pane for a diff that could not be read. Git's own words are the
-// useful part — a timeout now carries the command line and whatever the child
-// printed before it was killed — so show them verbatim in a terminal block
-// rather than folding them into one red sentence, and offer a Retry link so the
-// reader isn't left guessing that re-clicking the branch is the way out
-// (adhoc #1384).
-static QString branchDiffErrorHtml(const QString &branch, const QString &err,
-                                   int attempts)
-{
-    const QString message = err.trimmed().isEmpty()
-                                ? QStringLiteral("git failed")
-                                : err.trimmed();
-    const int split = message.indexOf(QLatin1Char('\n'));
-    const QString headline = split < 0 ? message : message.left(split);
-    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
-    QString html =
-        QStringLiteral("<p style='color:#f85149'><b>Could not diff %1:</b> %2</p>")
-            .arg(branch.toHtmlEscaped(), headline.toHtmlEscaped());
-    html += QStringLiteral(
-                "<pre style='background:%1;color:%2;padding:8px;'>%3</pre>")
-                .arg(dark ? QStringLiteral("#161b22") : QStringLiteral("#f6f8fa"),
-                     dark ? QStringLiteral("#c9d1d9") : QStringLiteral("#24292f"),
-                     message.toHtmlEscaped());
-    html += QStringLiteral("<p style='color:#8b949e'>Tried %1 %2. "
-                           "<a href='retry:diff' style='color:#58a6ff'>Retry</a></p>")
-                .arg(attempts)
-                .arg(attempts == 1 ? QStringLiteral("time") : QStringLiteral("times"));
-    return html;
-}
-
 void MainWindow::renderBranchScopeDiff()
 {
     if (!m_branchDiffView)
@@ -4915,7 +4885,15 @@ void MainWindow::renderBranchScopeDiff()
             // failures in place (adhoc #1384); a deterministic error falls
             // straight through on the first attempt, so a real problem still
             // appears immediately.
+            // Lock contention fails instantly, so three attempts there cost
+            // nothing; a timeout costs 8s each, and a pane that sits on its
+            // placeholder for half a minute is worse than an error the reader
+            // can act on — so stop retrying once the whole read has spent
+            // kRetryDeadlineMs.
             constexpr int kMaxAttempts = 3;
+            constexpr int kRetryDeadlineMs = 12000;
+            QElapsedTimer spent;
+            spent.start();
             for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
                 r.ok = true;
                 r.out.clear();
@@ -4924,8 +4902,9 @@ void MainWindow::renderBranchScopeDiff()
                 readDiff(r);
                 if (r.ok || !isTransientGitError(r.err))
                     break;
-                if (attempt < kMaxAttempts)
-                    QThread::msleep(250 * attempt); // let the contention clear
+                if (attempt == kMaxAttempts || spent.hasExpired(kRetryDeadlineMs))
+                    break;
+                QThread::msleep(250 * attempt); // let the contention clear
             }
             return r;
         },
