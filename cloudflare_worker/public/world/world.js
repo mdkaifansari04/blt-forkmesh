@@ -150,6 +150,9 @@ const SOCIAL_POSTS_URL = "/api/world/social-posts";
 const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 const ADMIN_ERROR_SEEN_KEY = "forkmesh.world.adminErrorsSeen.v1";
 const ADMIN_ERROR_POLL_MS = 15_000;
+// Newly logged errors are announced at most this often; arrivals in between
+// are carried into the next card so nothing is silently dropped.
+const ADMIN_ERROR_ANNOUNCE_GAP_MS = 60_000;
 // Element ids switched off in the Elements tab. Kept on the
 // device (never in account preferences) so a perf experiment on one machine
 // cannot dim the world on every other signed-in device.
@@ -212,6 +215,11 @@ const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
 const FLAGSHIP_PORTAL_RETRY_LIMIT = 20;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
+// One poll can carry a whole incident: several systems failing, then the
+// recoveries that close them. The bubble stack keeps six cards, so the two
+// classes of ping are budgeted separately instead of competing newest-first.
+const WORLD_ROUTINE_PING_ANNOUNCE_LIMIT = 2;
+const WORLD_ATTENTION_PING_ANNOUNCE_LIMIT = 3;
 const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000;
 const MIRROR_ACTIONS_POLL_MS = 20 * 1000;
 const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
@@ -3815,6 +3823,10 @@ function normalizeWorldNotifications(payload) {
         rawNumber <= 1_000_000_000
           ? rawNumber
           : 0;
+      // Operational pings carry the transition they report. Keeping it lets the
+      // stream tell "needs attention" from "recovered" without guessing at the
+      // wording of a title.
+      const rawState = String(item?.meta?.state || "");
       return {
         id,
         kind: sanitizeNotificationText(item?.kind, "Update", 40),
@@ -3822,6 +3834,7 @@ function normalizeWorldNotifications(payload) {
         body: sanitizeNotificationText(item?.body, "", 500),
         repo,
         number,
+        state: rawState === "up" || rawState === "down" ? rawState : "",
         href: safeNotificationURL(item?.href),
         ts: Math.max(0, Number(item?.ts) || 0),
         readAt: Math.max(0, Number(item?.readAt) || 0),
@@ -3829,6 +3842,24 @@ function normalizeWorldNotifications(payload) {
     })
     .filter(Boolean)
     .sort((left, right) => right.ts - left.ts);
+}
+
+// Wording used by pings that report something broken rather than something
+// done. Only consulted when the ping carries no explicit up/down state.
+const WORLD_ATTENTION_PING_RE =
+  /\b(?:needs attention|failed|failing|failure|down|outage|offline|unavailable|unreachable|error|errors|crash(?:ed)?|degraded|rejected)\b/i;
+
+// An outage ping is always followed by the recovery ping that closes it, and
+// the recovery is the newer of the two. Ranked purely by time, one poll's worth
+// of pings therefore showed nothing but "recovered" lines while every "needs
+// attention" line sat behind the "+N more" summary. Attention pings get their
+// own announcement budget instead.
+function worldNotificationNeedsAttention(item) {
+  if (!item) return false;
+  if (String(item.kind || "").toLowerCase() === "error_group") return true;
+  if (item.state === "down") return true;
+  if (item.state === "up") return false;
+  return WORLD_ATTENTION_PING_RE.test(String(item.title || ""));
 }
 
 function liveNodeRecords(network, mirrorCatalogs = []) {
@@ -5733,6 +5764,8 @@ class ForkMeshWorld extends HTMLElement {
     this.adminErrorTimer = 0;
     this.adminErrorLatestId = 0;
     this.adminErrorCount = 0;
+    this.adminErrorPendingAnnounce = 0;
+    this.adminErrorAnnouncedAt = 0;
     this.adminErrorEffectTimer = 0;
     this.adminStatusIssueActive = false;
     this.adminErrors = [];
@@ -12912,9 +12945,41 @@ class ForkMeshWorld extends HTMLElement {
         return;
       }
       const nextCount = Math.max(0, Number(payload?.newCount) || 0);
-      const arrived = nextCount > this.adminErrorCount;
+      const previousCount = this.adminErrorCount;
+      const arrived = nextCount > previousCount;
       this.adminErrorCount = nextCount;
       this.renderAdminErrors(nextCount, arrived);
+      // The badge alone only says a number changed somewhere off screen. New
+      // errors are announced in the same stream as the operational pings, in
+      // the same coarse shape the admin ping uses (status and source, never a
+      // route or a message) so nothing sensitive reaches the HUD. Arrivals
+      // accumulate rather than announce per poll: a storm is one card a minute
+      // carrying the real total, not a card every fifteen seconds.
+      if (arrived) {
+        this.adminErrorPendingAnnounce =
+          (this.adminErrorPendingAnnounce || 0) + (nextCount - previousCount);
+      }
+      const added = this.adminErrorPendingAnnounce || 0;
+      if (
+        added > 0 &&
+        this.activityNoticesSettled() &&
+        Date.now() - (this.adminErrorAnnouncedAt || 0) >=
+          ADMIN_ERROR_ANNOUNCE_GAP_MS
+      ) {
+        const status = Math.max(0, Number(payload?.latestStatus) || 0);
+        const source = /^[A-Za-z]{1,20}$/.test(String(payload?.latestSource))
+          ? String(payload.latestSource)
+          : "";
+        const latest = [status || "", source].filter(Boolean).join(" · ");
+        this.adminErrorPendingAnnounce = 0;
+        this.adminErrorAnnouncedAt = Date.now();
+        this.toast(
+          added === 1
+            ? `New error logged${latest ? ` (${latest})` : ""}`
+            : `${added} new errors logged${latest ? ` (latest ${latest})` : ""}`,
+          { kind: "error" },
+        );
+      }
     } catch (_) {
       // This is an operational convenience only. A failed badge poll must not
       // interfere with movement, rendering, or the existing admin surface.
@@ -13100,7 +13165,7 @@ class ForkMeshWorld extends HTMLElement {
           <h4 id="world-error-analytics-title">Previous 24 hours · ${chartTotal.toLocaleString()} occurrence${chartTotal === 1 ? "" : "s"}</h4>
           <div class="world-error-chart" role="img" aria-label="24-hour error frequency">
             ${chartHours
-              .map((count, index) => `<span tabindex="0" role="img" aria-label="${hourLabel(index)}: ${count} error${count === 1 ? "" : "s"}" data-empty="${count === 0}" style="height:${chartPeak ? Math.max(2, Math.round((132 * count) / chartPeak) : 2)}px" title="${hourLabel(index)} · ${count}"></span>`)
+              .map((count, index) => `<span tabindex="0" role="img" aria-label="${hourLabel(index)}: ${count} error${count === 1 ? "" : "s"}" data-empty="${count === 0}" style="height:${chartPeak ? Math.max(2, Math.round((132 * count) / chartPeak)) : 2}px" title="${hourLabel(index)} · ${count}"></span>`)
               .join("")}
           </div>
           <div class="world-error-hours"><span>24h ago</span><span>12h ago</span><span>now</span></div>
@@ -17410,14 +17475,19 @@ class ForkMeshWorld extends HTMLElement {
                 ? rows
                     .map((item) => {
                       const instant = new Date(item.when);
-                      const tone =
-                        item.source === "global"
+                      const attention =
+                        item.source === "personal" &&
+                        worldNotificationNeedsAttention(item);
+                      const tone = attention
+                        ? "danger"
+                        : item.source === "global"
                           ? "success"
                           : item.unread
                             ? "accent"
                             : "cool";
-                      const icon =
-                        item.source === "global"
+                      const icon = attention
+                        ? "⚠"
+                        : item.source === "global"
                           ? "📣"
                           : String(item.kind).toLowerCase().includes("issue")
                             ? "◉"
@@ -17579,12 +17649,33 @@ class ForkMeshWorld extends HTMLElement {
     if (globalEvents.length > 3) {
       this.toast(`World announcement: +${globalEvents.length - 3} more events`);
     }
-    personalNotifications.slice(0, 3).forEach((item) => {
+    // Anything reporting a failure — an outage transition, a new error group —
+    // is announced last so it lands closest to the notification corner and
+    // survives the bubble stack's own six-card limit, and it is never counted
+    // against the routine budget that recoveries and mentions share.
+    const attention = personalNotifications.filter(
+      worldNotificationNeedsAttention,
+    );
+    const routine = personalNotifications.filter(
+      (item) => !worldNotificationNeedsAttention(item),
+    );
+    routine.slice(0, WORLD_ROUTINE_PING_ANNOUNCE_LIMIT).forEach((item) => {
       this.toast(`New ping: ${item.title}`);
     });
-    if (personalNotifications.length > 3) {
+    if (routine.length > WORLD_ROUTINE_PING_ANNOUNCE_LIMIT) {
       this.toast(
-        `New ping: +${personalNotifications.length - 3} more`,
+        `New ping: +${routine.length - WORLD_ROUTINE_PING_ANNOUNCE_LIMIT} more`,
+      );
+    }
+    attention.slice(0, WORLD_ATTENTION_PING_ANNOUNCE_LIMIT).forEach((item) => {
+      this.toast(`New ping: ${item.title}`, { kind: "error" });
+    });
+    if (attention.length > WORLD_ATTENTION_PING_ANNOUNCE_LIMIT) {
+      this.toast(
+        `New ping: +${
+          attention.length - WORLD_ATTENTION_PING_ANNOUNCE_LIMIT
+        } more need attention`,
+        { kind: "error" },
       );
     }
   }
@@ -25757,7 +25848,7 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  toast(message, { priority = 0, lockMs = 0 } = {}) {
+  toast(message, { priority = 0, lockMs = 0, kind = "" } = {}) {
     const now = performance.now();
     const safePriority = Number.isFinite(priority) ? priority : 0;
     if (now < this.toastLockUntil && safePriority < this.toastPriority) return;
@@ -25766,13 +25857,19 @@ class ForkMeshWorld extends HTMLElement {
     this.toastPriority = safePriority;
     this.toastLockUntil = now + Math.max(0, Number(lockMs) || 0);
     const copy = String(message || "").trim();
-    const kind =
+    // Wording is only a fallback. A caller that already knows the card reports
+    // a failure says so: "mirror2 needs attention" reads as neutral status to
+    // any regex, and that is exactly the line that has to stand out.
+    const inferredKind =
       /\b(?:failed|error|unavailable|could not|denied)\b/i.test(copy)
         ? "error"
         : /\b(?:saved|ready|complete|success|online|passed)\b/i.test(copy)
           ? "success"
           : "status";
-    this.activityNotice(copy, { kind, sender: "ForkMesh" });
+    this.activityNotice(copy, {
+      kind: kind || inferredKind,
+      sender: "ForkMesh",
+    });
     this.toastTimer = window.setTimeout(() => {
       this.toastPriority = 0;
       this.toastLockUntil = 0;

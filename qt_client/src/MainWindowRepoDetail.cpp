@@ -3878,6 +3878,9 @@ void MainWindow::loadCommits()
     // until the new ones snap in, in one repaint when the guard unwinds.
     TableRepaintGuard repaintGuard(m_commitsTable);
     m_commitsTable->setRowCount(0);
+    // Drop the previous window's lane pitch: a load that bails out early must
+    // not leave the next repo's graph compressed to this repo's depth.
+    m_commitsTable->setProperty(kGraphLaneCountProperty, 0);
     showCommitList(); // always land on the list when (re)loading
     // The Insights "Contributors & activity" counts are derived from the same
     // history; keep them in step when it moves underneath an open Insights tab
@@ -3941,6 +3944,9 @@ void MainWindow::loadCommits()
     // is the hash the lane is currently waiting to reach; an empty entry is a free
     // slot a new branch can reuse.
     QList<QString> activeLanes;
+    // Widest the graph gets anywhere in this window. The delegate needs it up
+    // front to pick one lane pitch for every row (see commitGraphMetrics).
+    int graphLaneCount = 0;
     // Put outgoing work in the graph itself.  The synthetic dotted node's
     // bottom lane is the first real commit's top lane, so the connector reads
     // as one continuous graph rather than a detached warning card.
@@ -4048,6 +4054,13 @@ void MainWindow::loadCommits()
             if (!activeLanes.at(i).isEmpty())
                 botLaneCols.append(i);
         }
+        graphLaneCount = std::max({graphLaneCount, nodeLane + 1,
+                                   laneCols.isEmpty()
+                                       ? 0
+                                       : laneCols.last().toInt() + 1,
+                                   botLaneCols.isEmpty()
+                                       ? 0
+                                       : botLaneCols.last().toInt() + 1});
 
         const int row = m_commitsTable->rowCount();
         m_commitsTable->insertRow(row);
@@ -4173,11 +4186,14 @@ void MainWindow::loadCommits()
         updateCommitRowHover(row);
     }
     // The graph gutter needs no sizing pass: it is painted inside the summary
-    // cell and each row's text indents to its own rightmost lane (capped by
-    // kGraphMaxTextIndent in CommitSummaryDelegate). Repaints stay suspended
+    // cell and each row's text indents to its own rightmost lane. What the
+    // delegate does need is the window's widest lane count, so every row draws
+    // its lanes at the same pitch and the whole graph fits the gutter instead
+    // of striping across the messages (adhoc #60). Repaints stay suspended
     // through the banner update and filter re-apply below, so the whole reload
     // lands in one repaint. Rows stay in git-log order (no header sorting) so
     // the graph lanes always match the topology.
+    m_commitsTable->setProperty(kGraphLaneCountProperty, graphLaneCount);
 
     // Banner + expandable file view for the commits still waiting to sync
     // (m_commitsUnsyncedHashes was rebuilt by the row loop above).
@@ -4704,6 +4720,7 @@ enum GlobalSearchKind {
     GsBranch,     // branch name (str1) in the open repo
     GsFile,       // path (str1) in the open repo
     GsCommit,     // full hash (str1) in the open repo
+    GsAgent,      // agent session id (num) in the open repo
     GsDeepSearch, // open the streaming full-search page for the typed query
 };
 } // namespace
@@ -4751,6 +4768,12 @@ QWidget *MainWindow::createGlobalSearchBox()
     connect(m_globalSearchTimer, &QTimer::timeout, this,
             &MainWindow::rebuildGlobalSearchResults);
     connect(m_globalSearch, &QLineEdit::textChanged, this, [this](const QString &t) {
+        // The Agents page filters live, on every keystroke and ahead of the
+        // debounce: it is plain in-memory string matching, and the one part that
+        // touches disk (the transcript scan) is debounced off the GUI thread on
+        // its own. Waiting on the dropdown's timer here only made the page below
+        // lag behind what is typed.
+        syncAgentPageSearch();
         if (t.trimmed().isEmpty()) {
             m_globalSearchTimer->stop();
             hideGlobalSearchPopup();
@@ -4928,6 +4951,38 @@ void MainWindow::rebuildGlobalSearchResults()
                 break;
         }
 
+        // Agent sessions, matched on their prompt/issue title and on whatever the
+        // live transcript scan has found for this same query — so a run is
+        // findable by something it said, not just by what it was asked to do.
+        // Picking one opens the Agents tab on that session.
+        header = false;
+        const QString repoOwner = m_repositories.at(m_repoDetailIndex).owner;
+        for (const AgentSession &session : std::as_const(m_agentSessions)) {
+            if (session.owner != repoOwner || session.name != repoName)
+                continue;
+            const AgentTranscriptHit hit = agentTranscriptHit(session.id);
+            const QString title =
+                session.issueNumber > 0
+                    ? QStringLiteral("#%1 %2").arg(session.issueNumber)
+                          .arg(session.issueTitle)
+                    : session.issueTitle;
+            if (!title.toLower().contains(needle) && hit.count == 0)
+                continue;
+            if (!header) {
+                addHeader(QStringLiteral("Agent sessions") + suffix);
+                header = true;
+            }
+            QString label = title.simplified();
+            if (label.size() > 80)
+                label = label.left(79) + QString::fromUtf8("\xE2\x80\xA6");
+            if (hit.count > 0)
+                label += QString::fromUtf8("   \xC2\xB7  %1 in transcript")
+                             .arg(hit.count);
+            if (!addResult("dependabot", agentStatusIconColor(session), label,
+                           GsAgent, QString(), QString(), session.id))
+                break;
+        }
+
         // Branches.
         header = false;
         const QString ref = currentRef();
@@ -5053,8 +5108,13 @@ void MainWindow::activateGlobalSearchItem(QListWidgetItem *item)
 
     hideGlobalSearchPopup();
     if (m_globalSearch) {
-        QSignalBlocker block(m_globalSearch); // clearing must not re-trigger a rebuild
-        m_globalSearch->clear();
+        {
+            QSignalBlocker block(m_globalSearch); // clearing must not re-trigger a rebuild
+            m_globalSearch->clear();
+        }
+        // The blocked signal also skips the live page mirror, which would leave
+        // the Agents list narrowed by a query that is no longer on screen.
+        syncAgentPageSearch();
     }
 
     const bool repoOpen =
@@ -5095,6 +5155,9 @@ void MainWindow::activateGlobalSearchItem(QListWidgetItem *item)
         break;
     case GsCommit:
         if (repoOpen) { showSection(0); showOverviewCommits(); showCommit(s1); }
+        break;
+    case GsAgent:
+        switchToAgentsTab(num); // binds the repo, opens the tab, selects the run
         break;
     default:
         break;
@@ -9256,8 +9319,8 @@ void MainWindow::updateRepoActivityRail()
     const bool onBranches =
         onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 2;
-    const bool onAgents =
-        onHome && m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
+    const bool onAgents = onHome && m_repoDetailStack &&
+                          m_repoDetailStack->currentIndex() == kRepoAgentsTab;
     // Git is its own activity-rail destination, so hide every Code/repository
     // header above the source-control workspace rather than leaving rows of
     // unrelated navigation on screen. The Agents tab gets the same treatment: its
@@ -9278,13 +9341,18 @@ void MainWindow::updateRepoActivityRail()
         m_agentsNavButton->setChecked(onAgents);
     // The Git page has no search box of its own: the top bar's field is the one
     // place to search from, and here it searches this repo's history, so say so.
+    // The Agents page has its own box, but the top-bar one drives it too, so it
+    // says what typing up there will do to the page below.
     if (m_globalSearch)
         m_globalSearch->setPlaceholderText(
             onChanges ? QString::fromUtf8("Search commits\xE2\x80\xA6")
-                      : QString::fromUtf8("Search\xE2\x80\xA6"));
+            : onAgents
+                ? QString::fromUtf8("Search agents & transcripts\xE2\x80\xA6")
+                : QString::fromUtf8("Search\xE2\x80\xA6"));
     // Arriving on the page applies whatever is typed up there to the graph;
     // leaving it clears the filter so the list is whole again next time.
     syncGitCommitFilter();
+    syncAgentPageSearch();
 }
 
 // Mirror the top-bar search into the commit-list filter while the Git page is
@@ -9301,6 +9369,45 @@ void MainWindow::syncGitCommitFilter()
     if (m_commitSearch->text() == query)
         return;
     m_commitSearch->setText(query); // textChanged -> filterCommits
+}
+
+// Mirror the top-bar search into the Agents page while it is on screen, so that
+// box searches what is in front of you as you type: the session list narrows on
+// every keystroke (title, agent, status, PR — and, once the background scan
+// lands, the transcripts themselves) and the open session's transcript runs the
+// same query, so its matches highlight in place.
+//
+// The page keeps its own two boxes, and a query typed straight into one of them
+// is the user's, not ours: the mirror only overwrites a box while it still holds
+// exactly what the mirror last put there. That is what m_agentPageSearchMirror
+// remembers, and it is why clearing the top bar clears the page's boxes but
+// never a filter the user typed on the page itself.
+void MainWindow::syncAgentPageSearch()
+{
+    // The Agents tab builds lazily, so both boxes can still be null here; the
+    // mirror below no-ops on them and the transcript scan (which the dropdown
+    // needs either way) still runs.
+    const bool onHome = !m_sectionStack || m_sectionStack->currentIndex() == 0;
+    const bool onAgents = onHome && m_repoDetailStack &&
+                          m_repoDetailStack->currentIndex() == kRepoAgentsTab;
+    const QString query =
+        onAgents && m_globalSearch ? m_globalSearch->text().trimmed() : QString();
+    auto mirror = [&](QLineEdit *box) {
+        if (!box || box->text() == query)
+            return;
+        // Off the page, or with the top bar emptied, only take back a box that
+        // is still showing our own query.
+        if (query.isEmpty() && box->text() != m_agentPageSearchMirror)
+            return;
+        box->setText(query); // textChanged -> list filter / transcript highlight
+    };
+    mirror(m_agentSearch);
+    mirror(m_transcriptSearch);
+    m_agentPageSearchMirror = query;
+    // Scan even off the Agents page: the dropdown lists sessions by what their
+    // transcripts say, so the hits have to be there before the page is opened.
+    // A no-op once this query has been scanned for this repo.
+    scheduleAgentTranscriptSearch();
 }
 
 

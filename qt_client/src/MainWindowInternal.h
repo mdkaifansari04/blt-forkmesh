@@ -19,6 +19,7 @@
 #include "ClaudeIdeBridge.h"
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
+#include "CommitGraph.h"
 #include "ScrollJumpButtons.h"
 #include "DirectorySizeScan.h"
 #include "StallWatchdog.h"
@@ -572,183 +573,15 @@ const QLatin1String kRepoInfoPath(".forkmesh/info.json");
 // Agents tab (adhoc #78). Shared by the link builder and its linkActivated handler.
 const QLatin1String kAgentLinkScheme("forkmesh-agent:");
 
-// Lane geometry, shared between the column-width calc and the delegate so the
-// dots line up with the section width.
-constexpr int kGraphLaneWidth = 12;
-constexpr int kGraphMargin = 8;
-// Cap on how far a row's text can be pushed right by a very wide graph, so a
-// deep merge history can't shove the messages off-screen.
-constexpr int kGraphMaxTextIndent = 160;
-// Commit node is drawn as a "bullseye": a hollow ring with a filled centre,
-// matching the VS Code git-graph look. Slightly larger than before so the
-// nodes read as clear anchors; lane lines stop at the ring's edge on merge
-// rows so the background shows through the ring/centre-dot gap.
-constexpr qreal kGraphNodeOuter = 4.5; // outer ring radius
-constexpr qreal kGraphNodeInner = 2.0; // centre-dot radius
+// Commit-graph gutter geometry + painter (lane pitch, node sizes, palette).
+// Lives in CommitGraph.h so it can be rendered standalone.
 
-// Stable per-lane colour so a branch keeps its hue down the whole graph.
-// Blue leads so the trunk lane (main) draws blue, like the VS Code graph.
-inline QColor commitGraphLaneColor(int lane)
-{
-    static const QColor palette[] = {
-        QColor("#58a6ff"), QColor("#d29922"), QColor("#db61a2"),
-        QColor("#bc8cff"), QColor("#39c5cf"), QColor("#3fb950"),
-    };
-    constexpr int n = int(sizeof(palette) / sizeof(palette[0]));
-    return palette[((lane % n) + n) % n];
-}
 
 // Defined below: outlines a selected row in green instead of filling it solid.
 inline void paintRowSelectionBorder(QPainter *painter,
                                     const QStyleOptionViewItem &option,
                                     const QModelIndex &index);
 
-// Paints the git-graph gutter the way the VS Code git-graph view does: lanes
-// that pass straight through a row are drawn as vertical lines, while a lane
-// that merges into the commit (or branches out of it) loops through a rounded
-// quarter-circle corner — a horizontal run along the node's centreline joined
-// to a vertical run in its own lane. Merge commits draw as a bullseye (hollow
-// ring with a filled centre), regular commits as a solid dot. Each row carries
-// the lanes present at its top and bottom edges; comparing the two boundaries
-// tells us which lanes pass through, merge in, or branch out. Topology is
-// meaningful only while the list is in git-log order, which is why that
-// ordering is pinned when the list loads. Called by CommitSummaryDelegate
-// inside the summary cell (the standalone gutter column is hidden) so each
-// row's text can start right beside its own rightmost lane.
-inline void paintCommitGraphGutter(QPainter *painter, const QRect &r,
-                                   const QVariantList &topLanes,
-                                   const QVariantList &botLanes, int nodeLane,
-                                   bool isMerge, bool isOutgoing = false)
-{
-    if (topLanes.isEmpty() && botLanes.isEmpty() && nodeLane < 0)
-        return;
-    const qreal yTop = r.top();
-    const qreal yBot = r.top() + r.height(); // meets the next row's top edge
-    const qreal yMid = r.center().y() + 0.5;
-    auto laneX = [&](int lane) -> qreal {
-        return r.left() + kGraphMargin + lane * kGraphLaneWidth;
-    };
-    // Which lane columns are occupied at each edge of the row.
-    QSet<int> topSet;
-    QSet<int> botSet;
-    int maxLane = nodeLane;
-    for (const QVariant &v : topLanes) {
-        const int l = v.toInt();
-        topSet.insert(l);
-        maxLane = std::max(maxLane, l);
-    }
-    for (const QVariant &v : botLanes) {
-        const int l = v.toInt();
-        botSet.insert(l);
-        maxLane = std::max(maxLane, l);
-    }
-
-    painter->save();
-    painter->setRenderHint(QPainter::Antialiasing, true);
-
-    // On merge rows the lines stop short of the node by the ring radius, so
-    // the hollow ring keeps a clean background gap around its centre dot
-    // instead of lane strokes cutting through it.
-    const qreal trim = (isMerge && nodeLane >= 0) ? kGraphNodeOuter : 0.0;
-
-    // Round caps/joins keep the lanes and their loops smooth where they meet
-    // nodes and each other.
-    auto strokePath = [&](const QPainterPath &path, const QColor &c) {
-        QPen pen(c, 2.0);
-        pen.setCapStyle(Qt::RoundCap);
-        pen.setJoinStyle(Qt::RoundJoin);
-        painter->setPen(pen);
-        painter->setBrush(Qt::NoBrush);
-        painter->drawPath(path);
-    };
-    auto straight = [&](qreal x, qreal y0, qreal y1, const QColor &c) {
-        QPainterPath path(QPointF(x, y0));
-        path.lineTo(QPointF(x, y1));
-        strokePath(path, c);
-    };
-    // A lane looping into the node from the row's top edge: vertical in its
-    // own lane, then a rounded quarter-circle corner onto the node's
-    // centreline — the smooth "loop" the VS Code graph draws for merges.
-    auto loopIn = [&](int lane, const QColor &c) {
-        const qreal x0 = laneX(lane);
-        const qreal x1 = laneX(nodeLane);
-        const qreal rad = qMax(0.0, qMin(qAbs(x1 - x0) - trim, yMid - yTop));
-        const qreal sx = (x1 > x0) ? 1.0 : -1.0;
-        QPainterPath path(QPointF(x0, yTop));
-        path.lineTo(QPointF(x0, yMid - rad));
-        path.quadTo(QPointF(x0, yMid), QPointF(x0 + sx * rad, yMid));
-        path.lineTo(QPointF(x1 - sx * trim, yMid));
-        strokePath(path, c);
-    };
-    // A lane looping out of the node towards the row's bottom edge: horizontal
-    // along the centreline, then the rounded corner down into its own lane.
-    auto loopOut = [&](int lane, const QColor &c) {
-        const qreal x0 = laneX(nodeLane);
-        const qreal x1 = laneX(lane);
-        const qreal rad = qMax(0.0, qMin(qAbs(x1 - x0) - trim, yBot - yMid));
-        const qreal sx = (x1 > x0) ? 1.0 : -1.0;
-        QPainterPath path(QPointF(x0 + sx * trim, yMid));
-        path.lineTo(QPointF(x1 - sx * rad, yMid));
-        path.quadTo(QPointF(x1, yMid), QPointF(x1, yMid + rad));
-        path.lineTo(QPointF(x1, yBot));
-        strokePath(path, c);
-    };
-
-    // Every lane other than the node's: straight through if present at both
-    // edges, a merge loop if it only enters from the top, a branch loop if it
-    // only leaves at the bottom. Rows without a node (expanded file rows) only
-    // carry pass-through lanes; anything else degrades to a straight stub.
-    for (int lane = 0; lane <= maxLane; ++lane) {
-        if (lane == nodeLane)
-            continue;
-        const bool inTop = topSet.contains(lane);
-        const bool inBot = botSet.contains(lane);
-        const QColor c = commitGraphLaneColor(lane);
-        if (inTop && inBot)
-            straight(laneX(lane), yTop, yBot, c);
-        else if (inTop)
-            nodeLane >= 0 ? loopIn(lane, c) : straight(laneX(lane), yTop, yMid, c);
-        else if (inBot)
-            nodeLane >= 0 ? loopOut(lane, c) : straight(laneX(lane), yMid, yBot, c);
-    }
-
-    if (nodeLane >= 0) {
-        const QColor c = commitGraphLaneColor(nodeLane);
-        const qreal nx = laneX(nodeLane);
-        // The node's own lane: a straight stub above (it was reached from a
-        // child) and below (its first parent continues here), trimmed at the
-        // ring's edge on merge rows so the ring interior stays clear.
-        if (topSet.contains(nodeLane))
-            straight(nx, yTop, yMid - trim, c);
-        if (botSet.contains(nodeLane))
-            straight(nx, yMid + trim, yBot, c);
-        if (isOutgoing) {
-            // A local-only tip is not a commit of its own.  Draw it as a dotted
-            // ring, then continue its lane into the actual top commit below.
-            painter->setBrush(Qt::NoBrush);
-            QPen pen(c, 1.8, Qt::DotLine);
-            pen.setCapStyle(Qt::RoundCap);
-            painter->setPen(pen);
-            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter,
-                                 kGraphNodeOuter);
-        } else if (isMerge) {
-            // Merge node: hollow ring + filled centre.
-            painter->setBrush(Qt::NoBrush);
-            painter->setPen(QPen(c, 2.0));
-            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter, kGraphNodeOuter);
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(c);
-            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeInner, kGraphNodeInner);
-        } else {
-            // Regular commit: a solid dot.
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(c);
-            painter->drawEllipse(QPointF(nx, yMid), kGraphNodeOuter - 0.7,
-                                 kGraphNodeOuter - 0.7);
-        }
-    }
-    painter->restore();
-}
 
 // Paints the commits list's Summary column the way VS Code's source-control
 // graph does: the text starts right beside the commit's own lane (so it shifts
@@ -790,10 +623,6 @@ public:
             graphIdx.data(kGraphBottomLanesRole).toList();
         const QVariant nodeLaneVar = graphIdx.data(kGraphNodeLaneRole);
         const int nodeLane = nodeLaneVar.isValid() ? nodeLaneVar.toInt() : -1;
-        paintCommitGraphGutter(painter, option.rect, topLanes, botLanes,
-                               nodeLane,
-                               graphIdx.data(kGraphIsMergeRole).toBool(),
-                               index.data(kCommitOutgoingRole).toBool());
         int rowMaxLane = std::max(nodeLane, 0);
         for (const QVariant &v : topLanes)
             rowMaxLane = std::max(rowMaxLane, v.toInt());
@@ -802,9 +631,19 @@ public:
         if (fileRow) // nested one step under its commit's lane
             rowMaxLane =
                 std::max(rowMaxLane, index.data(kGraphNodeLaneRole).toInt());
-        const int indent =
-            std::min(kGraphMargin + (rowMaxLane + 1) * kGraphLaneWidth,
-                     kGraphMaxTextIndent);
+        // One pitch for the whole list (the loader publishes its widest row),
+        // so lanes line up vertically and a deep history compresses instead of
+        // running past the gutter and through the messages.
+        const int laneCount =
+            std::max(rowMaxLane + 1,
+                     w ? w->property(kGraphLaneCountProperty).toInt() : 0);
+        const CommitGraphMetrics metrics = commitGraphMetrics(laneCount);
+        paintCommitGraphGutter(painter, option.rect, topLanes, botLanes,
+                               nodeLane,
+                               graphIdx.data(kGraphIsMergeRole).toBool(),
+                               index.data(kCommitOutgoingRole).toBool(),
+                               metrics);
+        const int indent = commitGraphTextIndent(rowMaxLane, metrics);
 
         const QFontMetrics fm(option.font);
         QRect r = option.rect.adjusted(indent, 0, -8, 0);
@@ -3992,6 +3831,9 @@ inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
 // overview — and a relaunch restores the tab last viewed
 // (kLastRepoDetailTabSetting).
 constexpr int kRepoLandingTab = 0; // Code
+
+// The Agents tab's index in m_repoDetailStack (see ensureRepoDetailTabBuilt).
+constexpr int kRepoAgentsTab = 3;
 
 // Live claude.ai OAuth access token the Claude Code CLI stores in
 // ~/.claude/.credentials.json. Empty when the user logged in with an API key
@@ -7296,23 +7138,82 @@ private:
     QString m_fullText;
 };
 
+// A one-line, muted status label that sits beside a busy button and carries the
+// live "what is it doing right now" note (the sync button's git/seal progress).
+// It never widens its row: the size hint stays at zero width and the layout
+// hands it whatever space is left, so a long progress line elides instead of
+// pushing the button around. The untruncated text is kept for the tooltip and
+// so a resize re-elides the original rather than an already-cut string.
+class ElidingStatusLabel : public QLabel
+{
+public:
+    explicit ElidingStatusLabel(QWidget *parent = nullptr) : QLabel(parent)
+    {
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        setTextInteractionFlags(Qt::NoTextInteraction);
+    }
+
+    void setFullText(const QString &text)
+    {
+        const QString line = text.simplified();
+        if (line == m_fullText)
+            return;
+        m_fullText = line;
+        setToolTip(line);
+        applyElide();
+    }
+    QString fullText() const { return m_fullText; }
+
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QLabel::minimumSizeHint();
+        hint.setWidth(0);
+        return hint;
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QLabel::resizeEvent(event);
+        applyElide();
+    }
+
+private:
+    void applyElide()
+    {
+        const QString elided = fontMetrics().elidedText(
+            m_fullText, Qt::ElideRight, qMax(0, width()));
+        if (elided != text())
+            QLabel::setText(elided);
+    }
+
+    QString m_fullText;
+};
+
 // A push button that stacks its octicon above a small caption — the same
 // icon-over-words form as the activity rail's entries (adhoc #91) — but driven
 // by the button's live text(), so the existing "Issues (60)" / "Fork 0" count
-// updates keep working. Two forms: Tab paints the repo tabs' checked underline,
-// Action paints the repoAction pill's fill and border. Fully custom-painted
-// (like ActivityRailButton), so the QPushButton QSS box — including
-// #repoAction's max-height, which would squash the stacked layout — never
-// shapes what's drawn.
+// updates keep working. Three forms: Tab paints the repo tabs' checked
+// underline, Action paints the repoAction pill's fill and border, and Bare
+// paints neither — just the rail's own icon over caption, resting grey and
+// brightening under the pointer (adhoc #59). Fully custom-painted (like
+// ActivityRailButton), so the QPushButton QSS box — including #repoAction's
+// max-height, which would squash the stacked layout — never shapes what's
+// drawn.
 class VerticalIconButton : public QPushButton
 {
 public:
-    enum Form { Action, Tab };
+    enum Form { Action, Tab, Bare };
     explicit VerticalIconButton(const QString &text, Form form,
                                 QWidget *parent = nullptr)
         : QPushButton(text, parent), m_form(form)
     {
         setCursor(Qt::PointingHandCursor);
+        setFlat(true);
+        // Nothing here is styled by QSS, so Qt doesn't set WA_Hover for us —
+        // without it underMouse() would only be re-read on some unrelated
+        // repaint and the hover brightening would come and go at random.
+        setAttribute(Qt::WA_Hover, true);
     }
 
     QSize sizeHint() const override
@@ -7337,6 +7238,18 @@ public:
     }
     qint64 badgeCount() const { return m_badge; }
 
+    // Name the octicon instead of handing over a finished QIcon, and the glyph
+    // is re-tinted to the live caption colour on every repaint — exactly how
+    // ActivityRailButton does it, so a Bare tile's icon greys and brightens
+    // with its caption rather than sitting at one fixed contrast.
+    void setOcticonName(const QString &name)
+    {
+        if (m_iconName == name)
+            return;
+        m_iconName = name;
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -7345,11 +7258,14 @@ protected:
         const bool dark = currentThemeIsDark();
         const bool hovered = isEnabled() && underMouse();
         QColor fg;
-        if (m_form == Tab)
+        // Tab and Bare both rest in the rail's grey and brighten under the
+        // pointer; Action sits inside a pill that already separates it from the
+        // page, so it stays at full contrast.
+        if (m_form == Action)
+            fg = dark ? QColor("#e6edf3") : QColor("#1f2328");
+        else
             fg = dark ? QColor(isChecked() || hovered ? "#e6edf3" : "#8b949e")
                       : QColor(isChecked() || hovered ? "#1f2328" : "#656d76");
-        else
-            fg = dark ? QColor("#e6edf3") : QColor("#1f2328");
         if (!isEnabled())
             fg = QColor("#6e7681");
 
@@ -7359,14 +7275,18 @@ protected:
                                    : (hovered ? "#d0d7de" : "#eaeef2")));
             p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6,
                               6);
-        } else if (isChecked()) {
+        } else if (m_form == Tab && isChecked()) {
             p.fillRect(QRect(0, height() - 2, width(), 2),
                        QColor(dark ? "#2ea043" : "#1f883d"));
         }
 
         const QRect iconRect((width() - kIconPx) / 2, 6, kIconPx, kIconPx);
-        icon().paint(&p, iconRect, Qt::AlignCenter,
-                     isEnabled() ? QIcon::Normal : QIcon::Disabled);
+        if (m_iconName.isEmpty())
+            icon().paint(&p, iconRect, Qt::AlignCenter,
+                         isEnabled() ? QIcon::Normal : QIcon::Disabled);
+        else
+            p.drawPixmap(iconRect.topLeft(),
+                         tintedOcticonPixmap(m_iconName, fg, kIconPx));
 
         QFont f = font();
         f.setPixelSize(10);
@@ -7405,6 +7325,7 @@ private:
     static constexpr int kHeight = 44;
     Form m_form;
     qint64 m_badge = 0;
+    QString m_iconName; // empty: paint the QIcon set by setOcticon instead
 };
 
 // Width and height of one activity-rail entry, and the width of the rail

@@ -4350,6 +4350,29 @@ void MainWindow::saveNetworkLog()
     m_networkLogDiskLines = m_networkLog.size();
 }
 
+void MainWindow::logCapturedMessage(QtMsgType type, const QString &text)
+{
+    QString line = text.trimmed();
+    if (line.isEmpty())
+        return;
+    // Qt's own warnings read as plain statements ("QProcess: Destroyed while
+    // process ("git") is still running."), so without a severity word nothing
+    // in the entry says it wasn't ordinary progress. Say it — "Error" also
+    // earns the red ERROR badge from networkLogStyleFor().
+    switch (type) {
+    case QtWarningMsg:
+        line = QStringLiteral("Warning: ") + line;
+        break;
+    case QtCriticalMsg:
+    case QtFatalMsg:
+        line = QStringLiteral("Error: ") + line;
+        break;
+    default:
+        break;
+    }
+    logSystem(line);
+}
+
 void MainWindow::logSystem(const QString &text)
 {
     // Some callers (e.g. flashMessage("") to dismiss the toast) pass empty or

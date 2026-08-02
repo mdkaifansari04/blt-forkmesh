@@ -5956,6 +5956,56 @@ int main(int argc, char *argv[])
               "clearEvents starts the next run with a clean transcript");
     }
 
+    // Live transcript search: the search bar filters the session list by what a
+    // run actually said, so the store has to find a query across both the raw log
+    // and the stream-json events, count the hits, and hand back the surrounding
+    // text for the matching row's tooltip.
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "transcript search temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session = store.createSession(session);
+
+        check(store.searchTranscript(session, "recovery") == 0,
+              "an empty transcript matches nothing");
+
+        store.appendLog(session, "only seeing RECOVERY pings here");
+        store.appendEvent(session,
+                          QJsonObject{{"type", "assistant"},
+                                      {"text", "failure pings need recovery"}});
+
+        QString snippet;
+        check(store.searchTranscript(session, "recovery", &snippet) == 2,
+              "hits are counted across the raw log and the event stream");
+        check(snippet.contains("seeing RECOVERY pings"),
+              "the snippet carries the text around the first hit");
+        check(store.searchTranscript(session, "Recovery") == 2,
+              "transcript search is case-insensitive");
+        check(store.searchTranscript(session, "nowhere in here") == 0,
+              "a query the run never said matches nothing");
+        check(store.searchTranscript(session, "   ") == 0,
+              "a blank query never claims a match");
+
+        // Only the tail of a long-running session is read, so scanning every
+        // session on each keystroke stays cheap.
+        AgentSession chatty;
+        chatty.owner = "octo";
+        chatty.name = "demo";
+        chatty = store.createSession(chatty);
+        store.appendLog(chatty, "needle at the very start");
+        store.appendLog(chatty,
+                        QString(AgentStore::kTranscriptSearchTailBytes + 4096,
+                                QLatin1Char('x')));
+        check(store.searchTranscript(chatty, "needle") == 0,
+              "text older than the search tail is out of scope");
+        store.appendLog(chatty, "needle again at the end");
+        check(store.searchTranscript(chatty, "needle") == 1,
+              "the tail of a long transcript is still searched");
+    }
+
     // The Claude Code run summary the CLI reports on finish ("done · N turns ·
     // Ms · $X") is stored on the session and survives a restart (issue #296).
     {
@@ -6905,6 +6955,78 @@ int main(int argc, char *argv[])
                   !forkmesh::isFontDatabaseNoise(
                       QStringLiteral("forkmesh-419-control-line")),
               "isFontDatabaseNoise matches only the font-database warning");
+    }
+
+    // The app's progress lines and Qt's own warnings belong in the Log view, not
+    // in the terminal the desktop was launched from. The filter's sink is what
+    // moves them: it takes the message *instead of* the console, except headless
+    // (keepConsoleEcho), where the operator only has the console.
+    {
+        QStringList captured;
+        capturedMessages = &captured;
+        QtMessageHandler previous = qInstallMessageHandler(captureMessages);
+        forkmesh::installPlatformLogFilter(); // chains to captureMessages
+
+        QList<QPair<QtMsgType, QString>> sunk;
+        const auto record = [&sunk](QtMsgType type, const QString &message) {
+            sunk.append({type, message});
+        };
+
+        forkmesh::setAppLogSink(record, /*keepConsoleEcho=*/false);
+        qWarning("QProcess: Destroyed while process (\"git\") is still running.");
+        qInfo("Catalog publish response: jett/forkmesh 201 0");
+        // Noise stays noise: the sink must not be handed what the console was
+        // already spared.
+        qWarning("OpenType support missing for \"Noto Mono\", script 9");
+
+        forkmesh::setAppLogSink(record, /*keepConsoleEcho=*/true);
+        qWarning("forkmesh-headless-echo-line");
+
+        // A sink that logs would otherwise re-enter itself forever.
+        forkmesh::setAppLogSink(
+            [&sunk](QtMsgType type, const QString &message) {
+                sunk.append({type, message});
+                if (!message.startsWith(QLatin1String("re-entrant")))
+                    qWarning("re-entrant sink line");
+            },
+            /*keepConsoleEcho=*/false);
+        qWarning("forkmesh-reentrant-trigger");
+
+        forkmesh::clearAppLogSink();
+        qWarning("forkmesh-after-clear-line");
+        qInstallMessageHandler(previous); // restore so PASS/FAIL output prints
+        capturedMessages = nullptr;
+
+        const QString console = captured.join(QLatin1Char('\n'));
+        QStringList sunkText;
+        for (const auto &entry : sunk)
+            sunkText << entry.second;
+        const QString logged = sunkText.join(QLatin1Char('\n'));
+
+        check(logged.contains(QStringLiteral(
+                  "QProcess: Destroyed while process (\"git\") is still "
+                  "running.")) &&
+                  !console.contains(QStringLiteral("QProcess: Destroyed")),
+              "Qt's QProcess teardown warning goes to the log, not the console");
+        check(logged.contains(QStringLiteral("Catalog publish response")) &&
+                  !console.contains(QStringLiteral("Catalog publish response")),
+              "the app's own qInfo progress lines go to the log only");
+        check(!logged.contains(QStringLiteral("OpenType support missing")),
+              "known platform noise is still dropped before the sink");
+        check(sunk.first().first == QtWarningMsg &&
+                  sunk.at(1).first == QtInfoMsg,
+              "the sink is told each message's severity");
+        check(logged.contains(QStringLiteral("forkmesh-headless-echo-line")) &&
+                  console.contains(QStringLiteral("forkmesh-headless-echo-line")),
+              "keepConsoleEcho (headless) logs and still prints to the console");
+        // Qt refuses to re-enter an installed handler at all — the nested line
+        // goes straight to stderr, past captureMessages — so the observable
+        // guarantee is that it never loops back into the sink.
+        check(sunkText.count(QStringLiteral("re-entrant sink line")) == 0,
+              "a sink that logs re-entrantly does not feed itself");
+        check(!logged.contains(QStringLiteral("forkmesh-after-clear-line")) &&
+                  console.contains(QStringLiteral("forkmesh-after-clear-line")),
+              "clearAppLogSink sends messages back to the console");
     }
 
     // MCP connector (adhoc #16): the token is a bearer credential that lets an

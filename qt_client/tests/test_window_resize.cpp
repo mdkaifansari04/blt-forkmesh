@@ -1408,24 +1408,26 @@ int main(int argc, char *argv[])
     // real PR and Agents controls only after taking that user-visible path,
     // keeping the startup performance contract intact.
     // adhoc #7: the PR header's conflict action is a plain "Fix" that fills the
-    // prompt box — no provider dropdown to pick a resolver from — and the whole
-    // header row wears the same flat rail style (no filled primary pills).
+    // prompt box — no provider dropdown to pick a resolver from. adhoc #59: the
+    // whole header row is icon-over-caption rail tiles ("repoActionStack"), the
+    // same form as the activity rail, instead of a mix of pill shapes.
     bool prFixButtonFound = false;
     bool prHeaderStyleUniform = true;
     for (QPushButton *b : window.findChildren<QPushButton *>()) {
         if (b->text() == QStringLiteral("Fix") && !b->menu())
             prFixButtonFound = true;
-        if (b->text() == QStringLiteral("Review with AI") ||
-            b->text() == QStringLiteral("Fix all with AI") ||
+        if (b->text() == QStringLiteral("AI review") ||
+            b->text() == QStringLiteral("Fix all") ||
             b->text() == QStringLiteral("Merge") ||
-            b->text() == QStringLiteral("Fix conflicts with agent"))
-            prHeaderStyleUniform &= b->objectName() == QStringLiteral("ghostButton");
+            b->text() == QStringLiteral("Agent fix"))
+            prHeaderStyleUniform &=
+                b->objectName() == QStringLiteral("repoActionStack");
     }
     check(prFixButtonFound,
           QStringLiteral("PR header offers a plain 'Fix' button with no provider "
                          "dropdown after repository navigation"));
     check(prHeaderStyleUniform,
-          QStringLiteral("PR header actions all use the flat ghostButton style"));
+          QStringLiteral("PR header actions all use the rail-style icon tile"));
     // The Agents tab is built when it's first opened, and a repo no longer opens
     // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
     // before reading its list back. This also proves that route works for a repo
@@ -3425,6 +3427,101 @@ int main(int argc, char *argv[])
                   QStringLiteral("agent/issue-291-unrelated")),
               QStringLiteral("merging an unrelated branch flags no agent session "
                              "(issue #291)"));
+    }
+
+    // The top bar's search box searches the page in front of you: on the Agents
+    // tab it narrows the session list as each character lands, matches sessions on
+    // what their transcripts say (not just their prompt), and drives the open
+    // session's transcript search so hits highlight in place.
+    {
+        window.testOpenRepository(repoIdx); // "me/r", the Agents tab's repo
+        window.testOpenAgentsOverview();
+        QApplication::processEvents();
+
+        AgentSession titled;
+        titled.id = 7401;
+        titled.owner = QStringLiteral("me");
+        titled.name = QStringLiteral("r");
+        titled.issueTitle =
+            QStringLiteral("only seeing recovery pings, want failure pings too");
+        titled.status = AgentStatus::Success;
+        window.testAddAgentSession(titled);
+
+        AgentSession quiet;
+        quiet.id = 7402;
+        quiet.owner = QStringLiteral("me");
+        quiet.name = QStringLiteral("r");
+        quiet.issueTitle = QStringLiteral("tidy the release checklist");
+        quiet.status = AgentStatus::Success;
+        window.testAddAgentSession(quiet);
+        // Only this session's transcript mentions the query; its title does not.
+        window.testAppendAgentTranscript(
+            quiet.id, QStringLiteral("checked the recovery ping path first"));
+
+        AgentSession silent;
+        silent.id = 7403;
+        silent.owner = QStringLiteral("me");
+        silent.name = QStringLiteral("r");
+        silent.issueTitle = QStringLiteral("bump the icon cache");
+        silent.status = AgentStatus::Success;
+        window.testAddAgentSession(silent);
+
+        // Typing up top filters the list below straight away — no Enter, and no
+        // waiting on the dropdown's debounce.
+        window.testTypeGlobalSearch(QStringLiteral("recovery"));
+        QApplication::processEvents();
+        check(window.testAgentSearchText() == QStringLiteral("recovery"),
+              QString("the top-bar search mirrors into the Agents page's own "
+                      "filter (got \"%1\")")
+                  .arg(window.testAgentSearchText()));
+        check(window.testTranscriptSearchText() == QStringLiteral("recovery"),
+              QString("the same query drives the open session's transcript "
+                      "search (got \"%1\")")
+                  .arg(window.testTranscriptSearchText()));
+        QStringList titles = window.testAgentRowTitles();
+        check(titles.size() == 1 && titles.first().contains(
+                  QStringLiteral("only seeing recovery pings")),
+              QString("the list is narrowed to the session whose title matches "
+                      "(rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+
+        // The transcript scan is debounced off the GUI thread; run it now and let
+        // its result land. The session that only ever said "recovery" mid-run
+        // joins the list, and says how many times it was found.
+        window.testRunAgentTranscriptSearch();
+        QElapsedTimer transcriptSearchTimer;
+        transcriptSearchTimer.start();
+        while (transcriptSearchTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            titles = window.testAgentRowTitles();
+            if (titles.size() == 2)
+                break;
+        }
+        const QString transcriptRow = titles.filter(
+            QStringLiteral("release checklist")).value(0);
+        check(titles.size() == 2 && !transcriptRow.isEmpty(),
+              QString("a session whose transcript holds the query stays in the "
+                      "list even though its title does not (rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+        check(transcriptRow.contains(QStringLiteral("1 in transcript")),
+              QString("the row says the match came from the transcript (got "
+                      "\"%1\")")
+                  .arg(transcriptRow));
+        check(!titles.join(QLatin1Char(' ')).contains(
+                  QStringLiteral("icon cache")),
+              QString("a session that matches neither title nor transcript stays "
+                      "filtered out (rows: %1)")
+                  .arg(titles.join(QStringLiteral(" | "))));
+
+        // Clearing the top bar hands the whole list back.
+        window.testTypeGlobalSearch(QString());
+        QApplication::processEvents();
+        titles = window.testAgentRowTitles();
+        check(window.testAgentSearchText().isEmpty() && titles.size() >= 3,
+              QString("clearing the top-bar search unfilters the session list "
+                      "(filter \"%1\", %2 rows)")
+                  .arg(window.testAgentSearchText())
+                  .arg(titles.size()));
     }
 
     // adhoc #15: the network log renders only its newest segment up front, and
