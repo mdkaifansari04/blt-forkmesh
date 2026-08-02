@@ -1541,6 +1541,9 @@ void MainWindow::openRepoDetail(int repoIndex)
     // repo's uncommitted count now instead of leaving the previous repo's
     // number (or a blank icon) until the changes panel is first opened.
     refreshRepoChangeBadge();
+    // Re-tint the chrome-line node dots for this repo right away, for as long as
+    // the Mirror nodes page itself is still unbuilt (adhoc #44).
+    refreshNodeDotMatrix();
     m_repoDetailLoading = false;
 }
 

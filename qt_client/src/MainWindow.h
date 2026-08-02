@@ -1177,7 +1177,7 @@ private:
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
     // fresh sample exists and only probes when the socket is down.
     void onRelayLatencySampled(int ms);
-    void initRelayReachabilityWatch(); // OS reachability → instant radar flips
+    void initRelayReachabilityWatch(); // OS reachability → instant speed-dot flips
     void openServerWebsite(int index); // open a relay's site in the browser
     void showNodeMenu();           // searchable dropdown to pick a node
     void showNodesWindow();        // full window listing nodes, status, public wallet
@@ -2082,9 +2082,17 @@ private:
     // as stopSearch().
     void stopSizeMapScan();
     // Live "scanning <folder> · N files · M so far" line, driven from the walk
-    // itself (adhoc #112).
-    void showSizeMapScanProgress(const QString &current, qint64 bytes,
-                                 int files, bool elevated);
+    // itself (adhoc #112), plus one line per scanning thread beneath it
+    // (adhoc #95) — the walk is parallel, so a single line could only ever show
+    // one of the trees actually being read.
+    // root is the folder the scan was asked for: with the per-thread lines
+    // carrying the folders being walked, the summary names the stable one.
+    void showSizeMapScanProgress(
+        const QString &root,
+        const forkmesh::DirectorySizeScanProgressUpdate &update, bool elevated);
+    // Drops the per-thread lines and hides their box: every scan starts from no
+    // lines, and a finished one leaves the summary alone on screen.
+    void clearSizeMapWorkerLines();
     void applySizeMapResult(const QString &path,
                             forkmesh::DirectorySizeScanResult result,
                             bool hideIgnored, bool elevated);
@@ -3524,6 +3532,7 @@ private:
     // sha256, store it in the mirror's release CAS, then recurse to the rest.
     void downloadNextReleaseBlob(int index, const QString &mirrorPath,
                                  QMap<QString, QString> pending);
+    void pushReleaseToMirrors(const QString &tag);
     void deleteTag(const QString &tag);
     bool repoHasWorkingTree() const;
     void loadFileSearchIndex();
@@ -4544,6 +4553,8 @@ private:
     // copy (e.g. the ssh.<worker> gateway feeding mirror2/mirror3). Async and
     // best-effort; without it those mirrors only advance on a manual push.
     void pushToSshMirrorRemotes(int index);
+    int pushToSshMirrorRemotes(int index, bool userInitiated,
+                               const QString &releaseTag);
     void syncPublicEncryptedRepository(int index, bool quiet = false);
     void syncPrivateRepository(int index, bool quiet = false);
     void syncPrivateRepositoryWithRecipients(
@@ -5714,6 +5725,15 @@ private:
     // lands after the user switched repos.
     QWidget *m_sizeMapChart = nullptr;
     QLabel *m_sizeMapStatus = nullptr;
+    // One live line per scanning thread, under the status line and only while a
+    // scan runs (adhoc #95). The box holds the lines in worker order; a thread
+    // that has not reported yet has no line, so the box grows as the pool picks
+    // the work up.
+    QWidget *m_sizeMapWorkersBox = nullptr;
+    QList<QLabel *> m_sizeMapWorkerLines;
+    // Shown in place of the lines past kSizeMapWorkerLineLimit, so a many-core
+    // machine's scan cannot push the chart itself off the tab.
+    QLabel *m_sizeMapWorkerOverflow = nullptr;
     // Checkbox that drops .gitignored paths from the scan (adhoc #197).
     QCheckBox *m_sizeMapHideIgnored = nullptr;
     // Folder picked with "Choose folder…" so the map can size any directory on
@@ -6136,6 +6156,11 @@ private:
     QWidget *m_scmSyncRow = nullptr;
     ElidingStatusLabel *m_scmSyncStatus = nullptr; // "Writing objects: 62%" …
     int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
+    // Inputs to updateScmCommitControlVisibility(). Commits waiting to sync used
+    // to swap the commit row out for Sync Changes unconditionally, which stranded
+    // a staged change with a typed message and no button to land it.
+    bool m_scmOutgoingBlocking = false; // commits ahead, or a sync in flight
+    int m_scmPendingChangeCount = 0;    // working-tree rows the panel would list
     // Latest one-line progress note per syncing/pushing repository row, keyed
     // the same way m_syncingRepos/m_pushingRepos are. Only the open repo's note
     // is painted; the rest are kept so switching back mid-sync still shows one.

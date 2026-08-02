@@ -62,6 +62,17 @@ def test_ping_channel_tracks_its_own_delivered_transition():
     assert "UPDATE repository_monitor_state SET pinged_state=?" in ENTRY_TEXT
 
 
+def test_monitor_transition_upserts_stay_under_the_d1_parameter_limit():
+    transitions = ENTRY_TEXT[
+        ENTRY_TEXT.index("async def _record_status_monitor_transitions"):
+        ENTRY_TEXT.index("def _status_expected_checks_for_hour")
+    ]
+    assert "for offset in range(0, len(values), 80)" in transitions
+    assert "batch = values[offset:offset + 80]" in transitions
+    assert "count = len(batch) // 8" in transitions
+    assert "*batch" in transitions
+
+
 def test_admin_setting_exposes_independent_ping_and_email_controls():
     renderer = ENTRY_TEXT[
         ENTRY_TEXT.index("def _render_admin_operational_alerts"):

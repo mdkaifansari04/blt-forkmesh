@@ -10,6 +10,12 @@
 #include "ServerNode.h"
 #include "SingleInstance.h"
 #include "StartupSplash.h"
+// The startup timings below are the only thing this file needs from the trace
+// helpers, and they were reaching them by luck through MainWindowInternal.h;
+// main.cpp does not include that private header, so the app target stopped
+// compiling. Include the header that actually declares them. (CI builds
+// forkmesh-tests, not forkmesh, which is why the break got through.)
+#include "StartupTrace.h"
 #include "SystemStats.h"
 #include "Theme.h"
 
@@ -182,14 +188,14 @@ int runSizeMapScan(const QString &requestPath)
         return 2;
     }
     // Progress goes to stderr, one line per update, so the GUI can name the
-    // folder root is inside right now while stdout stays reserved for the tree
-    // (adhoc #112).
-    const auto progress = [](const QString &current, qint64 bytes, int files) {
-        const QByteArray line =
-            forkmesh::encodeScanProgress(current, bytes, files);
-        std::fwrite(line.constData(), 1, std::size_t(line.size()), stderr);
-        std::fflush(stderr);
-    };
+    // folders root is inside right now — one per scanning thread — while stdout
+    // stays reserved for the tree (adhoc #112/#95).
+    const auto progress =
+        [](const forkmesh::DirectorySizeScanProgressUpdate &update) {
+            const QByteArray line = forkmesh::encodeScanProgress(update);
+            std::fwrite(line.constData(), 1, std::size_t(line.size()), stderr);
+            std::fflush(stderr);
+        };
     const QByteArray result = forkmesh::encodeScanResult(
         forkmesh::scanDirectorySizes(path, options, progress));
     std::fwrite(result.constData(), 1, std::size_t(result.size()), stdout);
