@@ -2295,6 +2295,10 @@ int main(int argc, char *argv[])
         check(window.testGitWorkspaceIsExclusive(),
               QStringLiteral("a branch diff gives the Git rail exclusive ownership: "
                              "no Code chrome and no visible diff outside Git"));
+        check(window.testGitFooterIsCompact(),
+              QStringLiteral("Git shows only the compact, notification-width "
+                             "prompt footer; its live log and Background queue "
+                             "stay hidden"));
 
         // adhoc #420: following a branch link must land on the branch straight
         // away. The panel's git reads run on a worker thread now, so the

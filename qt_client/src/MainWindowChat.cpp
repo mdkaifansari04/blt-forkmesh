@@ -1452,6 +1452,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     logPanelLayout->addWidget(m_footerUpdateLog, 1);
 
     auto *leftRegion = new QWidget;
+    m_footerLeftRegion = leftRegion;
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
     auto *leftRegionLayout = new QHBoxLayout(leftRegion);
     leftRegionLayout->setContentsMargins(0, 0, 0, 0);
@@ -1463,6 +1464,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     leftRegionLayout->addWidget(logPanel, 1);
     leftRegionLayout->addWidget(m_backgroundQueue, 0);
 
+    // The Git workspace needs a distraction-free footer: its layout hides the
+    // whole left region and reveals this spacer so the compact prompt remains
+    // right-aligned beneath its notification bubbles.
+    auto *gitPromptSpacer = new QWidget;
+    m_footerGitPromptSpacer = gitPromptSpacer;
+    gitPromptSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    gitPromptSpacer->hide();
+
     // Horizontal split: bordered log + Background, then prompt. The hairline
     // rule that used to sit between the two halves is gone (adhoc #84): every
     // panel in the row already carries its own border, so the extra line was one
@@ -1471,6 +1480,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     dockRow->setContentsMargins(8, 8, 8, 8);
     dockRow->setSpacing(8);
     dockRow->addWidget(leftRegion, 1);
+    dockRow->addWidget(gitPromptSpacer, 1);
     dockRow->addWidget(promptWrapper, 1);
 
     // Pin the footer to just the compact prompt's height (adhoc #107): the dock
