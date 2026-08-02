@@ -1366,6 +1366,12 @@ void MainWindow::openRepoDetail(int repoIndex)
     // seconds on a large repo. Keep the event loop alive across them so the
     // window doesn't freeze (and the WM doesn't flag it "Not Responding").
     GitKeepAlive keepAlive;
+    // Another repository's branch patches are dead weight (and their keys name a
+    // git dir this window is leaving), so let them go here (adhoc #227). Only on
+    // an actual change of repository — reopening the one already on screen must
+    // keep its branches repainting from memory.
+    if (repoIndex != m_repoDetailIndex)
+        clearBranchDiffCache();
     m_repoDetailIndex = repoIndex;
     // Copy by value: the keep-alive pump services queued slots between git reads,
     // and a roster/network callback could mutate (and reallocate) m_repositories
@@ -3840,6 +3846,33 @@ bool MainWindow::commitsListIsCurrent()
     return currentMirrorTip() == m_commitsLoadedMirrorTip;
 }
 
+QString MainWindow::commitMarkerProbeSignature() const
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return {};
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    auto stamp = [](const QString &base, const QString &leaf) -> QString {
+        if (base.trimmed().isEmpty())
+            return QString();
+        const QFileInfo info(QDir(base).filePath(leaf));
+        return QString::number(info.lastModified().toMSecsSinceEpoch()) +
+               QLatin1Char(':') + QString::number(info.size());
+    };
+    // refs/heads rather than refs: git updates a loose ref by writing <ref>.lock
+    // and renaming it over the old file, which moves the mtime of the directory
+    // *holding* the ref but not of refs/ above it. packed-refs and logs/HEAD
+    // cover the packed and reflog cases.
+    QString signature = currentRef();
+    for (const QString &leaf :
+         {QStringLiteral("HEAD"), QStringLiteral("packed-refs"),
+          QStringLiteral("refs/heads"), QStringLiteral("logs/HEAD")}) {
+        signature += QLatin1Char('|') + stamp(repo.mirrorPath, leaf) +
+                     QLatin1Char('|') +
+                     stamp(repo.localPath, QStringLiteral(".git/") + leaf);
+    }
+    return signature;
+}
+
 void MainWindow::refreshCommitMarkersIfStale()
 {
     // Only while the commit list is actually on screen — isVisible() is false
@@ -3849,8 +3882,79 @@ void MainWindow::refreshCommitMarkersIfStale()
     // mirror tip), so there's nothing to keep in sync in the background.
     if (!m_commitsListPage || !m_commitsListPage->isVisible())
         return;
-    if (!commitsListIsCurrent())
+    if (m_commitMarkerProbeInFlight)
+        return;
+    // Nothing loaded yet, or the branch being browsed changed: that needs a real
+    // load, not a staleness probe. (What commitsListIsCurrent() answers false to
+    // before it reaches any git.)
+    if (!m_commitsTable || m_commitsTable->rowCount() == 0 ||
+        m_commitsLoadedTip.isEmpty() || m_commitsLoadedRef != currentRef()) {
         loadCommits();
+        return;
+    }
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const QString signature = commitMarkerProbeSignature();
+    // Neither ref store has been touched since the last probe, so no tip can
+    // have moved and there is nothing to rebuild — the common case, and now
+    // free. The ceiling bounds how long a filesystem signal we failed to notice
+    // could pin stale markers on screen; the floor keeps a repo that is being
+    // written continuously (an agent committing in a loop) from queueing a
+    // worker per sweep.
+    constexpr qint64 kProbeCeilingMs = 10 * 1000;
+    constexpr qint64 kProbeFloorMs = 750;
+    if (now - m_commitMarkerProbedAtMs < kProbeFloorMs)
+        return;
+    if (!signature.isEmpty() && signature == m_commitMarkerProbeSig &&
+        now - m_commitMarkerProbedAtMs < kProbeCeilingMs)
+        return;
+    m_commitMarkerProbeSig = signature;
+    m_commitMarkerProbedAtMs = now;
+
+    const QString dir = repoGitDir();
+    if (dir.isEmpty())
+        return;
+    // Everything the worker touches is captured BY VALUE — m_repositories can be
+    // reassigned underneath us while it runs (adhoc #119).
+    const QString ref = currentRef();
+    const QString mirrorBranch = m_repoBranch;
+    QString mirrorPath;
+    {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists())
+            mirrorPath = repo.mirrorPath;
+    }
+    const int index = m_repoDetailIndex;
+    m_commitMarkerProbeInFlight = true;
+    runOffThread<CommitMarkerProbe>(
+        [dir, ref, mirrorPath, mirrorBranch]() -> CommitMarkerProbe {
+            CommitMarkerProbe probe;
+            QByteArray out;
+            if (runGitCapture(dir, {QStringLiteral("rev-parse"), ref}, &out,
+                              nullptr))
+                probe.localTip = QString::fromUtf8(out).trimmed();
+            if (!mirrorPath.isEmpty())
+                probe.mirrorTip = mirrorBranchCommit(
+                    mirrorPath, mirrorBranch.isEmpty()
+                                    ? mirrorHeadBranch(mirrorPath)
+                                    : mirrorBranch);
+            return probe;
+        },
+        [this, index, ref](CommitMarkerProbe probe) {
+            m_commitMarkerProbeInFlight = false;
+            // The user navigated while the probe ran; whatever is on screen now
+            // was loaded after it started.
+            if (index != m_repoDetailIndex || ref != currentRef())
+                return;
+            if (!m_commitsListPage || !m_commitsListPage->isVisible())
+                return;
+            if (probe.localTip.isEmpty())
+                return; // unreadable ref: leave the list alone
+            if (probe.localTip == m_commitsLoadedTip &&
+                probe.mirrorTip == m_commitsLoadedMirrorTip)
+                return; // nothing moved
+            loadCommits();
+        });
 }
 
 // How deep a commit search widens the table window (see filterCommits). Bounded:
@@ -8918,7 +9022,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoDetailTabs = new QButtonGroup(this);
     m_repoDetailTabs->setExclusive(true);
     auto *tabRow = new QHBoxLayout;
-    tabRow->setContentsMargins(12, 0, 12, 0);
+    // 4px of air above the icons so the row doesn't sit flush against the
+    // window-chrome line. The rail carries the same inset (buildBreadcrumb's
+    // m_appNavigationRailLayout) so its first icon stays on this row's line.
+    tabRow->setContentsMargins(12, kRepoTabRowTopInset, 12, 0);
     tabRow->setSpacing(10);
     for (int i = 0; i < tabs.size(); ++i) {
         // Four ids get no top-bar tab: Commits (1), reached from the activity
@@ -9032,9 +9139,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBarScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     tabBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     tabBarScroll->setMinimumWidth(0);
-    // Tall enough for the stacked icon-over-caption tabs (44px, adhoc #91)
-    // plus the horizontal scrollbar a narrow window needs.
-    tabBarScroll->setFixedHeight(56);
+    // Tall enough for the stacked icon-over-caption tabs (44px, adhoc #91),
+    // their top inset, plus the horizontal scrollbar a narrow window needs.
+    tabBarScroll->setFixedHeight(56 + kRepoTabRowTopInset);
 
     // The integrity-pin warning ("clones are being rejected — reset the pin")
     // doesn't live in an in-page banner here; refreshRepoPinBanner surfaces it as
@@ -10309,26 +10416,26 @@ void MainWindow::showLoadStatus(const QString &what)
         QStringLiteral("<span style='color:#58a6ff'>%1 %2</span>")
             .arg(QString::fromUtf8("\xE2\x9F\xB3"), // ⟳
                  what.toHtmlEscaped()));
-    m_topMessage->setWordWrap(false);
     m_topMessage->show();
+    // A progress pill carries no countdown and no actions, so the row under the
+    // text goes away entirely and the pill stays as compact as it ever was.
+    if (m_topMessageMeta)
+        m_topMessageMeta->clear();
+    if (m_topMessageActions)
+        m_topMessageActions->hide();
     if (m_topMessageContainer) {
+        // Cancel a slide-out still in flight and re-anchor, so the progress pill
+        // never inherits a half-departed position.
         if (m_topMessageFlight)
             m_topMessageFlight->stop();
-        if (m_topMessageOpacity)
-            m_topMessageOpacity->setOpacity(1.0);
+        m_topMessageSlidingOut = false;
         positionTopMessageBubble();
         m_topMessageContainer->show();
         m_topMessageContainer->raise();
     }
     m_loadStatusShowing = true;
-    m_topMessageElided = false;
-    m_topMessageExpanded = false;
     if (m_topMessageTimer)
-        m_topMessageTimer->stop(); // don't let it fade out mid-load
-    if (m_topMessageFade)
-        m_topMessageFade->stop();
-    if (m_topMessageExpand)
-        m_topMessageExpand->hide();
+        m_topMessageTimer->stop(); // don't let it slide away mid-load
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
     if (m_topMessageSendToPrompt)

@@ -5684,6 +5684,11 @@
       repo.description,
       repo.channel,
       repo.source,
+      // Catalog records advertise the current head and stable root commits.
+      // Include both so a pasted full SHA or a short prefix opens the matching
+      // repository without fetching every repository's commit history.
+      repo.commit,
+      repo.rootCommit,
     ].join(" ").toLowerCase();
     return haystack.includes(query);
   }

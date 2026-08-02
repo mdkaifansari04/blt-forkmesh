@@ -151,6 +151,10 @@ const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
 // Backstop for the Debug tab's per-object walk so a pathological scene can
 // never build a million-entry array on the main thread.
 const SCENE_OBJECT_WALK_LIMIT = 5_000;
+// The same backstop for one expanded level of the element tree: a single
+// parent with more children than this reports the first slice, and the panel
+// says how many were left out.
+const ELEMENT_PART_LIMIT = 500;
 // Movement, camera controls, and rendering retain display cadence. Decorative
 // callbacks have their own budget: compact GPUs update them at 30 Hz and a
 // zoomed-out overview at 20 Hz, where sub-pixel fire/foliage changes cannot
@@ -15762,7 +15766,16 @@ export function createWorldScene({
     // transient mobile GPU reset can leave partially redrawn "scratchy"
     // geometry in place until the whole page is reloaded.
     event.preventDefault();
-    onRendererStateChange("lost");
+    // Three.js marks its GL state as lost, but its animation callback can
+    // still run until the shell hears about this event. Stop it synchronously
+    // so a dead context cannot spend the recovery window burning CPU at 0 FPS.
+    running = false;
+    renderer.setAnimationLoop(null);
+    onRendererStateChange("lost", {
+      // Chromium sometimes exposes a driver reset message here. It is empty
+      // on most browsers, so the shell treats it as optional diagnostics.
+      statusMessage: String(event.statusMessage || "").slice(0, 160),
+    });
   };
   const handleContextRestored = () => {
     renderer.resetState();
@@ -16002,6 +16015,7 @@ export function createWorldScene({
         drawables,
         triangles,
         interactives,
+        parts: elementPartRoots(element).length,
       };
     });
   }
@@ -16084,6 +16098,120 @@ export function createWorldScene({
         // last drawn state and the next frame tries again.
       }
     });
+  }
+
+  // An element row answers "what does this feature cost". Expanding it walks
+  // one level further in: the cabinets inside Mirror node cabinets, the desks
+  // and screens inside Office interior, the portals on the ring — and each of
+  // those expands again, all the way down to a single mesh.
+  //
+  // A lone wrapper Group is scaffolding rather than a part, so the first level
+  // opens straight into its children; elements registered with many roots (one
+  // per cabinet, one per avatar) list those roots instead.
+  function elementPartRoots(element) {
+    const roots = [...element.roots];
+    if (roots.length === 1 && roots[0]?.children?.length) {
+      return [...roots[0].children];
+    }
+    return roots;
+  }
+
+  // Parts are addressed by child index from the element down, which stays
+  // valid for as long as the subtree does. A churned root (a rebuilt cabinet,
+  // a despawned avatar) simply resolves to whatever now sits at that index, or
+  // to nothing — the panel re-reads on every render, so it never shows counts
+  // for a node that is gone.
+  function elementPartNodes(element, path) {
+    let nodes = elementPartRoots(element);
+    for (const index of path) {
+      const node = nodes[index];
+      if (!node) return [];
+      nodes = node.children || [];
+    }
+    return nodes;
+  }
+
+  function elementPartKind(node) {
+    if (node.isInstancedMesh) return "Instanced";
+    if (node.isSkinnedMesh) return "Skinned";
+    if (node.isMesh) return "Mesh";
+    if (node.isPoints) return "Points";
+    if (node.isLine) return "Line";
+    if (node.isSprite) return "Sprite";
+    if (node.isLight) return "Light";
+    if (node.isCamera) return "Camera";
+    if (node.children?.length) return "Group";
+    return node.type || "Object";
+  }
+
+  // Most pieces of the town are unnamed meshes, so name them by what they are
+  // and where they sit: "BoxGeometry #3" beats three identical "Mesh" rows.
+  function elementPartLabel(node, index) {
+    if (node.name) return node.name;
+    const kind = node.isMesh
+      ? node.geometry?.type || elementPartKind(node)
+      : elementPartKind(node);
+    return `${kind} #${index + 1}`;
+  }
+
+  // Counts use the same rules as listWorldElements — instanced batches count
+  // once — so the numbers on a part row always add up to the row above it.
+  function describeElementPart(node, index, path, interactiveSet) {
+    let objects = 0;
+    let drawables = 0;
+    let triangles = 0;
+    let interactives = 0;
+    node.traverse?.((child) => {
+      objects += 1;
+      if (interactiveSet.has(child)) interactives += 1;
+      if (!child.isMesh && !child.isPoints && !child.isLine && !child.isSprite) {
+        return;
+      }
+      if (child.userData?.raycastProxy === true) return;
+      drawables += 1;
+      const geometry = child.geometry;
+      const vertices =
+        geometry?.index?.count ?? geometry?.attributes?.position?.count ?? 0;
+      if (child.isMesh) triangles += Math.floor(vertices / 3);
+    });
+    return {
+      path: [...path, index],
+      label: elementPartLabel(node, index),
+      type: elementPartKind(node),
+      geometry: node.geometry?.type || "",
+      instances: node.isInstancedMesh ? Math.max(0, Number(node.count) || 0) : 0,
+      parts: node.children?.length || 0,
+      visible: node.visible !== false,
+      objects,
+      drawables,
+      triangles,
+      interactives,
+    };
+  }
+
+  function listWorldElementParts(elementId, path = []) {
+    const element = worldElements.get(String(elementId || ""));
+    if (!element) return { parts: [], total: 0 };
+    pruneDeadElementRoots(element);
+    const steps = (Array.isArray(path) ? path : [])
+      .map((step) => Number(step))
+      .filter((step) => Number.isInteger(step) && step >= 0);
+    const nodes = elementPartNodes(element, steps).filter(Boolean);
+    // A switched-off element has had its clickable children pulled out of the
+    // live raycast list, so read those back from the detached record — the
+    // click column stays truthful while the element is off.
+    const interactiveSet = new Set(interactive);
+    element.detached.forEach((record) => {
+      record.interactives?.forEach((child) => interactiveSet.add(child));
+    });
+    return {
+      total: nodes.length,
+      parts: nodes
+        .slice(0, ELEMENT_PART_LIMIT)
+        .map((node, index) =>
+          describeElementPart(node, index, steps, interactiveSet),
+        ),
+    };
   }
 
   // Unnamed meshes are the norm, so fall back to the nearest named ancestor
@@ -34594,6 +34722,7 @@ export function createWorldScene({
     listWorldElements,
     setWorldElementEnabled,
     listSceneObjects,
+    listWorldElementParts,
     installStoreElement,
     removeStoreElement,
     getEnvironmentState: () => ({
