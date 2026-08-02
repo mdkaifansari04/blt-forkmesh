@@ -422,6 +422,14 @@ void MainWindow::scanActionSpool()
 {
     if (!m_actionStore)
         return;
+    // Never sweep from inside someone else's blocking git wait. This pass syncs
+    // mirrors, re-attests pins and (through propagateRepoUpdate) rebuilds the
+    // whole commit list; delivered mid-pump it stacks all of that on top of the
+    // render already in flight and the two freeze as one. Re-post instead — the
+    // dominant shape in the stall log (see deferredOutOfKeepAlivePump).
+    if (deferredOutOfKeepAlivePump(m_actionSpoolSweepPending,
+                                   [this] { scanActionSpool(); }))
+        return;
     syncMirrorActionsConfiguration();
     scanExternalActionsSources();
     QDir dir(m_actionStore->spoolDir());
