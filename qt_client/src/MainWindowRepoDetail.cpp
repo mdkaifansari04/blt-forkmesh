@@ -10,6 +10,7 @@
 #include "MainWindowInternal.h"
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
+#include "UpstreamCheckoutSync.h"
 
 #include <QSignalBlocker>
 
@@ -1135,6 +1136,12 @@ void MainWindow::forkCurrentRepo()
     fork.owner = owner;
     fork.name = name;
     fork.description = src.description;
+    // Preserve the source URL as the fetch side of the fork's origin. The
+    // working copy pushes to its own mirror, but pulls must continue to follow
+    // the repository selected in the Repos tab.
+    fork.cloneUrl = src.cloneUrl.trimmed().isEmpty()
+                        ? repositorySource(src)
+                        : src.cloneUrl.trimmed();
     fork.solanaAddress = savedSolanaAddress();
     fork.publishToNetwork = true;
     fork.actionsEnabled = src.actionsEnabled;
@@ -1144,9 +1151,9 @@ void MainWindow::forkCurrentRepo()
     fork.mirrorPath = repositoryMirrorRoot() + "/" +
                       repoSegment(owner, QStringLiteral("owner")) + "-" +
                       repoSegment(name, QStringLiteral("repository")) + ".git";
-    // The chosen folder is the fork's working directory; its origin points at our
-    // own mirror (set up below), so it never auto-syncs from upstream — pushes to
-    // it keep the branches you publish.
+    // The chosen folder is the fork's working directory. Its origin fetches from
+    // the selected source repository and pushes to our own mirror (set up below),
+    // so pulls receive upstream work without publishing commits back upstream.
     fork.localPath = targetDir;
 
     m_repositories.append(fork);
@@ -1193,8 +1200,9 @@ void MainWindow::forkCurrentRepo()
                 refreshRepositoryList();
                 logSystem(QStringLiteral("Forked into %1/%2.").arg(owner, name));
 
-                // Check the fork out into the folder the user picked. Its origin
-                // is the local mirror, so commits pushed here update the fork.
+                // Check the fork out into the folder the user picked. Once the
+                // clone completes, origin is split so fetches use the source and
+                // pushes update this fork's local mirror.
                 const QString mirrorPath = f.mirrorPath;
                 QDir().mkpath(QFileInfo(targetDir).absolutePath());
                 auto *checkout = new QProcess(this);
@@ -1220,6 +1228,8 @@ void MainWindow::forkCurrentRepo()
                             m_repositories[i].localPath.clear();
                             saveRepositories();
                         } else {
+                            configureForkSource(i, QString(), true);
+                            ensurePushHook(m_repositories.at(i));
                             logSystem(QStringLiteral("Checked out %1/%2 into %3.")
                                           .arg(owner, name,
                                                QDir::toNativeSeparators(targetDir)));
@@ -1235,6 +1245,43 @@ void MainWindow::forkCurrentRepo()
     process->start(QStringLiteral("git"),
                    {QStringLiteral("clone"), QStringLiteral("--mirror"), source,
                     fork.mirrorPath});
+}
+
+bool MainWindow::configureForkSource(int index, const QString &sourceUrl,
+                                     bool notifyOnError)
+{
+    if (index < 0 || index >= m_repositories.size())
+        return false;
+    RepositoryRecord &fork = m_repositories[index];
+    const QString source = sourceUrl.trimmed().isEmpty()
+                               ? fork.cloneUrl.trimmed()
+                               : sourceUrl.trimmed();
+    if (source.isEmpty() || fork.localPath.trimmed().isEmpty() ||
+        fork.mirrorPath.trimmed().isEmpty())
+        return false;
+
+    const bool sourceChanged = fork.cloneUrl.trimmed() != source;
+    if (sourceChanged) {
+        fork.cloneUrl = source;
+        saveRepositories();
+    }
+
+    QString error;
+    if (!forkmesh::upstream::configureForkCheckoutRemote(
+            fork.localPath, source, fork.mirrorPath, &error)) {
+        logSystem(QStringLiteral("Fork: could not configure %1/%2 to pull from %3: %4")
+                      .arg(fork.owner, fork.name, source, error));
+        if (notifyOnError)
+            flashMessage(QStringLiteral("The fork was created, but its source remote "
+                                        "could not be configured: %1")
+                             .arg(error),
+                         true);
+        return false;
+    }
+    if (sourceChanged)
+        logSystem(QStringLiteral("Fork: %1/%2 now pulls from %3 and pushes to its local mirror.")
+                      .arg(fork.owner, fork.name, source));
+    return true;
 }
 
 void MainWindow::downloadCurrentRepoZip()
