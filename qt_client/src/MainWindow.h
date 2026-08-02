@@ -891,6 +891,19 @@ public:
     {
         return markAgentSessionsMerged(0, branch, mergeVerified);
     }
+    // The "Merge & clean up" buttons (Branches, Worktrees and the agent detail
+    // rail): merge the branch into the default branch, then delete its worktree,
+    // its branch and the agent session(s) that produced it.
+    bool testMergeBranchAndCleanUp(const QString &branch)
+    {
+        return mergeWorktreeIntoMain(branch,
+                                     worktreePathForBranch(repoGitDir(), branch),
+                                     /*deleteAgent=*/true);
+    }
+    bool testHasAgentSession(int sessionId)
+    {
+        return findAgentSession(sessionId) != nullptr;
+    }
     void testRefreshAgentMergeState() { refreshAgentMergeState(); }
     bool testAgentMergeStateRefreshing() const { return m_agentMergeStateRefreshing; }
     QString testAgentStatusCellText(int sessionId) const;
@@ -3094,6 +3107,10 @@ private:
     void clearRepoDetail();
     void openRepositoryWebsite(); // open the current repo's page in the browser
     void forkCurrentRepo();       // clone the open repo into your own node
+    // Persist and apply the source side of a fork's split origin remote. Used
+    // both after a new checkout and to repair forks made by older clients.
+    bool configureForkSource(int index, const QString &sourceUrl,
+                             bool notifyOnError = true);
     void downloadCurrentRepoZip();
     void setRepoDetailNotice(const QString &message, bool error = false);
     void refreshOpenRepoDetail(); // re-read the open repo after its mirror changes
@@ -4591,6 +4608,8 @@ private:
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
     void queueTopMessage(const QString &text, bool error,
                          const QString &clickHref = QString()); // park one behind the current toast
+    void appendTopMessageToPrompt(const QString &text);
+    void dismissQueuedTopMessage(quint64 id);
     void renderTopMessageQueue(); // repaint the visible stack of queued notifications
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
@@ -5092,12 +5111,14 @@ private:
     // advanceTopMessageQueue). Each entry carries its own error flag so a
     // queued event keeps its colour.
     struct TopMessageQueueEntry {
+        quint64 id = 0;
         QString text;
         bool error = false;
         QString clickHref;
         int durationSeconds = 0; // its full countdown starts when it reaches the top
     };
     QList<TopMessageQueueEntry> m_topMessageQueue;
+    quint64 m_nextTopMessageQueueId = 1;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageHovering = false;    // pauses the countdown while reading/actions
     bool m_topMessageIsPromptBubble = false; // submitted prompt gets a fuller, animated treatment

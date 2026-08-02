@@ -5496,25 +5496,8 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageSendToPrompt->setFocusPolicy(Qt::NoFocus);
     setOcticon(m_topMessageSendToPrompt, "paper-airplane", 13);
     m_topMessageSendToPrompt->hide();
-    connect(m_topMessageSendToPrompt, &QPushButton::clicked, this, [this] {
-        if (!m_issueQuickAdd || m_topMessageRaw.isEmpty())
-            return;
-        QString draft = m_issueQuickAdd->toPlainText();
-        if (!draft.trimmed().isEmpty()) {
-            if (!draft.endsWith(QStringLiteral("\n\n"))) {
-                if (draft.endsWith(QLatin1Char('\n')))
-                    draft += QLatin1Char('\n');
-                else
-                    draft += QStringLiteral("\n\n");
-            }
-        } else {
-            draft.clear();
-        }
-        draft += m_topMessageRaw;
-        m_issueQuickAdd->setPlainText(draft);
-        m_issueQuickAdd->moveCursor(QTextCursor::End);
-        m_issueQuickAdd->setFocus();
-    });
+    connect(m_topMessageSendToPrompt, &QPushButton::clicked, this,
+            [this] { appendTopMessageToPrompt(m_topMessageRaw); });
 
     // Dim countdown / queue / paused text. It used to be appended to the message
     // itself; on its own row it can never push the message into an ellipsis.
@@ -9543,9 +9526,16 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         setOcticon(openButton, localFork >= 0 ? "repo-forked" : "repo", 13);
         connect(openButton, &QPushButton::clicked, this,
                 [this, routeOwner, routeName, cloneUrl, isPrivate, localFork] {
-                    if (localFork >= 0)
+                    if (localFork >= 0) {
+                        // Forks made before split origin remotes were configured
+                        // have no remembered source. Reopening the source row is
+                        // enough to repair their pull route without changing
+                        // where pushes go.
+                        if (localFork < m_repositories.size() &&
+                            m_repositories.at(localFork).owner != routeOwner)
+                            configureForkSource(localFork, cloneUrl, false);
                         openRepoDetail(localFork);
-                    else
+                    } else
                         openNetworkRepo(routeOwner, routeName, cloneUrl,
                                         isPrivate);
                 });
@@ -10049,6 +10039,9 @@ void MainWindow::forkNetworkRepo(const QString &owner, const QString &name,
 {
     const int localFork = findNetworkLocalForkIndex(owner, name);
     if (localFork >= 0) {
+        if (localFork < m_repositories.size() &&
+            m_repositories.at(localFork).owner != owner)
+            configureForkSource(localFork, cloneUrl, false);
         openRepoDetail(localFork);
         return;
     }
