@@ -319,7 +319,6 @@ QString agentCostText(double usd);
 QString agentStatusText(const QString &status);
 QColor agentStatusColor(const QString &status);
 bool agentSessionActive(const AgentSession *s);
-QString solanaDisplayCurrency();
 QIcon agentStatusOcticon(const AgentSession &s, int px = 13);
 QColor agentStatusIconColor(const AgentSession &s);
 QString linkifyIssueRefs(const QString &escaped);
@@ -2802,11 +2801,10 @@ const QString kAutoPrBountyEnabledSetting =
 const QString kAutoPrBountyAmountSetting =
     QStringLiteral("bounty/autoPrAmountUsd");
 const QString kAutoPrBountyModeSetting = QStringLiteral("bounty/autoPrMode");
-const QString kSolanaDisplayUsdSetting = QStringLiteral("profile/solanaDisplayUsd");
-// Top-bar balance display currency: "sol" | "usd" | "inr". Supersedes the
-// older boolean above (migrated on first read).
-const QString kSolanaDisplayCurrencySetting =
-    QStringLiteral("profile/solanaDisplayCurrency");
+// The balance display-currency keys ("profile/solanaDisplayUsd" and its
+// "profile/solanaDisplayCurrency" successor) are retired: the balance reads as
+// a tiny always-SOL line under the account avatar (adhoc #96), so any stored
+// preference is simply ignored.
 const QString kSolanaLastBalanceSettingPrefix =
     QStringLiteral("profile/solanaLastBalance/");
 const QString kWindowGeometrySetting = QStringLiteral("ui/windowGeometry");
@@ -7544,6 +7542,39 @@ inline int railItemWidth()
     return width;
 }
 inline int railWidth() { return railItemWidth() + 6; } // + slim scrollbar
+
+// The public SOL balance sits under the account avatar (adhoc #96), so it has
+// to fit a railItemWidth() slot that it is not allowed to widen. Pick the
+// largest tiny size whose widest figure — "0.0000 SOL", the four-decimal dust
+// case — still fits, the same defence railItemWidth() applies to captions when
+// the box falls back to a wide face. Font is fixed at startup, so a
+// once-computed static is safe.
+inline QFont navBalanceFont()
+{
+    static const QFont font = [] {
+        QFont f = QGuiApplication::font();
+        // Regular weight, unlike the demi-bold rail captions: the balance is a
+        // sub-line under "Account", not a second heading competing with it.
+        f.setWeight(QFont::Normal);
+        for (int px = 9; px > 6; --px) {
+            f.setPixelSize(px);
+            if (QFontMetrics(f).horizontalAdvance(
+                    QStringLiteral("0.0000 SOL")) <= railItemWidth())
+                return f;
+        }
+        f.setPixelSize(6);
+        return f;
+    }();
+    return font;
+}
+
+// How much taller the account rail item is than every other one: the balance
+// line plus the layout spacing above it.
+inline int navBalanceLineHeight()
+{
+    static const int height = QFontMetrics(navBalanceFont()).height() + 2;
+    return height;
+}
 
 // One entry in the app-wide activity rail: an octicon over an optional small
 // label, VS-Code style, with the selected state drawn as a 2px accent line along

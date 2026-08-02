@@ -800,19 +800,6 @@ bool agentSessionActive(const AgentSession *s)
                  s->status == AgentStatus::Queued);
 }
 
-QString solanaDisplayCurrency()
-{
-    QSettings s;
-    QString cur = s.value(kSolanaDisplayCurrencySetting).toString().toLower();
-    if (cur.isEmpty())
-        cur = s.value(kSolanaDisplayUsdSetting, false).toBool()
-                  ? QStringLiteral("usd")
-                  : QStringLiteral("sol");
-    if (cur != QLatin1String("usd") && cur != QLatin1String("inr"))
-        cur = QStringLiteral("sol");
-    return cur;
-}
-
 QColor agentStatusColor(const QString &status)
 {
     if (status == AgentStatus::Success) return QColor("#3fb950");
