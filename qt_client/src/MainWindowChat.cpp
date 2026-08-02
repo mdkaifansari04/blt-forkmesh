@@ -3264,6 +3264,14 @@ void MainWindow::startDiagnostics()
 // resident memory, read from /proc, plus any UI-stall count.
 void MainWindow::updateFooterDiagnostics()
 {
+    // Descriptor pressure is a process-health check rather than a footer
+    // readout, so it samples ahead of the widget guard: a headless node has no
+    // footer, runs for weeks, and is the likeliest place for a leak to build.
+    const qint64 fdNow = QDateTime::currentMSecsSinceEpoch();
+    if (fdNow - m_fdPressureLastCheckMs >= 15000) {
+        m_fdPressureLastCheckMs = fdNow;
+        checkFileDescriptorPressure();
+    }
     if (!m_footerDiagnostics)
         return;
     const qint64 statsNow = QDateTime::currentMSecsSinceEpoch();
@@ -3375,6 +3383,38 @@ void MainWindow::updateFooterDiagnostics()
     } else {
         setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
         m_footerDiagnostics->setText(QString());
+    }
+}
+
+// Watch how close this process is to its file-descriptor cap. Running out is a
+// silent execution stop rather than an error the app can report: glib aborts
+// with SIGTRAP from g_wakeup_new() the moment a new event dispatcher cannot get
+// its pipes, which is what the v0.7.9 "crash inside
+// g_main_context_new_with_flags" report was. main() raises the soft cap at
+// startup, so reaching even 70% of it means something is leaking descriptors —
+// log that (with the thread count, since each thread pins a wakeup pipe) while
+// there is still headroom to find the leak instead of after the abort.
+void MainWindow::checkFileDescriptorPressure()
+{
+    const int limit = SystemStats::openFileSoftLimit();
+    const int open = SystemStats::openFileCount();
+    if (limit <= 0 || open <= 0)
+        return; // platform doesn't expose them; nothing to police
+    const double used = 100.0 * double(open) / double(limit);
+    // Log once per upward crossing, rearming only after usage falls well back,
+    // so a node parked near the line doesn't write a line every 15 seconds.
+    if (used >= 70.0 && m_fdPressureAlertArmed) {
+        m_fdPressureAlertArmed = false;
+        logSystem(QStringLiteral(
+                      "Warning: %1 of %2 file descriptors in use (%3%), %4 "
+                      "threads. Descriptor exhaustion aborts the app, so this "
+                      "is worth reporting with what was running.")
+                      .arg(open)
+                      .arg(limit)
+                      .arg(used, 0, 'f', 0)
+                      .arg(SystemStats::threadCount()));
+    } else if (used < 55.0) {
+        m_fdPressureAlertArmed = true;
     }
 }
 
