@@ -8354,6 +8354,7 @@ void MainWindow::setRepoBranch(const QString &branch)
     m_repoBranch = branch;
     if (m_branchButton)
         m_branchButton->setText(branch);
+    updateCommitsBranchButtonLabel();
     updateFooterCommitInfo(); // the strip's commit line follows the browsed branch
     loadRepoOverview(QString());
     loadCommits(); // also refreshes the Insights counts when that tab is on screen
@@ -8388,11 +8389,24 @@ void MainWindow::refreshCommitsBranchButton()
     const QString browsed = m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
     const QString label =
         browsed.isEmpty() ? QStringLiteral("(detached)") : browsed;
-    // The button elides, so the untruncated ref belongs on the tooltip.
+    const QString dir = repoGitDir();
+    QString worktreeName;
+    if (repoHasWorkingTree()) {
+        worktreeName = QFileInfo(QDir(dir).absolutePath()).fileName();
+        if (worktreeName.isEmpty())
+            worktreeName = QDir::toNativeSeparators(dir);
+    }
+    const QString displayLabel =
+        worktreeName.isEmpty()
+            ? label
+            : QString::fromUtf8("%1 \xC2\xB7 %2").arg(label, worktreeName);
+    // The button elides, so the untruncated ref and worktree belong on the
+    // tooltip. Showing both here keeps the history graph tied to the checkout
+    // whose working-tree changes occupy the pane above it.
     if (auto *elider = dynamic_cast<ElidingPushButton *>(m_commitsBranchButton))
-        elider->setFullText(label);
+        elider->setFullText(displayLabel);
     else
-        m_commitsBranchButton->setText(label);
+        m_commitsBranchButton->setText(displayLabel);
     m_commitsBranchButton->setToolTip(
         QString::fromUtf8("%1 \xE2\x80\x94 click to open another branch (its "
                           "history here, its diff against the base on the "
@@ -8635,6 +8649,7 @@ void MainWindow::loadBranchesAndTags()
             m_repoBranch.isEmpty() ? QStringLiteral("HEAD") : m_repoBranch);
         m_branchButton->setToolTip(QStringLiteral("Switch branch"));
     }
+    updateCommitsBranchButtonLabel();
 
     // Only refresh the Branches / Releases panels if one is actually on screen.
     // They run a git command per branch/tag, so eagerly refreshing them on every
@@ -9644,6 +9659,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     // --- Page 0: the commit list.
     auto *listPage = new QWidget;
+    listPage->setObjectName(QStringLiteral("gitHistoryListPage"));
     // VS-Code-style graph list: just the graph gutter and the summary line (the
     // summary carries the author at its right edge; author / date / hash /
     // files / adds / dels moved into the summary's hover box). The metadata
@@ -9844,7 +9860,9 @@ QWidget *MainWindow::buildRepoCommitsTab()
             });
 
     auto *listLayout = new QVBoxLayout(listPage);
-    listLayout->setContentsMargins(16, 12, 16, 16);
+    // Match the compact source-control half above: this list already has a
+    // splitter edge and does not need a second wide inset around its graph.
+    listLayout->setContentsMargins(6, 4, 4, 4);
     // The unsynced banner sits in normal flow between the search row and the
     // table: as a real laid-out widget it pushes the rows down instead of
     // floating over them, so it can never hide the very (newest, top) commits it
@@ -10157,9 +10175,14 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
 
     auto *workspaceSplit = new QSplitter(Qt::Horizontal);
-    workspaceSplit->setChildrenCollapsible(false);
+    workspaceSplit->setObjectName(QStringLiteral("gitWorkspaceSplit"));
+    workspaceSplit->setChildrenCollapsible(true);
     workspaceSplit->addWidget(leftSplit);
     workspaceSplit->addWidget(m_commitsStack);
+    // Keep the navigation column available, but let the large detail/diff
+    // surface collapse completely when the user wants the history graph wide.
+    workspaceSplit->setCollapsible(0, false);
+    workspaceSplit->setCollapsible(1, true);
     workspaceSplit->setStretchFactor(0, 0);
     workspaceSplit->setStretchFactor(1, 1);
     workspaceSplit->setSizes({430, 950});
