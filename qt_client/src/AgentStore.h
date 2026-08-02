@@ -69,6 +69,11 @@ struct AgentSession {
     QString orgTaskId;
     QString startedByBot;
     QString finishedByBot;
+    // A website-created organization job remains tied to its authenticated
+    // Worker lease until the terminal result is acknowledged.  Persisting the
+    // exact transport envelope lets a resumed local run report completion after
+    // ForkMesh itself restarts without claiming or executing the prompt twice.
+    QJsonObject orgAgentJob;
     int prNumber = 0;
     QString status = AgentStatus::Queued;
     QString branchName;
@@ -127,6 +132,8 @@ public:
     explicit AgentStore(QString rootDir);
 
     QList<AgentSession> loadAllSessions() const;
+    static QList<int> queuedSessionIdsOldestFirst(
+        const QList<AgentSession> &sessions);
     AgentSession createSession(AgentSession session);
     bool saveSession(const AgentSession &session) const;
     bool deleteSession(const AgentSession &session) const;
