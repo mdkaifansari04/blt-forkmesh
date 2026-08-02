@@ -234,6 +234,9 @@ raise SystemExit(2)
                   PublicMirrorRuntime::keyReference(
                       created.metadata.archiveId),
           "public archive metadata is complete and opaque");
+    check(PublicMirrorRuntime::repositoryRefsSha256(source, tools, &error) ==
+              created.metadata.expectedRefsSha256,
+          "an open mirror can cheaply prove its source refs are unchanged");
 
     const QString ciphertext = PublicMirrorRuntime::ciphertextPath(
         archiveRoot, created.metadata.archiveId);
