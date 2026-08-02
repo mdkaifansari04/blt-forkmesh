@@ -4968,9 +4968,11 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_relayJoinApproveButton, &QPushButton::clicked, this,
             &MainWindow::showRelayJoinApprovalDialog);
 
-    // Connection speed as a colour, pinned above the instance logo (adhoc
-    // #124): the radar dish that used to carry this on the right of the chrome
-    // line is gone, so the link's health now rides the instance it belongs to.
+    // Connection speed as the colour of the dropdown caret on the instance
+    // logo's corner (adhoc #124, adhoc #224): the radar dish that used to carry
+    // this on the right of the chrome line is gone, so the link's health rides
+    // the instance it belongs to — and rides the mark that says this logo opens
+    // a menu, rather than a separate dot that only looked like a status light.
     // The probe itself is still driven by m_relayLatencyTimer.
     m_relaySpeedDot = new RelaySpeedDot(m_relayMenuButton);
 
@@ -6506,20 +6508,65 @@ void MainWindow::showRelayMenu()
     menu.addAction(searchAction);
     menu.addSeparator();
 
-    // One checkable action per relay (active one checked), each labelled with
-    // that instance's connection speed (adhoc #124) — the readout the radar
-    // dish used to carry for the active relay only. Cached samples show
-    // instantly; anything stale is re-probed and the label updates in place
-    // while the menu is open.
+    // One row per relay, each labelled with that instance's connection speed
+    // (adhoc #124) — the readout the radar dish used to carry for the active
+    // relay only. Cached samples show instantly; anything stale is re-probed and
+    // the label updates in place while the menu is open.
+    //
+    // Each row is a widget rather than a plain QAction because the name now
+    // carries a link that opens that instance's website in the browser (adhoc
+    // #224) — the "server" link the breadcrumb used to hold before adhoc #91
+    // folded the domain into this menu, back where the domain went. Clicking
+    // anywhere else on the row still switches to the relay, and the active one
+    // is marked with a check the way the checkable action was.
     QList<QAction *> relayActions;
     for (int i = 0; i < m_servers.size(); ++i) {
         const ServerConfig &server = m_servers.at(i);
         const QString host = serverHost(server.url);
-        QAction *act = menu.addAction(QIcon(faviconFor(server)),
-                                      relayMenuEntryText(host));
-        act->setCheckable(true);
-        act->setChecked(i == m_activeServer);
-        connect(act, &QAction::triggered, this, [this, i] { switchToServer(i); });
+        const bool active = i == m_activeServer;
+
+        auto *row = new QWidget(&menu);
+        auto *rowLayout = new QHBoxLayout(row);
+        rowLayout->setContentsMargins(4, 0, 4, 0);
+        rowLayout->setSpacing(2);
+
+        // The check the checkable QAction used to draw, as a leading glyph so
+        // every row's text starts on the same column whether or not it is the
+        // live relay.
+        auto rowText = [active](const QString &entry) {
+            return (active ? QString::fromUtf8("\xE2\x9C\x93  ")
+                           : QStringLiteral("     ")) + entry;
+        };
+        auto *pick = new QPushButton(QIcon(faviconFor(server)),
+                                     rowText(relayMenuEntryText(host)), row);
+        pick->setFlat(true);
+        pick->setCursor(Qt::PointingHandCursor);
+        pick->setStyleSheet(QStringLiteral("text-align:left; padding:4px 6px;"));
+        pick->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        connect(pick, &QPushButton::clicked, &menu, [this, i, &menu] {
+            menu.close();
+            switchToServer(i);
+        });
+
+        auto *open = new QPushButton(row);
+        open->setObjectName(QStringLiteral("issueIconButton"));
+        open->setFlat(true);
+        open->setCursor(Qt::PointingHandCursor);
+        open->setFixedSize(26, 26);
+        open->setToolTip(QStringLiteral("Open %1 in your browser")
+                             .arg(host.isEmpty() ? server.url : host));
+        setOcticon(open, QStringLiteral("link"), 14);
+        connect(open, &QPushButton::clicked, &menu, [this, i, &menu] {
+            menu.close();
+            openServerWebsite(i);
+        });
+
+        rowLayout->addWidget(pick, 1);
+        rowLayout->addWidget(open, 0);
+
+        auto *act = new QWidgetAction(&menu);
+        act->setDefaultWidget(row);
+        menu.addAction(act);
         relayActions.append(act);
 
         const RelayLatencySample sample =
@@ -6527,11 +6574,11 @@ void MainWindow::showRelayMenu()
         if (QDateTime::currentMSecsSinceEpoch() - sample.stampMs <
             kRelaySpeedFreshMs)
             continue;
-        // The action dies with the menu, which the probe can easily outlive.
-        QPointer<QAction> guarded(act);
-        probeRelayHostSpeed(server.url, [this, guarded, host](int) {
+        // The row dies with the menu, which the probe can easily outlive.
+        QPointer<QPushButton> guarded(pick);
+        probeRelayHostSpeed(server.url, [this, guarded, host, rowText](int) {
             if (guarded)
-                guarded->setText(relayMenuEntryText(host));
+                guarded->setText(rowText(relayMenuEntryText(host)));
         });
     }
 
