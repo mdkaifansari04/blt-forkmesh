@@ -9565,15 +9565,14 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
             // run, not finished it. Mark the session Failed so the list/header show
             // the red error state instead of a green "Success" — the finished()
             // handler only promotes Running/Waiting to Success, so this sticks.
-            const QString subtype = ev.value(QStringLiteral("subtype")).toString();
             const bool userStopped = as->status == AgentStatus::Stopped;
-            if (!userStopped &&
-                (ev.value(QStringLiteral("is_error")).toBool() ||
-                 subtype.startsWith(QLatin1String("error")))) {
+            if (!userStopped && ClaudeTranscriptView::resultIsError(ev)) {
                 as->status = AgentStatus::Failed;
                 as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
-                const QString detail = ev.value(QStringLiteral("result")).toString().trimmed();
-                as->lastError = detail.isEmpty() ? subtype : detail;
+                // Same wording the transcript's "✗ Failed" row shows, so the
+                // list/pill/stored session all name the same reason instead of
+                // a bare status or a raw "error_max_turns" token.
+                as->lastError = ClaudeTranscriptView::failureReason(ev);
             } else if (as->status == AgentStatus::Running) {
                 // A clean `result` means the turn finished successfully — the agent
                 // said its piece (e.g. "Done") and isn't blocked on the user. Mark
@@ -9866,14 +9865,27 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
         label = "Waiting";
     else if (s == AgentStatus::Success)
         label = "Done";
-    else if (s == AgentStatus::Failed)
+    else if (s == AgentStatus::Failed) {
+        // Never a bare "Failed": say why on the pill itself, one line, with the
+        // full text (a traceback, a rate-limit message) on hover. The transcript
+        // row carries the same reason in full.
         label = "Failed";
-    else
+        QString why = session->lastError.trimmed();
+        if (!why.isEmpty()) {
+            QString oneLine = why.section(QLatin1Char('\n'), 0, 0).trimmed();
+            if (oneLine.size() > 120)
+                oneLine = oneLine.left(119) + QString::fromUtf8("\xE2\x80\xA6");
+            label += QString::fromUtf8(" \xC2\xB7 ") + oneLine;
+        }
+    } else
         label = agentStatusText(s);
     QString pill =
         QString::fromUtf8("<span style='color:%1'>\xE2\x97\x8F</span> "
                           "<span style='color:#8b949e'>%2</span>")
             .arg(dotColor, label.toHtmlEscaped());
+    m_agentStatusPill->setToolTip(s == AgentStatus::Failed
+                                      ? session->lastError.trimmed()
+                                      : QString());
     // Issue #291: once the worktree/PR has landed in the base branch, flag
     // it right on the status pill in the merged-purple used elsewhere.
     if (session->merged)
