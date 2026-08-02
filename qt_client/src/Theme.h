@@ -119,23 +119,35 @@ QComboBox QAbstractItemView {
     selection-background-color: #1f6feb; selection-color: #0d1117; color: #e6edf3;
 }
 QComboBox QAbstractItemView::item:selected { color: #0d1117; }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddAgentModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddAgentModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
     border: none;
     background-color: rgba(88, 166, 255, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddAgentModelSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddAgentModelSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
+}
+/* These two are icon-only and fixed at 30px wide, so the 8px left padding the
+   shared rule above gives the labelled pickers left only 18px for a 22px icon
+   and chopped its right edge (adhoc #1204). 4px a side fits it exactly. */
+QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
+    padding: 0px 4px;
+}
+QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
+    border: none; width: 0px;
+}
+QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
+    image: none; width: 0px; height: 0px;
 }
 
 QPushButton {
@@ -259,7 +271,7 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
     font-family: monospace; font-size: 12px;
 }
 #diffView {
-    background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+    background-color: #0d1117; border: none; border-radius: 0;
     color: #e6edf3; font-family: monospace; font-size: 12px;
 }
 #pullReviewSummary {
@@ -381,7 +393,8 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 #relayJoinDot {
     background-color: #da3633; border: 1px solid #0d1117; border-radius: 5px;
 }
-/* Faint hairline separating the agent squares from the node dots (adhoc #124). */
+/* Faint hairlines separating the agent squares, node dots and action runs
+   from each other on the chrome line (adhoc #124). */
 #chromeDotDivider { background-color: #30363d; }
 QPushButton#relayJoinApproveButton {
     background-color: #da3633; color: #ffffff; border: none;
@@ -472,9 +485,25 @@ QPushButton#agentsMagicButton:checked {
 }
 #topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
 #topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+#topMessageQueue { background: transparent; border: none; }
+#topMessageQueueContent { background: transparent; }
+#topMessageQueueCard { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
+#topMessageQueueText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+/* The message text scrolls only when it is taller than the window allows; the
+   area must stay see-through either way so the bubble keeps its rounded fill. */
+#topMessageScroll, #topMessageViewport, #topMessageActions {
+    background: transparent; border: none;
+}
+/* Countdown / queue depth, dimmed, on the action row under the message. */
+#topMessageMeta { background: transparent; border: none; color: #6e7681; font-size: 11px; }
 #topMessageOverlay { background-color: #161b22; border: 1px solid #30363d;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #c9d1d9; }
+QPushButton#topMessageAction {
+    background: rgba(88,166,255,0.12); border: 1px solid rgba(88,166,255,0.42);
+    border-radius: 6px; color: #58a6ff; font-size: 11px; font-weight: 600; padding: 2px 6px;
+}
+QPushButton#topMessageAction:hover { background: rgba(88,166,255,0.22); color: #79c0ff; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #30363d; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #8b949e;
@@ -1289,8 +1318,8 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
 }
 #diffView {
     background-color: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 6px;
+    border: none;
+    border-radius: 0;
     color: #e6edf3;
     font-family: monospace;
     font-size: 12px;
@@ -1318,15 +1347,19 @@ QPlainTextEdit#actionLog {
     selection-background-color: #2563eb;
     selection-color: #ffffff;
 }
-#agentStatusPill {
-    background-color: #f3f4f6;
+QToolButton#agentStatusPill {
+    background-color: transparent;
     border: 1px solid #d1d5db;
-    border-radius: 11px;
-    padding: 2px 10px;
-    font-size: 12px;
+    border-radius: 12px;
+    padding: 2px 7px 2px 4px;
+    font-size: 11px;
     font-weight: 600;
     color: #1f2937;
 }
+QToolButton#agentStatusPill:hover { background-color: #f3f4f6; }
+QToolButton#agentStatusPill[outcomeTone="success"] { border-color: #3fb950; }
+QToolButton#agentStatusPill[outcomeTone="failure"] { border-color: #f85149; }
+QToolButton#agentStatusPill[outcomeTone="pending"] { border-color: #e3742f; }
 #agentNetPanel {
     background-color: #f9fafb;
     border: 1px solid #d1d5db;
@@ -1428,23 +1461,35 @@ QComboBox QAbstractItemView {
     selection-background-color: #0969da; selection-color: #1f2328; color: #1f2328;
 }
 QComboBox QAbstractItemView::item:selected { color: #1f2328; }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddAgentModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddAgentModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
     border: none;
     background-color: rgba(9, 105, 218, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddAgentModelSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddAgentModelSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
+}
+/* These two are icon-only and fixed at 30px wide, so the 8px left padding the
+   shared rule above gives the labelled pickers left only 18px for a 22px icon
+   and chopped its right edge (adhoc #1204). 4px a side fits it exactly. */
+QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
+    padding: 0px 4px;
+}
+QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
+    border: none; width: 0px;
+}
+QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
+    image: none; width: 0px; height: 0px;
 }
 
 QPushButton {
@@ -1537,7 +1582,7 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
     font-family: monospace; font-size: 12px;
 }
 #diffView {
-    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+    background-color: #ffffff; border: none; border-radius: 0;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
 #pullReviewSummary {
@@ -1682,7 +1727,8 @@ QPushButton#windowChromeCloseButton:hover {
 #relayJoinDot {
     background-color: #cf222e; border: 1px solid #ffffff; border-radius: 5px;
 }
-/* Faint hairline separating the agent squares from the node dots (adhoc #124). */
+/* Faint hairlines separating the agent squares, node dots and action runs
+   from each other on the chrome line (adhoc #124). */
 #chromeDotDivider { background-color: #d0d7de; }
 QPushButton#relayJoinApproveButton {
     background-color: #cf222e; color: #ffffff; border: none;
@@ -1761,9 +1807,23 @@ QPushButton#agentsMagicButton:checked {
 }
 #topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
 #topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+#topMessageQueue { background: transparent; border: none; }
+#topMessageQueueContent { background: transparent; }
+#topMessageQueueCard { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
+#topMessageQueueText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+/* See the dark rules: transparent so the bubble's own rounded fill shows. */
+#topMessageScroll, #topMessageViewport, #topMessageActions {
+    background: transparent; border: none;
+}
+#topMessageMeta { background: transparent; border: none; color: #6e7781; font-size: 11px; }
 #topMessageOverlay { background-color: #ffffff; border: 1px solid #d0d7de;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #1f2328; }
+QPushButton#topMessageAction {
+    background: rgba(9,105,218,0.08); border: 1px solid rgba(9,105,218,0.35);
+    border-radius: 6px; color: #0969da; font-size: 11px; font-weight: 600; padding: 2px 6px;
+}
+QPushButton#topMessageAction:hover { background: rgba(9,105,218,0.16); color: #0550ae; }
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #656d76;
@@ -2563,8 +2623,8 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
 }
 #diffView {
     background-color: #ffffff;
-    border: 1px solid #d0d7de;
-    border-radius: 6px;
+    border: none;
+    border-radius: 0;
     color: #1f2328;
     font-family: monospace;
     font-size: 12px;
@@ -2592,14 +2652,18 @@ QPlainTextEdit#actionLog {
     selection-background-color: #0969da;
     selection-color: #ffffff;
 }
-#agentStatusPill {
-    background-color: #f6f8fa;
+QToolButton#agentStatusPill {
+    background-color: transparent;
     border: 1px solid #d0d7de;
-    border-radius: 11px;
-    padding: 2px 10px;
-    font-size: 12px;
+    border-radius: 12px;
+    padding: 2px 7px 2px 4px;
+    font-size: 11px;
     font-weight: 600;
 }
+QToolButton#agentStatusPill:hover { background-color: #f6f8fa; }
+QToolButton#agentStatusPill[outcomeTone="success"] { border-color: #3fb950; }
+QToolButton#agentStatusPill[outcomeTone="failure"] { border-color: #f85149; }
+QToolButton#agentStatusPill[outcomeTone="pending"] { border-color: #e3742f; }
 #agentNetPanel {
     background-color: #f6f8fa;
     border: 1px solid #d0d7de;

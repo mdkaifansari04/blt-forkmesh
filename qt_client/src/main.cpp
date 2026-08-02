@@ -968,13 +968,15 @@ int main(int argc, char *argv[])
                 Qt::QueuedConnection);
         },
         headless);
-    // The splash normally hands over from MainWindow's first paintEvent, which
-    // is the moment there is actually something behind it. This is the backstop
-    // for platforms/compositors that never deliver that paint (finish() is
-    // idempotent, so the common case ignores it).
-    QTimer::singleShot(4000, &app, [] {
-        forkmesh::ui::finishStartupSplash(QStringLiteral("Window ready"));
-    });
+    // The splash hands over at the end of MainWindow::runDeferredStartup() —
+    // the point where the app is actually loaded, rather than merely painted.
+    // There is deliberately no timer backstop here any more: the four-second
+    // one that used to live here was itself the bug, ending the splash on
+    // "Window ready" while sign-in, the repository restore and the agent resume
+    // were all still to come. runDeferredStartup() is armed from showEvent()
+    // regardless of platform, so the handover does not depend on a paint
+    // arriving; a launch that never gets that far falls to the splash's own
+    // idle timeout, its absolute deadline, or a click.
 
     // In headless mode, the node runs the full backend but there's no GUI to
     // interact with, so attach a stdin REPL to observe and drive it.

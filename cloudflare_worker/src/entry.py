@@ -36,8 +36,39 @@ from pyodide.ffi import jsnull
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
 
-import organization_discord
-from discord_rate import DiscordRateCoordinator
+
+class _LazyModule:
+    """Import a route-specific module only when one of its helpers is used.
+
+    Python Workers execute this module's global scope while validating a new
+    version.  Importing every optional HTTP domain there makes Pyodide parse
+    and initialize the whole application before it can serve its first
+    request, which exceeds the Worker startup memory allowance.  A proxy keeps
+    the normal ``module.helper(...)`` call sites while deferring that work to
+    the route which actually needs it.
+    """
+
+    __slots__ = ("_name", "_module")
+
+    def __init__(self, name):
+        self._name = name
+        self._module = None
+
+    def _load(self):
+        module = self._module
+        if module is None:
+            module = __import__(self._name)
+            self._module = module
+        return module
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+
+# These modules back optional route families.  Do not turn these assignments
+# back into top-level imports: Cloudflare validates Python Worker global scope
+# within a fixed memory budget.
+organization_discord = _LazyModule("organization_discord")
 
 # Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
 # lives in its own module. Wallet signing is intentionally not imported into the
@@ -519,10 +550,11 @@ from catalog import (  # noqa: E402
     safe_contribution_transport,
     safe_segment,
 )
-import contributions  # noqa: E402
+contributions = _LazyModule("contributions")
 
-# The D1 table/index DDL list ensure_schema() runs lives in schema.py.
-from schema import SCHEMA_STATEMENTS  # noqa: E402
+# The D1 table/index DDL list is only needed when a request or cron first
+# ensures storage.  It is large enough to keep out of Python global scope.
+schema = _LazyModule("schema")
 
 # Signed-event crypto + canonicalization -- the Ed25519/SHA-256 verify
 # primitives and the per-event canonical-content builders (which must
@@ -550,61 +582,61 @@ from events import (  # noqa: E402
 # extraction + HTML sanitization) lives in activitypub.py — a pure, js-free
 # sibling module the test suite imports directly. Only the WebCrypto RSA glue,
 # the D1-backed actor/follower/delivery state and the HTTP handlers live below.
-import activitypub as ap  # noqa: E402
-import activitypub_threads as ap_threads  # noqa: E402
-import edge_routing as https_routing  # noqa: E402
-import fediverse_digest as fedi_digest  # noqa: E402
-import reward_policy  # noqa: E402
+ap = _LazyModule("activitypub")
+ap_threads = _LazyModule("activitypub_threads")
+https_routing = _LazyModule("edge_routing")
+fedi_digest = _LazyModule("fediverse_digest")
+reward_policy = _LazyModule("reward_policy")
 # Objective evidence, one-account-one-vote governance, and contextual-only
 # community placement policy live outside the route spine.
-import community_ads_api  # noqa: E402
+community_ads_api = _LazyModule("community_ads_api")
 # Verified public fediverse feedback remains review-only until an authorized
 # owner explicitly queues it and the owner node confirms materialization.
-import fediverse_mentions_api  # noqa: E402
+fediverse_mentions_api = _LazyModule("fediverse_mentions_api")
 # Non-custodial organization succession is isolated from account, repository,
 # device, agent, and financial handlers. The API receives no platform-admin
 # authorization primitive and can mutate only organization membership roles.
-import organization_succession_api  # noqa: E402
+organization_succession_api = _LazyModule("organization_succession_api")
 # Least-privilege roles, owner-sealed envelope validation, and metadata-only
 # audit sanitization live in a pure sibling module. Keeping these allowlists
 # out of the route handlers makes them independently testable.
-import security_controls as security_control  # noqa: E402
+security_control = _LazyModule("security_controls")
 # Strict public-artifact validation and bounded encrypted D1 history for daily
 # repository security scans lives in a pure sibling module.
-import security_scan_ingest  # noqa: E402
+security_scan_ingest = _LazyModule("security_scan_ingest")
 # Transient multiplayer protocol sanitization. This pure module owns the
 # allowlist for every public world-presence field; the Durable Object below
 # never relays arbitrary client JSON.
-import world as world_protocol  # noqa: E402
+world_protocol = _LazyModule("world")
 # Fixed-footprint HyperLogLog helpers for the public Arrival Grid's approximate
 # unique counts. Raw edge request attributes never cross into this pure module.
-import world_visitors as world_visitor_metrics  # noqa: E402
+world_visitor_metrics = _LazyModule("world_visitors")
 # Public-only Fediverse directory and authenticated media-space orchestration
 # live behind a small adapter so they reuse this Worker's established sessions,
 # blind indexes, D1 helpers, and metadata-only audit trail.
-import world_community_api  # noqa: E402
+world_community_api = _LazyModule("world_community_api")
 # Community announcements are UTC D1 records with public cached reads and
 # platform-admin-only audited mutations; no production event is hardcoded in
 # the Three.js client.
-import world_events_api  # noqa: E402
+world_events_api = _LazyModule("world_events_api")
 # Persisted Code Workshop reports and participant events use the same narrow
 # authenticated/encrypted D1 adapter as the other World collaboration APIs.
-import world_social_feeds  # noqa: E402
-import world_satellites  # noqa: E402
-import world_workshops  # noqa: E402
+world_social_feeds = _LazyModule("world_social_feeds")
+world_satellites = _LazyModule("world_satellites")
+world_workshops = _LazyModule("world_workshops")
 # Organization-scoped Office marketing tasks use a separate HTTP/D1 subsystem.
 # It never receives platform-admin authorization or an Office Durable Object,
 # and its human-readable task/check-in data is encrypted at rest.
-import world_office_tasks  # noqa: E402
-import world_build_board  # noqa: E402
-import world_element_store  # noqa: E402
-import world_link_kiosk  # noqa: E402
+world_office_tasks = _LazyModule("world_office_tasks")
+world_build_board = _LazyModule("world_build_board")
+world_element_store = _LazyModule("world_element_store")
+world_link_kiosk = _LazyModule("world_link_kiosk")
 # Private administrator-created channel policy is kept in a pure module and
 # receives only this Worker's narrow session, crypto, D1, and audit adapter.
-import chat_channels_api  # noqa: E402
+chat_channels_api = _LazyModule("chat_channels_api")
 # Direct messages have a stricter participant-only authorization policy and
 # therefore use a separate pure API module instead of channel admin semantics.
-import chat_direct_messages_api  # noqa: E402
+chat_direct_messages_api = _LazyModule("chat_direct_messages_api")
 # Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
 # "fingerprint" attached to federated PR-opened notes. The federated copy is a
 # square PNG — fediverse clients won't preview an SVG attachment.
@@ -612,16 +644,16 @@ from pull_badge import patch_file_stats, pull_badge_png  # noqa: E402
 
 # Social-preview (OpenGraph) info-card renderer — pure-stdlib PNG drawing,
 # another js-free sibling module the test suite imports directly.
-import og_card  # noqa: E402
+og_card = _LazyModule("og_card")
 
 # The blog's RSS 2.0 feed, derived from the shipped static blog index. Serves
 # /blog/rss.xml and, through world_social_feeds, the world's blog banner.
-import blog_feed  # noqa: E402
+blog_feed = _LazyModule("blog_feed")
 
 # The fixed achievement-badge catalog (slug -> name/description/icon) and slug
 # validation are pure data/logic, so they live in their own js-free sibling
 # module; the D1-backed award/list/grant handlers stay below (adhoc #370).
-import badges as badge_catalog  # noqa: E402
+badge_catalog = _LazyModule("badges")
 
 
 def _repository_import_module():
@@ -5383,23 +5415,40 @@ async def leaderboards_overview(env):
     # These five public sources are independent. Resolve them concurrently so
     # the combined endpoint costs the slowest cache/database read, not the sum
     # of all five, which keeps both the page and World island quick at startup.
-    (network_response, referral_response, site_response, users_response,
-     wallet_response) = (
-        await asyncio.gather(
-            network_leaderboards(env),
-            referral_leaderboard(env),
-            site_referrer_leaderboard(env),
-            _account_users_directory(env, None),
-            wallet_leaderboard(env),
-        )
+    sources = (
+        ("network", network_leaderboards(env)),
+        ("referrals", referral_leaderboard(env)),
+        ("sites", site_referrer_leaderboard(env)),
+        ("users", _account_users_directory(env, None)),
+        ("wallets", wallet_leaderboard(env)),
     )
-    network, referrals, sites, users, wallets = await asyncio.gather(
-        _response_json(network_response),
-        _response_json(referral_response),
-        _response_json(site_response),
-        _response_json(users_response),
-        _response_json(wallet_response),
-    )
+    # return_exceptions on purpose: a bare gather re-raises the first failure,
+    # so one broken source used to 500 the whole hub — the website grid and the
+    # World island both went dark over a board neither of them needed. adhoc
+    # #225 did exactly that from a call-arity mismatch deep inside the users
+    # directory, and the same 500 was logged again here under /api/leaderboards.
+    # A source that fails now costs its own boards and nothing else.
+    settled = await asyncio.gather(
+        *(source for _name, source in sources), return_exceptions=True)
+    payloads = []
+    degraded = []
+    for (name, _source), result in zip(sources, settled):
+        if isinstance(result, BaseException):
+            degraded.append(name)
+            payloads.append({})
+            # Workers Logs stays off, so a degraded board would otherwise be
+            # invisible: report it best-effort, and never let telemetry sink
+            # the response the surviving boards are still being served in.
+            try:
+                await capture_sentry_error(
+                    env, 500, "GET", "/api/leaderboards",
+                    "leaderboards source failed: " + name + ": "
+                    + _safe_error_text(result), error=result)
+            except BaseException:
+                pass
+            continue
+        payloads.append(await _response_json(result))
+    network, referrals, sites, users, wallets = payloads
     activity_rows = []
     for user in users.get("users", []):
         if not isinstance(user, dict):
@@ -5419,7 +5468,8 @@ async def leaderboards_overview(env):
         key=lambda row: (-row["totalActiveMs"], row["name"].lower()))
     activity_rows = activity_rows[:LEADERBOARD_LIMIT]
 
-    def board(board_id, title, subtitle, value_kind, rows, category):
+    def board(board_id, title, subtitle, value_kind, rows, category,
+              source="network"):
         return {
             "id": board_id,
             "title": title,
@@ -5427,6 +5477,10 @@ async def leaderboards_overview(env):
             "valueKind": value_kind,
             "category": category,
             "rows": rows if isinstance(rows, list) else [],
+            # An empty board that failed to load reads exactly like one nobody
+            # has entered yet. Name the source per board so a client can say
+            # which of the two it is showing.
+            "degraded": source in degraded,
         }
 
     window_hours = int(network.get("windowHours") or 48)
@@ -5434,7 +5488,7 @@ async def leaderboards_overview(env):
         board(
             "activity", "World activity",
             "Registered members by total public active time",
-            "duration", activity_rows, "community"),
+            "duration", activity_rows, "community", "users"),
         board(
             "uptime", "Mainnode uptime",
             "Most minutes online · last %dh" % window_hours,
@@ -5468,15 +5522,15 @@ async def leaderboards_overview(env):
         board(
             "referrals", "Member referrals",
             "Signups first; clicks break ties",
-            "referrals", referrals.get("board"), "community"),
+            "referrals", referrals.get("board"), "community", "referrals"),
         board(
             "referring-sites", "Referring websites",
             "External sites sending visits to ForkMesh",
-            "visits", sites.get("board"), "community"),
+            "visits", sites.get("board"), "community", "sites"),
         board(
             "wallets", "Member SOL wallets",
             "Published payout addresses by public on-chain balance",
-            "sol", wallets.get("board"), "community"),
+            "sol", wallets.get("board"), "community", "wallets"),
         board(
             "funds-mainnodes", "Legacy funds · mainnodes",
             "Historical reporting aggregate; not a balance",
@@ -5494,6 +5548,10 @@ async def leaderboards_overview(env):
         {
             "ok": True,
             "observedAt": int(Date.now()),
+            # Which sources could not be read for this rebuild. Their boards
+            # are present but empty, so without this an outage behind one of
+            # them reads as "nobody has ranked yet" rather than a gap.
+            "degraded": degraded,
             "boards": boards,
             "network": network,
             "activity": {"board": activity_rows},
@@ -11628,7 +11686,7 @@ _hmac_key_cache = {"secret": None, "key": None}
 _room_key_cache = {"secret": None, "value": None}
 
 
-# Compatibility columns required by indexes in SCHEMA_STATEMENTS. These run
+# Compatibility columns required by indexes in schema.SCHEMA_STATEMENTS. These run
 # before the CREATE statements so an existing table can be upgraded before an
 # index references its new columns. A fresh database has no table yet, so the
 # failed ALTER is ignored and the current CREATE TABLE supplies the columns.
@@ -11740,14 +11798,26 @@ SCHEMA_ALTER_STATEMENTS = [
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
-# full apply so later cold isolates can skip the replay with one SELECT.
-_SCHEMA_FINGERPRINT = hashlib.sha256(
-    "\n".join(
-        SCHEMA_PRE_CREATE_ALTER_STATEMENTS
-        + SCHEMA_STATEMENTS
-        + SCHEMA_ALTER_STATEMENTS
-    ).encode("utf-8")
-).hexdigest()
+# full apply so later cold isolates can skip the replay with one SELECT.  Keep
+# its construction lazy too: accessing schema.SCHEMA_STATEMENTS here would
+# defeat the startup-memory saving above.
+_SCHEMA_FINGERPRINT = None
+
+
+def _schema_fingerprint():
+    global _SCHEMA_FINGERPRINT
+    if _SCHEMA_FINGERPRINT is None:
+        statements = globals().get("SCHEMA_STATEMENTS")
+        if statements is None:
+            statements = schema.SCHEMA_STATEMENTS
+        _SCHEMA_FINGERPRINT = hashlib.sha256(
+            "\n".join(
+                SCHEMA_PRE_CREATE_ALTER_STATEMENTS
+                + statements
+                + SCHEMA_ALTER_STATEMENTS
+            ).encode("utf-8")
+        ).hexdigest()
+    return _SCHEMA_FINGERPRINT
 
 
 async def ensure_schema(env):
@@ -11775,6 +11845,9 @@ async def _assert_legacy_wallet_custody_ready(env):
     marker. The explicit offline scrub writes the same marker after its guarded
     updates, so a quiesced migrated database starts without another full scan.
     """
+    fingerprint = _SCHEMA_FINGERPRINT
+    if fingerprint is None:
+        fingerprint = _schema_fingerprint()
     marker = await d1_first(
         env, "SELECT v FROM schema_meta WHERE k=?", LEGACY_WALLET_CUSTODY_MARKER)
     if marker and str(marker.get("v") or "").startswith("clean-v2:"):
@@ -11797,7 +11870,7 @@ async def _assert_legacy_wallet_custody_ready(env):
         "INSERT INTO schema_meta (k,v) VALUES (?,?) "
         "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
         LEGACY_WALLET_CUSTODY_MARKER,
-        "clean-v2:" + _SCHEMA_FINGERPRINT,
+        "clean-v2:" + fingerprint,
     )
 
 
@@ -11809,10 +11882,13 @@ async def _apply_schema(env):
     # the dominant startup cost for both requests and the per-minute cron (the
     # cron routinely blew its resource limits and the /status page recorded the
     # missing samples as downtime).
+    fingerprint = _SCHEMA_FINGERPRINT
+    if fingerprint is None:
+        fingerprint = _schema_fingerprint()
     try:
         row = await d1_first(
             env, "SELECT v FROM schema_meta WHERE k='fingerprint'")
-        if row and row.get("v") == _SCHEMA_FINGERPRINT:
+        if row and row.get("v") == fingerprint:
             await _assert_legacy_wallet_custody_ready(env)
             prune_actors = globals().get("_ap_prune_actor_inventory")
             if callable(prune_actors):
@@ -11832,7 +11908,10 @@ async def _apply_schema(env):
             await env.DB.prepare(sql).run()
         except Exception:
             pass
-    for sql in SCHEMA_STATEMENTS:
+    statements = globals().get("SCHEMA_STATEMENTS")
+    if statements is None:
+        statements = schema.SCHEMA_STATEMENTS
+    for sql in statements:
         await env.DB.prepare(sql).run()
     for sql in SCHEMA_ALTER_STATEMENTS:
         try:
@@ -11843,7 +11922,7 @@ async def _apply_schema(env):
         env,
         "INSERT INTO schema_meta (k, v) VALUES ('fingerprint', ?) "
         "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
-        _SCHEMA_FINGERPRINT,
+        fingerprint,
     )
     await _assert_legacy_wallet_custody_ready(env)
     prune_actors = globals().get("_ap_prune_actor_inventory")
@@ -16715,10 +16794,6 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "activityBucket": activity_bucket,
         **_account_public_last_email(rec),
         **_account_world_client_fields(rec),
-        "lastEmailAt": max(
-            0, int((email_activity or {}).get("sent_at") or 0)),
-        "lastEmailStatus": clean_string(
-            (email_activity or {}).get("status") or "", 40).lower(),
     }
 
 
@@ -16777,19 +16852,6 @@ async def _account_users_directory(env, request):
     # A bucket label only, joined in from its own query so this function
     # body never handles the raw touch timestamp behind it.
     activity_buckets = await _world_user_activity_buckets(env)
-    email_activity = {}
-    try:
-        send_rows = await d1_all(
-            env,
-            "SELECT account_bi,status,sent_at FROM mailtrap_email_sends "
-            "ORDER BY sent_at DESC LIMIT 5000",
-        )
-        for send in send_rows or []:
-            account_bi = str(send.get("account_bi") or "")
-            if account_bi and account_bi not in email_activity:
-                email_activity[account_bi] = send
-    except Exception:
-        email_activity = {}
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
         if (not rec or _account_kind(rec) != "user"
@@ -16802,8 +16864,7 @@ async def _account_users_directory(env, request):
         seen.add(name)
         out.append(_account_chat_user_payload(
             rec, row.get("total_active_ms", 0),
-            activity_buckets.get(row.get("user_bi"), ""),
-            email_activity.get(row.get("user_bi"))))
+            activity_buckets.get(row.get("user_bi"), "")))
 
     # The campfire seats members in this same array order, one bench per
     # account for the session — so this is sorted by join date (oldest
@@ -23554,8 +23615,17 @@ _DISCORD_OAUTH_GUILDS_PATH = "/users/@me/guilds"
 # this Worker isolate. It is intentionally not a durable cross-colo global
 # limiter and carries only short-lived rate metadata plus minimized public
 # channel/@everyone-role projections—never credentials, OAuth values, raw
-# private catalogs, or message history.
-_discord_rate_coordinator = DiscordRateCoordinator()
+# private catalogs, or message history.  Construct it with the first Discord
+# request instead of while Cloudflare is validating Python global scope.
+_discord_rate_coordinator_instance = None
+
+
+def _discord_rate_coordinator():
+    global _discord_rate_coordinator_instance
+    if _discord_rate_coordinator_instance is None:
+        _discord_rate_coordinator_instance = (
+            _LazyModule("discord_rate").DiscordRateCoordinator())
+    return _discord_rate_coordinator_instance
 
 
 def _discord_bot_token(env):
@@ -23688,7 +23758,7 @@ async def _discord_provider_request(env, method, path, body=None):
     if not token:
         return {"status": 0, "data": None, "retryAfterMs": 0}
     now = int(Date.now())
-    reserved_for = _discord_rate_coordinator.reserve(path, now)
+    reserved_for = _discord_rate_coordinator().reserve(path, now)
     if reserved_for:
         return {"status": 429, "data": None, "retryAfterMs": reserved_for}
     headers = {
@@ -23740,7 +23810,7 @@ async def _discord_provider_request(env, method, path, body=None):
             except Exception:
                 rate_headers[name] = ""
         observed_now = int(Date.now())
-        coordinated_retry = _discord_rate_coordinator.observe(
+        coordinated_retry = _discord_rate_coordinator().observe(
             path, status, rate_headers, data, observed_now)
         retry_after = 0
         try:
@@ -24072,7 +24142,7 @@ class _OrganizationDiscordRuntime:
         guild_id = _discord_snowflake(guild_id)
         if not guild_id:
             return None
-        return _discord_rate_coordinator.catalog_get(
+        return _discord_rate_coordinator().catalog_get(
             "public-channels:" + guild_id, int(Date.now()))
 
     def cache_discord_public_channels(self, guild_id, channels):
@@ -24081,7 +24151,7 @@ class _OrganizationDiscordRuntime:
             return
         # The policy module has already removed private/NSFW/thread metadata;
         # cache only its small id/name/type public projection.
-        _discord_rate_coordinator.catalog_put(
+        _discord_rate_coordinator().catalog_put(
             "public-channels:" + guild_id, channels, int(Date.now()))
 
     async def discord_guild_roles(self, guild_id):

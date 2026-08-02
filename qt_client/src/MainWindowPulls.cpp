@@ -1115,6 +1115,37 @@ void MainWindow::applyLoadedPulls(const PullStore &store,
                                   const QString &baseTip)
 {
     m_currentPulls = std::move(pulls);
+    // Agent attribution for the list badges, off the GUI thread. Scanning a PR's
+    // signed commit series for the ForkMesh-Agent trailer means walking the
+    // whole mbox when there is no trailer to find, and refreshPullList() used to
+    // do that for every visible row on every rebuild — including each search
+    // keystroke. Compute it once per load here instead; until it lands the rows
+    // simply carry no agent badge.
+    {
+        const quint64 provenanceGen = ++m_pullProvenanceGen;
+        QList<QPair<int, QString>> series;
+        series.reserve(m_currentPulls.size());
+        for (const PullRequest &pr : std::as_const(m_currentPulls))
+            series.append({pr.number, pr.commits}); // implicitly shared, cheap
+        runOffThread<QHash<int, PullAgentProvenance>>(
+            [series]() {
+                QHash<int, PullAgentProvenance> map;
+                for (const auto &entry : series) {
+                    const PullAgentProvenance prov =
+                        pullAgentProvenanceIn(entry.second);
+                    if (prov.isAgent)
+                        map.insert(entry.first, prov);
+                }
+                return map;
+            },
+            [this, provenanceGen](QHash<int, PullAgentProvenance> map) {
+                if (provenanceGen != m_pullProvenanceGen)
+                    return; // a newer load superseded this pass
+                m_pullProvenance = std::move(map);
+                if (m_pullTable)
+                    refreshPullList(); // badge the rows now that we know
+            });
+    }
     // Pre-compute which open PRs no longer apply cleanly so refreshPullList() can
     // badge their rows. Done here (not per refresh) so typing in the search box
     // doesn't re-spawn the dry-run apply for every open PR. Only meaningful when
@@ -1391,7 +1422,8 @@ void MainWindow::refreshPullList()
                     agent->prNumber == pr.number
                         ? QStringLiteral("this PR")
                         : QStringLiteral("branch %1").arg(pr.head)));
-        } else if (const PullAgentProvenance prov = pullAgentProvenance(pr);
+        } else if (const PullAgentProvenance prov =
+                       m_pullProvenance.value(pr.number);
                    prov.isAgent) {
             // No local session (e.g. an agent PR from another node), but the signed
             // commit trailer still attributes authorship (issue #365).
@@ -1640,19 +1672,40 @@ void MainWindow::showPull(int number)
     // before merging (the "Update branch" button merges the base in — issue #72).
     if (found->status == QLatin1String("open")) {
         const PullStore store = pullStoreForCurrentRepo();
-        bool behind = false;
-        int behindCount = 0;
-        if (store.canWrite() &&
-            store.isBranchBehindBase(found->number, &behind, nullptr, &behindCount) &&
-            behind) {
-            m_pullMeta->setText(
-                m_pullMeta->text() +
-                QString::fromUtf8(" \xC2\xB7 <span style='color:#d29922'>%1 commit%2 "
-                                  "behind %3</span>")
-                    .arg(behindCount)
-                    .arg(behindCount == 1 ? QString() : QStringLiteral("s"),
-                         found->base.toHtmlEscaped()));
-        }
+        const int pullNumber = found->number;
+        const QString base = found->base;
+        // This is a `git rev-list --count` over the PR range. It used to run
+        // while showing the detail pane and is the rev-parse/range stall seen in
+        // the watchdog traces. Keep the store and all identity inputs by value;
+        // the selected PR list can be replaced while the worker is running.
+        runOffThread<QPair<bool, int>>(
+            [store, pullNumber] {
+                bool behind = false;
+                int count = 0;
+                const bool ok = store.canWrite() &&
+                                store.isBranchBehindBase(pullNumber, &behind,
+                                                         nullptr, &count);
+                return qMakePair(ok && behind, count);
+            },
+            [this, pullNumber, base](QPair<bool, int> result) {
+                if (!result.first || m_currentPullNumber != pullNumber ||
+                    !m_pullMeta)
+                    return;
+                const auto current = std::find_if(
+                    m_currentPulls.cbegin(), m_currentPulls.cend(),
+                    [pullNumber](const PullRequest &candidate) {
+                        return candidate.number == pullNumber;
+                    });
+                if (current == m_currentPulls.cend() || current->base != base)
+                    return;
+                m_pullMeta->setText(
+                    m_pullMeta->text() +
+                    QString::fromUtf8(" \xC2\xB7 <span style='color:#d29922'>%1 commit%2 "
+                                      "behind %3</span>")
+                        .arg(result.second)
+                        .arg(result.second == 1 ? QString() : QStringLiteral("s"),
+                             base.toHtmlEscaped()));
+            });
     }
     const QString review = found->reviewSummary();
     if (review == QLatin1String("approved"))
@@ -1899,8 +1952,9 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     m_branchDiffPullNumber = pullNumber;
     showOverviewCommits();
     const QString dir = repoGitDir();
-    const bool liveBranch =
-        !pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head);
+    const QString reviewHead = resolvablePullHead(pr);
+    const bool liveBranch = !reviewHead.isEmpty() && !dir.isEmpty() &&
+                            localBranchExists(dir, reviewHead);
     // The graph browses the PR's head branch when it still exists, so the view
     // reads as one "<head> -> <base>" comparison (adhoc #16). With the branch
     // gone there is nothing to browse, so the graph stays on the default branch.
@@ -1908,13 +1962,13 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     m_branchCompareBase =
         pr.base.trimmed().isEmpty() || pr.base == defaultBase ? QString()
                                                                : pr.base;
-    const QString graphRef = liveBranch ? pr.head : defaultBase;
+    const QString graphRef = liveBranch ? reviewHead : defaultBase;
     if (!graphRef.isEmpty() && m_repoBranch != graphRef)
         setRepoBranch(graphRef);
     setCommitWorkspacePage(kCommitWorkspaceRangePage);
     if (liveBranch) {
         // Live branch: diff the PR's whole range against the repo's refs.
-        showBranchDiff(pr.head);
+        showBranchDiff(reviewHead);
     } else {
         // Branch gone: render the PR's stored patch directly. Mirror the reset
         // showBranchDiff does, minus the git reads that need the branch.
@@ -1958,6 +2012,11 @@ void MainWindow::registerDiffView(QTextEdit *view)
     // (including side-by-side) stays inside the visible window instead of
     // running past the right edge behind a horizontal scrollbar.
     view->setLineWrapMode(QTextEdit::WidgetWidth);
+    // No frame and no document inset: the file blocks already draw their own
+    // outlines, so a border plus the default 4px document margin only fenced the
+    // diff in and stole review width down its right edge (adhoc #223).
+    view->setFrameShape(QFrame::NoFrame);
+    view->document()->setDocumentMargin(0);
     view->viewport()->installEventFilter(this); // Ctrl+wheel, see eventFilter
     if (auto *browser = qobject_cast<QTextBrowser *>(view))
         browser->setOpenLinks(false);
@@ -3144,9 +3203,10 @@ void MainWindow::renderPullCommits(PullRequest pr)
             return QString::fromUtf8("\xE2\x97\x8B "); // hollow circle
         return QString();
     };
-    if (!dir.isEmpty() && !pr.base.isEmpty() && !pr.head.isEmpty()) {
+    const QString reviewHead = resolvablePullHead(pr);
+    if (!dir.isEmpty() && !pr.base.isEmpty() && !reviewHead.isEmpty()) {
         PullRangeSnapshot range;
-        if (pullRangeSnapshot(pr.base, pr.head, &range) &&
+        if (pullRangeSnapshot(pr.base, reviewHead, &range) &&
             !range.detailedLog.trimmed().isEmpty()) {
             for (const QString &line : QString::fromUtf8(range.detailedLog)
                                            .split('\n', Qt::SkipEmptyParts)) {
@@ -3285,6 +3345,26 @@ void MainWindow::renderPullCommits(PullRequest pr)
     }
 }
 
+QString MainWindow::resolvablePullHead(PullRequest pr) const
+{
+    const QString dir = repoGitDir();
+    if (dir.isEmpty() || pr.number <= 0)
+        return QString();
+    auto resolves = [&](const QString &ref) {
+        return !ref.trimmed().isEmpty() &&
+               runGitCapture(dir,
+                             {QStringLiteral("rev-parse"),
+                              QStringLiteral("--verify"),
+                              QStringLiteral("--quiet"),
+                              ref + QStringLiteral("^{commit}")},
+                             nullptr, nullptr);
+    };
+    if (resolves(pr.head))
+        return pr.head;
+    const QString canonical = QStringLiteral("pr/%1").arg(pr.number);
+    return resolves(canonical) ? canonical : QString();
+}
+
 // The base..head range walks for a PR, reused while neither ref has moved.
 //
 // Both walks are `git log` over a branch range — the single most common blocking
@@ -3353,8 +3433,10 @@ bool MainWindow::pullRangeSnapshot(const QString &base, const QString &head,
 // in the open repo. Used to tie action runs to the PR and to count commits.
 QStringList MainWindow::pullCommitShas(const PullRequest &pr) const
 {
+    const PullRequest snapshot = pr;
     PullRangeSnapshot range;
-    if (!pullRangeSnapshot(pr.base, pr.head, &range))
+    const QString reviewHead = resolvablePullHead(snapshot);
+    if (!pullRangeSnapshot(snapshot.base, reviewHead, &range))
         return {};
     return range.shas;
 }
@@ -3380,16 +3462,17 @@ QList<int> MainWindow::runIdsForPull(PullRequest pr) const
     // Also include the head tip in case base..head couldn't be enumerated. The
     // snapshot already resolved it, so this no longer costs a second rev-parse.
     PullRangeSnapshot range;
-    if (pullRangeSnapshot(pr.base, pr.head, &range)) {
+    const QString reviewHead = resolvablePullHead(pr);
+    if (pullRangeSnapshot(pr.base, reviewHead, &range)) {
         shas = QSet<QString>(range.shas.cbegin(), range.shas.cend());
         if (!range.headSha.isEmpty())
             shas.insert(range.headSha);
     } else if (const QString dir = repoGitDir();
-               !dir.isEmpty() && !pr.head.isEmpty()) {
+               !dir.isEmpty() && !reviewHead.isEmpty()) {
         // The range did not resolve (typically a cross-node PR whose base is not
         // here); the head alone may still be, and it is what run records point at.
         QByteArray tip;
-        if (runGitCapture(dir, {"rev-parse", pr.head}, &tip, nullptr))
+        if (runGitCapture(dir, {"rev-parse", reviewHead}, &tip, nullptr))
             shas.insert(QString::fromUtf8(tip).trimmed());
     }
     if (shas.isEmpty())
@@ -3539,14 +3622,15 @@ void MainWindow::runChecksForCurrentPull()
     for (const PullRequest &p : std::as_const(m_currentPulls))
         if (p.number == m_currentPullNumber)
             pr = p;
-    if (pr.number <= 0 || pr.head.isEmpty())
+    if (pr.number <= 0)
         return;
     const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
     // Resolve the PR head to a concrete commit the runner can check out.
     const QString dir = repoGitDir();
+    const QString reviewHead = resolvablePullHead(pr);
     QByteArray tip;
-    if (dir.isEmpty() ||
-        !runGitCapture(dir, {"rev-parse", pr.head}, &tip, nullptr) ||
+    if (dir.isEmpty() || reviewHead.isEmpty() ||
+        !runGitCapture(dir, {"rev-parse", reviewHead}, &tip, nullptr) ||
         tip.trimmed().isEmpty()) {
         setRepoDetailNotice(
             "Could not resolve the pull request's head commit to run checks.", true);
@@ -3554,7 +3638,7 @@ void MainWindow::runChecksForCurrentPull()
     }
     queueWorkflowsForCommit(m_repoDetailIndex, repo.owner, repo.name,
                             QString::fromUtf8(tip).trimmed(),
-                            QStringLiteral("refs/heads/") + pr.head);
+                            QStringLiteral("refs/heads/") + reviewHead);
     renderPullChecks(pr);
     renderPullChecksSummary(pr);
     renderPullReviewSummary(pr);
@@ -3570,15 +3654,21 @@ void MainWindow::buildAndPreviewCurrentPull()
     for (const PullRequest &p : std::as_const(m_currentPulls))
         if (p.number == m_currentPullNumber)
             pr = &p;
-    if (!pr || pr->head.isEmpty()) {
+    if (!pr) {
         setRepoDetailNotice("This pull request has no head branch to build.", true);
         return;
     }
     // Copy what we need out of the PR now: runGitCapture below pumps the GUI
     // event loop, and a reloadPulls() serviced during the pump reassigns
     // m_currentPulls, dangling `pr` (git-pump UAF family, adhoc #149).
-    const QString head = pr->head;
-    const int number = pr->number;
+    const PullRequest snapshot = *pr;
+    const int number = snapshot.number;
+    const QString head = resolvablePullHead(snapshot);
+    if (head.isEmpty()) {
+        setRepoDetailNotice(
+            "Could not resolve this pull request's reviewed code branch.", true);
+        return;
+    }
     const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
     const QString gitDir = repoGitDir();
     if (gitDir.isEmpty()) {
@@ -4588,7 +4678,7 @@ void MainWindow::mergeCurrentPull()
     reloadPulls();
     // Issue #291: flag the agent session behind this PR as landed in main (after
     // reloadPulls so the agent table's PR column also reflects the merge).
-    markAgentSessionsMerged(current.number, current.head);
+    markAgentSessionsMerged(current.number, current.head, /*mergeVerified=*/true);
     // Adhoc #110: only push the merge (closed PR + any linked issue closes) to the
     // mirror and notify peers when the owner has opted into auto-sync-on-merge.
     // Off by default: the merge stays local, refreshSourceControl above has
@@ -7507,7 +7597,7 @@ void MainWindow::mergeAndDeleteCurrentPull()
     refreshSourceControl(true);
     // Issue #291: flag the agent session behind this PR before its branch/record
     // are deleted below (after which it can no longer be detected on reload).
-    markAgentSessionsMerged(m_currentPullNumber, head);
+    markAgentSessionsMerged(m_currentPullNumber, head, /*mergeVerified=*/true);
 
     // Now delete the merged PR and its branch. Adhoc #110: only propagate the
     // merge (and the PR's removal) to peers when auto-sync-on-merge is on;

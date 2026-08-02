@@ -263,7 +263,10 @@ QWidget *MainWindow::buildSourceControlPanel()
     auto *panel = new QWidget;
     m_scmPanel = panel;
     auto *root = new QVBoxLayout(panel);
-    root->setContentsMargins(16, 10, 16, 6);
+    // A narrow column can't afford a 16px gutter on either side of it: that
+    // inset, the tree's indent and the row's own padding stacked up to ~44px of
+    // dead space before a filename started (adhoc #223).
+    root->setContentsMargins(8, 10, 8, 4);
     root->setSpacing(6);
 
     // A compact two-line compose field stays visible. Less-common generation
@@ -551,6 +554,7 @@ QWidget *MainWindow::buildSourceControlPanel()
             [this] {
                 if (sourceControlShowsRange()) {
                     m_branchDiffLastValid = false;
+                    forgetBranchDiff(m_branchDiffBranch); // rescan means re-read
                     renderBranchScopeDiff();
                 } else {
                     refreshSourceControl(true);
@@ -601,6 +605,10 @@ QWidget *MainWindow::buildSourceControlPanel()
     // the left column may get (adhoc #74); rows elide, so they stay readable.
     m_scmTree->setMinimumWidth(160);
     m_scmTree->setRootIsDecorated(true);
+    // Just enough to keep the group's expand arrow clickable. The default 20px
+    // indent pushed every filename a fifth of the column to the right for a
+    // tree that is only ever two levels deep (adhoc #223).
+    m_scmTree->setIndentation(10);
     m_scmTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     // ScmFileRow (via setItemWidget) draws its own thin green selection
     // outline; blank the app-wide #fileTree::item:selected solid fill so it
@@ -650,6 +658,26 @@ QWidget *MainWindow::buildSourceControlPanel()
     root->addWidget(m_scmEmptyNote);
 
     return panel;
+}
+
+// Empty the CHANGES tree while a newly clicked branch's range is still being
+// read. Deliberately lighter than showRangeFilesInSourceControl(): no working
+// tree probe, since nothing here is being enabled — the composer's state is
+// settled by that function once the range's files actually land (adhoc #227).
+void MainWindow::clearRangeFilesInSourceControl()
+{
+    if (!m_scmTree)
+        return;
+    if (m_scmOutgoingPanel)
+        m_scmOutgoingPanel->hide();
+    m_scmStatusCache.clear(); // returning to main must rebuild its working tree
+    m_scmTree->clear();
+    if (m_scmEmptyNote)
+        m_scmEmptyNote->hide();
+    if (m_scmCountLabel)
+        m_scmCountLabel->clear();
+    if (m_scmViewedLabel)
+        m_scmViewedLabel->clear();
 }
 
 void MainWindow::showRangeFilesInSourceControl(const QStringList &paths,
@@ -896,16 +924,21 @@ void MainWindow::refreshSourceControl(bool force)
     if (force)
         refreshRepoSyncIndicators();
     if (sourceControlShowsRange()) {
+        ++m_scmStatusGeneration; // discard a working-tree scan for the old view
         if (m_scmOutgoingPanel)
             m_scmOutgoingPanel->hide();
         if (force) {
             m_branchDiffLastValid = false;
+            forgetBranchDiff(m_branchDiffBranch); // rescan means re-read
             renderBranchScopeDiff();
         }
         return;
     }
     const QString dir = sourceControlGitDir();
     const bool canWrite = !dir.isEmpty() && repoHasWorkingTree();
+    // Invalidate a previous detached status read even when this refresh finds
+    // no usable checkout (for example after switching to a mirror-only repo).
+    const quint64 generation = ++m_scmStatusGeneration;
     refreshSourceControlOutgoing();
     if (m_scmEmptyNote)
         m_scmEmptyNote->setVisible(!canWrite);
@@ -949,14 +982,19 @@ void MainWindow::refreshSourceControl(bool force)
         return;
     }
 
-    QByteArray out;
-    runGitCapture(dir, {"status", "--porcelain=v1", "-z"}, &out, nullptr);
-
-    // runGitCapture pumps the event loop. An agent's Branch click can therefore
-    // open and finish a range diff while this older working-tree scan is in
-    // flight. Never let that stale scan clear the range files that just landed.
-    if (sourceControlShowsRange())
-        return;
+    // `git status` walks the whole working tree and was one of the most frequent
+    // GUI-thread stalls in the log (up to eight seconds on a busy checkout).
+    // Keep the previous tree visible while its replacement is read off-thread.
+    // Both the repository path and generation are values: a late result must not
+    // repaint a different checkout selected while this process was running.
+    runGitDetached(
+        dir, {"status", "--porcelain=v1", "-z"},
+        [this, force, dir, generation](bool ok, const QByteArray &out) {
+            if (generation != m_scmStatusGeneration ||
+                sourceControlShowsRange() || !m_scmTree)
+                return;
+            if (!ok)
+                return; // retain the last known-good tree on a failed scan
 
     // Skip the full rebuild when the working tree is unchanged since the last
     // scan: we rescan on tab focus / window activation, and without this every
@@ -1213,6 +1251,7 @@ void MainWindow::refreshSourceControl(bool force)
             }
         }
     }
+        });
 }
 
 // Commit row vs. Sync Changes. Outgoing commits alone hand the row to Sync, but

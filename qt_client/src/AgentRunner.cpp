@@ -208,6 +208,7 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
 
     m_session.status = AgentStatus::Running;
     m_session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_session.mergeCandidateHead.clear();
     m_session.contextWindow = m_config.contextWindow;
     m_session.maxOutputTokens = m_config.maxOutputTokens;
     m_session.promptTokens += estimateTokens(m_prompt);

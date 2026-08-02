@@ -853,9 +853,55 @@ QString PullStore::metaWorkTree() const
     return dir;
 }
 
+bool PullStore::materializePullMetadataRef(int number, QString *error) const
+{
+    if (number <= 0)
+        return true;
+    const QString meta = metaWorkTree();
+    const QString dir = meta.isEmpty() ? m_workTree : meta;
+    if (dir.isEmpty())
+        return true;
+
+    // Only publish a metadata pointer while the PR record exists at this exact
+    // ledger tip. A deletion removes the pointer separately, below.
+    const QString pullPath = QStringLiteral("HEAD:pulls/%1/pull.md").arg(number);
+    if (!runGit(dir, {"cat-file", "-e", pullPath}, nullptr, nullptr))
+        return true;
+    QByteArray tip;
+    QString err;
+    if (!runGit(dir, {"rev-parse", "--verify", "HEAD^{commit}"}, &tip, &err) ||
+        tip.trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Could not resolve pull metadata: ") + err;
+        return false;
+    }
+    if (!runGit(dir,
+                {"update-ref",
+                 QStringLiteral("refs/pr/%1/metadata").arg(number),
+                 QString::fromUtf8(tip).trimmed()},
+                nullptr, &err)) {
+        if (error)
+            *error = QStringLiteral("Could not attach metadata to PR #%1: %2")
+                         .arg(number)
+                         .arg(err);
+        return false;
+    }
+    return true;
+}
+
 bool PullStore::materializePullRef(const PullRequest &pr, QString *error) const
 {
-    QString sha = reachableHeadCommit(m_workTree, m_mirror, pr.head);
+    // The content and metadata are two facets of one PR. Metadata changes must
+    // not advance the reviewed code head, so they use a sibling private ref.
+    if (!materializePullMetadataRef(pr.number, error))
+        return false;
+    // Only a branch-backed PR declares its named head authoritative. A stored-
+    // patch PR may retain pr.head as signed provenance even after a file edit
+    // changed its content, so resolving that branch here would rematerialize the
+    // stale pre-edit tree and silently override the current patch.
+    QString sha = pr.branchBacked
+                      ? reachableHeadCommit(m_workTree, m_mirror, pr.head)
+                      : QString();
     if (sha.isEmpty() && !pr.base.trimmed().isEmpty()) {
         QByteArray baseSha;
         if (runGit(m_workTree,
@@ -901,7 +947,40 @@ bool PullStore::materializePullRef(const PullRequest &pr, QString *error) const
             *error = "Could not record the pull request ref: " + err;
         return false;
     }
-    return true;
+
+    // Give every materialized PR an ordinary branch that git tooling and agent
+    // sessions can discover without knowing ForkMesh's private refs namespace.
+    // Never force it: the branch is also a legitimate place for an agent/user to
+    // work, so only create it when absent or advance it when the old tip is an
+    // ancestor. update-ref's old value makes both paths compare-and-swap safe.
+    const QString branchRef = QStringLiteral("refs/heads/pr/%1").arg(pr.number);
+    QString oldSha = resolvedCommitOid(m_workTree, branchRef);
+    if (oldSha == sha)
+        return true; // repeated materialization is idempotent
+    if (!oldSha.isEmpty() &&
+        !runGit(m_workTree, {"merge-base", "--is-ancestor", oldSha, sha})) {
+        return true; // independently advanced/diverged: preserve the branch
+    }
+    const QString expected = oldSha.isEmpty()
+                                 ? QString(sha.size(), QLatin1Char('0'))
+                                 : oldSha;
+    if (runGit(m_workTree, {"update-ref", branchRef, sha, expected}, nullptr,
+               &err)) {
+        return true;
+    }
+    // A concurrent materializer may have won the CAS. Accept its equal/newer
+    // value; otherwise report the mechanical failure without forcing the ref.
+    const QString racedSha = resolvedCommitOid(m_workTree, branchRef);
+    if (racedSha == sha ||
+        (!racedSha.isEmpty() &&
+         runGit(m_workTree, {"merge-base", "--is-ancestor", sha, racedSha}))) {
+        return true;
+    }
+    if (!oldSha.isEmpty() && !racedSha.isEmpty())
+        return true; // it diverged during the race; preserving it is success
+    if (error)
+        *error = "Could not record the pull request branch: " + err;
+    return false;
 }
 
 void PullStore::computeStats(PullRequest &pr)
@@ -1631,14 +1710,9 @@ bool PullStore::updateBranchFromBase(int number, QString *error)
                     .arg(pr.base),
                 error))
         return false;
-    // Invalidate rather than refresh: mergePull only trusts a ref that was
-    // materialized at creation and never touched since, so a stale one left
-    // behind by this update doesn't silently change what a later merge
-    // applies. mergePull's pre-#399 fallback (patch/branch-name resolution)
-    // takes over correctly once the ref is gone.
-    runGit(m_workTree,
-          {"update-ref", "-d", QStringLiteral("refs/pr/%1/head").arg(number)},
-          nullptr, nullptr);
+    // The named head was fast-forwarded above, so refresh both the compatibility
+    // ref and the visible pr/<n> branch to the successfully updated content.
+    materializePullRef(pr, nullptr);
     return true;
 }
 
@@ -1670,19 +1744,16 @@ bool PullStore::mergePull(int number, QString *error, bool requirePeerReview)
         return false;
     }
     QString err;
-    // refs/pr/<n>/head (issue #399) is only ever set at creation time and
-    // deleted (never refreshed) by any later edit/conflict-resolution/rebase,
-    // so if it resolves here it's guaranteed to still describe exactly the
-    // content this PR had when it was opened — trust it directly. A PR that
-    // has since been edited has no ref and correctly falls through to the
-    // pre-#399 behavior below. The PR's change lives in real commits
-    // somewhere reachable — its own materialized ref, its head branch's local
-    // ref, or fetched from the mirror — so merge it the robust, patch-free
+    // refs/pr/<n>/head (issue #399) follows each successfully materialized PR
+    // content update, so when it resolves it describes the current stored PR.
+    // The PR's change lives in real commits somewhere reachable — its own
+    // materialized ref, its head branch's local ref, or fetched from the mirror
+    // — so merge it the robust, patch-free
     // way: bring the commit into reach and `git merge` it into the checked-
     // out base. This replays the exact objects — full authorship, binary
     // files, renames — with none of a patch's context-drift or "corrupt
     // binary patch" fragility. Only a PR with no reachable commit anywhere
-    // (pre-#399 stored-patch record, no ref, or an edited PR) falls back to
+    // (pre-#399 stored-patch record or no ref) falls back to
     // applying the diff below.
     QByteArray prRefSha;
     QString headSha;
@@ -2517,13 +2588,11 @@ bool PullStore::deletePullFile(int number, const QString &relPath, QString *erro
     if (!commit(QStringLiteral("pull #%1: delete %2").arg(number).arg(relPath),
                error))
         return false;
-    // Invalidate any materialized ref (issue #399): it would still point at
-    // the pre-edit commits (including the just-removed file's), and a stale
-    // ref would silently override the trimmed patch/mbox this just wrote.
-    // See updateBranchFromBase for the same reasoning.
-    runGit(m_workTree,
-          {"update-ref", "-d", QStringLiteral("refs/pr/%1/head").arg(number)},
-          nullptr, nullptr);
+    // Replay the trimmed content and refresh its refs. The visible branch is
+    // only advanced when this replay is a fast-forward; if the new synthetic
+    // commit diverges from it, materializePullRef deliberately preserves the
+    // existing branch while still refreshing the compatibility ref.
+    materializePullRef(pr, nullptr);
     return true;
 }
 
@@ -2574,10 +2643,7 @@ bool PullStore::finalizeOnPullBranch(int number, const QString &commitMsg,
     m_amRestoreRef.clear();
     if (!commit(commitMsg, error))
         return false;
-    // Invalidate rather than refresh - see updateBranchFromBase for why.
-    runGit(m_workTree,
-          {"update-ref", "-d", QStringLiteral("refs/pr/%1/head").arg(number)},
-          nullptr, nullptr);
+    materializePullRef(pr, nullptr);
     return true;
 }
 
@@ -2824,6 +2890,17 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
         return false;
     }
     const QString relPath = QStringLiteral("pulls/%1").arg(number);
+    const QString compatibilityRef =
+        QStringLiteral("refs/pr/%1/head").arg(number);
+    const QString metadataRef =
+        QStringLiteral("refs/pr/%1/metadata").arg(number);
+    const QString visibleBranch =
+        QStringLiteral("refs/heads/pr/%1").arg(number);
+    // Capture the materialized content tip before removing its metadata. These
+    // values are used as update-ref expected-old values below, so concurrent or
+    // independent branch work can never be deleted accidentally.
+    const QString materializedTip =
+        resolvedCommitOid(m_workTree, compatibilityRef);
     QString err;
     // pulls/ now lives on its own metadata branch (issue #399); fall back to
     // m_workTree only if a working tree somehow isn't available at all.
@@ -2857,11 +2934,21 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
             return false;
         }
     }
-    // Best-effort: drop the materialized content ref too. Leaving it behind is
-    // harmless (an unreferenced object eventually swept by gc), just untidy.
-    runGit(m_workTree,
-          {"update-ref", "-d", QStringLiteral("refs/pr/%1/head").arg(number)},
-          nullptr, nullptr);
+    // Permanent PR deletion owns the materialized refs, but remove them only if
+    // they still point at the content captured above. A visible branch that an
+    // agent/user advanced or diverged survives the PR record's deletion.
+    if (!materializedTip.isEmpty()) {
+        runGit(m_workTree,
+               {"update-ref", "-d", visibleBranch, materializedTip}, nullptr,
+               nullptr);
+        runGit(m_workTree,
+               {"update-ref", "-d", compatibilityRef, materializedTip}, nullptr,
+               nullptr);
+    }
+    // This ref is owned exclusively by the deleted PR record. Unlike the code
+    // branch it is never a user/agent workspace, so no divergence exception is
+    // needed.
+    runGit(m_workTree, {"update-ref", "-d", metadataRef}, nullptr, nullptr);
 
     // Default path: the PR folder is gone at the tip, which is all most callers
     // want. Skip the expensive full-history rewrite unless explicitly requested.
@@ -2943,10 +3030,22 @@ bool PullStore::commit(const QString &message, QString *error) const
         return false;
     }
     if (!runGit(dir, {"commit", "-m", message, "--", "pulls"}, nullptr, &err)) {
-        if (err.contains("nothing to commit") || err.isEmpty())
-            return true;
-        if (error)
-            *error = "git commit failed: " + err;
+        if (!(err.contains("nothing to commit") || err.isEmpty())) {
+            if (error)
+                *error = "git commit failed: " + err;
+            return false;
+        }
+    }
+
+    // Every PullStore commit message begins with "pull #N". Advance only that
+    // PR's metadata pointer to the new signed ledger state; this keeps comments,
+    // reviews and status changes attached to their PR without adding them to the
+    // PR's reviewed code branch.
+    static const QRegularExpression pullNumber(
+        QStringLiteral("^pull #(\\d+)(?:\\D|$)"));
+    const QRegularExpressionMatch match = pullNumber.match(message);
+    if (match.hasMatch() &&
+        !materializePullMetadataRef(match.captured(1).toInt(), error)) {
         return false;
     }
     return true;
