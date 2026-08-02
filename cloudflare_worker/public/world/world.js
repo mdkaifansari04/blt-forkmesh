@@ -150,10 +150,18 @@ const SOCIAL_POSTS_URL = "/api/world/social-posts";
 const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 const ADMIN_ERROR_SEEN_KEY = "forkmesh.world.adminErrorsSeen.v1";
 const ADMIN_ERROR_POLL_MS = 15_000;
+// Newly logged errors are announced at most this often; arrivals in between
+// are carried into the next card so nothing is silently dropped.
+const ADMIN_ERROR_ANNOUNCE_GAP_MS = 60_000;
 // Element ids switched off in the Elements tab. Kept on the
 // device (never in account preferences) so a perf experiment on one machine
 // cannot dim the world on every other signed-in device.
 const DISABLED_ELEMENTS_KEY = "forkmesh.world.disabledElements.v1";
+// Per-object triangle table in the Debug tab. Sorting is numeric for the
+// count columns and alphabetical for the rest, and only the leading rows of
+// the current sort are painted so a busy scene cannot stall the panel.
+const WORLD_OBJECT_NUMERIC_KEYS = new Set(["triangles", "instances"]);
+const WORLD_OBJECT_ROW_LIMIT = 300;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 // Everything a fresh page load pulls in — the relayed chat backlog, the first
@@ -207,6 +215,11 @@ const REPOSITORY_IMPORT_POLL_MS = 2 * 60 * 1000;
 const FLAGSHIP_PORTAL_RETRY_LIMIT = 20;
 const WORLD_UPDATE_CHECK_MIN_GAP_MS = 60 * 1000;
 const WORLD_NOTIFICATION_POLL_MS = 60 * 1000;
+// One poll can carry a whole incident: several systems failing, then the
+// recoveries that close them. The bubble stack keeps six cards, so the two
+// classes of ping are budgeted separately instead of competing newest-first.
+const WORLD_ROUTINE_PING_ANNOUNCE_LIMIT = 2;
+const WORLD_ATTENTION_PING_ANNOUNCE_LIMIT = 3;
 const MIRROR_STATUS_POLL_MS = 5 * 60 * 1000;
 const MIRROR_ACTIONS_POLL_MS = 20 * 1000;
 const WORLD_EVENT_POLL_MS = 3 * 60 * 1000;
@@ -227,7 +240,15 @@ const WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000;
 // The status Worker records one sample per minute. Poll on that same cadence;
 // the board's lightweight stand texture counts down every second in between.
 const WORLD_STATUS_POLL_MS = 60 * 1000;
+const WORLD_STATUS_ISSUE_WINDOW_MS = 60 * 1000;
 const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
+// QA is a shared work queue. Keep already-open Worlds close enough to the
+// server's authoritative first-review state that two testers are not dealt the
+// same card for the rest of a long session.
+const WORLD_QA_POLL_MS = 15 * 1000;
+// A custodial deposit address is watched, not confirmed by hand, so this is
+// how quickly a paid deposit turns into an unlocked element.
+const WORLD_ELEMENT_DEPOSIT_POLL_MS = 4 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS = 15 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_BASE_MS = 5 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_MAX_MS = 30 * 60 * 1000;
@@ -602,6 +623,9 @@ const WORLD_SPACE_IDS = new Set([
   "central",
   "west",
 ]);
+// Rows the HUD "who is online" dropdown draws before it stops and reports the
+// remainder as a count. The panel stays scrollable and readable on a phone.
+const WORLD_ONLINE_ROSTER_LIMIT = 40;
 
 function escapeHTML(value) {
   return String(value ?? "")
@@ -1109,6 +1133,28 @@ function validWorldSession() {
     : null;
 }
 
+function statusPayloadHasRecentIssue(payload, now = Date.now()) {
+  const systems = Array.isArray(payload?.systems) ? payload.systems : [];
+  const payloadNow = Number(payload?.now);
+  const referenceNow = Number.isFinite(payloadNow) && payloadNow > 0
+    ? payloadNow
+    : now;
+  const cutoff = referenceNow - WORLD_STATUS_ISSUE_WINDOW_MS;
+  return systems.some((system) =>
+    (Array.isArray(system?.minutes) ? system.minutes : []).some((minute) => {
+      const minuteTs = Number(minute?.minuteTs);
+      const status = String(minute?.status || "").toLowerCase();
+      return (
+        Number.isFinite(minuteTs) &&
+        minuteTs >= cutoff &&
+        minuteTs <= referenceNow &&
+        status !== "operational" &&
+        status !== "future"
+      );
+    }),
+  );
+}
+
 async function copyWorldText(value) {
   const text = String(value || "");
   if (!text) return false;
@@ -1596,9 +1642,10 @@ function publicIdentity(identity, settings) {
     // A visitor at this keyboard is by definition active within the hour;
     // the light itself stays dark until the account is authenticated.
     activityBucket: "hour",
-    // Authenticated account-mail activity is shown only on this local scene
-    // identity. Presence sanitization has no fields for it, so it never leaves
-    // the owner's browser.
+    // The exact stamp from the owner's authenticated read stays on this local
+    // scene identity: presence sanitization has no fields for it, so it never
+    // leaves the owner's browser. Every other member's badge paints the coarse
+    // copy the public directory carries.
     lastEmailAt: Math.max(0, Number(identity.lastEmailAt) || 0),
     lastEmailStatus: ["delivered", "failed"].includes(
       String(identity.lastEmailStatus || ""),
@@ -2328,6 +2375,14 @@ function normalizeMemberDirectory(value) {
         0,
         Math.min(999, Number(user?.visitCount) || 0),
       ),
+      // Hour-bucketed send time plus delivery outcome, so a member's badge
+      // wears the same last-email row whoever is reading it.
+      lastEmailAt: Math.max(0, Number(user?.lastEmailAt) || 0),
+      lastEmailStatus: ["delivered", "failed"].includes(
+        String(user?.lastEmailStatus || ""),
+      )
+        ? String(user.lastEmailStatus)
+        : "",
     }))
     .filter((user) => user.name);
 }
@@ -3771,6 +3826,10 @@ function normalizeWorldNotifications(payload) {
         rawNumber <= 1_000_000_000
           ? rawNumber
           : 0;
+      // Operational pings carry the transition they report. Keeping it lets the
+      // stream tell "needs attention" from "recovered" without guessing at the
+      // wording of a title.
+      const rawState = String(item?.meta?.state || "");
       return {
         id,
         kind: sanitizeNotificationText(item?.kind, "Update", 40),
@@ -3778,6 +3837,7 @@ function normalizeWorldNotifications(payload) {
         body: sanitizeNotificationText(item?.body, "", 500),
         repo,
         number,
+        state: rawState === "up" || rawState === "down" ? rawState : "",
         href: safeNotificationURL(item?.href),
         ts: Math.max(0, Number(item?.ts) || 0),
         readAt: Math.max(0, Number(item?.readAt) || 0),
@@ -3785,6 +3845,24 @@ function normalizeWorldNotifications(payload) {
     })
     .filter(Boolean)
     .sort((left, right) => right.ts - left.ts);
+}
+
+// Wording used by pings that report something broken rather than something
+// done. Only consulted when the ping carries no explicit up/down state.
+const WORLD_ATTENTION_PING_RE =
+  /\b(?:needs attention|failed|failing|failure|down|outage|offline|unavailable|unreachable|error|errors|crash(?:ed)?|degraded|rejected)\b/i;
+
+// An outage ping is always followed by the recovery ping that closes it, and
+// the recovery is the newer of the two. Ranked purely by time, one poll's worth
+// of pings therefore showed nothing but "recovered" lines while every "needs
+// attention" line sat behind the "+N more" summary. Attention pings get their
+// own announcement budget instead.
+function worldNotificationNeedsAttention(item) {
+  if (!item) return false;
+  if (String(item.kind || "").toLowerCase() === "error_group") return true;
+  if (item.state === "down") return true;
+  if (item.state === "up") return false;
+  return WORLD_ATTENTION_PING_RE.test(String(item.title || ""));
 }
 
 function liveNodeRecords(network, mirrorCatalogs = []) {
@@ -4149,6 +4227,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </a>
 
           <nav class="world-top-actions" data-world-top-actions aria-label="World tools">
+            <a
+              class="world-admin-status-light"
+              data-world-admin-status-light
+              href="/status"
+              aria-label="A system status issue was recorded in the past minute"
+              title="A system status issue was recorded in the past minute — open status"
+              hidden
+            >
+              <span class="world-admin-status-light-orb" aria-hidden="true"></span>
+            </a>
             ${
               identity.accountStatus === "Supporting member"
                 ? ""
@@ -4235,7 +4323,27 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </nav>
         </header>
 
-        <nav class="world-status-actions" aria-label="MCP prompt, notifications, errors, and tasks">
+        <nav class="world-status-actions" aria-label="Who is online, MCP prompt, notifications, errors, and tasks">
+          <div class="world-online-menu" data-world-online-menu data-open="false">
+            <button
+              class="world-online-button"
+              type="button"
+              data-world-online-toggle
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-label="1 person online right now"
+              title="Who is online right now"
+            >
+              <span class="world-status-action-icon" aria-hidden="true">👥</span>
+              <span class="world-tool-count" data-world-online-count>1</span>
+            </button>
+            <div
+              class="world-online-dropdown"
+              data-world-online-list
+              role="group"
+              aria-label="People online in the World right now"
+            ></div>
+          </div>
           <button class="world-prompt-button" type="button" data-world-mcp-prompt aria-label="Copy MCP task prompt" title="Copy a task-scoped MCP prompt">
             <span class="world-prompt-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false">
@@ -4940,6 +5048,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="work">Work</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="security">Security</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="debug">Debug</button>
+            <button type="button" role="tab" aria-selected="false" data-world-settings-tab="store">Store</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="elements" data-world-elements-tab hidden>Elements</button>
           </div>
 
@@ -5032,6 +5141,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <div class="world-office-task-list world-task-table" data-world-organization-task-list aria-label="Sortable organization task table" role="table">
                 <div class="world-office-task-empty">Sign in to load organization tasks.</div>
               </div>
+              <nav class="world-task-pager" data-world-organization-task-pager aria-label="Task pages" hidden></nav>
               <details class="world-task-board-issues">
                 <summary>Recent issue assignments</summary>
                 <ol class="world-office-task-list" data-world-work-issue-list aria-label="Issues recently assigned to you">
@@ -5106,10 +5216,60 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               </div>
             </fieldset>
             <fieldset class="world-setting-group">
+              <legend>Objects drawing triangles</legend>
+              <p class="world-setting-note">
+                Every individual object in the live scene that draws triangles,
+                heaviest first, with the element that owns it. Click any column
+                to sort by it; click again to reverse. Instanced meshes report
+                their whole batch. The scene is walked when you open this tab —
+                press Re-walk scene after moving or toggling elements.
+              </p>
+              <div class="world-element-master">
+                <button type="button" data-world-object-refresh>Re-walk scene</button>
+              </div>
+              <div
+                class="world-object-table"
+                data-world-object-list
+                role="table"
+                aria-label="Scene objects drawing triangles"
+              >
+                <p class="world-setting-note">Object list appears once the scene is ready.</p>
+              </div>
+              <p class="world-office-panel-status" data-world-object-status role="status" aria-live="polite"></p>
+            </fieldset>
+            <fieldset class="world-setting-group">
               <legend>Suggestions</legend>
               <ol class="world-debug-suggestions" data-world-debug-suggestions>
                 <li data-level="caution">Collecting the first sample…</li>
               </ol>
+            </fieldset>
+          </div>
+
+          <div class="world-settings-pane" data-world-settings-pane="store" hidden>
+            <fieldset class="world-setting-group">
+              <legend>Element store · synced to your account</legend>
+              <p class="world-setting-note">
+                Elements are self-contained plugins. Buy one and it is built
+                into your world with the parameters you set; some read a live
+                ForkMesh endpoint, and every endpoint an element may read is
+                listed before you buy. Half of each purchase stays with the
+                treasury and half is shared between online mirror nodes.
+                Buying an element does not purchase ownership, guaranteed
+                rewards, investment returns or any influence over the project.
+              </p>
+              <p class="world-setting-note">
+                Two ways to pay, with different custody. Paying the published
+                pool address from your own wallet means ForkMesh never
+                receives your key. Paying a temporary ForkMesh deposit address
+                means ForkMesh generates and holds that address's key until it
+                sweeps the funds — during that window ForkMesh, or anyone who
+                compromised it, could move them. Each option states its own
+                custody before you confirm.
+              </p>
+              <div class="world-store-list" data-world-store-list>
+                <p class="world-setting-note">Loading the element store…</p>
+              </div>
+              <p class="world-office-panel-status" data-world-store-status role="status" aria-live="polite"></p>
             </fieldset>
           </div>
 
@@ -5128,15 +5288,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <button type="button" data-world-element-master="on">Everything on</button>
                 <button type="button" data-world-element-master="off">Everything off</button>
               </div>
-              <label class="world-element-sort">
-                <span>Sort by</span>
-                <select data-world-element-sort aria-label="Sort world elements">
-                  <option value="drawables">Drawn</option>
-                  <option value="triangles">Triangles</option>
-                  <option value="interactives">Clicks</option>
-                </select>
-              </label>
-              <div class="world-element-list" data-world-element-list>
+              <div class="world-element-table" data-world-element-list role="table" aria-label="World elements">
                 <p class="world-setting-note">World element controls appear once the scene is ready.</p>
               </div>
               <p class="world-office-panel-status" data-world-element-status role="status" aria-live="polite"></p>
@@ -5402,6 +5554,10 @@ class ForkMeshWorld extends HTMLElement {
     this.rewardState = {};
     this.pendingRewards = [];
     this.pendingContribution = null;
+    this.storeCatalog = null;
+    this.storeLibrary = {};
+    this.pendingElementPurchase = null;
+    this.elementDepositTimer = 0;
     this.securityScan = null;
     this.securityHistory = [];
     this.securityRepository = "";
@@ -5421,6 +5577,7 @@ class ForkMeshWorld extends HTMLElement {
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.buildBoardTimer = 0;
     this.buildBoardLoad = null;
+    this.qaTimer = 0;
     this.orgAgentTimer = 0;
     this.sessionWatchTimer = 0;
     this.sessionWatchActive = false;
@@ -5467,6 +5624,9 @@ class ForkMeshWorld extends HTMLElement {
     this.remotePlayers = new Map();
     this.localPeers = new Map();
     this.inactivePlayers = [];
+    // Last roster written into the HUD "who is online" dropdown, so movement
+    // frames that change nobody's name or state never rebuild that list.
+    this.onlineRosterSignature = "";
     // address → {sol, txBucket, fetchedAt, pending} for the chest wallet QR.
     this.walletBadges = new Map();
     this.memberDirectory = [];
@@ -5568,6 +5728,7 @@ class ForkMeshWorld extends HTMLElement {
     this.qaDeck = {
       authenticated: false,
       cards: [],
+      stack: [],
       reviews: {},
       stats: { pass: 0, fail: 0, unsure: 0, reviewed: 0, total: 0 },
     };
@@ -5577,6 +5738,7 @@ class ForkMeshWorld extends HTMLElement {
     this.qaDeckSelectedKey = "";
     this.qaLoad = null;
     this.qaSaving = false;
+    this.qaResultTimer = 0;
     this.updateCheckTimer = 0;
     this.deployStatusTimer = 0;
     this.deployObservedRevision = "";
@@ -5586,6 +5748,12 @@ class ForkMeshWorld extends HTMLElement {
     // the scene at construction and edited live from the Elements tab.
     this.disabledWorldElements = storedDisabledWorldElements();
     this.worldElementSort = "drawables";
+    this.worldElementSortAscending = false;
+    // Per-object triangle table in the Debug tab: sort key and the last
+    // scene walk, kept until the tab is reopened or Re-walk is pressed.
+    this.worldObjectSort = "triangles";
+    this.worldObjectSortAscending = false;
+    this.worldObjects = [];
     this.worldTicketResolved = false;
     this.settingsUpdatedAt = 0;
     this.worldPreferencesLoaded = false;
@@ -5627,13 +5795,18 @@ class ForkMeshWorld extends HTMLElement {
     this.eventsTimer = 0;
     this.instanceDirectoryTimer = 0;
     this.instanceCelebrationTimer = 0;
+    this.installCelebrationTimer = 0;
     this.notificationsTimer = 0;
     this.adminErrorTimer = 0;
     this.adminErrorLatestId = 0;
     this.adminErrorCount = 0;
+    this.adminErrorPendingAnnounce = 0;
+    this.adminErrorAnnouncedAt = 0;
     this.adminErrorEffectTimer = 0;
+    this.adminStatusIssueActive = false;
     this.adminErrors = [];
     this.adminErrorGroups = [];
+    this.adminErrorHours = [];
     this.adminErrorsState = "idle";
     this.adminErrorBoardSearch = "";
     this.adminErrorBoardFilter = "all";
@@ -5773,6 +5946,7 @@ class ForkMeshWorld extends HTMLElement {
       this.landmarkCapabilities,
     );
     this.renderSavedViews();
+    this.renderOnlineRoster();
     this.syncViewportHeight();
     window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
     window.visualViewport?.addEventListener("scroll", this.syncViewportHeight);
@@ -6837,10 +7011,16 @@ class ForkMeshWorld extends HTMLElement {
       this.syncWorldCameraModeButton();
       void this.refreshBuildBoard();
       void this.refreshQaDeck();
+      void this.refreshStoreLibrary();
       this.buildBoardTimer = window.setInterval(
         () => void this.refreshBuildBoard({ quiet: true }),
         WORLD_BUILD_BOARD_POLL_MS,
       );
+      this.qaTimer = window.setInterval(() => {
+        if (!this.destroyed && !document.hidden) {
+          void this.refreshQaDeck({ quiet: true });
+        }
+      }, WORLD_QA_POLL_MS);
       void this.refreshOrgAgentBots();
       this.orgAgentTimer = window.setInterval(
         () => void this.refreshOrgAgentBots(),
@@ -7389,6 +7569,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   applyQaDeck(payload = {}, { afterKey = "" } = {}) {
+    const previousStackIndex = afterKey
+      ? (Array.isArray(this.qaDeck?.stack) ? this.qaDeck.stack : [])
+          .findIndex((card) => card?.key === afterKey)
+      : -1;
     const reviews =
       payload?.reviews && typeof payload.reviews === "object"
         ? payload.reviews
@@ -7422,6 +7606,8 @@ class ForkMeshWorld extends HTMLElement {
               howToTest,
               verdict,
               global,
+              reviewedByAnyone:
+                card?.reviewedByAnyone === true || global.total > 0,
               organizationTask: card?.organizationTask === true,
               department: sanitizePresenceText(
                 card?.department, "", 64),
@@ -7446,7 +7632,8 @@ class ForkMeshWorld extends HTMLElement {
           : null;
       })
       .filter(Boolean)
-      .slice(0, 64);
+      .slice(0, 4096);
+    const stack = cards.filter((card) => !card.reviewedByAnyone);
     const counts = { pass: 0, fail: 0, unsure: 0 };
     cards.forEach((card) => {
       if (card.verdict) counts[card.verdict] += 1;
@@ -7455,9 +7642,10 @@ class ForkMeshWorld extends HTMLElement {
       authenticated: payload?.authenticated === true,
       authorized: payload?.authorized === true,
       requiredTeam: sanitizePresenceText(
-        payload?.requiredTeam, "quality-assurance", 64),
+        payload?.requiredTeam, "", 64),
       revision: sanitizePresenceText(payload?.revision, "", 80),
       cards,
+      stack,
       reviews,
       globalReviews:
         payload?.globalReviews && typeof payload.globalReviews === "object"
@@ -7475,20 +7663,14 @@ class ForkMeshWorld extends HTMLElement {
       stats: {
         ...counts,
         reviewed: cards.filter((card) => card.verdict).length,
-        total: cards.length,
+        total: stack.length,
       },
     };
-    const previousIndex = cards.findIndex((card) => card.key === afterKey);
-    const unreviewed = cards
-      .map((card, index) => ({ card, index }))
-      .filter(({ card }) => !card.verdict);
-    if (unreviewed.length) {
+    if (stack.length) {
       this.qaCardIndex =
-        unreviewed.find(({ index }) => index > previousIndex)?.index ??
-        unreviewed[0].index;
-    } else if (cards.length) {
-      this.qaCardIndex =
-        previousIndex >= 0 ? (previousIndex + 1) % cards.length : 0;
+        previousStackIndex >= 0
+          ? Math.min(previousStackIndex, stack.length - 1)
+          : 0;
     } else {
       this.qaCardIndex = 0;
     }
@@ -7502,7 +7684,12 @@ class ForkMeshWorld extends HTMLElement {
     return this.qaDeck.cards.filter(
       (card) =>
         (Number(card?.global?.[verdict]) || 0) > 0 ||
-        String(card?.verdict || "") === verdict,
+        String(card?.verdict || "") === verdict ||
+        (card?.organizationTask === true &&
+          Number(card?.lastReviewedAt) > 0 &&
+          ({ passed: "pass", failed: "fail", unknown: "unsure" }[
+            String(card?.taskQaStatus || "")
+          ] === verdict)),
     );
   }
 
@@ -7534,7 +7721,7 @@ class ForkMeshWorld extends HTMLElement {
               (card) => card.key === this.qaDeckSelectedKey,
             )
           : null) ||
-        this.qaDeck.cards[this.qaCardIndex] ||
+        this.qaDeck.stack[this.qaCardIndex] ||
         null,
       currentIndex: this.qaCardIndex,
       stats: this.qaDeck.stats,
@@ -7564,7 +7751,6 @@ class ForkMeshWorld extends HTMLElement {
       const index = this.qaDeck.cards.findIndex((card) => card.key === key);
       if (index < 0) return;
       this.qaDeckSelectedKey = key;
-      this.qaCardIndex = index;
       this.qaDeckView = "detail";
       this.renderQaDeck();
       return;
@@ -7810,7 +7996,12 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return false;
     }
-    const card = this.qaDeck.cards[this.qaCardIndex];
+    const card =
+      this.qaDeckView === "detail" && this.qaDeckSelectedKey
+        ? this.qaDeck.cards.find(
+            (entry) => entry.key === this.qaDeckSelectedKey,
+          )
+        : this.qaDeck.stack[this.qaCardIndex];
     if (!card) return false;
     if (!this.qaDeck.authenticated || !validWorldSession()) {
       this.toast("Sign in to save QA results to your account.");
@@ -7834,9 +8025,13 @@ class ForkMeshWorld extends HTMLElement {
         { timeout: 8000 },
       );
       this.applyQaDeck(payload, { afterKey: card.key });
-      this.toast(
-        `${card.title}: ${verdict}. Your result and the shared QA totals were updated.`,
-      );
+      if (["pass", "fail"].includes(verdict)) {
+        this.announceQaVerdict(card, verdict);
+      } else {
+        this.toast(
+          `${card.title}: ${verdict}. Your result and the shared QA totals were updated.`,
+        );
+      }
       return true;
     } catch (error) {
       this.toast(
@@ -7846,6 +8041,57 @@ class ForkMeshWorld extends HTMLElement {
     } finally {
       this.qaSaving = false;
     }
+  }
+
+  announceQaVerdict(card, verdict) {
+    if (!card || !["pass", "fail"].includes(verdict)) return;
+    const title = String(card.title || "QA card").trim().slice(0, 120);
+    const passed = verdict === "pass";
+    const result = passed ? "passed" : "failed";
+    this.toast(
+      `QA ping · ${title} ${result}.${passed ? " 🎉" : ""}`,
+      { priority: 2, lockMs: 4500 },
+    );
+
+    this.$("[data-world-qa-result-effect]")?.remove();
+    window.clearTimeout(this.qaResultTimer);
+    const layer = document.createElement("section");
+    layer.className = `world-qa-result-effect world-qa-result-effect--${result}`;
+    layer.dataset.worldQaResultEffect = "true";
+    layer.setAttribute("role", "status");
+    layer.setAttribute(
+      "aria-label",
+      passed ? "QA card passed" : "QA card failed",
+    );
+    const notice = document.createElement("div");
+    notice.className = "world-qa-result-notice";
+    const heading = document.createElement("strong");
+    heading.textContent = passed ? "QA PASSED!" : "QA FAILED";
+    const copy = document.createElement("span");
+    copy.textContent = title;
+    notice.append(heading, copy);
+    layer.append(notice);
+    if (
+      passed &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      const confetti = document.createElement("div");
+      confetti.className = "world-qa-pass-confetti";
+      confetti.setAttribute("aria-hidden", "true");
+      for (let index = 0; index < 24; index += 1) {
+        const particle = document.createElement("i");
+        particle.style.setProperty("--x", `${18 + Math.random() * 64}%`);
+        particle.style.setProperty("--delay", `${Math.random() * 0.35}s`);
+        particle.style.setProperty("--hue", `${96 + Math.floor(Math.random() * 80)}`);
+        confetti.append(particle);
+      }
+      layer.append(confetti);
+    }
+    this.append(layer);
+    this.qaResultTimer = window.setTimeout(() => {
+      layer.remove();
+      this.qaResultTimer = 0;
+    }, passed ? 3600 : 4600);
   }
 
   async recordTaskQaVerdict(task, verdict) {
@@ -7875,7 +8121,7 @@ class ForkMeshWorld extends HTMLElement {
         );
       }
       await this.refreshQaDeck({ quiet: true });
-      const index = this.qaDeck.cards.findIndex((card) => card.key === key);
+      const index = this.qaDeck.stack.findIndex((card) => card.key === key);
       if (index < 0 || !this.qaDeck.authorized) {
         this.toast(
           "Join the Quality Assurance team to review completed tasks.",
@@ -8073,6 +8319,9 @@ class ForkMeshWorld extends HTMLElement {
     // socket is closed, so no arrival can force it — and accounts signed up
     // meanwhile are missing from the fire's total. Coming back is the cue.
     void this.refreshMemberDirectory();
+    // Reviews made in another browser while this tab was hidden must be
+    // removed before the tester handles the next card.
+    void this.refreshQaDeck({ quiet: true });
     // Coming back to this tab is itself the request to bring the account's
     // one avatar here, so a takeover by another device stops holding it off.
     this.reclaimPresenceHere();
@@ -9280,6 +9529,19 @@ class ForkMeshWorld extends HTMLElement {
       this.world?.updateFederatedInstances?.(instances);
       this.celebrateRecentInstance(instances);
     } catch (_) {}
+    try {
+      const payload = await this.fetchJSON(
+        `/api/world/installs?refresh=${Math.floor(Date.now() / 30_000)}`,
+        {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        },
+      );
+      this.celebrateRecentInstall(
+        Array.isArray(payload?.installs) ? payload.installs : [],
+      );
+    } catch (_) {}
   }
 
   startInstanceDirectoryPolling() {
@@ -9355,6 +9617,79 @@ class ForkMeshWorld extends HTMLElement {
     this.instanceCelebrationTimer = window.setTimeout(() => {
       layer.remove();
       this.instanceCelebrationTimer = 0;
+    }, remaining);
+  }
+
+  // A fresh desktop install — the one-line installer's final successful
+  // "done" report, surfaced through /api/world/installs — gets the same
+  // ten-minute firework treatment as a federated instance joining. The
+  // world-instance-* classes are reused so both celebrations share one look.
+  celebrateRecentInstall(installs = []) {
+    const now = Date.now();
+    const celebrationMs = 10 * 60 * 1000;
+    const newest = [...(Array.isArray(installs) ? installs : [])]
+      .filter(
+        (install) =>
+          install?.installedAt > 0 &&
+          now >= install.installedAt &&
+          now - install.installedAt < celebrationMs,
+      )
+      .sort((left, right) => right.installedAt - left.installedAt)[0];
+    if (!newest) return;
+    // The federated-instance celebration owns the overlay when both fire.
+    if (this.$("[data-world-instance-celebration]")) return;
+    const existing = this.$("[data-world-install-celebration]");
+    if (existing?.dataset.installId === newest.id) return;
+    existing?.remove();
+    window.clearTimeout(this.installCelebrationTimer);
+    const remaining = Math.max(
+      1000,
+      celebrationMs - (now - Number(newest.installedAt)),
+    );
+    const layer = document.createElement("section");
+    layer.className = "world-instance-celebration";
+    layer.dataset.worldInstallCelebration = "true";
+    layer.dataset.installId = newest.id;
+    layer.setAttribute("aria-label", "New ForkMesh desktop install celebration");
+    const fireworks = document.createElement("div");
+    fireworks.className = "world-instance-fireworks";
+    fireworks.setAttribute("aria-hidden", "true");
+    if (
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      for (let index = 0; index < 54; index += 1) {
+        const particle = document.createElement("i");
+        particle.style.setProperty("--x", `${5 + Math.random() * 90}%`);
+        particle.style.setProperty("--y", `${5 + Math.random() * 62}%`);
+        particle.style.setProperty("--delay", `${Math.random() * -4}s`);
+        particle.style.setProperty("--duration", `${1.8 + Math.random() * 2.7}s`);
+        particle.style.setProperty("--hue", `${Math.floor(Math.random() * 360)}`);
+        fireworks.append(particle);
+      }
+    }
+    const announcement = document.createElement("div");
+    announcement.className = "world-instance-announcement";
+    const eyebrow = document.createElement("p");
+    eyebrow.textContent = "NEW FORKMESH DESKTOP · NODE INSTALLED";
+    const title = document.createElement("strong");
+    const platform = [newest.os, newest.arch].filter(Boolean).join(" · ");
+    title.textContent = platform || "A new ForkMesh desktop";
+    const copy = document.createElement("span");
+    copy.textContent =
+      "Someone just installed the ForkMesh desktop with the one-line installer. Fireworks run for ten minutes.";
+    const link = document.createElement("a");
+    link.href = "/desktop.html";
+    link.textContent = "Get the desktop app →";
+    announcement.append(eyebrow, title, copy, link);
+    layer.append(fireworks, announcement);
+    this.append(layer);
+    this.toast("🎆 A new ForkMesh desktop was just installed.", {
+      priority: 2,
+      lockMs: 8000,
+    });
+    this.installCelebrationTimer = window.setTimeout(() => {
+      layer.remove();
+      this.installCelebrationTimer = 0;
     }, remaining);
   }
 
@@ -10326,6 +10661,13 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         diagnostics.removeAttribute("open");
       }
+      const onlineMenu = this.$("[data-world-online-menu]");
+      if (
+        onlineMenu?.dataset.open === "true" &&
+        !event.target.closest("[data-world-online-menu]")
+      ) {
+        this.setOnlineRosterOpen(false);
+      }
       const settingsPanel = this.$("[data-world-settings]");
       if (
         settingsPanel?.dataset.open === "true" &&
@@ -10496,6 +10838,22 @@ class ForkMeshWorld extends HTMLElement {
         this.downloadInstanceSetupCard();
         return;
       }
+      const onlinePerson = event.target.closest("[data-world-online-person]");
+      if (onlinePerson) {
+        this.openOnlineRosterMember(
+          onlinePerson.dataset.worldOnlinePerson,
+          onlinePerson,
+        );
+        return;
+      }
+      // Hover opens the roster in CSS; the click pins it open so touch — which
+      // has no hover at all — reaches the same list.
+      if (event.target.closest("[data-world-online-toggle]")) {
+        this.setOnlineRosterOpen(
+          this.$("[data-world-online-menu]")?.dataset.open !== "true",
+        );
+        return;
+      }
       const mcpPromptButton = event.target.closest("[data-world-mcp-prompt]");
       if (mcpPromptButton) {
         void this.copyMcpTaskPrompt(mcpPromptButton);
@@ -10581,6 +10939,75 @@ class ForkMeshWorld extends HTMLElement {
         this.setAllWorldElementsEnabled(
           elementMaster.dataset.worldElementMaster !== "off",
         );
+        return;
+      }
+      const storeBuy = event.target.closest("[data-world-store-buy]");
+      if (storeBuy) {
+        void this.purchaseStoreElement(storeBuy.dataset.worldStoreBuy).then(
+          () => this.renderWorldStorePane(),
+        );
+        return;
+      }
+      const storeDeposit = event.target.closest("[data-world-store-deposit]");
+      if (storeDeposit) {
+        void this.purchaseStoreElement(
+          storeDeposit.dataset.worldStoreDeposit,
+          "deposit",
+        ).then(() => this.renderWorldStorePane());
+        return;
+      }
+      const storeConfirm = event.target.closest("[data-world-store-confirm]");
+      if (storeConfirm) {
+        const signature = this.$("[data-world-store-signature]")?.value || "";
+        void this.confirmStoreElementPurchase(signature).then(() =>
+          this.renderWorldStorePane(),
+        );
+        return;
+      }
+      if (event.target.closest("[data-world-store-cancel]")) {
+        this.stopElementDepositPolling();
+        this.pendingElementPurchase = null;
+        this.renderWorldStorePane();
+        return;
+      }
+      const storeSave = event.target.closest("[data-world-store-save]");
+      if (storeSave) {
+        const elementId = storeSave.dataset.worldStoreSave;
+        const enabled = this.$(
+          `[data-world-store-enabled="${elementId}"]`,
+        )?.checked;
+        void this.configureStoreElement(elementId, {
+          params: this.collectStoreParams(elementId),
+          enabled: enabled !== false,
+        }).then(() => this.renderWorldStorePane("Saved."));
+        return;
+      }
+      const elementSort = event.target.closest("[data-world-element-sort]");
+      if (elementSort) {
+        const key = elementSort.dataset.worldElementSort;
+        if (this.worldElementSort === key) {
+          this.worldElementSortAscending = this.worldElementSortAscending !== true;
+        } else {
+          this.worldElementSort = key;
+          this.worldElementSortAscending = key === "label" || key === "category";
+        }
+        this.renderWorldElementsPane();
+        return;
+      }
+      if (event.target.closest("[data-world-object-refresh]")) {
+        this.renderWorldObjectPane({ walk: true });
+        return;
+      }
+      const objectSort = event.target.closest("[data-world-object-sort]");
+      if (objectSort) {
+        const key = objectSort.dataset.worldObjectSort;
+        if (this.worldObjectSort === key) {
+          this.worldObjectSortAscending = this.worldObjectSortAscending !== true;
+        } else {
+          this.worldObjectSort = key;
+          this.worldObjectSortAscending = !WORLD_OBJECT_NUMERIC_KEYS.has(key);
+        }
+        this.renderWorldObjectPane();
         return;
       }
       if (event.target.closest("[data-world-debug-copy]")) {
@@ -10858,6 +11285,27 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
+      const errorGroupDelete = event.target.closest(
+        "[data-world-admin-error-group-delete]",
+      );
+      if (errorGroupDelete) {
+        void this.deleteAdminErrorGroup(errorGroupDelete.dataset);
+        return;
+      }
+      const errorGroupTask = event.target.closest(
+        "[data-world-admin-error-group-task]",
+      );
+      if (errorGroupTask) {
+        void this.createTaskFromAdminErrorGroup(errorGroupTask.dataset);
+        return;
+      }
+      const errorCopy = event.target.closest("[data-world-admin-error-copy]");
+      if (errorCopy) {
+        void this.copyAdminErrorMessage(
+          errorCopy.dataset.worldAdminErrorCopy,
+        );
+        return;
+      }
       if (event.target.closest("[data-world-focus-play]")) {
         void this.playFocusMusic();
         return;
@@ -11095,16 +11543,6 @@ class ForkMeshWorld extends HTMLElement {
           elementToggle.dataset.worldElementToggle,
           elementToggle.checked,
         );
-        return;
-      }
-      const elementSort = event.target.closest("[data-world-element-sort]");
-      if (elementSort) {
-        this.worldElementSort = ["drawables", "triangles", "interactives"].includes(
-          elementSort.value,
-        )
-          ? elementSort.value
-          : "drawables";
-        this.renderWorldElementsPane();
         return;
       }
       const emojiCategory = event.target.closest(
@@ -11349,7 +11787,10 @@ class ForkMeshWorld extends HTMLElement {
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
       if (this.$("[data-world-chat-terminal]")?.open) return;
-      if (
+      if (this.$("[data-world-online-menu]")?.dataset.open === "true") {
+        this.setOnlineRosterOpen(false);
+        this.$("[data-world-online-toggle]")?.focus();
+      } else if (
         this.$("[data-world-instance-launcher]")?.dataset.open === "true"
       ) {
         this.toggleInstanceLauncher(false);
@@ -12478,6 +12919,21 @@ class ForkMeshWorld extends HTMLElement {
   applyAdminElementsAccess() {
     const elementsTab = this.$("[data-world-elements-tab]");
     if (elementsTab) elementsTab.hidden = false;
+    this.renderAdminStatusLight(this.adminStatusIssueActive);
+  }
+
+  renderAdminStatusLight(active = false) {
+    const light = this.$("[data-world-admin-status-light]");
+    if (!light) return;
+    this.adminStatusIssueActive = active === true;
+    const visible = this.identity?.isAdmin === true && this.adminStatusIssueActive;
+    light.hidden = !visible;
+    light.setAttribute(
+      "aria-label",
+      visible
+        ? "A system status issue was recorded in the past minute"
+        : "No recent system status issues",
+    );
   }
 
   adminErrorStorageKey() {
@@ -12567,9 +13023,41 @@ class ForkMeshWorld extends HTMLElement {
         return;
       }
       const nextCount = Math.max(0, Number(payload?.newCount) || 0);
-      const arrived = nextCount > this.adminErrorCount;
+      const previousCount = this.adminErrorCount;
+      const arrived = nextCount > previousCount;
       this.adminErrorCount = nextCount;
       this.renderAdminErrors(nextCount, arrived);
+      // The badge alone only says a number changed somewhere off screen. New
+      // errors are announced in the same stream as the operational pings, in
+      // the same coarse shape the admin ping uses (status and source, never a
+      // route or a message) so nothing sensitive reaches the HUD. Arrivals
+      // accumulate rather than announce per poll: a storm is one card a minute
+      // carrying the real total, not a card every fifteen seconds.
+      if (arrived) {
+        this.adminErrorPendingAnnounce =
+          (this.adminErrorPendingAnnounce || 0) + (nextCount - previousCount);
+      }
+      const added = this.adminErrorPendingAnnounce || 0;
+      if (
+        added > 0 &&
+        this.activityNoticesSettled() &&
+        Date.now() - (this.adminErrorAnnouncedAt || 0) >=
+          ADMIN_ERROR_ANNOUNCE_GAP_MS
+      ) {
+        const status = Math.max(0, Number(payload?.latestStatus) || 0);
+        const source = /^[A-Za-z]{1,20}$/.test(String(payload?.latestSource))
+          ? String(payload.latestSource)
+          : "";
+        const latest = [status || "", source].filter(Boolean).join(" · ");
+        this.adminErrorPendingAnnounce = 0;
+        this.adminErrorAnnouncedAt = Date.now();
+        this.toast(
+          added === 1
+            ? `New error logged${latest ? ` (${latest})` : ""}`
+            : `${added} new errors logged${latest ? ` (latest ${latest})` : ""}`,
+          { kind: "error" },
+        );
+      }
     } catch (_) {
       // This is an operational convenience only. A failed badge poll must not
       // interfere with movement, rendering, or the existing admin surface.
@@ -12606,7 +13094,11 @@ class ForkMeshWorld extends HTMLElement {
         const status = Number(item.status) || 0;
         if (filter === "server" && status < 500) return false;
         if (filter === "client" && (status < 400 || status >= 500)) return false;
-        if (filter === "browser" && item.method !== "BROWSER") return false;
+        if (
+          filter === "browser" &&
+          item.method !== "JS" &&
+          !String(item.path || "").startsWith("/client-error/")
+        ) return false;
         if (
           query &&
           ![
@@ -12650,7 +13142,11 @@ class ForkMeshWorld extends HTMLElement {
       const status = Number(item.status) || 0;
       if (filter === "server" && status < 500) return false;
       if (filter === "client" && (status < 400 || status >= 500)) return false;
-      if (filter === "browser" && item.method !== "BROWSER") return false;
+      if (
+        filter === "browser" &&
+        item.method !== "JS" &&
+        !String(item.path || "").startsWith("/client-error/")
+      ) return false;
       return (
         !query ||
         [
@@ -12676,6 +13172,40 @@ class ForkMeshWorld extends HTMLElement {
           .join("")}
         ${anonymous ? `<i title="${anonymous.toLocaleString()} anonymous occurrence(s)">?</i>` : ""}
       </span>`;
+    const errorSource = (item) =>
+      item.method === "JS" || String(item.path || "").startsWith("/client-error/")
+        ? "JavaScript"
+        : "Worker";
+    const sourceBadge = (item) =>
+      `<span class="world-error-source world-error-source--${
+        errorSource(item) === "JavaScript" ? "javascript" : "worker"
+      }">${errorSource(item)}</span>`;
+    const exactTime = (timestamp) => {
+      const instant = new Date(timestamp);
+      return Number.isNaN(instant.getTime()) ? "Unknown time" : instant.toLocaleString();
+    };
+    const relativeTime = (timestamp) =>
+      timestamp ? relativeTimeLabel(timestamp) : "unknown";
+    const chartHours = Array.from({ length: 24 }, (_, index) =>
+      Math.max(0, Number(this.adminErrorHours[index]) || 0),
+    );
+    const chartPeak = Math.max(0, ...chartHours);
+    const chartTotal = chartHours.reduce((total, count) => total + count, 0);
+    const hourLabel = (index) => {
+      const hoursAgo = 23 - index;
+      return hoursAgo === 0 ? "current hour" : `${hoursAgo} hours ago`;
+    };
+    const groupDataAttributes = (group) => {
+      const users = [
+        ...group.actors.map((actor) => `${actor.name} (${actor.count})`),
+        ...(group.anonymous ? [`anonymous (${group.anonymous})`] : []),
+      ].join(", ");
+      return `data-world-admin-error-group-status="${escapeHTML(group.status)}"
+        data-world-admin-error-group-method="${escapeHTML(group.method)}"
+        data-world-admin-error-group-path="${escapeHTML(group.path)}"
+        data-world-admin-error-group-message="${escapeHTML(group.message)}"
+        data-world-admin-error-group-users="${escapeHTML(users)}"`;
+    };
     return `
       <section class="world-activity-board world-activity-board--errors" aria-label="Error log">
         <header class="world-activity-board-heading">
@@ -12709,27 +13239,49 @@ class ForkMeshWorld extends HTMLElement {
           <div data-tone="warning"><strong>${total4xx}</strong><span>Client</span></div>
           <div data-tone="cool"><strong>${rows.length}</strong><span>Showing</span></div>
         </div>
+        <section class="world-error-analytics" aria-labelledby="world-error-analytics-title">
+          <h4 id="world-error-analytics-title">Previous 24 hours · ${chartTotal.toLocaleString()} occurrence${chartTotal === 1 ? "" : "s"}</h4>
+          <div class="world-error-chart" role="img" aria-label="24-hour error frequency">
+            ${chartHours
+              .map((count, index) => `<span tabindex="0" role="img" aria-label="${hourLabel(index)}: ${count} error${count === 1 ? "" : "s"}" data-empty="${count === 0}" style="height:${chartPeak ? Math.max(2, Math.round((132 * count) / chartPeak)) : 2}px" title="${hourLabel(index)} · ${count}"></span>`)
+              .join("")}
+          </div>
+          <div class="world-error-hours"><span>24h ago</span><span>12h ago</span><span>now</span></div>
+        </section>
         <section class="world-error-groups" aria-labelledby="world-error-groups-title">
           <h4 id="world-error-groups-title">Equivalent errors · previous 24 hours</h4>
           <div class="world-error-group-table" role="table" aria-label="Grouped error occurrences">
             <div class="world-error-group-header" role="row">
-              <span>Count</span><span>Status</span><span>Method</span>
-              <span>Path</span><span>Message</span><span>Users</span>
-              <span>First</span><span>Last</span>
+              <span>Count</span><span>24-hour frequency</span><span>Source</span>
+              <span>Status</span><span>Method</span><span>Path</span><span>Message</span>
+              <span>Users</span><span>First</span><span>Last</span><span>Actions</span>
             </div>
             ${grouped.length
               ? grouped
                   .map(
-                    (group) => `<div class="world-error-group-row" role="row">
+                    (group) => {
+                      const hours = Array.from({ length: 24 }, (_, index) =>
+                        Math.max(0, Number(group.hours[index]) || 0),
+                      );
+                      const peak = Math.max(0, ...hours);
+                      const attrs = groupDataAttributes(group);
+                      return `<div class="world-error-group-row" role="row">
                       <strong>${group.count.toLocaleString()}</strong>
+                      <span class="world-error-sparkline" tabindex="0" role="img" aria-label="24-hour frequency: ${group.count.toLocaleString()} occurrence${group.count === 1 ? "" : "s"}">${hours.map((count, index) => `<i data-empty="${count === 0}" style="height:${peak ? Math.max(2, Math.round((28 * count) / peak)) : 2}px" title="${hourLabel(index)} · ${count}"></i>`).join("")}</span>
+                      ${sourceBadge(group)}
                       <span>${escapeHTML(group.status || "ERR")}</span>
                       <span>${escapeHTML(group.method || "—")}</span>
                       <code title="${escapeHTML(group.path || "—")}">${escapeHTML(group.path || "—")}</code>
-                      <span title="${escapeHTML(group.message || "—")}">${escapeHTML(group.message || "—")}</span>
+                      <span class="world-error-message" title="${escapeHTML(group.message || "—")}"><span>${escapeHTML(group.message || "—")}</span><button type="button" data-world-admin-error-copy="${escapeHTML(group.message || "")}" title="Copy this message">Copy</button></span>
                       ${errorActorFaces(group.actors, group.anonymous)}
-                      <time>${escapeHTML(group.firstSeen ? new Date(group.firstSeen).toLocaleString() : "—")}</time>
-                      <time>${escapeHTML(group.lastSeen ? new Date(group.lastSeen).toLocaleString() : "—")}</time>
-                    </div>`,
+                      <time datetime="${escapeHTML(group.firstSeen ? new Date(group.firstSeen).toISOString() : "")}" title="${escapeHTML(exactTime(group.firstSeen))}">${escapeHTML(relativeTime(group.firstSeen))}</time>
+                      <time datetime="${escapeHTML(group.lastSeen ? new Date(group.lastSeen).toISOString() : "")}" title="${escapeHTML(exactTime(group.lastSeen))}">${escapeHTML(relativeTime(group.lastSeen))}</time>
+                      <span class="world-error-row-actions">
+                        <button type="button" ${attrs} data-world-admin-error-group-task>Task</button>
+                        <button type="button" ${attrs} data-world-admin-error-group-delete>Delete group</button>
+                      </span>
+                    </div>`;
+                    },
                   )
                   .join("")
               : '<p class="world-activity-empty">No grouped errors match these controls.</p>'}
@@ -12737,7 +13289,7 @@ class ForkMeshWorld extends HTMLElement {
         </section>
         <h4 class="world-error-raw-title">Individual records</h4>
         <div class="world-error-table-header" role="row">
-          <span>ID</span><span>Time</span><span>Status</span><span>Method</span>
+          <span>ID</span><span>Time</span><span>Source</span><span>Status</span><span>Method</span>
           <span>Path</span><span>Message</span><span>User</span><span>CF-Ray</span>
           <span>Actions</span>
         </div>
@@ -12759,10 +13311,11 @@ class ForkMeshWorld extends HTMLElement {
                     return `<li class="world-activity-row world-error-row" data-tone="${tone}">
                       <span>${escapeHTML(item.id)}</span>
                       <time datetime="${escapeHTML(Number.isNaN(instant.getTime()) ? "" : instant.toISOString())}">${escapeHTML(Number.isNaN(instant.getTime()) ? "Unknown" : instant.toLocaleString())}</time>
+                      ${sourceBadge(item)}
                       <strong>${escapeHTML(item.status || "ERR")}</strong>
                       <span>${escapeHTML(item.method || "—")}</span>
                       <code title="${escapeHTML(item.path || "—")}">${escapeHTML(item.path || "—")}</code>
-                      <span title="${escapeHTML(item.message || "Logged error")}">${escapeHTML(item.message || "Logged error")}</span>
+                      <span class="world-error-message" title="${escapeHTML(item.message || "Logged error")}"><span>${escapeHTML(item.message || "Logged error")}</span><button type="button" data-world-admin-error-copy="${escapeHTML(item.message || "")}" title="Copy this message">Copy</button></span>
                       <span class="world-error-single-actor" title="${escapeHTML(actor)}">${escapeHTML(actor.slice(0, 1).toUpperCase())}</span>
                       <span title="${escapeHTML(item.ray || "—")}">${escapeHTML(item.ray || "—")}</span>
                       <span class="world-error-row-actions">
@@ -12826,6 +13379,9 @@ class ForkMeshWorld extends HTMLElement {
           count: Math.max(0, Number(group?.count) || 0),
           firstSeen: Math.max(0, Number(group?.firstSeen) || 0),
           lastSeen: Math.max(0, Number(group?.lastSeen) || 0),
+          hours: Array.from({ length: 24 }, (_, index) =>
+            Math.max(0, Number(group?.hours?.[index]) || 0),
+          ),
           actors: (Array.isArray(group?.actors) ? group.actors : [])
             .slice(0, 16)
             .map((entry) => ({
@@ -12835,6 +13391,9 @@ class ForkMeshWorld extends HTMLElement {
             .filter((entry) => entry.name),
           anonymous: Math.max(0, Number(group?.anonymous) || 0),
         }));
+      this.adminErrorHours = Array.from({ length: 24 }, (_, index) =>
+        Math.max(0, Number(payload?.hourly?.[index]) || 0),
+      );
       this.adminErrorsState = this.adminErrors.length ? "ready" : "empty";
     } catch (_) {
       this.adminErrorsState = "unavailable";
@@ -12876,6 +13435,70 @@ class ForkMeshWorld extends HTMLElement {
     } catch (_) {
       this.toast("A Bot task could not be created from that error.");
     }
+  }
+
+  adminErrorGroupFromDataset(dataset) {
+    return {
+      status: sanitizePresenceText(dataset.worldAdminErrorGroupStatus, "", 12),
+      method: sanitizePresenceText(
+        dataset.worldAdminErrorGroupMethod,
+        "",
+        12,
+      ).toUpperCase(),
+      path: sanitizeNotificationText(dataset.worldAdminErrorGroupPath, "", 2000),
+      message: sanitizeNotificationText(
+        dataset.worldAdminErrorGroupMessage,
+        "",
+        1000,
+      ),
+      users: sanitizeNotificationText(
+        dataset.worldAdminErrorGroupUsers,
+        "",
+        300,
+      ),
+    };
+  }
+
+  async deleteAdminErrorGroup(dataset) {
+    if (this.identity?.isAdmin !== true) return;
+    const group = this.adminErrorGroupFromDataset(dataset);
+    if (!group.status || !group.method) return;
+    if (!window.confirm("Delete every error in this group? This cannot be undone.")) {
+      return;
+    }
+    try {
+      await this.postJSON(
+        "/api/world/admin/errors",
+        { group },
+        { method: "DELETE", timeout: 7000 },
+      );
+      await this.refreshAdminErrorRows();
+      this.toast("Equivalent error group deleted.");
+    } catch (_) {
+      this.toast("Error group could not be deleted.");
+    }
+  }
+
+  async createTaskFromAdminErrorGroup(dataset) {
+    if (this.identity?.isAdmin !== true) return;
+    const group = this.adminErrorGroupFromDataset(dataset);
+    if (!group.status || !group.method) return;
+    try {
+      await this.postJSON(
+        "/api/world/admin/errors",
+        { group },
+        { timeout: 7000 },
+      );
+      this.toast("Equivalent error group sent to the organization task list.");
+      this.officeTasks?.refresh?.({ quiet: true, force: true });
+    } catch (_) {
+      this.toast("A Bot task could not be created from that error group.");
+    }
+  }
+
+  async copyAdminErrorMessage(message) {
+    if (await copyWorldText(message)) this.toast("Error message copied.");
+    else this.toast("The error message could not be copied.");
   }
 
   async openAdminErrors(returnFocus = null) {
@@ -12935,6 +13558,183 @@ class ForkMeshWorld extends HTMLElement {
         );
       }
     });
+  }
+
+  // Purchased elements are plugins: the library says which ones this account
+  // owns and with which parameters, and the scene builds each one on demand
+  // from ./elements. Nothing is downloaded for an element nobody bought.
+  async refreshStoreLibrary() {
+    if (!this.sessionAuthenticated || !validWorldSession()) {
+      this.storeLibrary = {};
+      return;
+    }
+    let owned = {};
+    try {
+      const payload = await this.fetchJSON("/api/world/store/library", {
+        timeout: 6000,
+        maxAge: 0,
+        backoff: true,
+      });
+      owned = payload?.owned && typeof payload.owned === "object"
+        ? payload.owned
+        : {};
+    } catch {
+      return;
+    }
+    const previous = this.storeLibrary || {};
+    this.storeLibrary = owned;
+    Object.keys(previous).forEach((id) => {
+      if (!owned[id]) this.world?.removeStoreElement?.(id);
+    });
+    await Promise.allSettled(
+      Object.entries(owned).map(([id, entry]) =>
+        this.world?.installStoreElement?.({ id, ...entry }),
+      ),
+    );
+  }
+
+  async refreshStoreCatalog({ force = false } = {}) {
+    try {
+      this.storeCatalog = await this.fetchJSON("/api/world/store/catalog", {
+        auth: false,
+        timeout: 6000,
+        maxAge: force ? 0 : 60_000,
+        staleIfError: true,
+      });
+    } catch {
+      this.storeCatalog = this.storeCatalog || null;
+    }
+    return this.storeCatalog;
+  }
+
+  // Same non-custodial shape as a reward contribution: the visitor's own
+  // wallet signs one public transfer to the published pool address, tagged
+  // with a per-purchase reference. ForkMesh never holds a key.
+  async purchaseStoreElement(elementId, method = "direct") {
+    if (!this.sessionAuthenticated) {
+      this.toast("Log in to buy world elements.");
+      return null;
+    }
+    try {
+      this.pendingElementPurchase = await this.postJSON(
+        "/api/world/store",
+        { action: "prepare", elementId, method },
+      );
+      if (method === "deposit") this.startElementDepositPolling();
+      return this.pendingElementPurchase;
+    } catch (error) {
+      this.toast(`Could not start the purchase. ${error?.message || ""}`.trim());
+      return null;
+    }
+  }
+
+  // A deposit address has no signature for the buyer to paste, so the client
+  // watches the address instead — the same wait-for-the-deposit shape the
+  // desktop escrow dialog used.
+  startElementDepositPolling() {
+    this.stopElementDepositPolling();
+    this.elementDepositTimer = window.setInterval(() => {
+      if (this.destroyed || !this.pendingElementPurchase) {
+        this.stopElementDepositPolling();
+        return;
+      }
+      void this.pollElementDeposit();
+    }, WORLD_ELEMENT_DEPOSIT_POLL_MS);
+  }
+
+  stopElementDepositPolling() {
+    if (this.elementDepositTimer) {
+      window.clearInterval(this.elementDepositTimer);
+      this.elementDepositTimer = 0;
+    }
+  }
+
+  async pollElementDeposit() {
+    const purchase = this.pendingElementPurchase;
+    if (!purchase?.purchaseId) return null;
+    let result = null;
+    try {
+      result = await this.postJSON("/api/world/store", {
+        action: "deposit-status",
+        purchaseId: purchase.purchaseId,
+      });
+    } catch (error) {
+      if (/expired/i.test(error?.message || "")) {
+        this.stopElementDepositPolling();
+        this.pendingElementPurchase = null;
+        this.toast("The deposit window expired.");
+        this.renderWorldStorePane();
+      }
+      return null;
+    }
+    if (result?.status === "awaiting_payment") {
+      this.pendingElementPurchase = { ...purchase, received: result };
+      this.renderWorldStorePane(
+        `Waiting for the deposit — ${result.receivedSol || 0} SOL received.`,
+      );
+      return result;
+    }
+    if (result?.status === "confirmed" || result?.owned) {
+      this.stopElementDepositPolling();
+      this.pendingElementPurchase = null;
+      this.toast(
+        result.sweepPending
+          ? "Element unlocked. The deposit sweep is still pending."
+          : "Element unlocked and the deposit was swept.",
+      );
+      await this.refreshStoreLibrary();
+      this.renderWorldStorePane();
+    }
+    return result;
+  }
+
+  async confirmStoreElementPurchase(transactionSignature) {
+    const purchase = this.pendingElementPurchase;
+    if (!purchase?.purchaseId) {
+      this.toast("Start a purchase first.");
+      return null;
+    }
+    try {
+      const result = await this.postJSON("/api/world/store", {
+        action: "confirm",
+        purchaseId: purchase.purchaseId,
+        transactionSignature: String(transactionSignature || "").trim(),
+      });
+      if (result?.status === "awaiting_finality") {
+        this.toast("Waiting for the transfer to finalize…");
+        return result;
+      }
+      this.pendingElementPurchase = null;
+      this.toast("Element unlocked. Adding it to your world…");
+      await this.refreshStoreLibrary();
+      return result;
+    } catch (error) {
+      this.toast(`Could not confirm. ${error?.message || ""}`.trim());
+      return null;
+    }
+  }
+
+  async configureStoreElement(elementId, { params, placement, enabled } = {}) {
+    try {
+      const result = await this.postJSON("/api/world/store", {
+        action: "configure",
+        elementId,
+        ...(params ? { params } : {}),
+        ...(placement ? { placement } : {}),
+        ...(typeof enabled === "boolean" ? { enabled } : {}),
+      });
+      if (result?.element) {
+        this.storeLibrary = { ...this.storeLibrary, [elementId]: result.element };
+        await this.world?.installStoreElement?.({
+          id: elementId,
+          ...result.element,
+        });
+      }
+      return result;
+    } catch (error) {
+      this.toast(`Could not save. ${error?.message || ""}`.trim());
+      return null;
+    }
   }
 
   async refreshRewardState({ force = false } = {}) {
@@ -13127,6 +13927,7 @@ class ForkMeshWorld extends HTMLElement {
     this.statusBoardRequestedAt = Date.now();
     this.statusBoardLastCheckAt =
       Math.max(0, Number(payload?.current?.lastCronSampleTs) || 0);
+    this.renderAdminStatusLight(statusPayloadHasRecentIssue(payload));
     this.world?.updateSystemStatusBoard?.(payload);
     this.syncSystemStatusBoardTimer();
   }
@@ -14198,6 +14999,11 @@ class ForkMeshWorld extends HTMLElement {
                   )}</code> to confirm
                     <input name="confirmation" autocomplete="off" required />
                   </label>
+                  <ol class="world-node-delete-progress" aria-label="Node deletion progress">
+                    <li data-world-delete-step="1" data-state="ready"><b>1</b><span>Confirm node</span></li>
+                    <li data-world-delete-step="2" data-state="waiting"><b>2</b><span>Erase scoped state</span></li>
+                    <li data-world-delete-step="3" data-state="waiting"><b>3</b><span>Refresh the network</span></li>
+                  </ol>
                   <div class="world-detail-actions">
                     <button class="world-danger-action" type="submit">Delete this node entirely</button>
                   </div>
@@ -14853,6 +15659,14 @@ class ForkMeshWorld extends HTMLElement {
         new FormData(form).get("confirmation") || "",
       ).trim();
       const status = form.querySelector("[data-world-admin-delete-status]");
+      const setStep = (step, state) => {
+        form.querySelectorAll("[data-world-delete-step]").forEach((item) => {
+          const number = Number(item.dataset.worldDeleteStep || 0);
+          if (number < step) item.dataset.state = "complete";
+          else if (number === step) item.dataset.state = state;
+          else item.dataset.state = "waiting";
+        });
+      };
       if (confirmation !== `DELETE ${nodeName}`) {
         if (status) status.textContent = `Type DELETE ${nodeName} exactly.`;
         return;
@@ -14862,7 +15676,8 @@ class ForkMeshWorld extends HTMLElement {
       }
       const controls = [...form.elements];
       controls.forEach((control) => { control.disabled = true; });
-      if (status) status.textContent = "Deleting node and scoped state…";
+      setStep(2, "active");
+      if (status) status.textContent = "2/3 — Deleting node and scoped state…";
       try {
         const result = await this.postJSON("/api/world/admin/nodes/delete", {
           nodeName,
@@ -14879,13 +15694,19 @@ class ForkMeshWorld extends HTMLElement {
             ? result.identifiers
             : [],
         });
-        this.closeLandmark();
+        setStep(3, "active");
+        if (status) status.textContent = "3/3 — Refreshing the network…";
         if (effectStarted) {
           await new Promise((resolve) => window.setTimeout(resolve, 760));
         }
         await this.loadWorldData({ forceMirrors: true });
+        setStep(3, "complete");
+        if (status) status.textContent = "3/3 complete — Node deleted.";
+        await new Promise((resolve) => window.setTimeout(resolve, 450));
+        this.closeLandmark();
       } catch (error) {
         controls.forEach((control) => { control.disabled = false; });
+        setStep(2, "error");
         if (status) {
           status.textContent = `Delete failed: ${String(
             error?.message || "unknown error",
@@ -16909,14 +17730,19 @@ class ForkMeshWorld extends HTMLElement {
                 ? rows
                     .map((item) => {
                       const instant = new Date(item.when);
-                      const tone =
-                        item.source === "global"
+                      const attention =
+                        item.source === "personal" &&
+                        worldNotificationNeedsAttention(item);
+                      const tone = attention
+                        ? "danger"
+                        : item.source === "global"
                           ? "success"
                           : item.unread
                             ? "accent"
                             : "cool";
-                      const icon =
-                        item.source === "global"
+                      const icon = attention
+                        ? "⚠"
+                        : item.source === "global"
                           ? "📣"
                           : String(item.kind).toLowerCase().includes("issue")
                             ? "◉"
@@ -17078,12 +17904,33 @@ class ForkMeshWorld extends HTMLElement {
     if (globalEvents.length > 3) {
       this.toast(`World announcement: +${globalEvents.length - 3} more events`);
     }
-    personalNotifications.slice(0, 3).forEach((item) => {
+    // Anything reporting a failure — an outage transition, a new error group —
+    // is announced last so it lands closest to the notification corner and
+    // survives the bubble stack's own six-card limit, and it is never counted
+    // against the routine budget that recoveries and mentions share.
+    const attention = personalNotifications.filter(
+      worldNotificationNeedsAttention,
+    );
+    const routine = personalNotifications.filter(
+      (item) => !worldNotificationNeedsAttention(item),
+    );
+    routine.slice(0, WORLD_ROUTINE_PING_ANNOUNCE_LIMIT).forEach((item) => {
       this.toast(`New ping: ${item.title}`);
     });
-    if (personalNotifications.length > 3) {
+    if (routine.length > WORLD_ROUTINE_PING_ANNOUNCE_LIMIT) {
       this.toast(
-        `New ping: +${personalNotifications.length - 3} more`,
+        `New ping: +${routine.length - WORLD_ROUTINE_PING_ANNOUNCE_LIMIT} more`,
+      );
+    }
+    attention.slice(0, WORLD_ATTENTION_PING_ANNOUNCE_LIMIT).forEach((item) => {
+      this.toast(`New ping: ${item.title}`, { kind: "error" });
+    });
+    if (attention.length > WORLD_ATTENTION_PING_ANNOUNCE_LIMIT) {
+      this.toast(
+        `New ping: +${
+          attention.length - WORLD_ATTENTION_PING_ANNOUNCE_LIMIT
+        } more need attention`,
+        { kind: "error" },
       );
     }
   }
@@ -23249,9 +24096,18 @@ class ForkMeshWorld extends HTMLElement {
     if (selected === "debug") {
       // Paint the readings immediately instead of waiting out the 1s tick.
       this.renderDiagnostics();
+      // A fresh scene walk on entry; re-sorting afterwards reuses it.
+      this.renderWorldObjectPane({ walk: true });
     }
     if (selected === "elements") {
       this.renderWorldElementsPane();
+    }
+    if (selected === "store") {
+      void this.refreshStoreCatalog().then(() => {
+        if (!this.destroyed && this.settingsTab === "store") {
+          this.renderWorldStorePane();
+        }
+      });
     }
     if (selected === "work") {
       void this.ensureOfficeRuntime({ userInitiated: true }).then(() => {
@@ -23300,6 +24156,157 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
+  // One card per purchasable element. An owned element shows its parameter
+  // form; an unowned one shows its price and the endpoints it would read.
+  renderWorldStorePane(statusMessage = "") {
+    const list = this.$("[data-world-store-list]");
+    if (!list) return;
+    const status = this.$("[data-world-store-status]");
+    if (status) status.textContent = String(statusMessage || "").slice(0, 200);
+    const catalog = this.storeCatalog;
+    const elements = Array.isArray(catalog?.elements) ? catalog.elements : [];
+    if (!elements.length) {
+      list.innerHTML =
+        '<p class="world-setting-note">The element store is unavailable right now.</p>';
+      return;
+    }
+    const owned = this.storeLibrary || {};
+    const pending = this.pendingElementPurchase;
+    const methods = Array.isArray(catalog?.paymentMethods)
+      ? catalog.paymentMethods
+      : [{ method: "direct" }];
+    list.innerHTML = elements
+      .map((element) => {
+        const entry = owned[element.id];
+        const network = element.network?.length
+          ? `Reads ${element.network.map((path) => `<code>${escapeHTML(path)}</code>`).join(", ")}`
+          : "Makes no network requests";
+        const body = entry
+          ? `
+            <div class="world-store-params">
+              ${(element.params || [])
+                .map((spec) =>
+                  this.storeParamField(element.id, spec, entry.params?.[spec.key]),
+                )
+                .join("")}
+              <label class="world-store-param">
+                <span>In the world</span>
+                <input
+                  type="checkbox"
+                  data-world-store-enabled="${escapeHTML(element.id)}"
+                  ${entry.enabled === false ? "" : "checked"}
+                />
+              </label>
+            </div>
+            <button type="button" data-world-store-save="${escapeHTML(element.id)}">Save</button>`
+          : pending?.elementId === element.id
+            ? pending.method === "deposit"
+              ? `
+            <p class="world-setting-note">
+              Send exactly <strong>${escapeHTML(String(pending.amountSol))} SOL</strong>
+              to this ForkMesh deposit address. It unlocks by itself once the
+              payment lands — no signature to paste.
+              <a href="${escapeHTML(pending.uri)}" rel="noopener">Open in wallet</a>
+            </p>
+            <p class="world-store-address"><code>${escapeHTML(pending.depositAddress)}</code></p>
+            <p class="world-setting-note">
+              ForkMesh generated and holds this address's key until it sweeps
+              the funds, so it controls them during that window.
+              ${escapeHTML(
+                pending.received?.receivedSol
+                  ? `Received ${pending.received.receivedSol} SOL so far.`
+                  : "Waiting for the deposit…",
+              )}
+            </p>
+            <button type="button" data-world-store-cancel>Cancel</button>`
+              : `
+            <p class="world-setting-note">
+              Send exactly <strong>${escapeHTML(String(pending.amountSol))} SOL</strong>
+              to <code>${escapeHTML(pending.poolAddress)}</code> from your own
+              wallet, then paste the transaction signature. ForkMesh never
+              receives your wallet key.
+              <a href="${escapeHTML(pending.uri)}" rel="noopener">Open in wallet</a>
+            </p>
+            <label class="world-store-param">
+              <span>Transaction signature</span>
+              <input type="text" data-world-store-signature spellcheck="false" />
+            </label>
+            <button type="button" data-world-store-confirm="${escapeHTML(element.id)}">Confirm purchase</button>
+            <button type="button" data-world-store-cancel>Cancel</button>`
+            : `<div class="world-store-buy">
+                 ${
+                   methods.some((entry) => entry.method === "direct")
+                     ? `<button type="button" data-world-store-buy="${escapeHTML(element.id)}">
+                          Pay from my wallet · ${escapeHTML(String(element.priceSol))} SOL
+                        </button>`
+                     : ""
+                 }
+                 ${
+                   methods.some((entry) => entry.method === "deposit")
+                     ? `<button type="button" data-world-store-deposit="${escapeHTML(element.id)}">
+                          Use a ForkMesh deposit address
+                        </button>`
+                     : ""
+                 }
+               </div>`;
+        return `
+        <article class="world-store-card" data-owned="${Boolean(entry)}">
+          <header>
+            <strong>${escapeHTML(element.label)}</strong>
+            <span class="world-element-group">${escapeHTML(element.category)}</span>
+          </header>
+          <p class="world-setting-note">${escapeHTML(element.summary)}</p>
+          <p class="world-setting-note">${network}</p>
+          ${body}
+        </article>`;
+      })
+      .join("");
+  }
+
+  storeParamField(elementId, spec, value) {
+    const current = value === undefined ? spec.default : value;
+    const attributes =
+      `data-world-store-param="${escapeHTML(spec.key)}" ` +
+      `data-world-store-element="${escapeHTML(elementId)}"`;
+    let control = "";
+    if (spec.type === "number") {
+      control =
+        `<input type="number" ${attributes} value="${escapeHTML(String(current))}" ` +
+        `min="${escapeHTML(String(spec.min))}" max="${escapeHTML(String(spec.max))}" ` +
+        `step="${escapeHTML(String(spec.step || 1))}" />`;
+    } else if (spec.type === "select") {
+      control = `<select ${attributes}>${(spec.options || [])
+        .map(
+          (option) =>
+            `<option value="${escapeHTML(option)}"${option === current ? " selected" : ""}>${escapeHTML(option)}</option>`,
+        )
+        .join("")}</select>`;
+    } else if (spec.type === "toggle") {
+      control = `<input type="checkbox" ${attributes}${current ? " checked" : ""} />`;
+    } else {
+      control =
+        `<input type="text" ${attributes} value="${escapeHTML(String(current))}" ` +
+        `maxlength="${escapeHTML(String(spec.maxLength || 80))}" />`;
+    }
+    return `
+      <label class="world-store-param">
+        <span>${escapeHTML(spec.label || spec.key)}</span>
+        ${control}
+      </label>`;
+  }
+
+  collectStoreParams(elementId) {
+    const params = {};
+    this.$$(`[data-world-store-element="${elementId}"]`).forEach((input) => {
+      const key = input.dataset.worldStoreParam;
+      if (!key) return;
+      if (input.type === "checkbox") params[key] = input.checked;
+      else if (input.type === "number") params[key] = Number(input.value);
+      else params[key] = input.value;
+    });
+    return params;
+  }
+
   renderWorldElementsPane(statusMessage = "") {
     const list = this.$("[data-world-element-list]");
     if (!list) return;
@@ -23311,69 +24318,161 @@ class ForkMeshWorld extends HTMLElement {
         '<p class="world-setting-note">The world is still loading — element controls appear once the scene is built.</p>';
       return;
     }
-    const categoryOrder = [
-      "Systems",
-      "Terrain",
-      "Districts",
-      "Boards & kiosks",
-      "Scenery",
-      "Recreation",
-      "Vehicles & rides",
-      "Avatars & bots",
-      "Infrastructure",
+    const columns = [
+      { key: "label", heading: "Element" },
+      { key: "category", heading: "Group" },
+      { key: "drawables", heading: "Drawn" },
+      { key: "triangles", heading: "Tri" },
+      { key: "interactives", heading: "Click" },
     ];
-    const grouped = new Map();
-    elements.forEach((element) => {
-      const category = String(element.category || "Other");
-      if (!grouped.has(category)) grouped.set(category, []);
-      grouped.get(category).push(element);
-    });
-    const orderedCategories = [
-      ...categoryOrder.filter((category) => grouped.has(category)),
-      ...[...grouped.keys()].filter(
-        (category) => !categoryOrder.includes(category),
-      ),
-    ];
-    const sort = ["drawables", "triangles", "interactives"].includes(
-      this.worldElementSort,
-    )
+    const sort = columns.some((column) => column.key === this.worldElementSort)
       ? this.worldElementSort
       : "drawables";
-    const compareElements = (left, right) =>
-      Number(right[sort]) - Number(left[sort]) ||
-      left.label.localeCompare(right.label);
-    list.innerHTML = orderedCategories
-      .map((category) => {
-        const rows = grouped
-          .get(category)
-          .sort(compareElements)
-          .map((element) => {
-            const stats = element.system
-              ? "per-frame system"
-              : `${compactCountLabel(element.drawables)} drawn · ${compactCountLabel(element.triangles)} tri · ${compactCountLabel(element.interactives)} click`;
+    const textSort = sort === "label" || sort === "category";
+    const ascending = this.worldElementSortAscending === true;
+    const compareElements = (left, right) => {
+      const delta = textSort
+        ? String(left[sort]).localeCompare(String(right[sort]))
+        : Number(right[sort]) - Number(left[sort]);
+      return (
+        (textSort === ascending ? delta : -delta) ||
+        left.label.localeCompare(right.label)
+      );
+    };
+    const header = `
+      <div class="world-element-head" role="row">
+        <span aria-hidden="true"></span>
+        ${columns
+          .map((column) => {
+            const active = column.key === sort;
             return `
-            <label class="world-element-row" data-enabled="${element.enabled}">
-              <input
-                type="checkbox"
-                data-world-element-toggle="${escapeHTML(element.id)}"
-                ${element.enabled ? "checked" : ""}
-              />
-              <span class="world-element-copy">
-                <strong>${escapeHTML(element.label)}</strong>
-                <small>${escapeHTML(stats)}</small>
-              </span>
-            </label>`;
+            <button
+              type="button"
+              role="columnheader"
+              data-world-element-sort="${column.key}"
+              aria-sort="${active ? (ascending ? "ascending" : "descending") : "none"}"
+            >${column.heading}${active ? (ascending ? " ▲" : " ▼") : ""}</button>`;
           })
-          .join("");
+          .join("")}
+      </div>`;
+    const rows = elements
+      .sort(compareElements)
+      .map((element) => {
+        const count = (value) =>
+          element.system ? "—" : compactCountLabel(value);
         return `
-        <section class="world-element-category">
-          <h4>${escapeHTML(category)}</h4>
-          ${rows}
-        </section>`;
+        <label
+          class="world-element-row"
+          role="row"
+          data-enabled="${element.enabled}"
+          ${element.system ? 'title="Per-frame system — no geometry of its own"' : ""}
+        >
+          <input
+            type="checkbox"
+            data-world-element-toggle="${escapeHTML(element.id)}"
+            ${element.enabled ? "checked" : ""}
+          />
+          <strong>${escapeHTML(element.label)}</strong>
+          <span class="world-element-group">${escapeHTML(element.category)}</span>
+          <span class="world-element-count">${escapeHTML(count(element.drawables))}</span>
+          <span class="world-element-count">${escapeHTML(count(element.triangles))}</span>
+          <span class="world-element-count">${escapeHTML(count(element.interactives))}</span>
+        </label>`;
       })
       .join("");
-    const sortControl = this.$("[data-world-element-sort]");
-    if (sortControl) sortControl.value = sort;
+    list.innerHTML = header + rows;
+  }
+
+  // The Debug tab's per-object triangle table. The scene walk is explicit —
+  // taken when the tab opens and when Re-walk is pressed — so re-sorting a
+  // few thousand rows never costs another traversal, and the one-second
+  // diagnostics tick never rebuilds this list.
+  renderWorldObjectPane({ walk = false } = {}) {
+    const list = this.$("[data-world-object-list]");
+    if (!list) return;
+    const status = this.$("[data-world-object-status]");
+    if (walk || !this.worldObjects.length) {
+      this.worldObjects = this.world?.listSceneObjects?.() || [];
+    }
+    const objects = this.worldObjects;
+    if (!objects.length) {
+      list.innerHTML =
+        '<p class="world-setting-note">Nothing is drawing triangles yet — the scene is still building.</p>';
+      if (status) status.textContent = "";
+      return;
+    }
+    const columns = [
+      { key: "label", heading: "Object" },
+      { key: "element", heading: "Element" },
+      { key: "type", heading: "Type" },
+      { key: "triangles", heading: "Tri" },
+      { key: "instances", heading: "Inst" },
+    ];
+    const sort = columns.some((column) => column.key === this.worldObjectSort)
+      ? this.worldObjectSort
+      : "triangles";
+    const numeric = WORLD_OBJECT_NUMERIC_KEYS.has(sort);
+    const ascending = this.worldObjectSortAscending === true;
+    const compareObjects = (left, right) => {
+      const delta = numeric
+        ? Number(right[sort]) - Number(left[sort])
+        : String(left[sort]).localeCompare(String(right[sort]));
+      return (
+        (numeric === ascending ? -delta : delta) ||
+        left.label.localeCompare(right.label)
+      );
+    };
+    const header = `
+      <div class="world-object-head" role="row">
+        ${columns
+          .map((column) => {
+            const active = column.key === sort;
+            return `
+            <button
+              type="button"
+              role="columnheader"
+              data-world-object-sort="${column.key}"
+              aria-sort="${active ? (ascending ? "ascending" : "descending") : "none"}"
+            >${column.heading}${active ? (ascending ? " ▲" : " ▼") : ""}</button>`;
+          })
+          .join("")}
+      </div>`;
+    const shown = [...objects]
+      .sort(compareObjects)
+      .slice(0, WORLD_OBJECT_ROW_LIMIT);
+    const rows = shown
+      .map(
+        (object) => `
+        <div
+          class="world-object-row"
+          role="row"
+          data-visible="${object.visible !== false}"
+          title="${escapeHTML(
+            `${object.label} · ${object.geometry} · ${object.element}${
+              object.visible === false ? " · hidden" : ""
+            }${object.interactive ? " · clickable" : ""}`,
+          )}"
+        >
+          <strong>${escapeHTML(object.label)}</strong>
+          <span class="world-object-group">${escapeHTML(object.element)}</span>
+          <span class="world-object-group">${escapeHTML(object.type)}</span>
+          <span class="world-element-count">${escapeHTML(compactCountLabel(object.triangles))}</span>
+          <span class="world-element-count">${escapeHTML(compactCountLabel(object.instances))}</span>
+        </div>`,
+      )
+      .join("");
+    list.innerHTML = header + rows;
+    if (status) {
+      const total = objects.reduce(
+        (sum, object) => sum + (Number(object.triangles) || 0),
+        0,
+      );
+      status.textContent = `${objects.length.toLocaleString()} objects · ${total.toLocaleString()} triangles${
+        shown.length < objects.length
+          ? ` · showing ${shown.length.toLocaleString()}`
+          : ""
+      }`;
+    }
   }
 
   renderWorldSessions(message = "", tone = "") {
@@ -25162,7 +26261,7 @@ class ForkMeshWorld extends HTMLElement {
     }
   }
 
-  toast(message, { priority = 0, lockMs = 0 } = {}) {
+  toast(message, { priority = 0, lockMs = 0, kind = "" } = {}) {
     const now = performance.now();
     const safePriority = Number.isFinite(priority) ? priority : 0;
     if (now < this.toastLockUntil && safePriority < this.toastPriority) return;
@@ -25171,13 +26270,19 @@ class ForkMeshWorld extends HTMLElement {
     this.toastPriority = safePriority;
     this.toastLockUntil = now + Math.max(0, Number(lockMs) || 0);
     const copy = String(message || "").trim();
-    const kind =
+    // Wording is only a fallback. A caller that already knows the card reports
+    // a failure says so: "mirror2 needs attention" reads as neutral status to
+    // any regex, and that is exactly the line that has to stand out.
+    const inferredKind =
       /\b(?:failed|error|unavailable|could not|denied)\b/i.test(copy)
         ? "error"
-        : /\b(?:saved|ready|complete|success|online)\b/i.test(copy)
+        : /\b(?:saved|ready|complete|success|online|passed)\b/i.test(copy)
           ? "success"
           : "status";
-    this.activityNotice(copy, { kind, sender: "ForkMesh" });
+    this.activityNotice(copy, {
+      kind: kind || inferredKind,
+      sender: "ForkMesh",
+    });
     this.toastTimer = window.setTimeout(() => {
       this.toastPriority = 0;
       this.toastLockUntil = 0;
@@ -26456,6 +27561,7 @@ class ForkMeshWorld extends HTMLElement {
       this.identity.nodes = [];
     }
     this.stopAdminErrorPolling();
+    this.renderAdminStatusLight(false);
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.resetWorldActivity();
@@ -27419,6 +28525,171 @@ class ForkMeshWorld extends HTMLElement {
     this.syncWorldFaceImages(players);
     this.syncMemberLounge();
     this.updateSystemCapacityMetrics();
+    this.renderOnlineRoster();
+  }
+
+  // Everyone the live socket says is in the World right now: this visitor
+  // first, then each announced peer by name. Only fields presence already
+  // publishes are read, so the roster can never show more than an avatar does.
+  onlineRoster() {
+    const roster = [];
+    const seen = new Set();
+    if (this.identity && this.settings?.privacy) {
+      const self = publicIdentity(this.identity, this.settings);
+      const selfId = String(this.serverPeerId || this.identity.id || "self");
+      seen.add(selfId);
+      roster.push({
+        id: selfId,
+        self: true,
+        name: self.name,
+        flag: self.flag,
+        countryCode: self.countryCode,
+        accountStatus: self.accountStatus,
+        activity: self.status === "hidden" ? "online" : self.status,
+        statusEmoji: self.statusEmoji,
+        statusNote: self.statusNote,
+      });
+    }
+    const peers = [];
+    this.remotePlayers.forEach((player, id) => {
+      const peerId = String(id || "");
+      if (!player || !peerId || seen.has(peerId)) return;
+      seen.add(peerId);
+      peers.push({
+        id: peerId,
+        self: false,
+        player,
+        name: player.name || "visitor",
+        flag: player.flag || "",
+        countryCode: player.countryCode || "",
+        accountStatus: player.accountStatus || "Guest",
+        activity: player.activity || "online",
+        statusEmoji: player.statusEmoji || "",
+        statusNote: player.statusNote || "",
+      });
+    });
+    peers.sort((left, right) =>
+      left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
+    );
+    return [...roster, ...peers];
+  }
+
+  onlineRosterDetail(person) {
+    const status = [person.statusEmoji, person.statusNote]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" ");
+    if (status) return status;
+    return (
+      AVAILABILITY_OPTIONS.find((option) => option.id === person.activity)
+        ?.label || "Online"
+    );
+  }
+
+  // Keeps the HUD count honest on every peer render. The dropdown body is
+  // rewritten only when somebody actually joined, left, or changed state —
+  // movement frames must not yank the list out from under a pointer.
+  renderOnlineRoster() {
+    const badge = this.$("[data-world-online-count]");
+    const list = this.$("[data-world-online-list]");
+    if (!badge && !list) return;
+    const people = this.onlineRoster();
+    const count = people.length;
+    const realtimeOffline = !(
+      this.socket?.readyState === WebSocket.OPEN && Boolean(this.serverPeerId)
+    );
+    if (badge) badge.textContent = count > 99 ? "99+" : String(count);
+    this.$("[data-world-online-toggle]")?.setAttribute(
+      "aria-label",
+      count === 1
+        ? "1 person online right now — show who is here"
+        : `${count} people online right now — show who is here`,
+    );
+    if (!list) return;
+    const shown = people.slice(0, WORLD_ONLINE_ROSTER_LIMIT);
+    const remaining = count - shown.length;
+    const signature = [
+      realtimeOffline ? "offline" : "online",
+      remaining,
+      ...shown.map(
+        (person) => `${person.id} ${person.name} ${this.onlineRosterDetail(person)}`,
+      ),
+    ].join("");
+    if (signature === this.onlineRosterSignature) return;
+    this.onlineRosterSignature = signature;
+    list.innerHTML = `
+      <p class="world-online-heading">${
+        count === 1
+          ? "You are the only one here"
+          : `${count} people online now`
+      }</p>
+      <ul class="world-online-people">
+        ${shown
+          .map(
+            (person) => `<li>
+              <button
+                type="button"
+                data-world-online-person="${escapeHTML(person.id)}"
+                title="Open ${escapeHTML(person.name)}’s public profile"
+              >
+                <span class="world-online-flag" aria-hidden="true">${escapeHTML(
+                  person.flag || "◌",
+                )}</span>
+                <span class="world-online-name">${escapeHTML(person.name)}${
+                  person.self ? " (you)" : ""
+                }</span>
+                <span class="world-online-activity">${escapeHTML(
+                  this.onlineRosterDetail(person),
+                )}</span>
+              </button>
+            </li>`,
+          )
+          .join("")}
+      </ul>
+      ${
+        remaining > 0
+          ? `<p class="world-online-more">+${remaining} more online, not listed here</p>`
+          : ""
+      }
+      ${
+        realtimeOffline
+          ? `<p class="world-online-more">Realtime presence is offline, so only you are counted until it reconnects.</p>`
+          : ""
+      }`;
+  }
+
+  setOnlineRosterOpen(open) {
+    const menu = this.$("[data-world-online-menu]");
+    if (!menu) return;
+    menu.dataset.open = open ? "true" : "false";
+    this.$("[data-world-online-toggle]")?.setAttribute(
+      "aria-expanded",
+      open ? "true" : "false",
+    );
+  }
+
+  // A roster row is the same door the avatar itself is: it opens that
+  // member's public detail panel, it never moves or contacts anybody.
+  openOnlineRosterMember(peerId, returnFocus = null) {
+    const id = String(peerId || "");
+    const person = this.onlineRoster().find((entry) => entry.id === id);
+    if (!person) return;
+    this.setOnlineRosterOpen(false);
+    this.openWorldMemberDetail(
+      {
+        ...(person.player || {}),
+        peerId: person.self ? "" : id,
+        self: person.self === true,
+        name: person.name,
+        accountStatus: person.accountStatus,
+        flag: person.flag,
+        countryCode: person.countryCode,
+        status: person.activity,
+        statusEmoji: person.statusEmoji,
+        statusNote: person.statusNote,
+      },
+      { returnFocus },
+    );
   }
 
   // Public balance and transaction-recency bucket for one published wallet
@@ -28468,6 +29739,8 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.adminErrorTimer);
     window.clearTimeout(this.adminErrorEffectTimer);
     window.clearTimeout(this.instanceCelebrationTimer);
+    window.clearTimeout(this.installCelebrationTimer);
+    window.clearTimeout(this.qaResultTimer);
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
@@ -28477,6 +29750,10 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.mastodonRefreshTimer);
     window.clearInterval(this.socialFeedsTimer);
     window.clearInterval(this.sessionWatchTimer);
+    window.clearInterval(this.buildBoardTimer);
+    window.clearInterval(this.orgAgentTimer);
+    window.clearInterval(this.qaTimer);
+    window.clearInterval(this.elementDepositTimer);
     window.clearInterval(this.instanceDirectoryTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     window.clearTimeout(this.viewportSyncTimer);

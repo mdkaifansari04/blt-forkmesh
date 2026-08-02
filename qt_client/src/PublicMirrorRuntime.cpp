@@ -10,6 +10,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QMap>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
@@ -277,7 +278,8 @@ bool isLocalSource(const QString &source)
 
 bool cloneSource(const QString &source, const QStringList &gitPrefixArgs,
                  const QString &destination,
-                 const PublicMirrorRuntime::Tools &tools, QString *error)
+                 const PublicMirrorRuntime::Tools &tools, QString *error,
+                 bool originBranchesOnly = false)
 {
     const bool local = isLocalSource(source);
     if (!local && (!safeHttpsSource(source) ||
@@ -299,6 +301,13 @@ bool cloneSource(const QString &source, const QStringList &gitPrefixArgs,
         return false;
     }
     QStringList arguments;
+    arguments << QStringLiteral("-c") << QStringLiteral("pack.threads=1")
+              << QStringLiteral("-c")
+              << QStringLiteral("core.deltaBaseCacheLimit=16m")
+              << QStringLiteral("-c")
+              << QStringLiteral("pack.deltaCacheSize=16m")
+              << QStringLiteral("-c")
+              << QStringLiteral("pack.windowMemory=16m");
     if (!local) {
         arguments << QStringLiteral("-c") << QStringLiteral("protocol.allow=never")
                   << QStringLiteral("-c") << QStringLiteral("protocol.https.allow=always")
@@ -308,19 +317,6 @@ bool cloneSource(const QString &source, const QStringList &gitPrefixArgs,
                   << QStringLiteral("-c")
                   << QStringLiteral("core.hooksPath=") + QProcess::nullDevice()
                   << QStringLiteral("-c") << QStringLiteral("http.followRedirects=false")
-                  // A new mirror commonly starts on a small VPS. Git otherwise
-                  // sizes index-pack threads and delta caches from host CPUs,
-                  // which can consume nearly all RAM during the flagship clone
-                  // and starve sshd before the node can publish. These bounded
-                  // client-side settings trade a little first-sync speed for a
-                  // responsive, deterministic provisioning path.
-                  << QStringLiteral("-c") << QStringLiteral("pack.threads=1")
-                  << QStringLiteral("-c")
-                  << QStringLiteral("core.deltaBaseCacheLimit=16m")
-                  << QStringLiteral("-c")
-                  << QStringLiteral("pack.deltaCacheSize=16m")
-                  << QStringLiteral("-c")
-                  << QStringLiteral("pack.windowMemory=16m")
                   << gitPrefixArgs;
     } else {
         arguments << QStringLiteral("-c") << QStringLiteral("protocol.allow=never")
@@ -330,10 +326,91 @@ bool cloneSource(const QString &source, const QStringList &gitPrefixArgs,
     }
     arguments << QStringLiteral("clone") << QStringLiteral("--mirror")
               << QStringLiteral("--no-local") << source << destination;
-    return runProcess(
+    if (!runProcess(
         git, arguments, nullptr,
         QStringLiteral("The public mirror Git operation failed."), error,
-        hardenedGitEnvironment());
+        hardenedGitEnvironment()))
+        return false;
+    if (!originBranchesOnly)
+        return true;
+
+    QByteArray listing;
+    if (!runProcess(
+            git,
+            {QStringLiteral("-C"), destination,
+             QStringLiteral("for-each-ref"),
+             QStringLiteral("refs/remotes/origin"),
+             QStringLiteral("--format=%(objectname) %(refname:lstrip=3)")},
+            &listing,
+            QStringLiteral("The managed public mirror refs are unavailable."),
+            error, hardenedGitEnvironment()))
+        return false;
+    QMap<QString, QString> originBranches;
+    static const QRegularExpression oidPattern(
+        QStringLiteral("^(?:[0-9a-f]{40}|[0-9a-f]{64})$"));
+    for (const QByteArray &rawLine : listing.split('\n')) {
+        const QByteArray line = rawLine.trimmed();
+        const qsizetype space = line.indexOf(' ');
+        if (space <= 0 || space + 1 >= line.size())
+            continue;
+        const QString oid = QString::fromLatin1(line.left(space));
+        const QString name = QString::fromUtf8(line.mid(space + 1));
+        if (name == QLatin1String("HEAD") ||
+            !oidPattern.match(oid).hasMatch())
+            continue;
+        if (!runProcess(
+                git,
+                {QStringLiteral("check-ref-format"),
+                 QStringLiteral("--branch"), name},
+                nullptr,
+                QStringLiteral("The managed public mirror branch is invalid."),
+                error, hardenedGitEnvironment()))
+            return false;
+        originBranches.insert(name, oid);
+    }
+    if (originBranches.isEmpty()) {
+        setError(error, QStringLiteral(
+                            "The managed checkout has no fetched origin branches."));
+        return false;
+    }
+
+    listing.clear();
+    if (!runProcess(
+            git,
+            {QStringLiteral("-C"), destination,
+             QStringLiteral("for-each-ref"), QStringLiteral("refs/heads"),
+             QStringLiteral("--format=%(refname:lstrip=2)")},
+            &listing,
+            QStringLiteral("The managed public mirror refs are unavailable."),
+            error, hardenedGitEnvironment()))
+        return false;
+    for (const QByteArray &rawLine : listing.split('\n')) {
+        const QString name = QString::fromUtf8(rawLine.trimmed());
+        if (name.isEmpty() || originBranches.contains(name))
+            continue;
+        if (!runProcess(
+                git,
+                {QStringLiteral("-C"), destination,
+                 QStringLiteral("update-ref"), QStringLiteral("-d"),
+                 QStringLiteral("refs/heads/") + name},
+                nullptr,
+                QStringLiteral("The managed public mirror ref cleanup failed."),
+                error, hardenedGitEnvironment()))
+            return false;
+    }
+    for (auto it = originBranches.constBegin();
+         it != originBranches.constEnd(); ++it) {
+        if (!runProcess(
+                git,
+                {QStringLiteral("-C"), destination,
+                 QStringLiteral("update-ref"),
+                 QStringLiteral("refs/heads/") + it.key(), it.value()},
+                nullptr,
+                QStringLiteral("The managed public mirror ref update failed."),
+                error, hardenedGitEnvironment()))
+            return false;
+    }
+    return true;
 }
 
 bool isBareRepository(const QString &path,
@@ -381,6 +458,56 @@ QString refsSha256(const QString &path,
         return {};
     }
     return PublicMirrorRuntime::refsSha256FromForEachRef(output);
+}
+
+// A service-managed checkout exposes its publishable branch view through
+// refs/remotes/origin/*. cloneSource() rewrites those refs to refs/heads/*
+// before sealing, so derive that same canonical view directly from the
+// checkout for the no-op preflight. Local agent branches are intentionally
+// omitted; tags remain part of the public fingerprint.
+QString managedRefsSha256(const QString &path,
+                          const PublicMirrorRuntime::Tools &tools,
+                          QString *error)
+{
+    const QString git = resolveProgram(tools.git);
+    QByteArray branches;
+    QByteArray tags;
+    if (git.isEmpty() ||
+        !runProcess(
+            git,
+            {QStringLiteral("-C"), path, QStringLiteral("for-each-ref"),
+             QStringLiteral("--sort=refname"),
+             QStringLiteral("--format=%(objectname) refs/heads/%(refname:lstrip=3)"),
+             QStringLiteral("refs/remotes/origin/")},
+            &branches,
+            QStringLiteral("Could not verify the managed public mirror refs."),
+            error, hardenedGitEnvironment()) ||
+        !runProcess(
+            git,
+            {QStringLiteral("-C"), path, QStringLiteral("for-each-ref"),
+             QStringLiteral("--sort=refname"),
+             QStringLiteral("--format=%(objectname) %(refname)"),
+             QStringLiteral("refs/tags/")},
+            &tags,
+            QStringLiteral("Could not verify the managed public mirror refs."),
+            error, hardenedGitEnvironment())) {
+        return {};
+    }
+    QList<QByteArray> publishable;
+    for (const QByteArray &rawLine : branches.split('\n')) {
+        const QByteArray line = rawLine.trimmed();
+        if (!line.isEmpty() &&
+            !line.endsWith(QByteArrayLiteral(" refs/heads/HEAD")))
+            publishable.append(line);
+    }
+    if (publishable.isEmpty()) {
+        setError(error, QStringLiteral(
+                            "The managed checkout has no fetched origin branches."));
+        return {};
+    }
+    publishable.append(tags.trimmed());
+    return PublicMirrorRuntime::refsSha256FromForEachRef(
+        QByteArrayList(publishable).join('\n'));
 }
 
 QByteArray vaultKey(const QByteArray &secret, const QByteArray &salt)
@@ -950,11 +1077,75 @@ bool decryptInto(const QString &ciphertext, const IdentityEntry &entry,
     return true;
 }
 
+// Report one stage of the seal, when the caller asked to be told.
+void note(const PublicMirrorRuntime::Progress &progress, const QString &line)
+{
+    if (progress)
+        progress(line);
+}
+
+// Reopen a verified archive before making a full temporary mirror clone when
+// the source's cheap refs fingerprint is unchanged. Read the source again
+// after authentication so a ref update racing the first read falls back to the
+// normal clone-and-seal path instead of reporting a stale sync as current.
+bool reopenUnchangedArchive(
+    const std::function<QString(QString *)> &readSourceRefs,
+    const QString &archiveRoot, const QString &vaultPath,
+    const QByteArray &vaultSecret, const QString &existingArchiveId,
+    const PublicMirrorRuntime::Tools &tools, QString *error,
+    const PublicMirrorRuntime::Progress &progress,
+    PublicMirrorRuntime::SyncResult *result)
+{
+    if (!result ||
+        !PublicMirrorRuntime::isArchiveId(existingArchiveId))
+        return false;
+    const PublicMirrorRuntime::Metadata previous =
+        PublicMirrorRuntime::readMetadata(
+            archiveRoot, existingArchiveId, nullptr);
+    if (!previous.isValid())
+        return false;
+
+    note(progress, QStringLiteral("Checking whether the sealed mirror is current…"));
+    QString refsError;
+    const QString before = readSourceRefs(&refsError);
+    if (before.isEmpty() || before != previous.expectedRefsSha256)
+        return false;
+
+    note(progress,
+         QStringLiteral("Repository unchanged — reopening the sealed archive…"));
+    QString reopenError;
+    std::unique_ptr<PublicMirrorMaterialization> materialization =
+        PublicMirrorRuntime::materialize(
+            archiveRoot, vaultPath, vaultSecret, existingArchiveId,
+            tools, &reopenError);
+    if (!materialization) {
+        note(progress,
+             QStringLiteral("The existing seal failed verification — rebuilding it…"));
+        return false;
+    }
+
+    refsError.clear();
+    const QString after = readSourceRefs(&refsError);
+    if (after.isEmpty() || after != before) {
+        note(progress,
+             QStringLiteral("Repository refs changed during verification — rebuilding the seal…"));
+        return false;
+    }
+
+    result->created = false;
+    result->metadata = previous;
+    result->materialization = std::move(materialization);
+    if (error)
+        error->clear();
+    return true;
+}
+
 PublicMirrorRuntime::SyncResult sealTemporaryRepository(
     std::unique_ptr<QTemporaryDir> directory, const QString &repositoryPath,
     const QString &archiveRoot, const QString &vaultPath,
     const QByteArray &vaultSecret, const QString &existingArchiveId,
-    const PublicMirrorRuntime::Tools &tools, QString *error)
+    const PublicMirrorRuntime::Tools &tools, QString *error,
+    const PublicMirrorRuntime::Progress &progress = {})
 {
     PublicMirrorRuntime::SyncResult result;
     if (!isBareRepository(repositoryPath, tools, error) ||
@@ -972,6 +1163,7 @@ PublicMirrorRuntime::SyncResult sealTemporaryRepository(
         return {};
     }
 
+    note(progress, QStringLiteral("Unlocking the mirror's age key…"));
     Vault vault;
     if (!readVault(vaultPath, vaultSecret, &vault, true, error))
         return {};
@@ -991,6 +1183,7 @@ PublicMirrorRuntime::SyncResult sealTemporaryRepository(
         }
     }
 
+    note(progress, QStringLiteral("Reading the mirror's refs…"));
     const QString refs = refsSha256(repositoryPath, tools, error);
     if (refs.isEmpty()) {
         clearBytes(&entry.secretIdentity);
@@ -1004,6 +1197,8 @@ PublicMirrorRuntime::SyncResult sealTemporaryRepository(
     if (previous.isValid() &&
         previous.expectedRefsSha256 == refs) {
         clearBytes(&entry.secretIdentity);
+        note(progress,
+             QStringLiteral("Already sealed — reopening the archive…"));
         std::unique_ptr<PublicMirrorMaterialization> authenticated =
             PublicMirrorRuntime::materialize(
                 archiveRoot, vaultPath, vaultSecret,
@@ -1033,11 +1228,13 @@ PublicMirrorRuntime::SyncResult sealTemporaryRepository(
     }
     const QString stagedCiphertext =
         QDir(cipherDirectory.path()).filePath(QStringLiteral("archive.age"));
+    note(progress, QStringLiteral("Encrypting the mirror with age…"));
     if (!encryptRepository(repositoryPath, stagedCiphertext, entry, tools,
                            error)) {
         clearBytes(&entry.secretIdentity);
         return {};
     }
+    note(progress, QStringLiteral("Writing the sealed archive…"));
     const QString finalCiphertext =
         PublicMirrorRuntime::ciphertextPath(
             archiveRoot, result.metadata.archiveId);
@@ -1053,6 +1250,7 @@ PublicMirrorRuntime::SyncResult sealTemporaryRepository(
 
     // Authenticate a fresh decrypt before exposing the result or allowing a
     // caller to remove any legacy durable plaintext.
+    note(progress, QStringLiteral("Verifying the sealed archive…"));
     std::unique_ptr<PublicMirrorMaterialization> authenticated =
         PublicMirrorRuntime::materialize(
             archiveRoot, vaultPath, vaultSecret,
@@ -1167,6 +1365,64 @@ QString PublicMirrorRuntime::keyReference(const QString &archiveId)
                : QString();
 }
 
+int PublicMirrorRuntime::cleanupStaleTemporaryDirectories(
+    const QString &temporaryRoot, QString *error)
+{
+    const QFileInfo rootInfo(temporaryRoot);
+    const QString root = rootInfo.canonicalFilePath();
+    if (temporaryRoot.trimmed().isEmpty() || !rootInfo.isAbsolute() ||
+        !rootInfo.isDir() || rootInfo.isSymLink() || root.isEmpty()) {
+        setError(error, QStringLiteral(
+                            "The mirror temporary cleanup root is unsafe."));
+        return -1;
+    }
+
+    static const QRegularExpression ownedName(
+        QStringLiteral(
+            "^(?:forkmesh-mirror-runtime-[A-Za-z0-9_]+|"
+            "forkmesh-public-mirror-[A-Za-z0-9]{6}|"
+            "forkmesh-private-(?:sync|open)-[A-Za-z0-9]{6})$"));
+    // PublicMirrorRuntime used Qt's generic template before the dedicated
+    // prefix above was introduced. Only treat one of those old names as ours
+    // when it also contains the exact repository.git layout this class made.
+    static const QRegularExpression legacyName(
+        QStringLiteral("^ForkMesh-[A-Za-z0-9]{6}$"));
+
+    int removed = 0;
+    const QFileInfoList candidates =
+        QDir(root).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot,
+                                 QDir::Name);
+    for (const QFileInfo &candidate : candidates) {
+        const QString name = candidate.fileName();
+        const bool legacy = legacyName.match(name).hasMatch();
+        if (!ownedName.match(name).hasMatch() && !legacy)
+            continue;
+        if (legacy &&
+            !QFileInfo(QDir(candidate.absoluteFilePath())
+                           .filePath(QStringLiteral("repository.git")))
+                 .isDir()) {
+            continue;
+        }
+        if (candidate.isSymLink() || !candidate.isDir() ||
+            candidate.canonicalPath() != root) {
+            setError(error, QStringLiteral(
+                                "A mirror temporary directory is unsafe."));
+            return -1;
+        }
+        QDir directory(candidate.absoluteFilePath());
+        if (!directory.removeRecursively()) {
+            setError(error, QStringLiteral(
+                                "A stale mirror temporary directory could not "
+                                "be removed."));
+            return -1;
+        }
+        ++removed;
+    }
+    if (error)
+        error->clear();
+    return removed;
+}
+
 bool PublicMirrorRuntime::toolingAvailable(const Tools &tools, QString *error)
 {
     if (resolveProgram(tools.age).isEmpty()) {
@@ -1195,22 +1451,77 @@ bool PublicMirrorRuntime::toolingAvailable(const Tools &tools, QString *error)
 PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncRepository(
     const QString &repositoryPath, const QString &archiveRoot,
     const QString &vaultPath, const QByteArray &vaultSecret,
-    const QString &existingArchiveId, const Tools &tools, QString *error)
+    const QString &existingArchiveId, const Tools &tools, QString *error,
+    const Progress &progress)
 {
     return syncSource(repositoryPath, {}, archiveRoot, vaultPath,
-                      vaultSecret, existingArchiveId, tools, error);
+                      vaultSecret, existingArchiveId, tools, error, progress);
+}
+
+PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncManagedCheckout(
+    const QString &repositoryPath, const QString &archiveRoot,
+    const QString &vaultPath, const QByteArray &vaultSecret,
+    const QString &existingArchiveId, const Tools &tools, QString *error,
+    const Progress &progress)
+{
+    if (!toolingAvailable(tools, error))
+        return {};
+    SyncResult reopened;
+    if (isLocalSource(repositoryPath) &&
+        reopenUnchangedArchive(
+            [&](QString *refsError) {
+                return managedRefsSha256(repositoryPath, tools, refsError);
+            },
+            archiveRoot, vaultPath, vaultSecret, existingArchiveId,
+            tools, error, progress, &reopened)) {
+        return reopened;
+    }
+    if (error)
+        error->clear();
+    std::unique_ptr<QTemporaryDir> directory =
+        std::make_unique<QTemporaryDir>(
+            QDir::tempPath() +
+            QStringLiteral("/forkmesh-public-mirror-XXXXXX"));
+    if (!directory->isValid() ||
+        !prepareOwnerDirectory(directory->path(), error)) {
+        setError(error, QStringLiteral(
+                            "Could not create the temporary public-mirror directory."));
+        return {};
+    }
+    const QString repository =
+        QDir(directory->path()).filePath(QStringLiteral("repository.git"));
+    note(progress, QStringLiteral("Copying the managed checkout…"));
+    if (!cloneSource(repositoryPath, {}, repository, tools, error, true))
+        return {};
+    return sealTemporaryRepository(
+        std::move(directory), repository, archiveRoot, vaultPath,
+        vaultSecret, existingArchiveId, tools, error, progress);
 }
 
 PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncSource(
     const QString &source, const QStringList &gitPrefixArgs,
     const QString &archiveRoot, const QString &vaultPath,
     const QByteArray &vaultSecret, const QString &existingArchiveId,
-    const Tools &tools, QString *error)
+    const Tools &tools, QString *error, const Progress &progress)
 {
     if (!toolingAvailable(tools, error))
         return {};
+    SyncResult reopened;
+    if (isLocalSource(source) &&
+        reopenUnchangedArchive(
+            [&](QString *refsError) {
+                return refsSha256(source, tools, refsError);
+            },
+            archiveRoot, vaultPath, vaultSecret, existingArchiveId,
+            tools, error, progress, &reopened)) {
+        return reopened;
+    }
+    if (error)
+        error->clear();
     std::unique_ptr<QTemporaryDir> directory =
-        std::make_unique<QTemporaryDir>();
+        std::make_unique<QTemporaryDir>(
+            QDir::tempPath() +
+            QStringLiteral("/forkmesh-public-mirror-XXXXXX"));
     if (!directory->isValid() ||
         !prepareOwnerDirectory(directory->path(), error)) {
         setError(error, QStringLiteral("Could not create the temporary public-mirror directory."));
@@ -1218,11 +1529,12 @@ PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncSource(
     }
     const QString repository =
         QDir(directory->path()).filePath(QStringLiteral("repository.git"));
+    note(progress, QStringLiteral("Copying the repository to seal…"));
     if (!cloneSource(source, gitPrefixArgs, repository, tools, error))
         return {};
     return sealTemporaryRepository(
         std::move(directory), repository, archiveRoot, vaultPath,
-        vaultSecret, existingArchiveId, tools, error);
+        vaultSecret, existingArchiveId, tools, error, progress);
 }
 
 PublicMirrorRuntime::Metadata PublicMirrorRuntime::readMetadata(
@@ -1317,7 +1629,9 @@ PublicMirrorRuntime::materialize(
         return {};
     }
     std::unique_ptr<QTemporaryDir> directory =
-        std::make_unique<QTemporaryDir>();
+        std::make_unique<QTemporaryDir>(
+            QDir::tempPath() +
+            QStringLiteral("/forkmesh-public-mirror-XXXXXX"));
     if (!directory->isValid() ||
         !prepareOwnerDirectory(directory->path(), error) ||
         !decryptInto(ciphertextPath(archiveRoot, archiveId), entry,

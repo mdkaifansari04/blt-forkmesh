@@ -11,6 +11,7 @@
 
 #include "ActionStore.h"
 #include "AgentStore.h"
+#include "StartupSplash.h"
 
 namespace forkmesh::ui {
 
@@ -116,16 +117,20 @@ QString mirrorHeadBranch(const QString &mirrorPath)
 {
     if (!QDir(mirrorPath).exists())
         return QString();
-    QProcess p;
-    p.start("git", {"-C", mirrorPath, "symbolic-ref", "--short", "HEAD"});
-    if (p.waitForFinished(5000) && p.exitCode() == 0) {
-        const QString head = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
-        if (!head.isEmpty() &&
-            (!mirrorCommitForRef(mirrorPath, QStringLiteral("HEAD")).isEmpty() ||
-             !mirrorCommitForRef(mirrorPath,
-                                 QStringLiteral("refs/heads/") + head).isEmpty()))
-            return head;
+    // A bare mirror's HEAD is one line on disk; only fall back to the subprocess
+    // when it isn't the plain "ref: refs/heads/<branch>" form.
+    QString head = headBranchFromFile(mirrorPath);
+    if (head.isEmpty()) {
+        QProcess p;
+        p.start("git", {"-C", mirrorPath, "symbolic-ref", "--short", "HEAD"});
+        if (p.waitForFinished(5000) && p.exitCode() == 0)
+            head = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
     }
+    if (!head.isEmpty() &&
+        (!mirrorCommitForRef(mirrorPath, QStringLiteral("HEAD")).isEmpty() ||
+         !mirrorCommitForRef(mirrorPath,
+                             QStringLiteral("refs/heads/") + head).isEmpty()))
+        return head;
     // A bare mirror cloned from the relay can carry an unset/dangling HEAD (the
     // relay serves git-upload-pack without advertising a symref HEAD), so the
     // symbolic-ref above yields nothing. Every downstream figure the Mirror nodes
@@ -257,20 +262,25 @@ QColor actionStatusColor(const QString &status)
     return QColor("#8b949e");
 }
 
-// Detailed, timestamped startup logging so a slow launch can be diagnosed from
-// the terminal: each phase prints "[startup +<ms>ms] <phase>". Always on (cheap).
-QElapsedTimer &startupClock()
-{
-    static QElapsedTimer t;
-    if (!t.isValid())
-        t.start();
-    return t;
-}
+// Compatibility wrapper used throughout the feature files. StartupTrace owns
+// the single process-wide clock so early main() work and MainWindow work share
+// one timeline.
 void logStartup(const QString &phase)
 {
-    qInfo().noquote() << QStringLiteral("[startup +%1ms] %2")
-                             .arg(startupClock().elapsed(), 5)
-                             .arg(phase);
+    // forkmesh::logStartupTrace() emits the same "[startup +<ms>ms] <phase>"
+    // line off forkmesh::startupTraceClock(), and starts that clock if a path
+    // that skipped main()'s beginStartupTrace() (the test targets) gets here
+    // first.
+    forkmesh::logStartupTrace(phase);
+    // The same phases, on screen, while the constructor still owns the GUI
+    // thread (adhoc #39). logStartup() marks work that has *finished*, so it
+    // closes whichever step startupStep() announced; a phase indented by
+    // convention ("  openRepo: commits loaded") is a sub-line of the step that
+    // is still running, not the end of it.
+    if (phase.startsWith(QLatin1String("  ")))
+        startupDetail(phase.trimmed());
+    else if (auto *splash = activeStartupSplash())
+        splash->completeCurrentStep();
 }
 
 // Same idea for the rebuild/restart path, which can be slow (git pull, cmake
@@ -788,19 +798,6 @@ bool agentSessionActive(const AgentSession *s)
 {
     return s && (s->status == AgentStatus::Running ||
                  s->status == AgentStatus::Queued);
-}
-
-QString solanaDisplayCurrency()
-{
-    QSettings s;
-    QString cur = s.value(kSolanaDisplayCurrencySetting).toString().toLower();
-    if (cur.isEmpty())
-        cur = s.value(kSolanaDisplayUsdSetting, false).toBool()
-                  ? QStringLiteral("usd")
-                  : QStringLiteral("sol");
-    if (cur != QLatin1String("usd") && cur != QLatin1String("inr"))
-        cur = QStringLiteral("sol");
-    return cur;
 }
 
 QColor agentStatusColor(const QString &status)

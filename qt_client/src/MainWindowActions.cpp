@@ -1708,7 +1708,7 @@ void MainWindow::openNotificationLink(const NotificationLink &link)
         if (link.number > 0)
             showDiscussion(link.number);
     } else if (link.kind == QLatin1String("commit")) {
-        showOverviewCommits(); // the commits panel inside the Code overview
+        showOverviewCommits(); // the universal Git workspace
         if (!link.ref.isEmpty())
             showCommit(link.ref);
     } else if (link.kind == QLatin1String("release")) {
@@ -2806,8 +2806,10 @@ void MainWindow::updateActionsTabIndicator()
     // repo's count for every repo opened afterwards. m_repoWorkflows is per-repo
     // — cleared on open, then filled by refreshRepoActions() or, when the panel
     // stays lazy, by reloadWorkflowCountInBackground() (adhoc #116).
-    tab->setText(QStringLiteral("Actions (%1)")
-                     .arg(formatCount(m_repoWorkflows.size())));
+    // The workflow count rides the icon's corner as a rail-style badge
+    // (adhoc #6) rather than living in the caption.
+    if (auto *b = dynamic_cast<VerticalIconButton *>(tab))
+        b->setBadgeCount(m_repoWorkflows.size());
 }
 
 // Duration of the previous finished run of the same workflow, shown as the

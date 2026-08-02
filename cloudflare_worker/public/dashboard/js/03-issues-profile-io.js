@@ -198,6 +198,17 @@
     return { privateKey, pub };
   }
 
+  function webIssuePublicKey() {
+    try {
+      const stored = JSON.parse(
+        localStorage.getItem(WEB_ISSUE_KEY_STORAGE) || "null",
+      );
+      return String(stored?.pub || "");
+    } catch (_) {
+      return "";
+    }
+  }
+
   function pendingIssuesRepoKey(repo) {
     return `${String(repo?.owner || "").toLowerCase()}/${String(repo?.name || "").toLowerCase()}`;
   }
@@ -260,7 +271,7 @@
     if (!response.ok || data.ok === false) {
       throw new Error(data.error || `HTTP ${response.status}`);
     }
-    return data;
+    return { ...data, event };
   }
 
   // The compact World chat composer is a second presentation of the canonical
@@ -306,7 +317,160 @@
     if (!response.ok || data.ok === false) {
       throw new Error(data.error || `HTTP ${response.status}`);
     }
+    return { ...data, event };
+  }
+
+  function webIssueEventContent(type, fields = {}) {
+    const NUL = String.fromCharCode(0);
+    if (type === "edit") {
+      return String(fields.body || "") + NUL
+        + (Array.isArray(fields.attachments) ? fields.attachments.join(",") : "");
+    }
+    if (type === "title") return String(fields.title || "");
+    if (type === "status") return String(fields.status || "");
+    if (type === "labels") {
+      return (Array.isArray(fields.labels) ? fields.labels : []).join(",");
+    }
+    if (type === "milestone") return String(fields.milestone || "");
+    if (type === "dates") {
+      return `${Number(fields.startDate) || 0}${NUL}${Number(fields.endDate) || 0}`;
+    }
+    if (type === "priority") return String(Number(fields.priority) || 0);
+    if (type === "progress") return String(Number(fields.progress) || 0);
+    if (type === "assignees") {
+      return (Array.isArray(fields.assignees) ? fields.assignees : []).join(",");
+    }
+    if (type === "delete") return String(fields.target || "");
+    if (type === "vote") return "";
+    throw new Error("unsupported_issue_action");
+  }
+
+  function webIssueEventId(type, ts) {
+    const suffix = new Uint32Array(1);
+    crypto.getRandomValues(suffix);
+    return `${type}-web-${ts}-${suffix[0].toString(36)}`;
+  }
+
+  // Owner-side issue actions use the same append-only event model as Qt. The
+  // event is signed by this browser key, while the account session separately
+  // proves repository authority to the Worker before it enters the mirror
+  // inbox. Votes remain available to any signed-in contributor.
+  async function submitWebIssueEvent(repo, number, type, fields = {}) {
+    const issueNumber = Number(number);
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+      throw new Error("invalid_issue_number");
+    }
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const event = {
+      type,
+      id: webIssueEventId(type, ts),
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+    };
+    const fieldNames = {
+      edit: ["target", "body", "attachments"],
+      title: ["title"],
+      status: ["status"],
+      labels: ["labels"],
+      milestone: ["milestone"],
+      dates: ["startDate", "endDate"],
+      priority: ["priority"],
+      progress: ["progress"],
+      assignees: ["assignees"],
+      delete: ["target"],
+      vote: [],
+    }[type];
+    if (!fieldNames) throw new Error("unsupported_issue_action");
+    fieldNames.forEach((name) => {
+      event[name] = fields[name];
+    });
+    if (type === "edit") {
+      event.body = String(event.body || "").replace(/[\r\n]+$/, "");
+      event.attachments = Array.isArray(event.attachments)
+        ? event.attachments.map((value) => String(value))
+        : [];
+    }
+    if (type === "labels" || type === "assignees") {
+      event[type] = (Array.isArray(event[type]) ? event[type] : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean)
+        .slice(0, 20);
+    }
+    const contentHash = await sha256HexLower(
+      webIssueEventContent(type, event),
+    );
+    const canonical = `forkmesh-issue-event-v1\n${type}\n${issueNumber}\n${pub}\n${ts}\n${contentHash}`;
+    event.sig = bytesToB64url(await crypto.subtle.sign(
+      { name: "Ed25519" },
+      privateKey,
+      ISSUE_TEXT_ENCODER.encode(canonical),
+    ));
+    const payload = {
+      owner: repo.owner,
+      repo: repo.name,
+      number: issueNumber,
+      event,
+      ownerAccount: state.session?.nodeName || "",
+      sessionToken: state.session?.sessionToken || "",
+    };
+    const response = await fetch(`${repoApiBase(repo)}/issues`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return { ...data, event };
+  }
+
+  async function setWebIssueSubscription(repo, number, subscribed) {
+    const response = await fetch(`${repoApiBase(repo)}/subscribe`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        node: state.session?.nodeName || "",
+        sessionToken: state.session?.sessionToken || "",
+        source: "issue",
+        number: Number(number),
+        subscribed: subscribed === true,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
     return data;
+  }
+
+  async function loadWebIssueSubscription(repo, number) {
+    if (!state.session?.nodeName || !state.session?.sessionToken) return false;
+    const response = await fetch(`${repoApiBase(repo)}/subscribe`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        action: "status",
+        node: state.session.nodeName,
+        sessionToken: state.session.sessionToken,
+        source: "issue",
+        number: Number(number),
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) return false;
+    return data.subscribed === true;
   }
 
   // Mirrors DiscussionStore::contentForSigning's "comment" case (just the
@@ -474,6 +638,9 @@
     const number = Number(form.dataset.repoIssueCommentNumber || 0);
     const bodyInput = form.querySelector("[data-repo-issue-comment-body]");
     const submit = form.querySelector("[data-repo-issue-comment-submit]");
+    const actionButtons = form.querySelectorAll(
+      "[data-repo-issue-comment-action]",
+    );
     const hint = form.querySelector("[data-repo-issue-comment-hint]");
     const setHint = (text, tone) => {
       if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
@@ -489,10 +656,10 @@
       bodyInput?.focus();
       return;
     }
-    if (submit) submit.disabled = true;
+    actionButtons.forEach((button) => { button.disabled = true; });
     setHint("Signing and sending…");
     try {
-      await submitWebIssueComment(repo, number, body);
+      const result = await submitWebIssueComment(repo, number, body);
       // Show the comment straight away: it only reaches the mirror once the
       // maintainer's node drains the inbox, so the timeline can't reload it yet.
       const timeline = form.parentElement?.querySelector("[data-repo-issue-timeline]");
@@ -508,10 +675,28 @@
         }));
       }
       if (bodyInput) bodyInput.value = "";
-      if (submit) submit.disabled = false;
-      setHint("Comment accepted for direct delivery to an eligible mirror.", "good");
+      optimisticWebIssueEvent(result.event);
+      const action = String(form._issueSubmitAction || "comment");
+      form._issueSubmitAction = "comment";
+      if (action === "close") {
+        const statusResult = await submitWebIssueEvent(
+          repo,
+          number,
+          "status",
+          { status: "closed" },
+        );
+        optimisticWebIssueEvent(statusResult.event);
+      }
+      actionButtons.forEach((button) => { button.disabled = false; });
+      setHint(
+        action === "close"
+          ? "Comment sent and issue closure accepted."
+          : "Comment accepted for direct delivery to an eligible mirror.",
+        "good",
+      );
+      renderCurrentWebIssueDetail();
     } catch (error) {
-      if (submit) submit.disabled = false;
+      actionButtons.forEach((button) => { button.disabled = false; });
       const code = String(error?.message || "");
       setHint(
         code === "inbox_full" ? "Comment delivery is temporarily full. Try again later."
@@ -520,6 +705,232 @@
           : code === "bad_signature" ? "Could not verify the comment's signature."
           : "Could not send the comment. Please try again.",
         "bad");
+    }
+  }
+
+  function optimisticWebIssueEvent(event) {
+    const detail = state.repoRecordDetail;
+    if (!event || detail?.kind !== "issues") return;
+    const parsed = detail.parsed || {};
+    const values = parsed.values || (parsed.values = {});
+    const events = Array.isArray(parsed.issueEvents)
+      ? parsed.issueEvents
+      : (parsed.issueEvents = []);
+    if (!events.some((existing) => existing?.id === event.id)) events.push(event);
+    if (event.type === "title") values.title = event.title;
+    if (event.type === "status") values.status = event.status;
+    if (event.type === "labels") values.labels = `[${event.labels.join(", ")}]`;
+    if (event.type === "milestone") values.milestone = event.milestone;
+    if (event.type === "priority") values.priority = Number(event.priority) || 0;
+    if (event.type === "progress") values.progress = Number(event.progress) || 0;
+    if (event.type === "assignees") {
+      values.assignees = `[${event.assignees.join(", ")}]`;
+    }
+    if (event.type === "dates") {
+      values.startDate = Number(event.startDate) || 0;
+      values.endDate = Number(event.endDate) || 0;
+    }
+    if (event.type === "vote") values.votes = (Number(values.votes) || 0) + 1;
+    if (event.type === "edit" && event.target === parsed.issueOpenEventId) {
+      parsed.body = event.body;
+    }
+    if (event.type === "delete" && event.target === "self") {
+      parsed.issueDeleted = true;
+    }
+  }
+
+  function renderCurrentWebIssueDetail() {
+    const detail = state.repoRecordDetail;
+    if (detail?.kind !== "issues" || !detail.repo) return;
+    const container = $("[data-repo-issues]");
+    if (!container) return;
+    container.innerHTML = renderRepoRecordDetail(
+      detail.repo,
+      "issues",
+      detail.number,
+      detail.parsed,
+    );
+    window.lucide?.createIcons();
+  }
+
+  function webIssueActionError(error) {
+    const code = String(error?.message || "");
+    return ({
+      not_authorized: "Only the repository owner or an organization admin can do that.",
+      bad_signature: "The signed issue action could not be verified.",
+      inbox_full: "Issue delivery is temporarily full. Try again later.",
+      author_quota: "Too many issue changes are waiting to sync. Try again after the owner node drains them.",
+      issue_too_large: "That issue update is too large.",
+    })[code] || "The issue could not be updated. Please try again.";
+  }
+
+  function splitWebIssueList(value) {
+    return [...new Set(String(value || "").split(",")
+      .map((item) => item.trim())
+      .filter(Boolean))].slice(0, 20);
+  }
+
+  async function handleWebIssueAction(action, target = "") {
+    const detail = state.repoRecordDetail;
+    const repo = detail?.repo;
+    const number = Number(detail?.number || 0);
+    if (!repo || detail?.kind !== "issues" || !number) return;
+    if (!state.session?.nodeName) {
+      location.href = "/login?next="
+        + encodeURIComponent(`${location.pathname}${location.search}`);
+      return;
+    }
+    let type = "";
+    let fields = {};
+    if (action === "subscribe" || action === "unsubscribe") {
+      try {
+        await setWebIssueSubscription(repo, number, action === "subscribe");
+        detail.parsed.issueSubscribed = action === "subscribe";
+        renderCurrentWebIssueDetail();
+      } catch (error) {
+        window.alert(webIssueActionError(error));
+      }
+      return;
+    }
+    if (action === "vote") type = "vote";
+    if (action === "close" || action === "open") {
+      type = "status";
+      fields = { status: action };
+    }
+    if (action === "delete-issue") {
+      const title = String(detail.parsed?.values?.title || `issue #${number}`);
+      if (!window.confirm(
+        `Delete issue #${number} “${title}”?\n\nThis hides the issue everywhere after the signed deletion syncs. Its Git history remains recoverable.`,
+      )) return;
+      type = "delete";
+      fields = { target: "self" };
+    }
+    if (action === "delete-comment") {
+      if (!window.confirm("Delete this comment? Its Git history remains recoverable.")) return;
+      type = "delete";
+      fields = { target };
+    }
+    if (action === "edit-comment") {
+      const events = detail.parsed?.issueEvents || [];
+      const original = events.find((event) => event?.id === target);
+      if (!original) return;
+      const latest = events.filter(
+        (event) => event?.type === "edit" && event.target === target,
+      ).at(-1);
+      const nextBody = window.prompt("Edit comment", latest?.body ?? original.body ?? "");
+      if (nextBody === null) return;
+      type = "edit";
+      fields = { target, body: nextBody, attachments: latest?.attachments || original.attachments || [] };
+    }
+    if (!type) return;
+    try {
+      const result = await submitWebIssueEvent(repo, number, type, fields);
+      optimisticWebIssueEvent(result.event);
+      if (action === "delete-issue") {
+        state.issuesView.items = (state.issuesView.items || []).filter(
+          (issue) => Number(issue.number) !== number,
+        );
+        state.repoRecordDetail = null;
+        navigateHistory(`${repoPathUrl(repo)}/issues`);
+        renderRepoIssues();
+        return;
+      }
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      window.alert(webIssueActionError(error));
+    }
+  }
+
+  async function handleWebIssueTitleSubmit(form) {
+    const detail = state.repoRecordDetail;
+    const title = String(
+      form.querySelector("[data-repo-issue-title-input]")?.value || "",
+    ).trim();
+    if (!title) return;
+    try {
+      const result = await submitWebIssueEvent(
+        detail.repo,
+        detail.number,
+        "title",
+        { title },
+      );
+      optimisticWebIssueEvent(result.event);
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      window.alert(webIssueActionError(error));
+    }
+  }
+
+  async function handleWebIssueDescriptionSubmit(form) {
+    const detail = state.repoRecordDetail;
+    const body = String(
+      form.querySelector("[data-repo-issue-description-input]")?.value || "",
+    );
+    try {
+      const result = await submitWebIssueEvent(
+        detail.repo,
+        detail.number,
+        "edit",
+        {
+          target: detail.parsed.issueOpenEventId,
+          body,
+          attachments: detail.parsed.issueOpenAttachments || [],
+        },
+      );
+      optimisticWebIssueEvent(result.event);
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      window.alert(webIssueActionError(error));
+    }
+  }
+
+  async function handleWebIssueMetadataSubmit(form) {
+    const detail = state.repoRecordDetail;
+    const values = detail?.parsed?.values || {};
+    const hint = form.querySelector("[data-repo-issue-metadata-hint]");
+    const submit = form.querySelector("[data-repo-issue-metadata-save]");
+    const labels = splitWebIssueList(form.querySelector("[data-repo-issue-labels]")?.value);
+    const assignees = splitWebIssueList(form.querySelector("[data-repo-issue-assignees]")?.value);
+    const milestone = String(form.querySelector("[data-repo-issue-milestone-edit]")?.value || "").trim();
+    const priority = Math.min(99, Math.max(0, Number(form.querySelector("[data-repo-issue-priority]")?.value) || 0));
+    const progress = Math.min(100, Math.max(0, Number(form.querySelector("[data-repo-issue-progress]")?.value) || 0));
+    const dateValue = (selector) => {
+      const value = String(form.querySelector(selector)?.value || "");
+      return value ? Date.parse(`${value}T00:00:00Z`) || 0 : 0;
+    };
+    const startDate = dateValue("[data-repo-issue-start-date]");
+    const endDate = dateValue("[data-repo-issue-end-date]");
+    const actions = [];
+    if (labels.join(",") !== parseFrontMatterList(values.labels).join(",")) actions.push(["labels", { labels }]);
+    if (assignees.join(",") !== parseFrontMatterList(values.assignees).join(",")) actions.push(["assignees", { assignees }]);
+    if (milestone !== String(values.milestone || "")) actions.push(["milestone", { milestone }]);
+    if (priority !== (Number(values.priority) || 0)) actions.push(["priority", { priority }]);
+    if (progress !== (Number(values.progress) || 0)) actions.push(["progress", { progress }]);
+    if (startDate !== (Number(values.startDate) || 0) || endDate !== (Number(values.endDate) || 0)) actions.push(["dates", { startDate, endDate }]);
+    if (!actions.length) {
+      if (hint) hint.textContent = "No changes";
+      return;
+    }
+    if (submit) submit.disabled = true;
+    if (hint) hint.textContent = "Signing…";
+    try {
+      for (const [type, fields] of actions) {
+        const result = await submitWebIssueEvent(
+          detail.repo,
+          detail.number,
+          type,
+          fields,
+        );
+        optimisticWebIssueEvent(result.event);
+      }
+      if (hint) hint.textContent = "Saved";
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      if (hint) {
+        hint.className = "text-[10px] text-destructive";
+        hint.textContent = webIssueActionError(error);
+      }
     }
   }
 

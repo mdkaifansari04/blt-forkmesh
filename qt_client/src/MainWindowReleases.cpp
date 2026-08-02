@@ -29,6 +29,7 @@ enum MirrorNodeColumn {
     MirrorNodeColBranches,
     MirrorNodeColPulls,
     MirrorNodeColDiscussions,
+    MirrorNodeColHealth,
     MirrorNodeColCpu,
     MirrorNodeColRam,
     MirrorNodeColDisk,
@@ -39,6 +40,7 @@ enum MirrorNodeColumn {
     MirrorNodeColClones,
     MirrorNodeColWebsite,
     MirrorNodeColArtifacts,
+    MirrorNodeColReachability,
     MirrorNodeColumnCount,
 };
 
@@ -149,13 +151,13 @@ QWidget *MainWindow::buildReleasesTab()
     headerRow->addWidget(newButton);
     layout->addLayout(headerRow);
 
-    m_releasesTable = new QTableWidget(0, 10);
+    m_releasesTable = new QTableWidget(0, 11);
     installColumnHeaderMenu(m_releasesTable); // 3-dots per-column menu (issue #318)
     m_releasesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_releasesTable);
     m_releasesTable->setHorizontalHeaderLabels(
         {"Tag", "Commit", "Released", "Release notes", "Compare", "Artifacts",
-         "Size", "SHA-256", "Downloads", ""});
+         "Size", "SHA-256", "Downloads", "Mirrors", ""});
     m_releasesTable->verticalHeader()->setVisible(false);
     m_releasesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_releasesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -174,6 +176,7 @@ QWidget *MainWindow::buildReleasesTab()
     rh->setSectionResizeMode(7, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(8, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(9, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(10, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_releasesTable);
     // itemActivated (rather than cellDoubleClicked) so pressing Enter on the
     // keyboard-focused row opens the release too, matching the arrow-key
@@ -572,6 +575,12 @@ void MainWindow::loadReleasesPanel()
     m_releasesTable->setRowCount(0);
     const QString dir = repoGitDir();
     const bool writable = repoHasWorkingTree();
+    bool canPushToMirrors = false;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        canPushToMirrors = writable && !repo.previewOnly && !repo.isPrivate &&
+                           !repo.localPath.trimmed().isEmpty();
+    }
 
     // Release artifacts are published under .forkmesh/releases/<channel>/release.json (the
     // channel is usually "latest", NOT the tag name — see .forkmesh/releases/README.md and
@@ -941,6 +950,21 @@ void MainWindow::loadReleasesPanel()
             downloadsItem->setForeground(QColor("#8b949e"));
             m_releasesTable->setItem(row, 8, downloadsItem);
 
+            auto *pushMirrors = new QPushButton("Push to mirrors");
+            pushMirrors->setObjectName("ghostButton");
+            pushMirrors->setCursor(Qt::PointingHandCursor);
+            setOcticon(pushMirrors, "broadcast", 14);
+            pushMirrors->setToolTip(
+                QStringLiteral(
+                    "Push %1 to configured SSH mirror gateways and notify "
+                    "online peer mirrors. Release artifacts are transferred "
+                    "through the existing SHA-256-verified mirror path.")
+                    .arg(tag));
+            pushMirrors->setEnabled(canPushToMirrors);
+            connect(pushMirrors, &QPushButton::clicked, this,
+                    [this, tag] { pushReleaseToMirrors(tag); });
+            m_releasesTable->setCellWidget(row, 9, pushMirrors);
+
             auto *del = new QPushButton;
             del->setObjectName("issueIconButton");
             del->setFlat(true);
@@ -950,7 +974,7 @@ void MainWindow::loadReleasesPanel()
             del->setToolTip(QStringLiteral("Delete tag %1").arg(tag));
             del->setEnabled(writable);
             connect(del, &QPushButton::clicked, this, [this, tag] { deleteTag(tag); });
-            m_releasesTable->setCellWidget(row, 9, del);
+            m_releasesTable->setCellWidget(row, 10, del);
             ++count;
         }
     }
@@ -965,9 +989,8 @@ void MainWindow::loadReleasesPanel()
             m_releasesSummary->setText(
                 QStringLiteral("%1 (%2)").arg(currentTag).arg(count));
     }
-    if (m_repoReleasesTab)
-        m_repoReleasesTab->setText(
-            QStringLiteral("Releases (%1)").arg(formatCount(count)));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoReleasesTab))
+        b->setBadgeCount(count);
     if (count == 0) {
         m_releasesTable->insertRow(0);
         auto *empty = new QTableWidgetItem(
@@ -1073,9 +1096,10 @@ QWidget *MainWindow::buildMirrorNodesTab()
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
         {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Sync delay", "Size",
-         "Issues", "Commits", "Branches", "Pulls", "Discussions", "CPU", "RAM",
+         "Issues", "Commits", "Branches", "Pulls", "Discussions", "Health",
+         "CPU", "RAM",
          "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones", "Website",
-         "Artifacts"});
+         "Artifacts", "Reachability"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1100,6 +1124,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColBranches, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColPulls, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColDiscussions, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColHealth, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColCpu, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColRam, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColDisk, QHeaderView::ResizeToContents);
@@ -1110,6 +1135,8 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColClones, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColWebsite, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColArtifacts, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColReachability,
+                             QHeaderView::ResizeToContents);
     makeColumnsResizable(m_mirrorNodesTable);
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
@@ -1750,6 +1777,50 @@ void MainWindow::loadMirrorNodesPanel()
         item->setToolTip(tip);
         return item;
     };
+    auto makeReachabilityCell = [this, &source](
+                                    const QString &nodeName)
+        -> SortTableWidgetItem * {
+        const QString key = source + QLatin1Char('|') +
+                            nodeName.trimmed().toLower();
+        const QJsonObject probe = m_mirrorReachabilityCache.value(key);
+        const bool pending = m_mirrorReachabilityInFlight.contains(key) ||
+                             probe.isEmpty();
+        const bool loaded = probe.value(QStringLiteral("readmeLoaded")).toBool();
+        QString text;
+        QString tip;
+        double sortValue = 0;
+        if (pending) {
+            text = QStringLiteral("Checking\u2026");
+            tip = QStringLiteral(
+                "Requesting README.md from this exact mirror; failover is disabled.");
+            sortValue = 1;
+        } else if (loaded) {
+            const int latency = probe.value(QStringLiteral("latencyMs")).toInt();
+            text = latency > 0
+                       ? QStringLiteral("README \u00b7 %1 ms").arg(latency)
+                       : QStringLiteral("README loaded");
+            tip = QStringLiteral(
+                "This exact mirror returned README.md successfully (HTTP %1).")
+                      .arg(probe.value(QStringLiteral("status")).toInt(200));
+            sortValue = 3;
+        } else {
+            text = QStringLiteral("Unavailable");
+            const QString reason =
+                probe.value(QStringLiteral("reason")).toString();
+            const int status = probe.value(QStringLiteral("status")).toInt();
+            tip = QStringLiteral(
+                "This exact mirror did not return README.md; no other mirror was used.");
+            if (status > 0)
+                tip += QStringLiteral("\nHTTP %1").arg(status);
+            if (!reason.isEmpty())
+                tip += QStringLiteral("\n%1").arg(reason);
+            sortValue = 2;
+        }
+        auto *item = new SortTableWidgetItem(text);
+        item->setData(kTableSortRole, sortValue);
+        item->setToolTip(tip);
+        return item;
+    };
     // A right-aligned tally cell: em-dash when the count is unknown (-1), else the
     // (abbreviated) number, sorting on the raw value.
     auto makeServeCountCell = [](int value, const QString &tip) -> SortTableWidgetItem * {
@@ -1781,6 +1852,9 @@ void MainWindow::loadMirrorNodesPanel()
     // Node ids (keys) already shown, so a catalog record published under a node's
     // former name doesn't add a second row for the same identity (adhoc #46).
     QSet<QString> shownIds;
+    // Exact node names to probe once the table is complete. Deferring network
+    // starts keeps reply callbacks from re-entering this row-building pass.
+    QSet<QString> reachabilityNodes;
     // One activity dot per active node, fed to the live strip atop the panel.
     QVector<MirrorNodeDot> activityDots;
     // Build a right-aligned numeric count cell (Commits/Branches/Pulls/
@@ -2107,6 +2181,14 @@ void MainWindow::loadMirrorNodesPanel()
         m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                     discussionsItem);
 
+        // Health: the node's own self-check findings, pushed with its heartbeat
+        // (adhoc #27) — the disk trend, log errors and link flapping the three
+        // gauges beside it can't show. Hover for the findings.
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColHealth,
+            makeNodeHealthCell(node.diagnostics, node.diagnosticsMs,
+                               QDateTime::currentMSecsSinceEpoch()));
+
         // CPU / RAM / disk usage bars (hover for the underlying figures). The
         // telemetry is per-node, advertised in the node's heartbeats; peers that
         // don't advertise it (older builds) leave the bars as an em-dash.
@@ -2172,6 +2254,12 @@ void MainWindow::loadMirrorNodesPanel()
         markMismatch(artifactsItem, countMismatch(nodeArtifacts, refArtifacts),
                      QString::number(refArtifacts));
         m_mirrorNodesTable->setItem(row, MirrorNodeColArtifacts, artifactsItem);
+        const QString reachabilityNode = nodeDisplay.trimmed().toLower();
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColReachability,
+            makeReachabilityCell(reachabilityNode));
+        if (!reachabilityNode.isEmpty())
+            reachabilityNodes.insert(reachabilityNode);
         ++count;
     }
 
@@ -2359,6 +2447,12 @@ void MainWindow::loadMirrorNodesPanel()
                          QString::number(refDiscussions));
             m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                         catDiscussionsItem);
+            // Health: self-diagnostics ride the live heartbeat, not the signed
+            // catalog record, so an offline/catalog-only row has none to show.
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColHealth,
+                makeNodeHealthCell({}, 0, 0));
+
             // CPU / RAM / disk: a node that opted into public host telemetry
             // signs it into its catalog record (headless mirrors renew it every
             // registration lease), and /mirrors passes it through — so render
@@ -2426,6 +2520,11 @@ void MainWindow::loadMirrorNodesPanel()
                          QString::number(refArtifacts));
             m_mirrorNodesTable->setItem(row, MirrorNodeColArtifacts,
                                         catArtifactsItem);
+            const QString reachabilityNode = nodeName.trimmed().toLower();
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColReachability,
+                makeReachabilityCell(reachabilityNode));
+            reachabilityNodes.insert(reachabilityNode);
             ++count;
         }
     }
@@ -2449,6 +2548,12 @@ void MainWindow::loadMirrorNodesPanel()
                             repoSegment(repo.name, QStringLiteral("repository")),
                             source);
     }
+
+    for (const QString &nodeName : std::as_const(reachabilityNodes))
+        fetchMirrorReachability(
+            sourceOwner,
+            repoSegment(repo.name, QStringLiteral("repository")),
+            source, nodeName);
 
     m_mirrorNodesTable->setSortingEnabled(true);
 
@@ -2511,8 +2616,8 @@ void MainWindow::loadMirrorNodesPanel()
     if (m_mirrorResetPinButton)
         m_mirrorResetPinButton->setVisible(weAreSource && repoHasWorkingTree());
 
-    if (m_repoMirrorsTab)
-        m_repoMirrorsTab->setText(QStringLiteral("Mirror nodes (%1)").arg(formatCount(count)));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoMirrorsTab))
+        b->setBadgeCount(count);
     if (count == 0) {
         m_mirrorNodesTable->insertRow(0);
         auto *empty = new QTableWidgetItem(
@@ -2619,6 +2724,72 @@ void MainWindow::fetchCatalogMirrors(const QString &owner, const QString &repo,
                 loadMirrorNodesPanel();
         }
     });
+}
+
+void MainWindow::fetchMirrorReachability(const QString &owner,
+                                         const QString &repo,
+                                         const QString &source,
+                                         const QString &node)
+{
+    if (!m_networkAccess || owner.isEmpty() || repo.isEmpty() || node.isEmpty())
+        return;
+    const QString normalizedNode = node.trimmed().toLower();
+    const QString key = source + QLatin1Char('|') + normalizedNode;
+    if (m_mirrorReachabilityInFlight.contains(key))
+        return;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const QJsonObject cached = m_mirrorReachabilityCache.value(key);
+    const qint64 clientCheckedAt =
+        qint64(cached.value(QStringLiteral("clientCheckedAt")).toDouble());
+    constexpr qint64 kReachabilityCacheMs = 60 * 1000;
+    if (clientCheckedAt > 0 && nowMs - clientCheckedAt < kReachabilityCacheMs)
+        return;
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/%1/%2/mirrors/%3/reachability")
+                    .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
+                         QString::fromUtf8(QUrl::toPercentEncoding(repo)),
+                         QString::fromUtf8(
+                             QUrl::toPercentEncoding(normalizedNode))));
+    m_mirrorReachabilityInFlight.insert(key);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, key, source, normalizedNode] {
+                const int httpStatus = reply->attribute(
+                    QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                const QByteArray body = reply->readAll();
+                reply->deleteLater();
+                m_mirrorReachabilityInFlight.remove(key);
+                QJsonObject result = QJsonDocument::fromJson(body).object();
+                if (!result.value(QStringLiteral("ok")).toBool() ||
+                    result.value(QStringLiteral("node")).toString().trimmed()
+                            .compare(normalizedNode, Qt::CaseInsensitive) != 0) {
+                    result = {
+                        {QStringLiteral("ok"), true},
+                        {QStringLiteral("node"), normalizedNode},
+                        {QStringLiteral("reachable"), false},
+                        {QStringLiteral("readmeLoaded"), false},
+                        {QStringLiteral("status"), httpStatus},
+                        {QStringLiteral("reason"),
+                         QStringLiteral("probe_endpoint_unavailable")},
+                    };
+                }
+                result.insert(QStringLiteral("clientCheckedAt"),
+                              double(QDateTime::currentMSecsSinceEpoch()));
+                m_mirrorReachabilityCache.insert(key, result);
+
+                if (m_repoDetailIndex < 0 ||
+                    m_repoDetailIndex >= m_repositories.size())
+                    return;
+                const RepositoryRecord &current =
+                    m_repositories.at(m_repoDetailIndex);
+                const QString currentSource =
+                    repoSegment(current.owner, QStringLiteral("owner")) +
+                    QLatin1Char('/') +
+                    repoSegment(current.name, QStringLiteral("repository"));
+                if (currentSource == source)
+                    loadMirrorNodesPanel();
+            });
 }
 
 void MainWindow::fetchReleaseDownloadCounts(const QString &owner, const QString &repo,
@@ -2834,6 +3005,67 @@ void MainWindow::downloadNextReleaseBlob(int index, const QString &mirrorPath,
                 // panel load picks up the newly-hosted artifacts' count.
                 downloadNextReleaseBlob(index, mirrorPath, pending);
             });
+}
+
+void MainWindow::pushReleaseToMirrors(const QString &tag)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int index = m_repoDetailIndex;
+    const RepositoryRecord repo = m_repositories.at(index);
+    if (repo.previewOnly || repo.localPath.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            "Only the repository's source working copy can push releases.", true);
+        return;
+    }
+    if (repo.isPrivate) {
+        setRepoDetailNotice(
+            "Private repositories use sealed replica synchronization, not SSH "
+            "mirror pushes.",
+            true);
+        return;
+    }
+
+    QByteArray commitOut;
+    const QString tagRef = QStringLiteral("refs/tags/") + tag;
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+                        tagRef + QStringLiteral("^{commit}")},
+                       &commitOut, nullptr)) {
+        setRepoDetailNotice(
+            QStringLiteral("Release %1 no longer resolves to a commit.").arg(tag),
+            true);
+        return;
+    }
+    const QString commit = QString::fromUtf8(commitOut).trimmed();
+    if (commit.isEmpty()) {
+        setRepoDetailNotice(
+            QStringLiteral("Release %1 has no commit to push.").arg(tag), true);
+        return;
+    }
+
+    if (m_backend)
+        m_backend->notifyMirrorUpdated(
+            catalogOwner(repo) + QLatin1Char('/') +
+                repoSegment(repo.name, QStringLiteral("repository")),
+            commit);
+
+    propagateRepoUpdate(index);
+    const int sshRemotes =
+        pushToSshMirrorRemotes(index, /*userInitiated=*/true, tag);
+    if (sshRemotes == 0) {
+        setRepoDetailNotice(
+            QStringLiteral(
+                "Notified online mirrors about %1, but this working copy has no "
+                "SSH push remotes configured.")
+                .arg(tag),
+            true);
+        return;
+    }
+    logSystem(QStringLiteral("Release: fanning %1 out to %2 SSH mirror%3.")
+                  .arg(tag)
+                  .arg(sshRemotes)
+                  .arg(sshRemotes == 1 ? QString() : QStringLiteral("s")));
 }
 
 void MainWindow::promptNewRelease()

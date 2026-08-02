@@ -1103,8 +1103,31 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDetailTabs->setObjectName("agentDetailTabs"); // reuse the agent tab style
     m_issueDetailTabs->addTab(detailSplit, QStringLiteral("Issue"));
     m_issueFilesTabIndex =
-        m_issueDetailTabs->addTab(issueFilesPage, QStringLiteral("Files changed"));
+        m_issueDetailTabs->addTab(issueFilesPage, QStringLiteral("Changes in Git"));
     m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, false);
+    connect(m_issueDetailTabs, &QTabWidget::currentChanged, this,
+            [this](int index) {
+                if (index != m_issueFilesTabIndex || m_currentIssueNumber <= 0)
+                    return;
+                // Issues keep their discussion and metadata here; their linked
+                // repository changes open in the one Git range pane. Put the tab
+                // selection back before navigating so returning to the issue
+                // never exposes the legacy duplicate diff widget.
+                {
+                    QSignalBlocker block(m_issueDetailTabs);
+                    m_issueDetailTabs->setCurrentIndex(0);
+                }
+                if (const AgentSession *session =
+                        latestAgentSessionForIssue(m_currentIssueNumber)) {
+                    if (!session->branchName.isEmpty()) {
+                        switchToAgentBranch(session->id);
+                        return;
+                    }
+                }
+                const QList<int> pulls = pullsLinkedToIssue(m_currentIssueNumber);
+                if (!pulls.isEmpty())
+                    openPullDiffInGitView(pulls.constLast());
+            });
 
     auto *detailLayout = new QVBoxLayout(issueDetailView);
     detailLayout->setContentsMargins(0, 0, 0, 0);
@@ -1139,12 +1162,16 @@ QWidget *MainWindow::buildIssuesSection()
         if (show)
             m_issueDetail->raise();
         m_issueDetailToggle->setText(show ? "Hide detail" : "Show detail");
+        // Opening / closing the detail pane moves between the list and the
+        // issue, both of which the Back button can return to.
+        scheduleNavRecord();
     });
     connect(closeDetailButton, &QPushButton::clicked, this, [this] {
         if (m_issueDetail)
             m_issueDetail->hide();
         if (m_issueDetailToggle)
             m_issueDetailToggle->setText("Show detail");
+        scheduleNavRecord();
     });
     connect(m_issuesRepoCombo, &QComboBox::currentIndexChanged, this,
             [this](int) { reloadIssues(); });
@@ -1621,6 +1648,9 @@ void MainWindow::selectIssueListTab(int id)
     m_issueDetailToggle->setVisible(tableMode || boardMode);
     if (boardMode)
         refreshIssueBoard();
+    // Issues / Milestones / Labels / Board are four distinct destinations, so
+    // Back returns to the one you came from rather than out of the tab.
+    scheduleNavRecord();
 }
 
 namespace {
@@ -2602,6 +2632,8 @@ void MainWindow::showIssue(int number)
             }
             renderIssueThread(issue);
             updateIssueActionState();
+            // An open issue is its own place on the trail (adhoc #50).
+            scheduleNavRecord();
             return;
         }
     }
@@ -3954,6 +3986,7 @@ void MainWindow::quickAddIssue()
                                    model) > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();
+            showPromptBubble(title);
             // No issue exists in this mode (that's the point of it), so saying
             // "no issue created" is just noise — show what actually happened
             // instead: which agent, model, and permission mode picked up the
@@ -4000,6 +4033,7 @@ void MainWindow::quickAddIssue()
                 if (ok) {
                     quickAddGuard->clear();
                     clearQuickAddImages();
+                    showPromptBubble(title);
                     setIssueInlineNotice("Your signed issue was sent to the "
                                          "maintainer's inbox. It appears once "
                                          "they sync it.");
@@ -4023,6 +4057,7 @@ void MainWindow::quickAddIssue()
     }
     m_issueQuickAdd->clear();
     clearQuickAddImages();
+    showPromptBubble(title);
     m_currentIssueNumber = number;
     appendCreatedIssue(store, created);
     propagateRepoUpdate(issuesRepoIndex());
@@ -4849,6 +4884,26 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (handleFramelessResizeEvent(obj, event))
         return true;
 
+    // Notification bubbles are deliberately transient, but reading, selecting,
+    // copying, or sending one back to the prompt must never race its countdown.
+    // The deferred leave check avoids a false resume while the pointer moves from
+    // the bubble text onto one of its action buttons.
+    const bool topMessageWidget =
+        obj == m_topMessageContainer || obj == m_topMessage ||
+        obj == m_topMessageExpand || obj == m_topMessageCopy ||
+        obj == m_topMessageSendToPrompt || obj == m_topMessageClose;
+    if (topMessageWidget && event->type() == QEvent::Enter) {
+        setTopMessagePaused(true);
+    } else if (topMessageWidget && event->type() == QEvent::Leave) {
+        QTimer::singleShot(0, this, [this] {
+            if (!m_topMessageContainer || !m_topMessageContainer->isVisible())
+                return;
+            const QRect bubble(m_topMessageContainer->mapToGlobal(QPoint()),
+                               m_topMessageContainer->size());
+            setTopMessagePaused(bubble.contains(QCursor::pos()));
+        });
+    }
+
     // A Claude model combo's popup list view was shown: apply whatever's
     // cached so the dropdown reflects the last live fetch. No network call
     // here (see applyLiveClaudeModelsToCombos) — that only happens on the
@@ -4898,19 +4953,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         if (maybeShowSendToPromptMenu(obj, static_cast<QContextMenuEvent *>(event)))
             return true;
     }
-    // Hovering the top-bar balance is what spends a Solana getBalance call —
-    // every other path renders the cached figure, so the app no longer re-queries
-    // the public RPC endpoints on each profile refresh. Don't consume: the label
-    // still needs the enter event for its tooltip/hover styling.
+    // Hovering the rail balance under the account avatar is what spends a Solana
+    // getBalance call — every other path renders the cached figure, so the app no
+    // longer re-queries the public RPC endpoints on each profile refresh. Don't
+    // consume: the label still needs the enter event for its tooltip/hover
+    // styling. Clicking no longer cycles SOL/USD/INR — the tiny line is always
+    // SOL now (adhoc #96) — so the only click target left is its "Add SOL" link.
     if (obj == m_navSolanaBalance && event->type() == QEvent::Enter)
         refreshNavSolanaBalance();
-    // Click the top-bar balance to cycle its display currency (SOL/USD/INR).
-    if (obj == m_navSolanaBalance &&
-        event->type() == QEvent::MouseButtonRelease &&
-        !m_navSolanaBalanceAddress.isEmpty()) {
-        cycleNavSolanaCurrency();
-        return true;
-    }
     // Click a row (or effort dot) in the footer slash-actions popup (adhoc
     // #116): every activatable widget in that popup carries a "slashKind"
     // dynamic property, dispatched generically in activateSlashActionRow.

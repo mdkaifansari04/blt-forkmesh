@@ -336,6 +336,10 @@ QWidget *MainWindow::buildControlNodeSection()
     tabs->setObjectName(QStringLiteral("controlNodeTabs"));
     tabs->setDocumentMode(true);
     m_controlNodeTabs = tabs;
+    // Each operational area is its own destination on the Back/Forward trail
+    // (adhoc #50).
+    connect(tabs, &QTabWidget::currentChanged, this,
+            [this](int) { scheduleNavRecord(); });
     const auto addTab = [tabs](QWidget *card, const QString &name) {
         auto *body = new QWidget;
         auto *bodyCol = new QVBoxLayout(body);
@@ -1743,9 +1747,20 @@ void MainWindow::startDirectMirrorServices()
                             QStringLiteral("\"event\":\"gateway_started\""))) {
                         m_directMirrorGatewayHealthy = true;
                         checkDirectMirrorGatewayHealth();
-                        QTimer::singleShot(
-                            1500, this,
-                            &MainWindow::registerDirectMirrorEndpoint);
+                        // The loopback gateway can be ready before the Tunnel
+                        // connector has an edge route. Retry the signed
+                        // registration during that short convergence window;
+                        // a pending repository proof is not yet success.
+                        for (const int delayMs : {1500, 5000, 15000, 60000}) {
+                            QTimer::singleShot(delayMs, this, [this] {
+                                if (m_directMirrorEndpointRegistered)
+                                    return;
+                                checkDirectMirrorGatewayHealth();
+                                QTimer::singleShot(
+                                    750, this,
+                                    &MainWindow::registerDirectMirrorEndpoint);
+                            });
+                        }
                     }
                 });
         connect(
@@ -1761,6 +1776,21 @@ void MainWindow::startDirectMirrorServices()
                         .arg(exitCode));
                 gateway->deleteLater();
                 refreshControlNode();
+                // An unattended desktop mirror must recover the local origin
+                // just as the packaged systemd service does. Respect the
+                // operator's auto-start/offline controls and delay the retry
+                // so a repeatedly failing child cannot become a tight loop.
+                QTimer::singleShot(5000, this, [this] {
+                    if (m_nodeOffline ||
+                        !QSettings()
+                             .value(
+                                 QStringLiteral(
+                                     "control/autoStartMirrorServices"),
+                                 true)
+                             .toBool())
+                        return;
+                    startDirectMirrorServices();
+                });
             });
         gateway->start(
             python,
@@ -1959,10 +1989,26 @@ void MainWindow::startDirectMirrorServices()
                     .arg(exitCode));
             tunnel->deleteLater();
             refreshControlNode();
+            QTimer::singleShot(5000, this, [this] {
+                if (m_nodeOffline ||
+                    !QSettings()
+                         .value(
+                             QStringLiteral(
+                                 "control/autoStartMirrorServices"),
+                             true)
+                         .toBool())
+                    return;
+                startDirectMirrorServices();
+            });
         });
     tunnel->start(
         cloudflared,
-        {QStringLiteral("tunnel"), QStringLiteral("run")});
+        {QStringLiteral("tunnel"), QStringLiteral("--no-autoupdate"),
+         // QUIC's large UDP receive buffers compete directly with encrypted
+         // repository materialization on small mirrors. HTTP/2 keeps the
+         // connector stable under the same end-to-end Tunnel security model.
+         QStringLiteral("--protocol"), QStringLiteral("http2"),
+         QStringLiteral("run")});
     connectorToken.fill('\0');
     connectorToken.clear();
     refreshControlNode();
@@ -2135,6 +2181,9 @@ void MainWindow::registerDirectMirrorEndpoint()
                     object.value(QStringLiteral("baseUrl"))
                             .toString() ==
                         baseUrl &&
+                    object.value(QStringLiteral("health"))
+                            .toString() ==
+                        QLatin1String("active") &&
                     object
                             .value(QStringLiteral(
                                 "routerPublicKey"))

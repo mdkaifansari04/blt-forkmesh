@@ -175,8 +175,10 @@ def test_mirror_lights_are_colored_and_warning_states_blink():
     assert "mirrorByName" in APP
 
 
-def test_detailed_directory_members_stay_seated_at_the_campfire():
-    assert ".slice(0, CAMPFIRE_DETAILED_MEMBER_LIMIT)" in SCENE
+def test_all_non_walking_directory_members_use_full_seated_avatars():
+    assert "const seatedMemberIds = new Set(" in SCENE
+    assert ".filter((member) => member?.away !== true)" in SCENE
+    assert "CAMPFIRE_DETAILED_MEMBER_LIMIT" not in SCENE
     assert 'status: "sitting around the campfire"' in SCENE
     assert "figure.position.add(seat)" in SCENE
     assert "applySeatedLegPose(figure)" in SCENE
