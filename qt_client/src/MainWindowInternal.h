@@ -2972,10 +2972,6 @@ const QString kParakeetModelSetting = QStringLiteral("voice/parakeetModel");
 // Which microphone the recorder captures from (adhoc #10). Empty == the system
 // default; otherwise a recorder-specific device id from voiceInputDevices().
 const QString kVoiceInputDeviceSetting = QStringLiteral("voice/inputDevice");
-// When on, a successful "Merge to main" automatically runs "Pull <base> into
-// all" so every other branch catches up with the just-merged work (adhoc #250).
-const QString kBranchAutoPullAllSetting =
-    QStringLiteral("branches/autoPullAllOnMerge");
 const QString kCodexModelSetting = QStringLiteral("agents/codexModel");
 const QString kIssueAskAiModel = QStringLiteral("gpt-4.1-nano");
 // Persisted footer quick-add prompt history (adhoc #200) so Up still recalls
