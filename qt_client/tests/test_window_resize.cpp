@@ -2523,6 +2523,13 @@ int main(int argc, char *argv[])
                       "(tree = %1, diff = %2)")
                   .arg(window.testSourceControlPaths().join(QStringLiteral(", ")),
                        window.testBranchDiffFiles().join(QStringLiteral(", "))));
+        const QString branchCommitControls =
+            window.testScmCommitControlsState();
+        check(window.testSourceControlGitDir() == wtPath &&
+                  branchCommitControls.contains(QStringLiteral("commit=enabled")),
+              QString("Git can commit an open branch's uncommitted changes in "
+                      "that branch's own worktree (target = %1, controls = %2)")
+                  .arg(window.testSourceControlGitDir(), branchCommitControls));
         check(window.testClickSourceControlPath(
                   QStringLiteral("live-uncommitted.txt")) &&
                   window.testCommitWorkspacePage() == 2,
