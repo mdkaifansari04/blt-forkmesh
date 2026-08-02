@@ -8085,7 +8085,7 @@ button.world-element-name:hover .world-element-twisty {
   position: absolute;
   z-index: 18;
   width: min(190px, calc(100vw - 28px));
-  transform: translate(calc(-100% - 8px), 7px);
+  transform: translate(calc(-100% - 8px), 8px);
   border: 1px solid rgb(113 239 255 / 0.74);
   border-radius: 8px;
   background:
