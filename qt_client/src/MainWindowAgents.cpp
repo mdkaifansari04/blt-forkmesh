@@ -8093,7 +8093,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                     const QString &repoPath,
                                     const QString &customPrompt)
 {
-    if (!m_agentTranscript || !m_agentStore)
+    if (!m_agentStore)
         return;
     const int sid = session.id;
     const bool codex = agentIsCodexProvider(session.provider);
