@@ -939,6 +939,14 @@ public:
         return m_agentDiffStats.value(sessionId).files;
     }
     bool testAgentSessionMerged(int sessionId) const;
+    void testApplyCodexRateLimits(const QJsonObject &rateLimits)
+    {
+        applyCodexRateLimits(rateLimits);
+    }
+    QString testCodexUsageToolTip() const
+    {
+        return m_navCodexUsage ? m_navCodexUsage->toolTip() : QString();
+    }
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
