@@ -16228,17 +16228,60 @@ void MainWindow::setVultrProvisionStage(int stage, const QString &detail,
                                         bool failed)
 {
     const int bounded = qBound(1, stage, kVultrProvisionStageCount);
+    const int previousStage = m_vultrProvisionStage;
+    const QString previousDetail = m_vultrProvisionDetail;
     m_vultrProvisionStage = m_vultrResumeChain
                                 ? qMax(m_vultrProvisionStage, bounded)
                                 : bounded;
     if (!detail.isEmpty())
         m_vultrProvisionDetail = detail;
+    if (failed) {
+        pingVultrProvisionStage(m_vultrProvisionStage, false,
+                                m_vultrProvisionDetail);
+    } else if (previousStage > 0 &&
+               m_vultrProvisionStage > previousStage) {
+        // Advancing proves that the preceding numbered step completed. Status
+        // refreshes within a step (such as boot polls) keep the same stage and
+        // therefore cannot flood the Pings page.
+        pingVultrProvisionStage(previousStage, true, previousDetail);
+    }
     if (m_vultrStatus && !m_vultrProvisionDetail.isEmpty())
         m_vultrStatus->setText(m_vultrProvisionDetail);
     renderVultrProvisionProgress(failed);
     persistVultrProvisionState(failed ? QStringLiteral("failed")
                                       : QStringLiteral("active"),
                                  failed ? m_vultrProvisionDetail : QString());
+}
+
+void MainWindow::pingVultrProvisionStage(int stage, bool ok,
+                                         const QString &detail)
+{
+    static const QStringList stageNames = {
+        QStringLiteral("Credentials"),
+        QStringLiteral("Plan + image"),
+        QStringLiteral("Create server"),
+        QStringLiteral("Boot + connect"),
+        QStringLiteral("Install"),
+        QStringLiteral("Live traffic"),
+    };
+    const int bounded = qBound(1, stage, kVultrProvisionStageCount);
+    const QString node = m_vultrProvisionNode.isEmpty()
+                             ? QStringLiteral("new mirror")
+                             : m_vultrProvisionNode;
+    const QString outcome = ok ? QStringLiteral("succeeded")
+                               : QStringLiteral("failed");
+    QString body = QStringLiteral("%1 · step %2 of %3 %4.")
+                       .arg(node)
+                       .arg(bounded)
+                       .arg(kVultrProvisionStageCount)
+                       .arg(outcome);
+    const QString summary = detail.simplified();
+    if (!summary.isEmpty())
+        body += QLatin1Char(' ') + summary;
+    addNotification(
+        QStringLiteral("Vultr mirror deployment · %1 %2")
+            .arg(stageNames.at(bounded - 1), outcome),
+        body, !ok);
 }
 
 void MainWindow::restoreVultrProvision()
@@ -16402,6 +16445,10 @@ void MainWindow::findVultrProvisionInstance(
 
 void MainWindow::finishVultrProvision(bool ok, const QString &message)
 {
+    // A late reply from a cancelled/finished network or SSH operation must not
+    // emit a second terminal ping for the same deployment.
+    if (!m_vultrProvisionActive)
+        return;
     m_vultrProvisionActive = false;
     // A knock still in flight would otherwise outlive the run it belongs to.
     if (m_vultrSshProbeProcess) {
@@ -16424,6 +16471,7 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
             (ok ? QString::fromUtf8("\n\xE2\x9C\x94 ")
                 : QString::fromUtf8("\n\xE2\x9C\x98 ")) +
             message + QStringLiteral("\n"));
+    pingVultrProvisionStage(m_vultrProvisionStage, ok, message);
     saveVultrProvisionLog();
     m_vultrProvisionActive = false;
     m_vultrResumeRequested = !ok;
@@ -17015,6 +17063,9 @@ void MainWindow::createVultrMirrorFromForm()
 
     const bool resumedPreInstance = m_vultrResumeChain;
     m_vultrProvisionActive = true;
+    // Set this before the first transition so every stage ping identifies the
+    // mirror it belongs to, including credentials and plan discovery.
+    m_vultrProvisionNode = node;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
     m_vultrSshWaitCount = 0;
@@ -17531,6 +17582,11 @@ void MainWindow::startVultrHostInstall(const QString &node, const QString &ip,
         m_hostNameEdit->setText(node);
     if (m_hostUploadBinaryCheck)
         m_hostUploadBinaryCheck->setChecked(false);
+    // SSH has answered, so Boot + connect is complete and the install stage is
+    // now active. This also ensures an installer error pings "Install", not
+    // the preceding connectivity step.
+    setVultrProvisionStage(
+        5, QStringLiteral("SSH is ready — installing ForkMesh…"));
     ++m_vultrInstallAttempts;
     m_vultrProvisionNode = node;
     m_vultrInstanceIp = ip;
