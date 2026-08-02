@@ -378,7 +378,7 @@ verify_public_assets() {
         "/assets/blog/features/forkmesh-forever.webp image/webp"
         "/assets/video/forkmesh-forever.mp4 video/mp4"
         "/assets/video/forkmesh-forever.en.vtt text/vtt"
-        "/assets/music/cosmic-waves.ogg audio/ogg"
+        "/assets/songs/ForkMeshForever(IndiePop).mp3 audio/mpeg"
         "/dashboard/tailwind.css text/css"
     )
 

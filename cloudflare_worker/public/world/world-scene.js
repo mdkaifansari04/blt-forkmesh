@@ -17574,7 +17574,7 @@ export function createWorldScene({
   const songPlaque = makeGroundPlaque(
     THREE,
     "PLAY FORKMESH SONG",
-    "CLICK TO PLAY · LOCAL LOOP",
+    "CLICK TO PLAY ONCE · LOCAL",
     "#9ef7c6",
   );
   songPlaque.name = "forkmesh-song-plaque";

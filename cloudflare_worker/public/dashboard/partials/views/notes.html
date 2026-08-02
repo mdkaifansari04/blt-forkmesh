@@ -1,0 +1,34 @@
+          <section data-view="notes" class="view active h-full overflow-y-auto">
+            <div class="p-3 sm:p-6 w-full">
+              <div class="mb-4 flex items-start justify-between gap-3">
+                <div><h1 class="text-lg font-semibold text-foreground">Notes</h1><p class="mt-1 text-sm text-muted-foreground">Markdown notes with live collaborators, simple snapshots, sharing, publishing, and links to repository conversations.</p></div>
+                <button data-note-new type="button" class="rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:opacity-90"><i data-lucide="plus" class="mr-1 inline h-3.5 w-3.5"></i>New note</button>
+              </div>
+              <div data-notes-error class="mb-3 hidden rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"></div>
+              <div class="grid min-h-[680px] overflow-hidden rounded-lg border border-border bg-card lg:grid-cols-[260px_minmax(0,1fr)]">
+                <aside class="border-b border-border lg:border-b-0 lg:border-r">
+                  <div class="border-b border-border p-3"><input data-note-search type="search" placeholder="Search notes" class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:ring-1 focus:ring-primary" /></div>
+                  <div data-note-list class="max-h-[620px] overflow-y-auto"></div>
+                </aside>
+                <div data-note-empty class="flex items-center justify-center p-8 text-center text-sm text-muted-foreground">Select a note or create one.</div>
+                <div data-note-editor class="hidden min-w-0">
+                  <div class="flex flex-wrap items-center gap-2 border-b border-border p-3">
+                    <input data-note-title maxlength="200" class="min-w-[220px] flex-1 bg-transparent text-base font-semibold text-foreground outline-none" placeholder="Untitled note" />
+                    <span data-note-live class="rounded-full border border-border px-2 py-1 font-mono text-[10px] text-muted-foreground">offline</span>
+                    <label class="flex items-center gap-2 text-xs text-muted-foreground"><input data-note-public type="checkbox" /> Public</label>
+                    <button data-note-save type="button" class="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground">Save</button>
+                    <button data-note-delete type="button" class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-destructive">Delete</button>
+                  </div>
+                  <div class="grid min-h-[430px] md:grid-cols-2">
+                    <textarea data-note-markdown class="min-h-[430px] resize-none border-b border-border bg-background p-4 font-mono text-sm leading-6 text-foreground outline-none md:border-b-0 md:border-r" placeholder="# Start writing..."></textarea>
+                    <article data-note-preview class="prose max-w-none overflow-y-auto p-4 text-sm text-foreground"></article>
+                  </div>
+                  <div class="grid gap-4 border-t border-border p-4 xl:grid-cols-3">
+                    <section><h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Share</h2><div class="flex gap-2"><select data-note-share-type class="rounded border border-border bg-background px-2 py-1.5 text-xs"><option value="user">User</option><option value="organization">Organization</option></select><input data-note-share-name class="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1.5 text-xs" placeholder="name" /><select data-note-share-role class="rounded border border-border bg-background px-2 py-1.5 text-xs"><option value="editor">Editor</option><option value="viewer">Viewer</option></select><button data-note-share-add class="rounded border border-border px-2 text-xs">Add</button></div><div data-note-shares class="mt-2 space-y-1 text-xs text-muted-foreground"></div></section>
+                    <section><h2 class="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Attach</h2><div class="grid grid-cols-[1fr_1fr_auto_auto] gap-2"><input data-note-link-owner class="min-w-0 rounded border border-border bg-background px-2 py-1.5 text-xs" placeholder="owner" /><input data-note-link-repo class="min-w-0 rounded border border-border bg-background px-2 py-1.5 text-xs" placeholder="repo" /><select data-note-link-kind class="rounded border border-border bg-background px-2 text-xs"><option value="issue">Issue</option><option value="pull">PR</option><option value="discussion">Discussion</option></select><input data-note-link-number type="number" min="1" class="w-16 rounded border border-border bg-background px-2 text-xs" placeholder="#" /></div><button data-note-link-add class="mt-2 rounded border border-border px-2 py-1 text-xs">Attach conversation</button><div data-note-links class="mt-2 space-y-1 text-xs text-muted-foreground"></div></section>
+                    <section><div class="flex items-center justify-between"><h2 class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Versions</h2><button data-note-versions-refresh class="text-xs text-muted-foreground hover:text-foreground">Refresh</button></div><div data-note-versions class="mt-2 max-h-28 space-y-1 overflow-y-auto text-xs text-muted-foreground"></div><a data-note-public-link class="mt-3 hidden text-xs text-primary underline" target="_blank" rel="noopener">Open public note</a></section>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
