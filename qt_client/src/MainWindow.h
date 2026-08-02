@@ -4644,22 +4644,27 @@ private:
     // waiting agent). Empty = a plain, non-clickable toast.
     void flashMessage(const QString &text, bool error = false,
                       const QString &clickHref = QString(),
-                      int durationSeconds = 0);
+                      int durationSeconds = 0,
+                      const QString &kind = QString());
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
     void queueTopMessage(const QString &text, bool error,
-                         const QString &clickHref = QString()); // park one behind the current toast
+                         const QString &clickHref = QString(),
+                         const QString &kind = QString(),
+                         int durationSeconds = 0); // park one behind the current toast
     void appendTopMessageToPrompt(const QString &text);
     void dismissQueuedTopMessage(quint64 id);
     void renderTopMessageQueue(); // repaint the visible stack of queued notifications
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
-    void positionTopMessageBubble(); // size + anchor the bubble in the bottom-right stack
-    QRect topMessageBubbleRect(); // calculates the bottom-right stack geometry
+    void positionTopMessageBubble(); // size + anchor the bubble above the prompt
+    QRect topMessageBubbleRect(); // calculates the prompt-anchored stack geometry
     void setTopMessagePaused(bool paused); // hover pauses the countdown
     void slideTopMessageOut(); // countdown finished: ease the bubble off the right edge, then advance
-    void showPromptBubble(const QString &prompt); // animate a submitted prompt into a bubble
+    // Animate a submitted prompt into a bubble. When it launched or steered an
+    // agent, the bubble's action opens that exact session.
+    void showPromptBubble(const QString &prompt, int agentSessionId = -1);
     MessageRow *addMessageRow(const ChatMessage &message);
     MessageRow *createMessageRow(const ChatMessage &message,
                                  bool threadContext = false);
@@ -5131,10 +5136,10 @@ private:
     // Little crown badge painted over the top-left of the same avatar, shown
     // only while this node is an admin (see updateAdminCrownBadge()).
     QLabel *m_adminCrownBadge = nullptr;
-    QLabel *m_topMessage = nullptr;       // bottom-right success/failure bubble text
+    QLabel *m_topMessage = nullptr;       // prompt-anchored success/failure bubble text
     QFrame *m_topMessageContainer = nullptr; // floating bubble wrapping text + actions
     // Queued notifications are visible beneath the active bubble. As new ones
-    // arrive, this stack grows from the bottom-right corner upwards rather than hiding
+    // arrive, this stack grows upward from the prompt rather than hiding
     // messages behind a "+N more" counter.
     QScrollArea *m_topMessageQueueScroll = nullptr;
     QWidget *m_topMessageQueueContent = nullptr;
@@ -5154,9 +5159,12 @@ private:
     QPushButton *m_topMessageCopy = nullptr;
     QPushButton *m_topMessageSendToPrompt = nullptr;
     QPushButton *m_topMessageClose = nullptr;
+    QLabel *m_topMessageTypeBadge = nullptr;
     QString m_topMessageRaw;              // plain text of the current bubble, for copy/retry
     QString m_topMessageBaseHtml;         // bubble HTML (the whole message; never elided)
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
+    QString m_topMessageKind;             // typed badge on the current notification
+    int m_topMessageAgentSessionId = -1;  // prompt notification's exact agent, if any
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast slides away
     // Pending messages that arrived while another toast was already counting
     // down. They form the visible stack beneath the active toast, then each gets
@@ -5169,6 +5177,7 @@ private:
         bool error = false;
         QString clickHref;
         int durationSeconds = 0; // its full countdown starts when it reaches the top
+        QString kind;
     };
     QList<TopMessageQueueEntry> m_topMessageQueue;
     quint64 m_nextTopMessageQueueId = 1;

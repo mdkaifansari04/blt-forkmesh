@@ -1762,19 +1762,24 @@ void MainWindow::recordNotification(AppNotification item)
 // app border (adhoc #77).
 void MainWindow::flashNotification(const AppNotification &item)
 {
+    // The Pings page always retains the event, but its transient in-app card is
+    // optional. This is intentionally independent of the OS-alert toggles.
+    if (!QSettings().value(kInAppNotificationsSetting, true).toBool())
+        return;
     QString text = item.title.simplified();
     const QString detail = item.body.simplified();
     if (!detail.isEmpty())
         text += QString::fromUtf8(" \xE2\x80\x94 ") + detail; // —
     if (text.isEmpty())
         return;
+    const int duration = QSettings()
+                             .value(kInAppNotificationDurationSetting, 5)
+                             .toInt();
     if (item.warning) {
-        flashMessage(text, true);
+        flashMessage(text, true, QString(), duration, item.kind);
         flashErrorBorder();
-    } else if (topMessageBusy()) {
-        queueTopMessage(text, false);
     } else {
-        flashMessage(text, false);
+        flashMessage(text, false, QString(), duration, item.kind);
     }
 }
 

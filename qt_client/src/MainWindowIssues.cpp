@@ -3982,11 +3982,12 @@ void MainWindow::quickAddIssue()
                 prompt += QLatin1Char('\n');
             prompt += QStringLiteral("Attached image: %1").arg(img);
         }
-        if (startAdHocAgentForRepo(issuesRepoIndex(), prompt, provider, createPr,
-                                   model) > 0) {
+        const int agentSessionId = startAdHocAgentForRepo(
+            issuesRepoIndex(), prompt, provider, createPr, model);
+        if (agentSessionId > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();
-            showPromptBubble(title);
+            showPromptBubble(title, agentSessionId);
             // No issue exists in this mode (that's the point of it), so saying
             // "no issue created" is just noise — show what actually happened
             // instead: which agent, model, and permission mode picked up the
@@ -4891,7 +4892,8 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     const bool topMessageWidget =
         obj == m_topMessageContainer || obj == m_topMessage ||
         obj == m_topMessageScroll || obj == m_topMessageActions ||
-        obj == m_topMessageMeta || obj == m_topMessageCopy ||
+        obj == m_topMessageMeta || obj == m_topMessageTypeBadge ||
+        obj == m_topMessageCopy ||
         obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
         (m_topMessageScroll && obj == m_topMessageScroll->viewport());
     if (topMessageWidget && event->type() == QEvent::Enter) {
