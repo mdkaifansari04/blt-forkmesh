@@ -215,21 +215,57 @@ def test_scrub_requires_zero_balances_and_explicit_separate_confirmation():
     assert ".sign(" not in source
 
 
-def test_worker_bundle_has_no_solana_key_or_transaction_mutation_code():
+def test_signing_code_exists_only_for_the_gated_deposit_sweep():
+    """Signing is back, but only for custodial element-store deposits.
+
+    The legacy per-signup deposit funnel stays dead (asserted below and in the
+    sibling tests). What is restored is a narrow path: a temporary per-purchase
+    address, swept 50/50 to the treasury and online mirrors, whose key is
+    destroyed on success. This test pins that narrowness rather than the old
+    "no signing code anywhere" rule.
+    """
     worker = ENTRY.read_text(encoding="utf-8")
     solana = SOLANA.read_text(encoding="utf-8")
-    combined = worker + "\n" + solana
-    for forbidden in (
-        "def _new_solana_keypair",
-        "def _solana_send_transfers",
-        "def _solana_sign_transfers",
-        "def _solana_broadcast_raw",
-        "def _solana_send_transaction",
-        "def _solana_sign_message",
-        "def _solana_transfer_message",
-        '"method": "sendTransaction"',
-    ):
-        assert forbidden not in combined
+    # The read-only helper must stay incapable of sending, so a future caller
+    # cannot reach sendTransaction through it with a dynamic method string.
+    assert "_SOLANA_READ_ONLY_METHODS" in solana
+    read_only = solana[
+        solana.index("_SOLANA_READ_ONLY_METHODS = frozenset({")
+        : solana.index("def _solana_endpoints")
+    ]
+    assert "sendTransaction" not in read_only
+    assert '_SOLANA_WRITE_METHODS = frozenset({"sendTransaction"})' in solana
+    assert "async def _solana_rpc_write(env, method, params):" in solana
+    rpc = solana[
+        solana.index("async def _solana_rpc(env, method, params):")
+        : solana.index("async def _solana_rpc_call")
+    ]
+    assert "if method not in _SOLANA_READ_ONLY_METHODS:" in rpc
+    assert "sendTransaction" not in rpc
+
+    # Broadcasting is reachable only through the write helper.
+    send = worker[
+        worker.index("async def _solana_send_transaction(env, tx_bytes):")
+        : worker.index("async def _solana_send_transfers")
+    ]
+    assert "_solana_rpc_write(" in send
+
+    # The sweep is the only caller, and it is gated + destroys the key.
+    sweep = worker[
+        worker.index("async def _sweep_element_deposit")
+        : worker.index("async def _record_sweep_error")
+    ]
+    assert "_solana_send_transfers(env, from_addr, seed, transfers)" in sweep
+    assert "deposit_secret=''" in sweep
+    assert 'if row.get("sweep_signature"):' in sweep
+    assert "_custodial_deposits_enabled" in worker
+    gate = worker[
+        worker.index("def _custodial_deposits_enabled(env):")
+        : worker.index("async def _online_mirror_payout_addresses")
+    ]
+    assert 'flag in ("0", "false", "off", "no")' in gate
+    assert "return bool(_deposit_treasury_address(env))" in gate
+
     handler = worker[
         worker.index("async def bounties_handler")
         : worker.index("\n\n# Cap on collaborators")
