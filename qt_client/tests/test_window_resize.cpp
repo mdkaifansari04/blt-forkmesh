@@ -1392,26 +1392,25 @@ int main(int argc, char *argv[])
     // Repository detail is intentionally built on first navigation. Verify the
     // real PR and Agents controls only after taking that user-visible path,
     // keeping the startup performance contract intact.
-    bool prFixMenuFound = false;
-    for (QPushButton *fixButton : window.findChildren<QPushButton *>()) {
-        if (!fixButton->text().startsWith(QStringLiteral("Fix with agent")) ||
-            !fixButton->menu())
-            continue;
-        QStringList labels;
-        for (QAction *action : fixButton->menu()->actions())
-            labels << action->text();
-        // "CC" is Claude Code, shortened with the rest of the provider labels
-        // (adhoc #38).
-        if (labels == QStringList({QStringLiteral("Claude API"),
-                                   QStringLiteral("OpenAI API"),
-                                   QStringLiteral("CC")})) {
-            prFixMenuFound = true;
-            break;
-        }
+    // adhoc #7: the PR header's conflict action is a plain "Fix" that fills the
+    // prompt box — no provider dropdown to pick a resolver from — and the whole
+    // header row wears the same flat rail style (no filled primary pills).
+    bool prFixButtonFound = false;
+    bool prHeaderStyleUniform = true;
+    for (QPushButton *b : window.findChildren<QPushButton *>()) {
+        if (b->text() == QStringLiteral("Fix") && !b->menu())
+            prFixButtonFound = true;
+        if (b->text() == QStringLiteral("Review with AI") ||
+            b->text() == QStringLiteral("Fix all with AI") ||
+            b->text() == QStringLiteral("Merge") ||
+            b->text() == QStringLiteral("Fix conflicts with agent"))
+            prHeaderStyleUniform &= b->objectName() == QStringLiteral("ghostButton");
     }
-    check(prFixMenuFound,
-          QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
-                         "and Claude Code after repository navigation"));
+    check(prFixButtonFound,
+          QStringLiteral("PR header offers a plain 'Fix' button with no provider "
+                         "dropdown after repository navigation"));
+    check(prHeaderStyleUniform,
+          QStringLiteral("PR header actions all use the flat ghostButton style"));
     // The Agents tab is built when it's first opened, and a repo no longer opens
     // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
     // before reading its list back. This also proves that route works for a repo
@@ -1647,16 +1646,18 @@ int main(int argc, char *argv[])
                outgoingTimer.elapsed() < 5000)
             QApplication::processEvents(QEventLoop::AllEvents, 10);
         check(outgoingHistory && outgoingPanel && syncChanges && outgoingLabel &&
-                  outgoingPanel->isVisibleTo(&window) &&
+                  !outgoingPanel->isVisibleTo(&window) &&
+                  syncChanges->isVisibleTo(&window) &&
                   syncChanges->text().contains(QStringLiteral("3↑")) &&
                   syncChanges->isEnabled() &&
                   outgoingLabel->text().contains(QStringLiteral("main")) &&
                   railMarkedBeforeOpen && window.testGitPendingSyncCount() == 3,
-              QString("Source Control shows three outgoing commits and an enabled "
-                      "Sync Changes button (history=%1 visible=%2 button=%3 "
-                      "label=%4)")
+              QString("Source Control promotes the enabled Sync Changes action "
+                      "while outgoing commits are pending (history=%1 cardHidden=%2 "
+                      "buttonVisible=%3 button=%4 label=%5)")
                   .arg(outgoingHistory)
-                  .arg(outgoingPanel && outgoingPanel->isVisibleTo(&window))
+                  .arg(outgoingPanel && !outgoingPanel->isVisibleTo(&window))
+                  .arg(syncChanges && syncChanges->isVisibleTo(&window))
                   .arg(syncChanges ? syncChanges->text()
                                    : QStringLiteral("<missing>"))
                   .arg(outgoingLabel ? outgoingLabel->text()
@@ -1667,7 +1668,17 @@ int main(int argc, char *argv[])
         bool localRef = false;
         bool remoteRef = false;
         bool mergeLoop = false;
+        bool outgoingTopRow = false;
         if (graph) {
+            if (graph->rowCount() > 0) {
+                QTableWidgetItem *topSummary = graph->item(0, 6);
+                QTableWidgetItem *topLane = graph->item(0, 8);
+                outgoingTopRow = topSummary && topLane &&
+                                 topSummary->data(Qt::UserRole + 35).toBool() &&
+                                 topLane->data(Qt::UserRole + 20).toList().isEmpty() &&
+                                 topLane->data(Qt::UserRole + 22).toList() ==
+                                     QVariantList{0};
+            }
             for (int row = 0; row < graph->rowCount(); ++row) {
                 if (QTableWidgetItem *summary = graph->item(row, 6)) {
                     const QStringList kinds =
@@ -1686,9 +1697,11 @@ int main(int argc, char *argv[])
                 }
             }
         }
-        check(localRef && remoteRef && mergeLoop,
-              QString("commit graph identifies local target refs, remote cloud "
-                      "refs, and a merge loop (local=%1 remote=%2 loop=%3)")
+        check(outgoingTopRow && localRef && remoteRef && mergeLoop,
+              QString("commit graph links an outgoing dotted top row to local "
+                      "target refs, remote cloud refs, and a merge loop "
+                      "(outgoing=%1 local=%2 remote=%3 loop=%4)")
+                  .arg(outgoingTopRow)
                   .arg(localRef)
                   .arg(remoteRef)
                   .arg(mergeLoop));
