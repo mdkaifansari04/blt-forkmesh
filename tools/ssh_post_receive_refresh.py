@@ -5,10 +5,13 @@
 account. It drains but never parses hook stdin and atomically creates one fixed
 marker.
 
-``run`` is invoked by a systemd path unit as root. It claims that marker, runs
-the existing refresh tool as the unprivileged mirror account, restarts only the
-configured mirror gateway service, verifies a signed loopback health challenge,
-and finally runs the existing registration mode as the mirror account.
+``run`` is invoked by a systemd path unit as root. It claims that marker,
+temporarily pauses periodic lease renewal, runs the existing refresh tool as
+the unprivileged mirror account, restarts only the configured mirror gateway
+service, verifies a signed loopback health challenge, and finally renews the
+publication as the mirror account before resuming the timer. Pausing the timer
+closes the restart race where two valid publishers could alternately reject
+one another and make a busy mirror flap.
 
 No ref, repository path, SSH command, environment value, or other user input is
 placed in a process argument. Configuration is root-owned and secret-free.
@@ -63,6 +66,8 @@ HEALTH_REQUEST_TIMEOUT_SECONDS = 3.0
 HEALTH_RETRY_SECONDS = 0.5
 HEALTH_USER_AGENT = "ForkMesh-ssh-refresh-health/1.0"
 FIXED_RUNTIME_TMPDIR = "/var/lib/forkmesh-mirror/runtime-tmp"
+RENEW_SERVICE = "forkmesh-mirror-renew.service"
+RENEW_TIMER = "forkmesh-mirror-renew.timer"
 NAME_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,62}$")
 SERVICE_RE = re.compile(r"^[A-Za-z0-9@_.:-]{1,200}\.service$")
 PUBLIC_HOST_RE = re.compile(
@@ -523,7 +528,7 @@ def _run_as_mirror(
     timeout: float = REFRESH_TIMEOUT_SECONDS,
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
 ) -> None:
-    if mode not in {"refresh", "register"}:
+    if mode not in {"refresh", "register", "renew"}:
         raise RefreshBridgeError("refresh mode is invalid")
     _run_command(
         [
@@ -583,6 +588,30 @@ def _restart_gateway(
 ) -> None:
     _run_command(
         ["/usr/bin/systemctl", "restart", config.mirror_service],
+        timeout=SERVICE_TIMEOUT_SECONDS,
+        runner=runner,
+    )
+
+
+def _pause_renewal(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
+) -> None:
+    """Stop the timer and any queued renewal before changing generations."""
+    _run_command(
+        ["/usr/bin/systemctl", "stop", RENEW_TIMER, RENEW_SERVICE],
+        timeout=SERVICE_TIMEOUT_SECONDS,
+        runner=runner,
+    )
+
+
+def _resume_renewal(
+    *,
+    runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
+) -> None:
+    """Restore periodic renewal after publication or a failed refresh."""
+    _run_command(
+        ["/usr/bin/systemctl", "start", RENEW_TIMER],
         timeout=SERVICE_TIMEOUT_SECONDS,
         runner=runner,
     )
@@ -952,7 +981,10 @@ def _run_locked(
         now_ms=int(clock_ms()),
         phase=phase,
     )
+    renewal_paused = False
     try:
+        _pause_renewal(runner=runner)
+        renewal_paused = True
         _refresh_with_retry(
             config,
             runner=runner,
@@ -964,10 +996,25 @@ def _run_locked(
         phase = "health"
         health_waiter(config)
         phase = "register"
-        _run_as_mirror(config, "register", runner=runner)
+        # refresh() already performed the full source fsck, archive validation,
+        # and staged gateway check. Repeating them after the restart extends
+        # the public outage on small hosts by minutes. renew() revalidates the
+        # installed immutable generation, exact refs, and signatures before it
+        # performs the same endpoint and catalog publication.
+        _run_as_mirror(config, "renew", runner=runner)
+        _resume_renewal(runner=runner)
+        renewal_paused = False
         _publication_succeeded(config, processing, clock_ms=clock_ms)
         return {"ok": True, "event": "ssh_push_refresh_published"}
     except BaseException:
+        if renewal_paused:
+            try:
+                _resume_renewal(runner=runner)
+                renewal_paused = False
+            except BaseException:
+                # Preserve the original publication error and retained retry
+                # marker. Reconciliation retries this fixed resume command.
+                pass
         _persistent_failure(
             config, processing, phase=phase, clock_ms=clock_ms)
         raise
