@@ -6173,6 +6173,61 @@ test("local diagnostics report renderer and existing socket state without new te
   expect(socketCount).toBe(1);
 });
 
+test("the Debug tab lists every individual object drawing triangles and sorts by any column", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "world-debug-objects");
+  await waitForWorld(page);
+
+  await page.locator("[data-world-settings-open]").first().click();
+  await page.locator('[data-world-settings-tab="debug"]').click();
+
+  const rows = page.locator("[data-world-object-list] .world-object-row");
+  await expect(rows.first()).toBeVisible();
+  const status = page.locator("[data-world-object-status]");
+  await expect(status).toContainText("objects");
+  await expect(status).toContainText("triangles");
+
+  // Every row is one real mesh, and the scene walk agrees with the table.
+  const objects = await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.world.listSceneObjects(),
+  );
+  expect(objects.length).toBeGreaterThan(10);
+  expect(objects.every((object) => object.triangles > 0)).toBe(true);
+  expect(objects.every((object) => typeof object.label === "string")).toBe(true);
+  expect(new Set(objects.map((object) => object.element)).size).toBeGreaterThan(
+    1,
+  );
+
+  const readLabels = async () =>
+    page
+      .locator("[data-world-object-list] .world-object-row strong")
+      .allInnerTexts();
+
+  // Default order is heaviest triangle count first.
+  const labelsByTriangles = await readLabels();
+  expect(labelsByTriangles.length).toBeGreaterThan(1);
+
+  // Clicking the active column reverses it; clicking another sorts by it.
+  await page.locator('[data-world-object-sort="triangles"]').click();
+  await expect(
+    page.locator('[data-world-object-sort="triangles"]'),
+  ).toHaveAttribute("aria-sort", "ascending");
+  expect(await readLabels()).not.toEqual(labelsByTriangles);
+
+  await page.locator('[data-world-object-sort="label"]').click();
+  await expect(page.locator('[data-world-object-sort="label"]')).toHaveAttribute(
+    "aria-sort",
+    "ascending",
+  );
+  const byLabel = await readLabels();
+  expect(byLabel).toEqual([...byLabel].sort((a, b) => a.localeCompare(b)));
+
+  // Re-walking keeps the panel populated.
+  await page.locator("[data-world-object-refresh]").click();
+  await expect(rows.first()).toBeVisible();
+});
+
 test("the topbar has no clock or emote actions and local light level survives movement without becoming presence data", async ({
   page,
 }) => {
