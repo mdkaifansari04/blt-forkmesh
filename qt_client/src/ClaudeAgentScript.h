@@ -70,7 +70,8 @@ TOOLS = [
         "description": (
             "Run a shell command in the current working directory (the checked-out "
             "worktree). Use it to read, search, and edit files needed for the issue. "
-            "Do not commit, push, or use the network unless the issue requires it."
+            "After completing and verifying the requested changes, commit them to the "
+            "current agent branch. Do not push or use the network."
         ),
         "input_schema": {
             "type": "object",
