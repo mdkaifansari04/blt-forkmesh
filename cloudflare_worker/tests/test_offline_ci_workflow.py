@@ -5,6 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".forkmesh" / "ci.yml"
+DEPLOY_WORKFLOW = ROOT / ".forkmesh" / "deploy.yml"
 
 
 def test_worker_suite_uses_runner_packages_without_network_install():
@@ -15,6 +16,15 @@ def test_worker_suite_uses_runner_packages_without_network_install():
     assert "FORKMESH_CI_KNOWN_FAILURES=1" in source
     assert 'export TMPDIR="$ci_tmp"' in source
     assert 'ci_tmp="$PWD/.forkmesh-ci-tmp"' in source
+    assert " -m pip install" not in source
+    assert "python3 -m venv" not in source
+
+
+def test_deploy_reuses_ci_instead_of_installing_pytest():
+    source = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "needs: [.forkmesh/ci.yml]" in source
+    assert "Run Cloudflare Worker tests" not in source
     assert " -m pip install" not in source
     assert "python3 -m venv" not in source
 
