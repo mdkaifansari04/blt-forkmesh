@@ -460,6 +460,56 @@ QString refsSha256(const QString &path,
     return PublicMirrorRuntime::refsSha256FromForEachRef(output);
 }
 
+// A service-managed checkout exposes its publishable branch view through
+// refs/remotes/origin/*. cloneSource() rewrites those refs to refs/heads/*
+// before sealing, so derive that same canonical view directly from the
+// checkout for the no-op preflight. Local agent branches are intentionally
+// omitted; tags remain part of the public fingerprint.
+QString managedRefsSha256(const QString &path,
+                          const PublicMirrorRuntime::Tools &tools,
+                          QString *error)
+{
+    const QString git = resolveProgram(tools.git);
+    QByteArray branches;
+    QByteArray tags;
+    if (git.isEmpty() ||
+        !runProcess(
+            git,
+            {QStringLiteral("-C"), path, QStringLiteral("for-each-ref"),
+             QStringLiteral("--sort=refname"),
+             QStringLiteral("--format=%(objectname) refs/heads/%(refname:lstrip=3)"),
+             QStringLiteral("refs/remotes/origin/")},
+            &branches,
+            QStringLiteral("Could not verify the managed public mirror refs."),
+            error, hardenedGitEnvironment()) ||
+        !runProcess(
+            git,
+            {QStringLiteral("-C"), path, QStringLiteral("for-each-ref"),
+             QStringLiteral("--sort=refname"),
+             QStringLiteral("--format=%(objectname) %(refname)"),
+             QStringLiteral("refs/tags/")},
+            &tags,
+            QStringLiteral("Could not verify the managed public mirror refs."),
+            error, hardenedGitEnvironment())) {
+        return {};
+    }
+    QList<QByteArray> publishable;
+    for (const QByteArray &rawLine : branches.split('\n')) {
+        const QByteArray line = rawLine.trimmed();
+        if (!line.isEmpty() &&
+            !line.endsWith(QByteArrayLiteral(" refs/heads/HEAD")))
+            publishable.append(line);
+    }
+    if (publishable.isEmpty()) {
+        setError(error, QStringLiteral(
+                            "The managed checkout has no fetched origin branches."));
+        return {};
+    }
+    publishable.append(tags.trimmed());
+    return PublicMirrorRuntime::refsSha256FromForEachRef(
+        QByteArrayList(publishable).join('\n'));
+}
+
 QByteArray vaultKey(const QByteArray &secret, const QByteArray &salt)
 {
     if (secret.size() < 32 || salt.size() != 32)
@@ -1034,6 +1084,62 @@ void note(const PublicMirrorRuntime::Progress &progress, const QString &line)
         progress(line);
 }
 
+// Reopen a verified archive before making a full temporary mirror clone when
+// the source's cheap refs fingerprint is unchanged. Read the source again
+// after authentication so a ref update racing the first read falls back to the
+// normal clone-and-seal path instead of reporting a stale sync as current.
+bool reopenUnchangedArchive(
+    const std::function<QString(QString *)> &readSourceRefs,
+    const QString &archiveRoot, const QString &vaultPath,
+    const QByteArray &vaultSecret, const QString &existingArchiveId,
+    const PublicMirrorRuntime::Tools &tools, QString *error,
+    const PublicMirrorRuntime::Progress &progress,
+    PublicMirrorRuntime::SyncResult *result)
+{
+    if (!result ||
+        !PublicMirrorRuntime::isArchiveId(existingArchiveId))
+        return false;
+    const PublicMirrorRuntime::Metadata previous =
+        PublicMirrorRuntime::readMetadata(
+            archiveRoot, existingArchiveId, nullptr);
+    if (!previous.isValid())
+        return false;
+
+    note(progress, QStringLiteral("Checking whether the sealed mirror is current…"));
+    QString refsError;
+    const QString before = readSourceRefs(&refsError);
+    if (before.isEmpty() || before != previous.expectedRefsSha256)
+        return false;
+
+    note(progress,
+         QStringLiteral("Repository unchanged — reopening the sealed archive…"));
+    QString reopenError;
+    std::unique_ptr<PublicMirrorMaterialization> materialization =
+        PublicMirrorRuntime::materialize(
+            archiveRoot, vaultPath, vaultSecret, existingArchiveId,
+            tools, &reopenError);
+    if (!materialization) {
+        note(progress,
+             QStringLiteral("The existing seal failed verification — rebuilding it…"));
+        return false;
+    }
+
+    refsError.clear();
+    const QString after = readSourceRefs(&refsError);
+    if (after.isEmpty() || after != before) {
+        note(progress,
+             QStringLiteral("Repository refs changed during verification — rebuilding the seal…"));
+        return false;
+    }
+
+    result->created = false;
+    result->metadata = previous;
+    result->materialization = std::move(materialization);
+    if (error)
+        error->clear();
+    return true;
+}
+
 PublicMirrorRuntime::SyncResult sealTemporaryRepository(
     std::unique_ptr<QTemporaryDir> directory, const QString &repositoryPath,
     const QString &archiveRoot, const QString &vaultPath,
@@ -1360,6 +1466,18 @@ PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncManagedCheckout(
 {
     if (!toolingAvailable(tools, error))
         return {};
+    SyncResult reopened;
+    if (isLocalSource(repositoryPath) &&
+        reopenUnchangedArchive(
+            [&](QString *refsError) {
+                return managedRefsSha256(repositoryPath, tools, refsError);
+            },
+            archiveRoot, vaultPath, vaultSecret, existingArchiveId,
+            tools, error, progress, &reopened)) {
+        return reopened;
+    }
+    if (error)
+        error->clear();
     std::unique_ptr<QTemporaryDir> directory =
         std::make_unique<QTemporaryDir>(
             QDir::tempPath() +
@@ -1388,6 +1506,18 @@ PublicMirrorRuntime::SyncResult PublicMirrorRuntime::syncSource(
 {
     if (!toolingAvailable(tools, error))
         return {};
+    SyncResult reopened;
+    if (isLocalSource(source) &&
+        reopenUnchangedArchive(
+            [&](QString *refsError) {
+                return refsSha256(source, tools, refsError);
+            },
+            archiveRoot, vaultPath, vaultSecret, existingArchiveId,
+            tools, error, progress, &reopened)) {
+        return reopened;
+    }
+    if (error)
+        error->clear();
     std::unique_ptr<QTemporaryDir> directory =
         std::make_unique<QTemporaryDir>(
             QDir::tempPath() +
