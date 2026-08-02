@@ -194,6 +194,27 @@ def test_selection_prefers_region_latency_and_has_bounded_failover():
     assert len(selected) <= routing.MAX_FAILOVER_ATTEMPTS
 
 
+def test_selection_cursor_round_robins_every_eligible_endpoint():
+    records = [
+        _record(
+            "mirror-%s" % suffix,
+            baseUrl="https://mirror-%s.example.net" % suffix,
+            latencyMs=index * 10,
+        )
+        for index, suffix in enumerate(("a", "b", "c", "d"), start=1)
+    ]
+    selected_first = [
+        routing.select_endpoints(records, 100_500, cursor=cursor)[0]["node"]
+        for cursor in range(len(records))
+    ]
+    assert selected_first == [
+        "mirror-a", "mirror-b", "mirror-c", "mirror-d",
+    ]
+    assert routing.select_endpoints(
+        records, 100_500, cursor=len(records)
+    )[0]["node"] == "mirror-a"
+
+
 def test_internal_target_is_bounded_and_never_a_client_redirect_contract():
     target = routing.masked_target_url(
         "https://mirror.example.net/edge", "alice", "repo", "tree",
