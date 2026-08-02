@@ -1480,33 +1480,43 @@ QWidget *MainWindow::buildSettingsSection()
     // redacted from run logs.
     auto *varsLabel = new QLabel("VARIABLES / SECRETS");
     varsLabel->setObjectName("sectionLabel");
-    auto *varsHint = new QLabel(
+    // Keep the longer explanation available without giving it permanent vertical
+    // space. The same info icon treatment is used for other dense settings.
+    auto *varsHelpButton = new QPushButton;
+    varsHelpButton->setObjectName("inlineHelpButton");
+    varsHelpButton->setAccessibleName("About variables and secrets");
+    varsHelpButton->setAccessibleDescription(
         "Injected into every action run's environment and redacted from logs. "
         "Add CLOUDFLARE_API_TOKEN here to let the deploy workflow authenticate, "
         "and FORKMESH_RELEASE_SIGNING_KEY_PEM (the Ed25519 private key itself) "
         "to let the release workflow sign published builds.");
-    varsHint->setObjectName("statusLine");
-    varsHint->setWordWrap(true);
+    varsHelpButton->setToolTip(
+        "<div style='width: 420px; white-space: normal;'>"
+        + varsHelpButton->accessibleDescription().toHtmlEscaped() + "</div>");
+    varsHelpButton->setCursor(Qt::PointingHandCursor);
+    varsHelpButton->setFlat(true);
+    varsHelpButton->setFixedSize(24, 24);
+    setOcticon(varsHelpButton, "info", 14);
+    auto *varsHeading = new QHBoxLayout;
+    varsHeading->setContentsMargins(0, 0, 0, 0);
+    varsHeading->addWidget(varsLabel);
+    varsHeading->addWidget(varsHelpButton);
+    varsHeading->addStretch();
 
-    m_varsTable = new QTableWidget(0, 2);
-    installColumnHeaderMenu(m_varsTable); // 3-dots per-column menu (issue #318)
-    m_varsTable->setHorizontalHeaderLabels({"Name", "Value"});
-    m_varsTable->horizontalHeader()->setStretchLastSection(true);
-    m_varsTable->verticalHeader()->setVisible(false);
-    m_varsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_varsTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_varsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_varsTable->setMaximumHeight(160);
-    makeColumnsResizable(m_varsTable); // spreadsheet-style draggable columns (#263)
+    // Each variable gets a full-width card instead of a short, scrollable
+    // table. This keeps long names and values readable and removes column
+    // resizing from a settings page where the list can grow naturally.
+    m_varsList = new QWidget;
+    m_varsList->setObjectName("variablesList");
+    m_varsListLayout = new QVBoxLayout(m_varsList);
+    m_varsListLayout->setContentsMargins(0, 0, 0, 0);
+    m_varsListLayout->setSpacing(8);
 
     auto *varAddButton = new QPushButton("Add\xE2\x80\xA6");
-    auto *varEditButton = new QPushButton("Edit\xE2\x80\xA6");
-    auto *varDeleteButton = new QPushButton("Delete");
     auto *varExportButton = new QPushButton("Export");
     auto *varImportButton = new QPushButton("Import");
     m_varsRevealButton = new QPushButton("Reveal");
-    for (QPushButton *b : {varAddButton, varEditButton, varDeleteButton,
-                           varExportButton, varImportButton,
+    for (QPushButton *b : {varAddButton, varExportButton, varImportButton,
                            m_varsRevealButton}) {
         b->setObjectName("ghostButton");
         b->setCursor(Qt::PointingHandCursor);
@@ -1517,45 +1527,16 @@ QWidget *MainWindow::buildSettingsSection()
         "Import variables and secrets from a ForkMesh JSON file");
     m_varsRevealButton->setToolTip("Show or hide the secret values in clear text");
     connect(varAddButton, &QPushButton::clicked, this,
-            [this] { addOrEditVariable(false); });
-    connect(varEditButton, &QPushButton::clicked, this,
-            [this] { addOrEditVariable(true); });
-    connect(varDeleteButton, &QPushButton::clicked, this,
-            &MainWindow::deleteSelectedVariable);
+            [this] { addOrEditVariable(); });
     connect(varExportButton, &QPushButton::clicked, this,
             &MainWindow::exportVariables);
     connect(varImportButton, &QPushButton::clicked, this,
             &MainWindow::importVariables);
-    // Double-clicking a row is the natural "edit this one" gesture.
-    connect(m_varsTable, &QTableWidget::cellDoubleClicked, this,
-            [this](int, int) { addOrEditVariable(true); });
     connect(m_varsRevealButton, &QPushButton::clicked, this,
             &MainWindow::toggleVariablesRevealed);
-    // Click a revealed value to copy it to the clipboard. Masked rows do
-    // nothing — there is nothing useful to copy while hidden.
-    connect(m_varsTable, &QTableWidget::cellClicked, this,
-            [this](int row, int column) {
-                if (column != 1 || !m_varsRevealed)
-                    return;
-                QTableWidgetItem *item = m_varsTable->item(row, 1);
-                if (!item)
-                    return;
-                const QString value = item->data(Qt::UserRole).toString();
-                if (value.isEmpty())
-                    return;
-                QApplication::clipboard()->setText(value);
-                const QString name = m_varsTable->item(row, 0)
-                                         ? m_varsTable->item(row, 0)->text()
-                                         : QString();
-                logSystem(name.isEmpty()
-                              ? QStringLiteral("Copied value to clipboard.")
-                              : QStringLiteral("Copied %1 to clipboard.").arg(name));
-            });
     auto *varButtonRow = new QHBoxLayout;
     varButtonRow->setContentsMargins(0, 0, 0, 0);
     varButtonRow->addWidget(varAddButton);
-    varButtonRow->addWidget(varEditButton);
-    varButtonRow->addWidget(varDeleteButton);
     varButtonRow->addWidget(varExportButton);
     varButtonRow->addWidget(varImportButton);
     varButtonRow->addWidget(m_varsRevealButton);
@@ -1822,19 +1803,17 @@ QWidget *MainWindow::buildSettingsSection()
     m_voiceSettingsTabIndex = tabs->count();
     addTab(voiceTab, "Voice");
 
-    // Secrets & Coves: shared action variables and encrypted coves.
+    // Secrets: shared action variables. Coves are account-scoped and managed
+    // from their repository explorer, not through a global password here.
     auto *secretsTab = new QWidget;
     auto *secretsCol = new QVBoxLayout(secretsTab);
     secretsCol->setContentsMargins(2, 14, 2, 14);
     secretsCol->setSpacing(10);
-    secretsCol->addWidget(varsLabel);
-    secretsCol->addWidget(varsHint);
-    secretsCol->addWidget(m_varsTable);
+    secretsCol->addLayout(varsHeading);
     secretsCol->addLayout(varButtonRow);
-    secretsCol->addSpacing(6);
-    secretsCol->addWidget(buildCoveGlobalSection());
+    secretsCol->addWidget(m_varsList);
     secretsCol->addStretch();
-    addTab(secretsTab, "Secrets & Coves");
+    addTab(secretsTab, "Secrets");
 
     // MCP: connector token + the config to paste into an external agent, so
     // anything speaking MCP can work this node's issues and PRs (adhoc #16).
@@ -1856,7 +1835,7 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addWidget(tabs, 1);
     layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);
-    reloadVariablesTable();
+    reloadVariablesList();
     setSettingsAvatar(QByteArray()); // show the current/generated avatar
     return page;
 }
@@ -2170,7 +2149,7 @@ QWidget *MainWindow::buildQuickSetupTab()
                     QStringLiteral("world name"));
         if (varsChanged) {
             ActionStore::setVariables(vars);
-            reloadVariablesTable();
+            reloadVariablesList();
         }
 
         // The Vultr key goes through the shared helper so this page and the

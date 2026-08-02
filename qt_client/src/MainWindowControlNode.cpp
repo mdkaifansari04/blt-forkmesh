@@ -3822,7 +3822,7 @@ QStringList MainWindow::rememberVultrApiKey(const QString &apiKey,
     QStringList applied;
     if (changed) {
         ActionStore::setVariables(variables);
-        reloadVariablesTable();
+        reloadVariablesList();
         applied << QStringLiteral("this device's %1 variable").arg(canonical);
     }
 
@@ -3939,7 +3939,7 @@ QStringList MainWindow::rememberCloudflareApiToken(const QString &token,
     if (variables.value(QStringLiteral("CLOUDFLARE_API_TOKEN")) != key) {
         variables.insert(QStringLiteral("CLOUDFLARE_API_TOKEN"), key);
         ActionStore::setVariables(variables);
-        reloadVariablesTable();
+        reloadVariablesList();
         applied << QStringLiteral(
             "this device's CLOUDFLARE_API_TOKEN variable");
     }
