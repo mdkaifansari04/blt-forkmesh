@@ -1478,11 +1478,10 @@ private:
     bool m_unreachable = false; // relay failed to answer the last probe
 };
 
-// A matrix of tiny squares on the window-chrome line, one per active agent
-// session, sitting immediately right of the "Agents (N)" button. Each square
-// is painted in the same colour as that session's status icon in the agents
-// list, so the fleet's live work reads at a glance: green running, amber
-// queued, orange waiting for input. Finished history stays in the Agents page.
+// A matrix of tiny squares on the window-chrome line, one per agent session,
+// sitting immediately right of the "Agents (N)" button. Each square is painted
+// in the same colour as that session's status icon in the agents list, so the
+// whole fleet reads at a glance across live and terminal states.
 //
 // Running sessions get the night-rider treatment the agents list used to give its
 // (now dropped) Activity column: a Larson highlight travels along the matrix and
@@ -1521,9 +1520,9 @@ public:
         });
     }
 
-    // Replace the fleet. Every active session gets a square: the top-nav fleet
-    // indicator must stay a complete, directly clickable view of the work in
-    // progress rather than silently dropping older sessions.
+    // Replace the fleet. Every session gets a square: the top-nav fleet
+    // indicator must stay a complete, directly clickable view of the roster
+    // rather than silently dropping terminal or older sessions.
     void setDots(const QVector<Dot> &dots)
     {
         m_dots = dots;
@@ -1539,7 +1538,7 @@ public:
         update();
     }
 
-    // Number of active-session dots currently displayed.
+    // Number of session dots currently displayed.
     int shownCount() const { return m_dots.size(); }
 
     // Clicking a square opens that session; clicking the empty space around
