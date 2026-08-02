@@ -1,0 +1,2908 @@
+diff --git a/cloudflare_worker/browser_tests/playwright.config.js b/cloudflare_worker/browser_tests/playwright.config.js
+index 8df459adc..0bf44e131 100644
+--- a/cloudflare_worker/browser_tests/playwright.config.js
++++ b/cloudflare_worker/browser_tests/playwright.config.js
+@@ -19,7 +19,7 @@ module.exports = defineConfig({
+   webServer: {
+     command: "bash run-browser-worker.sh",
+     cwd: __dirname,
+-    url: "http://127.0.0.1:4179/world/",
++    url: "http://127.0.0.1:4179/world",
+     reuseExistingServer: !process.env.CI,
+     timeout: 120_000,
+   },
+diff --git a/cloudflare_worker/browser_tests/run-browser-worker.sh b/cloudflare_worker/browser_tests/run-browser-worker.sh
+index 5d0f5519d..a8d40aa10 100644
+--- a/cloudflare_worker/browser_tests/run-browser-worker.sh
++++ b/cloudflare_worker/browser_tests/run-browser-worker.sh
+@@ -4,7 +4,7 @@ set -euo pipefail
+ source ../pywrangler.sh
+ export FORKMESH_D1_LOCAL=1
+ export WRANGLER_NPM_SPEC="wrangler@4.42.1"
+-pywrangler dev \
++exec pywrangler dev \
+   --config wrangler.browser-tests.toml \
+   --ip 127.0.0.1 \
+   --port 4179 \
+diff --git a/cloudflare_worker/browser_tests/tests/world.spec.js b/cloudflare_worker/browser_tests/tests/world.spec.js
+index db5edc4ef..82c612e14 100644
+--- a/cloudflare_worker/browser_tests/tests/world.spec.js
++++ b/cloudflare_worker/browser_tests/tests/world.spec.js
+@@ -1916,6 +1916,442 @@ test("Office bridge, approach, and lobby meet on one continuous plane", async ({
+   expect(surfaces.bridge.minZ).toBeLessThan(surfaces.approach.maxZ);
+ });
+ 
++test("Office lobby marine aquarium is visible, ambient, and animated", async ({
++  page,
++}) => {
++  await prepareWorldPage(page, "office-marine-aquarium");
++  await page.emulateMedia({ reducedMotion: "no-preference" });
++  await waitForWorld(page);
++  const first = await page.locator("forkmesh-world").evaluate((shell) => {
++    shell.world.enterOfficeLobby({ floorId: "lobby" });
++    shell.world.setPaused(false);
++    const aquarium = shell.world.scene.getObjectByName(
++      "forkmesh-office-marine-aquarium",
++    );
++    const fish = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-fish-clownfish-0",
++    );
++    const tail = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-fish-tail-clownfish",
++    );
++    const bubble = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-bubble-0",
++    );
++    const softCoral = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-soft-coral-0",
++    );
++    const surface = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-water-surface",
++    );
++    const caustics = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-caustics",
++    );
++    const light = aquarium.getObjectByName("forkmesh-office-aquarium-light");
++    const interactive = [];
++    aquarium.traverse((child) => {
++      if (child.userData?.interactive) interactive.push(child.name);
++    });
++    return {
++      visible: aquarium.visible,
++      fish: fish.position.toArray(),
++      tailRotation: tail.rotation.y,
++      bubbleY: bubble.position.y,
++      coralRotation: softCoral.rotation.z,
++      surfaceHeight: surface.geometry.getAttribute("position").getY(0),
++      causticOpacity: caustics.children[0].material.opacity,
++      lightIntensity: light.intensity,
++      interactive,
++    };
++  });
++  await page.waitForTimeout(220);
++  const second = await page.locator("forkmesh-world").evaluate((shell) => {
++    const aquarium = shell.world.scene.getObjectByName(
++      "forkmesh-office-marine-aquarium",
++    );
++    const fish = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-fish-clownfish-0",
++    );
++    const tail = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-fish-tail-clownfish",
++    );
++    const bubble = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-bubble-0",
++    );
++    const softCoral = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-soft-coral-0",
++    );
++    const surface = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-water-surface",
++    );
++    const caustics = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-caustics",
++    );
++    const light = aquarium.getObjectByName("forkmesh-office-aquarium-light");
++    const interior = shell.world.scene.getObjectByName(
++      "forkmesh-office-interior",
++    );
++    const cameraPosition = interior.localToWorld(
++      shell.world.camera.position.clone().set(-58, 8.2, 13),
++    );
++    const target = interior.localToWorld(
++      shell.world.camera.position.clone().set(-82.4, 6.1, -10.5),
++    );
++    shell.world.setPaused(true);
++    shell.world.camera.fov = 52;
++    shell.world.camera.updateProjectionMatrix();
++    shell.world.camera.position.copy(cameraPosition);
++    shell.world.camera.lookAt(target);
++    shell.world.renderer.render(shell.world.scene, shell.world.camera);
++    return {
++      fish: fish.position.toArray(),
++      tailRotation: tail.rotation.y,
++      bubbleY: bubble.position.y,
++      coralRotation: softCoral.rotation.z,
++      surfaceHeight: surface.geometry.getAttribute("position").getY(0),
++      causticOpacity: caustics.children[0].material.opacity,
++      lightIntensity: light.intensity,
++    };
++  });
++  await page.locator("canvas.world-canvas").screenshot({
++    path: "/tmp/forkmesh-office-cinematic-reef-close.png",
++    animations: "disabled",
++  });
++  await page.locator("forkmesh-world").evaluate((shell) => {
++    const interior = shell.world.scene.getObjectByName(
++      "forkmesh-office-interior",
++    );
++    const cameraPosition = interior.localToWorld(
++      shell.world.camera.position.clone().set(-42, 10.5, 19),
++    );
++    const target = interior.localToWorld(
++      shell.world.camera.position.clone().set(-78, 5.2, -7),
++    );
++    shell.world.camera.fov = 59;
++    shell.world.camera.updateProjectionMatrix();
++    shell.world.camera.position.copy(cameraPosition);
++    shell.world.camera.lookAt(target);
++    shell.world.renderer.render(shell.world.scene, shell.world.camera);
++  });
++  await page.locator("canvas.world-canvas").screenshot({
++    path: "/tmp/forkmesh-office-cinematic-reef-lobby.png",
++    animations: "disabled",
++  });
++  expect(first.visible).toBe(true);
++  expect(first.interactive).toEqual([]);
++  expect(second.fish).not.toEqual(first.fish);
++  expect(second.tailRotation).not.toBe(first.tailRotation);
++  expect(second.bubbleY).not.toBe(first.bubbleY);
++  expect(second.coralRotation).not.toBe(first.coralRotation);
++  expect(second.surfaceHeight).not.toBe(first.surfaceHeight);
++  expect(second.causticOpacity).not.toBe(first.causticOpacity);
++  expect(second.lightIntensity).not.toBe(first.lightIntensity);
++});
++
++test("aquarium blocks lobby movement and double-click travel", async ({
++  page,
++}) => {
++  await prepareWorldPage(page, "office-aquarium-collision");
++  await waitForWorld(page);
++  const placeAtGlass = () =>
++    page.locator("forkmesh-world").evaluate((shell) => {
++      shell.world.enterOfficeLobby({ floorId: "lobby" });
++      shell.world.setCameraView({
++        mode: "third-person",
++        yaw: Math.PI / 2,
++        pitch: 0.35,
++        zoom: 0.9,
++      });
++      const interior = shell.world.scene.getObjectByName(
++        "forkmesh-office-interior",
++      );
++      const position = interior.localToWorld(
++        shell.world.player.position.clone().set(-79.7, 0.38, -10.5),
++      );
++      shell.world.player.position.copy(position);
++      shell.world.setPaused(false);
++    });
++
++  const readLocalPosition = () =>
++    page.locator("forkmesh-world").evaluate((shell) => {
++      const interior = shell.world.scene.getObjectByName(
++        "forkmesh-office-interior",
++      );
++      return interior.worldToLocal(
++        shell.world.player.getWorldPosition(shell.world.player.position.clone()),
++      ).toArray();
++    });
++
++  await placeAtGlass();
++  await page.locator("forkmesh-world").evaluate((shell) => {
++    shell.world.setControl("forward", true);
++  });
++  await page.waitForTimeout(450);
++  await page.locator("forkmesh-world").evaluate((shell) => {
++    shell.world.setControl("forward", false);
++  });
++  const walked = await readLocalPosition();
++
++  await placeAtGlass();
++  await page.locator("forkmesh-world").evaluate((shell) => {
++    const canvas = shell.world.renderer.domElement;
++    const interior = shell.world.scene.getObjectByName(
++      "forkmesh-office-interior",
++    );
++    const target = interior.localToWorld(
++      shell.world.player.position.clone().set(-82.9, 0.38, -10.5),
++    );
++    target.project(shell.world.camera);
++    const bounds = canvas.getBoundingClientRect();
++    canvas.dispatchEvent(new MouseEvent("dblclick", {
++      bubbles: true,
++      button: 0,
++      clientX: bounds.left + (target.x * 0.5 + 0.5) * bounds.width,
++      clientY: bounds.top + (-target.y * 0.5 + 0.5) * bounds.height,
++    }));
++  });
++  await page.waitForTimeout(450);
++  const dashed = await readLocalPosition();
++  const aquariumFrontLimit = -81.24 + 0.46;
++
++  expect(walked[0]).toBeGreaterThanOrEqual(aquariumFrontLimit);
++  expect(dashed[0]).toBeGreaterThanOrEqual(aquariumFrontLimit);
++});
++
++test("aquarium feeding appears nearby and expires after one minute", async ({
++  page,
++}) => {
++  test.slow();
++  await prepareWorldPage(page, "office-aquarium-feeding");
++  await waitForWorld(page);
++  const feedAction = page.locator("[data-world-aquarium-feed]");
++  await expect(feedAction).toBeHidden();
++
++  const before = await page.locator("forkmesh-world").evaluate((shell) => {
++    shell.world.enterOfficeLobby({ floorId: "lobby" });
++    shell.world.setCameraView({
++      mode: "third-person",
++      yaw: Math.PI / 2,
++      pitch: 0.3,
++      zoom: 0.72,
++    });
++    const interior = shell.world.scene.getObjectByName(
++      "forkmesh-office-interior",
++    );
++    const position = interior.localToWorld(
++      shell.world.player.position.clone().set(-78.8, 0.38, -10.5),
++    );
++    shell.world.player.position.copy(position);
++    shell.world.setPaused(false);
++    const aquarium = shell.world.scene.getObjectByName(
++      "forkmesh-office-marine-aquarium",
++    );
++    return aquarium.getObjectByName(
++      "forkmesh-office-aquarium-fish-clownfish-0",
++    ).position.toArray();
++  });
++
++  await expect(feedAction).toBeVisible();
++  await expect(feedAction).toHaveText("Feed the Fishes");
++  await page.locator("forkmesh-world").screenshot({
++    path: "/tmp/forkmesh-office-aquarium-feed-action.png",
++    animations: "disabled",
++  });
++  await feedAction.click();
++  await expect(feedAction).toBeDisabled();
++  await expect(feedAction).toHaveText("Fishes are feeding");
++  await page.waitForTimeout(220);
++  await page.locator("forkmesh-world").screenshot({
++    path: "/tmp/forkmesh-office-aquarium-feeding.png",
++    animations: "disabled",
++  });
++
++  const active = await page.locator("forkmesh-world").evaluate((shell) => {
++    const aquarium = shell.world.scene.getObjectByName(
++      "forkmesh-office-marine-aquarium",
++    );
++    const food = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-food",
++    );
++    const fish = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-fish-clownfish-0",
++    );
++    const state = shell.world.getOfficeAquariumState();
++    const fishPositions = aquarium.children
++      .filter((child) =>
++        child.name.startsWith("forkmesh-office-aquarium-fish-"),
++      )
++      .map((child) => child.position.toArray());
++    const pelletPositions = food.children.map((child) =>
++      child.position.toArray()
++    );
++    return {
++      state,
++      foodVisible: food.visible,
++      fishPosition: fish.position.toArray(),
++      fishPositions,
++      pelletPositions,
++      repeatStarted: shell.world.feedOfficeAquarium(),
++    };
++  });
++  expect(active.state.active).toBe(true);
++  expect(active.state.durationMs).toBe(60_000);
++  expect(active.foodVisible).toBe(true);
++  expect(active.repeatStarted).toBe(false);
++  expect(active.fishPosition).not.toEqual(before);
++  const fishZ = active.fishPositions.map((position) => position[2]);
++  const pelletZ = active.pelletPositions.map((position) => position[2]);
++  expect(Math.max(...fishZ) - Math.min(...fishZ)).toBeGreaterThan(6);
++  expect(Math.max(...active.fishPositions.map((position) => position[1])))
++    .toBeLessThan(9.6);
++  expect(Math.max(...pelletZ) - Math.min(...pelletZ)).toBeGreaterThan(6.5);
++
++  const expired = await page.locator("forkmesh-world").evaluate(
++    (shell, endsAt) => {
++      const aquarium = shell.world.scene.getObjectByName(
++        "forkmesh-office-marine-aquarium",
++      );
++      const food = aquarium.getObjectByName(
++        "forkmesh-office-aquarium-food",
++      );
++      const fish = aquarium.getObjectByName(
++        "forkmesh-office-aquarium-fish-clownfish-0",
++      );
++      const feedingPosition = fish.position.toArray();
++      const state = shell.world.getOfficeAquariumState(endsAt + 1);
++      return {
++        state,
++        foodVisible: food.visible,
++        feedingPosition,
++      };
++    },
++    active.state.endsAt,
++  );
++  expect(expired.state.active).toBe(false);
++  expect(expired.foodVisible).toBe(false);
++  await expect(feedAction).toBeEnabled();
++  await expect(feedAction).toHaveText("Feed the Fishes");
++  await expect.poll(() =>
++    page.locator("forkmesh-world").evaluate((shell) => {
++      const aquarium = shell.world.scene.getObjectByName(
++        "forkmesh-office-marine-aquarium",
++      );
++      return aquarium.getObjectByName(
++        "forkmesh-office-aquarium-fish-clownfish-0",
++      ).position.toArray();
++    })
++  ).not.toEqual(expired.feedingPosition);
++});
++
++test("Office cinematic reef remains composed with reduced motion", async ({
++  page,
++}) => {
++  await prepareWorldPage(page, "office-cinematic-reef-reduced-motion");
++  await page.emulateMedia({ reducedMotion: "reduce" });
++  await waitForWorld(page);
++  const state = await page.locator("forkmesh-world").evaluate((shell) => {
++    shell.world.enterOfficeLobby({ floorId: "lobby" });
++    const aquarium = shell.world.scene.getObjectByName(
++      "forkmesh-office-marine-aquarium",
++    );
++    const fish = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-fish-clownfish-0",
++    );
++    const bubble = aquarium.getObjectByName(
++      "forkmesh-office-aquarium-bubble-0",
++    );
++    return {
++      visible: aquarium.visible,
++      fishPosition: fish.position.toArray(),
++      bubblePosition: bubble.position.toArray(),
++    };
++  });
++  await page.waitForTimeout(220);
++  const settled = await page.locator("forkmesh-world").evaluate((shell) => {
++    const aquarium = shell.world.scene.getObjectByName(
++      "forkmesh-office-marine-aquarium",
++    );
++    return {
++      fishPosition: aquarium.getObjectByName(
++        "forkmesh-office-aquarium-fish-clownfish-0",
++      ).position.toArray(),
++      bubblePosition: aquarium.getObjectByName(
++        "forkmesh-office-aquarium-bubble-0",
++      ).position.toArray(),
++    };
++  });
++  const feeding = await page.locator("forkmesh-world").evaluate((shell) => {
++    shell.world.feedOfficeAquarium();
++    const aquarium = shell.world.scene.getObjectByName(
++      "forkmesh-office-marine-aquarium",
++    );
++    return {
++      state: shell.world.getOfficeAquariumState(),
++      fishPosition: aquarium.getObjectByName(
++        "forkmesh-office-aquarium-fish-clownfish-0",
++      ).position.toArray(),
++      tailRotation: aquarium.getObjectByName(
++        "forkmesh-office-aquarium-fish-tail-clownfish",
++      ).rotation.y,
++      pelletPosition: aquarium.getObjectByName(
++        "forkmesh-office-aquarium-food-pellet-0",
++      ).position.toArray(),
++    };
++  });
++  await page.waitForTimeout(220);
++  const feedingSettled = await page.locator("forkmesh-world").evaluate(
++    (shell) => {
++      const aquarium = shell.world.scene.getObjectByName(
++        "forkmesh-office-marine-aquarium",
++      );
++      return {
++        fishPosition: aquarium.getObjectByName(
++          "forkmesh-office-aquarium-fish-clownfish-0",
++        ).position.toArray(),
++        tailRotation: aquarium.getObjectByName(
++          "forkmesh-office-aquarium-fish-tail-clownfish",
++        ).rotation.y,
++        pelletPosition: aquarium.getObjectByName(
++          "forkmesh-office-aquarium-food-pellet-0",
++        ).position.toArray(),
++      };
++    },
++  );
++  const expired = await page.locator("forkmesh-world").evaluate(
++    (shell, endsAt) => {
++      const state = shell.world.getOfficeAquariumState(endsAt + 1);
++      const aquarium = shell.world.scene.getObjectByName(
++        "forkmesh-office-marine-aquarium",
++      );
++      return {
++        state,
++        foodVisible: aquarium.getObjectByName(
++          "forkmesh-office-aquarium-food",
++        ).visible,
++        fishPosition: aquarium.getObjectByName(
++          "forkmesh-office-aquarium-fish-clownfish-0",
++        ).position.toArray(),
++      };
++    },
++    feeding.state.endsAt,
++  );
++  expect(state.visible).toBe(true);
++  expect(state.fishPosition[1]).toBeGreaterThan(2);
++  expect(state.bubblePosition[1]).toBeGreaterThan(0.8);
++  expect(settled).toEqual({
++    fishPosition: state.fishPosition,
++    bubblePosition: state.bubblePosition,
++  });
++  expect(feeding.state.active).toBe(true);
++  expect(feedingSettled).toEqual({
++    fishPosition: feeding.fishPosition,
++    tailRotation: feeding.tailRotation,
++    pelletPosition: feeding.pelletPosition,
++  });
++  expect(expired.state.active).toBe(false);
++  expect(expired.foodVisible).toBe(false);
++  expect(expired.fishPosition).toEqual(state.fishPosition);
++});
++
+ test("a first-frame doorway crossing enters before proximity catches up", async ({
+   page,
+ }) => {
+diff --git a/cloudflare_worker/public/world/world-scene.js b/cloudflare_worker/public/world/world-scene.js
+index 5259e7b95..4e1ae67c7 100644
+--- a/cloudflare_worker/public/world/world-scene.js
++++ b/cloudflare_worker/public/world/world-scene.js
+@@ -109,6 +109,15 @@ const OFFICE_INTERIOR_EXIT_Z =
+ const OFFICE_ELEVATOR_HALF_WIDTH = 5;
+ const OFFICE_ELEVATOR_HALF_DEPTH = 4;
+ const OFFICE_ELEVATOR_CUT_MARGIN = 0.35;
++// The reef is a scene-owned lobby exhibit rather than part of the reusable
++// tower shell. Keep its physical footprint beside its scene integration so
++// every movement path observes the same cabinet and glass boundary.
++const OFFICE_AQUARIUM_BOUNDS = Object.freeze({
++  minX: -84.56,
++  maxX: -81.24,
++  minZ: -24.3,
++  maxZ: 3.3,
++});
+ const LIGHT_LEVEL_MIN = 40;
+ const LIGHT_LEVEL_MAX = 140;
+ const LIGHT_LEVEL_DEFAULT = 100;
+@@ -171,6 +180,27 @@ const WORLD_SPACE_FLOORS = Object.freeze({
+   west: 0.38,
+ });
+ 
++function pointHitsOfficeAquarium(floorId, x, z, radius = 0) {
++  if (floorId !== "lobby") return false;
++  const px = Number(x);
++  const pz = Number(z);
++  const margin = Math.max(0, Number(radius) || 0);
++  if (!Number.isFinite(px) || !Number.isFinite(pz)) return false;
++  return (
++    px >= OFFICE_AQUARIUM_BOUNDS.minX - margin &&
++    px <= OFFICE_AQUARIUM_BOUNDS.maxX + margin &&
++    pz >= OFFICE_AQUARIUM_BOUNDS.minZ - margin &&
++    pz <= OFFICE_AQUARIUM_BOUNDS.maxZ + margin
++  );
++}
++
++function officeScenePointIsWalkable(floorId, x, z, radius) {
++  return (
++    officeInteriorPointIsWalkable(floorId, x, z, radius) &&
++    !pointHitsOfficeAquarium(floorId, x, z, radius)
++  );
++}
++
+ function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
+   const px = Number(x);
+   const pz = Number(z);
+@@ -9512,6 +9542,1715 @@ function officeDoorStatusTexture(THREE, state = "open") {
+   });
+ }
+ 
++function createOfficeMarineAquarium(THREE, animated) {
++  const group = new THREE.Group();
++  group.name = "forkmesh-office-marine-aquarium";
++  group.position.set(-82.9, 0, -10.5);
++  const tankLength = 27;
++  const tankHeight = 12;
++  const tankDepth = 3;
++  const AQUARIUM_FEEDING_DURATION_MS = 60_000;
++  const AQUARIUM_FEEDING_APPROACH_MS = 4_200;
++  const AQUARIUM_FEEDING_RETURN_MS = 6_500;
++  const feedingCenter = new THREE.Vector3(0.68, 6.9, -1.8);
++  let feedingStartedAt = -Infinity;
++  let feedingActive = false;
++  let reducedFeedingPoseApplied = false;
++  const AQUARIUM_FISH_SPECIES = Object.freeze([
++    {
++      id: "clownfish",
++      sceneName: "forkmesh-office-aquarium-fish-clownfish",
++      body: "#ed682b",
++      accent: "#fff6df",
++      length: 1.38,
++      height: 0.52,
++      thickness: 0.42,
++      tail: "round",
++      bands: [0.31, 0.65],
++    },
++    {
++      id: "blue-tang",
++      sceneName: "forkmesh-office-aquarium-fish-blue-tang",
++      body: "#167ec5",
++      accent: "#101c3b",
++      length: 1.56,
++      height: 0.66,
++      thickness: 0.38,
++      tail: "fork",
++      bands: [],
++    },
++    {
++      id: "yellow-tang",
++      sceneName: "forkmesh-office-aquarium-fish-yellow-tang",
++      body: "#f4d52d",
++      accent: "#fff2a2",
++      length: 1.44,
++      height: 0.72,
++      thickness: 0.34,
++      tail: "fork",
++      bands: [],
++    },
++    {
++      id: "royal-gramma",
++      sceneName: "forkmesh-office-aquarium-fish-royal-gramma",
++      body: "#763bbd",
++      accent: "#efc42b",
++      length: 1.25,
++      height: 0.48,
++      thickness: 0.36,
++      tail: "round",
++      bands: [],
++    },
++    {
++      id: "butterflyfish",
++      sceneName: "forkmesh-office-aquarium-fish-butterflyfish",
++      body: "#f4e8bd",
++      accent: "#232a34",
++      length: 1.46,
++      height: 0.7,
++      thickness: 0.32,
++      tail: "fork",
++      bands: [0.7],
++    },
++    {
++      id: "chromis",
++      sceneName: "forkmesh-office-aquarium-fish-chromis",
++      body: "#5fc7d0",
++      accent: "#dcffff",
++      length: 0.8,
++      height: 0.31,
++      thickness: 0.28,
++      tail: "fork",
++      bands: [],
++    },
++  ]);
++
++  function aquariumSeedFraction(seed, index) {
++    const value =
++      Math.sin((seed + 1) * 12.9898 + (index + 1) * 78.233) *
++      43758.5453;
++    return value - Math.floor(value);
++  }
++
++  function drawAquariumSpeciesMarkings(context, canvas, species) {
++    const width = canvas.width;
++    const height = canvas.height;
++    if (species.id === "clownfish") {
++      for (const ratio of species.bands) {
++        context.fillStyle = "#211917";
++        context.fillRect(width * ratio - 12, 0, 24, height);
++        context.fillStyle = "#fff8e6";
++        context.fillRect(width * ratio - 7, 0, 14, height);
++      }
++    } else if (species.id === "blue-tang") {
++      context.fillStyle = "#101a3c";
++      context.beginPath();
++      context.moveTo(width * 0.18, height * 0.22);
++      context.bezierCurveTo(
++        width * 0.43,
++        height * 0.01,
++        width * 0.79,
++        height * 0.17,
++        width * 0.7,
++        height * 0.5,
++      );
++      context.bezierCurveTo(
++        width * 0.58,
++        height * 0.82,
++        width * 0.32,
++        height * 0.85,
++        width * 0.18,
++        height * 0.22,
++      );
++      context.fill();
++      context.fillStyle = "#f0cf35";
++      context.fillRect(width * 0.89, 0, width * 0.11, height);
++    } else if (species.id === "yellow-tang") {
++      const shade = context.createLinearGradient(0, 0, 0, height);
++      shade.addColorStop(0, "rgba(255,255,210,0.5)");
++      shade.addColorStop(0.52, "rgba(255,255,255,0)");
++      shade.addColorStop(1, "rgba(176,112,0,0.38)");
++      context.fillStyle = shade;
++      context.fillRect(0, 0, width, height);
++      context.fillStyle = "rgba(255,250,190,0.7)";
++      context.fillRect(width * 0.18, height * 0.47, width * 0.62, 2);
++    } else if (species.id === "royal-gramma") {
++      const split = context.createLinearGradient(0, 0, width, 0);
++      split.addColorStop(0.38, "rgba(118,59,189,0)");
++      split.addColorStop(0.55, "#efc42b");
++      split.addColorStop(1, "#dfa51d");
++      context.fillStyle = split;
++      context.fillRect(0, 0, width, height);
++      context.fillStyle = "rgba(255,241,167,0.8)";
++      for (let index = 0; index < 10; index += 1) {
++        context.fillRect(width * 0.42 + index * 6, height * 0.34, 2, 2);
++      }
++    } else if (species.id === "butterflyfish") {
++      context.fillStyle = "#252a30";
++      context.fillRect(width * 0.66, 0, width * 0.09, height);
++      context.fillStyle = "#e1b62e";
++      context.fillRect(width * 0.77, 0, width * 0.23, height);
++      context.fillStyle = "#1a2027";
++      context.beginPath();
++      context.arc(width * 0.2, height * 0.5, height * 0.14, 0, Math.PI * 2);
++      context.fill();
++    } else {
++      const shimmer = context.createLinearGradient(0, 0, width, 0);
++      shimmer.addColorStop(0, "rgba(255,255,255,0)");
++      shimmer.addColorStop(0.52, "rgba(229,255,255,0.62)");
++      shimmer.addColorStop(1, "rgba(255,255,255,0)");
++      context.fillStyle = shimmer;
++      context.fillRect(0, height * 0.42, width, height * 0.16);
++    }
++    const scaleGlow = context.createLinearGradient(0, 0, 0, height);
++    scaleGlow.addColorStop(0, "rgba(255,255,255,0.22)");
++    scaleGlow.addColorStop(0.48, "rgba(255,255,255,0)");
++    scaleGlow.addColorStop(1, "rgba(0,22,35,0.2)");
++    context.fillStyle = scaleGlow;
++    context.fillRect(0, 0, width, height);
++  }
++
++  function createAquariumFishTexture(THREE, species) {
++    const texture = canvasTexture(THREE, 256, 128, (context, canvas) => {
++      const gradient = context.createLinearGradient(0, 0, canvas.width, 0);
++      gradient.addColorStop(0, species.accent);
++      gradient.addColorStop(0.18, species.body);
++      gradient.addColorStop(0.76, species.body);
++      gradient.addColorStop(1, species.accent);
++      context.fillStyle = gradient;
++      context.fillRect(0, 0, canvas.width, canvas.height);
++      drawAquariumSpeciesMarkings(context, canvas, species);
++    });
++    texture.wrapS = THREE.RepeatWrapping;
++    return texture;
++  }
++
++  function createReefFishBodyGeometry(THREE, species) {
++    const half = species.length / 2;
++    const profile = [
++      new THREE.Vector2(0.07, -half),
++      new THREE.Vector2(species.height * 0.31, -half * 0.78),
++      new THREE.Vector2(species.height * 0.5, -half * 0.3),
++      new THREE.Vector2(species.height * 0.54, half * 0.18),
++      new THREE.Vector2(species.height * 0.44, half * 0.65),
++      new THREE.Vector2(species.height * 0.23, half * 0.91),
++      new THREE.Vector2(0.075, half),
++    ];
++    const geometry = new THREE.LatheGeometry(profile, 24);
++    geometry.rotateX(Math.PI / 2);
++    geometry.scale(species.thickness / species.height, 1, 1);
++    geometry.computeVertexNormals();
++    return geometry;
++  }
++
++  function createReefFishTailGeometry(THREE, species) {
++    const fork = species.tail === "fork" ? species.height * 0.14 : 0;
++    const length = species.length * 0.45;
++    const height = species.height * 0.74;
++    const geometry = new THREE.BufferGeometry();
++    geometry.setAttribute(
++      "position",
++      new THREE.Float32BufferAttribute([
++        0, 0, 0,
++        0, height, -length,
++        0, fork, -length * 0.8,
++        0, -height, -length,
++      ], 3),
++    );
++    geometry.setIndex([0, 1, 2, 0, 2, 3]);
++    geometry.computeVertexNormals();
++    return geometry;
++  }
++
++  function createReefFishFinGeometry(THREE, width, height) {
++    const geometry = new THREE.BufferGeometry();
++    geometry.setAttribute(
++      "position",
++      new THREE.Float32BufferAttribute([
++        0, 0, -width * 0.5,
++        0, height, -width * 0.2,
++        0, 0, width * 0.5,
++        0, height * 0.72, width * 0.2,
++      ], 3),
++    );
++    geometry.setIndex([0, 1, 3, 1, 2, 3]);
++    geometry.computeVertexNormals();
++    return geometry;
++  }
++
++  function createReefFishDorsalGeometry(THREE, species) {
++    return createReefFishFinGeometry(
++      THREE,
++      species.length * 0.68,
++      species.height * 0.68,
++    );
++  }
++
++  function createReefFishPectoralGeometry(THREE, species) {
++    return createReefFishFinGeometry(
++      THREE,
++      species.length * 0.3,
++      species.height * 0.46,
++    );
++  }
++
++  function createReefFish(THREE, species, instanceIndex) {
++    const fish = new THREE.Group();
++    fish.name = `${species.sceneName}-${instanceIndex}`;
++    const skin = createAquariumFishTexture(THREE, species);
++    const bodyMaterial = new THREE.MeshPhysicalMaterial({
++      color: "#ffffff",
++      map: skin,
++      roughness: 0.38,
++      metalness: 0.02,
++      clearcoat: 0.52,
++      clearcoatRoughness: 0.28,
++      emissive: species.body,
++      emissiveIntensity: 0.035,
++    });
++    const finMaterial = new THREE.MeshPhysicalMaterial({
++      color: species.body,
++      transparent: true,
++      opacity: 0.82,
++      roughness: 0.34,
++      clearcoat: 0.32,
++      clearcoatRoughness: 0.2,
++      side: THREE.DoubleSide,
++      depthWrite: false,
++    });
++    const body = new THREE.Mesh(
++      createReefFishBodyGeometry(THREE, species),
++      bodyMaterial,
++    );
++    body.name = `forkmesh-office-aquarium-fish-${species.id}-body`;
++    fish.add(body);
++    const tail = new THREE.Mesh(
++      createReefFishTailGeometry(THREE, species),
++      finMaterial,
++    );
++    tail.name = `forkmesh-office-aquarium-fish-tail-${species.id}`;
++    tail.position.z = -species.length / 2 + 0.04;
++    fish.add(tail);
++    const dorsalFin = new THREE.Mesh(
++      createReefFishDorsalGeometry(THREE, species),
++      finMaterial,
++    );
++    dorsalFin.name = `forkmesh-office-aquarium-fish-dorsal-fin-${species.id}`;
++    dorsalFin.position.y = species.height * 0.5;
++    dorsalFin.position.z = -species.length * 0.06;
++    fish.add(dorsalFin);
++    const analFin = new THREE.Mesh(
++      createReefFishFinGeometry(
++        THREE,
++        species.length * 0.46,
++        species.height * 0.36,
++      ),
++      finMaterial,
++    );
++    analFin.name = `forkmesh-office-aquarium-fish-anal-fin-${species.id}`;
++    analFin.position.set(0, -species.height * 0.46, -species.length * 0.08);
++    analFin.rotation.z = Math.PI;
++    fish.add(analFin);
++    const pectoralFins = [];
++    for (const side of [-1, 1]) {
++      const pectoralFin = new THREE.Mesh(
++        createReefFishPectoralGeometry(THREE, species),
++        finMaterial,
++      );
++      pectoralFin.name =
++        `forkmesh-office-aquarium-fish-pectoral-fin-${species.id}-${side}`;
++      pectoralFin.position.set(
++        side * species.thickness * 0.46,
++        -species.height * 0.06,
++        species.length * 0.16,
++      );
++      pectoralFin.rotation.z = side * (Math.PI / 2 + 0.22);
++      pectoralFin.userData.restZ = pectoralFin.rotation.z;
++      pectoralFins.push(pectoralFin);
++      fish.add(pectoralFin);
++    }
++    const eyeWhiteMaterial = new THREE.MeshPhysicalMaterial({
++      color: "#eaf7f5",
++      roughness: 0.22,
++      clearcoat: 0.9,
++      clearcoatRoughness: 0.08,
++    });
++    const irisMaterial = new THREE.MeshPhysicalMaterial({
++      color: "#071014",
++      roughness: 0.14,
++      clearcoat: 1,
++      clearcoatRoughness: 0.04,
++    });
++    const highlightMaterial = new THREE.MeshBasicMaterial({ color: "#ffffff" });
++    for (const side of [-1, 1]) {
++      const eye = new THREE.Mesh(
++        new THREE.SphereGeometry(species.height * 0.105, 16, 12),
++        eyeWhiteMaterial,
++      );
++      eye.name = `forkmesh-office-aquarium-fish-eye-${species.id}-${side}`;
++      eye.position.set(
++        side * species.thickness * 0.43,
++        species.height * 0.1,
++        species.length * 0.36,
++      );
++      fish.add(eye);
++      const iris = new THREE.Mesh(
++        new THREE.SphereGeometry(species.height * 0.067, 14, 10),
++        irisMaterial,
++      );
++      iris.name = `forkmesh-office-aquarium-fish-iris-${species.id}-${side}`;
++      iris.position.set(
++        side * species.thickness * 0.49,
++        species.height * 0.1,
++        species.length * 0.372,
++      );
++      fish.add(iris);
++      const highlight = new THREE.Mesh(
++        new THREE.SphereGeometry(species.height * 0.018, 8, 6),
++        highlightMaterial,
++      );
++      highlight.name =
++        `forkmesh-office-aquarium-fish-highlight-${species.id}-${side}`;
++      highlight.position.set(
++        side * species.thickness * 0.535,
++        species.height * 0.125,
++        species.length * 0.392,
++      );
++      fish.add(highlight);
++      const gill = new THREE.Mesh(
++        new THREE.TorusGeometry(
++          species.height * 0.16,
++          species.height * 0.018,
++          6,
++          18,
++          Math.PI * 1.18,
++        ),
++        irisMaterial,
++      );
++      gill.name = `forkmesh-office-aquarium-fish-gill-${species.id}-${side}`;
++      gill.position.set(
++        side * species.thickness * 0.45,
++        0,
++        species.length * 0.22,
++      );
++      gill.rotation.y = Math.PI / 2;
++      gill.rotation.x = side > 0 ? -0.58 : 0.58;
++      fish.add(gill);
++    }
++    const mouth = new THREE.Mesh(
++      new THREE.TorusGeometry(
++        species.height * 0.055,
++        species.height * 0.016,
++        6,
++        12,
++      ),
++      irisMaterial,
++    );
++    mouth.name = `forkmesh-office-aquarium-fish-mouth-${species.id}`;
++    mouth.position.set(0, -species.height * 0.08, species.length * 0.505);
++    fish.add(mouth);
++    const lateralHighlight = new THREE.Mesh(
++      new THREE.SphereGeometry(0.5, 18, 10),
++      new THREE.MeshBasicMaterial({
++        color: "#dfffff",
++        transparent: true,
++        opacity: 0.16,
++        depthWrite: false,
++      }),
++    );
++    lateralHighlight.name =
++      `forkmesh-office-aquarium-fish-highlight-${species.id}`;
++    lateralHighlight.scale.set(
++      species.thickness * 0.035,
++      species.height * 0.12,
++      species.length * 0.56,
++    );
++    lateralHighlight.position.x = species.thickness * 0.52;
++    fish.add(lateralHighlight);
++    return { fish, tail, pectoralFins };
++  }
++
++  function aquariumCylinderBetween(
++    THREE,
++    start,
++    end,
++    startRadius,
++    endRadius,
++    material,
++    radialSegments = 10,
++  ) {
++    const direction = end.clone().sub(start);
++    const branch = new THREE.Mesh(
++      new THREE.CylinderGeometry(
++        endRadius,
++        startRadius,
++        direction.length(),
++        radialSegments,
++      ),
++      material,
++    );
++    branch.position.copy(start).add(end).multiplyScalar(0.5);
++    branch.quaternion.setFromUnitVectors(
++      new THREE.Vector3(0, 1, 0),
++      direction.normalize(),
++    );
++    return branch;
++  }
++
++  function createAquariumLiveRock(THREE, material, scale, seed) {
++    const rock = new THREE.Group();
++    for (let index = 0; index < 5; index += 1) {
++      const fraction = aquariumSeedFraction(seed, index);
++      const mesh = new THREE.Mesh(
++        new THREE.IcosahedronGeometry(1, 2),
++        material,
++      );
++      mesh.position.set(
++        (fraction - 0.5) * scale * 0.72,
++        index * scale * 0.18,
++        (aquariumSeedFraction(seed, index + 7) - 0.5) * scale * 0.7,
++      );
++      mesh.scale.set(
++        scale * (0.58 + fraction * 0.34),
++        scale * (0.38 + fraction * 0.28),
++        scale * (0.7 + fraction * 0.26),
++      );
++      mesh.rotation.set(
++        fraction * 0.48,
++        fraction * Math.PI,
++        (fraction - 0.5) * 0.46,
++      );
++      rock.add(mesh);
++    }
++    return rock;
++  }
++
++  function createBranchingCoral(THREE, materials, scale, seed) {
++    const coral = new THREE.Group();
++    const joints = [
++      [0, 0, 0],
++      [0, 1.15, 0],
++      [-0.06, 1.86, -0.46],
++      [0.08, 2.04, 0.48],
++      [-0.08, 2.48, -0.72],
++      [0.06, 2.72, 0.76],
++      [0.02, 2.42, 0.16],
++    ];
++    for (const [from, to] of [
++      [0, 1],
++      [1, 2],
++      [1, 3],
++      [1, 6],
++      [2, 4],
++      [3, 5],
++    ]) {
++      const start = new THREE.Vector3(...joints[from]).multiplyScalar(scale);
++      const end = new THREE.Vector3(...joints[to]).multiplyScalar(scale);
++      coral.add(
++        aquariumCylinderBetween(
++          THREE,
++          start,
++          end,
++          0.16 * scale,
++          0.1 * scale,
++          materials.base,
++        ),
++      );
++      if (to >= 4) {
++        const tip = new THREE.Mesh(
++          new THREE.SphereGeometry(0.145 * scale, 14, 10),
++          materials.tip,
++        );
++        tip.position.copy(end);
++        coral.add(tip);
++      }
++    }
++    coral.rotation.y = aquariumSeedFraction(seed, 0) * Math.PI;
++    return coral;
++  }
++
++  function createPlateCoral(THREE, materials, scale, seed) {
++    const coral = new THREE.Group();
++    for (let index = 0; index < 4; index += 1) {
++      const plate = new THREE.Mesh(
++        new THREE.CylinderGeometry(
++          (1.06 - index * 0.14) * scale,
++          (0.9 - index * 0.12) * scale,
++          0.1 * scale,
++          32,
++        ),
++        index === 3 ? materials.tip : materials.base,
++      );
++      plate.position.set(
++        (index - 1.5) * 0.16 * scale,
++        index * 0.24 * scale,
++        (aquariumSeedFraction(seed, index) - 0.5) * 0.28 * scale,
++      );
++      plate.rotation.set(
++        (aquariumSeedFraction(seed, index + 3) - 0.5) * 0.16,
++        index * 0.64,
++        (index - 1.5) * 0.075,
++      );
++      coral.add(plate);
++    }
++    return coral;
++  }
++
++  function createBrainCoral(THREE, materials, scale) {
++    const coral = new THREE.Group();
++    const core = new THREE.Mesh(
++      new THREE.SphereGeometry(scale, 24, 16),
++      materials.base,
++    );
++    core.scale.set(1, 0.62, 0.86);
++    coral.add(core);
++    for (let index = 0; index < 5; index += 1) {
++      const ridge = new THREE.Mesh(
++        new THREE.TorusGeometry(
++          scale * (0.38 + index * 0.085),
++          scale * 0.035,
++          8,
++          28,
++        ),
++        materials.tip,
++      );
++      ridge.position.y = scale * (0.12 + index * 0.055);
++      ridge.rotation.set(Math.PI / 2, index * 0.41, index * 0.2);
++      coral.add(ridge);
++    }
++    return coral;
++  }
++
++  function createSeaFan(THREE, materials, scale, seed) {
++    const fan = new THREE.Group();
++    const origin = new THREE.Vector3(0, 0, 0);
++    for (let index = 0; index < 11; index += 1) {
++      const angle = -1.15 + index * 0.23;
++      const length = 1.35 + aquariumSeedFraction(seed, index) * 0.6;
++      const end = new THREE.Vector3(
++        (aquariumSeedFraction(seed, index + 20) - 0.5) * 0.12,
++        Math.cos(angle * 0.62) * length * scale,
++        Math.sin(angle) * length * scale,
++      );
++      fan.add(
++        aquariumCylinderBetween(
++          THREE,
++          origin,
++          end,
++          0.04 * scale,
++          0.018 * scale,
++          index % 2 ? materials.base : materials.tip,
++          7,
++        ),
++      );
++      const crossEnd = end.clone().multiplyScalar(0.78);
++      crossEnd.y += 0.2 * scale;
++      crossEnd.z += (index % 2 ? 0.18 : -0.18) * scale;
++      fan.add(
++        aquariumCylinderBetween(
++          THREE,
++          end.clone().multiplyScalar(0.38),
++          crossEnd,
++          0.024 * scale,
++          0.012 * scale,
++          materials.tip,
++          6,
++        ),
++      );
++    }
++    return fan;
++  }
++
++  function createSoftCoral(THREE, materials, scale, seed) {
++    const coral = new THREE.Group();
++    for (let index = 0; index < 9; index += 1) {
++      const length =
++        (0.42 + aquariumSeedFraction(seed, index) * 0.52) * scale;
++      const lobe = new THREE.Mesh(
++        new THREE.CapsuleGeometry(0.12 * scale, length, 6, 12),
++        index % 3 ? materials.base : materials.tip,
++      );
++      lobe.position.set(
++        (index - 4) * 0.14 * scale,
++        length * 0.52,
++        (aquariumSeedFraction(seed, index + 8) - 0.5) * 0.42 * scale,
++      );
++      lobe.rotation.z = (index - 4) * 0.055;
++      coral.add(lobe);
++    }
++    return coral;
++  }
++
++  function createAquariumAnemone(THREE, materials, scale, seed) {
++    const anemone = new THREE.Group();
++    const core = new THREE.Mesh(
++      new THREE.SphereGeometry(0.48 * scale, 20, 12),
++      materials.base,
++    );
++    core.scale.y = 0.34;
++    anemone.add(core);
++    for (let index = 0; index < 24; index += 1) {
++      const angle = (index / 24) * Math.PI * 2;
++      const length =
++        (0.52 + aquariumSeedFraction(seed, index) * 0.46) * scale;
++      const tentacle = new THREE.Mesh(
++        new THREE.CapsuleGeometry(0.038 * scale, length, 5, 8),
++        index % 4 ? materials.base : materials.tip,
++      );
++      tentacle.position.set(
++        Math.cos(angle) * 0.29 * scale,
++        length * 0.54,
++        Math.sin(angle) * 0.29 * scale,
++      );
++      tentacle.rotation.set(
++        Math.sin(angle) * 0.34,
++        0,
++        Math.cos(angle) * 0.34,
++      );
++      tentacle.userData.restRotationX = tentacle.rotation.x;
++      tentacle.userData.restRotationZ = tentacle.rotation.z;
++      anemone.add(tentacle);
++    }
++    return anemone;
++  }
++
++  function createSeaGrass(THREE, materials, scale, seed) {
++    const grass = new THREE.Group();
++    for (let index = 0; index < 14; index += 1) {
++      const length =
++        (0.52 + aquariumSeedFraction(seed, index) * 0.68) * scale;
++      const blade = new THREE.Mesh(
++        new THREE.CapsuleGeometry(0.018 * scale, length, 4, 6),
++        index % 3 ? materials.base : materials.tip,
++      );
++      blade.position.set(
++        (aquariumSeedFraction(seed, index + 10) - 0.5) * 0.76 * scale,
++        length * 0.5,
++        (aquariumSeedFraction(seed, index + 20) - 0.5) * 0.42 * scale,
++      );
++      blade.rotation.z =
++        (aquariumSeedFraction(seed, index + 30) - 0.5) * 0.28;
++      blade.userData.restRotationZ = blade.rotation.z;
++      grass.add(blade);
++    }
++    return grass;
++  }
++
++  function createAquariumStarfish(THREE, material, scale) {
++    const starfish = new THREE.Group();
++    const center = new THREE.Mesh(
++      new THREE.SphereGeometry(0.13 * scale, 14, 10),
++      material,
++    );
++    center.scale.y = 0.34;
++    starfish.add(center);
++    for (let index = 0; index < 5; index += 1) {
++      const angle = (index / 5) * Math.PI * 2;
++      starfish.add(
++        aquariumCylinderBetween(
++          THREE,
++          new THREE.Vector3(0, 0, 0),
++          new THREE.Vector3(
++            Math.cos(angle) * 0.42 * scale,
++            0.025 * scale,
++            Math.sin(angle) * 0.42 * scale,
++          ),
++          0.105 * scale,
++          0.025 * scale,
++          material,
++          7,
++        ),
++      );
++    }
++    return starfish;
++  }
++
++  function createAquariumClam(THREE, materials, scale) {
++    const clam = new THREE.Group();
++    for (const side of [-1, 1]) {
++      const shell = new THREE.Mesh(
++        new THREE.SphereGeometry(
++          0.32 * scale,
++          18,
++          10,
++          0,
++          Math.PI * 2,
++          0,
++          Math.PI / 2,
++        ),
++        side > 0 ? materials.base : materials.tip,
++      );
++      shell.scale.set(1, 0.45, 0.8);
++      shell.position.x = side * 0.08 * scale;
++      shell.rotation.z = side * 0.42;
++      clam.add(shell);
++    }
++    return clam;
++  }
++
++  function createAquariumDepthTexture(THREE) {
++    return canvasTexture(THREE, 256, 512, (context, canvas) => {
++      const depth = context.createLinearGradient(0, 0, 0, canvas.height);
++      depth.addColorStop(0, "#0d6783");
++      depth.addColorStop(0.24, "#0a4f70");
++      depth.addColorStop(0.64, "#07334f");
++      depth.addColorStop(1, "#041b2d");
++      context.fillStyle = depth;
++      context.fillRect(0, 0, canvas.width, canvas.height);
++      const glow = context.createRadialGradient(
++        canvas.width * 0.55,
++        canvas.height * 0.38,
++        8,
++        canvas.width * 0.55,
++        canvas.height * 0.38,
++        canvas.width * 0.72,
++      );
++      glow.addColorStop(0, "rgba(68,214,228,0.24)");
++      glow.addColorStop(1, "rgba(4,20,36,0)");
++      context.fillStyle = glow;
++      context.fillRect(0, 0, canvas.width, canvas.height);
++    });
++  }
++
++  function createAquariumCausticTexture(THREE) {
++    const texture = canvasTexture(THREE, 256, 256, (context, canvas) => {
++      context.clearRect(0, 0, canvas.width, canvas.height);
++      context.globalCompositeOperation = "screen";
++      context.filter = "blur(2px)";
++      for (let index = 0; index < 13; index += 1) {
++        context.strokeStyle = `rgba(178,248,255,${0.07 + (index % 4) * 0.025})`;
++        context.lineWidth = 2 + (index % 3);
++        context.beginPath();
++        const y = 12 + index * 19;
++        context.moveTo(-20, y);
++        context.bezierCurveTo(55, y - 24, 92, y + 28, 150, y - 4);
++        context.bezierCurveTo(190, y - 26, 222, y + 18, 280, y - 12);
++        context.stroke();
++      }
++      context.filter = "none";
++    });
++    texture.wrapS = THREE.RepeatWrapping;
++    texture.wrapT = THREE.RepeatWrapping;
++    texture.repeat.set(1.6, 2.4);
++    return texture;
++  }
++  const frameMaterial = makeMaterial(THREE, "#101d20", {
++    metalness: 0.78,
++    roughness: 0.22,
++  });
++  const edgeMaterial = makeMaterial(THREE, "#8fbfbe", {
++    metalness: 0.72,
++    roughness: 0.18,
++    emissive: "#173d43",
++    emissiveIntensity: 0.25,
++  });
++  const glassMaterial = new THREE.MeshPhysicalMaterial({
++    color: "#c9fbff",
++    transparent: true,
++    opacity: 0.12,
++    metalness: 0,
++    roughness: 0.06,
++    clearcoat: 1,
++    clearcoatRoughness: 0.04,
++    depthWrite: false,
++  });
++  const waterMaterial = new THREE.MeshPhysicalMaterial({
++    color: "#137d9c",
++    transparent: true,
++    opacity: 0.13,
++    roughness: 0.18,
++    metalness: 0,
++    clearcoat: 0.74,
++    clearcoatRoughness: 0.14,
++    emissive: "#087ba8",
++    emissiveIntensity: 0.23,
++    depthWrite: false,
++  });
++  const sandMaterial = makeMaterial(THREE, "#d99d61", {
++    roughness: 0.92,
++    emissive: "#5f3017",
++    emissiveIntensity: 0.16,
++  });
++  const backdropMaterial = new THREE.MeshStandardMaterial({
++    color: "#ffffff",
++    map: createAquariumDepthTexture(THREE),
++    roughness: 0.78,
++    emissive: "#06273b",
++    emissiveIntensity: 0.34,
++  });
++  const bubbleMaterial = makeMaterial(THREE, "#d9ffff", {
++    transparent: true,
++    opacity: 0.72,
++    metalness: 0.12,
++    roughness: 0.08,
++    emissive: "#75d9ef",
++    emissiveIntensity: 0.5,
++    depthWrite: false,
++  });
++  const frame = new THREE.Group();
++  frame.name = "forkmesh-office-aquarium-frame";
++  const addFramePiece = (width, height, depth, x, y, z, material) => {
++    const piece = new THREE.Mesh(
++      new THREE.BoxGeometry(width, height, depth),
++      material,
++    );
++    piece.position.set(x, y, z);
++    frame.add(piece);
++  };
++  addFramePiece(
++    tankDepth + 0.32,
++    0.5,
++    tankLength + 0.6,
++    0,
++    0.25,
++    0,
++    frameMaterial,
++  );
++  addFramePiece(
++    tankDepth + 0.32,
++    0.44,
++    tankLength + 0.6,
++    0,
++    tankHeight + 0.02,
++    0,
++    frameMaterial,
++  );
++  for (const x of [-tankDepth / 2, tankDepth / 2]) {
++    for (const z of [-tankLength / 2, tankLength / 2]) {
++      addFramePiece(
++        0.25,
++        tankHeight,
++        0.25,
++        x,
++        tankHeight / 2,
++        z,
++        edgeMaterial,
++      );
++    }
++  }
++  group.add(frame);
++  const backdrop = new THREE.Mesh(
++    new THREE.BoxGeometry(0.08, tankHeight - 0.56, tankLength - 0.48),
++    backdropMaterial,
++  );
++  backdrop.name = "forkmesh-office-aquarium-backdrop";
++  backdrop.position.set(-tankDepth / 2 + 0.08, tankHeight / 2, 0);
++  group.add(backdrop);
++  const water = new THREE.Mesh(
++    new THREE.BoxGeometry(
++      tankDepth - 0.3,
++      tankHeight - 0.62,
++      tankLength - 0.5,
++    ),
++    waterMaterial,
++  );
++  water.name = "forkmesh-office-aquarium-water";
++  water.position.y = tankHeight / 2;
++  group.add(water);
++  const frontGlass = new THREE.Mesh(
++    new THREE.BoxGeometry(0.06, tankHeight - 0.48, tankLength - 0.24),
++    glassMaterial,
++  );
++  frontGlass.name = "forkmesh-office-aquarium-front-glass";
++  frontGlass.position.set(tankDepth / 2 + 0.01, tankHeight / 2, 0);
++  group.add(frontGlass);
++  const sand = new THREE.Group();
++  sand.name = "forkmesh-office-aquarium-sand";
++  const sandBed = new THREE.Mesh(
++    new THREE.BoxGeometry(tankDepth - 0.44, 0.4, tankLength - 0.8),
++    sandMaterial,
++  );
++  sandBed.position.y = 0.55;
++  sand.add(sandBed);
++  const duneGeometry = new THREE.DodecahedronGeometry(1, 0);
++  for (const [x, y, z, scale] of [
++    [-0.35, 0.62, -8.8, 1.25],
++    [0.24, 0.68, -1.6, 1.45],
++    [-0.1, 0.6, 7.1, 1.08],
++  ]) {
++    const dune = new THREE.Mesh(duneGeometry, sandMaterial);
++    dune.scale.set(0.74 * scale, 0.13 * scale, 0.96 * scale);
++    dune.position.set(x, y, z);
++    sand.add(dune);
++  }
++  group.add(sand);
++  const rubbleMaterial = makeMaterial(THREE, "#8e765d", {
++    roughness: 0.98,
++  });
++  for (let index = 0; index < 14; index += 1) {
++    const rubble = new THREE.Mesh(
++      new THREE.IcosahedronGeometry(0.16 + (index % 3) * 0.04, 1),
++      index % 4 === 0 ? sandMaterial : rubbleMaterial,
++    );
++    rubble.position.set(
++      -0.8 + (index % 5) * 0.34,
++      0.82 + (index % 2) * 0.05,
++      -11 + index * 1.62,
++    );
++    rubble.scale.set(1, 0.52, 1.3);
++    rubble.rotation.y = index * 1.17;
++    sand.add(rubble);
++  }
++  const starfishMaterial = new THREE.MeshPhysicalMaterial({
++    color: "#e88442",
++    roughness: 0.72,
++    clearcoat: 0.12,
++  });
++  for (const [index, x, z, scale] of [
++    [0, 0.58, 8.8, 0.72],
++    [1, -0.62, -0.2, 0.54],
++  ]) {
++    const starfish = createAquariumStarfish(THREE, starfishMaterial, scale);
++    starfish.name = `forkmesh-office-aquarium-starfish-${index}`;
++    starfish.position.set(x, 0.88, z);
++    starfish.rotation.y = index * 1.34;
++    sand.add(starfish);
++  }
++  const clamMaterials = {
++    base: new THREE.MeshPhysicalMaterial({
++      color: "#b974c7",
++      roughness: 0.38,
++      clearcoat: 0.46,
++    }),
++    tip: new THREE.MeshPhysicalMaterial({
++      color: "#75d4c5",
++      roughness: 0.34,
++      clearcoat: 0.52,
++    }),
++  };
++  const clam = createAquariumClam(THREE, clamMaterials, 0.76);
++  clam.name = "forkmesh-office-aquarium-clam";
++  clam.position.set(0.36, 0.9, 5.7);
++  clam.rotation.y = -0.48;
++  sand.add(clam);
++  const liveRockMaterial = new THREE.MeshPhysicalMaterial({
++    color: "#4d3f36",
++    roughness: 0.9,
++    metalness: 0,
++    clearcoat: 0.06,
++    emissive: "#151b19",
++    emissiveIntensity: 0.22,
++  });
++  const reef = new THREE.Group();
++  reef.name = "forkmesh-office-aquarium-live-rock";
++  for (const [index, x, y, z, scale] of [
++    [0, -0.36, 0.96, -9.4, 1.42],
++    [1, 0.2, 1.08, -6.6, 1.24],
++    [2, -0.34, 0.88, -3.5, 1.18],
++    [3, 0.16, 0.76, -0.4, 0.96],
++    [4, -0.28, 0.72, 2.5, 0.82],
++    [5, 0.18, 0.68, 5.2, 0.68],
++  ]) {
++    const rock = createAquariumLiveRock(
++      THREE,
++      liveRockMaterial,
++      scale,
++      index + 3,
++    );
++    rock.position.set(x, y, z);
++    reef.add(rock);
++  }
++  group.add(reef);
++  const coralMaterialPair = (base, tip, transparent = false) => ({
++    base: new THREE.MeshPhysicalMaterial({
++      color: base,
++      roughness: transparent ? 0.38 : 0.58,
++      clearcoat: transparent ? 0.42 : 0.14,
++      clearcoatRoughness: 0.3,
++      emissive: base,
++      emissiveIntensity: transparent ? 0.12 : 0.08,
++      transparent,
++      opacity: transparent ? 0.86 : 1,
++      depthWrite: !transparent,
++    }),
++    tip: new THREE.MeshPhysicalMaterial({
++      color: tip,
++      roughness: 0.4,
++      clearcoat: 0.34,
++      clearcoatRoughness: 0.2,
++      emissive: tip,
++      emissiveIntensity: 0.16,
++      transparent,
++      opacity: transparent ? 0.9 : 1,
++      depthWrite: !transparent,
++    }),
++  });
++  const staghornMaterials = coralMaterialPair("#d95791", "#ffd1e7");
++  const mintStaghornMaterials = coralMaterialPair("#43bfa4", "#c8fff1");
++  const plateMaterials = coralMaterialPair("#ac6be0", "#e6c8ff");
++  const brainMaterials = coralMaterialPair("#d38c3b", "#ffd67a");
++  const fanMaterials = coralMaterialPair("#a84da8", "#f1a9e6", true);
++  const softMaterials = coralMaterialPair("#48bfae", "#b9fff0", true);
++  const anemoneMaterials = coralMaterialPair("#da76bd", "#ffd8f4", true);
++  const grassMaterials = coralMaterialPair("#27977f", "#8fe9c6", true);
++  const coralGarden = new THREE.Group();
++  coralGarden.name = "forkmesh-office-aquarium-coral-garden";
++  group.add(coralGarden);
++  const corals = [];
++  for (const [index, x, y, z, scale] of [
++    [0, -0.28, 1.76, -9.4, 1.02],
++    [1, 0.28, 1.64, -4.4, 0.9],
++    [2, -0.18, 1.36, 2.5, 0.68],
++  ]) {
++    const staghorn = createBranchingCoral(
++      THREE,
++      index === 1 ? mintStaghornMaterials : staghornMaterials,
++      scale,
++      index + 8,
++    );
++    staghorn.name = `forkmesh-office-aquarium-staghorn-${index}`;
++    staghorn.position.set(x, y, z);
++    coralGarden.add(staghorn);
++  }
++  for (const [index, x, y, z, scale] of [
++    [0, 0.26, 1.62, -6.9, 0.92],
++    [1, -0.24, 1.44, 1.1, 0.82],
++  ]) {
++    const plate = createPlateCoral(THREE, plateMaterials, scale, index + 14);
++    plate.name = `forkmesh-office-aquarium-plate-coral-${index}`;
++    plate.position.set(x, y, z);
++    coralGarden.add(plate);
++  }
++  for (const [index, x, y, z, scale] of [
++    [0, 0.34, 1.42, -2.7, 0.56],
++    [1, -0.24, 1.18, 4.8, 0.44],
++  ]) {
++    const brain = createBrainCoral(THREE, brainMaterials, scale);
++    brain.name = `forkmesh-office-aquarium-brain-coral-${index}`;
++    brain.position.set(x, y, z);
++    coralGarden.add(brain);
++  }
++  for (const [index, x, y, z, scale, phase] of [
++    [0, -0.42, 1.58, -8.1, 1.12, 0.4],
++    [1, -0.46, 1.34, 0.1, 0.92, 2.1],
++  ]) {
++    const coral = createSeaFan(THREE, fanMaterials, scale, index + 21);
++    coral.name = `forkmesh-office-aquarium-sea-fan-${index}`;
++    coral.position.set(x, y, z);
++    corals.push({ coral, phase, amount: 0.045 });
++    coralGarden.add(coral);
++  }
++  for (const [index, x, y, z, scale, phase] of [
++    [0, 0.5, 1.58, -5.4, 1.04, 0.8],
++    [1, -0.34, 1.38, 2.8, 0.9, 2.4],
++    [2, 0.3, 1.14, 6.8, 0.72, 4.2],
++  ]) {
++    const coral = createSoftCoral(THREE, softMaterials, scale, index + 30);
++    coral.name = `forkmesh-office-aquarium-soft-coral-${index}`;
++    coral.position.set(x, y, z);
++    corals.push({ coral, phase, amount: 0.065 });
++    coralGarden.add(coral);
++  }
++  const anemones = [];
++  for (const [index, x, y, z, scale, phase] of [
++    [0, 0.38, 1.5, -1.2, 0.98, 0.4],
++    [1, -0.32, 1.22, 6.1, 0.84, 2.1],
++  ]) {
++    const anemone = createAquariumAnemone(
++      THREE,
++      anemoneMaterials,
++      scale,
++      index + 40,
++    );
++    anemone.name = `forkmesh-office-aquarium-anemone-${index}`;
++    anemone.position.set(x, y, z);
++    anemones.push({ anemone, phase });
++    coralGarden.add(anemone);
++  }
++  const seaGrasses = [];
++  for (const [index, x, y, z, scale, phase] of [
++    [0, -0.56, 0.88, -10.8, 0.76, 0.2],
++    [1, 0.48, 0.88, 3.8, 0.68, 1.8],
++    [2, -0.42, 0.88, 8.2, 0.62, 3.6],
++  ]) {
++    const grass = createSeaGrass(THREE, grassMaterials, scale, index + 50);
++    grass.name = `forkmesh-office-aquarium-seagrass-${index}`;
++    grass.position.set(x, y, z);
++    seaGrasses.push({ grass, phase });
++    coralGarden.add(grass);
++  }
++  const fishStates = [];
++  const fishInstances = [
++    {
++      speciesId: "clownfish",
++      scale: 1.08,
++      speed: 0.000026,
++      phase: 0.06,
++      bank: 0.62,
++      points: [
++        [0.55, 7.5, -8.8],
++        [0.1, 8.2, -4.2],
++        [-0.45, 7.4, 0.8],
++        [-0.2, 6.5, -1.8],
++        [0.48, 6.8, -6.2],
++      ],
++    },
++    {
++      speciesId: "blue-tang",
++      scale: 1.12,
++      speed: 0.000019,
++      phase: 0.38,
++      bank: 0.52,
++      points: [
++        [-0.52, 8.7, -2.8],
++        [0.35, 9.3, 5.8],
++        [0.62, 7.8, 10.2],
++        [-0.18, 6.7, 5.1],
++        [-0.66, 7.5, 0.8],
++      ],
++    },
++    {
++      speciesId: "yellow-tang",
++      scale: 1.03,
++      speed: 0.000023,
++      phase: 0.67,
++      bank: 0.58,
++      points: [
++        [0.48, 9.5, -10.1],
++        [-0.22, 10.1, -5.8],
++        [-0.58, 8.9, -0.6],
++        [0.24, 8.0, -3.8],
++        [0.7, 8.8, -8.2],
++      ],
++    },
++    {
++      speciesId: "royal-gramma",
++      scale: 0.96,
++      speed: 0.000031,
++      phase: 0.22,
++      bank: 0.68,
++      points: [
++        [-0.64, 4.2, -7.4],
++        [0.16, 5.2, -3.7],
++        [0.58, 4.6, 0.4],
++        [-0.12, 3.7, -1.6],
++        [-0.7, 3.5, -5.1],
++      ],
++    },
++    {
++      speciesId: "butterflyfish",
++      scale: 1,
++      speed: 0.000021,
++      phase: 0.82,
++      bank: 0.54,
++      points: [
++        [0.58, 5.8, 2.8],
++        [0.06, 6.7, 7.2],
++        [-0.58, 5.9, 11],
++        [-0.22, 4.8, 8.6],
++        [0.66, 4.9, 5.1],
++      ],
++    },
++    {
++      speciesId: "chromis",
++      scale: 0.92,
++      speed: 0.000035,
++      phase: 0.12,
++      bank: 0.72,
++      points: [[-0.2, 8, 0], [0.48, 8.6, 5], [0.24, 7.7, 9], [-0.48, 7.2, 4]],
++    },
++    {
++      speciesId: "chromis",
++      scale: 0.82,
++      speed: 0.000034,
++      phase: 0.18,
++      bank: 0.74,
++      points: [[0.18, 7.6, -0.5], [0.62, 8.2, 4.3], [0.02, 7.4, 8.3], [-0.62, 6.9, 3.5]],
++    },
++    {
++      speciesId: "chromis",
++      scale: 0.76,
++      speed: 0.000036,
++      phase: 0.24,
++      bank: 0.7,
++      points: [[-0.38, 8.5, 0.8], [0.28, 9, 5.6], [0.52, 8.1, 9.7], [-0.34, 7.6, 4.9]],
++    },
++  ];
++  for (let index = 0; index < fishInstances.length; index += 1) {
++    const instance = fishInstances[index];
++    const species = AQUARIUM_FISH_SPECIES.find(
++      (candidate) => candidate.id === instance.speciesId,
++    );
++    const speciesIndex = fishInstances
++      .slice(0, index)
++      .filter((candidate) => candidate.speciesId === instance.speciesId)
++      .length;
++    const { fish, tail, pectoralFins } = createReefFish(
++      THREE,
++      species,
++      speciesIndex,
++    );
++    fish.scale.setScalar(instance.scale);
++    const curve = new THREE.CatmullRomCurve3(
++      instance.points.map((point) => new THREE.Vector3(...point)),
++      true,
++      "catmullrom",
++      0.42,
++    );
++    fishStates.push({
++      fish,
++      tail,
++      pectoralFins,
++      curve,
++      speed: instance.speed,
++      phase: instance.phase,
++      bank: instance.bank,
++      tailSpeed: 0.0038 + index * 0.00011,
++      point: new THREE.Vector3(),
++      tangent: new THREE.Vector3(),
++      feedingPoint: new THREE.Vector3(),
++      feedingAhead: new THREE.Vector3(),
++      feedingTangent: new THREE.Vector3(),
++      feedingRadius:
++        instance.speciesId === "chromis"
++          ? 4.2 + speciesIndex * 0.7
++          : 1.8 + index * 0.8,
++      feedingHeight:
++        instance.speciesId === "chromis"
++          ? -0.8 + speciesIndex * 0.4
++          : (index % 3 - 1) * 0.65,
++      feedingPhase: instance.phase * Math.PI * 2 + index * 0.74,
++      feedingSpeed: 0.00105 + (index % 4) * 0.00009,
++      feedingDelay: index * 260,
++    });
++    group.add(fish);
++  }
++  const bubbles = new THREE.Group();
++  bubbles.name = "forkmesh-office-aquarium-bubbles";
++  const bubbleGeometry = new THREE.SphereGeometry(0.1, 8, 6);
++  const bubbleStates = [];
++  for (let index = 0; index < 14; index += 1) {
++    const bubble = new THREE.Mesh(bubbleGeometry, bubbleMaterial);
++    bubble.name = `forkmesh-office-aquarium-bubble-${index}`;
++    const phase = index / 14;
++    const speed = 0.000045 + (index % 4) * 0.000009;
++    bubble.scale.setScalar(0.55 + (index % 3) * 0.22);
++    bubbleStates.push({
++      bubble,
++      x: -0.4 + (index % 5) * 0.22,
++      z: 6.3 + (index % 4) * 0.56,
++      phase,
++      speed,
++    });
++    bubbles.add(bubble);
++  }
++  group.add(bubbles);
++  const food = new THREE.Group();
++  food.name = "forkmesh-office-aquarium-food";
++  food.visible = false;
++  const foodGeometry = new THREE.SphereGeometry(0.075, 8, 6);
++  const foodMaterial = new THREE.MeshStandardMaterial({
++    color: "#d7a14b",
++    emissive: "#80521f",
++    emissiveIntensity: 0.66,
++    roughness: 0.82,
++    metalness: 0,
++    transparent: true,
++    opacity: 0.96,
++  });
++  const foodStates = [];
++  for (let index = 0; index < 28; index += 1) {
++    const pellet = new THREE.Mesh(foodGeometry, foodMaterial);
++    pellet.name = `forkmesh-office-aquarium-food-pellet-${index}`;
++    pellet.scale.set(
++      0.7 + aquariumSeedFraction(91, index) * 0.8,
++      0.65 + aquariumSeedFraction(92, index) * 0.55,
++      0.7 + aquariumSeedFraction(93, index) * 0.8,
++    );
++    foodStates.push({
++      pellet,
++      x: (aquariumSeedFraction(94, index) - 0.5) * 0.82,
++      z: (aquariumSeedFraction(95, index) - 0.5) * 8.4,
++      drift: 3.8 + aquariumSeedFraction(96, index) * 3.1,
++      phase: aquariumSeedFraction(97, index) * Math.PI * 2,
++    });
++    food.add(pellet);
++  }
++  group.add(food);
++  const surfaceGeometry = new THREE.PlaneGeometry(
++    tankDepth - 0.42,
++    tankLength - 0.72,
++    8,
++    42,
++  );
++  surfaceGeometry.rotateX(Math.PI / 2);
++  const surfaceMaterial = new THREE.MeshPhysicalMaterial({
++    color: "#b9f7ff",
++    transparent: true,
++    opacity: 0.2,
++    roughness: 0.08,
++    metalness: 0,
++    clearcoat: 1,
++    clearcoatRoughness: 0.06,
++    side: THREE.DoubleSide,
++    depthWrite: false,
++  });
++  const waterSurface = new THREE.Mesh(surfaceGeometry, surfaceMaterial);
++  waterSurface.name = "forkmesh-office-aquarium-water-surface";
++  waterSurface.position.y = tankHeight - 0.48;
++  group.add(waterSurface);
++  const surfacePositionAttribute = surfaceGeometry.getAttribute("position");
++  const surfaceBaseHeights = new Float32Array(surfacePositionAttribute.count);
++  for (let index = 0; index < surfacePositionAttribute.count; index += 1) {
++    surfaceBaseHeights[index] = surfacePositionAttribute.getY(index);
++  }
++  const particleGeometry = new THREE.BufferGeometry();
++  const particlePositions = new Float32Array(54 * 3);
++  for (let index = 0; index < 54; index += 1) {
++    particlePositions[index * 3] =
++      -1 + aquariumSeedFraction(70, index) * 2;
++    particlePositions[index * 3 + 1] =
++      1.2 + aquariumSeedFraction(71, index) * 9.8;
++    particlePositions[index * 3 + 2] =
++      -12.2 + aquariumSeedFraction(72, index) * 24.4;
++  }
++  particleGeometry.setAttribute(
++    "position",
++    new THREE.BufferAttribute(particlePositions, 3),
++  );
++  const particles = new THREE.Points(
++    particleGeometry,
++    new THREE.PointsMaterial({
++      color: "#d7fbff",
++      size: 0.045,
++      transparent: true,
++      opacity: 0.44,
++      depthWrite: false,
++      blending: THREE.AdditiveBlending,
++    }),
++  );
++  particles.name = "forkmesh-office-aquarium-particles";
++  group.add(particles);
++  const causticTexture = createAquariumCausticTexture(THREE);
++  const causticMaterial = new THREE.MeshBasicMaterial({
++    color: "#b9f8ff",
++    map: causticTexture,
++    transparent: true,
++    opacity: 0.18,
++    side: THREE.DoubleSide,
++    depthWrite: false,
++    blending: THREE.AdditiveBlending,
++  });
++  const caustics = new THREE.Group();
++  caustics.name = "forkmesh-office-aquarium-caustics";
++  const sandCaustics = new THREE.Mesh(
++    new THREE.PlaneGeometry(tankDepth - 0.5, tankLength - 0.9),
++    causticMaterial,
++  );
++  sandCaustics.rotation.x = -Math.PI / 2;
++  sandCaustics.position.y = 0.82;
++  caustics.add(sandCaustics);
++  const backdropCaustics = new THREE.Mesh(
++    new THREE.PlaneGeometry(tankLength - 0.9, tankHeight - 0.9),
++    causticMaterial.clone(),
++  );
++  backdropCaustics.rotation.y = Math.PI / 2;
++  backdropCaustics.position.set(-tankDepth / 2 + 0.13, tankHeight / 2, 0);
++  caustics.add(backdropCaustics);
++  group.add(caustics);
++  const topLight = new THREE.Mesh(
++    new THREE.BoxGeometry(tankDepth - 0.32, 0.11, tankLength - 1),
++    makeMaterial(THREE, "#55edff", {
++      emissive: "#29d4e6",
++      emissiveIntensity: 1.3,
++      metalness: 0.28,
++      roughness: 0.24,
++    }),
++  );
++  topLight.name = "forkmesh-office-aquarium-top-light";
++  topLight.position.y = tankHeight - 0.34;
++  group.add(topLight);
++  const waterLight = new THREE.PointLight("#44e8ff", 3.1, 17, 1.8);
++  waterLight.name = "forkmesh-office-aquarium-light";
++  waterLight.position.set(0.45, 6.6, -1.5);
++  group.add(waterLight);
++  const spillLight = new THREE.PointLight("#7df0c6", 1.1, 9, 1.9);
++  spillLight.name = "forkmesh-office-aquarium-spill-light";
++  spillLight.position.set(1.95, 3.2, -2.5);
++  group.add(spillLight);
++  const sandLight = new THREE.PointLight("#ffd08a", 0.7, 8.5, 2);
++  sandLight.name = "forkmesh-office-aquarium-sand-light";
++  sandLight.position.set(0.2, 1.7, -2.8);
++  group.add(sandLight);
++  function aquariumSmoothstep(value) {
++    const amount = clamp(value, 0, 1);
++    return amount * amount * (3 - 2 * amount);
++  }
++
++  function aquariumFeedingTarget(state, elapsed, target) {
++    const angle = elapsed * state.feedingSpeed + state.feedingPhase;
++    target.set(
++      feedingCenter.x + Math.sin(angle * 1.7) * 0.22,
++      feedingCenter.y +
++        state.feedingHeight +
++        Math.sin(angle * 2.35 + state.feedingPhase) * 0.42,
++      feedingCenter.z + Math.cos(angle) * state.feedingRadius,
++    );
++    return target;
++  }
++
++  function updateAquariumFish(time, animate = true) {
++    const motionTime = animate ? time : 0;
++    for (let index = 0; index < fishStates.length; index += 1) {
++      const state = fishStates[index];
++      const progress = (motionTime * state.speed + state.phase) % 1;
++      state.curve.getPointAt(progress, state.point);
++      state.curve.getTangentAt(progress, state.tangent).normalize();
++      let feedingBlend = 0;
++      if (feedingActive) {
++        const elapsed = Math.max(0, time - feedingStartedAt);
++        const feedingElapsed = animate ? elapsed : 8_500;
++        const approach = aquariumSmoothstep(
++          (feedingElapsed - state.feedingDelay) /
++            AQUARIUM_FEEDING_APPROACH_MS,
++        );
++        const returnWindow = aquariumSmoothstep(
++          (AQUARIUM_FEEDING_DURATION_MS - feedingElapsed) /
++            AQUARIUM_FEEDING_RETURN_MS,
++        );
++        feedingBlend = animate ? approach * returnWindow : 1;
++        aquariumFeedingTarget(
++          state,
++          feedingElapsed,
++          state.feedingPoint,
++        );
++        aquariumFeedingTarget(
++          state,
++          feedingElapsed + 28,
++          state.feedingAhead,
++        );
++        state.feedingTangent
++          .subVectors(state.feedingAhead, state.feedingPoint)
++          .normalize();
++        state.tangent
++          .lerp(state.feedingTangent, feedingBlend)
++          .normalize();
++      }
++      const fish = state.fish;
++      fish.position.copy(state.point);
++      if (feedingBlend > 0) {
++        fish.position.lerp(state.feedingPoint, feedingBlend);
++      }
++      if (animate) {
++        fish.position.y +=
++          Math.sin(motionTime * 0.0017 + state.phase * 11) *
++          (0.08 + feedingBlend * 0.035);
++      }
++      fish.rotation.y = Math.atan2(state.tangent.x, state.tangent.z);
++      fish.rotation.z = -state.tangent.y * state.bank;
++      fish.rotation.x = animate
++        ? Math.sin(time * 0.0011 + state.phase * 8) * 0.035
++        : 0;
++      state.tail.rotation.y =
++        Math.sin(
++          motionTime * state.tailSpeed * (1 + feedingBlend * 0.62) +
++            state.phase * 9,
++        ) *
++        (0.38 + feedingBlend * 0.08);
++      for (
++        let finIndex = 0;
++        finIndex < state.pectoralFins.length;
++        finIndex += 1
++      ) {
++        const fin = state.pectoralFins[finIndex];
++        fin.rotation.z =
++          fin.userData.restZ +
++          Math.sin(
++            motionTime * (0.004 + feedingBlend * 0.0014) +
++              state.phase * 7 +
++              finIndex * Math.PI,
++          ) *
++            (0.12 + feedingBlend * 0.035);
++      }
++    }
++  }
++  function updateAquariumReef(time) {
++    for (let index = 0; index < corals.length; index += 1) {
++      const { coral, phase, amount } = corals[index];
++      coral.rotation.z = Math.sin(time * 0.00082 + phase) * amount;
++      coral.rotation.x = Math.cos(time * 0.00067 + phase) * 0.036;
++    }
++    for (let index = 0; index < anemones.length; index += 1) {
++      const state = anemones[index];
++      const anemone = state.anemone;
++      anemone.rotation.z = Math.sin(time * 0.0011 + state.phase) * 0.1;
++      anemone.rotation.x = Math.cos(time * 0.0009 + state.phase) * 0.055;
++      for (let childIndex = 1; childIndex < anemone.children.length; childIndex += 1) {
++        const tentacle = anemone.children[childIndex];
++        tentacle.rotation.x =
++          tentacle.userData.restRotationX +
++          Math.sin(time * 0.0015 + state.phase + childIndex * 0.31) * 0.055;
++        tentacle.rotation.z =
++          tentacle.userData.restRotationZ +
++          Math.cos(time * 0.0012 + state.phase + childIndex * 0.27) * 0.065;
++      }
++    }
++    for (let index = 0; index < seaGrasses.length; index += 1) {
++      const state = seaGrasses[index];
++      const grass = state.grass;
++      grass.rotation.z = Math.sin(time * 0.0009 + state.phase) * 0.055;
++      for (let childIndex = 0; childIndex < grass.children.length; childIndex += 1) {
++        const blade = grass.children[childIndex];
++        blade.rotation.z =
++          blade.userData.restRotationZ +
++          Math.sin(time * 0.0013 + state.phase + childIndex * 0.22) * 0.08;
++      }
++    }
++  }
++
++  function updateAquariumBubbles(time) {
++    for (let index = 0; index < bubbleStates.length; index += 1) {
++      const state = bubbleStates[index];
++      const rise = (time * state.speed + state.phase) % 1;
++      const bubble = state.bubble;
++      bubble.position.x =
++        state.x + Math.sin(time * 0.0014 + state.phase) * 0.09;
++      bubble.position.y = 1 + rise * 9.8;
++      bubble.position.z = state.z;
++    }
++  }
++
++  function updateAquariumAtmosphere(time) {
++    for (let index = 0; index < surfacePositionAttribute.count; index += 1) {
++      const x = surfacePositionAttribute.getX(index);
++      const z = surfacePositionAttribute.getZ(index);
++      surfacePositionAttribute.setY(
++        index,
++        surfaceBaseHeights[index] +
++          Math.sin(time * 0.0014 + z * 0.72) * 0.035 +
++          Math.cos(time * 0.0011 + x * 2.1 + z * 0.28) * 0.022,
++      );
++    }
++    surfacePositionAttribute.needsUpdate = true;
++    particles.position.y = Math.sin(time * 0.00022) * 0.16;
++    particles.position.z = Math.cos(time * 0.00017) * 0.12;
++    particles.rotation.y = Math.sin(time * 0.00011) * 0.025;
++    causticTexture.offset.x = (time * 0.000006) % 1;
++    causticTexture.offset.y = (time * -0.000004) % 1;
++    const pulse = Math.sin(time * 0.0015);
++    sandCaustics.material.opacity = 0.17 + pulse * 0.025;
++    backdropCaustics.material.opacity = 0.095 + pulse * 0.018;
++    waterLight.intensity = 2.7 + pulse * 0.18;
++    spillLight.intensity = 0.9 + pulse * 0.07;
++    sandLight.intensity = 0.7 + pulse * 0.045;
++    topLight.material.emissiveIntensity = 1.18 + pulse * 0.08;
++    waterMaterial.emissiveIntensity = 0.23 + pulse * 0.025;
++  }
++
++  function updateAquariumFood(time, animate = true) {
++    if (!feedingActive) {
++      food.visible = false;
++      return;
++    }
++    const elapsed = clamp(
++      time - feedingStartedAt,
++      0,
++      AQUARIUM_FEEDING_DURATION_MS,
++    );
++    const progress = elapsed / AQUARIUM_FEEDING_DURATION_MS;
++    const visualProgress = animate ? progress : 0.14;
++    const fade =
++      progress < 0.82
++        ? 1
++        : aquariumSmoothstep((1 - progress) / 0.18);
++    feedingCenter.set(0.68, 6.9 - visualProgress * 1.8, -1.8);
++    food.visible = true;
++    foodMaterial.opacity = 0.96 * fade;
++    for (let index = 0; index < foodStates.length; index += 1) {
++      const state = foodStates[index];
++      const wobble = animate
++        ? Math.sin(time * 0.0012 + state.phase) * 0.1
++        : Math.sin(state.phase) * 0.1;
++      state.pellet.position.set(
++        feedingCenter.x + state.x + wobble,
++        7.85 - visualProgress * state.drift - (index % 5) * 0.055,
++        feedingCenter.z + state.z + wobble * 0.55,
++      );
++      state.pellet.rotation.set(
++        state.phase + visualProgress * Math.PI * 2,
++        state.phase * 0.7 + visualProgress * Math.PI * 3,
++        state.phase * 0.4,
++      );
++    }
++  }
++
++  function updateFeeding(time, animate = true) {
++    const now = Number.isFinite(Number(time)) ? Number(time) : performance.now();
++    if (
++      feedingActive &&
++      now - feedingStartedAt >= AQUARIUM_FEEDING_DURATION_MS
++    ) {
++      feedingActive = false;
++      feedingStartedAt = -Infinity;
++      reducedFeedingPoseApplied = false;
++      food.visible = false;
++      foodMaterial.opacity = 0.96;
++      if (!animate) updateAquariumFish(0, true);
++    }
++    updateAquariumFood(now, animate);
++    if (!animate && feedingActive && !reducedFeedingPoseApplied) {
++      updateAquariumFish(0, false);
++      reducedFeedingPoseApplied = true;
++    }
++    return feedingActive;
++  }
++
++  function feed(time = performance.now()) {
++    const now = Number.isFinite(Number(time)) ? Number(time) : performance.now();
++    updateFeeding(now, true);
++    if (feedingActive) return false;
++    feedingStartedAt = now;
++    feedingActive = true;
++    reducedFeedingPoseApplied = false;
++    updateAquariumFood(now, true);
++    return true;
++  }
++
++  function getFeedingState(time = performance.now()) {
++    const now = Number.isFinite(Number(time)) ? Number(time) : performance.now();
++    if (
++      feedingActive &&
++      now - feedingStartedAt >= AQUARIUM_FEEDING_DURATION_MS
++    ) {
++      updateFeeding(now, true);
++    }
++    const elapsedMs = feedingActive
++      ? clamp(now - feedingStartedAt, 0, AQUARIUM_FEEDING_DURATION_MS)
++      : 0;
++    return {
++      active: feedingActive,
++      startedAt: feedingActive ? feedingStartedAt : null,
++      endsAt: feedingActive
++        ? feedingStartedAt + AQUARIUM_FEEDING_DURATION_MS
++        : null,
++      elapsedMs,
++      remainingMs: feedingActive
++        ? AQUARIUM_FEEDING_DURATION_MS - elapsedMs
++        : 0,
++      durationMs: AQUARIUM_FEEDING_DURATION_MS,
++      foodVisible: food.visible,
++      foodPosition: feedingCenter.toArray(),
++    };
++  }
++
++  function initializeAquariumState(time) {
++    updateAquariumFish(time);
++    updateAquariumReef(time);
++    updateAquariumBubbles(time);
++    updateAquariumAtmosphere(time);
++  }
++  initializeAquariumState(0);
++  animated.push((time) => {
++    initializeAquariumState(time);
++  });
++  group.traverse((child) => {
++    if (!child.isMesh) return;
++    child.castShadow = child.material?.transparent !== true;
++    child.receiveShadow = child.material?.transparent !== true;
++  });
++  return { group, feed, updateFeeding, getFeedingState };
++}
++
+ function createForkMeshOffice(THREE, position, interactive, animated) {
+   const group = new THREE.Group();
+   const wallThickness = 0.35;
+@@ -11542,6 +13281,92 @@ export function createWorldScene({
+     });
+   }
+   addOfficeFloorSurface(officeInterior, officeLobbyFloorMaterial);
++  const officeAquarium = createOfficeMarineAquarium(THREE, animated);
++  officeInterior.add(officeAquarium.group);
++  const aquariumFeedAnchor = new THREE.Object3D();
++  aquariumFeedAnchor.name = "forkmesh-office-aquarium-feed-anchor";
++  aquariumFeedAnchor.position.set(2.15, 8.4, 0);
++  officeAquarium.group.add(aquariumFeedAnchor);
++  const aquariumFeedLocalPosition = new THREE.Vector3();
++  let aquariumFeedNearby = false;
++  const aquariumFeedAction = document.createElement("button");
++  aquariumFeedAction.type = "button";
++  aquariumFeedAction.className = "world-aquarium-feed-action";
++  aquariumFeedAction.dataset.worldAquariumFeed = "";
++  aquariumFeedAction.dataset.feeding = "false";
++  aquariumFeedAction.textContent = "Feed the Fishes";
++  aquariumFeedAction.setAttribute("aria-label", "Feed the Fishes");
++  aquariumFeedAction.hidden = true;
++  labelLayer.appendChild(aquariumFeedAction);
++
++  function feedOfficeAquarium(time = performance.now()) {
++    const started = officeAquarium.feed(time);
++    officeAquarium.updateFeeding(time, !reducedMotion);
++    return started;
++  }
++
++  function getOfficeAquariumState(time = performance.now()) {
++    officeAquarium.updateFeeding(time, !reducedMotion);
++    return officeAquarium.getFeedingState(time);
++  }
++
++  function handleAquariumFeed(event) {
++    event.preventDefault();
++    event.stopPropagation();
++    if (!aquariumFeedNearby) return;
++    if (feedOfficeAquarium()) {
++      aquariumFeedAction.disabled = true;
++      aquariumFeedAction.dataset.feeding = "true";
++      aquariumFeedAction.textContent = "Fishes are feeding";
++      aquariumFeedAction.setAttribute(
++        "aria-label",
++        "Fishes are feeding",
++      );
++    }
++  }
++  aquariumFeedAction.addEventListener("click", handleAquariumFeed);
++
++  function updateOfficeAquariumProximity(time, rect) {
++    officeAvatarLocalPosition(player, aquariumFeedLocalPosition);
++    aquariumFeedNearby =
++      officeSceneMode === "lobby" &&
++      officeCurrentFloorId === "lobby" &&
++      !officeElevatorRide &&
++      aquariumFeedLocalPosition.x >=
++        OFFICE_AQUARIUM_BOUNDS.maxX + OFFICE_AVATAR_RADIUS - 0.04 &&
++      aquariumFeedLocalPosition.x <=
++        OFFICE_AQUARIUM_BOUNDS.maxX + OFFICE_AVATAR_RADIUS + 4.8 &&
++      aquariumFeedLocalPosition.z >= OFFICE_AQUARIUM_BOUNDS.minZ + 0.4 &&
++      aquariumFeedLocalPosition.z <= OFFICE_AQUARIUM_BOUNDS.maxZ - 0.4;
++    if (!aquariumFeedNearby) {
++      aquariumFeedAction.hidden = true;
++      aquariumFeedAction.style.visibility = "hidden";
++      return;
++    }
++    const feeding = officeAquarium.getFeedingState(time).active;
++    const label = feeding ? "Fishes are feeding" : "Feed the Fishes";
++    aquariumFeedAction.hidden = false;
++    aquariumFeedAction.disabled = feeding;
++    aquariumFeedAction.dataset.feeding = String(feeding);
++    if (aquariumFeedAction.textContent !== label) {
++      aquariumFeedAction.textContent = label;
++      aquariumFeedAction.setAttribute("aria-label", label);
++    }
++    aquariumFeedAnchor.position.z = clamp(
++      aquariumFeedLocalPosition.z - officeAquarium.group.position.z,
++      -11.2,
++      11.2,
++    );
++    updateScreenLabel(
++      THREE,
++      aquariumFeedAnchor,
++      aquariumFeedAction,
++      camera,
++      rect.width,
++      rect.height,
++      0,
++    );
++  }
+   OFFICE_FLOORS.slice(1).forEach((floor) => {
+     const floorGroup = new THREE.Group();
+     floorGroup.name = `forkmesh-office-floor-${floor.id}`;
+@@ -13625,7 +15450,7 @@ export function createWorldScene({
+   function nearestOfficeWalkablePosition(floorId, localPosition) {
+     const origin = localPosition.clone();
+     if (
+-      officeInteriorPointIsWalkable(
++      officeScenePointIsWalkable(
+         floorId,
+         origin.x,
+         origin.z,
+@@ -13644,7 +15469,7 @@ export function createWorldScene({
+         const x = origin.x + Math.cos(angle) * distance;
+         const z = origin.z + Math.sin(angle) * distance;
+         if (
+-          officeInteriorPointIsWalkable(
++          officeScenePointIsWalkable(
+             floorId,
+             x,
+             z,
+@@ -13993,7 +15818,7 @@ export function createWorldScene({
+         z <= OFFICE_DOORWAY_APPROACH_Z + 0.08;
+       return (
+         inLobbyDoorway ||
+-        officeInteriorPointIsWalkable(
++        officeScenePointIsWalkable(
+           officeCurrentFloorId,
+           x,
+           z,
+@@ -21253,7 +23078,7 @@ export function createWorldScene({
+     if (officeSceneMode === "lobby") {
+       const localPoint = officeInterior.worldToLocal(point.clone());
+       if (
+-        !officeInteriorPointIsWalkable(
++        !officeScenePointIsWalkable(
+           officeCurrentFloorId,
+           localPoint.x,
+           localPoint.z,
+@@ -21614,6 +23439,8 @@ export function createWorldScene({
+       event.target instanceof HTMLInputElement ||
+       event.target instanceof HTMLTextAreaElement ||
+       event.target instanceof HTMLSelectElement ||
++      event.target instanceof HTMLButtonElement ||
++      event.target instanceof HTMLAnchorElement ||
+       event.target?.isContentEditable
+     ) return;
+     if (MOVEMENT_KEYS.has(event.code)) {
+@@ -21799,6 +23626,7 @@ export function createWorldScene({
+     updateBuildBoardProximity();
+     updateOfficeReceptionGuide(time);
+     updateOfficeAttendanceClock(time);
++    officeAquarium.updateFeeding(time, !reducedMotion);
+     // The Office is part of the same live World. Neighbours and ForkBot keep
+     // animating while the local visitor is in the tower instead of freezing
+     // the landscape visible through its glass walls.
+@@ -21980,6 +23808,7 @@ export function createWorldScene({
+       animateWeather(weather.snow, time, delta, "snow");
+     }
+     const rect = container.getBoundingClientRect();
++    updateOfficeAquariumProximity(time, rect);
+     // main removed the floating landmark labels (adhoc #243); only the player
+     // and remote name plates remain, and they are a town-scene concern.
+     if (officeSceneMode === "town") {
+@@ -22164,6 +23993,7 @@ export function createWorldScene({
+     window.removeEventListener("keydown", handleKeyDown);
+     window.removeEventListener("keyup", handleKeyUp);
+     window.removeEventListener("blur", handleWindowBlur);
++    aquariumFeedAction.removeEventListener("click", handleAquariumFeed);
+     touchPointers.clear();
+     keys.clear();
+     touchKeys.clear();
+@@ -22213,6 +24043,8 @@ export function createWorldScene({
+     setSelfWorkBadgeVisibility,
+     travelToOfficeFloor,
+     sitOnOfficeChair,
++    feedOfficeAquarium,
++    getOfficeAquariumState,
+     setOfficeParticipants,
+     updateOfficeMarketingTasks,
+     isOfficeInterior: () => officeSceneMode !== "town",
+diff --git a/cloudflare_worker/public/world/world.css b/cloudflare_worker/public/world/world.css
+index 27bfb5d01..c1ef7df91 100644
+--- a/cloudflare_worker/public/world/world.css
++++ b/cloudflare_worker/public/world/world.css
+@@ -6186,6 +6186,61 @@ forkmesh-world.world-office-active .world-quick-dock {
+   text-transform: none;
+ }
+ 
++.world-aquarium-feed-action {
++  position: absolute;
++  display: inline-flex;
++  min-height: 38px;
++  align-items: center;
++  justify-content: center;
++  transform: translate(-50%, -100%);
++  border: 1px solid rgb(113 239 255 / 0.74);
++  border-radius: 999px;
++  background:
++    linear-gradient(180deg, rgb(10 42 48 / 0.94), rgb(5 20 25 / 0.96));
++  box-shadow:
++    0 12px 30px rgb(0 8 12 / 0.4),
++    inset 0 1px rgb(214 253 255 / 0.16);
++  padding: 8px 15px;
++  color: #e3fcff;
++  cursor: pointer;
++  font: 750 0.64rem/1 "ForkMesh Mono", ui-monospace, monospace;
++  letter-spacing: 0.025em;
++  white-space: nowrap;
++  pointer-events: auto;
++  backdrop-filter: blur(10px);
++  transition:
++    border-color 160ms ease,
++    background-color 160ms ease,
++    box-shadow 160ms ease,
++    transform 160ms ease;
++}
++
++.world-aquarium-feed-action[hidden] {
++  display: none;
++}
++
++.world-aquarium-feed-action:hover:not(:disabled) {
++  transform: translate(-50%, calc(-100% - 2px));
++  border-color: #b8fbff;
++  box-shadow:
++    0 14px 34px rgb(0 8 12 / 0.46),
++    0 0 22px rgb(72 228 246 / 0.2),
++    inset 0 1px rgb(232 254 255 / 0.22);
++}
++
++.world-aquarium-feed-action:focus-visible {
++  outline: 2px solid var(--world-mint);
++  outline-offset: 3px;
++}
++
++.world-aquarium-feed-action[data-feeding="true"] {
++  border-color: rgb(158 247 198 / 0.62);
++  background:
++    linear-gradient(180deg, rgb(19 52 44 / 0.94), rgb(7 26 23 / 0.96));
++  color: #cffff0;
++  cursor: default;
++}
++
+ .world-dashboard-embed {
+   min-height: calc(100svh - 3.5rem);
+ }
+diff --git a/cloudflare_worker/tests/test_world_emoji_status.py b/cloudflare_worker/tests/test_world_emoji_status.py
+index f411dd4ee..021689863 100644
+--- a/cloudflare_worker/tests/test_world_emoji_status.py
++++ b/cloudflare_worker/tests/test_world_emoji_status.py
+@@ -18,7 +18,6 @@ def run_data_module(source):
+     result = subprocess.run(
+         [
+             "node",
+-            "--experimental-default-type=module",
+             "--input-type=module",
+             "-e",
+             source,
+diff --git a/cloudflare_worker/tests/test_world_frontend.py b/cloudflare_worker/tests/test_world_frontend.py
+index 7ec41cd17..8bcaa9143 100644
+--- a/cloudflare_worker/tests/test_world_frontend.py
++++ b/cloudflare_worker/tests/test_world_frontend.py
+@@ -97,7 +97,6 @@ def test_world_entry_modules_have_valid_ecmascript_module_syntax():
+         completed = subprocess.run(
+             [
+                 "node",
+-                "--experimental-default-type=module",
+                 "--check",
+                 str(module),
+             ],
+@@ -112,8 +111,8 @@ def test_world_entry_modules_have_valid_ecmascript_module_syntax():
+ 
+ def test_world_contains_the_initial_city_districts_without_a_clock():
+     for landmark in (
+-        "information",
+         "fountain",
++        "campfire",
+         "repositories",
+         "office",
+     ):
+@@ -143,40 +142,28 @@ def test_forkmesh_office_is_a_navigable_world_landmark():
+     assert 'id: "office"' in DATA
+     assert 'label: "ForkMesh Office"' in DATA
+     assert 'shortLabel: "Office"' in DATA
+-    assert "position: [45, 0, -27]" in DATA
++    assert "position: [0, 0, -215]" in DATA
+     assert 'id: "visiting-office"' in DATA
+ 
+ 
+-def test_landmarks_are_spread_out_inside_the_repository_portal_perimeter():
++def test_landmarks_use_stable_positions_inside_the_world_and_office_campus():
+     positions = {
+-        "information": (-40, 30),
+         "fountain": (0, 0),
++        "campfire": (8, 8),
+         "repositories": (35, 38),
+-        "office": (45, -27),
++        "office": (0, -215),
+     }
+     for landmark, (x, z) in positions.items():
+         start = DATA.index(f'id: "{landmark}"')
+         block = DATA[start: DATA.index("\n  },", start)]
+         assert f"position: [{x}, 0, {z}]" in block
+ 
+-    perimeter_radius = 68
+-    noncentral = {
+-        landmark: position
+-        for landmark, position in positions.items()
+-        if landmark != "fountain"
+-    }
+-    assert all(
+-        math.hypot(x, z) <= perimeter_radius - 15
+-        for x, z in noncentral.values()
+-    )
+-    assert min(
+-        math.dist(left, right)
+-        for index, left in enumerate(noncentral.values())
+-        for right in list(noncentral.values())[index + 1:]
+-    ) >= 18
++    town_landmarks = [positions["campfire"], positions["repositories"]]
++    assert min(math.dist(left, right) for left in town_landmarks for right in town_landmarks if left != right) >= 18
++    assert math.dist(positions["office"], positions["fountain"]) >= 180
+     assert "const REPOSITORY_EDGE_RADIUS = 68" in SCENE
+     assert "const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0])" in SCENE
+-    assert "const SYSTEM_CAPACITY_PLATFORM_POSITION = Object.freeze([8, 0, -27])" in SCENE
++    assert "const SYSTEM_CAPACITY_INFRASTRUCTURE_POSITION = Object.freeze([-24, 0, 7])" in SCENE
+ 
+ 
+ def test_static_world_fallback_links_to_chat():
+@@ -187,7 +174,6 @@ def test_static_world_fallback_links_to_chat():
+ def test_scene_builds_playable_landmarks_and_badged_avatars():
+     for builder in (
+         "createAvatar",
+-        "createInformationBooth",
+         "createFountain",
+         "createRepositoryDistrict",
+         "createOrganizationQuarter",
+@@ -215,7 +201,7 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
+     ):
+         assert status_icon in APP
+         assert status_icon in SCENE
+-    assert "You entered as a guest immediately" in DATA
++    assert "Everyone, including guests, can cross the bridge and enter the lobby" in DATA
+     assert "function updateOrganizations" in SCENE
+     assert "organization-profiles" in SCENE
+     assert "organization.memberList" in SCENE
+@@ -804,7 +790,7 @@ def test_focus_music_is_local_long_form_playback_without_polling():
+     assert "focusMusicTrackId: DEFAULT_FOCUS_MUSIC_TRACK_ID" in APP
+     assert "focusMusicVolume: DEFAULT_FOCUS_MUSIC_VOLUME" in APP
+     assert "focusMusicMuted: false" in APP
+-    assert "writeJSON(localStorage, SETTINGS_KEY, this.settings)" in APP
++    assert "writeJSON(localStorage, SETTINGS_KEY, {" in APP
+ 
+     start = APP.index("  async playFocusMusic(")
+     end = APP.index("\n  stopFocusMusic(", start)
+@@ -1031,7 +1017,7 @@ def test_mobile_world_chat_composer_stays_above_safe_area_and_terminal_bars():
+ 
+ 
+ def test_world_receives_private_notifications_and_global_announcements():
+-    assert "WORLD_NOTIFICATION_POLL_MS = 30 * 1000" in APP
++    assert "WORLD_NOTIFICATION_POLL_MS = 60 * 1000" in APP
+     assert "normalizeWorldNotifications" in APP
+     assert "/api/notifications?node=${encodeURIComponent(" in APP
+     assert 'this.fetchJSON("/api/world/events"' in APP
+@@ -1842,10 +1828,10 @@ def test_known_bots_are_verified_from_a_deployed_public_directory():
+ 
+ def test_financial_and_security_metaphors_disclose_current_limitations():
+     assert (
+-        "Worker stores only public payout addresses, unsigned intents, and "
+-        "finalized signatures"
++        "The production mainnet-beta flow reads public on-chain state, accepts "
++        "direct wallet-to-pool contributions"
+     ) in DATA
+-    assert "community-pool signer stays in the first instance operator’s encrypted local Qt client" in DATA
++    assert "sends unsigned plans to the instance owner’s local Qt signer" in DATA
+     assert "Mainnet-beta · external signer" in DATA
+     assert "Development instances may explicitly select a test network" in DATA
+     assert "Visual coins are not guaranteed rewards or investments" in DATA
+@@ -1854,8 +1840,8 @@ def test_financial_and_security_metaphors_disclose_current_limitations():
+         "platform administrators do not automatically receive those recipient "
+         "private keys"
+     ) in PRIVACY
+-    assert "Raw IP addresses are never shown in the world" in DATA
+-    assert "does not eliminate endpoint, authorization, or operational risk" in DATA
++    assert "Raw IP addresses, full User-Agent strings, and precise location are never public" in PRIVACY
++    assert "Every metaphor has a technical panel" in DATA
+     assert "availability, not automatic trust" in DATA
+     assert "Normal repository traffic stays on HTTPS" in DATA
+     assert "What is actually happening" in APP
+@@ -1977,9 +1963,9 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
+ def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
+     assert "const WORLD_GROUND_RADIUS = 88;" in SCENE
+     assert "const CAMERA_OFFSET = [17, 16, 21];" in SCENE
+-    assert "const CAMERA_ZOOM_MIN = 0.12;" in SCENE
+-    assert "const CAMERA_ZOOM_MAX = 3.2;" in SCENE
+-    assert "const CAMERA_FAR_PLANE = 240;" in SCENE
++    assert "const CAMERA_ZOOM_MIN = 0.06;" in SCENE
++    assert "const CAMERA_ZOOM_MAX = 28;" in SCENE
++    assert "const CAMERA_FAR_PLANE = 1200;" in SCENE
+     assert (
+         "new THREE.PerspectiveCamera(\n"
+         "    44,\n"
+@@ -1992,19 +1978,11 @@ def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
+     # At maximum strategic zoom, a camera looking at the world center can still
+     # see through the opposite edge of the finite ground before its far plane.
+     camera_distance = math.hypot(17, 16, 21)
+-    assert camera_distance * 3.2 + 88 < 240
+-
+-    zoom_fog_start = SCENE.index("  function zoomFogMultiplier() {")
+-    zoom_fog = SCENE[
+-        zoom_fog_start:
+-        SCENE.index("\n  function setLightLevel(", zoom_fog_start)
+-    ]
+-    assert "CAMERA_ZOOM_MAX - 1" in zoom_fog
+-    assert "(cameraZoom - 1) / 7" not in zoom_fog
++    assert camera_distance * 28 + 88 < 1200
+ 
+ 
+ def test_world_uses_nonhuman_infrastructure_without_the_world_spanning_grid():
+-    assert "const WORLD_RADIUS = 174" in SCENE
++    assert "const WORLD_RADIUS = 340" in SCENE
+     assert "const WORLD_GROUND_RADIUS = 88" in SCENE
+     assert "electric-mesh-city-block-grid" not in SCENE
+     assert "electricMeshConduit" not in SCENE
+@@ -2234,7 +2212,7 @@ def test_world_lighting_is_static_daylight_with_a_local_persisted_control():
+     assert "data-world-light-level-output" in APP
+     assert "this.settings.lightLevel = next" in APP
+     assert "this.world?.setLightLevel(next)" in APP
+-    assert "writeJSON(localStorage, SETTINGS_KEY, this.settings)" in APP
++    assert "writeJSON(localStorage, SETTINGS_KEY, {" in APP
+     assert "lightLevel" not in APP[
+         APP.index("function publicIdentity"):APP.index("function presenceBrowser")
+     ]
+@@ -2321,14 +2299,8 @@ def test_approved_federated_instances_render_without_private_relay_material():
+     assert "instance?.approved === true" in SCENE
+ 
+ 
+-def test_information_booth_deep_link_carries_no_cloudflare_secret():
++def test_cloudflare_setup_deep_link_carries_no_cloudflare_secret():
+     exact = "forkmesh://control/cloudflare"
+-    assert exact in APP
+-    assert "The hosted World never accepts, proxies, or stores a Cloudflare API token" in APP
+-    assert 'type="password"' not in APP[
+-        APP.index("informationPanelHTML()"):
+-        APP.index("rewardPanelHTML()")
+-    ]
+     assert exact in QT_MAIN
+     assert "target == QLatin1String" in QT_MAIN
+     assert "openCloudflareSetupFromSystemLink" in QT_CONTROL
+@@ -2491,7 +2463,7 @@ def test_forkbot_mention_excites_the_droid_with_echo_screen_and_thinking_dots():
+         "const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\\b/i;"
+         in APP
+     )
+-    assert APP.count("this.world?.exciteForkbot?.(") == 2
++    assert APP.count("this.world?.exciteForkbot?.(") == 1
+ 
+ 
+ def test_collapsed_chat_bar_shows_an_unread_count_excluding_own_lines():
+diff --git a/cloudflare_worker/tests/test_world_marine_aquarium.py b/cloudflare_worker/tests/test_world_marine_aquarium.py
+new file mode 100644
+index 000000000..f2da22c69
+--- /dev/null
++++ b/cloudflare_worker/tests/test_world_marine_aquarium.py
+@@ -0,0 +1,146 @@
++#!/usr/bin/env python3
++"""Contracts for the ambient marine aquarium in the Office lobby."""
++
++from pathlib import Path
++
++
++ROOT = Path(__file__).resolve().parents[1]
++SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text(
++    encoding="utf-8"
++)
++
++
++def _aquarium_block():
++    start = SCENE.index("function createOfficeMarineAquarium")
++    end = SCENE.index("function createForkMeshOffice", start)
++    return SCENE[start:end]
++
++
++def test_office_lobby_has_a_bioluminescent_left_wall_marine_aquarium():
++    aquarium = _aquarium_block()
++    assert 'group.name = "forkmesh-office-marine-aquarium"' in aquarium
++    assert 'group.position.set(-82.9, 0, -10.5)' in aquarium
++    for name in (
++        "forkmesh-office-aquarium-frame",
++        "forkmesh-office-aquarium-water",
++        "forkmesh-office-aquarium-sand",
++        "forkmesh-office-aquarium-coral",
++        "forkmesh-office-aquarium-anemone",
++        "forkmesh-office-aquarium-fish",
++        "forkmesh-office-aquarium-bubbles",
++        "forkmesh-office-aquarium-light",
++    ):
++        assert name in aquarium
++    assert "createOfficeMarineAquarium(THREE, animated)" in SCENE
++
++
++def test_marine_aquarium_stays_ambient_and_reuses_the_scene_animation_queue():
++    aquarium = _aquarium_block()
++    assert "interactive.push" not in aquarium
++    assert "userData.interactive" not in aquarium
++    assert "userData.officeFloorId" not in aquarium
++    assert "animated.push((time) =>" in aquarium
++    assert "Math.sin(time" in aquarium
++    assert "fish.position" in aquarium
++    assert "bubble.position.y" in aquarium
++    assert "coral.rotation.z" in aquarium
++    assert "anemone.rotation.z" in aquarium
++
++
++def test_marine_fish_have_smooth_species_detail_and_individual_curved_paths():
++    aquarium = _aquarium_block()
++    assert "new THREE.LatheGeometry(profile, 24)" in aquarium
++    assert "forkmesh-office-aquarium-fish-eye" in aquarium
++    assert "forkmesh-office-aquarium-fish-dorsal-fin" in aquarium
++    assert "forkmesh-office-aquarium-fish-pectoral-fin" in aquarium
++    assert "createAquariumFishTexture" in aquarium
++    assert "new THREE.CatmullRomCurve3" in aquarium
++    assert "Math.atan2(state.tangent.x, state.tangent.z)" in aquarium
++
++
++def test_cinematic_reef_builds_recognizable_fish_species():
++    aquarium = _aquarium_block()
++    for species in (
++        "clownfish",
++        "blue-tang",
++        "yellow-tang",
++        "royal-gramma",
++        "butterflyfish",
++        "chromis",
++    ):
++        assert f'id: "{species}"' in aquarium
++        assert f"forkmesh-office-aquarium-fish-{species}" in aquarium
++    for detail in (
++        "createAquariumFishTexture",
++        "createReefFishBodyGeometry",
++        "forkmesh-office-aquarium-fish-gill",
++        "forkmesh-office-aquarium-fish-mouth",
++        "forkmesh-office-aquarium-fish-iris",
++        "forkmesh-office-aquarium-fish-highlight",
++    ):
++        assert detail in aquarium
++
++
++def test_cinematic_reef_contains_layered_habitat_families():
++    aquarium = _aquarium_block()
++    for helper in (
++        "createAquariumLiveRock",
++        "createBranchingCoral",
++        "createPlateCoral",
++        "createBrainCoral",
++        "createSeaFan",
++        "createSoftCoral",
++        "createAquariumAnemone",
++        "createSeaGrass",
++    ):
++        assert helper in aquarium
++    for name in (
++        "forkmesh-office-aquarium-live-rock",
++        "forkmesh-office-aquarium-staghorn",
++        "forkmesh-office-aquarium-plate-coral",
++        "forkmesh-office-aquarium-brain-coral",
++        "forkmesh-office-aquarium-sea-fan",
++        "forkmesh-office-aquarium-soft-coral",
++        "forkmesh-office-aquarium-seagrass",
++    ):
++        assert name in aquarium
++
++
++def test_cinematic_reef_uses_curved_motion_and_initialized_atmosphere():
++    aquarium = _aquarium_block()
++    assert "new THREE.CatmullRomCurve3" in aquarium
++    assert "curve.getPointAt" in aquarium
++    assert "curve.getTangentAt" in aquarium
++    assert "initializeAquariumState(0)" in aquarium
++    assert "createAquariumCausticTexture" in aquarium
++    assert "forkmesh-office-aquarium-particles" in aquarium
++    assert "forkmesh-office-aquarium-water-surface" in aquarium
++    assert "forkmesh-office-aquarium-caustics" in aquarium
++
++
++def test_aquarium_registers_a_lobby_only_collision_footprint():
++    assert "OFFICE_AQUARIUM_BOUNDS" in SCENE
++    assert "function officeScenePointIsWalkable" in SCENE
++    assert 'floorId !== "lobby"' in SCENE
++    assert "officeInteriorPointIsWalkable(" in SCENE
++    assert "pointHitsOfficeAquarium(" in SCENE
++
++
++def test_aquarium_feeding_is_timed_and_reuses_scene_animation():
++    aquarium = _aquarium_block()
++    assert "AQUARIUM_FEEDING_DURATION_MS = 60_000" in aquarium
++    assert 'food.name = "forkmesh-office-aquarium-food"' in aquarium
++    assert "function feed(time = performance.now())" in aquarium
++    assert "function updateFeeding(time, animate = true)" in aquarium
++    assert "feedingBlend" in aquarium
++    assert "return { group, feed, updateFeeding, getFeedingState }" in aquarium
++    assert "setTimeout(" not in aquarium
++    assert "setInterval(" not in aquarium
++
++
++def test_aquarium_feeding_action_is_proximity_scoped_and_accessible():
++    assert 'aquariumFeedAction.type = "button"' in SCENE
++    assert 'aquariumFeedAction.textContent = "Feed the Fishes"' in SCENE
++    assert 'aquariumFeedAction.dataset.worldAquariumFeed = ""' in SCENE
++    assert "updateOfficeAquariumProximity" in SCENE
++    assert 'removeEventListener("click", handleAquariumFeed)' in SCENE
+diff --git a/cloudflare_worker/tests/test_world_mirror_cabinets.py b/cloudflare_worker/tests/test_world_mirror_cabinets.py
+index 0ae23ba16..eb6975f1d 100644
+--- a/cloudflare_worker/tests/test_world_mirror_cabinets.py
++++ b/cloudflare_worker/tests/test_world_mirror_cabinets.py
+@@ -55,7 +55,6 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
+     result = subprocess.run(
+         [
+             "node",
+-            "--experimental-default-type=module",
+             "--input-type=module",
+             "-e",
+             script,
+@@ -120,7 +119,6 @@ def test_live_node_builder_keeps_long_names_distinct_and_rejected_routes_blocked
+     result = subprocess.run(
+         [
+             "node",
+-            "--experimental-default-type=module",
+             "--input-type=module",
+             "-e",
+             script,
+@@ -172,7 +170,6 @@ def test_live_node_builder_uses_the_freshest_repository_state_per_node():
+     result = subprocess.run(
+         [
+             "node",
+-            "--experimental-default-type=module",
+             "--input-type=module",
+             "-e",
+             script,
+@@ -223,7 +220,6 @@ def test_live_node_builder_retains_offline_payload_rows_but_not_unrelated_names(
+     result = subprocess.run(
+         [
+             "node",
+-            "--experimental-default-type=module",
+             "--input-type=module",
+             "-e",
+             script,
+diff --git a/cloudflare_worker/tests/test_world_office_frontend.py b/cloudflare_worker/tests/test_world_office_frontend.py
+index 94a0d795f..4a34da8f8 100644
+--- a/cloudflare_worker/tests/test_world_office_frontend.py
++++ b/cloudflare_worker/tests/test_world_office_frontend.py
+@@ -822,7 +822,7 @@ def test_meeting_handoff_projects_the_live_player_out_of_collidable_furniture():
+ 
+     assert "nearestOfficeWalkablePosition(" in enter
+     assert "setOfficeParticipants([])" in enter
+-    assert "officeInteriorPointIsWalkable(" in nearest
++    assert "officeScenePointIsWalkable(" in nearest
+     assert "OFFICE_AVATAR_RADIUS" in nearest
+     assert "cameraMode !== \"first-person\"" in participants
+ 
+@@ -1100,7 +1100,7 @@ def test_rooftop_camera_and_pointer_travel_stay_on_the_active_floor():
+     )
+     assert "officeObjectMatchesCurrentFloor(object)" in pointer
+     assert "officeObjectMatchesCurrentFloor(object)" in double_click
+-    assert "officeInteriorPointIsWalkable(" in ground
++    assert "officeScenePointIsWalkable(" in ground
+     assert "officeCurrentFloorId" in ground
+     assert "dashTarget" in lobby_walk
+     assert "constrainOfficeInteriorWalls(" in lobby_walk
+diff --git a/cloudflare_worker/tests/test_world_pull_review.py b/cloudflare_worker/tests/test_world_pull_review.py
+index 2e02c9900..25d43c2e4 100644
+--- a/cloudflare_worker/tests/test_world_pull_review.py
++++ b/cloudflare_worker/tests/test_world_pull_review.py
+@@ -17,7 +17,6 @@ def run_module(source):
+     result = subprocess.run(
+         [
+             "node",
+-            "--experimental-default-type=module",
+             "--input-type=module",
+             "-e",
+             source,

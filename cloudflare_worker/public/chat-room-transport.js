@@ -3,6 +3,7 @@ import {
   derivePassphraseKey,
   encryptObject,
 } from "./chat-crypto.js";
+import { moderateChatPlain } from "./chat-moderation.js";
 
 const INITIAL_RECONNECT_MS = 2000;
 const MAX_RECONNECT_MS = 30000;
@@ -147,7 +148,7 @@ export function createChatRoomTransport({
       }
       const plain = await decryptObject(envelope, key);
       if (!plain || attempt !== generation || roomSocket !== socket) return;
-      onPlain(plain, room, access);
+      onPlain(await moderateChatPlain(plain), room, access);
     });
 
     roomSocket.addEventListener("close", (event = {}) => {
@@ -201,7 +202,8 @@ export function createChatRoomTransport({
     async send(plain, { persist = false } = {}) {
       if (!this.connected) return false;
       const activeSocket = socket;
-      const envelope = await encryptObject(plain, currentKey);
+      const envelope = await encryptObject(
+        await moderateChatPlain(plain), currentKey);
       if (persist) envelope.persist = true;
       if (activeSocket !== socket || !this.connected) return false;
       activeSocket.send(JSON.stringify(envelope));

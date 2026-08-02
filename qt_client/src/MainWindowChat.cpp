@@ -5622,7 +5622,7 @@ QWidget *MainWindow::buildBreadcrumb()
             &MainWindow::showNotifications);
 
     // Compact success/failure bubble. It is parented to the window rather than a
-    // layout, allowing notifications to float just above the composer without
+    // layout, allowing notifications to stay in the bottom-right stack without
     // shifting the prompt or the live-log footer.
     m_topMessage = new QLabel;
     m_topMessage->setObjectName("topMessageText");
@@ -5728,9 +5728,9 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageQueueScroll->setWidget(m_topMessageQueueContent);
     m_topMessageQueueScroll->hide();
 
-    // Only a message taller than the room above the composer ever scrolls; the
-    // usual few-line toast shows entirely, with no scrollbar (topMessageBubbleRect
-    // sizes this to the text).
+    // Only a message taller than the available notification area ever scrolls;
+    // the usual few-line toast shows entirely (topMessageBubbleRect sizes this
+    // to the text).
     m_topMessageScroll = new QScrollArea;
     m_topMessageScroll->setObjectName("topMessageScroll");
     m_topMessageScroll->setFrameShape(QFrame::NoFrame);

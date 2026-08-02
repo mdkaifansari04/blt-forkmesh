@@ -1,0 +1,326 @@
+diff --git a/cloudflare_worker/public/world/world.css b/cloudflare_worker/public/world/world.css
+index 90ddcf695..776171de6 100644
+--- a/cloudflare_worker/public/world/world.css
++++ b/cloudflare_worker/public/world/world.css
+@@ -6552,7 +6552,10 @@ forkmesh-world.world-office-active .world-quick-dock {
+   z-index: 21;
+   top: var(--safe-top);
+   right: var(--safe-right);
+-  width: min(360px, calc(100vw - 28px));
++  width: min(
++    var(--world-settings-user-width, 360px),
++    calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
++  );
+   max-height: calc(100svh - var(--safe-top) - var(--safe-bottom));
+   overflow-y: auto;
+   border: 1px solid var(--world-line-strong);
+@@ -6571,13 +6574,6 @@ forkmesh-world.world-office-active .world-quick-dock {
+   visibility: visible;
+ }
+ 
+-.world-settings[data-active-tab="work"] {
+-  width: min(
+-    920px,
+-    calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
+-  );
+-}
+-
+ .world-settings-heading {
+   display: flex;
+   align-items: start;
+@@ -6788,6 +6784,26 @@ forkmesh-world.world-office-active .world-quick-dock {
+   outline: none;
+ }
+ 
++.world-element-sort {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 10px;
++  margin: 10px 0;
++  color: var(--world-muted);
++  font: 0.62rem "ForkMesh Mono", monospace;
++  letter-spacing: 0.06em;
++  text-transform: uppercase;
++}
++
++.world-element-sort select {
++  border: 1px solid var(--world-line);
++  background: #0a1915;
++  color: var(--world-copy);
++  padding: 7px 9px;
++  font: inherit;
++}
++
+ .world-element-category {
+   margin-top: 12px;
+ }
+diff --git a/cloudflare_worker/public/world/world.js b/cloudflare_worker/public/world/world.js
+index 2fb39e1a5..bb27ed34d 100644
+--- a/cloudflare_worker/public/world/world.js
++++ b/cloudflare_worker/public/world/world.js
+@@ -150,7 +150,7 @@ const SOCIAL_POSTS_URL = "/api/world/social-posts";
+ const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
+ const ADMIN_ERROR_SEEN_KEY = "forkmesh.world.adminErrorsSeen.v1";
+ const ADMIN_ERROR_POLL_MS = 15_000;
+-// Element ids an administrator switched off in the Elements tab. Kept on the
++// Element ids switched off in the Elements tab. Kept on the
+ // device (never in account preferences) so a perf experiment on one machine
+ // cannot dim the world on every other signed-in device.
+ const DISABLED_ELEMENTS_KEY = "forkmesh.world.disabledElements.v1";
+@@ -4911,7 +4911,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
+ 
+         <section class="world-settings" data-world-settings aria-labelledby="world-settings-title" aria-hidden="true" inert>
+           <div class="world-settings-resize" data-world-settings-resize role="separator"
+-            tabindex="0" aria-label="Resize Work panel" aria-orientation="vertical"></div>
++            tabindex="0" aria-label="Resize settings panel" aria-orientation="vertical"></div>
+           <div class="world-settings-heading">
+             <div>
+               <p class="world-eyebrow">YOUR WORLD PREFERENCES</p>
+@@ -5115,9 +5115,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
+ 
+           <div class="world-settings-pane" data-world-settings-pane="elements" hidden>
+             <fieldset class="world-setting-group">
+-              <legend>World elements · administrator, this device only</legend>
++              <legend>World elements · this device only</legend>
+               <p class="world-setting-note">
+-                Switch any element off to remove it completely from the game —
++                Switch any element off to remove it completely from your game —
+                 its geometry leaves the scene, its raycast targets are dropped,
+                 and its per-frame work stops — then watch the Debug tab to see
+                 what it was costing. Switch it back on to restore it. Choices
+@@ -5128,8 +5128,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
+                 <button type="button" data-world-element-master="on">Everything on</button>
+                 <button type="button" data-world-element-master="off">Everything off</button>
+               </div>
++              <label class="world-element-sort">
++                <span>Sort by</span>
++                <select data-world-element-sort aria-label="Sort world elements">
++                  <option value="drawables">Drawn</option>
++                  <option value="triangles">Triangles</option>
++                  <option value="interactives">Clicks</option>
++                </select>
++              </label>
+               <div class="world-element-list" data-world-element-list>
+-                <p class="world-setting-note">Sign in as an administrator to control world elements.</p>
++                <p class="world-setting-note">World element controls appear once the scene is ready.</p>
+               </div>
+               <p class="world-office-panel-status" data-world-element-status role="status" aria-live="polite"></p>
+             </fieldset>
+@@ -5573,9 +5581,10 @@ class ForkMeshWorld extends HTMLElement {
+     this.deployObservedRevision = "";
+     this.pendingWorldShare = null;
+     this.savedViews = [];
+-    // Element ids an administrator switched off on this device. Applied to
++    // Element ids switched off on this device. Applied to
+     // the scene at construction and edited live from the Elements tab.
+     this.disabledWorldElements = storedDisabledWorldElements();
++    this.worldElementSort = "drawables";
+     this.worldTicketResolved = false;
+     this.settingsUpdatedAt = 0;
+     this.worldPreferencesLoaded = false;
+@@ -6566,9 +6575,8 @@ class ForkMeshWorld extends HTMLElement {
+           (this.currentSpace === "town-square"
+             ? FRESH_ARRIVAL_CAMPFIRE_PREVIEW
+             : null),
+-        // Applied before the admin ticket resolves; a device whose session
+-        // turns out not to be an administrator is restored to the full world
+-        // by applyAdminElementsAccess the moment that answer arrives.
++        // Applied before the account ticket resolves, and kept local to this
++        // browser so one visitor's performance experiment stays personal.
+         initialDisabledElements: this.disabledWorldElements,
+         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+         // After a detected crash the same GPU or memory pressure would likely
+@@ -11088,6 +11096,16 @@ class ForkMeshWorld extends HTMLElement {
+         );
+         return;
+       }
++      const elementSort = event.target.closest("[data-world-element-sort]");
++      if (elementSort) {
++        this.worldElementSort = ["drawables", "triangles", "interactives"].includes(
++          elementSort.value,
++        )
++          ? elementSort.value
++          : "drawables";
++        this.renderWorldElementsPane();
++        return;
++      }
+       const emojiCategory = event.target.closest(
+         "[data-world-emoji-category]",
+       );
+@@ -12435,27 +12453,8 @@ class ForkMeshWorld extends HTMLElement {
+   }
+ 
+   applyAdminElementsAccess() {
+-    const enabled = this.identity?.isAdmin === true;
+     const elementsTab = this.$("[data-world-elements-tab]");
+-    if (elementsTab) elementsTab.hidden = !enabled;
+-    if (
+-      !enabled &&
+-      this.worldTicketResolved &&
+-      this.disabledWorldElements.length
+-    ) {
+-      // A stored experiment from an admin session must never dim the world
+-      // for whoever is signed in (or signed out) on this device now.
+-      this.disabledWorldElements = [];
+-      writeJSON(localStorage, DISABLED_ELEMENTS_KEY, []);
+-      (this.world?.listWorldElements?.() || [])
+-        .filter((element) => !element.enabled)
+-        .forEach((element) =>
+-          this.world.setWorldElementEnabled(element.id, true),
+-        );
+-    }
+-    if (!enabled && this.settingsTab === "elements") {
+-      this.selectSettingsTab("view");
+-    }
++    if (elementsTab) elementsTab.hidden = false;
+   }
+ 
+   adminErrorStorageKey() {
+@@ -23202,14 +23201,11 @@ class ForkMeshWorld extends HTMLElement {
+   }
+ 
+   selectSettingsTab(tab) {
+-    let selected = ["view", "work", "security", "debug", "elements"].includes(
++    const selected = ["view", "work", "security", "debug", "elements"].includes(
+       tab,
+     )
+       ? tab
+       : "view";
+-    if (selected === "elements" && this.identity?.isAdmin !== true) {
+-      selected = "view";
+-    }
+     this.settingsTab = selected;
+     const panel = this.$("[data-world-settings]");
+     if (panel) panel.dataset.activeTab = selected;
+@@ -23247,10 +23243,7 @@ class ForkMeshWorld extends HTMLElement {
+ 
+   setWorldElementEnabled(id, enabled) {
+     const elementId = String(id || "");
+-    if (
+-      this.identity?.isAdmin !== true ||
+-      !this.world?.setWorldElementEnabled?.(elementId, enabled)
+-    ) {
++    if (!this.world?.setWorldElementEnabled?.(elementId, enabled)) {
+       return;
+     }
+     const disabled = new Set(this.disabledWorldElements);
+@@ -23269,7 +23262,6 @@ class ForkMeshWorld extends HTMLElement {
+   }
+ 
+   setAllWorldElementsEnabled(enabled) {
+-    if (this.identity?.isAdmin !== true) return;
+     const elements = this.world?.listWorldElements?.() || [];
+     elements.forEach((element) =>
+       this.world.setWorldElementEnabled(element.id, enabled),
+@@ -23290,11 +23282,6 @@ class ForkMeshWorld extends HTMLElement {
+     if (!list) return;
+     const status = this.$("[data-world-element-status]");
+     if (status) status.textContent = String(statusMessage || "").slice(0, 200);
+-    if (this.identity?.isAdmin !== true) {
+-      list.innerHTML =
+-        '<p class="world-setting-note">Sign in as an administrator to control world elements.</p>';
+-      return;
+-    }
+     const elements = this.world?.listWorldElements?.() || [];
+     if (!elements.length) {
+       list.innerHTML =
+@@ -23324,11 +23311,19 @@ class ForkMeshWorld extends HTMLElement {
+         (category) => !categoryOrder.includes(category),
+       ),
+     ];
++    const sort = ["drawables", "triangles", "interactives"].includes(
++      this.worldElementSort,
++    )
++      ? this.worldElementSort
++      : "drawables";
++    const compareElements = (left, right) =>
++      Number(right[sort]) - Number(left[sort]) ||
++      left.label.localeCompare(right.label);
+     list.innerHTML = orderedCategories
+       .map((category) => {
+         const rows = grouped
+           .get(category)
+-          .sort((a, b) => a.label.localeCompare(b.label))
++          .sort(compareElements)
+           .map((element) => {
+             const stats = element.system
+               ? "per-frame system"
+@@ -23354,6 +23349,8 @@ class ForkMeshWorld extends HTMLElement {
+         </section>`;
+       })
+       .join("");
++    const sortControl = this.$("[data-world-element-sort]");
++    if (sortControl) sortControl.value = sort;
+   }
+ 
+   renderWorldSessions(message = "", tone = "") {
+diff --git a/cloudflare_worker/tests/test_world_admin_elements_and_debug_tab.py b/cloudflare_worker/tests/test_world_admin_elements_and_debug_tab.py
+index 51c838367..22504cffa 100644
+--- a/cloudflare_worker/tests/test_world_admin_elements_and_debug_tab.py
++++ b/cloudflare_worker/tests/test_world_admin_elements_and_debug_tab.py
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env python3
+-"""Contracts for the admin Elements tab and the settings Debug tab.
++"""Contracts for the Elements tab and the settings Debug tab.
+ 
+-The issue asks for three things: an administrator-only settings tab that can
++The issue asks for three things: a settings tab that can
+ turn every single world element off (completely removing it from the game)
+ and back on to isolate what is slowing rendering down; the debug tool moved
+ into its own settings tab; and that panel staying open while playing, with
+@@ -99,7 +99,7 @@ def test_disabling_an_element_removes_it_from_scene_raycast_and_frame_work():
+     assert "() => nodeInfrastructure.get(id) === registeredCabinet," in SCENE
+ 
+ 
+-def test_elements_tab_is_admin_only_device_local_and_wired_to_the_scene():
++def test_elements_tab_is_available_to_everyone_device_local_and_wired_to_the_scene():
+     for contract in (
+         'data-world-settings-tab="elements"',
+         'data-world-settings-pane="elements"',
+@@ -113,25 +113,36 @@ def test_elements_tab_is_admin_only_device_local_and_wired_to_the_scene():
+         "initialDisabledElements: this.disabledWorldElements,",
+     ):
+         assert contract in APP
+-    # Only a verified administrator flips switches, and choices persist on
+-    # this device only — never into synced account preferences.
++    # Every visitor can flip switches, and choices persist on this device only
++    # — never into synced account preferences.
+     toggle = APP.split("  setWorldElementEnabled(id, enabled) {", 1)[1].split(
+         "\n  setAllWorldElementsEnabled(", 1
+     )[0]
+-    assert "this.identity?.isAdmin !== true" in toggle
++    assert "this.identity?.isAdmin !== true" not in toggle
+     assert "writeJSON(localStorage, DISABLED_ELEMENTS_KEY" in toggle
+     assert "disabledElements" not in APP.split("function defaultSettings()", 1)[
+         1
+     ].split("function mergeSettings", 1)[0]
+-    # Selecting the tab without admin rights falls back to View, and a device
+-    # whose session resolves to non-admin gets the full world back.
+-    assert 'selected === "elements" && this.identity?.isAdmin !== true' in APP
+-    assert "this.worldTicketResolved = true;" in APP
++    # The tab stays visible regardless of the current account.
+     restore = APP.split("  applyAdminElementsAccess() {", 1)[1].split(
+         "\n  adminErrorStorageKey", 1
+     )[0]
+-    assert "elementsTab.hidden = !enabled;" in restore
+-    assert "this.disabledWorldElements = [];" in restore
++    assert "elementsTab.hidden = false;" in restore
++
++
++def test_elements_can_sort_by_drawn_triangles_or_clicks():
++    for contract in (
++        'data-world-element-sort',
++        '<option value="drawables">Drawn</option>',
++        '<option value="triangles">Triangles</option>',
++        '<option value="interactives">Clicks</option>',
++        'this.worldElementSort = "drawables";',
++    ):
++        assert contract in APP
++    render = APP.split("  renderWorldElementsPane(statusMessage = \"\") {", 1)[1].split(
++        "\n  renderWorldSessions", 1
++    )[0]
++    assert 'Number(right[sort]) - Number(left[sort])' in render
+ 
+ 
+ def test_debug_tab_shows_live_readings_with_suggestions_and_stays_open():

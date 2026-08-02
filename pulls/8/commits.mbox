@@ -1,0 +1,1393 @@
+From 295a444738daa46056bde5b164c69807b0070892 Mon Sep 17 00:00:00 2001
+From: Md Kaif Ansari <amdkaif843@gmail.com>
+Date: Sun, 12 Jul 2026 00:38:17 +0530
+Subject: [PATCH] feat(worker): add outreach autopilot flow
+
+---
+ .../public/assets/email-admin.js              |   9 +-
+ cloudflare_worker/src/email_admin.py          | 134 +++++--
+ cloudflare_worker/src/entry.py                | 331 +++++++++++++++---
+ .../tests/test_email_admin_client.py          |   8 +
+ .../tests/test_email_admin_domain.py          |  14 +
+ .../tests/test_email_admin_frontend.py        |  56 ++-
+ .../tests/test_email_admin_worker.py          | 331 +++++++++++++++++-
+ 7 files changed, 809 insertions(+), 74 deletions(-)
+
+diff --git a/cloudflare_worker/public/assets/email-admin.js b/cloudflare_worker/public/assets/email-admin.js
+index cd6242a2..27ddfbbe 100644
+--- a/cloudflare_worker/public/assets/email-admin.js
++++ b/cloudflare_worker/public/assets/email-admin.js
+@@ -363,8 +363,10 @@
+     const hasCategory = String(categoryId || "").trim().length > 0;
+     return {
+       showBar: count > 0,
++      showStart: count > 0,
+       showMove: moveAction,
+       showDelete: deleteAction,
++      canStart: count > 0,
+       canMove: count > 0 && moveAction && hasCategory,
+       canDelete: count > 0 && deleteAction,
+     };
+@@ -407,9 +409,10 @@
+     const selectAll = form.querySelector("[data-select-all]");
+     const count = form.querySelector("[data-selection-count]");
+     const bar = form.querySelector("[data-bulk-actions]");
+-    const action = form.querySelector('[name="bulk_action"]');
++    const action = form.querySelector("[data-bulk-choice]");
+     const categoryControl = form.querySelector("[data-category-control]");
+     const category = form.querySelector('[name="category_id"]');
++    const start = form.querySelector("[data-bulk-start]");
+     const submit = form.querySelector("[data-bulk-submit]");
+     const deleteOpen = form.querySelector("[data-bulk-delete-open]");
+     const dialogCount = form.querySelector("[data-dialog-selection-count]");
+@@ -431,6 +434,10 @@
+         category.disabled = !state.showMove;
+         category.required = state.showMove;
+       }
++      if (start) {
++        start.hidden = !state.showStart;
++        start.disabled = !state.canStart;
++      }
+       if (submit) {
+         submit.hidden = !state.showMove;
+         submit.disabled = !state.canMove;
+diff --git a/cloudflare_worker/src/email_admin.py b/cloudflare_worker/src/email_admin.py
+index 68d22551..0d6bc927 100644
+--- a/cloudflare_worker/src/email_admin.py
++++ b/cloudflare_worker/src/email_admin.py
+@@ -295,13 +295,8 @@ def normalize_template_values(name, subject, body):
+     return clean_name, clean_subject, clean_body
+ 
+ 
+-def _replace_placeholders(value, recipient):
++def _placeholder_names(value):
+     text = value or ""
+-    values = {
+-        "name": _render_field(recipient.get("name"), 120) or "there",
+-        "company": _render_field(recipient.get("company"), 160) or "your team",
+-        "email": normalize_email(recipient.get("email")),
+-    }
+     placeholder_names = set()
+     cursor = 0
+     for match in PLACEHOLDER_RE.finditer(text):
+@@ -316,6 +311,23 @@ def _replace_placeholders(value, recipient):
+     unknown = sorted(placeholder_names - ALLOWED_PLACEHOLDERS)
+     if unknown:
+         raise ValueError("unknown placeholder: " + unknown[0])
++    return placeholder_names
++
++
++def template_recipient_fields(subject, body):
++    return tuple(
++        sorted(_placeholder_names(subject) | _placeholder_names(body))
++    )
++
++
++def _replace_placeholders(value, recipient):
++    text = value or ""
++    _placeholder_names(text)
++    values = {
++        "name": _render_field(recipient.get("name"), 120) or "there",
++        "company": _render_field(recipient.get("company"), 160) or "your team",
++        "email": normalize_email(recipient.get("email")),
++    }
+     return PLACEHOLDER_RE.sub(lambda match: values[match.group(1).strip()], text)
+ 
+ 
+@@ -533,6 +545,17 @@ dialog::backdrop{background:var(--admin-backdrop);backdrop-filter:blur(3px)}
+ .bulk-actions label{display:flex;align-items:center;gap:6px;margin:0;font-size:12px}
+ .bulk-actions select{width:auto;min-width:160px;padding:7px 9px}
+ .bulk-actions button{min-height:33px;padding:6px 10px}
++.audience-summary{margin-bottom:14px;border:1px solid var(--admin-border);border-radius:8px;background:var(--admin-surface-raised)}
++.audience-summary-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 13px;border-bottom:1px solid var(--admin-border-subtle)}
++.audience-summary-header a{white-space:nowrap;font-size:12px}
++.audience-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0;margin:0;padding:0;list-style:none}
++.audience-person{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;min-width:0;padding:11px 13px;border-bottom:1px solid var(--admin-border-subtle)}
++.audience-person div{min-width:0}
++.audience-person strong,.audience-person span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
++.audience-person strong{font-size:13px}
++.audience-person .muted{margin-top:2px;font-size:11px}
++.advanced-overrides{margin:13px 0}
++.advanced-overrides>summary{font-weight:700}
+ .recipient-select,[data-select-all]{width:16px!important;height:16px!important;accent-color:var(--admin-primary)}
+ .selected-row,.selected-row:hover{background:var(--admin-selected)}
+ .edit-link{font-weight:750}
+@@ -941,8 +964,8 @@ def _render_recipients_view(model, csrf):
+         '<span class="badge system-badge">◆ default</span> category.</p>'
+         '<label>Recipient JSON array<textarea id="recipient-json" '
+         'name="recipients_json" rows="8" maxlength="2097152" '
+-        'required placeholder=\'["person@example.com", '
+-        '{"email":"pat@example.com","name":"Pat","company":"Orbit"}]\''
++        'required placeholder=\'[{"name":"Pat","email":"pat@example.com",'
++        '"company":"Orbit"}]\''
+         ">"
+         + html.escape(import_value)
+         + "</textarea></label>"
+@@ -968,8 +991,9 @@ def _render_recipients_view(model, csrf):
+         'data-dialog-selection-count>0</span> recipients</strong> and removes '
+         'them from future outreach.</p><div class="dialog-actions">'
+         '<button class="secondary" type="button" data-dialog-close>Cancel</button>'
+-        '<button class="danger" type="submit" name="confirm_bulk_delete" '
+-        'value="1">Delete recipients</button></div></div></dialog>'
++        + _hidden("confirm_bulk_delete", "1")
++        + '<button class="danger" type="submit" name="bulk_action" '
++        'value="delete">Delete recipients</button></div></div></dialog>'
+     )
+     table = (
+         '<form id="recipient-bulk-form" class="recipient-bulk-form" method="post" '
+@@ -978,7 +1002,9 @@ def _render_recipients_view(model, csrf):
+         + _hidden("action", "bulk_recipients")
+         + '<div class="bulk-actions" data-bulk-actions><strong><span '
+         'data-selection-count>0</span> selected</strong>'
+-        '<label>Action<select name="bulk_action" required>'
++        '<button data-bulk-start type="submit" name="bulk_action" '
++        'value="start_outreach" disabled hidden>Start outreach</button>'
++        '<label>Manage selected<select data-bulk-choice>'
+         '<option value="">Choose action</option>'
+         '<option value="move_category">Move to category</option>'
+         '<option value="delete">Delete recipients</option></select></label>'
+@@ -986,8 +1012,9 @@ def _render_recipients_view(model, csrf):
+         'name="category_id" disabled>'
+         '<option value="">Choose category</option>'
+         + category_options
+-        + '</select></label><button data-bulk-submit type="submit" disabled '
+-        'hidden>Move recipients</button><button class="danger" '
++        + '</select></label><button data-bulk-submit type="submit" '
++        'name="bulk_action" value="move_category" disabled hidden>'
++        'Move recipients</button><button class="danger" '
+         'data-bulk-delete-open data-dialog-open="bulk-delete-dialog" '
+         'aria-haspopup="dialog" aria-controls="bulk-delete-dialog" '
+         'type="button" disabled hidden>Delete recipients</button>'
+@@ -1243,6 +1270,15 @@ def _render_campaign_review(draft, csrf):
+         '<span class="badge">' + html.escape(value) + "</span>"
+         for value in category_names
+     )
++    individual_count = _nonnegative_int(draft.get("individual_count"))
++    if individual_count:
++        badges += (
++            '<span class="badge">'
++            + str(individual_count)
++            + " selected "
++            + ("person" if individual_count == 1 else "people")
++            + "</span>"
++        )
+     preview = draft.get("preview") if isinstance(draft.get("preview"), dict) else {}
+     preview_subject = str(preview.get("subject", subject))
+     preview_html = str(preview.get("html", "<p>Preview unavailable.</p>"))
+@@ -1279,7 +1315,7 @@ def _render_campaign_review(draft, csrf):
+             + _hidden("action", "confirm_campaign")
+             + '<label class="check"><input type="checkbox" name="confirm_send" '
+             'value="1" required> I confirm this reviewed audience and message.</label>'
+-            '<button class="danger" type="submit">Queue email to '
++            '<button class="danger" type="submit">Start queued outreach to '
+             + str(unique_count)
+             + " recipients</button></form>"
+         )
+@@ -1309,7 +1345,7 @@ def _render_campaign_review(draft, csrf):
+         + str(invalid_count)
+         + '</strong>invalid recipients excluded</div></div><p class="help">'
+         + str(selected_count)
+-        + ' category memberships were evaluated.</p><h3>'
++        + ' audience entries were evaluated.</p><h3>'
+         + html.escape(subject)
+         + "</h3><details><summary>Reviewed plain-text body</summary><pre>"
+         + html.escape(body)
+@@ -1327,6 +1363,55 @@ def _render_campaign_review(draft, csrf):
+ 
+ def _render_compose_view(model, csrf):
+     categories = _model_categories(model)
++    selected_recipient_ids = []
++    selected_hidden = []
++    selected_rows = []
++    for recipient in model.get("selected_recipients", []):
++        if not isinstance(recipient, dict):
++            continue
++        recipient_id = _positive_id(recipient.get("id"))
++        email = normalize_email(recipient.get("email"))
++        if recipient_id is None or not email:
++            continue
++        name = recipient.get("name")
++        company = recipient.get("company")
++        display_name = name.strip() if isinstance(name, str) else ""
++        display_company = company.strip() if isinstance(company, str) else ""
++        recipient_categories = [
++            value.strip()
++            for value in recipient.get("categories", [])
++            if isinstance(value, str) and value.strip()
++        ]
++        category_name = recipient_categories[0] if recipient_categories else "default"
++        selected_recipient_ids.append(recipient_id)
++        selected_hidden.append(_hidden("recipient_ids", recipient_id))
++        primary = display_name or email
++        details = email if display_name else "Name not provided"
++        if display_company:
++            details += " · " + display_company
++        selected_rows.append(
++            '<li class="audience-person"><div><strong>'
++            + html.escape(primary)
++            + '</strong><span class="muted">'
++            + html.escape(details)
++            + '</span></div><span class="badge">'
++            + html.escape(category_name)
++            + "</span></li>"
++        )
++    selected_summary = ""
++    if selected_recipient_ids:
++        count = len(selected_recipient_ids)
++        selected_summary = (
++            '<section class="audience-summary" aria-label="Selected recipients">'
++            '<div class="audience-summary-header"><strong>'
++            + str(count)
++            + " individually selected recipient"
++            + ("" if count == 1 else "s")
++            + '</strong><a href="/outreach?view=recipients">Back to recipients</a>'
++            '</div><ul class="audience-list">'
++            + "".join(selected_rows)
++            + "</ul></section>"
++        )
+     category_options = "".join(
+         '<label class="check"><input type="checkbox" name="category_ids" value="'
+         + str(category["id"])
+@@ -1359,16 +1444,25 @@ def _render_compose_view(model, csrf):
+         'action="/outreach?view=compose">'
+         + _hidden_csrf(csrf)
+         + _hidden("action", "review_campaign")
+-        + '<fieldset><legend>Recipient categories</legend>'
++        + "".join(selected_hidden)
++        + selected_summary
++        + '<fieldset><legend>Add category audiences</legend>'
+         + (category_options or '<p class="help">No categories are available.</p>')
+-        + '</fieldset><label>Template<select name="template_id" required>'
++        + '</fieldset><p class="help">Selected people and categories are combined '
++        'and deduplicated before the outreach is prepared.</p>'
++        '<label>Template<select name="template_id" required>'
+         '<option value="">Choose a template</option>'
+         + "".join(template_options)
+-        + '</select></label><label>Subject override <span class="muted">optional</span>'
++        + '</select></label><p class="help">The template automatically fills '
++        '{{name}}, {{company}}, and {{email}} from imported recipient data.</p>'
++        '<details class="advanced-overrides">'
++        '<summary>Advanced message overrides</summary>'
++        '<p class="help">Leave these empty to use the selected template exactly.</p>'
++        '<label>Subject override <span class="muted">optional</span>'
+         '<input name="subject" maxlength="240"></label>'
+         '<label>Body override <span class="muted">optional</span>'
+-        '<textarea name="body" maxlength="32000" rows="14"></textarea></label>'
+-        '<button type="submit">Review campaign</button></form></section>'
++        '<textarea name="body" maxlength="32000" rows="10"></textarea></label>'
++        '</details><button type="submit">Prepare outreach</button></form></section>'
+     )
+     return compose + _render_campaign_review(model.get("draft"), csrf)
+ 
+diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
+index 114d0ec1..574a8dc2 100644
+--- a/cloudflare_worker/src/entry.py
++++ b/cloudflare_worker/src/entry.py
+@@ -349,6 +349,7 @@ from email_admin import (  # noqa: E402
+     render_console_page,
+     render_login_page,
+     render_message,
++    template_recipient_fields,
+ )
+ 
+ # Signed-event crypto + canonicalization -- the Ed25519/SHA-256 verify
+@@ -14273,6 +14274,57 @@ async def _email_admin_validate_category_ids(env, submitted_ids):
+     return ordered
+ 
+ 
++async def _email_admin_validate_recipient_ids(env, submitted_ids):
++    if submitted_ids is None:
++        values = []
++    elif isinstance(submitted_ids, str):
++        values = [submitted_ids]
++    else:
++        try:
++            values = list(submitted_ids)
++        except TypeError as error:
++            raise ValueError("unknown recipient") from error
++    if len(values) > 50:
++        raise ValueError("select no more than 50 individual recipients")
++
++    selected = []
++    for value in values:
++        try:
++            selected.append(_email_admin_id(value, "recipient"))
++        except ValueError as error:
++            raise ValueError("unknown recipient") from error
++    if len(set(selected)) != len(selected):
++        raise ValueError("duplicate recipient selection")
++    if not selected:
++        return []
++
++    payload = json.dumps(selected, separators=(",", ":"))
++    live_rows = await d1_all(
++        env,
++        "SELECT id FROM email_recipients "
++        "WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))",
++        payload,
++    )
++    live = set()
++    for row in live_rows:
++        try:
++            live.add(_email_admin_id(row.get("id"), "recipient"))
++        except (AttributeError, ValueError):
++            continue
++    if live != set(selected):
++        raise ValueError("unknown recipient")
++    return selected
++
++
++def _email_admin_compose_location(recipient_ids):
++    location = EMAIL_ADMIN_PATH + "?view=compose"
++    for recipient_id in recipient_ids:
++        location += "&recipient=" + str(
++            _email_admin_id(recipient_id, "recipient")
++        )
++    return location
++
++
+ async def _email_admin_import_recipients(env, raw):
+     parsed = parse_recipient_array(raw)
+     if parsed["errors"]:
+@@ -14483,28 +14535,42 @@ async def _email_admin_batch_run(env, sql, param_rows):
+ 
+ 
+ async def _email_admin_review_campaign(
+-    env, category_ids, template_id, subject, body
++    env, category_ids, recipient_ids, template_id, subject, body
+ ):
+-    selected = await _email_admin_validate_category_ids(env, category_ids)
+-    if not selected:
+-        raise ValueError("select at least one category")
+-    if len(selected) > 100:
++    selected_categories = await _email_admin_validate_category_ids(
++        env, category_ids
++    )
++    selected_recipients = await _email_admin_validate_recipient_ids(
++        env, recipient_ids
++    )
++    if not selected_categories and not selected_recipients:
++        raise ValueError("select at least one recipient or category")
++    if len(selected_categories) > 100:
+         raise ValueError("select no more than 100 categories")
+-    placeholders = ",".join("?" for _ in selected)
+-    live = await d1_all(
+-        env,
+-        "SELECT id,name FROM email_categories WHERE id IN ("
+-        + placeholders
+-        + ")",
+-        *selected,
++    category_payload = json.dumps(
++        selected_categories, separators=(",", ":")
++    )
++    recipient_payload = json.dumps(
++        selected_recipients, separators=(",", ":")
+     )
++    live = []
++    if selected_categories:
++        live = await d1_all(
++            env,
++            "SELECT id,name FROM email_categories "
++            "WHERE id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))",
++            category_payload,
++        )
+     category_names = {
+         _email_admin_id(row.get("id"), "category"): normalize_category_name(
+             row.get("name")
+         )
+         for row in live
+     }
+-    if any(category_id not in category_names for category_id in selected):
++    if any(
++        category_id not in category_names
++        for category_id in selected_categories
++    ):
+         raise ValueError("unknown category")
+ 
+     template_record_id = _email_admin_id(template_id, "template")
+@@ -14525,27 +14591,35 @@ async def _email_admin_review_campaign(
+         submitted_subject or stored.get("subject"),
+         submitted_body or stored.get("body"),
+     )
++    required_fields = template_recipient_fields(final_subject, final_body)
+ 
+-    selected_row = await d1_first(
+-        env,
+-        "SELECT COUNT(*) AS n FROM email_category_memberships "
+-        "WHERE category_id IN ("
+-        + placeholders
+-        + ")",
+-        *selected,
+-    )
+-    selected_count = max(0, int((selected_row or {}).get("n", 0) or 0))
++    category_membership_count = 0
++    if selected_categories:
++        selected_row = await d1_first(
++            env,
++            "SELECT COUNT(*) AS n FROM email_category_memberships "
++            "WHERE category_id IN (SELECT CAST(value AS INTEGER) "
++            "FROM json_each(?))",
++            category_payload,
++        )
++        category_membership_count = max(
++            0, int((selected_row or {}).get("n", 0) or 0)
++        )
++    selected_count = category_membership_count + len(selected_recipients)
+     recipient_rows = await d1_all(
+         env,
++        "WITH audience_ids(id) AS ("
++        "SELECT m.recipient_id FROM email_category_memberships m "
++        "WHERE m.category_id IN (SELECT CAST(value AS INTEGER) "
++        "FROM json_each(?)) UNION SELECT CAST(value AS INTEGER) "
++        "FROM json_each(?)) "
+         "SELECT DISTINCT r.id,r.email_bi,r.data FROM email_recipients r "
+-        "JOIN email_category_memberships m ON m.recipient_id=r.id "
+-        "WHERE m.category_id IN ("
+-        + placeholders
+-        + ") ORDER BY r.id",
+-        *selected,
++        "JOIN audience_ids a ON a.id=r.id ORDER BY r.id",
++        category_payload,
++        recipient_payload,
+     )
+     if not recipient_rows:
+-        raise ValueError("selected categories have no recipients")
++        raise ValueError("selected audience has no recipients")
+ 
+     recipients = []
+     seen_emails = set()
+@@ -14581,14 +14655,44 @@ async def _email_admin_review_campaign(
+         seen_emails.add(recipient["email"])
+         recipients.append((recipient_id, recipient))
+     if not recipients:
+-        raise ValueError("selected categories have no valid recipients")
++        raise ValueError("selected audience has no valid recipients")
++
++    missing_personalization = []
++    for _recipient_id, recipient in recipients:
++        missing_fields = [
++            field
++            for field in required_fields
++            if not str(recipient.get(field) or "").strip()
++        ]
++        if missing_fields:
++            missing_personalization.append(
++                (recipient["email"], missing_fields)
++            )
++    if missing_personalization:
++        visible = missing_personalization[:5]
++        details = "; ".join(
++            email + " (" + ", ".join(fields) + ")"
++            for email, fields in visible
++        )
++        remaining = len(missing_personalization) - len(visible)
++        if remaining:
++            details += "; plus " + str(remaining) + " more"
++        raise ValueError(
++            "Missing personalization for "
++            + details
++            + ". Edit these recipients before preparing outreach."
++        )
+ 
+     overlap_duplicates = max(0, selected_count - len(recipient_rows))
+     campaign_id = _email_admin_random_id()
+     now = int(Date.now())
+     campaign_snapshot = {
+-        "category_ids": selected,
+-        "category_names": [category_names[item] for item in selected],
++        "category_ids": selected_categories,
++        "category_names": [
++            category_names[item] for item in selected_categories
++        ],
++        "recipient_ids": selected_recipients,
++        "individual_count": len(selected_recipients),
+         "template_id": template_record_id,
+         "sender": OUTREACH_SENDER_EMAIL,
+         "subject": final_subject,
+@@ -15090,6 +15194,7 @@ async def _email_admin_load_draft(env, campaign_id):
+         "id": record_id,
+         "status": str(row.get("status") or "draft"),
+         "category_names": category_names,
++        "individual_count": safe_count("individual_count"),
+         "selected_count": safe_count("selected_count"),
+         "unique_count": safe_count("unique_count"),
+         "duplicate_count": safe_count("duplicate_count"),
+@@ -15349,6 +15454,7 @@ async def _email_admin_load_model(
+     cursor=None,
+     direction=None,
+     edit_id=None,
++    recipient_ids=None,
+ ):
+     active_view = view or "recipients"
+     if active_view == "jobs":
+@@ -15395,6 +15501,88 @@ async def _email_admin_load_model(
+         category_by_id[item["id"]] = item
+     model["categories"] = categories
+ 
++    if active_view == "compose":
++        selected_ids = await _email_admin_validate_recipient_ids(
++            env, recipient_ids
++        )
++        model["selected_recipients"] = []
++        if selected_ids:
++            payload = json.dumps(selected_ids, separators=(",", ":"))
++            selected_raw = await d1_all(
++                env,
++                "SELECT r.id,r.data,r.updated_at FROM email_recipients r "
++                "WHERE r.id IN (SELECT CAST(value AS INTEGER) "
++                "FROM json_each(?))",
++                payload,
++            )
++            memberships_raw = await d1_all(
++                env,
++                "SELECT recipient_id,category_id "
++                "FROM email_category_memberships "
++                "WHERE recipient_id IN (SELECT CAST(value AS INTEGER) "
++                "FROM json_each(?)) ORDER BY recipient_id,category_id",
++                payload,
++            )
++            memberships = {}
++            for raw in memberships_raw:
++                try:
++                    recipient_id = _email_admin_id(
++                        raw.get("recipient_id"), "recipient"
++                    )
++                    membership_id = _email_admin_id(
++                        raw.get("category_id"), "category"
++                    )
++                except (AttributeError, ValueError):
++                    continue
++                if membership_id in category_by_id:
++                    memberships.setdefault(recipient_id, set()).add(
++                        membership_id
++                    )
++
++            records_by_id = {}
++            for raw in selected_raw:
++                try:
++                    recipient_id = _email_admin_id(
++                        raw.get("id"), "recipient"
++                    )
++                except (AttributeError, ValueError):
++                    continue
++                decrypted = await decrypt_row(env, raw.get("data"))
++                if not isinstance(decrypted, dict):
++                    continue
++                try:
++                    record = normalize_recipient_record(
++                        decrypted.get("email"),
++                        decrypted.get("name", ""),
++                        decrypted.get("company", ""),
++                    )
++                    updated_at = max(0, int(raw.get("updated_at") or 0))
++                except (TypeError, ValueError):
++                    continue
++                recipient_categories = memberships.get(recipient_id, set())
++                ordered_category_ids = [
++                    category["id"]
++                    for category in categories
++                    if category["id"] in recipient_categories
++                ]
++                records_by_id[recipient_id] = {
++                    "id": recipient_id,
++                    "email": record["email"],
++                    "name": record["name"],
++                    "company": record["company"],
++                    "categories": [
++                        category_by_id[item]["name"]
++                        for item in ordered_category_ids
++                    ],
++                    "category_ids": ordered_category_ids,
++                    "updated_at": updated_at,
++                }
++            model["selected_recipients"] = [
++                records_by_id[recipient_id]
++                for recipient_id in selected_ids
++                if recipient_id in records_by_id
++            ]
++
+     if active_view == "recipients":
+         selected_category = None
+         if category_id is not None:
+@@ -16994,9 +17182,26 @@ class Default(WorkerEntrypoint):
+             cursor_value = (params.get("cursor", [""]) or [""])[0]
+             direction_value = (params.get("direction", [""]) or [""])[0]
+             edit_value = (params.get("edit", [""]) or [""])[0]
++            recipient_values = params.get("recipient", [])
+             category_id = None
+             campaign_id = None
+             banner = str((params.get("notice", [""]) or [""])[0])[:240]
++            if view != "compose":
++                recipient_values = []
++            elif len(recipient_values) > 50:
++                recipient_values = []
++                banner = "Invalid recipient selection."
++            else:
++                try:
++                    recipient_values = [
++                        _email_admin_id(value, "recipient")
++                        for value in recipient_values
++                    ]
++                    if len(set(recipient_values)) != len(recipient_values):
++                        raise ValueError("duplicate recipient selection")
++                except ValueError:
++                    recipient_values = []
++                    banner = "Invalid recipient selection."
+             if category_value:
+                 try:
+                     category_id = _email_admin_id(category_value, "category")
+@@ -17030,15 +17235,32 @@ class Default(WorkerEntrypoint):
+                 edit_value = None
+             await _email_admin_seed_defaults(self.env)
+             await _email_admin_seed_templates(self.env)
+-            model = await _email_admin_load_model(
+-                self.env,
+-                category_id=category_id,
+-                campaign_id=campaign_id,
+-                view=view,
+-                cursor=cursor_value,
+-                direction=direction_value,
+-                edit_id=edit_value,
+-            )
++            try:
++                model = await _email_admin_load_model(
++                    self.env,
++                    category_id=category_id,
++                    campaign_id=campaign_id,
++                    view=view,
++                    cursor=cursor_value,
++                    direction=direction_value,
++                    edit_id=edit_value,
++                    recipient_ids=recipient_values,
++                )
++            except ValueError:
++                if not recipient_values:
++                    raise
++                recipient_values = []
++                banner = "Invalid recipient selection."
++                model = await _email_admin_load_model(
++                    self.env,
++                    category_id=category_id,
++                    campaign_id=campaign_id,
++                    view=view,
++                    cursor=cursor_value,
++                    direction=direction_value,
++                    edit_id=edit_value,
++                    recipient_ids=recipient_values,
++                )
+             page = render_console_page(
+                 view,
+                 _email_admin_csrf_token(self.env, request),
+@@ -17134,11 +17356,13 @@ class Default(WorkerEntrypoint):
+         await _email_admin_seed_defaults(self.env)
+         await _email_admin_seed_templates(self.env)
+         redirect_campaign_id = None
++        submitted_recipient_ids = form.get("recipient_ids", [])
+         try:
+             if action == "review_campaign":
+                 redirect_campaign_id = await _email_admin_review_campaign(
+                     self.env,
+                     form.get("category_ids", []),
++                    submitted_recipient_ids,
+                     _email_admin_form_value(form, "template_id"),
+                     _email_admin_form_value(form, "subject"),
+                     _email_admin_form_value(form, "body"),
+@@ -17200,10 +17424,24 @@ class Default(WorkerEntrypoint):
+                 )
+                 view = "recipients"
+             elif action == "bulk_recipients":
++                bulk_action = _email_admin_form_value(form, "bulk_action")
++                if bulk_action == "start_outreach":
++                    selected_recipients = (
++                        await _email_admin_validate_recipient_ids(
++                            self.env, form.get("recipient_ids", [])
++                        )
++                    )
++                    if not selected_recipients:
++                        raise ValueError("Select at least one recipient.")
++                    return _email_admin_redirect(
++                        location=_email_admin_compose_location(
++                            selected_recipients
++                        )
++                    )
+                 notice = await _email_admin_bulk_recipients(
+                     self.env,
+                     form.get("recipient_ids", []),
+-                    _email_admin_form_value(form, "bulk_action"),
++                    bulk_action,
+                     _email_admin_form_value(form, "category_id"),
+                     _email_admin_form_value(
+                         form, "confirm_bulk_delete"
+@@ -17306,10 +17544,21 @@ class Default(WorkerEntrypoint):
+                     )
+                 except ValueError:
+                     pass
++            error_recipient_ids = []
++            if view == "compose" and submitted_recipient_ids:
++                try:
++                    error_recipient_ids = (
++                        await _email_admin_validate_recipient_ids(
++                            self.env, submitted_recipient_ids
++                        )
++                    )
++                except ValueError:
++                    pass
+             model = await _email_admin_load_model(
+                 self.env,
+                 campaign_id=error_campaign_id,
+                 view=view,
++                recipient_ids=error_recipient_ids,
+             )
+             page = render_console_page(view, csrf, model, str(error))
+             return _email_admin_html_response(page, status=400)
+diff --git a/cloudflare_worker/tests/test_email_admin_client.py b/cloudflare_worker/tests/test_email_admin_client.py
+index 0eb76b00..c7c8362c 100644
+--- a/cloudflare_worker/tests/test_email_admin_client.py
++++ b/cloudflare_worker/tests/test_email_admin_client.py
+@@ -137,29 +137,37 @@ def test_client_bulk_state_reveals_only_required_controls():
+     assert result == [
+         {
+             "showBar": False,
++            "showStart": False,
+             "showMove": False,
+             "showDelete": False,
++            "canStart": False,
+             "canMove": False,
+             "canDelete": False,
+         },
+         {
+             "showBar": True,
++            "showStart": True,
+             "showMove": True,
+             "showDelete": False,
++            "canStart": True,
+             "canMove": False,
+             "canDelete": False,
+         },
+         {
+             "showBar": True,
++            "showStart": True,
+             "showMove": True,
+             "showDelete": False,
++            "canStart": True,
+             "canMove": True,
+             "canDelete": False,
+         },
+         {
+             "showBar": True,
++            "showStart": True,
+             "showMove": False,
+             "showDelete": True,
++            "canStart": True,
+             "canMove": False,
+             "canDelete": True,
+         },
+diff --git a/cloudflare_worker/tests/test_email_admin_domain.py b/cloudflare_worker/tests/test_email_admin_domain.py
+index 0587c7f1..06d9ae53 100644
+--- a/cloudflare_worker/tests/test_email_admin_domain.py
++++ b/cloudflare_worker/tests/test_email_admin_domain.py
+@@ -15,6 +15,7 @@ from src.email_admin import (
+     normalize_template_values,
+     parse_recipient_array,
+     render_message,
++    template_recipient_fields,
+ )
+ 
+ 
+@@ -330,6 +331,19 @@ def test_normalize_template_values_trims_and_validates_placeholders():
+     )
+ 
+ 
++def test_template_recipient_fields_returns_only_referenced_fields():
++    assert template_recipient_fields(
++        "Hi {{name}}", "Contact {{email}} about {{company}}"
++    ) == ("company", "email", "name")
++
++
++def test_template_recipient_fields_rejects_invalid_placeholders():
++    with pytest.raises(ValueError, match="unknown placeholder: role"):
++        template_recipient_fields("Hi {{role}}", "Body")
++    with pytest.raises(ValueError, match="malformed placeholder"):
++        template_recipient_fields("Hi {{name", "Body")
++
++
+ @pytest.mark.parametrize(
+     ("name", "subject", "body", "message"),
+     (
+diff --git a/cloudflare_worker/tests/test_email_admin_frontend.py b/cloudflare_worker/tests/test_email_admin_frontend.py
+index 587723b5..82f9924a 100644
+--- a/cloudflare_worker/tests/test_email_admin_frontend.py
++++ b/cloudflare_worker/tests/test_email_admin_frontend.py
+@@ -220,8 +220,7 @@ def test_recipient_view_uses_validated_import_and_contextual_bulk_actions():
+     assert 'id="recipient-import-form"' in page
+     assert 'id="recipient-json"' in page
+     assert (
+-        '["person@example.com", '
+-        '{"email":"pat@example.com","name":"Pat","company":"Orbit"}]'
++        '[{"name":"Pat","email":"pat@example.com","company":"Orbit"}]'
+         in page
+     )
+     assert 'id="recipient-format"' in page
+@@ -234,6 +233,8 @@ def test_recipient_view_uses_validated_import_and_contextual_bulk_actions():
+     assert 'name="recipient_ids" value="7"' in page
+     assert 'name="action" value="bulk_recipients"' in page
+     assert 'name="bulk_action"' in page
++    assert 'name="bulk_action" value="start_outreach"' in page
++    assert 'data-bulk-start' in page
+     assert 'value="move_category"' in page
+     assert 'value="add_category"' not in page
+     assert 'value="remove_category"' not in page
+@@ -241,7 +242,8 @@ def test_recipient_view_uses_validated_import_and_contextual_bulk_actions():
+     assert 'data-selection-count' in page
+     assert 'data-select-all' in page
+     assert 'data-category-control hidden' in page
+-    assert 'data-bulk-submit type="submit" disabled' in page
++    assert 'data-bulk-submit type="submit"' in page
++    assert 'value="move_category" disabled hidden' in page
+     assert 'data-bulk-delete-open' in page
+     assert 'aria-controls="bulk-delete-dialog"' in page
+     assert '<dialog id="bulk-delete-dialog"' in page
+@@ -479,7 +481,7 @@ COMPOSE_MODEL = {
+ }
+ 
+ 
+-def test_compose_view_requires_categories_template_and_review_action():
++def test_compose_view_accepts_categories_and_prepares_from_a_template():
+     page = render_console_page("compose", "csrf", COMPOSE_MODEL)
+ 
+     assert 'name="category_ids" value="1"' in page
+@@ -487,10 +489,50 @@ def test_compose_view_requires_categories_template_and_review_action():
+     assert "following (8)" in page
+     assert 'select name="template_id" required' in page
+     assert 'option value="3"' in page
++    assert '<summary>Advanced message overrides</summary>' in page
+     assert 'name="subject" maxlength="240"' in page
+     assert 'name="body" maxlength="32000"' in page
+     assert 'name="action" value="review_campaign"' in page
+-    assert "Review campaign" in page
++    assert "Prepare outreach" in page
++
++
++def test_compose_view_preserves_and_summarizes_selected_recipients():
++    model = {
++        **COMPOSE_MODEL,
++        "selected_recipients": [
++            {
++                "id": 42,
++                "email": "jane@example.com",
++                "name": "Jane Doe",
++                "company": "Acme",
++                "categories": ["default"],
++                "category_ids": [1],
++                "updated_at": 1,
++            },
++            {
++                "id": 7,
++                "email": "pat@example.com",
++                "name": "",
++                "company": "Orbit",
++                "categories": ["following"],
++                "category_ids": [1],
++                "updated_at": 1,
++            },
++        ],
++    }
++
++    page = render_console_page("compose", "csrf", model)
++
++    assert "2 individually selected recipients" in page
++    assert 'name="recipient_ids" value="42"' in page
++    assert 'name="recipient_ids" value="7"' in page
++    assert "Jane Doe" in page
++    assert "jane@example.com" in page
++    assert "Acme" in page
++    assert "pat@example.com" in page
++    assert ">default</span>" in page
++    assert "Back to recipients" in page
++    assert "fills {{name}}, {{company}}, and {{email}}" in page
+ 
+ 
+ def test_compose_review_shows_exact_counts_preview_and_test_gate():
+@@ -500,6 +542,7 @@ def test_compose_review_shows_exact_counts_preview_and_test_gate():
+             "id": "campaign-id",
+             "status": "draft",
+             "category_names": ["following", "confirmed"],
++            "individual_count": 2,
+             "selected_count": 10,
+             "unique_count": 8,
+             "duplicate_count": 2,
+@@ -517,6 +560,7 @@ def test_compose_review_shows_exact_counts_preview_and_test_gate():
+     page = render_console_page("compose", "csrf", model)
+ 
+     assert "8 unique recipients" in page
++    assert "2 selected people" in page
+     assert "2 duplicates removed" in page
+     assert "0 invalid recipients excluded" in page
+     assert 'name="action" value="send_test"' in page
+@@ -551,7 +595,7 @@ def test_successful_test_unlocks_explicit_final_confirmation():
+     assert "Test sent to operator@example.com" in page
+     assert 'name="confirm_send" value="1" required' in page
+     assert 'name="action" value="confirm_campaign"' in page
+-    assert "Queue email to 8 recipients" in page
++    assert "Start queued outreach to 8 recipients" in page
+ 
+ 
+ def test_compose_review_escapes_campaign_values_and_preview_srcdoc():
+diff --git a/cloudflare_worker/tests/test_email_admin_worker.py b/cloudflare_worker/tests/test_email_admin_worker.py
+index 356249c3..c84afda8 100644
+--- a/cloudflare_worker/tests/test_email_admin_worker.py
++++ b/cloudflare_worker/tests/test_email_admin_worker.py
+@@ -685,6 +685,8 @@ EMAIL_DATA_FUNCTIONS = {
+     "_email_admin_id",
+     "_email_admin_seed_defaults",
+     "_email_admin_validate_category_ids",
++    "_email_admin_validate_recipient_ids",
++    "_email_admin_compose_location",
+     "_email_admin_import_recipients",
+     "_email_admin_load_model",
+     "_email_admin_create_category",
+@@ -711,6 +713,7 @@ def _load_email_admin_data(extra_globals):
+     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
+     namespace = {
+         "Date": _FakeDate,
++        "EMAIL_ADMIN_PATH": "/outreach",
+         "json": json,
+         "DEFAULT_CATEGORIES": email_admin.DEFAULT_CATEGORIES,
+         "normalize_category_name": email_admin.normalize_category_name,
+@@ -990,6 +993,151 @@ def test_load_model_decrypts_recipients_filters_membership_and_excludes_data():
+     assert model["templates"] == []
+ 
+ 
++def test_validate_recipient_ids_preserves_order_with_one_bounded_query():
++    calls = []
++
++    async def d1_all(_env, sql, *args):
++        calls.append((sql, args))
++        return [{"id": 7}, {"id": 42}]
++
++    data = _load_email_admin_data({"d1_all": d1_all})
++
++    selected = asyncio.run(
++        data["_email_admin_validate_recipient_ids"](
++            SimpleNamespace(), ["42", "7"]
++        )
++    )
++
++    assert selected == [42, 7]
++    assert len(calls) == 1
++    assert "json_each(?)" in calls[0][0]
++    assert json.loads(calls[0][1][0]) == [42, 7]
++
++
++@pytest.mark.parametrize(
++    ("submitted", "message"),
++    (
++        ([7, 7], "duplicate recipient selection"),
++        (list(range(1, 52)), "select no more than 50 individual recipients"),
++        (["invalid"], "unknown recipient"),
++    ),
++)
++def test_validate_recipient_ids_rejects_invalid_input_before_database(
++    submitted, message
++):
++    async def unexpected(*_args):
++        raise AssertionError("invalid selection reached the database")
++
++    data = _load_email_admin_data({"d1_all": unexpected})
++
++    with pytest.raises(ValueError, match=message):
++        asyncio.run(
++            data["_email_admin_validate_recipient_ids"](
++                SimpleNamespace(), submitted
++            )
++        )
++
++
++def test_validate_recipient_ids_accepts_empty_and_rejects_unknown_rows():
++    calls = []
++
++    async def d1_all(_env, _sql, *_args):
++        calls.append(True)
++        return [{"id": 7}]
++
++    data = _load_email_admin_data({"d1_all": d1_all})
++
++    assert asyncio.run(
++        data["_email_admin_validate_recipient_ids"](SimpleNamespace(), None)
++    ) == []
++    assert calls == []
++    with pytest.raises(ValueError, match="unknown recipient"):
++        asyncio.run(
++            data["_email_admin_validate_recipient_ids"](
++                SimpleNamespace(), [7, 8]
++            )
++        )
++
++
++def test_compose_location_preserves_selected_recipient_order():
++    data = _load_email_admin_data({})
++
++    assert data["_email_admin_compose_location"]([42, 7]) == (
++        "/outreach?view=compose&recipient=42&recipient=7"
++    )
++
++
++def test_compose_model_loads_only_selected_recipients_in_submitted_order():
++    selected_query_args = []
++
++    async def d1_all(_env, sql, *args):
++        if "FROM email_categories c" in sql:
++            return [
++                {
++                    "id": 2,
++                    "name": "default",
++                    "is_system": 1,
++                    "count": 2,
++                }
++            ]
++        if sql.startswith("SELECT id FROM email_recipients"):
++            return [{"id": 7}, {"id": 42}]
++        if "SELECT r.id,r.data,r.updated_at" in sql:
++            selected_query_args.extend(json.loads(args[0]))
++            return [
++                {
++                    "id": 7,
++                    "data": {
++                        "email": "seven@example.com",
++                        "name": "Seven",
++                        "company": "Orbit",
++                    },
++                    "updated_at": 70,
++                },
++                {
++                    "id": 42,
++                    "data": {
++                        "email": "forty-two@example.com",
++                        "name": "Forty Two",
++                        "company": "Acme",
++                    },
++                    "updated_at": 420,
++                },
++            ]
++        if sql.startswith("SELECT recipient_id,category_id"):
++            return [
++                {"recipient_id": 7, "category_id": 2},
++                {"recipient_id": 42, "category_id": 2},
++            ]
++        if "FROM email_templates" in sql:
++            return []
++        raise AssertionError(sql)
++
++    async def decrypt_row(_env, value):
++        return value
++
++    data = _load_email_admin_data(
++        {"d1_all": d1_all, "decrypt_row": decrypt_row}
++    )
++    model = asyncio.run(
++        data["_email_admin_load_model"](
++            SimpleNamespace(), view="compose", recipient_ids=[42, 7]
++        )
++    )
++
++    assert selected_query_args == [42, 7]
++    assert [item["id"] for item in model["selected_recipients"]] == [42, 7]
++    assert model["selected_recipients"][0] == {
++        "id": 42,
++        "email": "forty-two@example.com",
++        "name": "Forty Two",
++        "company": "Acme",
++        "categories": ["default"],
++        "category_ids": [2],
++        "updated_at": 420,
++    }
++
++
+ def test_recipient_model_uses_fifty_row_cursor_page_and_visible_memberships():
+     membership_args = []
+ 
+@@ -1403,11 +1551,13 @@ def test_authenticated_handler_loads_models_and_gates_mutations_with_csrf():
+     assert 'params.get("cursor"' in source
+     assert 'params.get("direction"' in source
+     assert 'params.get("edit"' in source
++    assert 'params.get("recipient", [])' in source
+     assert "category_id=category_id" in source
+     assert "campaign_id=campaign_id" in source
+     assert "cursor=cursor_value" in source
+     assert "direction=direction_value" in source
+     assert "edit_id=edit_value" in source
++    assert "recipient_ids=recipient_values" in source
+     assert 'params.get("notice"' in source
+     assert "submitted_action = _email_admin_form_value" in source
+     csrf_position = source.index("if not _email_admin_csrf_ok")
+@@ -1417,6 +1567,9 @@ def test_authenticated_handler_loads_models_and_gates_mutations_with_csrf():
+     first_action = source.index('action == "import_recipients"')
+     assert csrf_position < mutation_seed < first_action
+     assert '_email_admin_form_value(form, "confirm_delete")' in source
++    assert 'bulk_action == "start_outreach"' in source
++    assert "_email_admin_validate_recipient_ids(" in source
++    assert "_email_admin_compose_location(" in source
+     assert "_email_admin_action_location(view, notice)" in source
+ 
+ 
+@@ -1433,6 +1586,17 @@ def test_invalid_recipient_import_renders_exact_errors_without_redirecting():
+     assert "_email_admin_import_error_banner" not in import_branch
+ 
+ 
++def test_review_handler_carries_individual_recipients_through_errors():
++    source = ast.get_source_segment(ENTRY_TEXT, _function_node("_email_admin"))
++    review_start = source.index('action == "review_campaign"')
++    review_end = source.index('action == "send_test"', review_start)
++    review_branch = source[review_start:review_end]
++
++    assert "submitted_recipient_ids" in review_branch
++    assert 'form.get("recipient_ids", [])' in source
++    assert "recipient_ids=error_recipient_ids" in source
++
++
+ EMAIL_TEMPLATE_FUNCTIONS = {
+     "_email_admin_id",
+     "_email_admin_seed_templates",
+@@ -1591,6 +1755,7 @@ def test_template_delete_checks_existence_before_write():
+ EMAIL_CAMPAIGN_FUNCTIONS = {
+     "_email_admin_id",
+     "_email_admin_validate_category_ids",
++    "_email_admin_validate_recipient_ids",
+     "_email_admin_campaign_id",
+     "_email_admin_random_id",
+     "_email_admin_delivery_snapshot",
+@@ -1618,6 +1783,7 @@ def _load_email_admin_campaigns(extra_globals):
+     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
+     namespace = {
+         "base64": base64,
++        "json": json,
+         "re": __import__("re"),
+         "Date": _FakeDate,
+         "OUTREACH_SENDER_EMAIL": "founders@forkmesh.com",
+@@ -1626,6 +1792,7 @@ def _load_email_admin_campaigns(extra_globals):
+         "normalize_recipient_record": email_admin.normalize_recipient_record,
+         "normalize_template_values": email_admin.normalize_template_values,
+         "render_message": email_admin.render_message,
++        "template_recipient_fields": email_admin.template_recipient_fields,
+     }
+     exec(compile(module, str(ENTRY), "exec"), namespace)
+     namespace.update(extra_globals)
+@@ -1645,6 +1812,19 @@ def test_campaign_review_snapshots_a_deduplicated_encrypted_audience():
+     assert "_email_admin_batch_run" in ENTRY_TEXT
+     assert "params[start:start + 100]" in ENTRY_TEXT
+     assert "seen_blind_indexes" in ENTRY_TEXT
++    assert '"recipient_ids": selected_recipients' in ENTRY_TEXT
++    assert "template_recipient_fields" in ENTRY_TEXT
++
++
++def test_campaign_personalization_helper_is_imported_at_runtime():
++    imported = {
++        alias.name
++        for node in ENTRY_TREE.body
++        if isinstance(node, ast.ImportFrom) and node.module == "email_admin"
++        for alias in node.names
++    }
++
++    assert "template_recipient_fields" in imported
+ 
+ 
+ def test_campaign_test_and_confirmation_actions_exist():
+@@ -1682,17 +1862,27 @@ def test_review_campaign_stores_valid_unique_snapshots_and_review_counts():
+                 {"id": 1, "name": "following"},
+                 {"id": 2, "name": "confirmed"},
+             ]
++        if sql.startswith("SELECT id FROM email_recipients"):
++            return [{"id": 11}]
+         if "SELECT DISTINCT r.id" in sql:
+             return [
+                 {
+                     "id": 10,
+                     "email_bi": "bi:a",
+-                    "data": {"email": "A@example.com", "name": "A"},
++                    "data": {
++                        "email": "A@example.com",
++                        "name": "A",
++                        "company": "Acme",
++                    },
+                 },
+                 {
+                     "id": 11,
+                     "email_bi": "bi:b",
+-                    "data": {"email": "b@example.com", "company": "Orbit"},
++                    "data": {
++                        "email": "b@example.com",
++                        "name": "Bee",
++                        "company": "Orbit",
++                    },
+                 },
+                 {"id": 12, "email_bi": "bi:bad", "data": {"email": "bad"}},
+             ]
+@@ -1732,7 +1922,7 @@ def test_review_campaign_stores_valid_unique_snapshots_and_review_counts():
+     )
+     campaign_id = asyncio.run(
+         campaigns["_email_admin_review_campaign"](
+-            SimpleNamespace(DB=DB()), [2, 1, 2], 3, "", ""
++            SimpleNamespace(DB=DB()), [2, 1, 2], [11], 3, "", ""
+         )
+     )
+ 
+@@ -1743,9 +1933,11 @@ def test_review_campaign_stores_valid_unique_snapshots_and_review_counts():
+     snapshot = campaign_insert[1][1]
+     assert snapshot["category_ids"] == [1, 2]
+     assert snapshot["category_names"] == ["following", "confirmed"]
+-    assert snapshot["selected_count"] == 4
++    assert snapshot["recipient_ids"] == [11]
++    assert snapshot["individual_count"] == 1
++    assert snapshot["selected_count"] == 5
+     assert snapshot["unique_count"] == 2
+-    assert snapshot["duplicate_count"] == 1
++    assert snapshot["duplicate_count"] == 2
+     assert snapshot["invalid_count"] == 1
+     assert snapshot["test_sent_at"] == 0
+     assert len(batches) == 1
+@@ -1806,7 +1998,7 @@ def test_review_campaign_cleans_up_campaign_and_deliveries_on_batch_failure():
+     with pytest.raises(RuntimeError, match="batch failed"):
+         asyncio.run(
+             campaigns["_email_admin_review_campaign"](
+-                SimpleNamespace(DB=DB()), [1], 3, "", ""
++                SimpleNamespace(DB=DB()), [1], [], 3, "", ""
+             )
+         )
+ 
+@@ -1814,6 +2006,133 @@ def test_review_campaign_cleans_up_campaign_and_deliveries_on_batch_failure():
+     assert "DELETE FROM email_campaigns" in runs[-1][0]
+ 
+ 
++def test_review_campaign_accepts_explicit_only_with_unused_metadata_empty():
++    runs = []
++    database = _BatchDatabase()
++
++    async def d1_all(_env, sql, *_args):
++        if sql.startswith("SELECT id FROM email_recipients"):
++            return [{"id": 10}]
++        if "SELECT DISTINCT r.id" in sql:
++            return [
++                {
++                    "id": 10,
++                    "email_bi": "bi:person",
++                    "data": {"email": "person@example.com"},
++                }
++            ]
++        raise AssertionError(sql)
++
++    async def d1_first(_env, sql, *_args):
++        if "FROM email_templates" in sql:
++            return {
++                "id": 3,
++                "name": "Email only",
++                "data": {
++                    "subject": "Hello",
++                    "body": "Contact {{email}}",
++                },
++            }
++        raise AssertionError(sql)
++
++    async def d1_run(_env, sql, *args):
++        runs.append((sql, args))
++
++    async def identity(_env, value):
++        return dict(value)
++
++    campaigns = _load_email_admin_campaigns(
++        {
++            "d1_all": d1_all,
++            "d1_first": d1_first,
++            "d1_run": d1_run,
++            "decrypt_row": identity,
++            "encrypt_row": identity,
++            "_random_bytes": lambda length: b"y" * length,
++        }
++    )
++
++    asyncio.run(
++        campaigns["_email_admin_review_campaign"](
++            SimpleNamespace(DB=database), [], [10], 3, "", ""
++        )
++    )
++
++    campaign_insert = next(
++        item for item in runs if "INSERT INTO email_campaigns" in item[0]
++    )
++    snapshot = campaign_insert[1][1]
++    assert snapshot["category_ids"] == []
++    assert snapshot["recipient_ids"] == [10]
++    assert snapshot["individual_count"] == 1
++    assert snapshot["selected_count"] == 1
++    assert snapshot["unique_count"] == 1
++    assert len(database.batches[0]) == 1
++    assert database.batches[0][0].args[3]["text"] == (
++        "Contact person@example.com"
++    )
++
++
++def test_review_campaign_blocks_missing_referenced_personalization_before_writes():
++    writes = []
++
++    async def d1_all(_env, sql, *_args):
++        if sql.startswith("SELECT id FROM email_recipients"):
++            return [{"id": 10}]
++        if "SELECT DISTINCT r.id" in sql:
++            return [
++                {
++                    "id": 10,
++                    "email_bi": "bi:person",
++                    "data": {
++                        "email": "person@example.com",
++                        "name": "Person",
++                        "company": "",
++                    },
++                }
++            ]
++        raise AssertionError(sql)
++
++    async def d1_first(_env, sql, *_args):
++        if "FROM email_templates" in sql:
++            return {
++                "id": 3,
++                "name": "Company outreach",
++                "data": {"subject": "Hello", "body": "For {{company}}"},
++            }
++        raise AssertionError(sql)
++
++    async def d1_run(_env, sql, *args):
++        writes.append((sql, args))
++
++    async def decrypt_row(_env, value):
++        return dict(value)
++
++    async def unexpected_encrypt(*_args):
++        raise AssertionError("missing personalization must not be encrypted")
++
++    campaigns = _load_email_admin_campaigns(
++        {
++            "d1_all": d1_all,
++            "d1_first": d1_first,
++            "d1_run": d1_run,
++            "decrypt_row": decrypt_row,
++            "encrypt_row": unexpected_encrypt,
++        }
++    )
++
++    with pytest.raises(
++        ValueError,
++        match=r"person@example\.com \(company\)",
++    ):
++        asyncio.run(
++            campaigns["_email_admin_review_campaign"](
++                SimpleNamespace(), [], [10], 3, "", ""
++            )
++        )
++    assert writes == []
++
++
+ def test_campaign_test_send_uses_snapshot_without_mutating_deliveries():
+     runs = []
+     sends = []
+-- 
+2.50.1 (Apple Git-155)
+

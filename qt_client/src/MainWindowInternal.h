@@ -1135,9 +1135,22 @@ public:
     void setSamples(const QVector<double> &values, double maxValue,
                     const QString &valueText)
     {
+        m_loading = false;
         m_max = maxValue > 0 ? maxValue : 1.0;
         m_value = valueText;
         m_history = values.mid(qMax(0, values.size() - m_maxPoints));
+        update();
+    }
+
+    // Repository trend cards are created before their first stats pass. Keep
+    // that short interval visually intentional instead of showing blank cards.
+    void setLoading(bool loading)
+    {
+        m_loading = loading;
+        if (loading) {
+            m_value.clear();
+            m_history.clear();
+        }
         update();
     }
 
@@ -1166,6 +1179,16 @@ protected:
         p.setPen(Qt::NoPen);
         p.setBrush(card);
         p.drawPath(cardPath);
+
+        if (m_loading) {
+            QColor placeholder = palette().color(QPalette::WindowText);
+            placeholder.setAlpha(42);
+            p.setPen(Qt::NoPen);
+            p.setBrush(placeholder);
+            p.drawRoundedRect(box.adjusted(7, 9, -7, -16), 2, 2);
+            p.drawRoundedRect(box.adjusted(10, 21, -10, -7), 2, 2);
+            return;
+        }
 
         // The sparkline fills the whole card (adhoc #46), with the most recent
         // sample at its right edge so the curve scrolls left over time. Clipped
@@ -1249,6 +1272,7 @@ private:
     double m_max = 100.0;
     QVector<double> m_history;
     int m_maxPoints = 60;
+    bool m_loading = false;
 };
 
 // A row-sized memory trend square for one process in the "High memory usage"
@@ -7729,7 +7753,7 @@ private:
     QString m_glyph;
 };
 
-// A one-line, muted status label that sits beside a busy button and carries the
+// A one-line, muted status label that sits beneath a busy button and carries the
 // live "what is it doing right now" note (the sync button's git/seal progress).
 // It never widens its row: the size hint stays at zero width and the layout
 // hands it whatever space is left, so a long progress line elides instead of
