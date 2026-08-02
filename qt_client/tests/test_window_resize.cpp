@@ -1,4 +1,5 @@
 #include "../src/MainWindow.h"
+#include "../src/ClaudeTranscriptView.h"
 #include "../src/PlatformLogFilter.h"
 #include "ForkMeshVersion.h"
 
@@ -16,11 +17,13 @@
 #include <QEventLoop>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QImage>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QFileInfo>
+#include <QImage>
 #include <QPointer>
 #include <QProcess>
 #include <QRegularExpression>
@@ -98,6 +101,24 @@ bool tryAcquireWithEvents(QSemaphore &semaphore, int timeoutMs)
         QApplication::processEvents(QEventLoop::AllEvents, 10);
     } while (timer.elapsed() < timeoutMs);
     return semaphore.tryAcquire();
+}
+
+bool iconContainsChromaKey(const QIcon &icon)
+{
+    const QImage image = icon.pixmap(QSize(32, 32)).toImage().convertToFormat(
+        QImage::Format_RGBA8888);
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            const bool magentaKey =
+                pixel.red() > 235 && pixel.green() < 30 && pixel.blue() > 225;
+            const bool greenKey =
+                pixel.green() > 220 && pixel.red() < 45 && pixel.blue() < 45;
+            if (pixel.alpha() > 32 && (magentaKey || greenKey))
+                return true;
+        }
+    }
+    return false;
 }
 
 QString widgetPath(QWidget *widget)
@@ -1398,6 +1419,16 @@ int main(int argc, char *argv[])
     window.testOpenRepository(repoIdx);
     QApplication::processEvents();
 
+    // Historical signed PR heads can be pruned after repair/cleanup. The PR's
+    // durable canonical branch remains the review source, so every PR surface
+    // must resolve that instead of feeding a missing name to `git diff`.
+    runGitChecked(repoDir.path(), {"branch", "pr/404", "HEAD"});
+    PullRequest repairedPull;
+    repairedPull.number = 404;
+    repairedPull.head = QStringLiteral("api-pr/removed/historical-head");
+    check(window.testResolvablePullHead(repairedPull) == QStringLiteral("pr/404"),
+          QStringLiteral("a missing signed PR head falls back to pr/<number>"));
+
     // adhoc #55: the status strip names the commit the open branch is on —
     // short SHA, date, subject and author. The read is detached (it must not
     // block the GUI thread), so pump the loop until it lands.
@@ -2573,6 +2604,83 @@ int main(int argc, char *argv[])
               QStringLiteral("Branches marks a branch that still needs main merged "
                              "with the same download icon as the Agents list"));
 
+        // adhoc #227: clicking a branch has to repaint for *that* branch straight
+        // away. The range pane used to keep the previously viewed branch's diff
+        // and changed-file list on screen for as long as the new branch's git
+        // read took, so it confidently attributed one branch's changes to
+        // another; and a branch already reviewed once must come back instantly
+        // from its cached patch rather than through another read.
+        QTemporaryDir swapHome;
+        const QString swapPath = swapHome.path() + QStringLiteral("/wt-swap");
+        runGitChecked(wtRepo.path(), {"branch", "feature/fast-swap", "main"});
+        runGitChecked(wtRepo.path(),
+                      {"worktree", "add", swapPath, "feature/fast-swap"});
+        {
+            QFile swapOnly(swapPath + QStringLiteral("/fast-swap-only.txt"));
+            swapOnly.open(QIODevice::WriteOnly);
+            swapOnly.write("only on fast-swap\n");
+            swapOnly.close();
+        }
+        runGitChecked(swapPath, {"add", "fast-swap-only.txt"});
+        runGitChecked(swapPath, {"commit", "-m", "fast-swap only file"});
+
+        const auto waitForDiffText = [&window](const QString &needle) {
+            QElapsedTimer diffTimer;
+            diffTimer.start();
+            while (diffTimer.elapsed() < 5000 &&
+                   !window.testBranchDiffText().contains(needle))
+                QApplication::processEvents(QEventLoop::AllEvents, 20);
+            return window.testBranchDiffText().contains(needle);
+        };
+
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        check(waitForDiffText(QStringLiteral("branch-change.txt")),
+              QStringLiteral("the range pane renders the selected branch's own "
+                             "changed file"));
+
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/fast-swap"));
+        const QString swappedText = window.testBranchDiffText();
+        check(!swappedText.contains(QStringLiteral("branch-change.txt")),
+              QString("selecting another branch drops the previous branch's diff "
+                      "at once rather than leaving it on screen while git is read "
+                      "(adhoc #227, pane = \"%1\")")
+                  .arg(swappedText.left(60).simplified()));
+        check(!window.testSourceControlPaths().contains(
+                  QStringLiteral("branch-change.txt")),
+              QString("...and the CHANGES list stops listing the branch that was "
+                      "left (files = %1)")
+                  .arg(window.testSourceControlPaths().join(QStringLiteral(", "))));
+        check(waitForDiffText(QStringLiteral("fast-swap-only.txt")),
+              QStringLiteral("the newly selected branch's own diff arrives behind "
+                             "that placeholder"));
+        check(window.testBranchDiffCached(QStringLiteral("feature/fast-swap")),
+              QStringLiteral("a rendered branch range is kept for the next visit "
+                             "(adhoc #227)"));
+
+        // Back to the first branch: its patch is still held, so the pane repaints
+        // from memory on the very next turn of the event loop instead of waiting
+        // out a second read of the same diff.
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        check(window.testBranchDiffPaintedFromCache() &&
+                  window.testBranchDiffText().contains(
+                      QStringLiteral("branch-change.txt")),
+              QString("returning to an already-reviewed branch repaints its diff "
+                      "without waiting on git (adhoc #227, from cache = %1)")
+                  .arg(window.testBranchDiffPaintedFromCache()
+                           ? QStringLiteral("yes")
+                           : QStringLiteral("no")));
+
+        // Leave the fixture as the branch/merge tests below expect it.
+        runGitChecked(wtRepo.path(),
+                      {"worktree", "remove", "--force", swapPath});
+        runGitChecked(wtRepo.path(), {"branch", "-D", "feature/fast-swap"});
+        window.testReloadBranchesPanel();
+        QApplication::processEvents();
+
         // adhoc #119: merging from the comparison ends it — the branch's work
         // is in main, so leaving its diff open only shows the user something
         // they're finished with. Re-open the branch, then let its "Merge to
@@ -2935,25 +3043,88 @@ int main(int argc, char *argv[])
 
         QComboBox *quickProvider =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddAgentSelector"));
-        QStringList providerLabels;
-        if (quickProvider) {
-            for (int i = 0; i < quickProvider->count(); ++i)
-                providerLabels << quickProvider->itemText(i);
+        QComboBox *quickAgentModel = seeded.findChild<QComboBox *>(
+            QStringLiteral("quickAddAgentModelSelector"));
+        QStringList agentModelLabels;
+        bool allAgentModelsHaveIcons = quickAgentModel;
+        bool agentModelIconsAreClean = quickAgentModel;
+        if (quickAgentModel) {
+            for (int i = 0; i < quickAgentModel->count(); ++i) {
+                agentModelLabels << quickAgentModel->itemText(i);
+                allAgentModelsHaveIcons &= !quickAgentModel->itemIcon(i).isNull();
+                agentModelIconsAreClean &=
+                    !iconContainsChromaKey(quickAgentModel->itemIcon(i));
+            }
         }
-        // Short labels (adhoc #38) so all four composer dropdowns fit one row.
-        check(providerLabels == QStringList({QStringLiteral("Manual"),
-                                             QStringLiteral("Codex"),
-                                             QStringLiteral("OpenAI"),
-                                             QStringLiteral("Claude API"),
-                                             QStringLiteral("CC")}),
-              QStringLiteral("quick-add agent dropdown offers Manual plus the agent providers"));
-        check(quickProvider && quickProvider->maxVisibleItems() >= quickProvider->count() &&
-                  quickProvider->view() &&
-                  quickProvider->view()->verticalScrollBarPolicy() ==
-                      Qt::ScrollBarAlwaysOff,
-              QStringLiteral("quick-add agent dropdown is configured as a full non-scrolling list"));
-        check(seeded.testQuickAddModelVisible() && !seeded.testQuickAddModelEditable(),
-              QStringLiteral("Claude Code prompt picker shows the Claude model dropdown"));
+        // adhoc #1204: rows are the bare model name — no "· Claude Code" /
+        // "· Codex" suffix repeated down the whole menu; the per-row tooltip
+        // still says which agent runs the model.
+        check(quickAgentModel && quickAgentModel->isVisible() &&
+                  quickAgentModel->maxVisibleItems() >= quickAgentModel->count() &&
+                  agentModelLabels.contains(QStringLiteral("Auto")) &&
+                  agentModelLabels.contains(QStringLiteral("GPT-5.5")) &&
+                  agentModelLabels.contains(QStringLiteral("OpenAI API")) &&
+                  agentModelLabels.contains(QStringLiteral("Claude API")) &&
+                  std::none_of(agentModelLabels.cbegin(), agentModelLabels.cend(),
+                               [](const QString &label) {
+                                   return label.contains(
+                                              QStringLiteral("Claude Code")) ||
+                                          label.endsWith(QStringLiteral("Codex"));
+                               }) &&
+                  quickAgentModel->itemData(
+                      quickAgentModel->findText(QStringLiteral("GPT-5.5")),
+                      Qt::ToolTipRole).toString() ==
+                      QStringLiteral("GPT-5.5 · Codex") &&
+                  allAgentModelsHaveIcons && agentModelIconsAreClean && quickProvider &&
+                  !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
+              QString("one icon-rich composer dropdown combines agents and models (%1)")
+                  .arg(agentModelLabels.join(QStringLiteral(", "))));
+        // The menu is ordered strongest-model-first, and the superseded /
+        // small-sibling models are left out entirely (adhoc #1204). Offline this
+        // is the static fallback line-up, so the order is exact: the Auto router
+        // above every concrete model, then Claude strongest-first, then Codex —
+        // with Haiku 4.5 and GPT-5.4-Mini dropped.
+        QStringList rankedLabels;
+        for (int i = 0; i < quickAgentModel->count(); ++i) {
+            // Manual and the two API agents carry no model of their own.
+            if (quickAgentModel->itemData(i, Qt::UserRole + 1).toString().isEmpty())
+                continue;
+            rankedLabels << quickAgentModel->itemText(i);
+        }
+        check(rankedLabels == QStringList({QStringLiteral("Auto"),
+                                           QStringLiteral("Fable 5"),
+                                           QStringLiteral("Opus 4.8"),
+                                           QStringLiteral("Sonnet 4.6"),
+                                           QStringLiteral("GPT-5.5"),
+                                           QStringLiteral("GPT-5.4")}),
+              QString("composer models sort most powerful first, weak ones hidden (%1)")
+                  .arg(rankedLabels.join(QStringLiteral(", "))));
+        QComboBox *canonicalModel =
+            seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));
+        int concreteClaudeChoice = -1;
+        QString concreteClaudeModel;
+        if (quickAgentModel) {
+            for (int i = 0; i < quickAgentModel->count(); ++i) {
+                const QString candidate =
+                    quickAgentModel->itemData(i, Qt::UserRole + 1).toString();
+                if (quickAgentModel->itemData(i).toString() ==
+                        QStringLiteral("claude-code") &&
+                    candidate != QStringLiteral("auto")) {
+                    concreteClaudeChoice = i;
+                    concreteClaudeModel = candidate;
+                    break;
+                }
+            }
+        }
+        if (concreteClaudeChoice >= 0)
+            quickAgentModel->setCurrentIndex(concreteClaudeChoice);
+        QApplication::processEvents();
+        check(concreteClaudeChoice >= 0 &&
+                  seeded.testQuickAddAgentProvider() ==
+                      QStringLiteral("claude-code") &&
+                  canonicalModel &&
+                  canonicalModel->currentData().toString() == concreteClaudeModel,
+              QStringLiteral("one combined-menu click updates provider and model state"));
 
         // adhoc #38: the composer's speed (reasoning-effort) picker sits next to
         // the mode selector, offers the CLI's ladder with "Ultra" for xhigh, and
@@ -2967,13 +3138,48 @@ int main(int argc, char *argv[])
                 speedLabels << quickSpeed->itemText(i);
         }
         check(quickSpeed && quickSpeed->isVisible() &&
+                  quickSpeed->width() <= 32 &&
+                  quickSpeed->accessibleName().startsWith(
+                      QStringLiteral("Reasoning effort:")) &&
                   speedLabels == QStringList({QStringLiteral("Low"),
                                               QStringLiteral("Medium"),
                                               QStringLiteral("High"),
                                               QStringLiteral("Ultra"),
-                                              QStringLiteral("Max")}),
+                                              QStringLiteral("Max")}) &&
+                  std::all_of(
+                      speedLabels.cbegin(), speedLabels.cend(),
+                      [quickSpeed](const QString &label) {
+                          const QIcon icon =
+                              quickSpeed->itemIcon(quickSpeed->findText(label));
+                          return !icon.isNull() && !iconContainsChromaKey(icon);
+                      }),
               QString("composer speed picker offers the effort ladder (%1)")
                   .arg(speedLabels.join(QStringLiteral(", "))));
+        QComboBox *quickMode =
+            seeded.findChild<QComboBox *>(QStringLiteral("quickAddModeSelector"));
+        // adhoc #1204: each row also carries the permission it grants, spelled out
+        // beside the label once the popup is open (Qt::UserRole + 7), so the open
+        // menu is not four bare words.
+        bool modesExplainPermissions = quickMode;
+        if (quickMode) {
+            for (int i = 0; i < quickMode->count(); ++i) {
+                modesExplainPermissions &=
+                    !quickMode->itemData(i, Qt::UserRole + 7).toString().isEmpty();
+            }
+        }
+        check(quickMode && quickMode->width() <= 32 &&
+                  quickMode->accessibleName().startsWith(
+                      QStringLiteral("Permission mode:")) &&
+                  quickMode->itemText(0) == QStringLiteral("Auto") &&
+                  quickMode->itemText(1) == QStringLiteral("Ask") &&
+                  quickMode->itemText(2) == QStringLiteral("Plan") &&
+                  quickMode->itemText(3) == QStringLiteral("Edit") &&
+                  modesExplainPermissions &&
+                  !quickMode->itemIcon(0).isNull() &&
+                  !quickMode->itemIcon(3).isNull() &&
+                  !iconContainsChromaKey(quickMode->itemIcon(0)) &&
+                  !iconContainsChromaKey(quickMode->itemIcon(3)),
+              QStringLiteral("mode picker is icon-only until its labeled menu opens"));
         if (quickSpeed) {
             const int ultra = quickSpeed->findData(QStringLiteral("xhigh"));
             quickSpeed->setCurrentIndex(ultra);
@@ -3034,8 +3240,14 @@ int main(int argc, char *argv[])
         seeded.testSetQuickAddAgentProvider(QStringLiteral("codex"));
         QApplication::processEvents();
         const QStringList codexModels = seeded.testQuickAddModelLabels();
-        check(seeded.testQuickAddModelVisible() && !seeded.testQuickAddModelEditable() &&
-                  codexModels ==
+        check(!seeded.testQuickAddModelVisible() &&
+                  quickAgentModel && quickAgentModel->isVisible() &&
+                  quickAgentModel->currentText().startsWith(QStringLiteral("GPT-")) &&
+                  quickAgentModel
+                      ->itemData(quickAgentModel->currentIndex(), Qt::ToolTipRole)
+                      .toString()
+                      .endsWith(QStringLiteral("· Codex")) &&
+                  !seeded.testQuickAddModelEditable() && codexModels ==
                       QStringList({QStringLiteral("GPT-5.5"),
                                    QStringLiteral("GPT-5.4"),
                                    QStringLiteral("GPT-5.4-Mini")}),
@@ -3062,8 +3274,9 @@ int main(int argc, char *argv[])
         stopChildProcesses(rememberedPromptProvider);
         seeded.testSetQuickAddAgentProvider(QStringLiteral("claude-api"));
         QApplication::processEvents();
-        check(!seeded.testQuickAddModelVisible(),
-              QStringLiteral("prompt-row model picker stays hidden for API-only providers"));
+        check(!seeded.testQuickAddModelVisible() && quickAgentModel->isVisible() &&
+                  quickAgentModel->currentText() == QStringLiteral("Claude API"),
+              QStringLiteral("combined picker stays visible for API-only providers"));
 
         // The default-agent control belongs to the independently deferred
         // Settings page. Visit it before driving the combo like a user.
@@ -3298,6 +3511,46 @@ int main(int argc, char *argv[])
                   QStringLiteral("see forkmesh://pull/o/r/7.")) ==
                   QStringLiteral("see <forkmesh://pull/o/r/7>."),
               QStringLiteral("autolink leaves trailing punctuation out of a permalink"));
+
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("review feat/clickable-agent-transcripts")) ==
+                  QStringLiteral("review [feat/clickable-agent-transcripts]"
+                                 "(forkmesh-branch:feat%2Fclickable-agent-transcripts)"),
+              QStringLiteral("agent transcript links a feature branch"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("open qt_client/src/ClaudeTranscriptView.cpp:1445")) ==
+                  QStringLiteral("open [qt_client/src/ClaudeTranscriptView.cpp:1445]"
+                                 "(forkmesh-file:qt_client%2Fsrc%2FClaudeTranscriptView.cpp?line=1445)"),
+              QStringLiteral("agent transcript links a repo file at a line"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("open /repo/qt_client/src/MainWindow.cpp#L42")) ==
+                  QStringLiteral("open [/repo/qt_client/src/MainWindow.cpp#L42]"
+                                 "(forkmesh-file:%2Frepo%2Fqt_client%2Fsrc%2FMainWindow.cpp?line=42)"),
+              QStringLiteral("agent transcript links an absolute file at a line"));
+        check(ClaudeTranscriptView::linkifyReferences(QStringLiteral("edit MainWindow.h")) ==
+                  QStringLiteral("edit [MainWindow.h](forkmesh-file:MainWindow.h)"),
+              QStringLiteral("agent transcript links a bare filename"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("see #123 and a1b2c3d")) ==
+                  QStringLiteral("see [#123](forkmesh-ref:123) and "
+                                 "[a1b2c3d](forkmesh-commit:a1b2c3d)"),
+              QStringLiteral("agent transcript links issue and commit references"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("```\nMainWindow.h\nfeat/not-a-link\n```")) ==
+                  QStringLiteral("```\nMainWindow.h\nfeat/not-a-link\n```"),
+              QStringLiteral("agent transcript leaves fenced code untouched"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("[MainWindow.h](https://example.test/file)")) ==
+                  QStringLiteral("[MainWindow.h](https://example.test/file)"),
+              QStringLiteral("agent transcript never nests an existing link"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("use `MainWindow.h` next")) ==
+                  QStringLiteral("use [MainWindow.h](forkmesh-file:MainWindow.h) next"),
+              QStringLiteral("agent transcript makes an exact inline filename clickable"));
+        check(ClaudeTranscriptView::linkifyReferences(
+                  QStringLiteral("visit https://example.com/MainWindow.h")) ==
+                  QStringLiteral("visit https://example.com/MainWindow.h"),
+              QStringLiteral("agent transcript leaves web URLs intact"));
     }
 
     // issue #195: a commit SHA mentioned in a commit message body becomes a
@@ -3458,10 +3711,11 @@ int main(int argc, char *argv[])
     // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
     // run), and confirm the Status cell flips from the run status to "merged".
     {
+        window.testOpenRepository(repoIdx);
         AgentSession mergeSession;
         mergeSession.id = 2910;
         mergeSession.owner = QStringLiteral("me");
-        mergeSession.name = QStringLiteral("mergerepo");
+        mergeSession.name = QStringLiteral("r");
         mergeSession.branchName = QStringLiteral("agent/issue-291-merge-note");
         mergeSession.issueNumber = 291;
         mergeSession.issueTitle = QStringLiteral("note a task merging into main");
@@ -3480,10 +3734,22 @@ int main(int argc, char *argv[])
                       "worktree/PR lands (issue #291, cell = %1)")
                   .arg(window.testAgentStatusCellText(2910)));
 
-        // Merging the session's branch into the base flags it.
-        check(window.testMarkAgentBranchMerged(
+        // A completed agent cannot claim that its branch landed merely by naming
+        // it. Only a merge path that already proved the Git/PullStore operation
+        // succeeded may set the durable merged state.
+        check(!window.testMarkAgentBranchMerged(
                   QStringLiteral("agent/issue-291-merge-note")),
-              QStringLiteral("merging an agent task's branch flags its session "
+              QStringLiteral("an unverified agent branch cannot mark its session "
+                             "merged (issue #291)"));
+        check(!window.testAgentSessionMerged(2910) &&
+                  window.testAgentStatusCellText(2910) == QStringLiteral("Success"),
+              QStringLiteral("a rejected merge claim leaves the run status intact "
+                             "(issue #291)"));
+
+        check(window.testMarkAgentBranchMerged(
+                  QStringLiteral("agent/issue-291-merge-note"),
+                  /*mergeVerified=*/true),
+              QStringLiteral("a verified branch merge flags its agent session "
                              "(issue #291)"));
 
         // The Status column now reads "merged" and the flag is persisted, so both
@@ -3525,6 +3791,100 @@ int main(int argc, char *argv[])
                              "(issue #291)"));
     }
 
+    // A branch is mutable after an agent starts. In particular, an agent that
+    // resets it to an advanced main must not be read as having merged its work:
+    // the commits after baseRef belong to main, not to the agent. The background
+    // detector instead needs a tip it observed while that tip was outside main.
+    {
+        QTemporaryDir mergeDetectionRepo;
+        if (initGitRepo(mergeDetectionRepo)) {
+            const int mergeDetectionRepoIdx = window.testAddLocalRepository(
+                "me", "merge-detection", mergeDetectionRepo.path());
+            window.testOpenRepository(mergeDetectionRepoIdx);
+            QElapsedTimer idleTimer;
+            idleTimer.start();
+            while (window.testAgentMergeStateRefreshing() && idleTimer.elapsed() < 5000)
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+
+            const QString baseRef =
+                gitOutput(mergeDetectionRepo.path(), {"rev-parse", "main"});
+            const QString resetBranch =
+                QStringLiteral("agent/issue-291-reset-to-main");
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "-b", resetBranch});
+            QFile resetFile(mergeDetectionRepo.path() + QStringLiteral("/reset.txt"));
+            if (resetFile.open(QIODevice::WriteOnly)) {
+                resetFile.write("discarded agent draft\n");
+                resetFile.close();
+            }
+            runGitChecked(mergeDetectionRepo.path(), {"add", "reset.txt"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"commit", "-m", "temporary agent draft"});
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "main"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"commit", "--allow-empty", "-m", "advance main"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"branch", "-f", resetBranch, "main"});
+
+            AgentSession resetSession;
+            resetSession.id = 2911;
+            resetSession.owner = QStringLiteral("me");
+            resetSession.name = QStringLiteral("merge-detection");
+            resetSession.branchName = resetBranch;
+            resetSession.baseRef = baseRef;
+            resetSession.baseBranch = QStringLiteral("main");
+            resetSession.status = AgentStatus::Success;
+            window.testAddAgentSession(resetSession);
+            window.testRefreshAgentMergeState();
+            QElapsedTimer resetScanTimer;
+            resetScanTimer.start();
+            while (window.testAgentMergeStateRefreshing() &&
+                   resetScanTimer.elapsed() < 5000)
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+            check(!window.testAgentMergeStateRefreshing() &&
+                      !window.testAgentSessionMerged(resetSession.id),
+                  QStringLiteral("resetting an agent branch to an advanced main does "
+                                 "not self-report a merge (issue #291)"));
+
+            const QString landedBranch =
+                QStringLiteral("agent/issue-291-observed-tip");
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "-b", landedBranch});
+            QFile landedFile(mergeDetectionRepo.path() + QStringLiteral("/landed.txt"));
+            if (landedFile.open(QIODevice::WriteOnly)) {
+                landedFile.write("agent work that landed\n");
+                landedFile.close();
+            }
+            runGitChecked(mergeDetectionRepo.path(), {"add", "landed.txt"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"commit", "-m", "agent change"});
+            const QString observedHead =
+                gitOutput(mergeDetectionRepo.path(), {"rev-parse", landedBranch});
+            runGitChecked(mergeDetectionRepo.path(), {"checkout", "main"});
+            runGitChecked(mergeDetectionRepo.path(),
+                          {"merge", "--no-ff", landedBranch, "-m", "merge agent work"});
+
+            AgentSession landedSession;
+            landedSession.id = 2912;
+            landedSession.owner = QStringLiteral("me");
+            landedSession.name = QStringLiteral("merge-detection");
+            landedSession.branchName = landedBranch;
+            landedSession.baseBranch = QStringLiteral("main");
+            landedSession.mergeCandidateHead = observedHead;
+            landedSession.status = AgentStatus::Success;
+            window.testAddAgentSession(landedSession);
+            window.testRefreshAgentMergeState();
+            QElapsedTimer landedScanTimer;
+            landedScanTimer.start();
+            while (window.testAgentMergeStateRefreshing() &&
+                   landedScanTimer.elapsed() < 5000)
+                QApplication::processEvents(QEventLoop::AllEvents, 10);
+            check(!window.testAgentMergeStateRefreshing() &&
+                      window.testAgentSessionMerged(landedSession.id),
+                  QStringLiteral("an observed agent tip is marked merged only after "
+                                 "Git proves it reached main (issue #291)"));
+            window.testOpenRepository(repoIdx);
+        }
+    }
+
     // The top bar's search box searches the page in front of you: on the Agents
     // tab it narrows the session list as each character lands, matches sessions on
     // what their transcripts say (not just their prompt), and drives the open
@@ -3532,6 +3892,38 @@ int main(int argc, char *argv[])
     {
         window.testOpenRepository(repoIdx); // "me/r", the Agents tab's repo
         window.testOpenAgentsOverview();
+
+        // A PR opened from an Agent branch persists the number on that exact
+        // repo's session. Same-number PRs and same-named branches in another
+        // repository must never cross-link.
+        AgentSession prAgent;
+        prAgent.id = 7391;
+        prAgent.owner = QStringLiteral("me");
+        prAgent.name = QStringLiteral("r");
+        prAgent.branchName = QStringLiteral("agent/adhoc-7391-pr-link");
+        prAgent.status = AgentStatus::Success;
+        window.testAddAgentSession(prAgent);
+        AgentSession foreignPrAgent = prAgent;
+        foreignPrAgent.id = 7392;
+        foreignPrAgent.owner = QStringLiteral("someone-else");
+        window.testAddAgentSession(foreignPrAgent);
+        check(window.testBindAgentSessionsToPull(
+                  739, QStringLiteral("agent/adhoc-7391-pr-link")) &&
+                  window.testAgentSessionPullNumber(7391) == 739 &&
+                  window.testAgentSessionPullNumber(7392) == 0,
+              QStringLiteral("PR creation durably binds only the matching "
+                             "repo's Agent session"));
+        check(window.testAgentSessionForPullId(
+                  739, QStringLiteral("agent/adhoc-7391-pr-link")) == 7391,
+              QStringLiteral("PR lookup is repository-scoped by number and "
+                             "branch"));
+
+        check(window.testBindAgentSessionsToPull(
+                  740, QStringLiteral("manual/pr-740")) &&
+                  window.testAgentSessionForPullId(
+                      740, QStringLiteral("manual/pr-740")) > 0,
+              QStringLiteral("a manual PR receives a provenance-only Agent "
+                             "association"));
         QApplication::processEvents();
 
         AgentSession titled;
@@ -3618,6 +4010,66 @@ int main(int argc, char *argv[])
                       "(filter \"%1\", %2 rows)")
                   .arg(window.testAgentSearchText())
                   .arg(titles.size()));
+    }
+
+    // adhoc #222: a session started from a pasted screenshot shows it as a little
+    // square at the head of its row, and clicking that square opens the picture.
+    // The scan for "Attached image:" lines and the decode both run off the GUI
+    // thread, so the row fills in a beat after the session appears.
+    {
+        window.testOpenRepository(repoIdx); // "me/r", the Agents tab's repo
+        window.testOpenAgentsOverview();
+        QApplication::processEvents();
+
+        QTemporaryDir shots;
+        check(shots.isValid(), QStringLiteral("attachment fixture dir is valid"));
+        const QString shotPath = shots.filePath(QStringLiteral("paste-222.png"));
+        QImage shot(48, 24, QImage::Format_ARGB32);
+        shot.fill(QColor("#3fb950"));
+        check(shot.save(shotPath),
+              QStringLiteral("the attachment fixture image is written to disk"));
+
+        AgentSession pictured;
+        pictured.id = 7411;
+        pictured.owner = QStringLiteral("me");
+        pictured.name = QStringLiteral("r");
+        pictured.issueTitle = QStringLiteral("make the toolbar match this");
+        pictured.prompt =
+            QStringLiteral("make the toolbar match this\nAttached image: %1")
+                .arg(shotPath);
+        pictured.status = AgentStatus::Success;
+        window.testAddAgentSession(pictured);
+
+        AgentSession plain;
+        plain.id = 7412;
+        plain.owner = QStringLiteral("me");
+        plain.name = QStringLiteral("r");
+        plain.issueTitle = QStringLiteral("rename the release checklist");
+        plain.prompt = QStringLiteral("rename the release checklist");
+        plain.status = AgentStatus::Success;
+        window.testAddAgentSession(plain);
+
+        // The scan is delivered from a worker and the decode that follows it is a
+        // second hop, so run the pass and then wait for the square itself.
+        window.testScanAgentSessionImages();
+        QElapsedTimer attachmentTimer;
+        attachmentTimer.start();
+        while (attachmentTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            if (window.testAgentRowHasThumbnail(7411))
+                break;
+        }
+        check(window.testAgentRowImages(7411) == QStringList{shotPath},
+              QString("the picture named in a session's prompt reaches its row "
+                      "(adhoc #222, got %1)")
+                  .arg(window.testAgentRowImages(7411).join(QStringLiteral(" | "))));
+        check(window.testAgentRowHasThumbnail(7411),
+              QStringLiteral("that row draws the attachment as a thumbnail "
+                             "(adhoc #222)"));
+        check(window.testAgentRowImages(7412).isEmpty() &&
+                  !window.testAgentRowHasThumbnail(7412),
+              QStringLiteral("a session with no attachment keeps a bare row "
+                             "(adhoc #222)"));
     }
 
     // adhoc #15: the network log renders only its newest segment up front, and
