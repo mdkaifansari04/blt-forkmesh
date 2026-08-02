@@ -853,8 +853,48 @@ QString PullStore::metaWorkTree() const
     return dir;
 }
 
+bool PullStore::materializePullMetadataRef(int number, QString *error) const
+{
+    if (number <= 0)
+        return true;
+    const QString meta = metaWorkTree();
+    const QString dir = meta.isEmpty() ? m_workTree : meta;
+    if (dir.isEmpty())
+        return true;
+
+    // Only publish a metadata pointer while the PR record exists at this exact
+    // ledger tip. A deletion removes the pointer separately, below.
+    const QString pullPath = QStringLiteral("HEAD:pulls/%1/pull.md").arg(number);
+    if (!runGit(dir, {"cat-file", "-e", pullPath}, nullptr, nullptr))
+        return true;
+    QByteArray tip;
+    QString err;
+    if (!runGit(dir, {"rev-parse", "--verify", "HEAD^{commit}"}, &tip, &err) ||
+        tip.trimmed().isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Could not resolve pull metadata: ") + err;
+        return false;
+    }
+    if (!runGit(dir,
+                {"update-ref",
+                 QStringLiteral("refs/pr/%1/metadata").arg(number),
+                 QString::fromUtf8(tip).trimmed()},
+                nullptr, &err)) {
+        if (error)
+            *error = QStringLiteral("Could not attach metadata to PR #%1: %2")
+                         .arg(number)
+                         .arg(err);
+        return false;
+    }
+    return true;
+}
+
 bool PullStore::materializePullRef(const PullRequest &pr, QString *error) const
 {
+    // The content and metadata are two facets of one PR. Metadata changes must
+    // not advance the reviewed code head, so they use a sibling private ref.
+    if (!materializePullMetadataRef(pr.number, error))
+        return false;
     // Only a branch-backed PR declares its named head authoritative. A stored-
     // patch PR may retain pr.head as signed provenance even after a file edit
     // changed its content, so resolving that branch here would rematerialize the
@@ -2852,6 +2892,8 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
     const QString relPath = QStringLiteral("pulls/%1").arg(number);
     const QString compatibilityRef =
         QStringLiteral("refs/pr/%1/head").arg(number);
+    const QString metadataRef =
+        QStringLiteral("refs/pr/%1/metadata").arg(number);
     const QString visibleBranch =
         QStringLiteral("refs/heads/pr/%1").arg(number);
     // Capture the materialized content tip before removing its metadata. These
@@ -2903,6 +2945,10 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
                {"update-ref", "-d", compatibilityRef, materializedTip}, nullptr,
                nullptr);
     }
+    // This ref is owned exclusively by the deleted PR record. Unlike the code
+    // branch it is never a user/agent workspace, so no divergence exception is
+    // needed.
+    runGit(m_workTree, {"update-ref", "-d", metadataRef}, nullptr, nullptr);
 
     // Default path: the PR folder is gone at the tip, which is all most callers
     // want. Skip the expensive full-history rewrite unless explicitly requested.
@@ -2984,10 +3030,22 @@ bool PullStore::commit(const QString &message, QString *error) const
         return false;
     }
     if (!runGit(dir, {"commit", "-m", message, "--", "pulls"}, nullptr, &err)) {
-        if (err.contains("nothing to commit") || err.isEmpty())
-            return true;
-        if (error)
-            *error = "git commit failed: " + err;
+        if (!(err.contains("nothing to commit") || err.isEmpty())) {
+            if (error)
+                *error = "git commit failed: " + err;
+            return false;
+        }
+    }
+
+    // Every PullStore commit message begins with "pull #N". Advance only that
+    // PR's metadata pointer to the new signed ledger state; this keeps comments,
+    // reviews and status changes attached to their PR without adding them to the
+    // PR's reviewed code branch.
+    static const QRegularExpression pullNumber(
+        QStringLiteral("^pull #(\\d+)(?:\\D|$)"));
+    const QRegularExpressionMatch match = pullNumber.match(message);
+    if (match.hasMatch() &&
+        !materializePullMetadataRef(match.captured(1).toInt(), error)) {
         return false;
     }
     return true;
