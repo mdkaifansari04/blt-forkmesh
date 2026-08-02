@@ -79,6 +79,20 @@ def test_webgl_context_losses_are_reported_with_diagnostics():
     assert "World renderer crashed; WebGL context lost after" in WORLD
     assert "this.reportedRendererContextLoss = true;" in WORLD
     assert "this.rendererContextLosses" in WORLD
+    # The first full-renderer loss is restarted in compact mode after the
+    # browser's restoration window; the compact retry stays manual to avoid a
+    # reload loop on a persistently unhealthy driver.
+    assert "const RENDERER_RECOVERY_RELOAD_DELAY_MS = 10_000;" in WORLD
+    assert "if (!this.rendererSafeMode)" in WORLD
+    assert "this.reloadForRendererRecovery();" in WORLD
+    assert "rendererRecoveryReloadTimer" in WORLD
+    # Driver status and high-water marks make a loss after a long session
+    # distinguishable from a scene that was simply too heavy at the end.
+    assert "context reason ${statusMessage}" in WORLD
+    assert "peak textures ${coarseCrashLabel(highWater.textures)}" in WORLD
+    assert "noteRendererDiagnosticsHighWater(snapshot);" in WORLD
+    assert "renderer.setAnimationLoop(null);" in SCENE
+    assert "statusMessage: String(event.statusMessage || \"\")" in SCENE
 
 
 def test_crashed_sessions_reboot_into_the_compact_renderer():

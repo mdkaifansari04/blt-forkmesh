@@ -15766,7 +15766,16 @@ export function createWorldScene({
     // transient mobile GPU reset can leave partially redrawn "scratchy"
     // geometry in place until the whole page is reloaded.
     event.preventDefault();
-    onRendererStateChange("lost");
+    // Three.js marks its GL state as lost, but its animation callback can
+    // still run until the shell hears about this event. Stop it synchronously
+    // so a dead context cannot spend the recovery window burning CPU at 0 FPS.
+    running = false;
+    renderer.setAnimationLoop(null);
+    onRendererStateChange("lost", {
+      // Chromium sometimes exposes a driver reset message here. It is empty
+      // on most browsers, so the shell treats it as optional diagnostics.
+      statusMessage: String(event.statusMessage || "").slice(0, 160),
+    });
   };
   const handleContextRestored = () => {
     renderer.resetState();
