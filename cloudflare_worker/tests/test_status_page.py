@@ -44,6 +44,9 @@ def _load(*names, extra_globals=None):
         "STATUS_MINUTES_SHOWN", "STATUS_MINUTE_RETAIN_MS",
         "STATUS_MIRROR_PREFIX", "STATUS_MIRROR_MAX",
         "STATUS_DEPLOY_GRACE_MS", "STATUS_DEPLOY_MAX_MS",
+        "EMAIL_STATUS_LOOKBACK_MS", "EMAIL_DELIVERY_GRACE_MS",
+        "EMAIL_DELIVERY_FAILURE_STATES",
+        "EMAIL_DELIVERY_CONFIRMED_STATES",
     }
     helper_names = {
         "_status_expected_checks_for_hour", "_status_effective_hour",
@@ -99,6 +102,8 @@ def _sample_env(
             return {"ok": 1}
         if "mirror_https_endpoints" in sql:
             return {"n": 1 if host_online else 0}
+        if "mailtrap_email_sends" in sql:
+            return dict(latest_email) if latest_email else None
         return {}
 
     async def d1_all(_env, sql, *_args):
@@ -143,6 +148,7 @@ def _sample_env(
         "_flagship_repository_probe": repository_probe,
         "_record_status_monitor_transitions": noop,
         "_installer_delivery_status": installer_status,
+        "clean_string": lambda value, limit: str(value or "")[:limit],
     }
     return extra, inserted, hourly, minutely
 
@@ -156,7 +162,11 @@ def _run_sample(
         do_abort_rows=do_abort_rows,
     )
     g = _load("record_status_sample", extra_globals=extra)
-    asyncio.run(g["record_status_sample"](object()))
+    env = SimpleNamespace(
+        MAILTRAP_API_TOKEN="test-token" if email_configured else "",
+        MAILTRAP_WEBHOOK_SECRET="test-secret" if email_configured else "",
+    )
+    asyncio.run(g["record_status_sample"](env))
     return (
         {row["system"]: row["failure"] for row in inserted},
         {row["system"]: row["reason"] for row in hourly},
@@ -170,7 +180,7 @@ def test_all_systems_recorded_ok_with_no_errors_and_a_live_https_mirror():
     results, reasons, _minutes = _run_sample(error_paths=[], host_online=True, db_ok=True)
     assert set(results) == {
         "website", "api", "errors", "database", "flagship_repository",
-        "installer", "git_hosting", "realtime", "durable_objects",
+        "email", "installer", "git_hosting", "realtime", "durable_objects",
     }
     assert all(failure == 0 for failure in results.values())
     assert all(reason is None for reason in reasons.values())
@@ -261,6 +271,40 @@ def test_no_healthy_https_mirror_fails_only_git_hosting():
     assert "no healthy direct https mirror" in reasons["git_hosting"].lower()
 
 
+def test_email_status_fails_closed_without_sending_or_webhook_config():
+    results, reasons, _minutes = _run_sample(email_configured=False)
+    assert results["email"] == 1
+    assert "sending API is not configured" in reasons["email"]
+
+
+def test_email_status_tracks_rejection_delivery_and_missing_delivery_event():
+    rejected = {
+        "accepted": 0, "status": "failed",
+        "sent_at": _Clock.value - 1_000, "status_at": _Clock.value - 1_000,
+    }
+    results, reasons, _minutes = _run_sample(latest_email=rejected)
+    assert results["email"] == 1
+    assert "rejected" in reasons["email"]
+
+    delivered = {
+        "accepted": 1, "status": "delivery",
+        "sent_at": _Clock.value - 60_000,
+        "status_at": _Clock.value - 30_000,
+    }
+    results, reasons, _minutes = _run_sample(latest_email=delivered)
+    assert results["email"] == 0
+    assert reasons["email"] is None
+
+    stale = {
+        "accepted": 1, "status": "accepted",
+        "sent_at": _Clock.value - 31 * 60_000,
+        "status_at": _Clock.value - 31 * 60_000,
+    }
+    results, reasons, _minutes = _run_sample(latest_email=stale)
+    assert results["email"] == 1
+    assert "no delivery event after 30 minutes" in reasons["email"]
+
+
 def test_signed_mirror_endpoints_get_independent_status_samples():
     fresh = _Clock.value - 30_000
     rows = [
@@ -282,6 +326,24 @@ def test_signed_mirror_endpoints_get_independent_status_samples():
     assert minutes["mirror:mirror3"][0] == 0
     assert "failed its signed HTTPS health check" in reasons["mirror:mirror3"]
     assert all("jett" not in system for system in results)
+
+
+def test_every_registered_mirror_name_gets_a_row_even_without_a_valid_proof():
+    rows = [
+        {"node_name": "mirror2", "checked_at": 0, "healthy": 0,
+         "integrity": None, "forkmesh_active": 0,
+         "forkmesh_verified_at": 0},
+        {"node_name": "mirror6", "checked_at": 0, "healthy": 0,
+         "integrity": None, "forkmesh_active": 0,
+         "forkmesh_verified_at": 0},
+        {"node_name": "mirror7", "checked_at": 0, "healthy": 0,
+         "integrity": None, "forkmesh_active": 0,
+         "forkmesh_verified_at": 0},
+    ]
+    results, reasons, _minutes = _run_sample(mirror_rows=rows)
+    assert {"mirror:mirror2", "mirror:mirror6", "mirror:mirror7"} <= set(results)
+    assert all(results[f"mirror:mirror{n}"] == 1 for n in (2, 6, 7))
+    assert "fresh signed" in reasons["mirror:mirror6"]
 
 
 def test_stale_signed_mirror_stays_visible_as_down():
@@ -1324,7 +1386,7 @@ def test_current_snapshot_survives_a_failing_read():
     assert out["current"]["catalogRepos"] is None
     assert out["current"]["onlineNodes"] == 0
     # systems still rendered despite the failed metric
-    assert len(out["systems"]) == 9
+    assert len(out["systems"]) == 10
 
 
 def test_flagship_repository_monitor_is_public_and_deduplicates_email_states():
