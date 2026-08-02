@@ -27,6 +27,33 @@ constexpr int kCommitCopyShaRole = Qt::UserRole + 2;
 // file, so the authorship filter can hide/show it without re-reading the mbox.
 constexpr int kPullFileAgentRole = Qt::UserRole + 1;
 
+// Every pull-request action is an icon-over-caption tile — the same form as the
+// activity rail and the repo tab row (adhoc #59), so the three bars on this page
+// read as one visual language instead of three. Bare, not Action: no pill fill
+// or border, just the glyph over its caption resting in the rail's grey and
+// brightening together under the pointer. Captions stay short because the full
+// sentence belongs in the tooltip, and any count rides the icon's corner as a
+// badge (setBadgeCount) rather than being spelled into the caption.
+VerticalIconButton *pullActionButton(const QString &caption, const char *icon,
+                                     const QString &tooltip = QString())
+{
+    auto *b = new VerticalIconButton(caption, VerticalIconButton::Bare);
+    b->setObjectName("repoActionStack");
+    b->setCursor(Qt::PointingHandCursor);
+    b->setOcticonName(QString::fromLatin1(icon));
+    if (!tooltip.isEmpty())
+        b->setToolTip(tooltip);
+    return b;
+}
+
+// The count on a tile, when the tile is one (a plain QPushButton elsewhere in
+// the page keeps working, it just carries no badge).
+void setPullActionBadge(QPushButton *button, int count)
+{
+    if (auto *tile = dynamic_cast<VerticalIconButton *>(button))
+        tile->setBadgeCount(qMax(0, count));
+}
+
 // Locates a named HTML anchor (<a name="...">) inside a QTextDocument.
 // QTextDocument::find only searches visible text, and an anchor carries none,
 // so finding one means walking fragments and checking their char format for it
@@ -85,36 +112,38 @@ QWidget *MainWindow::buildPullsTab()
     headingRow->setSpacing(8);
     headingRow->addWidget(heading, 1);
     headingRow->addWidget(m_pullHideDetailButton, 0, Qt::AlignTop);
-    m_pullNewButton = new QPushButton("New pull request");
-    m_pullChooseDirButton = new QPushButton("Choose directory");
-    m_pullImportButton = new QPushButton("Import patch");
-    m_pullSyncButton = new QPushButton("Sync inbox");
-    m_pullDeleteAllMergedButton = new QPushButton("Delete all merged + branches");
-    for (QPushButton *b : {m_pullNewButton, m_pullChooseDirButton, m_pullImportButton,
-                           m_pullSyncButton, m_pullDeleteAllMergedButton}) {
-        b->setObjectName("ghostButton");
-        b->setProperty("buttonSize", "sm");
-        b->setCursor(Qt::PointingHandCursor);
-    }
-    setOcticon(m_pullNewButton, "plus", 16);
-    setOcticon(m_pullChooseDirButton, "file-directory", 16);
-    setOcticon(m_pullImportButton, "download", 16);
-    setOcticon(m_pullSyncButton, "sync", 16);
-    setOcticon(m_pullDeleteAllMergedButton, "trash", 16);
-    m_pullChooseDirButton->setToolTip("Create a pull request from another local checkout of this repository");
-    m_pullImportButton->setToolTip("Open a .patch/.diff file (e.g. a downloaded commit) as a pull request");
-    m_pullSyncButton->setToolTip("Pull PR submissions filed by other nodes and merge them");
-    m_pullDeleteAllMergedButton->setToolTip(
-        "Delete every merged pull request in this repo and its head branch");
+    m_pullNewButton = pullActionButton(
+        QStringLiteral("New"), "plus",
+        QStringLiteral("Open a new pull request in this repository"));
+    m_pullChooseDirButton = pullActionButton(
+        QStringLiteral("Directory"), "file-directory",
+        QStringLiteral("Create a pull request from another local checkout of "
+                       "this repository"));
+    m_pullImportButton = pullActionButton(
+        QStringLiteral("Import"), "download",
+        QStringLiteral("Open a .patch/.diff file (e.g. a downloaded commit) as "
+                       "a pull request"));
+    m_pullSyncButton = pullActionButton(
+        QStringLiteral("Inbox"), "sync",
+        QStringLiteral("Pull PR submissions filed by other nodes and merge them"));
+    // The badge counts the merged pull requests this would sweep away, so the
+    // size of the cleanup is visible before it's clicked.
+    m_pullDeleteAllMergedButton = pullActionButton(
+        QStringLiteral("Merged"), "trash",
+        QStringLiteral("Delete every merged pull request in this repo and its "
+                       "head branch"));
     connect(m_pullImportButton, &QPushButton::clicked, this,
             &MainWindow::importPatchAsPull);
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
-    toolbar->addWidget(m_pullNewButton);
-    toolbar->addWidget(m_pullChooseDirButton);
-    toolbar->addWidget(m_pullImportButton);
-    toolbar->addWidget(m_pullSyncButton);
-    toolbar->addWidget(m_pullDeleteAllMergedButton);
+    // Frameless tiles need the gap the pill's border used to provide; this is
+    // the same rhythm as the repository tab row.
+    toolbar->setSpacing(10);
+    toolbar->addWidget(m_pullNewButton, 0, Qt::AlignTop);
+    toolbar->addWidget(m_pullChooseDirButton, 0, Qt::AlignTop);
+    toolbar->addWidget(m_pullImportButton, 0, Qt::AlignTop);
+    toolbar->addWidget(m_pullSyncButton, 0, Qt::AlignTop);
+    toolbar->addWidget(m_pullDeleteAllMergedButton, 0, Qt::AlignTop);
     toolbar->addStretch();
 
     m_pullSearch = new QLineEdit;
@@ -157,41 +186,41 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTitle = new QLabel("Select a pull request");
     m_pullTitle->setObjectName("channelTitle");
     m_pullTitle->setWordWrap(true);
-    m_pullUpdateButton = new QPushButton("Update branch");
-    m_pullMergeButton = new QPushButton("Merge");
-    m_pullResolveButton = new QPushButton("Resolve conflicts\xE2\x80\xA6");
-    m_pullFixButton = new QPushButton("Fix");
-    m_pullFixConflictsButton = new QPushButton("Fix conflicts with agent");
-    m_pullEditFileButton = new QPushButton("Edit file\xE2\x80\xA6");
-    m_pullDeleteFileButton = new QPushButton("Delete file\xE2\x80\xA6");
-    m_pullCloseButton = new QPushButton("Close");
-    m_pullReopenButton = new QPushButton("Reopen");
-    m_pullSendToSourceButton = new QPushButton("Send to source of truth");
-    m_pullDeleteButton = new QPushButton("Delete");
-    m_pullDeleteBranchButton = new QPushButton("Delete PR + branch");
-    m_pullMergeDeleteButton = new QPushButton("Merge + delete branch");
-    m_pullPreviewButton = new QPushButton("Build & preview");
-    m_pullLinkIssueButton = new QPushButton("Link issue");
-    m_pullSplitButton = new QPushButton;
-    for (QPushButton *b : {m_pullUpdateButton, m_pullMergeButton, m_pullResolveButton,
-                           m_pullFixButton, m_pullFixConflictsButton,
-                           m_pullEditFileButton, m_pullDeleteFileButton,
-                           m_pullCloseButton, m_pullReopenButton,
-                           m_pullSendToSourceButton, m_pullDeleteButton,
-                           m_pullDeleteBranchButton, m_pullMergeDeleteButton,
-                           m_pullPreviewButton,
-                           m_pullLinkIssueButton, m_pullSplitButton}) {
-        // Every header action wears the flat rail style (adhoc #7) — the filled
-        // green/grey pills that used to single out Merge and the AI actions made
-        // an otherwise uniform toolbar read as three unrelated bars.
-        b->setObjectName("ghostButton");
-        b->setProperty("buttonSize", "sm");
-        b->setCursor(Qt::PointingHandCursor);
-    }
+    // Every header action wears the same icon-over-caption tile as the activity
+    // rail (adhoc #59, extending adhoc #7's flat treatment): a stacked octicon
+    // over a short caption, with the long explanation in the tooltip and any
+    // count on the icon's corner. The caption carries both the verb and its
+    // scope, because the delete family shares one trash glyph.
+    m_pullUpdateButton = pullActionButton(
+        QStringLiteral("Update"), "sync",
+        QStringLiteral("Merge the base branch into this pull request branch"));
+    m_pullMergeButton = pullActionButton(QStringLiteral("Merge"), "check-circle");
+    m_pullResolveButton = pullActionButton(QStringLiteral("Resolve"),
+                                           "git-pull-request");
+    m_pullFixButton = pullActionButton(QStringLiteral("Fix"), "rocket");
+    m_pullFixConflictsButton = pullActionButton(QStringLiteral("Agent fix"),
+                                                "git-merge");
+    m_pullEditFileButton = pullActionButton(QStringLiteral("Edit file"), "pencil");
+    m_pullDeleteFileButton =
+        pullActionButton(QStringLiteral("Delete file"), "trash");
+    m_pullCloseButton = pullActionButton(QStringLiteral("Close"), "circle-slash");
+    m_pullReopenButton = pullActionButton(QStringLiteral("Reopen"),
+                                          "issue-reopened");
+    m_pullSendToSourceButton = pullActionButton(QStringLiteral("Send"), "upload");
+    m_pullDeleteButton = pullActionButton(QStringLiteral("Delete PR"), "trash");
+    m_pullDeleteBranchButton =
+        pullActionButton(QStringLiteral("Delete + branch"), "trash");
+    m_pullMergeDeleteButton =
+        pullActionButton(QStringLiteral("Merge + delete"), "check-circle");
+    m_pullPreviewButton = pullActionButton(QStringLiteral("Preview"),
+                                           "device-desktop");
+    m_pullLinkIssueButton = pullActionButton(
+        QStringLiteral("Link issue"), "link",
+        QStringLiteral("Link an issue to this pull request"));
     // Unified <-> side-by-side toggle for this PR's diff (shared preference).
+    m_pullSplitButton = pullActionButton(QString(), "diff");
     m_pullSplitButton->setCheckable(true);
     m_pullSplitButton->setChecked(diffSplitPref());
-    setOcticon(m_pullSplitButton, "diff", 16);
     updateDiffSplitButton(m_pullSplitButton);
     connect(m_pullSplitButton, &QPushButton::clicked, this, [this](bool on) {
         setDiffSplitPref(on);
@@ -205,22 +234,14 @@ QWidget *MainWindow::buildPullsTab()
         if (m_pullFiles && m_pullFiles->count() > 0)
             renderPullDiff();
     });
-    setOcticon(m_pullUpdateButton, "sync", 16);
-    setOcticon(m_pullMergeButton, "check-circle", 16);
-    setOcticon(m_pullResolveButton, "git-pull-request", 16);
-    setOcticon(m_pullLinkIssueButton, "link", 16);
-    m_pullLinkIssueButton->setToolTip("Link an issue to this pull request");
     connect(m_pullLinkIssueButton, &QPushButton::clicked, this,
             &MainWindow::linkIssueToPullFromPullPage);
     // Copy a forkmesh:// permalink to this PR (issue #154): pasted into a comment
     // it renders as a link back here via autolinkReferences().
-    auto *pullCopyLinkButton = new QPushButton("Copy link");
-    pullCopyLinkButton->setObjectName("ghostButton");
-    pullCopyLinkButton->setProperty("buttonSize", "sm");
-    pullCopyLinkButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(pullCopyLinkButton, "copy", 16);
-    pullCopyLinkButton->setToolTip(
-        "Copy a link to this pull request you can paste into an issue or PR comment");
+    auto *pullCopyLinkButton = pullActionButton(
+        QStringLiteral("Copy link"), "copy",
+        QStringLiteral("Copy a link to this pull request you can paste into an "
+                       "issue or PR comment"));
     connect(pullCopyLinkButton, &QPushButton::clicked, this, [this] {
         if (m_currentPullNumber > 0)
             copyReferenceLink(QStringLiteral("pull"),
@@ -228,12 +249,9 @@ QWidget *MainWindow::buildPullsTab()
     });
     // View this PR's page on the public website, mirroring the repo's own
     // "browsable at" link (repositoryWebUrl()).
-    auto *pullViewWebsiteButton = new QPushButton("View on website");
-    pullViewWebsiteButton->setObjectName("ghostButton");
-    pullViewWebsiteButton->setProperty("buttonSize", "sm");
-    pullViewWebsiteButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(pullViewWebsiteButton, "link", 16);
-    pullViewWebsiteButton->setToolTip("Open this pull request on the public website");
+    auto *pullViewWebsiteButton = pullActionButton(
+        QStringLiteral("Website"), "link",
+        QStringLiteral("Open this pull request on the public website"));
     connect(pullViewWebsiteButton, &QPushButton::clicked, this, [this] {
         if (m_currentPullNumber <= 0 || m_repoDetailIndex < 0 ||
             m_repoDetailIndex >= m_repositories.size())
@@ -242,25 +260,19 @@ QWidget *MainWindow::buildPullsTab()
         QDesktopServices::openUrl(QUrl(repositoryWebUrl(repo) + "/pulls/" +
                                        QString::number(m_currentPullNumber)));
     });
-    setOcticon(m_pullCloseButton, "circle-slash", 16);
-    setOcticon(m_pullReopenButton, "issue-reopened", 16);
+    m_pullCloseButton->setToolTip("Close this pull request without merging it");
     m_pullReopenButton->setToolTip("Reopen this pull request");
     m_pullReopenButton->hide(); // only shown when the PR is closed or merged
-    setOcticon(m_pullSendToSourceButton, "upload", 16);
     m_pullSendToSourceButton->setToolTip(
         "Deliver this pull request to the repository owner's inbox. The relay "
         "holds it, so it reaches the source of truth even while that node is "
         "offline.");
     m_pullSendToSourceButton->hide(); // only shown on mirror nodes (can't merge here)
-    setOcticon(m_pullDeleteButton, "trash", 16);
     m_pullDeleteButton->setToolTip("Permanently delete this pull request");
-    setOcticon(m_pullDeleteBranchButton, "trash", 16);
     m_pullDeleteBranchButton->setToolTip(
         "Permanently delete this pull request and its head branch");
-    setOcticon(m_pullMergeDeleteButton, "check-circle", 16);
     m_pullMergeDeleteButton->setToolTip(
         "Merge this pull request, then permanently delete it and its head branch");
-    setOcticon(m_pullPreviewButton, "device-desktop", 16);
     m_pullPreviewButton->setToolTip(
         "Check out this pull request, build the app from it, and launch the result "
         "as an isolated preview \xE2\x80\x94 try the change running before merging");
@@ -279,7 +291,6 @@ QWidget *MainWindow::buildPullsTab()
     // task. A plain click now writes a ready-made conflict-resolution prompt
     // into the footer prompt box, where it can be edited and sent to whichever
     // agent the prompt bar is pointed at.
-    setOcticon(m_pullFixButton, "rocket", 16);
     m_pullFixButton->setToolTip(
         "Fill the prompt box with a task to resolve this pull request's "
         "conflicts on its own branch \xE2\x80\x94 edit it, then send it to an agent");
@@ -291,17 +302,14 @@ QWidget *MainWindow::buildPullsTab()
     // context/history and full tool access instead of a fresh, conflict-only
     // rewrite. Only shown when such a session is attached (see
     // updatePullActionState / agentSessionForPull).
-    setOcticon(m_pullFixConflictsButton, "git-merge", 16);
     m_pullFixConflictsButton->hide();
     connect(m_pullFixConflictsButton, &QPushButton::clicked, this,
             &MainWindow::fixCurrentPullConflictsWithOriginatingAgent);
-    setOcticon(m_pullEditFileButton, "pencil", 16);
     m_pullEditFileButton->setToolTip(
         "Edit the selected file and commit the change to this pull request's "
         "branch (the PR stays open, ready to merge)");
     connect(m_pullEditFileButton, &QPushButton::clicked, this,
             &MainWindow::editCurrentPullFile);
-    setOcticon(m_pullDeleteFileButton, "trash", 16);
     m_pullDeleteFileButton->setToolTip(
         "Delete the selected file and commit the deletion to this pull request's "
         "branch (the PR stays open, ready to merge)");
@@ -313,21 +321,17 @@ QWidget *MainWindow::buildPullsTab()
     // suggestion. "Fix all with AI" appears once unresolved review threads
     // exist and hands the whole list — including findings without a quick fix —
     // to a Claude Code agent that commits to the PR's branch.
-    m_pullReviewAiButton = new QPushButton("Review with AI");
-    m_pullFixAllAiButton = new QPushButton("Fix all with AI");
-    for (QPushButton *b : {m_pullReviewAiButton, m_pullFixAllAiButton}) {
-        b->setObjectName("ghostButton"); // same flat rail style as the rest (adhoc #7)
-        b->setProperty("buttonSize", "sm");
-        b->setCursor(Qt::PointingHandCursor);
-    }
-    setOcticon(m_pullReviewAiButton, "eye", 16);
-    m_pullReviewAiButton->setToolTip(
-        "Ask an AI to review this pull request's diff. Each finding is posted "
-        "as a review thread on the lines of code it concerns; findings with a "
-        "safe mechanical fix get a one-click \"Apply fix & commit\".");
+    m_pullReviewAiButton = pullActionButton(
+        QStringLiteral("AI review"), "eye",
+        QStringLiteral("Ask an AI to review this pull request's diff. Each "
+                       "finding is posted as a review thread on the lines of "
+                       "code it concerns; findings with a safe mechanical fix "
+                       "get a one-click \"Apply fix & commit\"."));
+    // The unresolved-finding count rides this tile's corner as a badge instead
+    // of a "(3)" suffix in its caption.
+    m_pullFixAllAiButton = pullActionButton(QStringLiteral("Fix all"), "rocket");
     connect(m_pullReviewAiButton, &QPushButton::clicked, this,
             &MainWindow::reviewCurrentPullWithAi);
-    setOcticon(m_pullFixAllAiButton, "rocket", 16);
     m_pullFixAllAiButton->setToolTip(
         "Let a Claude Code agent work through every unresolved review finding "
         "\xE2\x80\x94 including the ones without a quick fix \xE2\x80\x94 and "
@@ -340,6 +344,7 @@ QWidget *MainWindow::buildPullsTab()
     // row below packs left (trailing stretch) so it reads as a toolbar.
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
+    pullHeaderRow->setSpacing(10);
     pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
     // The AI review pair leads the toolbar so it reads as the page's headline
     // action (adhoc #82).
@@ -357,6 +362,9 @@ QWidget *MainWindow::buildPullsTab()
     pullHeaderRow->addWidget(m_pullReopenButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullSendToSourceButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullLinkIssueButton, 0, Qt::AlignTop);
+    // "Copy link" was built but never placed (issue #154's button leaked as a
+    // parentless widget); it belongs next to the website link.
+    pullHeaderRow->addWidget(pullCopyLinkButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(pullViewWebsiteButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullCloseButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullDeleteButton, 0, Qt::AlignTop);
@@ -927,7 +935,10 @@ QWidget *MainWindow::buildPullsTab()
     m_pullSubTabs->setExclusive(true);
     auto *subTabRow = new QHBoxLayout;
     subTabRow->setContentsMargins(0, 0, 0, 0);
-    subTabRow->setSpacing(2);
+    subTabRow->setSpacing(10); // same rhythm as the repository tab row
+    // Same icon-over-caption tab as the repository tab row (adhoc #59); the
+    // per-tab counts ride each icon's corner as badges (updatePullSubTabCounts)
+    // rather than being appended to the caption.
     const QList<QPair<QString, const char *>> subTabs = {
         {QStringLiteral("Conversation"), "comment"},
         {QStringLiteral("Commits"), "git-branch"},
@@ -935,7 +946,8 @@ QWidget *MainWindow::buildPullsTab()
         {QStringLiteral("Changes in Git"), "file-diff"},
         {QStringLiteral("Badge"), "graph"}};
     for (int i = 0; i < subTabs.size(); ++i) {
-        auto *b = new QPushButton(subTabs.at(i).first);
+        QPushButton *b =
+            new VerticalIconButton(subTabs.at(i).first, VerticalIconButton::Tab);
         b->setObjectName("repoTab");
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
@@ -945,6 +957,8 @@ QWidget *MainWindow::buildPullsTab()
         m_pullSubTabs->addButton(b, i);
         subTabRow->addWidget(b);
     }
+    m_pullSubTabs->button(3)->setToolTip(
+        QStringLiteral("Open this pull request's changes in the Git range view"));
     subTabRow->addStretch();
     m_pullTabConversation = qobject_cast<QPushButton *>(m_pullSubTabs->button(0));
     m_pullTabCommits = qobject_cast<QPushButton *>(m_pullSubTabs->button(1));
@@ -3746,23 +3760,21 @@ void MainWindow::buildAndPreviewCurrentPull()
 
 void MainWindow::updatePullSubTabCounts(PullRequest pr)
 {
-    const auto label = [](QPushButton *b, const QString &name, int n) {
-        if (b)
-            b->setText(n > 0 ? QStringLiteral("%1 %2").arg(name).arg(n) : name);
-    };
+    // The caption is fixed; the count is a corner badge on the tab's icon
+    // (adhoc #59), so a tab never changes width as its count moves.
+    const auto label = [](QPushButton *b, int n) { setPullActionBadge(b, n); };
     if (pr.number <= 0) {
-        label(m_pullTabConversation, QStringLiteral("Conversation"), 0);
-        label(m_pullTabCommits, QStringLiteral("Commits"), 0);
-        label(m_pullTabChecks, QStringLiteral("Checks"), 0);
-        label(m_pullTabFiles, QStringLiteral("Changes in Git"), 0);
+        label(m_pullTabConversation, 0);
+        label(m_pullTabCommits, 0);
+        label(m_pullTabChecks, 0);
+        label(m_pullTabFiles, 0);
         return;
     }
     const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
-    label(m_pullTabConversation, QStringLiteral("Conversation"),
-          snapshot.topLevelItems + snapshot.totalThreads);
-    label(m_pullTabCommits, QStringLiteral("Commits"), pullCommitShas(pr).size());
-    label(m_pullTabChecks, QStringLiteral("Checks"), runIdsForPull(pr).size());
-    label(m_pullTabFiles, QStringLiteral("Changes in Git"), pr.filesChanged);
+    label(m_pullTabConversation, snapshot.topLevelItems + snapshot.totalThreads);
+    label(m_pullTabCommits, pullCommitShas(pr).size());
+    label(m_pullTabChecks, runIdsForPull(pr).size());
+    label(m_pullTabFiles, pr.filesChanged);
 }
 
 void MainWindow::submitPullComment()
@@ -3898,6 +3910,7 @@ void MainWindow::updatePullActionState()
     QString base;
     QString patch;
     int independentApprovals = 0;
+    int linkedIssues = 0;
     bool independentChangesRequested = false;
     bool independentReviewReady = false;
     for (const PullRequest &pr : m_currentPulls) {
@@ -3908,6 +3921,7 @@ void MainWindow::updatePullActionState()
             head   = pr.head;
             base   = pr.base;
             patch  = pr.patch;
+            linkedIssues = issuesLinkedFromPull(pr).size();
             independentApprovals = pr.independentApprovalCount();
             independentChangesRequested =
                 pr.hasIndependentChangesRequested();
@@ -3997,15 +4011,14 @@ void MainWindow::updatePullActionState()
     if (m_pullSyncButton)
         m_pullSyncButton->setEnabled(writable);
     if (m_pullDeleteAllMergedButton) {
-        bool anyMerged = false;
-        for (const PullRequest &pr : m_currentPulls) {
-            if (pr.status == QLatin1String("merged")) {
-                anyMerged = true;
-                break;
-            }
-        }
-        m_pullDeleteAllMergedButton->setEnabled(writable && anyMerged &&
+        int mergedCount = 0;
+        for (const PullRequest &pr : m_currentPulls)
+            if (pr.status == QLatin1String("merged"))
+                ++mergedCount;
+        m_pullDeleteAllMergedButton->setEnabled(writable && mergedCount > 0 &&
                                                 !m_pullDeleteInProgress);
+        // The badge is how many merged PRs the sweep would take with it.
+        setPullActionBadge(m_pullDeleteAllMergedButton, mergedCount);
     }
     if (m_pullUpdateButton) {
         m_pullUpdateButton->setVisible(writable && have && open && behind);
@@ -4085,9 +4098,13 @@ void MainWindow::updatePullActionState()
     // A running AI fix holds the working tree in a git-am session for this PR, so
     // every conflict action stays disabled until it lands or aborts.
     const bool aiFixBusy = m_aiFix && m_aiFix->number == m_currentPullNumber;
+    // Conflicting-file count on every conflict action's icon: how much work the
+    // resolve/fix tiles are actually offering to take on.
+    const int conflictCount = conflicted ? conflictFiles.size() : 0;
     if (m_pullResolveButton) {
         m_pullResolveButton->setVisible(conflicted);
         m_pullResolveButton->setEnabled(conflicted && !aiFixBusy);
+        setPullActionBadge(m_pullResolveButton, conflictCount);
     }
     if (m_pullFixButton) {
         // Shown whenever the PR conflicts. It only writes a prompt, so it needs
@@ -4096,6 +4113,7 @@ void MainWindow::updatePullActionState()
         // the other conflict actions.
         m_pullFixButton->setVisible(conflicted);
         m_pullFixButton->setEnabled(conflicted && !aiFixBusy);
+        setPullActionBadge(m_pullFixButton, conflictCount);
     }
     if (m_pullFixConflictsButton) {
         // Only offer to continue the agent that actually authored this branch
@@ -4113,6 +4131,7 @@ void MainWindow::updatePullActionState()
         m_pullFixConflictsButton->setVisible(conflicted && continuable);
         m_pullFixConflictsButton->setEnabled(conflicted && continuable &&
                                              !agentBusy && !aiFixBusy);
+        setPullActionBadge(m_pullFixConflictsButton, conflictCount);
         m_pullFixConflictsButton->setToolTip(
             agentBusy
                 ? QStringLiteral("The agent for this pull request is already "
@@ -4143,9 +4162,7 @@ void MainWindow::updatePullActionState()
         const bool fixable = writable && have && open && unresolved > 0;
         m_pullFixAllAiButton->setVisible(fixable);
         m_pullFixAllAiButton->setEnabled(fixable && !m_aiFix && !m_aiReview);
-        if (fixable)
-            m_pullFixAllAiButton->setText(
-                QStringLiteral("Fix all with AI (%1)").arg(unresolved));
+        setPullActionBadge(m_pullFixAllAiButton, fixable ? unresolved : 0);
     }
     if (m_pullEditFileButton)
         m_pullEditFileButton->setEnabled(writable && have && open && m_pullFiles &&
@@ -4167,6 +4184,8 @@ void MainWindow::updatePullActionState()
         m_pullSendToSourceButton->setVisible(offerSend);
         m_pullSendToSourceButton->setEnabled(offerSend);
     }
+    // Issues already linked to this PR ride the Link issue tile as a badge.
+    setPullActionBadge(m_pullLinkIssueButton, have ? linkedIssues : 0);
     if (m_pullDeleteButton)
         m_pullDeleteButton->setEnabled(writable && have);
     if (m_pullDeleteBranchButton)
