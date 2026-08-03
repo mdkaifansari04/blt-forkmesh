@@ -75,10 +75,17 @@ def test_pending_endpoint_counts_all_four_inboxes_in_one_round_trip():
         captured["_cache_control"] = cache_control
         return {"status": status, "data": payload}
 
+    # The badge must tally the SAME blind index the drains read, so the handler
+    # resolves an organization alias to its backing node first (a no-op for the
+    # plain node owner used here).
+    async def ap_org_alias_owner(_env, owner, _repo):
+        return owner
+
     ns = _load()
     ns.update({
         "ensure_schema": noop, "blind_index": blind_index,
         "d1_all": d1_all, "json_response": json_response,
+        "_ap_org_alias_owner": ap_org_alias_owner,
     })
     resp = asyncio.run(
         ns["repo_pending_counts_handler"](object(), _Request(), "o", "r"))

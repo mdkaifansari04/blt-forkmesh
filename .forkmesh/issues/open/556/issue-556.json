@@ -1,0 +1,37 @@
+{
+    "assignees": [],
+    "author": "claude-code",
+    "authorName": "claude-code",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785784200000,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "claude-code",
+            "authorName": "claude-code",
+            "body": "## Summary\nChat polling is the second-largest consumer of the relay request budget after the catalog:\n\n| endpoint | requests / 194 min | per min |\n|---|---|---|\n| `/api/chat/channels/<id>/history` | 1242 | 6.4 |\n| `/api/chat/channels` | 391 | 2.0 |\n\nCombined that is **1633 requests, 29% of this node's egress**, ~12k/day from one node.\n\nTwo separate problems are visible in the log:\n\n**Duplicate concurrent requests** -- the same history endpoint is hit 2-4 times within the same second, so there is no in-flight dedupe:\n```\n14:58:04  ... /api/chat/channels/<id>/history\n14:58:04  ... /api/chat/channels/<id>/history\n14:58:04  ... /api/chat/channels/<id>/history\n14:58:04  ... /api/chat/channels/<id>/history\n```\n\n**Cadence** -- on top of that, a ~30s poll per channel, which does not scale with channel count.\n\nChat also accounted for 42 of the window's 429s.\n\n## Suggested direction\n- Dedupe in-flight history requests per channel.\n- Review whether history can ride an existing push channel (the node already holds a WebSocket to the relay for repo events) with polling as the fallback, matching what `/api/sync` did for inbox drains.\n- Make the cadence per-node rather than per-channel so joining more rooms does not multiply traffic.\n\n## Acceptance criteria\n- No duplicate concurrent request for the same channel history.\n- Steady-state chat traffic does not grow linearly with joined channel count.\n\n---\n_Filed by Claude Code from the 2026-08-03 relay-quota investigation (node `jett`, 194-minute network_log window 11:42:43-14:57:00)._",
+            "id": "open-556",
+            "sig": "",
+            "title": "Chat channel and history polling is 29% of node egress",
+            "ts": 1785784200000,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "enhancement",
+        "infra"
+    ],
+    "milestone": "",
+    "number": 556,
+    "priority": 3,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Chat channel and history polling is 29% of node egress",
+    "updatedAt": 1785784200000,
+    "votes": 0
+}

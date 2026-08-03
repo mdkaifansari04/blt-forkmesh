@@ -101,6 +101,15 @@ def _runtime(inserted, notifications, verified):
         "method_name": lambda request: request.method,
         "ensure_schema": noop,
         "blind_index": blind_index,
+        # The handler resolves its storage key through
+        # _inbox_repo_key so an organization alias can never be keyed
+        # to a queue no drain reads; these wire-contract tests use a
+        # plain node URL, where it is just the hash.
+        "_inbox_repo_key": (
+            lambda _env, _request, owner, repo:
+                _async_value("bi:" + owner + "/" + repo)
+        ),
+        "_OrgAliasUnresolved": _OrgAliasUnresolved,
         "verify_pull_event": verify_pull_event,
         "d1_first": d1_first,
         "d1_run": d1_run,
@@ -131,6 +140,10 @@ def _runtime(inserted, notifications, verified):
 
 async def _async_value(value):
     return value
+
+
+class _OrgAliasUnresolved(Exception):
+    """Stand-in for entry.py's narrow alias-resolution failure."""
 
 
 def test_pull_post_preserves_portable_change_data_and_normalizes_legacy_body():

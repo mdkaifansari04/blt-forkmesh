@@ -16,6 +16,9 @@ QT_PULLS = (
 QT_ISSUES = (
     ROOT.parent / "qt_client" / "src" / "MainWindowIssues.cpp"
 ).read_text(encoding="utf-8")
+QT_DISCUSSIONS = (
+    ROOT.parent / "qt_client" / "src" / "MainWindowDiscussions.cpp"
+).read_text(encoding="utf-8")
 
 
 def _load(name, extra_globals):
@@ -228,3 +231,24 @@ def test_qt_pull_drain_signs_org_alias_but_keeps_server_authoritative():
     assert "hasOwnerSigningCapability(repo.owner)" not in apply
     assert "hasOwnerSigningCapability()" in query
     assert "hasOwnerSigningCapability(owner)" not in query
+
+
+def test_owner_intake_never_gates_the_drain_on_the_session_account_name():
+    # The relay authorizes a PUBLIC owner (org alias, or a namespace this key
+    # owns that is no longer the account name); a local name-equality test can
+    # only produce false negatives. The asserts above check for the literal
+    # "repo.owner", which a drift past them defeated simply by hoisting the same
+    # value into a `signer` variable -- and that silently killed every drain for
+    # forkmesh/forkmesh while the site showed "+20 pending" indefinitely. Pin
+    # the shape instead of one spelling: owner intake takes the no-arg form and
+    # only mirror intake, which really does speak as the account, passes a name.
+    for label, text, fn in (
+        ("issues", QT_ISSUES, "void MainWindow::drainIssuesInboxFor"),
+        ("pulls", QT_PULLS, "void MainWindow::drainPullsInboxFor"),
+        ("discussions", QT_DISCUSSIONS,
+         "void MainWindow::drainDiscussionsInboxFor"),
+    ):
+        drain = text.split(fn, 1)[1][:4000]
+        assert "!hasOwnerSigningCapability(signer))" not in drain, label
+        assert "mirrorIntake ? hasOwnerSigningCapability(signer)" in drain, label
+        assert ": hasOwnerSigningCapability();" in drain, label
