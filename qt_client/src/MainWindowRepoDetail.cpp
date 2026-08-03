@@ -1629,7 +1629,12 @@ void MainWindow::updateRepoIssueCount()
 void MainWindow::updateRepoDiscussionCount()
 {
     if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoDiscussionsTab))
-        b->setBadgeCount(m_currentDiscussions.size());
+        b->setBadgeCount(std::count_if(
+            m_currentDiscussions.begin(), m_currentDiscussions.end(),
+            [](const Discussion &discussion) {
+                return discussion.status != QLatin1String("closed") &&
+                       discussion.status != QLatin1String("archived");
+            }));
 }
 
 void MainWindow::updateRepoPullCount()
@@ -4250,8 +4255,8 @@ void MainWindow::loadCommits()
                                          .arg(unpushed.size())});
         summary->setData(kCommitRefKindsRole, QStringList{QStringLiteral("local")});
         summary->setToolTip(
-            QStringLiteral("%1 local commit%2 waiting to sync. Use Sync Changes "
-                           "above to publish them.")
+            QStringLiteral("%1 local commit%2 waiting to sync. Click to show files, "
+                           "then Sync Changes to publish them.")
                 .arg(unpushed.size())
                 .arg(unpushed.size() == 1 ? QString() : QStringLiteral("s")));
         m_commitsTable->setItem(row, kCommitSummaryCol, summary);
@@ -4655,6 +4660,11 @@ struct CommitFileStat {
     int adds = 0;
     int dels = 0;
 };
+struct UnsyncedCommitFiles {
+    QString hash;
+    QString subject;
+    QList<CommitFileStat> files;
+};
 
 static QList<CommitFileStat> commitFileStats(const QString &dir,
                                              const QString &hash)
@@ -4870,13 +4880,122 @@ void MainWindow::updateCommitRowHover(int row)
 
 void MainWindow::updateCommitsUnsyncedFilesPanel()
 {
-    // This status is a linked, dotted top row in the graph now. Keeping a
-    // second banner or expandable list above it makes the graph look detached
-    // and pushes the newest state away from the rest of its history.
-    if (m_commitsUnsyncedBanner)
+    if (!m_commitsUnsyncedBanner || !m_commitsUnsyncedFiles ||
+        !m_commitsUnsyncedSyncButton)
+        return;
+
+    const int pendingCount = m_commitsUnsyncedHashes.size();
+    if (pendingCount <= 0) {
+        m_commitsUnsyncedExpanded = false;
+        if (m_commitsBannerFade)
+            m_commitsBannerFade->stop();
         m_commitsUnsyncedBanner->hide();
-    if (m_commitsUnsyncedFiles)
+        m_commitsUnsyncedSyncButton->hide();
         m_commitsUnsyncedFiles->hide();
+        return;
+    }
+
+    if (m_commitsBannerFade)
+        m_commitsBannerFade->stop();
+    if (m_commitsBannerOpacity)
+        m_commitsBannerOpacity->setOpacity(1.0);
+
+    const bool syncing = m_pushingRepos.contains(m_repoDetailIndex) ||
+                        m_syncingRepos.contains(m_repoDetailIndex);
+    m_commitsUnsyncedSyncButton->setVisible(true);
+    m_commitsUnsyncedSyncButton->setEnabled(!syncing);
+    m_commitsUnsyncedSyncButton->setText(
+        pendingCount > 0 ? QStringLiteral("Sync Changes %1↑").arg(pendingCount)
+                         : QStringLiteral("Sync Changes"));
+    if (syncing)
+        startButtonSpin(m_commitsUnsyncedSyncButton);
+    else
+        stopButtonSpin(m_commitsUnsyncedSyncButton);
+    setOcticon(m_commitsUnsyncedSyncButton, QStringLiteral("sync"), 14);
+    m_commitsUnsyncedSyncButton->setToolTip(
+        QStringLiteral("Publish outgoing commits to the network mirror or push "
+                       "them to the configured upstream branch"));
+
+    const QString filesLabel =
+        m_commitsUnsyncedExpanded ? QStringLiteral("Hide files")
+                                  : QStringLiteral("Show files");
+    m_commitsUnsyncedBanner->setText(
+        QStringLiteral("%1 local commit%2 waiting to sync. <a href=\"commits\">%3</a>")
+            .arg(pendingCount)
+            .arg(pendingCount == 1 ? QString() : QStringLiteral("s"))
+            .arg(filesLabel));
+    m_commitsUnsyncedBanner->show();
+
+    if (!m_commitsUnsyncedExpanded) {
+        m_commitsUnsyncedFiles->hide();
+        return;
+    }
+
+    const QString dir = repoGitDir();
+    if (dir.isEmpty()) {
+        m_commitsUnsyncedFiles->hide();
+        return;
+    }
+
+    QHash<QString, QString> commitSubjects;
+    if (m_commitsTable) {
+        for (int row = 0; row < m_commitsTable->rowCount(); ++row) {
+            QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
+            if (!sum || sum->data(kCommitRowKindRole).toInt() != 0)
+                continue;
+            const QString hash = sum->data(Qt::UserRole).toString();
+            if (!hash.isEmpty())
+                commitSubjects.insert(hash, sum->text());
+        }
+    }
+
+    QList<UnsyncedCommitFiles> entries;
+    for (const QString &hash : m_commitsUnsyncedHashes) {
+        QList<CommitFileStat> files = commitFileStats(dir, hash);
+        if (files.isEmpty())
+            continue;
+        UnsyncedCommitFiles entry;
+        entry.hash = hash;
+        entry.subject = commitSubjects.value(hash);
+        entry.files = std::move(files);
+        entries << entry;
+    }
+
+    m_commitsUnsyncedFiles->clear();
+    if (entries.isEmpty()) {
+        auto *placeholder = new QTreeWidgetItem(m_commitsUnsyncedFiles);
+        placeholder->setText(0, QStringLiteral("No file details available yet."));
+        m_commitsUnsyncedFiles->show();
+        return;
+    }
+
+    for (const UnsyncedCommitFiles &entry : entries) {
+        auto *commitItem = new QTreeWidgetItem(m_commitsUnsyncedFiles);
+        commitItem->setText(
+            0,
+            entry.subject.isEmpty()
+                ? entry.hash.left(8)
+                : QStringLiteral("%1 — %2").arg(entry.hash.left(8),
+                                               entry.subject));
+        commitItem->setIcon(0, themedOcticon("git-commit", QColor("#58a6ff"), 14));
+        commitItem->setData(0, Qt::UserRole, entry.hash);
+        for (const CommitFileStat &file : entry.files) {
+            auto *fileItem = new QTreeWidgetItem(commitItem);
+            fileItem->setIcon(0, iconForFile(file.path.section(QLatin1Char('/'), -1)));
+            fileItem->setText(0, QString::fromUtf8("%1  +%2 \xE2\x88\x92%3")
+                                       .arg(file.path)
+                                       .arg(file.adds)
+                                       .arg(file.dels));
+            fileItem->setData(0, Qt::UserRole, entry.hash);
+            fileItem->setData(0, Qt::UserRole + 1, file.path);
+            fileItem->setToolTip(
+                0,
+                QString::fromUtf8("%1 \xC2\xB7 +%2 \xE2\x88\x92%3").arg(
+                    file.path, QString::number(file.adds), QString::number(file.dels)));
+        }
+        commitItem->setExpanded(true);
+    }
+    m_commitsUnsyncedFiles->show();
 }
 
 void MainWindow::fetchCurrentRepo()
@@ -9888,14 +10007,19 @@ QWidget *MainWindow::buildRepoCommitsTab()
                 QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
                 if (!item)
                     return;
-                if (item->data(kCommitRowKindRole).toInt() == 1) {
+                const int kind = item->data(kCommitRowKindRole).toInt();
+                if (kind == 1) {
                     m_pendingCommitFileScroll =
                         item->data(kCommitFilePathRole).toString();
                     showCommit(item->data(Qt::UserRole).toString());
                     return;
                 }
-                if (item->data(kCommitRowKindRole).toInt() == 0)
+                if (kind == 0)
                     toggleCommitFilesRows(row);
+                if (kind == 2) {
+                    m_commitsUnsyncedExpanded = !m_commitsUnsyncedExpanded;
+                    updateCommitsUnsyncedFilesPanel();
+                }
             });
     // Double click (or Enter) on a commit opens its full detail page — diff,
     // conversation, and the Delete / Restore commit actions.
@@ -9950,6 +10074,16 @@ QWidget *MainWindow::buildRepoCommitsTab()
             m_commitsUnsyncedBanner->hide();
     });
     m_commitsUnsyncedBanner->hide();
+    m_commitsUnsyncedSyncButton = new QPushButton(QStringLiteral("Sync Changes"));
+    m_commitsUnsyncedSyncButton->setObjectName("ghostButton");
+    m_commitsUnsyncedSyncButton->setCursor(Qt::PointingHandCursor);
+    m_commitsUnsyncedSyncButton->setToolTip(
+        QStringLiteral("Publish outgoing commits to the network mirror or push "
+                       "them to the configured upstream branch"));
+    setOcticon(m_commitsUnsyncedSyncButton, QStringLiteral("sync"), 14);
+    connect(m_commitsUnsyncedSyncButton, &QPushButton::clicked, this,
+            &MainWindow::pushCurrentRepoUpstream);
+    m_commitsUnsyncedSyncButton->hide();
 
     // Commit search has no box of its own on this page any more: the top bar's
     // search field takes the job over while the Git page is up — it relabels
@@ -10047,7 +10181,13 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // floating over them, so it can never hide the very (newest, top) commits it
     // flags. When hidden it collapses to zero height and the table reclaims it.
     listLayout->addLayout(searchRow);
-    listLayout->addWidget(m_commitsUnsyncedBanner);
+    auto *outgoingRow = new QWidget(listPage);
+    auto *outgoingRowLayout = new QHBoxLayout(outgoingRow);
+    outgoingRowLayout->setContentsMargins(0, 0, 0, 0);
+    outgoingRowLayout->setSpacing(8);
+    outgoingRowLayout->addWidget(m_commitsUnsyncedSyncButton);
+    outgoingRowLayout->addWidget(m_commitsUnsyncedBanner, 1);
+    listLayout->addWidget(outgoingRow);
     // Files touched by the pending-sync commits, shown when the banner's
     // "Show files" link is toggled: one expandable entry per pending commit.
     m_commitsUnsyncedFiles = new QTreeWidget(listPage);

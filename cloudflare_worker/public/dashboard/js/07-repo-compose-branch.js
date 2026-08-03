@@ -28,7 +28,7 @@
             <span data-repo-issue-attach-hint class="text-[11px] text-muted-foreground"></span>
           </div>
           <input type="file" data-repo-issue-file-input multiple accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" />
-          <div data-repo-issue-attachments class="flex flex-wrap gap-2"></div>
+          <div data-repo-issue-attachments class="grid gap-2"></div>
         </div>
         ${canAssignAgent ? `
         <div class="grid gap-2">
@@ -88,10 +88,17 @@
     const renderAttachmentChips = () => {
       if (!attachmentsList) return;
       attachmentsList.innerHTML = images.map((img) => `
-        <span class="inline-flex items-center gap-1.5 rounded-md border border-border bg-secondary/50 px-2 py-1 text-[11px] text-foreground">
-          <i data-lucide="image" class="h-3 w-3 text-muted-foreground"></i>${escapeHtml(img.name)}
-          <button type="button" data-repo-issue-attachment-remove="${img.id}" class="text-muted-foreground hover:text-destructive" aria-label="Remove ${escapeHtml(img.name)}">&times;</button>
-        </span>`).join("");
+        <span class="rounded-md border border-border bg-secondary/50 p-2 text-[11px] text-foreground">
+          <span class="flex items-start gap-2">
+            <img src="${escapeHtml(img.dataUrl)}" alt="${escapeHtml(img.name)}" class="h-12 w-12 flex-none rounded border border-border object-cover" />
+            <span class="min-w-0">
+              <span class="block truncate font-medium">${escapeHtml(img.name)}</span>
+              <span class="mt-1 block text-muted-foreground">Image attachment</span>
+            </span>
+            <button type="button" data-repo-issue-attachment-remove="${img.id}" class="ml-auto inline-flex h-4 w-4 items-center justify-center rounded-sm text-muted-foreground hover:text-destructive" aria-label="Remove ${escapeHtml(img.name)}">&times;</button>
+          </span>
+        </span>`).join("") + (images.length ? `
+        <span class="h-px border-t border-border"></span>` : "");
       window.lucide?.createIcons();
     };
     attachmentsList?.addEventListener("click", (event) => {
@@ -1368,8 +1375,37 @@
     return `<span data-repo-branch-summary class="inline-flex h-9 items-center gap-2 whitespace-nowrap text-xs font-semibold text-muted-foreground"><i data-lucide="git-branch" class="h-3.5 w-3.5"></i><span data-repo-branch-count class="text-foreground">${formatCount(count)}</span><span>${count === 1 ? "Branch" : "Branches"}</span></span>`;
   }
 
+  function repoBranchAgentTone(status) {
+    const value = String(status || "").toLowerCase();
+    if (value === "success") return "text-primary";
+    if (value === "failed" || value === "stopped") return "text-destructive";
+    if (value === "running") return "text-yellow-500";
+    return "text-muted-foreground";
+  }
+
+  function findRepoBranchAgent(repo, branch) {
+    const key = String(branch || "").trim().toLowerCase();
+    if (!key || !repo || !repo.owner || !repo.name) return null;
+    const agents = Array.isArray(state.agentsView?.agents) ? state.agentsView.agents : [];
+    const candidates = agents.filter(
+      (agent) => String(agent.branchName || "").trim().toLowerCase() === key,
+    );
+    return candidates[0] || null;
+  }
+
+  function renderRepoBranchAgentStatus(repo, branch) {
+    const agent = findRepoBranchAgent(repo, branch);
+    if (!agent || !agent.id) return "";
+    return `
+      <button type="button" data-repo-agent-open data-repo-agent-id="${escapeHtml(String(agent.id))}" data-repo-agent-composer-mode="add" data-repo-branch-agent-status class="inline-flex min-w-0 items-center gap-1.5 rounded-md border border-border bg-secondary/60 px-2 py-1.5 text-[11px] font-semibold hover:bg-secondary/80">
+        <i data-lucide="bot" class="h-3.5 w-3.5 text-muted-foreground shrink-0"></i>
+        <span class="rounded-full border border-border px-1.5 py-0.5 ${repoBranchAgentTone(agent.status)}">${escapeHtml(agent.status || "unknown")}</span>
+        <span class="hidden truncate min-w-0 sm:inline text-muted-foreground">on this branch</span>
+      </button>`;
+  }
+
   function renderRepoBranchToolbar(repo, branch) {
-    return `<div data-repo-branch-toolbar class="flex min-w-0 flex-nowrap items-center gap-3"><div data-repo-branch-control class="relative inline-flex min-w-0 max-w-64 shrink">${renderRepoBranchButton(branch)}${renderRepoBranchMenu(repo, repoBranchList(repo), false)}</div>${renderRepoBranchSummary(repo)}</div>`;
+    return `<div data-repo-branch-toolbar class="flex min-w-0 flex-nowrap items-center gap-3"><div data-repo-branch-control class="relative inline-flex min-w-0 max-w-64 shrink">${renderRepoBranchButton(branch)}${renderRepoBranchMenu(repo, repoBranchList(repo), false)}</div>${renderRepoBranchSummary(repo)}${renderRepoBranchAgentStatus(repo, branch)}</div>`;
   }
 
   function renderRepoBranchMenu(repo, branches, open) {
@@ -1429,6 +1465,15 @@
       const branch = repoSelectedBranch(repo);
       control.innerHTML = `${renderRepoBranchButton(branch)}${renderRepoBranchMenu(repo, repoBranchList(repo), open)}`;
       control.querySelector("[data-repo-branch-button]")?.setAttribute("aria-expanded", open ? "true" : "false");
+      const toolbar = control.closest("[data-repo-branch-toolbar]");
+      const status = toolbar?.querySelector("[data-repo-branch-agent-status]");
+      const nextStatus = renderRepoBranchAgentStatus(repo, branch);
+      if (nextStatus) {
+        if (status) status.outerHTML = nextStatus;
+        else if (toolbar) toolbar.insertAdjacentHTML("beforeend", nextStatus);
+      } else if (status) {
+        status.remove();
+      }
     });
     $$("[data-repo-branch-summary]").forEach((summary) => {
       summary.outerHTML = renderRepoBranchSummary(repo);

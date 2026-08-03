@@ -7461,6 +7461,7 @@ void MainWindow::onProfileNameChanged(const QString &name)
                              QStringLiteral("owner"));
     setDesktopCapability(m_accountName, false);
     m_accountAuthenticated = false;
+    m_accountEmail.clear();
     m_accountTier = QStringLiteral("free");
     m_accountSolanaVerified = false;
     m_isAdmin = false;
@@ -7512,6 +7513,7 @@ void MainWindow::logout()
     m_isAdmin = false;
     m_seenPendingUsers.clear();
     m_accountName.clear();
+    m_accountEmail.clear();
     // Drop the cached user-account linkage too. These are display caches that
     // refreshProfileAccountStatus() already clears whenever accountOwner() is
     // empty — which it now is — and leaving them set would keep the top-bar

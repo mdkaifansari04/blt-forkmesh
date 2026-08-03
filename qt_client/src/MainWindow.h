@@ -4867,6 +4867,8 @@ private:
     // the git fetch subprocesses bypass that manager entirely. Explicit "sync
     // now" paths (headlessSyncNow) call autoSyncMirrors() directly, ungated.
     void autoSyncMirrorsIfRelayHealthy();
+    // Re-arm the mirror sync timer after interval updates from Settings.
+    void restartMirrorSyncTimer();
     // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
     // pull it immediately instead of waiting for the next auto-sync tick.
     void syncMirrorsBehindRoster();
@@ -6440,6 +6442,7 @@ private:
     int m_searchPending = 0;         // how many of those are still running
     QString m_searchPageQuery;
     QLabel *m_commitsUnsyncedBanner = nullptr; // "N commits not yet synced" banner
+    QPushButton *m_commitsUnsyncedSyncButton = nullptr;
     // Expandable file view under the banner: one entry per pending commit, its
     // children the files that commit touches. Toggled by the banner's
     // "Show files" link; the expanded state survives reloads.
@@ -8199,6 +8202,7 @@ private:
     // Registered account/node identity for this session.
     bool m_accountAuthenticated = false;
     QString m_accountName;
+    QString m_accountEmail;
     // Session token minted by /api/accounts/login, used to authenticate
     // profile writes (e.g. persisting the chosen avatar to the account record
     // so the web dashboard shows the same picture the desktop app does).

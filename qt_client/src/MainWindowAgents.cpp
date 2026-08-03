@@ -173,6 +173,89 @@ struct AgentImageBatch {
 };
 
 QString agentMergeBase(const AgentSession &s);
+QString usageExhaustedSetting(const QString &providerKey,
+                             const QString &windowKey);
+QString usageResetSetting(const QString &providerKey,
+                         const QString &windowKey);
+
+QString briefFailureReason(const AgentSession &session)
+{
+    QString why = session.lastError.simplified();
+    why = why.left(120);
+    return why;
+}
+
+QString agentUsageWindowLabel(const QString &windowKey)
+{
+    if (windowKey == QLatin1String("5h"))
+        return QStringLiteral("5-hour");
+    if (windowKey == QLatin1String("weekly"))
+        return QStringLiteral("weekly");
+    if (windowKey == QLatin1String("fable"))
+        return QStringLiteral("Fable weekly");
+    return windowKey;
+}
+
+QString agentUsageLimitCountdownText(const AgentSession &session)
+{
+    const QString providerKey =
+        agentIsClaudeProvider(session.provider)
+            ? QStringLiteral("claude")
+            : (agentIsCodexProvider(session.provider)
+                   ? QStringLiteral("codex")
+                   : QString());
+    if (providerKey.isEmpty())
+        return QString();
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QSettings settings;
+    QString bestLabel;
+    qint64 bestRemaining = 0;
+
+    auto considerWindow = [&](const QString &windowKey) {
+        const QString exhaustedKey = usageExhaustedSetting(providerKey, windowKey);
+        if (exhaustedKey.isEmpty() || !settings.value(exhaustedKey).toBool())
+            return;
+        const QString resetKey = usageResetSetting(providerKey, windowKey);
+        const qint64 resetAt = settings.value(resetKey).toLongLong();
+        if (resetAt <= 0)
+            return;
+        const qint64 remaining = resetAt - now;
+        if (remaining <= 0)
+            return;
+        if (bestRemaining == 0 || remaining < bestRemaining) {
+            bestRemaining = remaining;
+            bestLabel = agentUsageWindowLabel(windowKey);
+        }
+    };
+
+    considerWindow(QStringLiteral("5h"));
+    considerWindow(QStringLiteral("weekly"));
+    if (providerKey == QLatin1String("claude"))
+        considerWindow(QStringLiteral("fable"));
+
+    if (bestRemaining <= 0)
+        return QString();
+    return QStringLiteral("%1 usage limit reached · resets in %2")
+        .arg(bestLabel, humanizeRemaining(bestRemaining));
+}
+
+QString agentSuccessOutcomeText(const AgentSession &session)
+{
+    QStringList parts;
+    if (session.numTurns > 0)
+        parts << QStringLiteral("%1 turns").arg(session.numTurns);
+    if (session.durationMs > 0)
+        parts << QStringLiteral("%1s").arg(session.durationMs / 1000);
+    if (session.totalTokens > 0)
+        parts << QStringLiteral("%1 tokens")
+                     .arg(formatCount(session.totalTokens));
+    if (session.costUsd > 0.0)
+        parts << agentCostText(session.costUsd);
+    if (parts.isEmpty())
+        return QStringLiteral("Done");
+    return QStringLiteral("Done · %1").arg(parts.join(QStringLiteral(" · ")));
+}
 
 int agentStatusModelIconIndex(const AgentSession &session)
 {
@@ -200,9 +283,11 @@ QString agentStatusBadgeText(const AgentSession &session)
     if (session.merged)
         return QStringLiteral("Merged");
     if (session.status == AgentStatus::Success)
-        return QStringLiteral("Done");
+        return agentSuccessOutcomeText(session);
     if (session.status == AgentStatus::Failed)
-        return QStringLiteral("Failed");
+        return briefFailureReason(session).isEmpty()
+                   ? QStringLiteral("Failed")
+                   : QStringLiteral("Failed: %1").arg(briefFailureReason(session));
     if (session.status == AgentStatus::Stopped)
         return QStringLiteral("Stopped");
     if (session.status == AgentStatus::Running)
@@ -234,8 +319,18 @@ QString agentStatusBadgeToolTip(const AgentSession &session)
     details << agentStatusBadgeText(session);
     if (session.merged)
         details << QStringLiteral("Merged into %1").arg(agentMergeBase(session));
-    if (session.status == AgentStatus::Failed && !session.lastError.trimmed().isEmpty())
-        details << session.lastError.trimmed();
+    if (session.status == AgentStatus::Success &&
+        (session.numTurns > 0 || session.durationMs > 0 ||
+         session.totalTokens > 0 || session.costUsd > 0.0))
+        details << QStringLiteral("Brief stats: %1")
+                       .arg(agentSuccessOutcomeText(session).mid(
+                           QStringLiteral("Done · ").size()));
+    else if (session.status == AgentStatus::Failed &&
+             !session.lastError.trimmed().isEmpty())
+        details << QStringLiteral("Failure reason: %1").arg(session.lastError.trimmed());
+    if (const QString usageLine = agentUsageLimitCountdownText(session);
+        !usageLine.isEmpty())
+        details << usageLine;
     details << QStringLiteral("Click to show session details.");
     return details.join(QLatin1Char('\n'));
 }
@@ -12581,6 +12676,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
     processAgentQueue();
     looperOnSessionFinished(sessionId); // adhoc #92: chain to the next open issue
     maybeStartQueuedRebuild(); // adhoc #75: a rebuild may be waiting on this run
+    refreshQuickAddAgentModelSelector();
 }
 
 void MainWindow::updateAgentActionState()

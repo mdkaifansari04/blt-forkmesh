@@ -481,15 +481,37 @@ constexpr int kPacmanAnchorRole = Qt::UserRole + 12;
 constexpr int kNodeLightRole = Qt::UserRole + 13;
 // Cadence on which a node re-fetches its mirrors from source (mirrors
 // m_mirrorSyncTimer, which adds ±15% jitter — the pie is an approximation);
-// a behind node is expected to catch up within roughly one minute. This is
+// a behind node is expected to catch up within roughly a few minutes. This is
 // only the dropped-event safety net: push events still notify mirror peers the
 // moment the source moves.
 // Push/websocket events are the primary update path. This short poll is the
 // bounded retry for a dropped event or for a peer that woke while the source's
-// gateway generation was still swapping; keep it within the product's
-// seconds-level convergence promise.
-constexpr qint64 kMirrorSyncIntervalMs = 5LL * 1000;
+// gateway generation was still swapping.
+constexpr qint64 kMirrorSyncIntervalMs = 5LL * 60 * 1000;
 constexpr int kMirrorSyncJitterPercent = 15;
+// User-facing mirror-sync frequency (settings -> repositories). Tracked in
+// whole minutes so the settings UI can be straightforward and readable.
+constexpr int kMirrorSyncIntervalMinMinutes = 1;
+constexpr int kMirrorSyncIntervalMaxMinutes = 24 * 60;
+constexpr int kMirrorSyncIntervalDefaultMinutes = 5;
+const QString kMirrorSyncIntervalSetting =
+    QStringLiteral("repos/mirrorSyncIntervalMinutes");
+
+inline int mirrorSyncIntervalMinutes()
+{
+    return qBound(
+        kMirrorSyncIntervalMinMinutes,
+        QSettings()
+            .value(kMirrorSyncIntervalSetting,
+                   kMirrorSyncIntervalDefaultMinutes)
+            .toInt(),
+        kMirrorSyncIntervalMaxMinutes);
+}
+
+inline qint64 mirrorSyncIntervalMs()
+{
+    return qint64(mirrorSyncIntervalMinutes()) * 60 * 1000;
+}
 
 // Extra labels this machine answers to when a workflow declares `runs-on:`
 // (free-form, comma/space separated — e.g. "ios, xcode, gpu"). The machine's
@@ -2719,13 +2741,14 @@ public:
         const QVariant anchor = index.data(kPacmanAnchorRole);
         if (!anchor.isValid())
             return;
+        const qint64 intervalMs = qMax(1LL, mirrorSyncIntervalMs());
         qint64 elapsed =
             (QDateTime::currentMSecsSinceEpoch() - anchor.toLongLong()) %
-            kMirrorSyncIntervalMs;
+            intervalMs;
         if (elapsed < 0)
-            elapsed += kMirrorSyncIntervalMs;
+            elapsed += intervalMs;
         const double frac =
-            qBound(0.0, double(elapsed) / double(kMirrorSyncIntervalMs), 1.0);
+            qBound(0.0, double(elapsed) / double(intervalMs), 1.0);
 
         const bool dark = currentThemeIsDark();
         QRectF box(option.rect.right() - kDiameter - 6,
