@@ -41,7 +41,11 @@ import { createWorldSky } from "./world-sky.js";
 import { WORKER_FOOTPRINT } from "./worker-footprint.js";
 // Side-effect import: ForkMesh's own QR generator publishes globalThis.ForkMeshQR,
 // used for the reward-pool treasury address board.
-import "../qr.js";
+// Wallet QR codes are optional scene decoration. Start loading the encoder as
+// soon as this module evaluates, but keep its sizeable implementation outside
+// the initial World module graph. The shell waits for this promise before it
+// builds the scene, preserving the first-render QR code when it is available.
+export const QR_MODULE_READY = import("../qr.js").catch(() => null);
 
 const OUTFIT_COLOR_HEX = Object.fromEntries(
   OUTFIT_COLOR_OPTIONS.map((option) => [option.id, option.color]),
