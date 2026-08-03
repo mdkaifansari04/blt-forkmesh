@@ -649,34 +649,25 @@ def test_office_walkway_meets_the_lobby_without_a_gap_or_step():
     assert "OFFICE_LOBBY_SURFACE_Y / 2" in floor_surface
 
 
-def test_office_glass_uses_one_stable_non_depth_writing_envelope():
+def test_office_uses_an_opaque_facade_to_conceal_its_interior():
     scene = source(SCENE_PATH)
-    material_helper = scene[
-        scene.index("function makeMaterial("):
-        scene.index("function setShadows(")
-    ]
+    office = function_body(scene, "createForkMeshOffice")
     exterior = scene[
-        scene.index('const glass = makeMaterial(THREE, "#9ef7c6"'):
+        scene.index('const facade = makeMaterial(THREE, "#173c32"'):
         scene.index("const doorMaterial = makeMaterial", scene.index(
-            'const glass = makeMaterial(THREE, "#9ef7c6"'
+            'const facade = makeMaterial(THREE, "#173c32"'
         ))
     ]
-    assert "parameters.depthWrite = options.depthWrite" in material_helper
     for contract in (
-        "opacity: 0.24",
-        "metalness: 0",
-        "roughness: 0.62",
-        "depthWrite: false",
+        'facade.name = "forkmesh-office-opaque-facade"',
+        "metalness: 0.22",
+        "roughness: 0.74",
     ):
         assert contract in exterior
-    assert "officeFloorGlassMaterial" not in scene
-    assert (
-        "new THREE.BoxGeometry(0.18, OFFICE_FLOOR_HEIGHT - 0.7, OFFICE_DEPTH)"
-        not in scene
-    )
-    assert "child.material?.transparent" in scene
-    assert "child.castShadow = false" in scene
-    assert "child.receiveShadow = false" in scene
+    assert "transparent: true" not in exterior
+    assert "depthWrite: false" not in exterior
+    assert office.count("facade,") == 4
+    assert "opaque curtain wall" in scene
 
 
 def test_tower_is_five_stories_and_about_ten_times_the_old_width():

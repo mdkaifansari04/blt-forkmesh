@@ -86,7 +86,7 @@ export const LANDMARKS = [
     summary:
       "A ten-story team campus connected to the World by a walkable bridge.",
     metaphor:
-      "A glass tower with a staffed lobby, team floors, an elevator, and a rooftop observatory.",
+      "An office tower with a staffed lobby, team floors, an elevator, and a rooftop observatory.",
     reality:
       "Building admission is open to every visitor. Elevator grants come from server-verified organization team membership; avatar position never grants private data access.",
     status: "Open lobby · team floors",
