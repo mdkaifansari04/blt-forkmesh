@@ -4981,6 +4981,7 @@ void MainWindow::updateCommitsUnsyncedFilesPanel()
             fileItem->setData(0, Qt::UserRole, entry.hash);
             fileItem->setData(0, Qt::UserRole + 1, file.path);
             fileItem->setToolTip(
+                0,
                 QString::fromUtf8("%1 \xC2\xB7 +%2 \xE2\x88\x92%3").arg(
                     file.path, QString::number(file.adds), QString::number(file.dels)));
         }
