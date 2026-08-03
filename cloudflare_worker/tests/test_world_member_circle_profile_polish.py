@@ -235,12 +235,12 @@ def test_lobby_has_wall_doorways_with_access_and_walk_through_checks():
 
 def test_world_asset_loading_and_unavailable_actions_are_console_quiet():
     for asset in (
-        "city-park-grass-v1.webp",
         "concrete-brick-path-v1.webp",
         "beach-horizon-v1.webp",
     ):
         line = next(line for line in HTML.splitlines() if asset in line)
         assert 'crossorigin="anonymous"' in line
+    assert "city-park-grass-v1.webp" not in HTML
     face = SCENE.split(
         "function makeConsentedProfileFace", 1
     )[1].split("\nfunction ", 1)[0]
