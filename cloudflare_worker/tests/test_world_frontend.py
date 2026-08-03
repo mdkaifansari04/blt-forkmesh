@@ -2173,19 +2173,21 @@ def test_world_settings_moves_focus_before_hiding_the_panel():
     assert "panel.inert = true;" in toggle
 
 
-def test_world_members_center_is_a_fixed_cost_yurt():
+def test_world_members_center_is_a_fixed_cost_yurt_with_bounded_interior_roster():
     assert 'membersYurt.name = "members-center-yurt"' in SCENE
     assert 'yurtDoor.name = "members-yurt-door"' in SCENE
     assert 'yurtChimney.name = "members-yurt-central-chimney"' in SCENE
     assert "function membersYurtDoorTexture" in SCENE
     assert "noteDirectoryMembers" in APP
     lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
-        "// Registered members sit", 1
+        "// Legacy bench-circle implementation", 1
     )[0]
-    assert "loungeMembers.clear();" in lounge
-    assert "campfire.userData.memberFigureCount = 0;" in lounge
+    assert "MEMBERS_YURT_VISIBLE_MEMBER_LIMIT" in lounge
+    assert ".slice(0, MEMBERS_YURT_VISIBLE_MEMBER_LIMIT);" in lounge
+    assert "membersYurtMemberPosition(index, interiorMembers.length)" in lounge
+    assert "campfire.userData.memberFigureCount = seen.size;" in lounge
     assert "return;" in lounge
-    assert "createAvatar(" not in lounge
+    assert "createAvatar(" in lounge
 
     nodes = SCENE[
         SCENE.index("  function updateNetworkNodes"):

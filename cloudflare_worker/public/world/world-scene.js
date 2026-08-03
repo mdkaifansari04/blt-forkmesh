@@ -18111,10 +18111,52 @@ export function createWorldScene({
   campfireGround.receiveShadow = true;
   campfire.add(campfireGround);
 
-  // The directory can grow without making the scene grow: the whole Members
-  // Center is represented by one permanent yurt instead of one bench and one
-  // avatar for every registered account. The entrance faces the Town Square.
+  // The yurt stays a fixed landmark as the directory grows. A bounded set of
+  // member avatars lives inside instead of expanding furniture across town.
+  // The entrance faces the Town Square.
   const MEMBERS_YURT_RADIUS = 12;
+  // Full avatars make the directory useful again once a visitor walks through
+  // the canvas shell, while three fixed rings keep the yurt's maximum render
+  // cost and physical footprint independent of account growth.
+  const MEMBERS_YURT_MEMBER_RINGS = [
+    { radius: 4.4, capacity: 10 },
+    { radius: 7.1, capacity: 16 },
+    { radius: 9.7, capacity: 22 },
+  ];
+  const MEMBERS_YURT_VISIBLE_MEMBER_LIMIT = MEMBERS_YURT_MEMBER_RINGS.reduce(
+    (total, ring) => total + ring.capacity,
+    0,
+  );
+  function membersYurtMemberPosition(index, total) {
+    const boundedTotal = Math.max(
+      0,
+      Math.min(MEMBERS_YURT_VISIBLE_MEMBER_LIMIT, Math.round(Number(total) || 0)),
+    );
+    let ringStart = 0;
+    for (const ring of MEMBERS_YURT_MEMBER_RINGS) {
+      const ringCount = Math.min(
+        ring.capacity,
+        Math.max(0, boundedTotal - ringStart),
+      );
+      if (index < ringStart + ringCount) {
+        // Leave a doorway-wide aisle on -Z, then distribute this ring over the
+        // remaining arc. Sparse directories still spread around the hearth.
+        const entranceGap = Math.min(Math.PI / 2, 3.6 / ring.radius);
+        const usableArc = Math.PI * 2 - entranceGap;
+        const slot = index - ringStart;
+        const angle =
+          -Math.PI / 2 + entranceGap / 2 +
+          ((slot + 0.5) / Math.max(1, ringCount)) * usableArc;
+        return new THREE.Vector3(
+          Math.cos(angle) * ring.radius,
+          0,
+          Math.sin(angle) * ring.radius,
+        );
+      }
+      ringStart += ringCount;
+    }
+    return new THREE.Vector3();
+  }
   campfireGround.scale.setScalar(MEMBERS_YURT_RADIUS + 0.8);
   const membersYurt = new THREE.Group();
   membersYurt.name = "members-center-yurt";
@@ -18198,6 +18240,9 @@ export function createWorldScene({
   );
   memberDoorInfo.name = "members-yurt-door-member-info";
   memberDoorInfo.position.set(4.95, 3.9, -MEMBERS_YURT_RADIUS - 0.5);
+  // PlaneGeometry's front faces +Z. The plaque sits on the yurt's -Z side,
+  // so approaching visitors otherwise see its mirrored back face.
+  memberDoorInfo.rotation.y = Math.PI;
   memberDoorInfo.renderOrder = 12;
   membersYurt.add(memberDoorInfo);
 
@@ -18321,8 +18366,9 @@ export function createWorldScene({
   fireLight.castShadow = false;
   campfire.add(fireLight);
   let memberCountShown = "";
-  // Member data belongs at the entrance. Nothing over the fire changes with
-  // the roster, and no per-member logs, benches, labels, or avatars are built.
+  // Headline member data belongs at the entrance. Nothing over the fire
+  // changes with the roster, and no per-member logs, benches, or labels grow
+  // outside the yurt.
   function setCampfireMemberCount(total, newest = "") {
     const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
     const latest = String(newest || "").trim().slice(0, 18);
@@ -28493,9 +28539,9 @@ export function createWorldScene({
       avatar.userData.campfireSeated =
         String(remote.activity || "") === CAMPFIRE_SEATED_ACTIVITY;
       if (useRegisteredLounge) {
-        // Only live peers get avatars. Idle peers wait in the small entrance
-        // plaza; the complete account directory stays represented by the one
-        // count/name plaque instead of being expanded into scene objects.
+        // Live idle peers keep their presence avatar in the small entrance
+        // plaza. Offline directory members have their own bounded interior
+        // figures, so the same account is never duplicated inside the yurt.
         const place = hashNumber(remote.id) % 8;
         avatar.userData.targetPosition.set(
           campfire.position.x - 3.15 + (place % 4) * 2.1,
@@ -28758,25 +28804,124 @@ export function createWorldScene({
     leaderboardGridState.members = leaderboardMembers;
     repaintLeaderboardGrid();
 
-    // The yurt deliberately caps this district's rendering cost. Directory
-    // members still enrich live-avatar badges, leaderboards, and the aquarium,
-    // but a directory refresh creates no roster-only figures or furniture.
-    // Clear any figures left by a scene hot-reload from the former bench ring.
+    // Populate the yurt interior with the directory members who are not
+    // already represented by a live World avatar. The opaque front faces of
+    // the yurt shell conceal these figures from outside; once a visitor walks
+    // through the entrance, the shell's culled back faces reveal the roster.
     if (membersYurt) {
+      const interiorNames = new Set();
+      const interiorMembers = (Array.isArray(members) ? members : [])
+        .filter((member) => {
+          const name = String(member?.name || "").trim().toLowerCase();
+          if (!name || member?.away === true || interiorNames.has(name)) {
+            return false;
+          }
+          interiorNames.add(name);
+          return true;
+        })
+        .slice(0, MEMBERS_YURT_VISIBLE_MEMBER_LIMIT);
+      const seen = new Set();
+      interiorMembers.forEach((member, index) => {
+        const name = String(member.name).trim().slice(0, 32);
+        const id = `member:${name.toLowerCase()}`;
+        seen.add(id);
+        const memberCountry = /^[A-Z]{2}$/.test(
+          String(member.countryCode || "").toUpperCase(),
+        )
+          ? String(member.countryCode).toUpperCase()
+          : "";
+        const joinedAt = Math.max(0, Number(member.createdAt) || 0);
+        const memberIdentity = {
+          id,
+          name,
+          flag:
+            String(member.flag || "") ||
+            (memberCountry ? flagEmoji(memberCountry) : "◌"),
+          countryCode: memberCountry,
+          browser: String(member.browser || "Hidden"),
+          os: String(member.os || "Hidden"),
+          status: "inside the Members Center yurt",
+          accountStatus: "Registered",
+          emailVerified: member.emailVerified === true,
+          localTime: "",
+          activityCategory: "visiting-members-yurt",
+          inputActive: false,
+          visitCount: Math.max(
+            0,
+            Math.min(999, Number(member.visitCount) || 0),
+          ),
+          firstVisitAge: joinedAt > 0 ? "this-session" : "hidden",
+          firstSeenMinutes: firstSeenMinutesBucket(joinedAt),
+          joinedAt,
+          totalActiveMs: Math.max(
+            0,
+            Number(member.totalActiveMs ?? member.activeMs) || 0,
+          ),
+          nodes: Array.isArray(member.nodes) ? member.nodes.slice(0, 6) : [],
+          statusEmoji: "",
+          statusNote: String(member.status || ""),
+          activityBucket: member.activityBucket || "",
+          lastEmailAt: Math.max(0, Number(member.lastEmailAt) || 0),
+          lastEmailStatus: String(member.lastEmailStatus || ""),
+          lastEmailPrivate: false,
+        };
+        const badgeKey = JSON.stringify(memberIdentity);
+        let figure = loungeMembers.get(id);
+        if (!figure) {
+          figure = createAvatar(
+            THREE,
+            memberIdentity,
+            { remote: true, scale: 0.78 },
+          );
+          figure.userData.badgeKey = badgeKey;
+          world.add(figure);
+          registerCompactDistrictRoot("members", figure);
+          loungeMembers.set(id, figure);
+          registerAvatarChestControls(figure, id);
+        } else if (figure.userData.badgeKey !== badgeKey) {
+          updateAvatarBadge(THREE, figure, memberIdentity, true);
+          syncOperatorBelt(THREE, figure, memberIdentity.nodes);
+          figure.userData.badgeKey = badgeKey;
+        }
+        syncAvatarActivity(figure, {
+          inputActive: false,
+          accountStatus: "Registered",
+          activityBucket: member.activityBucket || "",
+        });
+        syncRemoteOrgTeamControl(figure, {
+          id,
+          name,
+          accountStatus: "Registered",
+          orgTeam: member?.orgTeam,
+        });
+        const slot = membersYurtMemberPosition(index, interiorMembers.length);
+        figure.position.set(
+          campfire.position.x + slot.x,
+          WORLD_WALKING_PLANE_Y,
+          campfire.position.z + slot.z,
+        );
+        // Avatar fronts face local -Z, so this heading turns each member
+        // toward the central fire and leaves profile backs readable outside it.
+        figure.rotation.y = Math.atan2(slot.x, slot.z);
+        applyLegPitch(figure, 0, 0);
+        figure.userData.ambientInteraction = null;
+      });
       loungeMembers.forEach((figure, id) => {
+        if (seen.has(id)) return;
         removeRemoteOrgTeamControl(figure, id);
         unregisterAvatarChestControls(figure);
         world.remove(figure);
         unregisterCompactDistrictRoot("members", figure);
         disposeObject3D(figure);
+        loungeMembers.delete(id);
       });
-      loungeMembers.clear();
-      campfire.userData.memberFigureCount = 0;
-      campfire.userData.detailedMemberFigures = 0;
+      campfire.userData.memberFigureCount = seen.size;
+      campfire.userData.detailedMemberFigures = seen.size;
       campfire.userData.seatedMemberFigures = 0;
       return;
     }
 
+    // Legacy bench-circle implementation retained for pre-yurt scene variants.
     // Registered members sit in a circle around the campfire facing the
     // flames. Every account in the directory owns one numbered bench for the
     // whole session — a member out walking the world leaves theirs visibly
