@@ -43,6 +43,7 @@ def _load(*names, extra_globals=None):
         "STATUS_HISTORY_RETAIN_MS", "STATUS_SAMPLE_WINDOW_MS",
         "STATUS_HOUR_MS", "STATUS_DAY_MS",
         "STATUS_MINUTES_SHOWN", "STATUS_MINUTE_RETAIN_MS",
+        "STATUS_EDGE_CACHE_TTL", "STATUS_EDGE_CACHE_KEYS",
         "STATUS_MIRROR_PREFIX", "STATUS_MIRROR_MAX",
         "STATUS_RETIRED_MIRRORS",
         "STATUS_DEPLOY_GRACE_MS", "STATUS_DEPLOY_MAX_MS",
@@ -743,6 +744,44 @@ def test_world_status_projection_keeps_visual_windows_without_nested_history():
     assert len(website["hours"]) == 24
     assert len(website["minutes"]) == 60
     assert "checkDescription" not in website
+
+
+def test_status_history_cache_separates_full_and_world_projections():
+    matched = []
+    stored = []
+    built = []
+
+    async def edge_cache_match(key):
+        matched.append(key)
+        return {"cached": key} if key.endswith("/full-v1") else None
+
+    async def edge_cache_put(key, response):
+        stored.append((key, response))
+
+    async def status_history(_env, view="full"):
+        built.append(view)
+        return {"fresh": view}
+
+    runtime = _load(
+        "cached_status_history",
+        extra_globals={
+            "edge_cache_match": edge_cache_match,
+            "edge_cache_put": edge_cache_put,
+            "status_history": status_history,
+        },
+    )
+    cached = runtime["cached_status_history"]
+
+    assert asyncio.run(cached(object(), "full")) == {
+        "cached": "https://forkmesh.internal/api/status/full-v1"}
+    assert asyncio.run(cached(object(), "world")) == {"fresh": "world"}
+    assert built == ["world"]
+    assert matched == [
+        "https://forkmesh.internal/api/status/full-v1",
+        "https://forkmesh.internal/api/status/world-v1",
+    ]
+    assert stored == [(
+        "https://forkmesh.internal/api/status/world-v1", {"fresh": "world"})]
 
 
 def test_all_checks_passing_today_is_operational():

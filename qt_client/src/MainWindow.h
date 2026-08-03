@@ -939,6 +939,14 @@ public:
         return m_agentDiffStats.value(sessionId).files;
     }
     bool testAgentSessionMerged(int sessionId) const;
+    void testApplyCodexRateLimits(const QJsonObject &rateLimits)
+    {
+        applyCodexRateLimits(rateLimits);
+    }
+    QString testCodexUsageToolTip() const
+    {
+        return m_navCodexUsage ? m_navCodexUsage->toolTip() : QString();
+    }
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -1019,6 +1027,7 @@ private:
     static constexpr int kNodesSectionIndex = 13; // "Nodes" directory (adhoc #9)
     static constexpr int kControlNodeSectionIndex = 14;
     static constexpr int kOrganizationTasksSectionIndex = 15;
+    static constexpr int kNotesSectionIndex = 16;
 
     // Setup page
     QWidget *buildSetupPage();
@@ -1505,6 +1514,20 @@ private:
     QWidget *buildIssuesSection();
     QWidget *buildOrganizationTasksSection();
     void refreshOrganizationTasks();
+    QWidget *buildNotesSection();
+    void refreshNotes();
+    void renderNotesList(const QString &selectId = QString());
+    void selectNote(const QString &id, const QString &storage);
+    void createNote();
+    void saveNote();
+    void deleteNote();
+    void shareNote();
+    void attachNoteConversation();
+    void showNoteVersions();
+    using NoteReplyHandler = std::function<void(
+        bool, const QJsonObject &, const QString &)>;
+    void requestNotes(const QByteArray &method, const QString &path,
+                      const QJsonObject &body, NoteReplyHandler handler);
     void applyOrganizationTasks(const QJsonObject &payload);
     // The table paints one page of the catalog at a time (adhoc #24): search
     // and the summary still run over every task, only the rows are bounded.
@@ -3112,9 +3135,9 @@ private:
     void noteActionRunWaiting(int runId, const QString &detail);
     int repoIndexFor(const QString &owner, const QString &name) const;
     // Settings: global variables/secrets editor.
-    void reloadVariablesTable();
-    void addOrEditVariable(bool editSelected);
-    void deleteSelectedVariable();
+    void reloadVariablesList();
+    void addOrEditVariable(const QString &name = QString());
+    void deleteVariable(const QString &name);
     void exportVariables();
     void importVariables();
     void toggleVariablesRevealed();
@@ -3644,14 +3667,15 @@ private:
 
     // --- Coves: encrypted, password-shared file vaults inside a repo ----------
     // A cove is .forkmesh/coves/<slug>.cove (AES-256-GCM, see CoveStore). The team
-    // shares one password out-of-band; entered in repo or global Settings, it
-    // unlocks matching coves. Opening a cove logs it locally and (if the creator
+    // shares one password out-of-band; entered in repo settings, it unlocks
+    // matching legacy coves. Account-scoped coves live in the repository explorer.
+    // Opening a cove logs it locally and (if the creator
     // asked) sends a best-effort live alert back to the creator's node.
     CoveStore coveStoreForRepo(int repoIndex) const;
     QString coveRepoSettingsPrefix(int repoIndex) const; // QSettings key prefix
-    QString rememberedCovePassword(int repoIndex) const; // repo pw, else global
-    bool coveAutoOpenEnabled(int repoIndex) const;       // repo OR global toggle
-    // Try the session cache, then the remembered repo/global passwords. On success
+    QString rememberedCovePassword(int repoIndex) const; // repo password
+    bool coveAutoOpenEnabled(int repoIndex) const;       // repo toggle
+    // Try the session cache, then the remembered repo password. On success
     // fills cove (documents/accessLog), caches the working password, and returns it.
     bool tryUnlockCove(Cove &cove, int repoIndex, QString *passwordOut) const;
     void logCoveAccessLocal(const Cove &cove);           // "log yourself" — local
@@ -3662,9 +3686,8 @@ private:
     void promptCreateCove(int repoIndex);
     void rebuildRepoCovesList();                         // repo Settings list
     QWidget *buildCoveSection();                         // repo Settings "Coves"
-    QWidget *buildCoveGlobalSection();                   // global Settings "Coves"
-    void applyCovePasswordFromSettings(int repoIndex, bool global,
-                                       const QString &password, bool remember);
+    void applyCovePasswordFromSettings(int repoIndex, const QString &password,
+                                       bool remember);
     static QByteArray coveOpenCanonical(const QString &coveId, const QString &creatorKey,
                                         const QString &openerKey, qint64 ts);
     // Apply an edited source/fork URL to the open repo: persist it and repoint
@@ -4629,22 +4652,27 @@ private:
     // waiting agent). Empty = a plain, non-clickable toast.
     void flashMessage(const QString &text, bool error = false,
                       const QString &clickHref = QString(),
-                      int durationSeconds = 0);
+                      int durationSeconds = 0,
+                      const QString &kind = QString());
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
     void queueTopMessage(const QString &text, bool error,
-                         const QString &clickHref = QString()); // park one behind the current toast
+                         const QString &clickHref = QString(),
+                         const QString &kind = QString(),
+                         int durationSeconds = 0); // park one behind the current toast
     void appendTopMessageToPrompt(const QString &text);
     void dismissQueuedTopMessage(quint64 id);
     void renderTopMessageQueue(); // repaint the visible stack of queued notifications
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
-    void positionTopMessageBubble(); // size + anchor the bubble in the bottom-right stack
-    QRect topMessageBubbleRect(); // calculates the bottom-right stack geometry
+    void positionTopMessageBubble(); // size + anchor the bubble above the prompt
+    QRect topMessageBubbleRect(); // calculates the prompt-anchored stack geometry
     void setTopMessagePaused(bool paused); // hover pauses the countdown
     void slideTopMessageOut(); // countdown finished: ease the bubble off the right edge, then advance
-    void showPromptBubble(const QString &prompt); // animate a submitted prompt into a bubble
+    // Animate a submitted prompt into a bubble. When it launched or steered an
+    // agent, the bubble's action opens that exact session.
+    void showPromptBubble(const QString &prompt, int agentSessionId = -1);
     MessageRow *addMessageRow(const ChatMessage &message);
     MessageRow *createMessageRow(const ChatMessage &message,
                                  bool threadContext = false);
@@ -5049,6 +5077,20 @@ private:
     QTimer *m_webSolanaTimer = nullptr;
     QPushButton *m_chatButton = nullptr; // top-bar chat toggle (next to the bell)
     QPushButton *m_tasksNavButton = nullptr;
+    QPushButton *m_notesNavButton = nullptr;
+    QListWidget *m_notesList = nullptr;
+    QLineEdit *m_noteTitle = nullptr;
+    MarkdownEditor *m_noteEditor = nullptr;
+    QComboBox *m_noteStorageMode = nullptr;
+    QCheckBox *m_notePublic = nullptr;
+    QLabel *m_notesStatus = nullptr;
+    QJsonArray m_localNotes;
+    QJsonArray m_cloudNotes;
+    QJsonObject m_selectedNote;
+    QString m_selectedNoteStorage;
+    bool m_notesLoading = false;
+    bool m_noteDirty = false;
+    QTimer *m_noteRefreshTimer = nullptr;
     QTableWidget *m_organizationTasksTable = nullptr;
     QTableWidget *m_organizationTaskQueueTable = nullptr;
     QLineEdit *m_organizationTasksSearch = nullptr;
@@ -5102,10 +5144,10 @@ private:
     // Little crown badge painted over the top-left of the same avatar, shown
     // only while this node is an admin (see updateAdminCrownBadge()).
     QLabel *m_adminCrownBadge = nullptr;
-    QLabel *m_topMessage = nullptr;       // bottom-right success/failure bubble text
+    QLabel *m_topMessage = nullptr;       // prompt-anchored success/failure bubble text
     QFrame *m_topMessageContainer = nullptr; // floating bubble wrapping text + actions
     // Queued notifications are visible beneath the active bubble. As new ones
-    // arrive, this stack grows from the bottom-right corner upwards rather than hiding
+    // arrive, this stack grows upward from the prompt rather than hiding
     // messages behind a "+N more" counter.
     QScrollArea *m_topMessageQueueScroll = nullptr;
     QWidget *m_topMessageQueueContent = nullptr;
@@ -5125,9 +5167,12 @@ private:
     QPushButton *m_topMessageCopy = nullptr;
     QPushButton *m_topMessageSendToPrompt = nullptr;
     QPushButton *m_topMessageClose = nullptr;
+    QLabel *m_topMessageTypeBadge = nullptr;
     QString m_topMessageRaw;              // plain text of the current bubble, for copy/retry
     QString m_topMessageBaseHtml;         // bubble HTML (the whole message; never elided)
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
+    QString m_topMessageKind;             // typed badge on the current notification
+    int m_topMessageAgentSessionId = -1;  // prompt notification's exact agent, if any
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast slides away
     // Pending messages that arrived while another toast was already counting
     // down. They form the visible stack beneath the active toast, then each gets
@@ -5140,6 +5185,7 @@ private:
         bool error = false;
         QString clickHref;
         int durationSeconds = 0; // its full countdown starts when it reaches the top
+        QString kind;
     };
     QList<TopMessageQueueEntry> m_topMessageQueue;
     quint64 m_nextTopMessageQueueId = 1;
@@ -6647,8 +6693,6 @@ private:
     QPushButton *m_covePwRevealBtn = nullptr;// reveal pw (source-of-truth only)
     QCheckBox *m_coveAutoOpenCheck = nullptr;// per-repo auto-open toggle
     QLabel *m_coveEmptyHint = nullptr;
-    QLineEdit *m_coveGlobalPasswordEdit = nullptr; // global Settings password
-    QCheckBox *m_coveGlobalAutoOpenCheck = nullptr;
     // Cove id -> the password that unlocked it this session (memory only). Lets
     // "auto-show" reveal a cove without re-prompting and re-encrypt on save.
     QHash<QString, QString> m_coveSessionPasswords;
@@ -6972,10 +7016,11 @@ private:
     QPushButton *m_actionFixButton = nullptr;
     QComboBox *m_actionFixAgentCombo = nullptr;
     QComboBox *m_actionFixModelCombo = nullptr;
-    // Settings: variables/secrets table.
-    QTableWidget *m_varsTable = nullptr;
-    // When true, the variables table shows secret values in clear text instead
-    // of the masked bullets. Toggled by the Reveal/Hide button.
+    // Settings: full-width variables/secrets list.
+    QWidget *m_varsList = nullptr;
+    QVBoxLayout *m_varsListLayout = nullptr;
+    // When true, the variables list shows secret values in clear text instead
+    // of password masking. Toggled by the Reveal/Hide button.
     bool m_varsRevealed = false;
     QPushButton *m_varsRevealButton = nullptr;
     // Per-repo "run actions on push" toggle. Mirrored repos default off; the

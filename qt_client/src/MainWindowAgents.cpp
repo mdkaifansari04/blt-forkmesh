@@ -18,6 +18,8 @@
 #include <QTextOption>
 #include <QUrl>
 #include <QEvent>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFrame>
 #include <QShowEvent>
 
@@ -1523,26 +1525,26 @@ ActivityRailButton *railActionButton(const QString &icon, const QString &caption
     return button;
 }
 
-// The queue belongs to the list it controls, rather than to a footer that
-// permanently steals vertical space from that list.  Keep it as a child of the
-// table viewport so rows continue underneath it, and re-anchor it whenever the
-// viewport moves or changes size.
+// The fleet bar belongs to the session-list pane, rather than to a footer that
+// permanently steals vertical space from the list. Keep it over that pane's
+// lower-right edge so it stays with the list when the detail pane opens, and
+// re-anchor it whenever the pane changes size.
 class AgentQueueOverlay final : public QFrame
 {
 public:
-    explicit AgentQueueOverlay(QWidget *viewport)
-        : QFrame(viewport), m_viewport(viewport)
+    explicit AgentQueueOverlay(QWidget *pane)
+        : QFrame(pane), m_pane(pane)
     {
         setObjectName(QStringLiteral("agentQueueOverlay"));
         setAttribute(Qt::WA_StyledBackground);
-        if (m_viewport)
-            m_viewport->installEventFilter(this);
+        if (m_pane)
+            m_pane->installEventFilter(this);
     }
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (watched == m_viewport &&
+        if (watched == m_pane &&
             (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
             QTimer::singleShot(0, this, [this] { reposition(); });
         }
@@ -1558,16 +1560,16 @@ protected:
 private:
     void reposition()
     {
-        if (!m_viewport || !isVisible())
+        if (!m_pane || !isVisible())
             return;
         adjustSize();
         constexpr int kMargin = 12;
-        move(qMax(kMargin, m_viewport->width() - width() - kMargin),
-             qMax(kMargin, m_viewport->height() - height() - kMargin));
+        move(qMax(kMargin, m_pane->width() - width() - kMargin),
+             qMax(kMargin, m_pane->height() - height() - kMargin));
         raise();
     }
 
-    QWidget *m_viewport = nullptr;
+    QWidget *m_pane = nullptr;
 };
 
 } // namespace
@@ -1575,8 +1577,10 @@ private:
 QWidget *MainWindow::buildAgentsTab()
 {
     auto *page = new QWidget;
+    page->setObjectName(QStringLiteral("agentsPage"));
 
     auto *listPane = new QWidget;
+    listPane->setObjectName(QStringLiteral("agentsListPane"));
     listPane->setMinimumWidth(260);
     // No heading at all any more (adhoc #224): with the repository band hidden
     // on this tab (updateRepoActivityRail) and the toolbar moved to the pane's
@@ -1703,6 +1707,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentDeleteMergedButton = railActionButton(
         QStringLiteral("trash"), QStringLiteral("Del merged"),
         "Delete the worktree, branch and session of every merged agent");
+    m_agentDeleteMergedButton->setObjectName("agentDeleteMergedButton");
     connect(m_agentDeleteMergedButton, &QPushButton::clicked, this,
             &MainWindow::deleteAllMergedAgentSessions);
 
@@ -1739,6 +1744,7 @@ QWidget *MainWindow::buildAgentsTab()
         QStringLiteral("circle-slash"), QStringLiteral("Stop all"),
         "Stop every running agent and cancel the queued ones. External "
         "Claude Code sessions started outside ForkMesh are left alone.");
+    m_agentStopAllButton->setObjectName("agentStopAllButton");
     connect(m_agentStopAllButton, &QPushButton::clicked, this,
             &MainWindow::stopAllRunningAgents);
 
@@ -1749,16 +1755,83 @@ QWidget *MainWindow::buildAgentsTab()
         QStringLiteral("rocket"), QStringLiteral("Start all"),
         "Resume every stopped or failed agent. Merged sessions and external "
         "Claude Code sessions started outside ForkMesh are left alone.");
+    m_agentStartAllButton->setObjectName("agentStartAllButton");
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
-    // Float the queue above the list's lower-right corner.  It makes live fleet
-    // capacity easy to read without reserving a footer row, while the visible
-    // list continues behind the compact, translucent panel.
-    auto *agentQueueOverlay = new AgentQueueOverlay(m_agentTable->viewport());
+    // Keep every fleet action in one floating bar at the bottom-right of the
+    // session-list pane. Queue capacity, bulk controls, and interactive
+    // provider terminals are all available from one place.
+    auto *agentQueueOverlay = new AgentQueueOverlay(listPane);
     auto *agentQueueLayout = new QHBoxLayout(agentQueueOverlay);
     agentQueueLayout->setContentsMargins(8, 6, 8, 6);
     agentQueueLayout->setSpacing(4);
+
+    auto openProviderTerminal = [this](const QString &program,
+                                       const QString &providerName,
+                                       const QString &dialogObjectName,
+                                       const QString &terminalObjectName) {
+        if (m_headless) {
+            logSystem(QStringLiteral("Cannot open %1 on a headless node.")
+                          .arg(providerName));
+            return;
+        }
+        const QString repoPath = repoGitDir();
+        if (repoPath.isEmpty()) {
+            flashMessage(QStringLiteral("Open a repository before starting %1.")
+                             .arg(providerName),
+                         true);
+            return;
+        }
+
+        auto *dialog = new QDialog(this);
+        dialog->setObjectName(dialogObjectName);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle(QStringLiteral("%1 terminal").arg(providerName));
+        dialog->resize(900, 560);
+        auto *layout = new QVBoxLayout(dialog);
+        auto *notice = new QLabel(
+            QStringLiteral("<b>%1</b> is running in <code>%2</code>.")
+                .arg(providerName.toHtmlEscaped(), repoPath.toHtmlEscaped()),
+            dialog);
+        notice->setWordWrap(true);
+        layout->addWidget(notice);
+        auto *terminal = new TerminalWidget(dialog);
+        terminal->setObjectName(terminalObjectName);
+        layout->addWidget(terminal, 1);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+        connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+        layout->addWidget(buttons);
+        dialog->show();
+        dialog->raise();
+        terminal->runCommand(program, repoPath);
+        terminal->setFocus();
+    };
+
+    auto *claudeTerminalButton = railActionButton(
+        QStringLiteral("terminal"), QStringLiteral("Claude"),
+        "Open Claude Code in a new terminal at this repository");
+    claudeTerminalButton->setObjectName("agentClaudeTerminalButton");
+    connect(claudeTerminalButton, &QPushButton::clicked, this,
+            [openProviderTerminal] {
+                openProviderTerminal(QStringLiteral("claude"),
+                                     QStringLiteral("Claude Code"),
+                                     QStringLiteral("agentClaudeTerminalDialog"),
+                                     QStringLiteral("agentClaudeTerminal"));
+            });
+
+    auto *codexTerminalButton = railActionButton(
+        QStringLiteral("terminal"), QStringLiteral("Codex"),
+        "Open Codex in a new terminal at this repository");
+    codexTerminalButton->setObjectName("agentCodexTerminalButton");
+    connect(codexTerminalButton, &QPushButton::clicked, this,
+            [openProviderTerminal] {
+                openProviderTerminal(QStringLiteral("codex"),
+                                     QStringLiteral("Codex"),
+                                     QStringLiteral("agentCodexTerminalDialog"),
+                                     QStringLiteral("agentCodexTerminal"));
+            });
+
     auto *queueIcon = new QPushButton(agentQueueOverlay);
     queueIcon->setObjectName("agentQueueIcon");
     queueIcon->setFixedSize(24, 28);
@@ -1787,26 +1860,19 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentQueueLimitIncreaseButton, &QPushButton::clicked, this, [this] {
         setAgentConcurrencyLimit(maxRunningAgents() + 1);
     });
+    agentQueueLayout->addWidget(m_agentStartAllButton);
+    agentQueueLayout->addWidget(m_agentStopAllButton);
+    agentQueueLayout->addWidget(m_agentDeleteMergedButton);
+    agentQueueLayout->addWidget(m_agentHideDetailButton);
+    agentQueueLayout->addWidget(claudeTerminalButton);
+    agentQueueLayout->addWidget(codexTerminalButton);
     agentQueueLayout->addWidget(queueIcon);
     agentQueueLayout->addWidget(m_agentQueueLimitDecreaseButton);
     agentQueueLayout->addWidget(m_agentQueueStatusLabel);
     agentQueueLayout->addWidget(m_agentQueueLimitIncreaseButton);
     refreshAgentQueueControls();
 
-    // The remaining bulk actions stay in a compact footer.  The queue itself
-    // lives above the rows, so no search field or queue controls consume width
-    // down here.
-    auto *agentListToolbar = new QHBoxLayout;
-    agentListToolbar->setContentsMargins(10, 2, 10, 8);
-    agentListToolbar->setSpacing(6);
-    agentListToolbar->addWidget(m_agentStartAllButton, 0);
-    agentListToolbar->addWidget(m_agentStopAllButton, 0);
-    agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
-    agentListToolbar->addStretch(1);
-    agentListToolbar->addWidget(m_agentHideDetailButton, 0, Qt::AlignVCenter);
-
     listLayout->addWidget(m_agentTable, 1);
-    listLayout->addLayout(agentListToolbar);
 
     auto *detailPane = new QWidget;
     // Keep the whole title on one line; the detail pane's actual right edge is
@@ -4608,9 +4674,27 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
         return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QSettings settings;
-    auto apply = [&](bool weekly, const QJsonObject &window,
+    auto apply = [&](bool weekly, const QJsonValue &windowValue,
                      const QString &pctKey, const QString &resetKey,
                      const QString &anchorKey) {
+        // The app-server deliberately uses null for a window unavailable to the
+        // current account. Keep a previous account's percentage or reset from
+        // leaking into that empty gauge; an absent key, by contrast, is a
+        // partial update and must leave the last known window untouched.
+        if (windowValue.isNull()) {
+            settings.remove(pctKey);
+            settings.remove(resetKey);
+            settings.remove(anchorKey);
+            settings.setValue(
+                usageExhaustedSetting(QStringLiteral("codex"),
+                                      weekly ? QStringLiteral("weekly")
+                                             : QStringLiteral("5h")),
+                false);
+            return;
+        }
+        if (windowValue.isUndefined())
+            return;
+        const QJsonObject window = windowValue.toObject();
         if (window.isEmpty())
             return;
         const int used = qBound(0, window.value(QStringLiteral("usedPercent")).toInt(),
@@ -4650,22 +4734,24 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
                                          : QStringLiteral("5-hour"),
                                   knownReset);
         }
-        if (m_navCodexUsage) {
-            const qint64 remaining = resetMs - now;
-            static_cast<TokenUsageMiniChart *>(m_navCodexUsage)
-                ->setRemaining(weekly, 100 - used,
-                               remaining > 0
-                                   ? QStringLiteral("resets in %1")
-                                         .arg(humanizeRemaining(remaining))
-                                   : QString());
-        }
     };
-    apply(false, rateLimits.value(QStringLiteral("primary")).toObject(),
+    apply(false, rateLimits.value(QStringLiteral("primary")),
           kCodexUsage5hPctSetting, kCodexUsage5hResetSetting,
           kCodexLimit5hStartSetting);
-    apply(true, rateLimits.value(QStringLiteral("secondary")).toObject(),
+    apply(true, rateLimits.value(QStringLiteral("secondary")),
           kCodexUsageWeekPctSetting, kCodexUsageWeekResetSetting,
           kCodexLimitWeekStartSetting);
+    // Render from the complete cached state only after both windows are
+    // updated. This preserves an existing countdown on partial updates and
+    // derives the local countdown when Codex omits resetsAt.
+    refreshCodexUsageRemaining();
+    if (m_navCodexUsage) {
+        auto *chart = static_cast<TokenUsageMiniChart *>(m_navCodexUsage);
+        if (rateLimits.value(QStringLiteral("primary")).isNull())
+            chart->setRemaining(/*weekly=*/false, -1, QString());
+        if (rateLimits.value(QStringLiteral("secondary")).isNull())
+            chart->setRemaining(/*weekly=*/true, -1, QString());
+    }
     refreshAgentLimitLabel();
 }
 

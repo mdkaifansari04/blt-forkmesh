@@ -25,28 +25,28 @@ export const LANDMARKS = [
   },
   {
     id: "campfire",
-    label: "Campfire circle",
-    shortLabel: "Campfire",
-    eyebrow: "COMMUNITY SEATING / 04",
-    icon: "🔥",
+    label: "Members Center yurt",
+    shortLabel: "Members Center",
+    eyebrow: "COMMUNITY YURT / 04",
+    icon: "⛺",
     color: "#ff9a5a",
     position: [0, 0, 130],
     summary:
-      "The members' fire, where every registered account owns a named bench. Choosing it walks you back to your own seat.",
+      "A large shared yurt represents the complete member community without drawing every account into the scene.",
     metaphor:
-      "A ring of wooden benches around a burning log pile, each plank signed with the name of the member it belongs to.",
+      "Everyone gathers under one round roof around a central hearth and chimney.",
     reality:
-      "Bench names come from the same public account directory the chat roster uses. Sitting is a local pose plus the normal presence broadcast; it grants no access and reveals nothing beyond the position you already share.",
-    status: "Public roster seating",
+      "The entrance plaque reads the public account total and latest member name from the existing directory. Only live visitors render as avatars; the full roster does not create geometry or draw calls.",
+    status: "Fixed-cost community landmark",
     statusTone: "live",
     bullets: [
-      "One named bench per public registered account, kept for the whole session and left visibly empty while its owner is out walking the world.",
-      "Guests, and members the directory has not caught up with, take the open benches the circle always keeps free.",
-      "The ring always leaves a doorway-wide gap facing the town, so anyone can walk in to the fire and back out without stepping over a bench.",
-      "Private profiles and hidden-name visitors are never given a named bench.",
-      "The seated pose is held until you move, so any movement key stands you back up.",
+      "The door shows the total public member count and the latest member name.",
+      "The central fire vents through the chimney in the middle of the roof.",
+      "Member growth updates one sign texture rather than adding benches, labels, logs, or roster avatars.",
+      "Private profiles and hidden-name visitors are never named on the entrance.",
+      "Only people currently sharing live presence appear as avatars nearby.",
     ],
-    primary: { label: "Return to your bench", action: "campfire" },
+    primary: { label: "Visit the Members Center", action: "campfire" },
   },
   {
     id: "repositories",
@@ -86,7 +86,7 @@ export const LANDMARKS = [
     summary:
       "A ten-story team campus connected to the World by a walkable bridge.",
     metaphor:
-      "A glass tower with a staffed lobby, team floors, an elevator, and a rooftop observatory.",
+      "An office tower with a staffed lobby, team floors, an elevator, and a rooftop observatory.",
     reality:
       "Building admission is open to every visitor. Elevator grants come from server-verified organization team membership; avatar position never grants private data access.",
     status: "Open lobby · team floors",
@@ -325,82 +325,12 @@ export const WORLD_REGIONS = [
   { id: "west", label: "West Campus", phase: "Local daylight view" },
 ];
 
-export const FOCUS_MUSIC_TRACKS = Object.freeze([
-  Object.freeze({
-    id: "cosmic-waves",
-    name: "Cosmic Waves",
-    artist: "HoliznaCC0",
-    duration: "33:04",
-    trackUrl: "/assets/music/cosmic-waves.ogg",
-    sourceUrl:
-      "https://freemusicarchive.org/music/holiznacc0/space-sleep-meditation/cosmic-waves/",
-    license: "CC0 1.0",
-    licenseUrl: "https://creativecommons.org/publicdomain/zero/1.0/",
-  }),
-  Object.freeze({
-    id: "dreamscape",
-    name: "DreamScape",
-    artist: "HoliznaCC0",
-    duration: "21:59",
-    trackUrl: "/assets/music/dreamscape.ogg",
-    sourceUrl:
-      "https://freemusicarchive.org/music/holiznacc0/space-sleep-meditation/dreamscape/",
-    license: "CC0 1.0",
-    licenseUrl: "https://creativecommons.org/publicdomain/zero/1.0/",
-  }),
-  Object.freeze({
-    id: "too-brief-a-time",
-    name: "Too Brief A Time To Be Anything",
-    artist: "HoliznaCC0",
-    duration: "45:00",
-    trackUrl: "/assets/music/too-brief-a-time.ogg",
-    sourceUrl:
-      "https://freemusicarchive.org/music/holiznacc0/space-sleep-meditation/too-brief-a-time-to-be-anything/",
-    license: "CC0 1.0",
-    licenseUrl: "https://creativecommons.org/publicdomain/zero/1.0/",
-  }),
-]);
-
-export const RADIO_STATIONS = [
-  {
-    id: "forkmesh-song",
-    name: "ForkMesh Forever (Indie Pop)",
-    provider: "ForkMesh",
-    description:
-      "The project’s own song, hosted by ForkMesh. It plays on this device only after you press the button; nothing autoplays and no stream is relayed.",
-    playMode: "hosted",
-    actionLabel: "Listen to the ForkMesh song",
-    trackUrl: "/assets/songs/ForkMeshForever(IndiePop).mp3",
-    homepageUrl:
-      "https://github.com/forkmesh/forkmesh/blob/main/docs/world-soundtrack-license.md",
-  },
-  {
-    id: "forkmesh-focus",
-    name: "ForkMesh Focus Tones",
-    provider: "ForkMesh",
-    description:
-      "Original four-hour local procedural score under CC0-1.0; no streamed media or shared-clock synchronization.",
-    playMode: "generated",
-    homepageUrl:
-      "https://github.com/forkmesh/forkmesh/blob/main/docs/world-soundtrack-license.md",
-  },
-  {
-    id: "somafm-groovesalad",
-    name: "Groove Salad",
-    provider: "SomaFM",
-    description: "Ambient and downtempo instrumental grooves.",
-    playMode: "external",
-    homepageUrl: "https://somafm.com/groovesalad/",
-  },
-  {
-    id: "somafm-defcon",
-    name: "DEF CON Radio",
-    provider: "SomaFM",
-    description: "Music for hacking, coding, and security workshops.",
-    playMode: "external",
-    homepageUrl: "https://somafm.com/defcon/",
-  },
-];
+export const FORKMESH_SONG = Object.freeze({
+  name: "ForkMesh Forever (Indie Pop)",
+  trackUrl: "/assets/songs/ForkMeshForever(IndiePop).mp3",
+  licenseUrl:
+    "https://github.com/forkmesh/forkmesh/blob/main/docs/world-soundtrack-license.md",
+});
 
 export function landmarkById(id) {
   return LANDMARKS.find((landmark) => landmark.id === id) || LANDMARKS[0];

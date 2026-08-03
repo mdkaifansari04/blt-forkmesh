@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Split repository work panels and compact exhibit layout."""
+"""Repository dome and focused-workbench presentation contracts."""
 
 from pathlib import Path
 
@@ -11,81 +11,39 @@ APP = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
 CSS = (ROOT / "public" / "world" / "world.css").read_text(encoding="utf-8")
 
 
-def test_repository_issues_and_pulls_have_separate_left_right_panels():
+def test_repository_circle_is_enclosed_by_a_geodesic_dome():
+    dome = SCENE[
+        SCENE.index("function createRepositoryGeodesicDome("):
+        SCENE.index("function createRepositoryDistrict(")
+    ]
+    district = SCENE[
+        SCENE.index("function createRepositoryDistrict("):
+        SCENE.index("function createOrganizationQuarter(")
+    ]
+    assert "const REPOSITORY_DOME_RADIUS = REPOSITORY_GROUND_RADIUS - 1.5" in SCENE
+    assert "const REPOSITORY_DOME_DETAIL = 2" in SCENE
+    assert 'dome.name = "repository-geodesic-dome"' in dome
+    assert "new THREE.IcosahedronGeometry(" in dome
+    assert "new THREE.InstancedMesh(" in dome
+    assert 'struts.name = "repository-geodesic-dome-struts"' in dome
+    assert "struts.computeBoundingSphere();" in dome
+    assert 'foundation.name = "repository-geodesic-dome-foundation"' in dome
+    assert "const dome = createRepositoryGeodesicDome(THREE);" in district
+    assert "group.add(dome);" in district
+
+
+def test_repository_refresh_no_longer_feeds_the_tall_pr_and_issue_lists():
+    refresh = APP[
+        APP.index("  syncRepositoryScene() {"):
+        APP.index("  repositoryTreeSizePreview(")
+    ]
     desk = SCENE[
         SCENE.index("function updateRepositoryRecordDesk("):
         SCENE.index("function setRepositoryIssuePageExpanded(")
     ]
-    assert "const pullBoard = addRecordBoard(" in desk
-    assert 'pulls,\n      "pull",\n      -7.75,' in desk
-    assert 'issues,\n      "issue",\n      7.75,' in desk
-    assert '"combined"' not in desk
-    assert "repository-${kind}-open-count:" in desk
-
-
-def test_each_repository_panel_uses_one_total_count_height_record_column():
-    desk = SCENE[
-        SCENE.index("function updateRepositoryRecordDesk("):
-        SCENE.index("function setRepositoryIssuePageExpanded(")
-    ]
-    assert "const rowPitch = 0.52;" in desk
-    assert "const boardHeight = 0.74 + rows * rowPitch;" in desk
-    assert "const rows = Math.max(1, allItems.length);" in desk
-    assert "const towerSlot = pageInfo.start + index;" in desk
-    assert "repository-${kind}-tower-slots:" in desk
-    assert "const cardX = 0;" in desk
-    assert "new THREE.PlaneGeometry(3.78, 0.46)" in desk
-    assert "items.length > 13 ? 2 : 1" not in desk
-
-
-def test_repository_lists_read_chronologically_downward_with_counts_below():
-    desk = SCENE[
-        SCENE.index("function updateRepositoryRecordDesk("):
-        SCENE.index("function setRepositoryIssuePageExpanded(")
-    ]
-    assert ".slice(pageInfo.start, pageInfo.end)" in desk
-    assert ".reverse();" not in desk
-    assert "right.updatedAt || right.createdAt || right.number" in desk
-    assert "right.createdAt || right.number" in desk
-    assert "const boardBottomY = groundY + 2.62;" in desk
-    assert "groundY + 1.75" in desk
-    assert "groundY + 0.7" in desk
-    assert "groundY + boardHeight + 1.72" not in desk
-
-
-def test_repository_panels_do_not_add_ground_view_placards():
-    desk = SCENE[
-        SCENE.index("function updateRepositoryRecordDesk("):
-        SCENE.index("function setRepositoryIssuePageExpanded(")
-    ]
-    assert "repository-${kind}-viewing-pad:" not in desk
-    assert '"FIRST PERSON"' not in desk
-    assert "repositoryViewingPad" not in SCENE
-
-
-def test_repository_cards_clip_text_to_their_physical_bounds():
-    issue = SCENE[
-        SCENE.index("function repositoryIssueCardTexture"):
-        SCENE.index("function repositoryPullCardTexture")
-    ]
-    pull = SCENE[
-        SCENE.index("function repositoryPullCardTexture"):
-        SCENE.index("const REPOSITORY_FOLLOWER_ACCENTS")
-    ]
-    assert issue.count("clipCanvasText") >= 2
-    assert pull.count("clipCanvasText") >= 3
-
-
-def test_counts_are_large_open_only_headers_and_paging_is_at_panel_bottom():
-    assert "function repositoryRecordCountTexture(" in SCENE
-    assert '"OPEN ISSUES"' in SCENE
-    assert '"OPEN PRS"' in SCENE
-    assert 'context.font = \'900 205px "ForkMesh Mono"' in SCENE
-    assert 'String(item?.state || "").toLowerCase() === "open"' in SCENE
-    assert "function repositoryRecordPageTexture(" in SCENE
-    assert "groundY + 1.75" in SCENE
-    assert "groundY + 0.7" in SCENE
-    assert "groundY + boardHeight + 2.04" not in SCENE
+    assert "updateRepositoryRecordDesk" not in refresh
+    assert desk.index("return;") < desk.index("const owner")
+    assert "repository-record-desk" not in desk[:desk.index("return;")]
 
 
 def test_repo_exhibit_has_an_angled_named_pedestal_without_an_agent_control_dock():
@@ -100,7 +58,7 @@ def test_repo_exhibit_has_an_angled_named_pedestal_without_an_agent_control_dock
     assert "repository-agent-robot-arm:" not in SCENE
     assert "repository-agent-terminal-screen:" not in SCENE
     assert "repositoryAgentTasksByRepository" in SCENE
-    assert "task.status === \"running\"" in SCENE
+    assert 'task.status === "running"' in SCENE
 
 
 def test_agent_and_fediverse_counts_share_the_repository_placard():
@@ -119,7 +77,6 @@ def test_agent_and_fediverse_counts_share_the_repository_placard():
     assert "repositoryAgentTasksByRepository.get(repositoryKey)" in activity
     assert "portalRecord?.record?.fediverseFollowerCount" in activity
     assert "{ runningAgents, fediverseFollowers }" in activity
-    # Counts no longer float as separate labels beside the robot dock or ring.
     assert "repository-agent-control-label:" not in SCENE
     assert "repository-fediverse-follower-caption:" not in SCENE
 

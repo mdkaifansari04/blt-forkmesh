@@ -423,7 +423,7 @@ QWidget *MainWindow::buildChatPage()
     for (int index = 3; index <= 8; ++index)
         addDeferredSection();
     m_sectionStack->addWidget(new QWidget);              // 9 retired Firewall redirect
-    for (int index = 10; index <= 15; ++index)
+    for (int index = 10; index <= 16; ++index)
         addDeferredSection();
     logStartup(QStringLiteral("  buildChatPage: secondary sections deferred"));
 
@@ -505,7 +505,8 @@ QWidget *MainWindow::buildChatPage()
     // directly above Pings (adhoc #97).
     for (QPushButton *button :
          {m_settingsNavButton, m_logNavButton, m_navScreenshotButton,
-          m_navResizeButton, m_tasksNavButton, m_notificationButton})
+          m_navResizeButton, m_notesNavButton, m_tasksNavButton,
+          m_notificationButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
 
     // The account avatar is intentionally the bottom-most rail destination. It
@@ -1118,7 +1119,8 @@ QWidget *MainWindow::buildNetworkLogDock()
             recordQuickAddHistory(typed);
         m_issueQuickAdd->clear();
         clearQuickAddImages();
-        showPromptBubble(prompt);
+        const int agentSessionId = m_selectedAgentSessionId;
+        showPromptBubble(prompt, agentSessionId);
         sendPromptToSelectedAgent(prompt);
     });
 
@@ -2198,10 +2200,7 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // Rows read as the bare model name (adhoc #1204): "Opus 5", not "Opus 5 · Claude
 // Code". Which CLI runs a model follows from the model, so the suffix was the
 // same handful of words repeated down the whole menu; the tooltip still carries
-// it. Models are ordered strongest-first by agentModelPowerRank(), and the
-// superseded/small-sibling ones agentModelIsMinorTier() flags are left out
-// entirely — except when one of them is the live selection, which must stay
-// visible or picking it once would make it unpickable again.
+// it. Models are ordered strongest-first by agentModelPowerRank().
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -2224,19 +2223,14 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         QString model;
         QString agentName; // which CLI/API runs it, for the tooltip
         int rank = 0;      // higher sorts nearer the top
-        bool minor = false;
     };
     QList<Choice> models;
-    auto addModel = [&models, selectedProvider, selectedModel](
+    auto addModel = [&models](
                         const QIcon &icon, const QString &label,
                         const QString &provider, const QString &model,
                         const QString &agentName) {
-        const bool isSelection =
-            provider == selectedProvider &&
-            (selectedModel.isEmpty() || model == selectedModel);
         models.append(Choice{icon, label, provider, model, agentName,
-                             agentModelPowerRank(model, label),
-                             !isSelection && agentModelIsMinorTier(model, label)});
+                             agentModelPowerRank(model, label)});
     };
 
     QComboBox claudeModels;
@@ -2292,8 +2286,6 @@ void MainWindow::refreshQuickAddAgentModelSelector()
               QStringLiteral("File an issue from this prompt instead of "
                              "starting an agent"));
     for (const Choice &choice : models) {
-        if (choice.minor)
-            continue;
         addChoice(choice.icon, choice.label, choice.provider, choice.model,
                   QStringLiteral("%1 · %2").arg(choice.label, choice.agentName));
     }
@@ -5592,6 +5584,18 @@ QWidget *MainWindow::buildBreadcrumb()
         showSection(kOrganizationTasksSectionIndex);
     });
 
+    m_notesNavButton = new ActivityRailButton(QStringLiteral("note"),
+                                              QStringLiteral("Notes"));
+    m_notesNavButton->setObjectName("notesNavButton");
+    m_notesNavButton->setCheckable(true);
+    m_notesNavButton->setCursor(Qt::PointingHandCursor);
+    m_notesNavButton->setToolTip(QStringLiteral("Local and cloud Markdown notes"));
+    setOcticon(m_notesNavButton, "note", 16);
+    m_navGroup->addButton(m_notesNavButton, kNotesSectionIndex);
+    connect(m_notesNavButton, &QPushButton::clicked, this, [this] {
+        showSection(kNotesSectionIndex);
+    });
+
     m_breadcrumb = new QLabel;
     m_breadcrumb->setObjectName("breadcrumb");
     m_breadcrumb->setTextFormat(Qt::RichText);
@@ -5622,7 +5626,7 @@ QWidget *MainWindow::buildBreadcrumb()
             &MainWindow::showNotifications);
 
     // Compact success/failure bubble. It is parented to the window rather than a
-    // layout, allowing notifications to stay in the bottom-right stack without
+    // layout, allowing notifications to stay above the prompt without
     // shifting the prompt or the live-log footer.
     m_topMessage = new QLabel;
     m_topMessage->setObjectName("topMessageText");
@@ -5675,8 +5679,18 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageSendToPrompt->setFocusPolicy(Qt::NoFocus);
     setOcticon(m_topMessageSendToPrompt, "paper-airplane", 13);
     m_topMessageSendToPrompt->hide();
-    connect(m_topMessageSendToPrompt, &QPushButton::clicked, this,
-            [this] { appendTopMessageToPrompt(m_topMessageRaw); });
+    connect(m_topMessageSendToPrompt, &QPushButton::clicked, this, [this] {
+        if (m_topMessageAgentSessionId > 0) {
+            switchToAgentsTab(m_topMessageAgentSessionId);
+            return;
+        }
+        appendTopMessageToPrompt(m_topMessageRaw);
+    });
+
+    m_topMessageTypeBadge = new QLabel;
+    m_topMessageTypeBadge->setObjectName("topMessageTypeBadge");
+    m_topMessageTypeBadge->setFocusPolicy(Qt::NoFocus);
+    m_topMessageTypeBadge->hide();
 
     // Dim countdown / queue / paused text. It used to be appended to the message
     // itself; on its own row it can never push the message into an ellipsis.
@@ -5751,6 +5765,7 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *topMessageActionRow = new QHBoxLayout(m_topMessageActions);
     topMessageActionRow->setContentsMargins(0, 0, 0, 0);
     topMessageActionRow->setSpacing(4);
+    topMessageActionRow->addWidget(m_topMessageTypeBadge);
     topMessageActionRow->addWidget(m_topMessageMeta);
     topMessageActionRow->addStretch(1);
     topMessageActionRow->addWidget(m_topMessageCopy);
@@ -5766,15 +5781,16 @@ QWidget *MainWindow::buildBreadcrumb()
                             static_cast<QWidget *>(m_topMessageScroll),
                             static_cast<QWidget *>(m_topMessageScroll->viewport()),
                             static_cast<QWidget *>(m_topMessageActions),
+                            static_cast<QWidget *>(m_topMessageTypeBadge),
                             static_cast<QWidget *>(m_topMessageMeta),
                             static_cast<QWidget *>(m_topMessageCopy),
                             static_cast<QWidget *>(m_topMessageSendToPrompt),
                             static_cast<QWidget *>(m_topMessageClose)})
         widget->installEventFilter(this);
 
-    // One geometry animation drives both the composer-to-bubble arrival and the
-    // slide-off exit. The bubble never fades: it stays fully readable for the
-    // whole countdown and only then leaves, so nothing dims out mid-read.
+    // The geometry animation handles the slide-off and the short notification
+    // entry. Prompt submissions themselves are placed directly above the
+    // composer, so they never cover it.
     m_topMessageFlight = new QPropertyAnimation(m_topMessageContainer, "geometry", this);
     m_topMessageFlight->setDuration(260);
     m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
@@ -8900,6 +8916,7 @@ void MainWindow::ensureSectionBuilt(int index)
     case 12: section = buildNetworkDiagnosticsSection(); break;
     case 14: section = buildControlNodeSection(); break;
     case 15: section = buildOrganizationTasksSection(); break;
+    case 16: section = buildNotesSection(); break;
     default: break;
     }
     if (!section)
@@ -8979,6 +8996,8 @@ void MainWindow::showSection(int index)
         refreshControlNode();
     } else if (index == kOrganizationTasksSectionIndex) {
         refreshOrganizationTasks();
+    } else if (index == kNotesSectionIndex) {
+        refreshNotes();
     }
 }
 
