@@ -3067,6 +3067,28 @@ test("Office lobby marine aquarium is visible, ambient, and animated", async ({
   expect(second.lightIntensity).not.toBe(first.lightIntensity);
 });
 
+test("aquarium fish render only while visiting the Office", async ({ page }) => {
+  await prepareWorldPage(page, "office-aquarium-fish-visibility");
+  await waitForWorld(page);
+  const visibility = await page.locator("forkmesh-world").evaluate((shell) => {
+    const aquarium = shell.world.scene.getObjectByName(
+      "forkmesh-office-marine-aquarium",
+    );
+    const batches = () => [
+      "forkmesh-office-aquarium-user-fish-bodies",
+      "forkmesh-office-aquarium-user-fish-tails",
+      "forkmesh-office-aquarium-user-fish-fins",
+    ].map((name) => aquarium.getObjectByName(name).visible);
+    const outside = batches();
+    shell.world.enterOfficeLobby({ floorId: "lobby" });
+    const inside = batches();
+    return { outside, inside };
+  });
+
+  expect(visibility.outside).toEqual([false, false, false]);
+  expect(visibility.inside).toEqual([true, true, true]);
+});
+
 test("reef controls stay tank-mounted and report a live country school", async ({
   page,
 }) => {
