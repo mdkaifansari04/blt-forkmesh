@@ -850,6 +850,20 @@ void MainWindow::loadRepositories()
             repo.publicArchiveId.clear();
         repo.publishToNetwork = settings.value("publishToNetwork").toBool();
         repo.isPrivate = settings.value("isPrivate").toBool();
+        // Public repositories are durable plaintext bare mirrors. Older
+        // releases persisted only publicArchiveId and recreated mirrorPath as
+        // a temporary age materialization; give those records their stable
+        // managed path now so the next sync can migrate them in place.
+        if (!repo.isPrivate && repo.mirrorPath.trimmed().isEmpty() &&
+            !repo.owner.trimmed().isEmpty() && !repo.name.trimmed().isEmpty()) {
+            repo.mirrorPath = repositoryMirrorRoot() + "/" +
+                              repoSegment(repo.owner,
+                                          QStringLiteral("owner")) +
+                              "-" +
+                              repoSegment(repo.name,
+                                          QStringLiteral("repository")) +
+                              ".git";
+        }
         // Default off for mirrored repos (owner isn't this node); on for repos
         // this node owns. Explicitly stored values always win.
         repo.actionsEnabled =
@@ -982,12 +996,12 @@ void MainWindow::saveRepositories() const
         settings.setValue("solanaAddress", repo.solanaAddress);
         // A private mirror path is an owner-only runtime materialization. Once
         // an opaque encrypted replica exists, never persist that temporary
-        // plaintext path. A legacy path is retained only until the first
-        // authenticated sealing pass can migrate and remove it safely.
+        // plaintext path. Public repositories intentionally persist their
+        // protected bare path; publicArchiveId is only a migration marker from
+        // releases that encrypted public data unnecessarily.
         settings.setValue(
             "mirrorPath",
-            (!repo.privateReplicaId.isEmpty() ||
-             !repo.publicArchiveId.isEmpty())
+            !repo.privateReplicaId.isEmpty()
                 ? QString()
                 : repo.mirrorPath);
         settings.setValue("privateReplicaId", repo.privateReplicaId);
@@ -2537,9 +2551,8 @@ QWidget *MainWindow::buildRepoSettingsTab()
         m_repositories[m_repoDetailIndex].isPrivate = on;
         saveRepositories();
         // Remove the old visibility from the direct gateway immediately. The
-        // current temporary materialization stays alive only long enough to
-        // seal the replacement format; it is never promoted to durable
-        // plaintext.
+        // The current public bare mirror is removed from serving before a
+        // private replacement is sealed.
         QString gatewayError;
         rebuildDirectMirrorGatewayConfiguration(
             &gatewayError, true);
@@ -2548,7 +2561,7 @@ QWidget *MainWindow::buildRepoSettingsTab()
                            m_repositories.at(m_repoDetailIndex).owner,
                            m_repositories.at(m_repoDetailIndex).name));
         // A private transition must seal/migrate before any private catalog
-        // record exists. Public transition rebuilds an official-age archive.
+        // record exists. A public transition rebuilds the plaintext bare mirror.
         if (on)
             syncPrivateRepository(m_repoDetailIndex, /*quiet=*/false);
         else
@@ -3553,7 +3566,7 @@ void MainWindow::stopRepoHosts()
 
 void MainWindow::startRepoHosts()
 {
-    // The per-repository persistent socket is retired. Public and encrypted
+    // The per-repository persistent socket is retired. Public and private
     // repository bytes use direct HTTPS, while the /api/sync drain carries
     // small control-plane changes — now pushed live over the per-owner node
     // event socket, with the bounded poll as the fallback. Publish/settings
@@ -5160,7 +5173,7 @@ void MainWindow::syncMirrorsBehindRoster()
 {
     // A peer just (re-)advertised its mirror set via hello. For every repo we
     // mirror, if any online peer advertises a commit our bare mirror does not
-    // contain, pull it now rather than waiting for the one-minute auto-sync.
+    // contain, pull it now rather than waiting for the safety sync.
     // This backstops notifyMirrorUpdated (which is ephemeral and missed if we
     // were offline/just connected): the moment the roster shows the source
     // moved, we converge. syncRepository fetches refs/heads/* + refs/tags/*,
@@ -5329,11 +5342,35 @@ void MainWindow::propagateRepoUpdate(int index)
     // already paints synchronously the instant a commit lands.
     if (index == m_repoDetailIndex)
         refreshRepoSyncIndicators();
+    // The working copy is authoritative and already has the new objects. Fan
+    // its refs out before the local bare-mirror fetch starts so SSH-fed mirrors
+    // can begin their lightweight refresh immediately.
+    pushToSshMirrorRemotes(index);
+
+    // Desktop peers use the relay frame as their primary wake-up. Announce the
+    // exact working-copy tip now; their fetch is safe to retry while the public
+    // gateway catches up, and the five-second safety pass below closes any
+    // short race without returning to minute-scale polling.
+    QByteArray commitBytes;
+    QString commit;
+    if (runGitCapture(repo.localPath,
+                      {QStringLiteral("rev-parse"),
+                       QStringLiteral("--verify"),
+                       QStringLiteral("HEAD^{commit}")},
+                      &commitBytes, nullptr)) {
+        commit = QString::fromUtf8(commitBytes).trimmed();
+    }
+    if (m_backend && !commit.isEmpty()) {
+        m_backend->notifyMirrorUpdated(
+            catalogOwner(repo) + "/" +
+                repoSegment(repo.name, QStringLiteral("repository")),
+            commit);
+    }
     // syncRepository fetches the bare mirror from the local working copy, so the
     // just-committed issue/PR lands in the mirror. On a detected change it
     // refreshes the open detail (updating the Issues/PR counts) and broadcasts
     // notifyMirrorUpdated, which mirroring peers act on via onPeerMirrorUpdated —
-    // converging everyone in seconds rather than at the next one-minute tick.
+    // converging everyone in seconds rather than at the next safety tick.
     syncRepository(index, /*quiet=*/true);
     // The mirror fetch above is asynchronous; until it finishes our working copy
     // is ahead of the bare mirror we serve. Refresh the Mirror nodes panel now so
@@ -5402,7 +5439,7 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     }
 
     // Converge promptly: pull the peer's advance into our own mirror now instead
-    // of waiting for the next one-minute auto-sync. This fetches
+    // of waiting for the next safety sync. This fetches
     // refs/heads/* and refs/tags/*, so issues and pull requests (which live on
     // refs/heads) come along with the code. Quiet so it doesn't spam unless
     // something changed. The sync's completion broadcasts notifyMirrorSynced,
@@ -6467,8 +6504,8 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
             // materialization is already alive, retaining that exact checkout
             // is the complete sync. Reopening the same large archive used to
             // emit a new advert and feed back into another sync request.
-            if (!managedCheckoutSource && !source.isEmpty() &&
-                openMaterialization && openMaterialization->isValid() &&
+            if (!source.isEmpty() && openMaterialization &&
+                openMaterialization->isValid() &&
                 PublicMirrorRuntime::isArchiveId(existingArchiveId)) {
                 progress(QStringLiteral(
                     "Checking whether the open encrypted mirror is current…"));
@@ -6747,12 +6784,13 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
 
 // Push the served bare mirror's stable refs (heads + tags) to every ssh://
 // push remote configured on the working copy — e.g. the ssh.<worker> Git
-// gateway feeding the headless mirror fleet, whose post-receive hook re-seals
+// gateway feeding the headless mirror fleet, whose post-receive hook refreshes
 // and republishes each mirror. The relay's "mirror-update" websocket frame
 // only reaches desktop peers in the live room; without this push the SSH-fed
 // mirrors sat frozen at whatever the owner last pushed by hand (adhoc #272).
-// Best-effort and fully async; runs after every successful mirror sync, so the
-// one-minute auto-sync doubles as the self-heal for a push a gateway missed.
+// Best-effort and fully async; runs immediately for source changes and after
+// every successful mirror sync, so the five-second safety pass also self-heals
+// a push the gateway missed.
 void MainWindow::pushToSshMirrorRemotes(int index)
 {
     (void)pushToSshMirrorRemotes(index, /*userInitiated=*/false, QString());
@@ -6772,20 +6810,9 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
     if (repo.previewOnly || repo.isPrivate ||
         repo.localPath.trimmed().isEmpty())
         return 0;
-    // A source-of-truth repository has no on-disk served mirror: it publishes
-    // through the sealed encrypted archive, and its record keeps mirrorPath
-    // empty. Requiring one silently disabled every SSH-fed gateway for exactly
-    // the repository that feeds them, so mirror2/mirror3 froze at whatever
-    // commit the last manual push left while their catalog lease stayed fresh.
-    // Fall back to the working copy, which holds the same heads and tags.
-    const bool releaseFanout = userInitiated && !releaseTag.trimmed().isEmpty();
-    const QString pushSource =
-        releaseFanout
-            ? repo.localPath
-            : ((!repo.mirrorPath.trimmed().isEmpty() &&
-                QDir(repo.mirrorPath).exists())
-                   ? repo.mirrorPath
-                   : repo.localPath);
+    // Always push from the authoritative working copy so a just-created commit
+    // starts the SSH fan-out before the local bare mirror fetch finishes.
+    const QString pushSource = repo.localPath;
     if (!QDir(pushSource).exists())
         return 0;
     const QString repoKey = repo.owner + "/" + repo.name;
@@ -6946,7 +6973,7 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
         // divergent ref while advancing every safe ref, and the next sync retries
         // it after the source converges. An intentional rewrite or branch
         // deletion must go through an explicit, reviewed Git operation;
-        // otherwise one stale one-minute sync can undo a clean main merge on
+        // otherwise one stale safety sync can undo a clean main merge on
         // every headless mirror.
         trackProcessActivity(process, QStringLiteral("push"),
                              QStringLiteral("Pushing %1/%2 to %3")
@@ -6974,9 +7001,20 @@ void MainWindow::syncRepository(int index, bool quiet)
         syncPrivateRepository(index, quiet);
         return;
     }
-    if (!preview) {
-        syncPublicEncryptedRepository(index, quiet);
-        return;
+    if (!preview && (repo.mirrorPath.trimmed().isEmpty() ||
+                     PublicMirrorRuntime::isArchiveId(
+                         repo.publicArchiveId))) {
+        // Public mirrors no longer pay the age seal/materialize cost. Migrate
+        // every legacy encrypted record onto its deterministic durable bare
+        // repository; the normal clone/fetch completion below removes the old
+        // ciphertext only after this replacement is usable.
+        repo.mirrorPath = repositoryMirrorRoot() + "/" +
+                          repoSegment(repo.owner,
+                                      QStringLiteral("owner")) +
+                          "-" +
+                          repoSegment(repo.name,
+                                      QStringLiteral("repository")) +
+                          ".git";
     }
     if (!QDir().mkpath(QFileInfo(repo.mirrorPath).absolutePath())) {
         if (!quiet)
@@ -7093,9 +7131,8 @@ void MainWindow::syncRepository(int index, bool quiet)
 // one being waited on.
 //
 // Every sync path has to call this, not just the preview one: a brand-new
-// install mirrors the flagship as a normal public repo, so it lands in
-// syncPublicEncryptedRepository and the auto-select never fired at all
-// (adhoc #116).
+// install mirrors the flagship as a normal public repo, so every normal public
+// clone/fetch completion must reach this helper (adhoc #116).
 bool MainWindow::completePendingRepoAutoOpen(int index)
 {
     if (index < 0 || index >= m_repositories.size() ||
@@ -7214,6 +7251,30 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         const bool changed =
                             !hasMirror || *afterDigest != beforeDigest;
                         repo.lastSyncMs = QDateTime::currentMSecsSinceEpoch();
+                        if (!stillPreview && !repo.isPrivate &&
+                            PublicMirrorRuntime::isArchiveId(
+                                repo.publicArchiveId)) {
+                            const QString archiveId = repo.publicArchiveId;
+                            m_publicMirrorMaterializations.remove(archiveId);
+                            const bool ciphertextRemoved = QFile::remove(
+                                PublicMirrorRuntime::ciphertextPath(
+                                    publicArchiveRoot(), archiveId));
+                            const bool metadataRemoved = QFile::remove(
+                                QDir(publicArchiveRoot())
+                                    .filePath(archiveId +
+                                              QStringLiteral(".json")));
+                            repo.publicArchiveId.clear();
+                            logSystem(QStringLiteral(
+                                          "Public mirror: migrated %1/%2 to "
+                                          "plaintext storage; legacy age "
+                                          "archive cleanup %3.")
+                                          .arg(repo.owner, repo.name,
+                                               (ciphertextRemoved ||
+                                                metadataRemoved)
+                                                   ? QStringLiteral("completed")
+                                                   : QStringLiteral(
+                                                         "was already complete")));
+                        }
                         if (!stillPreview)
                             saveRepositories();
                         refreshRepositoryList();

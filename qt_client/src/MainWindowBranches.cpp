@@ -493,8 +493,8 @@ namespace {
 // pipe per standard channel plus the child watcher), so an unbounded fan-out
 // walks straight through the 1024-descriptor soft limit and the whole process
 // starts failing with "QProcess: Cannot create pipe (Too many open files)" —
-// including work that has nothing to do with git, such as the age/tar pipeline
-// behind the encrypted public mirror. Cap what is in flight and queue the rest;
+// including unrelated sync and network work. Cap what is in flight and queue
+// the rest;
 // every callback here already re-checks generation counters and widget pointers
 // before touching the UI, so a read that starts late is safe.
 constexpr int kMaxDetachedGitInFlight = 12;

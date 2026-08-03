@@ -56,7 +56,7 @@
     "healthSignerCommand": {"$ref": "#/$defs/command"},
     "mergeExecutorCommand": {
       "$ref": "#/$defs/command",
-      "description": "Required when an encrypted public repository explicitly enables merge-pull; receives only typed bounded JSON on stdin."
+      "description": "Required when a public repository explicitly enables merge-pull; receives only typed bounded JSON on stdin."
     },
     "actionsSummaryPath": {
       "type": "string",
@@ -90,7 +90,7 @@
         "oneOf": [
           {"$ref": "#/$defs/privateRepository"},
           {"$ref": "#/$defs/disabledPublicRepository"},
-          {"$ref": "#/$defs/encryptedPublicRepository"}
+          {"$ref": "#/$defs/publicRepository"}
         ]
       }
     }
@@ -184,7 +184,7 @@
         }
       ]
     },
-    "encryptedPublicRepository": {
+    "publicRepository": {
       "allOf": [
         {"$ref": "#/$defs/identity"},
         {
@@ -195,7 +195,7 @@
             "name",
             "visibility",
             "enabled",
-            "encryptedArchive",
+            "gitDir",
             "integrity"
           ],
           "properties": {
@@ -206,32 +206,7 @@
             "releaseStore": {"type": "string", "minLength": 1},
             "integrity": {"$ref": "#/$defs/integrity"},
             "operations": {"$ref": "#/$defs/operations"},
-            "encryptedArchive": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "scheme",
-                "ciphertextPath",
-                "ciphertextSha256",
-                "keyReference",
-                "materializeCommand"
-              ],
-              "properties": {
-                "scheme": {
-                  "const": "age-encrypted-tar-v1"
-                },
-                "ciphertextPath": {"type": "string", "minLength": 1},
-                "ciphertextSha256": {
-                  "type": "string",
-                  "pattern": "^[0-9a-f]{64}$"
-                },
-                "keyReference": {
-                  "type": "string",
-                  "pattern": "^[A-Za-z0-9._:/@+-]{3,240}$"
-                },
-                "materializeCommand": {"$ref": "#/$defs/command"}
-              }
-            }
+            "gitDir": {"type": "string", "pattern": "^/", "minLength": 2}
           }
         }
       ]

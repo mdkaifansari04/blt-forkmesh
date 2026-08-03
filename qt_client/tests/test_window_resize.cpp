@@ -479,7 +479,7 @@ int main(int argc, char *argv[])
                   "DONE  MainWindow: warm Code, Branches and Worktrees UI (")) &&
               startupLog.contains(QStringLiteral(
                   "startup job scheduled: initial mirror synchronization in "
-                  "15000ms")),
+                  "1000ms")),
           QString("startup log names and times every material constructor phase "
                   "(detailed steps=%1)")
                   .arg(detailedStartupSteps));
