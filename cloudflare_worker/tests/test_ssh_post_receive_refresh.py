@@ -78,7 +78,7 @@ def test_notify_discards_ref_input_and_creates_only_fixed_marker(tmp_path, monke
     assert sorted(path.name for path in tmp_path.iterdir()) == ["pending"]
 
 
-def test_run_serializes_renewal_around_fixed_refresh_restart_health_order(
+def test_run_releases_push_path_before_periodic_renewal(
     tmp_path, monkeypatch
 ):
     config = _config(tmp_path)
@@ -110,8 +110,7 @@ def test_run_serializes_renewal_around_fixed_refresh_restart_health_order(
         "forkmesh-mirror.service",
     ]
     assert events[3] == ["signed-health"]
-    assert events[4][-1] == "renew"
-    assert events[5] == [
+    assert events[4] == [
         "/usr/bin/systemctl",
         "start",
         bridge.RENEW_TIMER,
@@ -148,7 +147,6 @@ def test_run_gives_every_child_only_the_fixed_disk_backed_tmpdir(
         "stop",
         "refresh",
         "restart",
-        "renew",
         "start",
     ]
     expected = {
@@ -208,7 +206,6 @@ def test_run_retries_only_refresh_once_then_publishes_in_exact_order(
         "refresh",
         "restart",
         "signed-health",
-        "renew",
         "start",
     ]
     assert refresh_timeouts == [
@@ -307,7 +304,7 @@ def test_run_does_not_retry_refresh_without_remaining_deadline(
     assert not config.trigger_path.exists()
 
 
-@pytest.mark.parametrize("failure_phase", ["restart", "health", "renew"])
+@pytest.mark.parametrize("failure_phase", ["restart", "health"])
 def test_run_never_retries_later_publication_phases(
     tmp_path, monkeypatch, failure_phase
 ):
@@ -340,22 +337,17 @@ def test_run_never_retries_later_publication_phases(
     expected = {
         "restart": ["stop", "refresh", "restart", "start"],
         "health": ["stop", "refresh", "restart", "health", "start"],
-        "renew": [
-            "stop", "refresh", "restart", "health", "renew", "start",
-        ],
     }
     assert events == expected[failure_phase]
     assert events.count("refresh") == 1
     assert events.count("restart") == 1
     assert events.count("health") <= 1
-    assert events.count("renew") <= 1
+    assert "renew" not in events
     assert sleeps == []
     assert not config.trigger_path.exists()
     status = bridge.refresh_status(config)
     assert status["status"] == "retry-pending"
-    assert status["phase"] == (
-        "register" if failure_phase == "renew" else failure_phase
-    )
+    assert status["phase"] == failure_phase
 
 
 def test_failed_publication_is_durable_deferred_then_retried(
@@ -428,7 +420,7 @@ def test_failed_publication_is_durable_deferred_then_retried(
     )
     assert published["event"] == "ssh_push_refresh_published"
     assert events == [
-        "stop", "refresh", "restart", "health", "renew", "start",
+        "stop", "refresh", "restart", "health", "start",
     ]
     assert not retry_path.exists()
     status = bridge.refresh_status(
@@ -460,7 +452,7 @@ def test_reconcile_recovers_processing_marker_left_by_killed_service(
     )
     assert result["event"] == "ssh_push_refresh_published"
     assert events == [
-        "stop", "refresh", "restart", "health", "renew", "start",
+        "stop", "refresh", "restart", "health", "start",
     ]
     assert not processing.exists()
 
@@ -482,7 +474,7 @@ def test_periodic_reconcile_runs_without_a_push_marker(tmp_path, monkeypatch):
     )
     assert result["event"] == "ssh_push_refresh_published"
     assert events == [
-        "stop", "refresh", "restart", "health", "renew", "start",
+        "stop", "refresh", "restart", "health", "start",
     ]
 
 

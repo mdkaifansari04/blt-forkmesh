@@ -5263,7 +5263,8 @@ void MainWindow::convergeSourceRepoFromMesh(int index)
     const QString key = repo.owner.trimmed().toLower() + QLatin1Char('/') +
                         repo.name.trimmed().toLower();
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-    if (nowMs - m_sourceConvergeAttemptMs.value(key, 0) < 60 * 1000)
+    if (nowMs - m_sourceConvergeAttemptMs.value(key, 0) <
+        kMirrorSyncIntervalMs)
         return;
     m_sourceConvergeAttemptMs.insert(key, nowMs);
     const QString meshUrl = repositoryNetworkCloneUrl(repo.owner, repo.name);
