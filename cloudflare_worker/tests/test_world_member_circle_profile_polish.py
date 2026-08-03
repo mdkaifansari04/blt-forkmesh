@@ -44,6 +44,10 @@ def test_member_count_is_on_a_plaque_beside_the_yurt_door():
     assert "function membersYurtDoorTexture(THREE, total, newest = \"\")" in SCENE
     assert 'memberDoorInfo.name = "members-yurt-door-member-info"' in SCENE
     assert "memberDoorInfo.position.set(4.95, 3.9" in SCENE
+    # PlaneGeometry faces +Z by default, while visitors approach this plaque
+    # from -Z. Turn its front toward them so DoubleSide does not mirror the
+    # canvas text through the back face.
+    assert "memberDoorInfo.rotation.y = Math.PI;" in SCENE
     assert 'context.fillText("MEMBERS CENTER", 512, 92);' in SCENE
 
 
@@ -170,13 +174,17 @@ def test_mirror_lights_are_colored_and_warning_states_blink():
     assert "mirrorByName" in APP
 
 
-def test_all_non_walking_directory_members_use_full_seated_avatars():
-    assert "const seatedMemberIds = new Set(" in SCENE
-    assert ".filter((member) => member?.away !== true)" in SCENE
-    assert "CAMPFIRE_DETAILED_MEMBER_LIMIT" not in SCENE
-    assert 'status: "sitting around the campfire"' in SCENE
-    assert "figure.position.add(seat)" in SCENE
-    assert "applySeatedLegPose(figure)" in SCENE
+def test_non_walking_directory_members_use_full_avatars_inside_the_yurt():
+    interior = SCENE.split("// Populate the yurt interior", 1)[1].split(
+        "// Legacy bench-circle implementation", 1
+    )[0]
+    assert "MEMBERS_YURT_VISIBLE_MEMBER_LIMIT" in SCENE
+    assert "membersYurtMemberPosition(index, interiorMembers.length)" in interior
+    assert "member?.away === true" in interior
+    assert 'status: "inside the Members Center yurt"' in interior
+    assert "figure = createAvatar(" in interior
+    assert "figure.position.set(" in interior
+    assert "applyLegPitch(figure, 0, 0)" in interior
     assert "figure.userData.ambientInteraction = null" in SCENE
     assert "const memberWorldDestinations" not in SCENE
     assert "const memberNpcStations" not in SCENE

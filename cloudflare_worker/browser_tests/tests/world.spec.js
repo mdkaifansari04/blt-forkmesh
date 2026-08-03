@@ -4832,6 +4832,14 @@ test("Office facade conceals interiors while preserving elevator glazing", async
     ].flatMap((floorId) => transparentMeshes(
       scene.getObjectByName(`forkmesh-office-floor-${floorId}`)
     ));
+    const teamFloorsHidden = [
+      "marketing",
+      "engineering",
+      "infrastructure",
+    ].every((floorId) =>
+      scene.getObjectByName(`forkmesh-office-floor-${floorId}`)?.visible === false
+    );
+    const officeInterior = scene.getObjectByName("forkmesh-office-interior");
     const rooftop = transparentMeshes(
       scene.getObjectByName("forkmesh-office-floor-rooftop")
     );
@@ -4855,6 +4863,8 @@ test("Office facade conceals interiors while preserving elevator glazing", async
         ),
       },
       teamLayerCount: teamLayers.length,
+      teamFloorsHidden,
+      interiorHidden: officeInterior?.visible === false,
       rooftop: {
         count: rooftop.length,
         stable: rooftop.every((mesh) => mesh.material.depthWrite === false),
@@ -4869,22 +4879,24 @@ test("Office facade conceals interiors while preserving elevator glazing", async
       doors: {
         count: doors.filter(Boolean).length,
         stable: doors.every((mesh) =>
-          mesh?.material?.transparent === true &&
-          mesh.material.opacity === 0.3 &&
+          mesh?.material?.transparent === false &&
+          mesh.material.opacity === 1 &&
           mesh.material.metalness === 0 &&
-          mesh.material.depthWrite === false &&
-          mesh.castShadow === false &&
-          mesh.receiveShadow === false
+          mesh.material.depthWrite !== false
         ),
       },
     };
   });
   expect(facade.exterior.count).toBeGreaterThanOrEqual(12);
   expect(facade.exterior.opaque).toBe(true);
-  expect(facade.teamLayerCount).toBe(0);
-  expect(facade.rooftop).toEqual({ count: 5, stable: true });
+  expect(facade.teamLayerCount).toBeGreaterThan(0);
+  expect(facade.teamFloorsHidden).toBe(true);
+  expect(facade.interiorHidden).toBe(true);
+  expect(facade.rooftop.count).toBeGreaterThanOrEqual(5);
+  expect(facade.rooftop.stable).toBe(true);
   expect(facade.shaftLayerCount).toBe(0);
-  expect(facade.car).toEqual({ count: 5, stable: true });
+  expect(facade.car.count).toBeGreaterThanOrEqual(5);
+  expect(facade.car.stable).toBe(true);
   expect(facade.doors).toEqual({ count: 2, stable: true });
 });
 
@@ -9009,7 +9021,7 @@ test("the authenticated member appears immediately and active time advances loca
   expect(stillPaused).toBeCloseTo(paused.totalActiveMs, 3);
 });
 
-test("the Members Center renders a fixed yurt and places arrivals at its door", async ({
+test("the Members Center shows its roster inside and places arrivals at its door", async ({
   page,
 }) => {
   const session = {
@@ -9024,6 +9036,16 @@ test("the Members Center renders a fixed yurt and places arrivals at its door", 
         nodes: [],
         createdAt: FIXED_NOW - 1_000,
       },
+      {
+        name: "alice",
+        nodes: [],
+        createdAt: FIXED_NOW - 3_000,
+      },
+      {
+        name: "bob",
+        nodes: [],
+        createdAt: FIXED_NOW - 2_000,
+      },
     ],
   });
   await waitForWorld(page);
@@ -9031,7 +9053,9 @@ test("the Members Center renders a fixed yurt and places arrivals at its door", 
     const shell = document.querySelector("forkmesh-world");
     return Boolean(
       shell?.world?.scene?.getObjectByName("members-yurt-door-member-info")
-        ?.material?.map,
+        ?.material?.map &&
+        shell?.world?.scene?.getObjectByName("avatar:member:alice") &&
+        shell?.world?.scene?.getObjectByName("avatar:member:bob"),
     );
   });
 
@@ -9051,6 +9075,20 @@ test("the Members Center renders a fixed yurt and places arrivals at its door", 
     const startHere = shell.world.scene.getObjectByName(
       "forkmesh-start-here-map",
     );
+    const memberPositions = ["alice", "bob"].map((name) => {
+      const figure = shell.world.scene.getObjectByName(`avatar:member:${name}`);
+      const position = figure.position;
+      return {
+        name,
+        x: position.x,
+        y: position.y,
+        z: position.z,
+        radius: Math.hypot(
+          position.x - yurt.parent.position.x,
+          position.z - yurt.parent.position.z,
+        ),
+      };
+    });
     return {
       placed: shell.freshArrivalCampfireSeated,
       activity: shell.lastMovement.activity,
@@ -9061,12 +9099,14 @@ test("the Members Center renders a fixed yurt and places arrivals at its door", 
       yurtPresent: Boolean(yurt),
       doorPosition: door.position.toArray(),
       infoPosition: info.position.toArray(),
+      infoRotation: info.rotation.y,
       infoHasTexture: Boolean(info.material.map),
       chimneyPosition: chimney.position.toArray(),
       memberBenchesPresent: Boolean(
         shell.world.scene.getObjectByName("campfire-member-circle"),
       ),
       directoryFigures: yurt.parent.userData.detailedMemberFigures || 0,
+      memberPositions,
       dirtY: dirt.position.y,
       signPresent: Boolean(
         shell.world.scene.getObjectByName(
@@ -9090,12 +9130,19 @@ test("the Members Center renders a fixed yurt and places arrivals at its door", 
   expect(arrival.yurtPresent).toBe(true);
   expect(arrival.doorPosition[2]).toBeLessThan(-12);
   expect(arrival.infoPosition[0]).toBeGreaterThan(4);
+  expect(arrival.infoRotation).toBeCloseTo(Math.PI, 5);
   expect(arrival.infoHasTexture).toBe(true);
   expect(arrival.chimneyPosition[0]).toBe(0);
   expect(arrival.chimneyPosition[2]).toBe(0);
   expect(arrival.chimneyPosition[1]).toBeGreaterThan(10);
   expect(arrival.memberBenchesPresent).toBe(false);
-  expect(arrival.directoryFigures).toBe(0);
+  expect(arrival.directoryFigures).toBe(2);
+  expect(arrival.memberPositions).toHaveLength(2);
+  for (const member of arrival.memberPositions) {
+    expect(member.y).toBeCloseTo(0.38, 5);
+    expect(member.radius).toBeGreaterThan(4);
+    expect(member.radius).toBeLessThan(10);
+  }
   expect(arrival.dirtY).toBeGreaterThan(0.105);
   expect(arrival.signPresent).toBe(false);
   expect(arrival.startHere.x).toBe(0);

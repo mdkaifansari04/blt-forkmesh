@@ -24,12 +24,41 @@ def test_repository_circle_is_enclosed_by_a_geodesic_dome():
     assert "const REPOSITORY_DOME_DETAIL = 2" in SCENE
     assert 'dome.name = "repository-geodesic-dome"' in dome
     assert "new THREE.IcosahedronGeometry(" in dome
+    assert 'shell.name = "repository-geodesic-dome-shell"' in dome
+    assert 'makeMaterial(THREE, "#ffffff"' in dome
+    assert "transparent: false" in dome
+    assert "opacity: 1" in dome
     assert "new THREE.InstancedMesh(" in dome
     assert 'struts.name = "repository-geodesic-dome-struts"' in dome
     assert "struts.computeBoundingSphere();" in dome
     assert 'foundation.name = "repository-geodesic-dome-foundation"' in dome
+    assert 'doors.name = "repository-geodesic-dome-doors"' in dome
+    assert 'transparent: false' in dome
+    assert "inWestDoorway" in dome
     assert "const dome = createRepositoryGeodesicDome(THREE);" in district
     assert "group.add(dome);" in district
+    assert 'interior.name = "repository-geodesic-dome-interior"' in district
+    assert "interior.visible = false" in district
+
+
+def test_repository_dome_draws_its_interior_only_while_occupied():
+    occupancy = SCENE[
+        SCENE.index("  function updateRepositoryDomeOccupancy("):
+        SCENE.index("  function compactDistrictDiagnostics(")
+    ]
+    catalog = SCENE[
+        SCENE.index("  function updateRepositoryCatalog("):
+        SCENE.index("  function setRepositoryImportState(")
+    ]
+    assert "REPOSITORY_DOME_ENTER_RADIUS" in occupancy
+    assert "REPOSITORY_DOME_EXIT_RADIUS" in occupancy
+    assert "interior.visible = occupied" in occupancy
+    assert "catalog.visible = occupied" in occupancy
+    assert "dome.visible = !occupied" in occupancy
+    assert "updateRepositoryDomeOccupancy();" in SCENE
+    assert "layer.userData.repositoryDomeInterior = true" in catalog
+    assert "updateRepositoryDomeOccupancy(true);" in catalog
+    assert "constrainRepositoryDome(previousHorizontalPosition)" in SCENE
 
 
 def test_repository_refresh_no_longer_feeds_the_tall_pr_and_issue_lists():

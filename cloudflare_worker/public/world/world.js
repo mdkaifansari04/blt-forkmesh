@@ -182,15 +182,12 @@ const DETAIL_WIDTH_STEP = 48;
 const SETTINGS_WIDTH_KEY = "forkmesh.world.settingsWidth.v1";
 const SETTINGS_WIDTH_MIN = 360;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
-// Before the roster finishes building the actual bench ring, start an
-// unplaced visitor beside the fire instead of briefly painting them at the old
-// central arrival grid. syncMemberLounge immediately replaces this preview
-// with their real seated bench pose.
+// Start outside the closed yurt so its roster is not drawn before entry.
 const FRESH_ARRIVAL_CAMPFIRE_PREVIEW = Object.freeze({
   x: 0,
   y: 0.38,
-  z: 137,
-  heading: 0,
+  z: 114.8,
+  heading: Math.PI,
   space: "town-square",
 });
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
@@ -2423,9 +2420,8 @@ function normalizeMediaSpaces(value) {
     .slice(0, 50);
 }
 
-// Public chat roster directory (user profiles only) doubles as the
-// campfire-circle population: every public registered account gets a bench
-// around the fire, and the roster length sizes the circle.
+// The public user-profile directory also populates the bounded member-avatar
+// rings inside the Members Center yurt.
 function normalizeMemberDirectory(value) {
   return (Array.isArray(value?.users) ? value.users : [])
     .map((user) => ({
@@ -29789,10 +29785,9 @@ class ForkMeshWorld extends HTMLElement {
 
   syncMemberLounge() {
     if (!this.world?.updateMemberLounge) return;
-    // Seat every public registered account in the circle around the campfire.
-    // Members already rendered as live or opted-in idle avatars keep their
-    // richer presence avatar instead of a duplicate directory figure, leaving
-    // their own named bench visibly empty while they are out and about.
+    // Populate the yurt from the public directory. Members already rendered as
+    // live or opted-in idle avatars keep their richer presence avatar instead
+    // of receiving a duplicate interior figure.
     const present = new Set();
     const registered = [];
     let guests = 0;
@@ -29815,9 +29810,8 @@ class ForkMeshWorld extends HTMLElement {
       ) {
         registered.push(clean.slice(0, 32));
       }
-      // The named benches come from the users table, so everyone here without
-      // a row in it — guests, private profiles, bots — needs one of the spare
-      // seats instead, or the ring comes up short (adhoc #427).
+      // Presence names absent from the users table are guests, private
+      // profiles, or bots. Track them separately from the member directory.
       if (!listed.has(key)) guests += 1;
     };
     note(this.identity?.name, this.identity?.accountStatus);

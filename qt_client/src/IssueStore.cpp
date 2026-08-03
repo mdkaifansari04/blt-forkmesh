@@ -1341,7 +1341,7 @@ int IssueStore::createIssue(const QString &title, const QString &body,
     issue.status = "open";
     issue.labels = labels;
     issue.milestone = milestone;
-    issue.priority = qBound(0, priority, 99);
+    issue.priority = qBound(0, priority, 8999);
     issue.assignees = assignees;
     issue.createdAt = ev.ts;
     issue.author = ev.author;
@@ -1549,10 +1549,10 @@ bool IssueStore::setPriority(int number, int priority, QString *error)
 {
     if (!canWrite())
         return false;
-    if (priority < 0 || priority > 99) {
+    if (priority < 0 || priority > 8999) {
         if (error)
             *error = QStringLiteral(
-                "Priority must be between 1 and 99, or 0 to clear it.");
+                "Priority must be between 1 and 8999, or 0 to clear it.");
         return false;
     }
     Issue issue;
@@ -1871,7 +1871,7 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
         // as vouched data that rode along with the submission.
         issue.labels = meta.labels;
         issue.milestone = meta.milestone;
-        issue.priority = qBound(0, meta.priority, 99);
+        issue.priority = qBound(0, meta.priority, 8999);
         issue.assignees = meta.assignees;
         issue.events.append(ev);
         recomputeMetadata(issue);

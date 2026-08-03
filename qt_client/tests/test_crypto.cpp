@@ -22,6 +22,7 @@
 #include "../src/McpConnector.h"
 #include "../src/NetworkBackoff.h"
 #include "../src/NodeDiagnostics.h"
+#include "../src/NoteListEntry.h"
 #include "../src/PlatformLogFilter.h"
 #include "../src/ProjectStore.h"
 #include "../src/PullAiReview.h"
@@ -550,6 +551,62 @@ int main(int argc, char *argv[])
                   QString::fromUtf8(file.readAll()).contains(
                       QStringLiteral("ForkMesh: Codex usage is ready")),
               "usage-limit calendar event is written atomically under app data");
+    }
+
+    {
+        // Notes sidebar rows. The list used to show only storage + version,
+        // so a note that was never published and one that is live on the web
+        // read identically — the report was "my published note did not show
+        // up on the web and did not show in the list of notes locally".
+        const QJsonObject draft{{"title", "Draft"}, {"version", 3}};
+        check(NoteListEntry::lines(draft, {}, "local", false) ==
+                  QStringList{"Draft", "Local only · On this computer · v3"},
+              "a local-only note names its storage and stays off the web");
+
+        // Asked for the cloud but never got there: the row says so instead of
+        // looking exactly like a saved-but-private note.
+        check(NoteListEntry::lines(draft, {}, "both", false).at(1) ==
+                  QStringLiteral("Local + cloud · Not published yet · v3"),
+              "a note with no cloud copy is labelled as not published yet");
+
+        const QJsonObject published{
+            {"title", "Launch plan"}, {"version", 4}, {"visibility", "public"},
+            {"views", 12}, {"readers", 4},
+            {"shares", QJsonArray{
+                QJsonObject{{"name", "bob"}, {"role", "editor"}},
+                QJsonObject{{"name", "acme"}, {"role", "viewer"}}}}};
+        const QStringList row =
+            NoteListEntry::lines(published, published, "both", true);
+        check(row.at(1) == QStringLiteral(
+                  "Local + cloud · Public · 12 views from 4 readers · v4"),
+              "a published note shows its status and read count");
+        check(row.at(2) ==
+                  QStringLiteral("Shared with bob (editor), acme (viewer)"),
+              "the row names every collaborator the note is shared with");
+
+        // Shared but not published, and read exactly once by one reader.
+        const QJsonObject shared{
+            {"title", "Spec"}, {"version", 1}, {"visibility", "private"},
+            {"views", 1}, {"readers", 1},
+            {"shares", QJsonArray{
+                QJsonObject{{"name", "bob"}, {"role", "viewer"}}}}};
+        check(NoteListEntry::lines(shared, shared, "cloud", true) ==
+                  QStringList{"Spec", "Cloud · Shared · 1 view · v1",
+                              "Shared with bob (viewer)"},
+              "a shared private note reads as Shared, not Public");
+
+        // Signed out: the cloud copy is unreadable, but the mirrored
+        // visibility on the local record still tells the truth.
+        const QJsonObject mirrored{{"title", "Launch plan"}, {"version", 4},
+                                   {"visibility", "public"}};
+        check(NoteListEntry::lines(mirrored, {}, "both", true) ==
+                  QStringList{"Launch plan", "Local + cloud · Public · v4",
+                              "Not shared with anyone"},
+              "a published note still reads as Public without the listing");
+
+        // An unread draft is not labelled "0 views".
+        check(NoteListEntry::viewsLabel(QJsonObject{{"views", 0}}).isEmpty(),
+              "a note nobody has read carries no view count");
     }
 
     {
@@ -4767,6 +4824,10 @@ int main(int argc, char *argv[])
                             .filePath(QStringLiteral(".forkmesh/issues/open/1")))
                        .exists(),
               "closing an issue moves its folder from open/ to closed/");
+        check(repo.setPriority(n, 8999, &err),
+              "setPriority accepts the expanded lowest rank");
+        check(!repo.setPriority(n, 9000, &err),
+              "setPriority rejects ranks beyond 8999");
         check(repo.setPriority(n, 3, &err), "setPriority succeeds");
         check(repo.assignAgent(n, "codex", 42, true, "queued", &err),
               "assignAgent succeeds");

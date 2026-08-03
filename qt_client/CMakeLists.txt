@@ -213,6 +213,7 @@ set(FORKMESH_APP_SOURCES
     src/CoveStore.cpp
     src/ChatHistoryLimits.h
     src/ChatVisitorPresence.h
+    src/NoteListEntry.h
     src/ServerNode.h
     src/ServerNode.cpp
     src/OfficeChannelMirror.h
@@ -620,6 +621,7 @@ if(FORKMESH_BUILD_TESTS)
         src/ReferenceLinks.h
         src/ChatHistoryLimits.h
         src/ChatVisitorPresence.h
+        src/NoteListEntry.h
         src/SystemStats.h
         src/SystemStats.cpp
         src/NodeDiagnostics.h

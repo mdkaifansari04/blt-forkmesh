@@ -6938,17 +6938,22 @@ int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
         // a branch that advanced on the gateway while this checkout was offline.
         // Automatic propagation therefore uses ordinary fast-forward refspecs
         // and explicitly disables force and prune, even when a machine carries
-        // old push configuration. An intentional rewrite or branch deletion must
-        // go through an explicit, reviewed Git operation; otherwise one stale
-        // one-minute sync can undo a clean main merge on every headless
-        // mirror.
+        // old push configuration. Keep the update non-atomic: a mirror can
+        // legitimately advance one collaboration branch (for example
+        // forkmesh/pulls) before the source consumes it. That one protected
+        // non-fast-forward must not reject an otherwise clean main update and
+        // leave the entire headless fleet stale. Git still rejects only that
+        // divergent ref while advancing every safe ref, and the next sync retries
+        // it after the source converges. An intentional rewrite or branch
+        // deletion must go through an explicit, reviewed Git operation;
+        // otherwise one stale one-minute sync can undo a clean main merge on
+        // every headless mirror.
         trackProcessActivity(process, QStringLiteral("push"),
                              QStringLiteral("Pushing %1/%2 to %3")
                                  .arg(repo.owner, repo.name, url));
         process->start(QStringLiteral("git"),
                        {QStringLiteral("-C"), pushSource,
                         QStringLiteral("push"), QStringLiteral("--porcelain"),
-                        QStringLiteral("--atomic"),
                         QStringLiteral("--no-force"),
                         QStringLiteral("--no-prune"),
                         url, QStringLiteral("refs/heads/*:refs/heads/*"),

@@ -14,6 +14,8 @@ namespace {
 // over the relay and gets the long budget.
 constexpr int kPlumbingTimeoutMs = 30 * 1000;
 constexpr int kFetchTimeoutMs = 10 * 60 * 1000;
+const QString kGeneratedStatsPath =
+    QStringLiteral(".forkmesh/stats/repository.json");
 
 bool runGit(const QString &dir, const QStringList &args, QString *output,
             int timeoutMs = kPlumbingTimeoutMs)
@@ -65,6 +67,29 @@ bool worktreeClean(const QString &worktreePath)
                 &status))
         return false;
     return status.trimmed().isEmpty();
+}
+
+// The headless node rewrites this tracked, generated snapshot while it runs.
+// Most fast-forwards can preserve it in place; when upstream also changed the
+// file, Git correctly refuses the merge. That generated-only conflict is safe
+// to regenerate, but no other tracked edit may be discarded.
+bool onlyGeneratedStatsDirty(const QString &worktreePath)
+{
+    QString status;
+    if (!runGit(worktreePath,
+                {QStringLiteral("status"), QStringLiteral("--porcelain"),
+                 QStringLiteral("--untracked-files=no")},
+                &status))
+        return false;
+    const QStringList lines =
+        status.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    if (lines.isEmpty())
+        return false;
+    for (const QString &line : lines) {
+        if (line.size() < 4 || line.mid(3) != kGeneratedStatsPath)
+            return false;
+    }
+    return true;
 }
 
 // branch -> worktree directory, for every branch checked out anywhere (the
@@ -177,7 +202,8 @@ QString RefreshOutcome::summary() const
 static RefreshOutcome refreshCore(const QString &checkoutPath,
                                   const QString &upstreamUrl,
                                   const QStringList &forcedBranches,
-                                  bool repointOrigin, bool pruneGone)
+                                  bool repointOrigin, bool pruneGone,
+                                  bool recoverGeneratedStats)
 {
     RefreshOutcome outcome;
     const QString path = checkoutPath.trimmed();
@@ -260,17 +286,34 @@ static RefreshOutcome refreshCore(const QString &checkoutPath,
         const bool fastForward =
             !have.isEmpty() && containedIn(path, have, target);
         if (!worktree.isEmpty()) {
-            // The branch is checked out somewhere; move it through its own
-            // worktree, and only when that worktree carries no local edits.
-            if (!worktreeClean(worktree))
-                continue;
+            // The branch is checked out somewhere, so move it through its own
+            // worktree. For a fast-forward, let Git perform the precise safety
+            // check: unrelated tracked changes (notably the node-generated
+            // .forkmesh/stats/repository.json) can remain in place, while Git
+            // still refuses an update that would overwrite a local edit. A
+            // forced metadata reset has no such protection, so it retains the
+            // stricter completely-clean guard.
             bool moved = false;
             if (fastForward) {
                 moved = runGit(worktree,
                                {QStringLiteral("merge"),
                                 QStringLiteral("--ff-only"), target},
                                nullptr);
-            } else if (forced.contains(branch)) {
+                if (!moved && recoverGeneratedStats &&
+                    onlyGeneratedStatsDirty(worktree) &&
+                    runGit(worktree,
+                           {QStringLiteral("restore"),
+                            QStringLiteral("--source=HEAD"),
+                            QStringLiteral("--staged"),
+                            QStringLiteral("--worktree"),
+                            QStringLiteral("--"), kGeneratedStatsPath},
+                           nullptr)) {
+                    moved = runGit(worktree,
+                                   {QStringLiteral("merge"),
+                                    QStringLiteral("--ff-only"), target},
+                                   nullptr);
+                }
+            } else if (forced.contains(branch) && worktreeClean(worktree)) {
                 moved = runGit(worktree,
                                {QStringLiteral("reset"), QStringLiteral("--hard"),
                                 target},
@@ -325,7 +368,8 @@ RefreshOutcome refreshManagedCheckoutFromUpstream(
     const QStringList &forcedBranches)
 {
     return refreshCore(checkoutPath, upstreamUrl, forcedBranches,
-                       /*repointOrigin=*/true, /*pruneGone=*/true);
+                       /*repointOrigin=*/true, /*pruneGone=*/true,
+                       /*recoverGeneratedStats=*/true);
 }
 
 RefreshOutcome convergeSourceCheckoutFromMesh(const QString &checkoutPath,
@@ -334,10 +378,11 @@ RefreshOutcome convergeSourceCheckoutFromMesh(const QString &checkoutPath,
     // The source of truth converging on submissions an online mirror merged
     // while this node was away. Strictly additive: no remote reconfiguration,
     // no branch pruning, no forced branches — every local ref moves only by
-    // fast-forward through a clean worktree, so local-only work always wins
-    // and simply supersedes the mesh on the next publish.
+    // fast-forward through its worktree, so Git preserves local edits and
+    // local-only work always wins and supersedes the mesh on the next publish.
     return refreshCore(checkoutPath, meshUrl, /*forcedBranches=*/{},
-                       /*repointOrigin=*/false, /*pruneGone=*/false);
+                       /*repointOrigin=*/false, /*pruneGone=*/false,
+                       /*recoverGeneratedStats=*/false);
 }
 
 } // namespace forkmesh::upstream

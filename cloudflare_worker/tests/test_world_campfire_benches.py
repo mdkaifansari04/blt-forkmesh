@@ -121,7 +121,7 @@ def test_live_idle_members_wait_at_the_yurt_entrance_not_roster_benches():
     remote = SCENE.split("function setRemotePlayers", 1)[1].split(
         "function updateMemberLounge", 1
     )[0]
-    assert "Only live peers get avatars" in remote
+    assert "Live idle peers keep their presence avatar" in remote
     assert "MEMBERS_YURT_RADIUS" in remote
     assert "campfire.userData.seatOffsets" not in remote
     assert "campfire.userData.seatByName" not in remote
@@ -218,6 +218,25 @@ def test_members_yurt_is_the_existing_world_map_destination():
     assert '  "campfire",\n' in APP.split("LOCAL_LIVE_LANDMARKS", 1)[1]
 
 
+def test_members_yurt_is_opaque_and_pages_its_interior_until_entry():
+    yurt = SCENE.split('membersYurt.name = "members-center-yurt"', 1)[1].split(
+        "const SWING_SEAT_COUNT", 1
+    )[0]
+    occupancy = SCENE.split("function updateMembersYurtOccupancy", 1)[1].split(
+        "function syncEnclosureDoors", 1
+    )[0]
+    assert "transparent: false" in yurt
+    assert "opacity: 1" in yurt
+    assert "depthWrite: true" in yurt
+    assert 'membersYurtInterior.name = "members-yurt-interior"' in yurt
+    assert "membersYurtInterior.visible = false" in yurt
+    assert "membersYurtInterior.add(child)" in yurt
+    assert "membersYurtInterior.visible = occupied" in occupancy
+    assert "membersYurt.visible = !occupied" in occupancy
+    assert "figure.visible = occupied" in occupancy
+    assert "constrainMembersYurt(previousHorizontalPosition)" in SCENE
+
+
 def test_choosing_the_members_spot_moves_you_to_the_yurt_entrance():
     scene = SCENE.split("function returnToCampfireBench", 1)[1].split(
         "\n  function ", 1
@@ -261,14 +280,18 @@ def test_campfire_clearing_keeps_its_landmark_tree_ring_out():
     assert 'if (["campfire", "office"].includes(landmark.id)) return;' in trees
 
 
-def test_directory_members_do_not_create_roster_avatars():
+def test_directory_members_are_visible_as_bounded_yurt_interior_avatars():
     lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
-        "// Registered members sit", 1
+        "// Legacy bench-circle implementation", 1
     )[0]
-    assert "loungeMembers.clear();" in lounge
-    assert "campfire.userData.memberFigureCount = 0;" in lounge
+    assert "const interiorMembers =" in lounge
+    assert ".slice(0, MEMBERS_YURT_VISIBLE_MEMBER_LIMIT);" in lounge
+    assert "membersYurtMemberPosition(index, interiorMembers.length)" in lounge
+    assert 'status: "inside the Members Center yurt"' in lounge
+    assert "figure = createAvatar(" in lounge
+    assert "campfire.userData.memberFigureCount = seen.size;" in lounge
+    assert "campfire.userData.seatedMemberFigures = 0;" in lounge
     assert "return;" in lounge
-    assert "figure = createAvatar(" not in lounge
 
 
 def test_legs_hinge_at_the_hip_and_knee_with_the_shoe_on_the_shin():
@@ -316,24 +339,20 @@ def test_bench_height_is_derived_from_the_seated_pose():
     assert "legInstances.setMatrixAt(" in ring
 
 
-def test_campfire_fills_every_non_walking_member_bench_with_a_figure():
-    assert "CAMPFIRE_DETAILED_MEMBER_LIMIT" not in SCENE
-    assert "const seatedMemberIds = new Set(" in SCENE
-    assert ".filter((member) => member?.away !== true)" in SCENE
-    assert "const represented = seatedMemberIds.has(id);" in SCENE
+def test_yurt_fills_interior_rings_with_non_walking_member_figures():
+    interior = SCENE.split("// Populate the yurt interior", 1)[1].split(
+        "// Legacy bench-circle implementation", 1
+    )[0]
+    assert "const MEMBERS_YURT_MEMBER_RINGS" in SCENE
+    assert "const MEMBERS_YURT_VISIBLE_MEMBER_LIMIT" in SCENE
+    assert "member?.away === true" in interior
     assert "campfire.userData.detailedMemberFigures" in SCENE
     assert "campfire-instanced-member-sitters" not in SCENE
     assert "updateCompactCampfireSitters" not in SCENE
-    assert "figure = createAvatar(" in SCENE
-    assert "{ remote: true, scale: 0.88 }" in SCENE
-    assert "campfire.userData.seatedMemberFigures = seen.size;" in SCENE
-    assert 'labelState = member.away === true' in SCENE
-    assert '"ROSTER BENCH"' in SCENE
-    assert "showAtBench(seatByName.get(wanted))" in SCENE
-    assert "setCampfireSeatOrgTeamAction(" in SCENE
-    assert "polygonOffsetFactor: -1" in SCENE
-    assert "repaintCampfireSeatLabels();" in SCENE
-    assert "labelMesh.material.map = texture" in SCENE
+    assert "figure = createAvatar(" in interior
+    assert "{ remote: true, scale: 0.78 }" in interior
+    assert "campfire.userData.seatedMemberFigures = 0;" in interior
+    assert "figure.rotation.y = Math.atan2(slot.x, slot.z);" in interior
 
 
 def test_member_total_and_latest_name_update_the_door_only():
