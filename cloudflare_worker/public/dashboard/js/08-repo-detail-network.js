@@ -2322,10 +2322,11 @@
       const agentOpenButton = event.target.closest("[data-repo-agent-open]");
       if (agentOpenButton && state.selectedRepo) {
         const agentId = agentOpenButton.dataset.repoAgentId || "";
+        const composerMode = agentOpenButton.dataset.repoAgentComposerMode || "";
         if (String(state.agentsView.selectedAgentId ?? "") === String(agentId)) {
           closeRepoAgentDetail(state.selectedRepo);
         } else {
-          openRepoAgentDetail(state.selectedRepo, agentId);
+          openRepoAgentDetail(state.selectedRepo, agentId, composerMode);
         }
         return;
       }
