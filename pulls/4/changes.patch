@@ -21,13 +21,13 @@ index c578061d..a4588e46 100644
  
 +# Dedicated outreach console at https://<host>/admin-email.
 +# This is one shared operator credential and is separate from ForkMesh accounts.
-+EMAIL_ADMIN_USERNAME=CHANGE-ME
++EMAIL_ADMIN_USERNAME=<CHANGE-ME>
 +# Store only a PBKDF2-SHA256 salt and hash in salt_base64:hash_base64 format.
 +# Generate it without putting the password in shell history:
 +# python3 -c 'import base64,getpass,hashlib,secrets;s=secrets.token_bytes(16);p=getpass.getpass("Password: ").encode();h=hashlib.pbkdf2_hmac("sha256",p,s,100000);print(base64.b64encode(s).decode()+":"+base64.b64encode(h).decode())'
-+EMAIL_ADMIN_PASSWORD_HASH=CHANGE-ME
++EMAIL_ADMIN_PASSWORD_HASH=<CHANGE-ME>
 +# Generate with: python3 -c 'import secrets;print(secrets.token_urlsafe(48))'
-+EMAIL_ADMIN_SESSION_SECRET=CHANGE-ME
++EMAIL_ADMIN_SESSION_SECRET=<CHANGE-ME>
 +
  # Treasury Solana address: receives automated sweeps from per-account join
  # deposit wallets. Kept here as a secret rather than in wrangler.toml so it's
@@ -49,9 +49,9 @@ index c578061d..a4588e46 100644
 +# The Worker reads env.MAILTRAP_API_TOKEN. A fork that does not send email can
 +# drop MAILTRAP_API_TOKEN from the required list in deploy.sh.
  # Get a token: Mailtrap -> Sending Domains -> API Tokens.
- MAILTRAP_API_TOKEN=CHANGE-ME
+ MAILTRAP_API_TOKEN=<CHANGE-ME>
  # Optional overrides (sensible defaults if omitted):
-@@ -59,6 +69,7 @@ MAILTRAP_API_TOKEN=CHANGE-ME
+@@ -59,6 +69,7 @@ MAILTRAP_API_TOKEN=<CHANGE-ME>
  #   MAILTRAP_API_URL      Send endpoint (default https://send.api.mailtrap.io/api/send)
  # MAILTRAP_SENDER=no-reply@forkmesh.com
  # MAILTRAP_SENDER_NAME=ForkMesh
