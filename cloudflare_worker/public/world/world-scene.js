@@ -57,6 +57,8 @@ const BEACH_RADIUS = 76;
 const BEACH_ROAD_MIN_X = 225;
 const BEACH_ROAD_MAX_X = BEACH_CENTER_X - BEACH_RADIUS + 12;
 const BEACH_ROAD_HALF_WIDTH = 14;
+const BEACH_TOWN_PORTAL_X = 330;
+const BEACH_SCENE_PORTAL_X = BEACH_CENTER_X - BEACH_RADIUS + 7;
 const REPOSITORY_ISLAND_CENTER_X = 130;
 const REPOSITORY_ISLAND_RING_RADIUS = 31;
 // The satellite districts are joined by broad landscaped causeways, not
@@ -368,7 +370,7 @@ function officeScenePointIsWalkable(floorId, x, z, radius) {
   );
 }
 
-function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
+function cityWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   const px = Number(x);
   const pz = Number(z);
   const margin = Math.max(0, Number(radius) || 0);
@@ -383,6 +385,14 @@ function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   ) {
     return true;
   }
+  return false;
+}
+
+function beachWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
+  const px = Number(x);
+  const pz = Number(z);
+  const margin = Math.max(0, Number(radius) || 0);
+  if (!Number.isFinite(px) || !Number.isFinite(pz)) return false;
   if (
     px >= BEACH_ROAD_MIN_X + margin &&
     px <= BEACH_ROAD_MAX_X - margin &&
@@ -393,6 +403,13 @@ function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   return (
     Math.hypot(px - BEACH_CENTER_X, pz - BEACH_CENTER_Z) <=
     BEACH_RADIUS - margin
+  );
+}
+
+function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
+  return (
+    cityWalkSurfaceContains(x, z, radius) ||
+    beachWalkSurfaceContains(x, z, radius)
   );
 }
 
@@ -17538,10 +17555,15 @@ export function createWorldScene({
   addWorldBike(0, "#77d9ff", 0.38);
   addWorldBike(1, "#9ef7c6", 0.43);
 
-  // A single connected road leaves the eastern city edge and arrives at a
-  // coastal rest area. The beach uses only local, preloaded assets so entering
-  // it never waits on a remote video host or triggers a large network stall.
+  // The coastal access road and rest area live together in the destination
+  // scene. The beach uses only local, preloaded assets so entering it never
+  // waits on a remote video host or triggers a large network stall.
   const beachRoadLength = BEACH_ROAD_MAX_X - BEACH_ROAD_MIN_X;
+  const beachScene = new THREE.Group();
+  beachScene.name = "forkmesh-beach-scene";
+  beachScene.userData.beachScene = true;
+  beachScene.visible = false;
+  world.add(beachScene);
   const beachRoad = new THREE.Mesh(
     new THREE.BoxGeometry(
       beachRoadLength,
@@ -17558,7 +17580,7 @@ export function createWorldScene({
   );
   beachRoad.receiveShadow = true;
   beachRoad.userData.ground = true;
-  world.add(beachRoad);
+  beachScene.add(beachRoad);
 
   const beachFoundation = new THREE.Mesh(
     new THREE.CylinderGeometry(BEACH_RADIUS, BEACH_RADIUS, 4.8, 96),
@@ -17567,7 +17589,7 @@ export function createWorldScene({
   beachFoundation.name = "forkmesh-beach-foundation";
   beachFoundation.position.set(BEACH_CENTER_X, -2.4, BEACH_CENTER_Z);
   beachFoundation.receiveShadow = true;
-  world.add(beachFoundation);
+  beachScene.add(beachFoundation);
   const beachSand = new THREE.Mesh(
     new THREE.CircleGeometry(BEACH_RADIUS, 96),
     makeMaterial(THREE, "#d8c49a", { roughness: 1 }),
@@ -17577,7 +17599,7 @@ export function createWorldScene({
   beachSand.position.set(BEACH_CENTER_X, 0.035, BEACH_CENTER_Z);
   beachSand.receiveShadow = true;
   beachSand.userData.ground = true;
-  world.add(beachSand);
+  beachScene.add(beachSand);
   const beachWater = new THREE.Mesh(
     new THREE.PlaneGeometry(190, 260),
     makeMaterial(THREE, "#2b83a6", {
@@ -17590,7 +17612,7 @@ export function createWorldScene({
   beachWater.name = "forkmesh-beach-water";
   beachWater.rotation.x = -Math.PI / 2;
   beachWater.position.set(BEACH_CENTER_X + 116, -0.08, BEACH_CENTER_Z);
-  world.add(beachWater);
+  beachScene.add(beachWater);
   const beachHorizonTexture = projectAssetTexture(
     THREE,
     "/world/assets/beach-horizon-v1.webp",
@@ -17607,10 +17629,70 @@ export function createWorldScene({
   );
   beachHorizon.name = "forkmesh-beach-peripheral-horizon";
   beachHorizon.position.set(BEACH_CENTER_X, 18, BEACH_CENTER_Z);
-  world.add(beachHorizon);
+  beachScene.add(beachHorizon);
   registerWorldElement(
     "beach", "Beach & ocean", "Terrain",
     [beachRoad, beachFoundation, beachSand, beachWater, beachHorizon],
+  );
+
+  function createBeachPortal(name, label, action, x, heading) {
+    const portal = new THREE.Group();
+    portal.name = name;
+    portal.position.set(x, 0.22, BEACH_CENTER_Z);
+    portal.rotation.y = heading;
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(4.15, 0.38, 12, 56),
+      makeMaterial(THREE, "#77d9ff", {
+        emissive: "#1f8fb8",
+        emissiveIntensity: 1.05,
+      }),
+    );
+    const face = new THREE.Mesh(
+      new THREE.CircleGeometry(3.72, 48),
+      makeMaterial(THREE, "#52c7df", {
+        emissive: "#176b92",
+        transparent: true,
+        opacity: 0.48,
+        side: THREE.DoubleSide,
+      }),
+    );
+    [ring, face].forEach((surface, index) => {
+      surface.name = `${name}-${index ? "face" : "ring"}`;
+      surface.position.set(0, 4.25, index ? 0.04 : 0);
+      surface.userData.interactive = action;
+      interactive.push(surface);
+    });
+    const portalLabel = makeLabelSprite(
+      THREE, label, "CLICK TO TRAVEL", "#77d9ff",
+    );
+    portalLabel.name = `${name}-label`;
+    portalLabel.position.set(0, 9.25, 0);
+    portalLabel.scale.set(6.4, 2.15, 1);
+    portal.add(ring, face, portalLabel);
+    return portal;
+  }
+
+  const beachEntryPortal = createBeachPortal(
+    "forkmesh-beach-entry-portal",
+    "BEACH",
+    "beach-scene-enter",
+    BEACH_TOWN_PORTAL_X,
+    -Math.PI / 2,
+  );
+  world.add(beachEntryPortal);
+  const beachReturnPortal = createBeachPortal(
+    "forkmesh-beach-return-portal",
+    "RETURN TO TOWN",
+    "beach-scene-exit",
+    BEACH_SCENE_PORTAL_X,
+    Math.PI / 2,
+  );
+  beachScene.add(beachReturnPortal);
+  registerWorldElement(
+    "beach-portals",
+    "Beach scene portals",
+    "Navigation",
+    [beachEntryPortal, beachReturnPortal],
   );
 
   function addWorldBench({
@@ -17673,13 +17755,14 @@ export function createWorldScene({
     heading: 0,
     activity: "resting beside the recreation garden",
   });
-  addWorldBench({
+  const beachBench = addWorldBench({
     name: "forkmesh-beach-bench",
     x: BEACH_CENTER_X + 24,
     z: BEACH_CENTER_Z - 10,
     heading: -Math.PI / 2,
     activity: "sitting at the ForkMesh beach",
   });
+  beachScene.add(beachBench);
 
   const carStates = [];
   function addBeachCar() {
@@ -17719,7 +17802,7 @@ export function createWorldScene({
         wheels.push(wheel);
       }
     }
-    car.position.set(BEACH_ROAD_MIN_X + 22, 0.04, BEACH_CENTER_Z);
+    car.position.set(BEACH_CENTER_X - 38, 0.04, BEACH_CENTER_Z);
     car.rotation.y = -Math.PI / 2;
     const hint = makeLabelSprite(
       THREE,
@@ -17737,7 +17820,7 @@ export function createWorldScene({
       interactive.push(child);
     });
     setShadows(car);
-    world.add(car);
+    beachScene.add(car);
     registerWorldElement("beach-car", "Beach car", "Vehicles & rides", car);
     carStates.push({ car, wheels, moving: false });
   }
@@ -19814,6 +19897,11 @@ export function createWorldScene({
   let nodeCoverOccupied = false;
   let membersYurtOccupied = false;
   let officeSceneMode = "town";
+  let beachSceneActive = false;
+  const activeWalkSurfaceContains = (x, z, radius = OFFICE_AVATAR_RADIUS) =>
+    beachSceneActive
+      ? beachWalkSurfaceContains(x, z, radius)
+      : cityWalkSurfaceContains(x, z, radius);
   let activeEnclosureScene = "";
   const enclosureHiddenWorldRoots = new Map();
 
@@ -19894,6 +19982,10 @@ export function createWorldScene({
       (
         root.userData.officeInterior !== true ||
         officeSceneMode !== "town"
+      ) &&
+      (
+        root.userData.beachScene !== true ||
+        beachSceneActive
       );
     root.userData.compactDistrictResident = resident;
     if (resident) return;
@@ -19926,7 +20018,9 @@ export function createWorldScene({
       );
       // The active Office floor must remain resident even if an unusual saved
       // pose temporarily lies beyond the outdoor boundary.
-      const required = id === "office" && officeSceneMode !== "town";
+      const required =
+        (id === "office" && officeSceneMode !== "town") ||
+        (id === "beach" && beachSceneActive);
       const nextResident =
         required || district.resident === true
           ? required || district.distance <= district.exit
@@ -19949,6 +20043,10 @@ export function createWorldScene({
             (
               root.userData.officeInterior !== true ||
               officeSceneMode !== "town"
+            ) &&
+            (
+              root.userData.beachScene !== true ||
+              beachSceneActive
             );
           if (root.visible !== shouldDraw) {
             syncCompactDistrictRoot(district, root);
@@ -20095,11 +20193,14 @@ export function createWorldScene({
     }
     if (mode === "members") return [campfire, ...loungeMembers.values()];
     if (mode === "office") return [officeInterior];
+    if (mode === "beach") return [beachScene];
     return [];
   }
 
   function syncEnclosureSceneVisibility(force = false) {
-    const next = officeSceneMode !== "town"
+    const next = beachSceneActive
+      ? "beach"
+      : officeSceneMode !== "town"
       ? "office"
       : nodeCoverOccupied
         ? "nodes"
@@ -20118,6 +20219,7 @@ export function createWorldScene({
       activeEnclosureScene = next;
       world.userData.activeEnclosureScene = next;
     }
+    beachScene.visible = beachSceneActive;
     if (!next) return next;
     const keep = new Set([player, ...enclosureSceneRoots(next)]);
     world.children.forEach((root) => {
@@ -20179,13 +20281,7 @@ export function createWorldScene({
     landmarkObjects.get("office"),
     officeLandscaping,
   ]);
-  registerCompactDistrictRoot("beach", [
-    beachFoundation,
-    beachSand,
-    beachWater,
-    beachHorizon,
-    ...carStates.map((state) => state.car),
-  ]);
+  registerCompactDistrictRoot("beach", beachScene);
   updateRepositoryDomeOccupancy(true);
   updateLeaderboardCircleOccupancy(true);
   updateNodeCoverOccupancy(true);
@@ -25078,6 +25174,56 @@ export function createWorldScene({
     return true;
   }
 
+  function setBeachScene(active) {
+    if (active === beachSceneActive || officeSceneMode !== "town") {
+      return false;
+    }
+    if (active) {
+      dismountSwing({ relocate: false });
+      dismountBike({ relocate: false });
+      dismountQuadcopter({ relocate: false });
+      if (jetpackEquipped) setJetpackEquipped(false);
+      stopGymExercise();
+    }
+    dismountCar({ relocate: false });
+    standUpFromBench();
+    beachSceneActive = active;
+    currentSpace = active ? "beach" : "town-square";
+    currentFloorY = 0.38;
+    currentLocation = active ? "ForkMesh Beach" : "Town Square";
+    player.position.set(
+      active ? BEACH_SCENE_PORTAL_X + 6 : BEACH_TOWN_PORTAL_X - 6,
+      currentFloorY,
+      BEACH_CENTER_Z,
+    );
+    player.rotation.y = active ? -Math.PI / 2 : Math.PI / 2;
+    cameraFocus = null;
+    cameraSnapPending = true;
+    cancelDash();
+    focusedRepositoryKey = "";
+    lastPosition.copy(player.position);
+    updateCompactDistrictResidency(true);
+    syncEnclosureSceneVisibility(true);
+    if (active) completeStartHereStep("explore");
+    else nearestLandmark();
+    onLocationChange(currentLocation, active ? "beach" : "");
+    onMovement({
+      x: player.position.x,
+      y: player.position.y,
+      z: player.position.z,
+      heading: player.rotation.y,
+      space: currentSpace,
+      moving: false,
+      activity: active
+        ? "arriving at the ForkMesh beach"
+        : "returning to the Town Square",
+    });
+    return true;
+  }
+
+  const enterBeachScene = () => setBeachScene(true);
+  const leaveBeachScene = () => setBeachScene(false);
+
   function focusLandmark(id) {
     const landmark = landmarkById(id);
     const object = landmarkObjects.get(landmark.id);
@@ -27281,7 +27427,7 @@ export function createWorldScene({
       // toward the nearest point on the continuous city instead of eventually
       // marooning the player on a non-walkable landing coordinate.
       if (
-        !worldWalkSurfaceContains(
+        !activeWalkSurfaceContains(
           player.position.x,
           player.position.z,
           OFFICE_AVATAR_RADIUS,
@@ -27296,7 +27442,7 @@ export function createWorldScene({
             startZ +
             (CONTINUOUS_CITY_CENTER_Z - startZ) * progress;
           if (
-            worldWalkSurfaceContains(x, z, OFFICE_AVATAR_RADIUS)
+            activeWalkSurfaceContains(x, z, OFFICE_AVATAR_RADIUS)
           ) {
             player.position.x = x;
             player.position.z = z;
@@ -27769,7 +27915,7 @@ export function createWorldScene({
     }
 
     if (
-      !worldWalkSurfaceContains(
+      !activeWalkSurfaceContains(
         player.position.x,
         player.position.z,
         OFFICE_AVATAR_RADIUS,
@@ -34358,6 +34504,14 @@ export function createWorldScene({
       });
       return;
     }
+    if (hit?.object?.userData?.interactive === "beach-scene-enter") {
+      enterBeachScene();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "beach-scene-exit") {
+      leaveBeachScene();
+      return;
+    }
     if (hit?.object?.userData?.interactive === "office-link-kiosk") {
       onLobbyLinkKioskSelect();
       return;
@@ -34697,7 +34851,7 @@ export function createWorldScene({
       ) {
         return null;
       }
-    } else if (!worldWalkSurfaceContains(point.x, point.z)) {
+    } else if (!activeWalkSurfaceContains(point.x, point.z)) {
       return null;
     }
     point.y = currentFloorY;
@@ -36141,6 +36295,9 @@ export function createWorldScene({
     player,
     renderer,
     focusLandmark,
+    enterBeachScene,
+    leaveBeachScene,
+    isBeachScene: () => beachSceneActive,
     enterOffice,
     enterOfficeLobby,
     enterOfficeMeeting,
