@@ -152,7 +152,7 @@ def test_leaderboards_have_one_square_raised_grid_without_circle_boards():
     assert '"forkmesh-leaderboard-ring-walk"' not in scene
 
 
-def test_leaderboard_circle_has_a_minimal_one_sided_opaque_cover():
+def test_leaderboard_circle_has_a_minimal_opaque_cover_with_an_open_door():
     scene = source()
     cover = scene.split(
         "function createLeaderboardOpaqueCover(THREE)", 1
@@ -160,16 +160,69 @@ def test_leaderboard_circle_has_a_minimal_one_sided_opaque_cover():
     district = scene.split(
         'leaderboardDistrict.name = "forkmesh-leaderboard-district"', 1
     )[1].split("const leaderboardBeacon", 1)[0]
-    assert "const sides = 8;" in cover
-    assert "const wallHeight = 25.5;" in cover
-    assert "const roofHeight = 9.5;" in cover
+    assert "const LEADERBOARD_COVER_SIDES = 8;" in scene
+    assert "const sides = LEADERBOARD_COVER_SIDES;" in cover
+    assert "index === sides - 1" in cover
+    assert "LEADERBOARD_DOOR_WIDTH" in cover
+    assert "LEADERBOARD_DOOR_HEIGHT" in cover
     assert "new THREE.BufferGeometry()" in cover
     assert "side: THREE.FrontSide" in cover
+    assert "transparent: false" in cover
+    assert "opacity: 1" in cover
+    assert "depthWrite: true" in cover
     assert 'cover.name = "forkmesh-leaderboard-opaque-cover"' in cover
-    assert "transparent:" not in cover
+    assert 'doorFrame.name = "forkmesh-leaderboard-door-frame"' in cover
+    assert "forkmesh-leaderboard-door-${" in cover
+    assert "new THREE.PlaneGeometry(" in cover
+    assert "side: THREE.DoubleSide" in cover
     assert "createLeaderboardOpaqueCover(THREE)" in district
     assert "leaderboardDistrict.add(leaderboardCover)" in district
     assert "interactive.push(leaderboardCover)" in district
+
+
+def test_leaderboard_contents_are_not_drawn_until_the_avatar_is_inside():
+    scene = source()
+    district = scene.split(
+        'leaderboardDistrict.name = "forkmesh-leaderboard-district"', 1
+    )[1].split("const leaderboardBeacon", 1)[0]
+    occupancy = scene.split(
+        "  function updateLeaderboardCircleOccupancy(", 1
+    )[1].split("  function compactDistrictDiagnostics(", 1)[0]
+    assert (
+        'leaderboardInterior.name = "forkmesh-leaderboard-interior"'
+        in district
+    )
+    assert "leaderboardInterior.visible = false" in district
+    assert "leaderboardInterior.add(\n    createDistrictGroundCircle" in district
+    assert "leaderboardInterior.add(object)" in scene
+    assert "leaderboardInterior.add(leaderboardSuperPanel)" in scene
+    assert "leaderboardCoverContainsWorldPoint(" in occupancy
+    assert "? -OFFICE_AVATAR_RADIUS" in occupancy
+    assert ": OFFICE_AVATAR_RADIUS" in occupancy
+    assert "leaderboardInterior.visible = occupied" in occupancy
+    assert "updateLeaderboardCircleOccupancy(true);" in scene
+    assert "updateLeaderboardCircleOccupancy();" in scene
+
+
+def test_leaderboard_walls_only_allow_crossing_through_the_door():
+    scene = source()
+    crossing = scene.split(
+        "function leaderboardDoorCrossingIsClear(", 1
+    )[1].split("export function circularRideCameraYaw(", 1)[0]
+    constraint = scene.split(
+        "  function constrainLeaderboardCover(", 1
+    )[1].split("  function constrainTownOfficeWalls(", 1)[0]
+    assert "LEADERBOARD_COVER_APOTHEM" in crossing
+    assert "LEADERBOARD_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS" in crossing
+    assert "wasInside === isInside" in constraint
+    assert (
+        "leaderboardDoorCrossingIsClear(previousPosition, player.position)"
+        in constraint
+    )
+    assert "player.position.x = previousPosition.x" in constraint
+    assert "player.position.z = previousPosition.z" in constraint
+    assert "cancelDash()" in constraint
+    assert "constrainLeaderboardCover(previousHorizontalPosition);" in scene
 
 
 def test_two_clickable_bikes_use_normal_movement_and_collision():
