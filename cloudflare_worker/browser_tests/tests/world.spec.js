@@ -8987,7 +8987,7 @@ test("the authenticated member appears immediately and active time advances loca
   expect(stillPaused).toBeCloseTo(paused.totalActiveMs, 3);
 });
 
-test("a fresh member spawns seated in the open Members Circle", async ({
+test("the Members Center renders a fixed yurt and places arrivals at its door", async ({
   page,
 }) => {
   const session = {
@@ -9007,24 +9007,22 @@ test("a fresh member spawns seated in the open Members Circle", async ({
   await waitForWorld(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
-    return shell?.world?.scene?.getObjectByName(
-      "campfire-newest-member-name-sparkles",
-    )?.visible === true;
+    return Boolean(
+      shell?.world?.scene?.getObjectByName("members-yurt-door-member-info")
+        ?.material?.map,
+    );
   });
 
   const arrival = await page.locator("forkmesh-world").evaluate((shell) => {
     const player = shell.world.player;
-    const count = shell.world.scene.getObjectByName("campfire-member-count");
-    const sparkle = shell.world.scene.getObjectByName(
-      "campfire-newest-member-name-sparkles",
+    const yurt = shell.world.scene.getObjectByName("members-center-yurt");
+    const door = shell.world.scene.getObjectByName("members-yurt-door");
+    const info = shell.world.scene.getObjectByName(
+      "members-yurt-door-member-info",
     );
-    const fireSparksLeft = shell.world.scene.getObjectByName(
-      "campfire-newest-member-fire-sparks-left",
+    const chimney = shell.world.scene.getObjectByName(
+      "members-yurt-central-chimney",
     );
-    const fireSparksRight = shell.world.scene.getObjectByName(
-      "campfire-newest-member-fire-sparks-right",
-    );
-    const flame = shell.world.scene.getObjectByName("campfire-primary-flame");
     const dirt = shell.world.scene.getObjectByName(
       "campfire-member-circle-dirt",
     );
@@ -9032,21 +9030,21 @@ test("a fresh member spawns seated in the open Members Circle", async ({
       "forkmesh-start-here-map",
     );
     return {
-      seated: shell.freshArrivalCampfireSeated,
+      placed: shell.freshArrivalCampfireSeated,
       activity: shell.lastMovement.activity,
       x: player.position.x,
       y: player.position.y,
       z: player.position.z,
       leftKnee: player.userData.leftKnee.rotation.x,
-      countScale: count.scale.toArray(),
-      countY: count.position.y,
-      sparkleVisible: sparkle.visible,
-      fireSparksVisible: fireSparksLeft.visible && fireSparksRight.visible,
-      fireSparksSpan:
-        fireSparksRight.geometry.attributes.position.getX(15) -
-        fireSparksLeft.geometry.attributes.position.getX(15),
-      fireHeight: flame.scale.y,
-      fireWidth: flame.scale.x,
+      yurtPresent: Boolean(yurt),
+      doorPosition: door.position.toArray(),
+      infoPosition: info.position.toArray(),
+      infoHasTexture: Boolean(info.material.map),
+      chimneyPosition: chimney.position.toArray(),
+      memberBenchesPresent: Boolean(
+        shell.world.scene.getObjectByName("campfire-member-circle"),
+      ),
+      directoryFigures: yurt.parent.userData.detailedMemberFigures || 0,
       dirtY: dirt.position.y,
       signPresent: Boolean(
         shell.world.scene.getObjectByName(
@@ -9061,43 +9059,40 @@ test("a fresh member spawns seated in the open Members Circle", async ({
     };
   });
 
-  expect(arrival.seated).toBe(true);
-  expect(arrival.activity).toBe("sitting beside the campfire");
-  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeGreaterThan(5);
-  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeLessThan(10);
-  expect(arrival.y).toBeLessThan(0.38);
-  expect(Math.abs(arrival.leftKnee)).toBeGreaterThan(0.5);
-  expect(arrival.countScale).toEqual([9.5, 4.75, 1]);
-  expect(arrival.countY).toBeGreaterThan(14);
-  expect(arrival.sparkleVisible).toBe(true);
-  expect(arrival.fireSparksVisible).toBe(true);
-  expect(Math.abs(arrival.fireSparksSpan)).toBeGreaterThan(8);
-  expect(arrival.fireHeight).toBeGreaterThan(2.5);
-  expect(arrival.fireWidth).toBeGreaterThan(2.5);
+  expect(arrival.placed).toBe(true);
+  expect(arrival.activity).toBe("visiting the Members Center yurt");
+  expect(arrival.x).toBeCloseTo(0, 5);
+  expect(arrival.z).toBeCloseTo(114.8, 5);
+  expect(arrival.y).toBeCloseTo(0.38, 5);
+  expect(arrival.leftKnee).toBeCloseTo(0, 5);
+  expect(arrival.yurtPresent).toBe(true);
+  expect(arrival.doorPosition[2]).toBeLessThan(-12);
+  expect(arrival.infoPosition[0]).toBeGreaterThan(4);
+  expect(arrival.infoHasTexture).toBe(true);
+  expect(arrival.chimneyPosition[0]).toBe(0);
+  expect(arrival.chimneyPosition[2]).toBe(0);
+  expect(arrival.chimneyPosition[1]).toBeGreaterThan(10);
+  expect(arrival.memberBenchesPresent).toBe(false);
+  expect(arrival.directoryFigures).toBe(0);
   expect(arrival.dirtY).toBeGreaterThan(0.105);
   expect(arrival.signPresent).toBe(false);
   expect(arrival.startHere.x).toBe(0);
   expect(arrival.startHere.z).toBe(168);
   expect(arrival.startHere.rotation).toBeCloseTo(Math.PI, 5);
 
-  // Position storage contains coordinates but deliberately no activity label.
-  // A clean reload must recognize the bench ring and rebuild the seated pose.
+  // The entrance position persists as a normal standing location.
   await page.reload();
   await waitForWorld(page);
   const reloaded = await page.locator("forkmesh-world").evaluate((shell) => ({
-    activity: shell.lastMovement.activity,
+    x: shell.world.player.position.x,
     y: shell.world.player.position.y,
     leftKnee: shell.world.player.userData.leftKnee.rotation.x,
-    radius: Math.hypot(
-      shell.world.player.position.x,
-      shell.world.player.position.z - 130,
-    ),
+    z: shell.world.player.position.z,
   }));
-  expect(reloaded.activity).toBe("sitting beside the campfire");
-  expect(reloaded.y).toBeLessThan(0.38);
-  expect(Math.abs(reloaded.leftKnee)).toBeGreaterThan(0.5);
-  expect(reloaded.radius).toBeGreaterThan(5);
-  expect(reloaded.radius).toBeLessThan(10);
+  expect(reloaded.x).toBeCloseTo(0, 5);
+  expect(reloaded.y).toBeCloseTo(0.38, 5);
+  expect(reloaded.z).toBeCloseTo(114.8, 5);
+  expect(reloaded.leftKnee).toBeCloseTo(0, 5);
 });
 
 test("the System Status board countdown advances between minute syncs", async ({

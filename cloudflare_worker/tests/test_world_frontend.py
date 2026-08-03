@@ -2173,43 +2173,19 @@ def test_world_settings_moves_focus_before_hiding_the_panel():
     assert "panel.inert = true;" in toggle
 
 
-def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
-    # adhoc #287: one bench per registered account rings the campfire. A
-    # bounded recent subset appears as seated figures facing the fire, members
-    # walking the world leave their named bench empty, and the ring rebuilds
-    # wider whenever a new account joins so everyone still fits. adhoc #291
-    # adds one extra bench that always stays open for the next guest, and
-    # adhoc #303 one more per guest already in the world, names every bench
-    # so an empty one says who is out and about, and seats accounts that
-    # signed up after the tab loaded straight from their presence frame.
-    assert "function rebuildCampfireCircle" in SCENE
-    assert '"campfire-member-circle"' in SCENE
-    assert (
-        "rebuildCampfireCircle(\n      Math.max(total, roster.length) "
-        "+ guestSeats + 1,\n    )" in SCENE
-    )
-    assert "function setCampfireSeatLabel" in SCENE
-    assert "function drawCampfireSeatPlate" in SCENE
-    assert "function repaintCampfireSeatLabels" in SCENE
-    assert 'labelMesh.name = "campfire-member-bench-label-atlas"' in SCENE
-    assert '"OPEN SEAT"' in SCENE
-    assert '"OUT AND ABOUT"' in SCENE
-    assert "campfire.userData.seatByName" in SCENE
+def test_world_members_center_is_a_fixed_cost_yurt():
+    assert 'membersYurt.name = "members-center-yurt"' in SCENE
+    assert 'yurtDoor.name = "members-yurt-door"' in SCENE
+    assert 'yurtChimney.name = "members-yurt-central-chimney"' in SCENE
+    assert "function membersYurtDoorTexture" in SCENE
     assert "noteDirectoryMembers" in APP
-    # Concentric rows hold 25 people each and preserve one aligned walk-in gap.
-    assert "const CAMPFIRE_MEMBERS_PER_ROW = 25;" in SCENE
-    assert "const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);" in SCENE
-    assert "CAMPFIRE_ENTRANCE_WIDTH / radius" in SCENE
-    assert '"sitting around the campfire"' in SCENE
-    # Figures and idle live avatars both face the pit at the circle's centre.
-    # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
-    # negated form pointed everyone away from the flames (adhoc #291).
-    assert SCENE.count("Math.atan2(offset.x, offset.z)") >= 1
-    assert SCENE.count("Math.atan2(seat.x, seat.z)") >= 1
-    assert "Math.atan2(-offset.x, -offset.z)" not in SCENE
-    assert "Math.atan2(-seat.x, -seat.z)" not in SCENE
-    # Idle/returning live members take the empty tail benches.
-    assert "campfire.userData.memberFigureCount" in SCENE
+    lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
+        "// Registered members sit", 1
+    )[0]
+    assert "loungeMembers.clear();" in lounge
+    assert "campfire.userData.memberFigureCount = 0;" in lounge
+    assert "return;" in lounge
+    assert "createAvatar(" not in lounge
 
     nodes = SCENE[
         SCENE.index("  function updateNetworkNodes"):
