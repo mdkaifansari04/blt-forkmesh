@@ -180,26 +180,132 @@ QString quickAddUsageLimitCountdownText(const QString &provider)
 
 QString quickAddModelChoiceSuccess(const AgentSession &session)
 {
-    QStringList parts;
-    if (session.numTurns > 0)
-        parts << QStringLiteral("%1 turns").arg(session.numTurns);
-    if (session.durationMs > 0)
-        parts << QStringLiteral("%1s").arg(session.durationMs / 1000);
-    if (session.totalTokens > 0)
-        parts << QStringLiteral("%1 tokens")
-                     .arg(formatCount(session.totalTokens));
-    if (session.costUsd > 0.0)
-        parts << agentCostText(session.costUsd);
-    return parts.isEmpty() ? QStringLiteral("Done")
-                           : QStringLiteral("Done · %1")
-                                 .arg(parts.join(QStringLiteral(" · ")));
+    Q_UNUSED(session);
+    return QStringLiteral("✓");
 }
 
 QString quickAddModelChoiceFailure(const QString &message)
 {
-    QString why = message.simplified().left(120);
-    return why.isEmpty() ? QStringLiteral("Failed") : QStringLiteral("Failed: %1")
-                                                     .arg(why);
+    Q_UNUSED(message);
+    return QStringLiteral("✗");
+}
+
+QString maskCredentialValue(const QString &value)
+{
+    const QString trimmed = value.trimmed();
+    if (trimmed.isEmpty())
+        return QString();
+    if (trimmed.size() <= 10)
+        return QStringLiteral("••••");
+    return QStringLiteral("%1…%2").arg(trimmed.left(4), trimmed.right(4));
+}
+
+QString firstNonEmpty(const QStringList &values)
+{
+    for (const QString &value : values) {
+        const QString trimmed = value.trimmed();
+        if (!trimmed.isEmpty())
+            return trimmed;
+    }
+    return QString();
+}
+
+QString jsonString(const QJsonObject &obj, const QString &key)
+{
+    return obj.value(key).toString().trimmed();
+}
+
+QString jsonString(const QJsonObject &obj, const QString &container,
+                  const QString &key)
+{
+    const QJsonObject nested = obj.value(container).toObject();
+    return nested.value(key).toString().trimmed();
+}
+
+QString agentCliIdentityLabel(const QString &provider)
+{
+    const bool codex = agentIsCodexProvider(provider);
+    const QString filePath =
+        codex ? QDir::homePath() + QStringLiteral("/.codex/auth.json")
+              : QDir::homePath() + QStringLiteral("/.claude/.credentials.json");
+    const auto readFile = [](const QString &path) {
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly))
+            return QByteArray();
+        return file.readAll();
+    };
+
+    const QJsonObject credentials =
+        QJsonDocument::fromJson(readFile(filePath)).object();
+
+    QString name;
+    QString email;
+    QString token;
+
+    if (codex) {
+        const QJsonObject tokens = credentials.value(QStringLiteral("tokens")).toObject();
+        token = firstNonEmpty({
+            jsonString(tokens, QStringLiteral("openAiApiKey")),
+            jsonString(tokens, QStringLiteral("access_token")),
+            jsonString(tokens, QStringLiteral("apiKey")),
+            jsonString(tokens, QStringLiteral("token")),
+            jsonString(credentials, QStringLiteral("access_token")),
+            jsonString(credentials, QStringLiteral("apiKey")),
+            jsonString(credentials, QStringLiteral("token")),
+            qEnvironmentVariable("OPENAI_API_KEY"),
+            QSettings().value(kCodexApiKeySetting).toString(),
+            QSettings().value(kOpenAiAdminKeySetting).toString(),
+        });
+        name = firstNonEmpty({
+            jsonString(credentials, QStringLiteral("account"), QStringLiteral("name")),
+            jsonString(credentials, QStringLiteral("user"), QStringLiteral("name")),
+            jsonString(credentials, QStringLiteral("name")),
+            jsonString(credentials, QStringLiteral("user")),
+        });
+        email = firstNonEmpty({
+            jsonString(credentials, QStringLiteral("account"), QStringLiteral("email")),
+            jsonString(credentials, QStringLiteral("user"), QStringLiteral("email")),
+            jsonString(credentials, QStringLiteral("email")),
+        });
+    } else {
+        const QJsonObject oauth =
+            credentials.value(QStringLiteral("claudeAiOauth")).toObject();
+        name = firstNonEmpty({
+            jsonString(oauth, QStringLiteral("user"), QStringLiteral("name")),
+            jsonString(oauth, QStringLiteral("user"), QStringLiteral("username")),
+            jsonString(oauth, QStringLiteral("account"), QStringLiteral("name")),
+            jsonString(oauth, QStringLiteral("name")),
+            jsonString(oauth, QStringLiteral("user")),
+            jsonString(credentials, QStringLiteral("name")),
+        });
+        email = firstNonEmpty({
+            jsonString(oauth, QStringLiteral("user"), QStringLiteral("email")),
+            jsonString(oauth, QStringLiteral("account"), QStringLiteral("email")),
+            jsonString(oauth, QStringLiteral("email")),
+            jsonString(credentials, QStringLiteral("email")),
+        });
+        token = firstNonEmpty({
+            jsonString(oauth, QStringLiteral("accessToken")),
+            jsonString(oauth, QStringLiteral("refreshToken")),
+            jsonString(oauth, QStringLiteral("apiKey")),
+            jsonString(oauth, QStringLiteral("access_token")),
+            qEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN"),
+            qEnvironmentVariable("ANTHROPIC_AUTH_TOKEN"),
+            qEnvironmentVariable("ANTHROPIC_API_KEY"),
+            QSettings().value(kClaudeApiKeySetting).toString(),
+            QSettings().value(kClaudeAdminKeySetting).toString(),
+        });
+    }
+
+    if (!name.isEmpty() && !email.isEmpty())
+        return QStringLiteral("%1 (%2)").arg(name, email);
+    if (!name.isEmpty())
+        return name;
+    if (!email.isEmpty())
+        return email;
+    if (!token.isEmpty())
+        return QStringLiteral("token %1").arg(maskCredentialValue(token));
+    return QString();
 }
 
 QString quickAddModelChoiceSummary(const QList<AgentSession> &sessions,
@@ -2386,13 +2492,24 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             quickAddUsageLimitCountdownText(choice.provider);
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
-        if (!chosenIdentity.isEmpty())
+        const QString identity = agentCliIdentityLabel(choice.provider);
+        if (!identity.isEmpty())
+            toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
+        else if (!chosenIdentity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(chosenIdentity, toolTip);
         if (!statusSummary.isEmpty()) {
-            toolTip +=
-                QStringLiteral("\nLast run: %1").arg(statusSummary);
+            const QString statusLine =
+                statusSummary == QStringLiteral("")
+                    ? QString()
+                    : statusSummary == QStringLiteral("✗") &&
+                              !usageCountdown.isEmpty()
+                          ? QStringLiteral("%1 · %2").arg(statusSummary, usageCountdown)
+                          : statusSummary;
+            if (!statusLine.isEmpty())
+                toolTip += QStringLiteral("\n%1").arg(statusLine);
         }
-        if (!usageCountdown.isEmpty()) {
+        if (!usageCountdown.isEmpty() &&
+            (statusSummary != QStringLiteral("✗"))) {
             toolTip +=
                 QStringLiteral("\nLimit status: %1").arg(usageCountdown);
         }
