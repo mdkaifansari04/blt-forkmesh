@@ -33896,6 +33896,11 @@ def _forkbot_is_allowed_ai_model(env, wanted=""):
     return False
 
 
+def _forkbot_ai_model_not_found_error(error):
+    text = _safe_error_text(error).lower()
+    return "model" in text and "not found" in text
+
+
 async def forkbot_models_handler(env, request):
     """List the Workers AI models a chat client may send its prompt to."""
     if method_name(request) not in ("GET", "HEAD"):
@@ -34003,7 +34008,12 @@ async def ai_ask_handler(env, request):
         return limited
     reply = await _forkbot_run_ai(
         env, AI_ASK_SYSTEM_PROMPT, prompt, model=model,
-        max_tokens=AI_ASK_MAX_TOKENS)
+        max_tokens=AI_ASK_MAX_TOKENS,
+        allow_model_not_found_error=True)
+    if isinstance(reply, dict) and reply.get("__forkbot_ai_error__") == "not_found":
+        return json_response(
+            {"error": "not_found", "model": reply.get("model", model)},
+            status=404)
     if not isinstance(reply, str) or not reply.strip():
         # _forkbot_run_ai already logged why (missing binding, provider error,
         # unusable shape); the composer needs a distinguishable failure so it
@@ -34017,8 +34027,10 @@ async def ai_ask_handler(env, request):
     })
 
 
-async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
-                          model="", max_tokens=512):
+async def _forkbot_run_ai(
+    env, system_prompt, user_prompt, schema=None, model="", max_tokens=512,
+    allow_model_not_found_error=False,
+):
     """Run the Workers AI chat model and return the raw response text/object
     (or None). Shared by the issue-drafting and intent-classification helpers.
 
@@ -34064,6 +34076,8 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
             ran = True
             break
         except Exception as error:
+            if allow_model_not_found_error and _forkbot_ai_model_not_found_error(error):
+                return {"__forkbot_ai_error__": "not_found", "model": model}
             last_error = error
             continue
     if not ran:
