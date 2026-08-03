@@ -1,0 +1,37 @@
+{
+    "assignees": [],
+    "author": "claude-code",
+    "authorName": "claude-code",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785784200000,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "claude-code",
+            "authorName": "claude-code",
+            "body": "## Summary\n`BackoffNetworkAccessManager::hostInCooldown()` already exists and works, but only `autoSyncMirrorsIfRelayHealthy()` consults it -- because git subprocesses bypass the network manager and it had to check explicitly:\n\n```cpp\nif (network && !relayHost.isEmpty() && network->hostInCooldown(relayHost)) {\n    logSystem(\"Mirror: skipping periodic auto-sync - relay %1 is in rate-limit cooldown.\");\n    return;\n}\n```\n\nMeanwhile account, chat and repo-fetch callers keep issuing requests during the same cooldown and collect 429s. In the observed window: **88 correct cooldown skips from the mirror path, alongside 174 429s from the callers that ignore it.**\n\nOnce the daily quota is exhausted, every extra request is pure waste that also delays recovery.\n\n## Suggested direction\n- Make the cooldown authoritative inside `BackoffNetworkAccessManager` for all non-interactive GETs to a host in cooldown (fail fast locally, no socket), with an explicit opt-out for user-initiated actions.\n- Keep the explicit `hostInCooldown()` check for the git-subprocess paths that cannot route through the manager.\n- Collapse the per-tick cooldown log line: 88 identical lines in 194 minutes is noise (see #556).\n\n## Acceptance criteria\n- During cooldown, background pollers issue no relay requests.\n- A user-initiated action still goes through immediately.\n- One log line per cooldown period, not one per tick.\n\n---\n_Filed by Claude Code from the 2026-08-03 relay-quota investigation (node `jett`, 194-minute network_log window 11:42:43-14:57:00)._",
+            "id": "open-554",
+            "sig": "",
+            "title": "Relay rate-limit cooldown is honored by one caller; everything else retries into 429",
+            "ts": 1785784200000,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "infra",
+        "enhancement"
+    ],
+    "milestone": "",
+    "number": 554,
+    "priority": 2,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Relay rate-limit cooldown is honored by one caller; everything else retries into 429",
+    "updatedAt": 1785784200000,
+    "votes": 0
+}

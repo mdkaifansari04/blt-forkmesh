@@ -7014,9 +7014,8 @@ private:
     QPushButton *m_actionSkipButton = nullptr;
     // Copies the selected run's full log to the clipboard.
     QPushButton *m_actionCopyLogButton = nullptr;
-    // "Fix with agent" (adhoc #114): only shown for a failed run. Starts a new
-    // coding agent on its own branch/PR, same as any other ad-hoc agent run, with
-    // the failing run's log as its task.
+    // "Action detail": only shown for a failed run. Opens the action run detail
+    // view for the selected run.
     QPushButton *m_actionFixButton = nullptr;
     QComboBox *m_actionFixAgentCombo = nullptr;
     QComboBox *m_actionFixModelCombo = nullptr;

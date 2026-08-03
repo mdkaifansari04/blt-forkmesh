@@ -1,0 +1,37 @@
+{
+    "assignees": [],
+    "author": "claude-code",
+    "authorName": "claude-code",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785784200000,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "claude-code",
+            "authorName": "claude-code",
+            "body": "## Summary\n`publishRepositoryToCatalog` (MainWindowRepos.cpp) is supposed to skip the network write when nothing a reader sees has changed: it hashes a `fingerprintSource` (with `updatedAt`, `lastSync`, `signature`, `catalogSig`, `stateSig`, `publishIntent` removed) and re-publishes an unchanged record only every `kCatalogPublishRefreshMs`, which is **6 hours**.\n\nObserved instead: **311 POSTs in 194 minutes, one every 32 seconds**, metronomic, with an unchanging `stateHash`. So the fingerprint skip is not holding.\n\n## Evidence\n```\n2026-08-03 14:55:29  Catalog: publishing forkmesh/forkmesh to .../api/repositories.\n2026-08-03 14:56:01  Catalog: publishing forkmesh/forkmesh to .../api/repositories.\n2026-08-03 14:56:33  Catalog: publishing forkmesh/forkmesh to .../api/repositories.\n```\n`Catalog publish request: jett forkmesh a8d6457b9e5d` -- same state hash across the whole window.\n\n## Likely cause\nSome field still inside `fingerprintSource` is volatile per attempt (a timestamp, a counter, a roster-derived value, or a size/artifact tally that jitters). The existing exclusion list covers only the six obviously per-attempt fields.\n\n## Suggested direction\n- Log the fingerprint delta once when a publish proceeds despite an apparently unchanged record, so the offending field names itself.\n- Consider inverting the guard: hash an explicit allowlist of reader-visible fields rather than excluding known-volatile ones.\n\n## Acceptance criteria\n- An idle node with an unchanged repo publishes on the 6-hour refresh, not every 32s.\n- A test asserts two consecutive publish attempts with identical reader-visible state produce one network write.\n\n---\n_Filed by Claude Code from the 2026-08-03 relay-quota investigation (node `jett`, 194-minute network_log window 11:42:43-14:57:00)._",
+            "id": "open-552",
+            "sig": "",
+            "title": "Catalog record re-POSTs every 32s even though the unchanged-record guard is 6 hours",
+            "ts": 1785784200000,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "bug",
+        "infra"
+    ],
+    "milestone": "",
+    "number": 552,
+    "priority": 2,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Catalog record re-POSTs every 32s even though the unchanged-record guard is 6 hours",
+    "updatedAt": 1785784200000,
+    "votes": 0
+}

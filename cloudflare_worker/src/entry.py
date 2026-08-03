@@ -23623,6 +23623,21 @@ _ORG_ALIAS_MEMO = {}
 ORG_ALIAS_MEMO_TTL_MS = 30 * 1000
 ORG_ALIAS_MEMO_MAX = 512
 
+# One alias->host inbox recovery sweep per repo per isolate (_inbox_repo_key).
+# Keyed by the host repo blind index and marked BEFORE the sweep runs, so a
+# failing sweep costs one UPDATE per isolate rather than one per request; a
+# recycled isolate retries on its own.
+_ALIAS_INBOX_REKEYED = {}
+ALIAS_INBOX_REKEY_MAX = 512
+
+
+class _OrgAliasUnresolved(Exception):
+    """An organization alias behind a durable write could not be resolved.
+
+    Narrow on purpose: inbox handlers turn ONLY this into a retryable 503, so a
+    genuine bug still surfaces as a 500 instead of masquerading as backpressure.
+    """
+
 
 def _org_logo_url(value):
     raw = clean_string(value or "", 500).strip()
@@ -23768,10 +23783,10 @@ async def verify_org_push_token(env, pusher, owner, repo, ts, sig):
     return await _org_write_allowed(env, owner, repo, pusher)
 
 
-async def _org_repo_node(env, org, repo):
-    # Node owner serving /<org>/<repo>, or "" when the pair is not a
-    # registered alias. Fail closed on any error: "" simply means "not an org
-    # URL" and the request proceeds unrewritten.
+async def _org_repo_node_strict(env, org, repo):
+    # _org_repo_node without the fail-closed swallow: a lookup error PROPAGATES.
+    # Routing may treat "cannot resolve" as "not an org URL", but a caller
+    # choosing a durable STORAGE key must not — see _inbox_repo_key.
     org = (org or "").strip().lower()
     repo = (repo or "").strip().lower()
     if not org or not repo:
@@ -23781,22 +23796,28 @@ async def _org_repo_node(env, org, repo):
     hit = _ORG_ALIAS_MEMO.get(key)
     if hit and now - hit[1] < ORG_ALIAS_MEMO_TTL_MS:
         return hit[0]
-    node = ""
-    try:
-        await ensure_schema(env)
-        org_bi = await blind_index(env, "org:" + org)
-        row = await d1_first(
-            env, "SELECT node_owner FROM org_repos WHERE org_bi=? AND repo=?",
-            org_bi, repo)
-        node = str((row or {}).get("node_owner") or "").strip().lower()
-        if not valid_node_name(node) or node == org:
-            node = ""
-    except Exception:
-        return ""
+    await ensure_schema(env)
+    org_bi = await blind_index(env, "org:" + org)
+    row = await d1_first(
+        env, "SELECT node_owner FROM org_repos WHERE org_bi=? AND repo=?",
+        org_bi, repo)
+    node = str((row or {}).get("node_owner") or "").strip().lower()
+    if not valid_node_name(node) or node == org:
+        node = ""
     if len(_ORG_ALIAS_MEMO) >= ORG_ALIAS_MEMO_MAX:
         _ORG_ALIAS_MEMO.clear()
     _ORG_ALIAS_MEMO[key] = (node, now)
     return node
+
+
+async def _org_repo_node(env, org, repo):
+    # Node owner serving /<org>/<repo>, or "" when the pair is not a
+    # registered alias. Fail closed on any error: "" simply means "not an org
+    # URL" and the request proceeds unrewritten.
+    try:
+        return await _org_repo_node_strict(env, org, repo)
+    except Exception:
+        return ""
 
 
 async def org_alias_rewrite(env, request, url):
@@ -35178,6 +35199,83 @@ async def _record_mirror_attested_state(env, request, owner, repo, mirror_node):
         return False
 
 
+async def _rekey_alias_inbox(env, alias_owner, host_owner, repo, repo_bi):
+    """Move issue/pull/discussion inbox rows off an organization alias's blind
+    index and onto the backing node's key, where every drain actually reads.
+
+    Same recovery as _forkbot_rekey_alias_inbox, across all three queues: no
+    drain path ever looks at the alias key, so a row written there is stranded.
+    Idempotent (the alias key ends up empty) and best-effort — a hiccup here
+    must never fail the submission that triggered it. The stored items carry no
+    owner binding, so re-keying them is a pure routing fix."""
+    if not host_owner or host_owner == alias_owner:
+        return
+    try:
+        alias_bi = await blind_index(env, alias_owner + "/" + repo)
+        if not alias_bi or alias_bi == repo_bi:
+            return
+        for table in ("issue_inbox", "pull_inbox", "discussion_inbox"):
+            await d1_run(
+                env,
+                "UPDATE %s SET repo_bi=? WHERE repo_bi=?" % table,
+                repo_bi, alias_bi)
+    except Exception:
+        pass
+
+
+async def _inbox_repo_key(env, request, owner, repo):
+    """The blind index the inbox drains read for this repo. Raises when an
+    organization alias cannot be resolved right now.
+
+    org_alias_rewrite normally hands these handlers the canonical /<node>/<repo>
+    path, so `owner` is already the backing node and this is a plain hash. But
+    that rewrite resolves the alias through _org_repo_node, which fails CLOSED:
+    one D1 hiccup or an overloaded isolate returns "" and the request proceeds
+    UNREWRITTEN, still naming the organization. Blind-indexing that alias picks
+    a key no drain ever reads (see _forkbot_enqueue_issue), so the submission is
+    accepted with 201 and then dead-letters forever — the source-of-truth node
+    stays online, GET /api/sync keeps answering 200 with an empty queue, and the
+    row never leaves the database. Resolve the alias again here WITHOUT
+    swallowing the failure, so the caller can answer a retryable 503 instead of
+    writing to nowhere, and sweep up anything an earlier request stranded."""
+    original = REPO_API_PREFIX_RE.match(urlparse(request.url).path)
+    public_owner = str(
+        safe_segment(original.group(1)) if original else "").lower()
+    owner_l = str(owner or "").lower()
+    if public_owner and public_owner != owner_l:
+        # The rewrite already resolved this alias; `owner` is the backing node.
+        # Both names are in hand here, which makes this the one cheap place to
+        # sweep rows an earlier unrewritten request stranded on the alias key.
+        repo_bi = await blind_index(env, owner + "/" + repo)
+        await _recover_alias_inbox_once(
+            env, public_owner, owner_l, repo, repo_bi)
+        return repo_bi
+    # Unrewritten: either a plain node URL (resolves to "", the common case and
+    # a per-isolate memo hit) or an alias the rewrite failed to resolve.
+    try:
+        node = await _org_repo_node_strict(env, owner, repo)
+    except Exception as exc:
+        raise _OrgAliasUnresolved(str(exc))
+    host_owner = node or owner
+    repo_bi = await blind_index(env, host_owner + "/" + repo)
+    if node:
+        await _recover_alias_inbox_once(env, owner_l, node, repo, repo_bi)
+    return repo_bi
+
+
+async def _recover_alias_inbox_once(env, alias_owner, host_owner, repo,
+                                    repo_bi):
+    """Run at most one alias->host inbox sweep per repo per isolate."""
+    if not alias_owner or not host_owner or alias_owner == host_owner:
+        return
+    if not repo_bi or repo_bi in _ALIAS_INBOX_REKEYED:
+        return
+    if len(_ALIAS_INBOX_REKEYED) >= ALIAS_INBOX_REKEY_MAX:
+        _ALIAS_INBOX_REKEYED.clear()
+    _ALIAS_INBOX_REKEYED[repo_bi] = True
+    await _rekey_alias_inbox(env, alias_owner, host_owner, repo, repo_bi)
+
+
 async def _drain_issue_inbox(env, request, repo_bi, claimant_bi=""):
     """Ack (delete) the exact issue-inbox rows named by ?ids=, returning how many
     were removed, and record the drain in inbox_drain_log. Rows the node did not
@@ -35239,7 +35337,10 @@ async def _confirm_fediverse_issue_materializations(env, request):
 async def issues_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
-    repo_bi = await blind_index(env, owner + "/" + repo)
+    try:
+        repo_bi = await _inbox_repo_key(env, request, owner, repo)
+    except _OrgAliasUnresolved:
+        return json_response({"error": "alias_unresolved"}, status=503)
     if method == "POST":
         try:
             data = await bounded_json_request(request)
@@ -35472,7 +35573,10 @@ async def issues_handler(env, request, owner, repo):
 async def pulls_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
-    repo_bi = await blind_index(env, owner + "/" + repo)
+    try:
+        repo_bi = await _inbox_repo_key(env, request, owner, repo)
+    except _OrgAliasUnresolved:
+        return json_response({"error": "alias_unresolved"}, status=503)
     if method == "POST":
         try:
             data = await bounded_json_request(request)
@@ -35682,7 +35786,10 @@ async def pulls_handler(env, request, owner, repo):
 async def discussions_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
-    repo_bi = await blind_index(env, owner + "/" + repo)
+    try:
+        repo_bi = await _inbox_repo_key(env, request, owner, repo)
+    except _OrgAliasUnresolved:
+        return json_response({"error": "alias_unresolved"}, status=503)
     if method == "POST":
         try:
             data = await bounded_json_request(request)
@@ -35831,7 +35938,11 @@ async def repo_pending_counts_handler(env, request, owner, repo):
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     await ensure_schema(env)
-    repo_bi = await blind_index(env, owner + "/" + repo)
+    # Count the SAME key the drains read (see _inbox_repo_key), or an aliased
+    # repo's badge sticks at "N pending" forever against a queue the owner node
+    # is never shown. Read-only resolution: no rekey from a public cached GET.
+    repo_bi = await blind_index(
+        env, (await _ap_org_alias_owner(env, owner, repo)) + "/" + repo)
     rows = await d1_all(
         env,
         "SELECT 'issues' AS k, COUNT(*) AS c FROM issue_inbox "

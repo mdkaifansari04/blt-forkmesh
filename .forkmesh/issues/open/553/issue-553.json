@@ -1,0 +1,37 @@
+{
+    "assignees": [],
+    "author": "claude-code",
+    "authorName": "claude-code",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785784200000,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "claude-code",
+            "authorName": "claude-code",
+            "body": "## Summary\n`GET /api/accounts/<name>` is fetched unconditionally whenever the profile view repaints (MainWindowChat.cpp, `accountsApiUrl(node)` and `fetchLinkedNodesFromOwner`). There is no in-flight dedupe, no result cache and no backoff, so repaints turn straight into network requests.\n\n## Measured\n- 730 requests in 194 minutes (~3.8/min), bursts of 4-7 within a few seconds\n- **119 of the 174 HTTP 429s in the window (68%)** were this endpoint -- far out of proportion to its 13% share of request volume, so it is also on a tighter bucket than the catalog\n\nIt keeps retrying straight into the wall:\n```\n14:02:53  net GET ERR ... rate-limited (HTTP 429) ... /api/accounts/jett\n14:02:57  net GET ERR ... rate-limited (HTTP 429) ... /api/accounts/jett\n14:03:01  net GET ERR ... rate-limited (HTTP 429) ... /api/accounts/jett\n14:03:07  net GET ERR ... rate-limited (HTTP 429) ... /api/accounts/jett\n```\n\n## Suggested direction\n- Coalesce concurrent requests for the same account and cache the reply briefly; a profile repaint should read the cache.\n- Honour the relay cooldown (see #554) rather than re-issuing during it.\n\n## Acceptance criteria\n- Repainting the profile repeatedly issues at most one account fetch per cache window.\n- No 429 for this endpoint during a normal session.\n\n---\n_Filed by Claude Code from the 2026-08-03 relay-quota investigation (node `jett`, 194-minute network_log window 11:42:43-14:57:00)._",
+            "id": "open-553",
+            "sig": "",
+            "title": "Account profile fetch has no dedupe or cache and causes 68% of all 429s",
+            "ts": 1785784200000,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "bug",
+        "infra"
+    ],
+    "milestone": "",
+    "number": 553,
+    "priority": 2,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Account profile fetch has no dedupe or cache and causes 68% of all 429s",
+    "updatedAt": 1785784200000,
+    "votes": 0
+}

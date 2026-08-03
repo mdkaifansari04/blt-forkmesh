@@ -1,0 +1,38 @@
+{
+    "assignees": [],
+    "author": "claude-code",
+    "authorName": "claude-code",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785784200000,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "claude-code",
+            "authorName": "claude-code",
+            "body": "## Summary\n`m_mirrorSyncTimer` fires every 5 seconds and calls `autoSyncMirrorsIfRelayHealthy()` -> `autoSyncMirrors()` -> `reattestStalePins()`. `reattestStalePins()` ends with an **unconditional full catalog list GET** (`m_networkAccess->get(QNetworkRequest(catalogListUrl()))`, MainWindowChat.cpp) with no throttle, no in-flight guard and no conditional request. That single call is the largest consumer of this project's Cloudflare request budget.\n\nIts own neighbouring comment calls it \"the 15-minute reattestStalePins tick\" (MainWindowChat.cpp:7876) -- so the 5-second cadence is not the intended design, it is collateral from the mirror timer being sped up.\n\n## Measured (one desktop node, 194 minutes)\n| endpoint | requests | per min | projected/day |\n|---|---|---|---|\n| `/api/repositories` | 3156 | 16.3 | ~23,400 |\n| `/api/chat/channels/<id>/history` | 1242 | 6.4 | ~9,200 |\n| `/api/accounts/<name>` | 730 | 3.8 | ~5,400 |\n| `/api/chat/channels` | 391 | 2.0 | ~2,900 |\n| `/api/sync` (the one that delivers work) | 19 | 0.1 | ~140 |\n| **total** | **5632** | **29.0** | **~41,800** |\n\n`/api/repositories` is **56% of all egress**; `/api/sync` is 0.34%. Catalog GETs land every ~5s, matching the timer exactly. The free plan allows 100k requests/day for the whole site, and there are 22 mirrors each running their own timer.\n\n## Root cause\n`kMirrorSyncIntervalMs` (MainWindowInternal.h) went 5 min -> 60 s -> **5 s**:\n- `83b3f018a` \"fix(mirrors): converge public nodes within seconds\" (2026-08-03 03:13) cut 60s -> 5s\n- `4ea041228` \"fix(qt): retry mirror convergence every five seconds\" then retargeted the source-convergence throttle from a fixed 60s to `kMirrorSyncIntervalMs`, inheriting 5s\n\nFast mirror convergence is a reasonable goal, but the tick now also drives pin re-attestation and its catalog fetch, which do not need second-level latency.\n\n## Suggested direction\n- Give `reattestStalePins()` its own cadence (the documented 15 minutes) independent of the mirror tick, plus an in-flight guard.\n- Make the pin check use a cheap conditional/targeted read instead of the full catalog list, or reuse the catalog the node already fetched for its publish.\n- Keep the 5s cadence only for the git-side convergence that actually needs it.\n\n## Acceptance criteria\n- A steady-state node with no local changes issues no more than a few `/api/repositories` requests per minute.\n- Mirror convergence latency does not regress.\n- A regression test pins the reattest cadence so a future mirror-timer change cannot inherit it again.\n\n---\n_Filed by Claude Code from the 2026-08-03 relay-quota investigation (node `jett`, 194-minute network_log window 11:42:43-14:57:00)._",
+            "id": "open-551",
+            "sig": "",
+            "title": "Mirror tick at 5s makes reattestStalePins re-fetch the whole catalog 12x/min",
+            "ts": 1785784200000,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "bug",
+        "infra",
+        "performance"
+    ],
+    "milestone": "",
+    "number": 551,
+    "priority": 1,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Mirror tick at 5s makes reattestStalePins re-fetch the whole catalog 12x/min",
+    "updatedAt": 1785784200000,
+    "votes": 0
+}

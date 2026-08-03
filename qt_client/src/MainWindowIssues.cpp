@@ -8133,7 +8133,18 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
     const QString signer = mirrorIntake
         ? accountOwner().trimmed().toLower()
         : repoSegment(repo.owner, QStringLiteral("owner"));
-    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
+    // Authorization for a PUBLIC owner is the relay's call: it verifies this
+    // device against that owner's currently trusted keys (organization
+    // owner/admin membership included) and 401s otherwise, exactly as
+    // signedInboxQuery() documents. hasOwnerSigningCapability(signer) instead
+    // demands signer == session account, which can only ever produce FALSE
+    // NEGATIVES — and did: for a repo whose public owner is not the session
+    // account name this returned early on every tick, so the queue had no path
+    // to this node at all while the website showed "+N pending" forever. Mirror
+    // intake genuinely does speak as the account, so it keeps the strict check.
+    const bool canSign = mirrorIntake ? hasOwnerSigningCapability(signer)
+                                      : hasOwnerSigningCapability();
+    if (signer.isEmpty() || !canSign)
         return;
 
     QUrl url = issuesApiUrl(repo);
@@ -8177,6 +8188,27 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(backoffKey,
                                       QDateTime::currentMSecsSinceEpoch());
+            const int status =
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                    .toInt();
+            // A rejected drain is the difference between "nothing is queued"
+            // and "everything is queued and unreachable". Say so once per repo
+            // instead of only backing off: this failure mode is invisible on an
+            // auto-poll, which is how a full inbox stayed stuck behind a silent
+            // early return in the first place.
+            if (status == 401 || status == 403) {
+                static QSet<QString> s_inboxAuthWarned;
+                if (!s_inboxAuthWarned.contains(backoffKey)) {
+                    s_inboxAuthWarned.insert(backoffKey);
+                    logSystem(QStringLiteral(
+                                  "The relay rejected this node's signed issue "
+                                  "drain for %1/%2 as \"%3\" (HTTP %4), so "
+                                  "web-filed issues can't sync down. Re-link "
+                                  "this node to the account that owns %2.")
+                                  .arg(repo.owner, repo.name, signer)
+                                  .arg(status));
+                }
+            }
             if (interactive)
                 setIssueInlineNotice("Could not reach the inbox: " +
                                          reply->errorString(),

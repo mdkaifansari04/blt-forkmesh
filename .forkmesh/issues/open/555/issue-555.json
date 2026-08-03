@@ -1,0 +1,37 @@
+{
+    "assignees": [],
+    "author": "claude-code",
+    "authorName": "claude-code",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785784200000,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [],
+            "author": "claude-code",
+            "authorName": "claude-code",
+            "body": "## Summary\nUnder the request pressure described in #551, the catalog GET intermittently fails with a Cloudflare **1101** -- an unhandled exception in the Python worker, surfaced to clients as a 500:\n\n```\n13:59:47  net GET ERR 500 Error transferring https://forkmesh.com/api/repositories?viewer=jett&ts=...&sig=...\n          - server replied: [body: error code: 1101]\n```\n\n9 occurrences in the 194-minute window, all on `/api/repositories` with a signed `viewer`.\n\n## Why this matters beyond the 500 itself\nSeveral resolvers fail **closed** on exception. `_org_repo_node` swallows any error and returns `\"\"`, which routing reads as \"not an organization URL\". A 1101 during that lookup therefore silently changes request routing, and until the inbox handlers were hardened it could key a submission to a blind index no drain reads. So a load-induced exception here is not only a failed request -- it degrades correctness elsewhere.\n\n## Suggested direction\n- Capture the actual traceback (`capture_sentry_error`; Workers Logs are intentionally off) and identify what throws on this path under load. Likely candidates: a D1 timeout or subrequest-limit breach while assembling the catalog for a signed viewer.\n- Audit the catalog GET for unbounded per-request work, in the same family as the earlier `info/refs` hangs.\n- Separately, review remaining fail-closed resolvers for cases where \"cannot determine\" is silently treated as a definite answer.\n\n## Acceptance criteria\n- No 1101 on `/api/repositories` under normal fleet load.\n- The catalog GET's D1/subrequest work per request is bounded and asserted by a test.\n\n---\n_Filed by Claude Code from the 2026-08-03 relay-quota investigation (node `jett`, 194-minute network_log window 11:42:43-14:57:00)._",
+            "id": "open-555",
+            "sig": "",
+            "title": "/api/repositories returns Cloudflare 1101 (worker exception) under load",
+            "ts": 1785784200000,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "bug",
+        "infra"
+    ],
+    "milestone": "",
+    "number": 555,
+    "priority": 2,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "/api/repositories returns Cloudflare 1101 (worker exception) under load",
+    "updatedAt": 1785784200000,
+    "votes": 0
+}
