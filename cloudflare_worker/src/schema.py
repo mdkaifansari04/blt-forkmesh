@@ -320,6 +320,12 @@ SCHEMA_STATEMENTS = [
     # squat node names. ip_bi is the same one-way index stored on the account.
     "CREATE TABLE IF NOT EXISTS signup_rate (ip_bi TEXT PRIMARY KEY, "
     "count INTEGER NOT NULL DEFAULT 0, window_start_ts INTEGER NOT NULL DEFAULT 0)",
+    # Per-account Workers AI throttle for POST /api/ai/ask (the desktop
+    # composer's "send this prompt to a Cloudflare AI model" path). Every call
+    # bills the relay's Workers AI account, so a signed account gets a bounded
+    # number per rolling window. Plaintext counters only — no prompt content.
+    "CREATE TABLE IF NOT EXISTS ai_ask_rate (account_bi TEXT PRIMARY KEY, "
+    "count INTEGER NOT NULL DEFAULT 0, window_start_ts INTEGER NOT NULL DEFAULT 0)",
     # Installer link-code rendezvous (adhoc #53): install.sh mints a short code
     # the fresh headless node registers with, and the installing user's desktop
     # app offers the same code signed by its key. Whichever side arrives first
