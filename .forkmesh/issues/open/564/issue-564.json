@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "I6m75bui1-9scYtzBC-h3xf35OR63Xqa23rFyEnHSPM",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785557174,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "I6m75bui1-9scYtzBC-h3xf35OR63Xqa23rFyEnHSPM",
+            "authorName": "jett",
+            "body": "Here are some free Three.js games with large, open, or procedurally generated worlds:\n\nSlow Roads — The best starting point. Relaxing driving through endless procedurally generated landscapes; built with Three.js.\nVeilbound — A new 3D browser MMORPG with open zones, classes, dungeons, parties and PvP. It runs directly in the browser using Three.js.\nTitans of Time — An old-school 3D browser MMORPG with multiple regions, quests, NPCs and multiplayer, built using Three.js.\nWolfYay — Multiplayer sandbox where you can explore, build blocks, fly and find player-created worlds.\nSpace Odyssey — Procedurally generated space exploration with planets, terrain and a solar-system-scale environment. More of an experimental sandbox than a finished game.\nUpstanding Citizen — A first-person open-world crime sandbox set in Bayport City, playable in-browser and made with Three.js.\nWorld Generator 2.0 — More of a playable world-generation experiment, but it creates a full explorable open world extremely quickly.\n\nBest three to try first: Slow Roads for procedural terrain, Veilbound for an MMO-style world, and WolfYay for multiplayer sandbox exploration.\n\nthese games are so fast and smooth, why is my game so laggy and slow?\n\nThose smooth games usually aren’t rendering “more”—they’re carefully hiding how little they render at once.\n\nThe most common Three.js slowdowns are:\n\nToo many draw calls. Thousands of separate meshes/materials are much worse than a few large batched meshes. Use InstancedMesh, merge static geometry, and reuse materials.\nToo many triangles. High-poly terrain, trees, buildings, characters, and imported models add up quickly. Use lower-poly assets and LODs.\nRendering the whole world. Large games divide the map into chunks and only load/render nearby areas. Enable frustum culling and distance culling.\nExpensive shadows. Multiple shadow-casting lights, large shadow maps, and every object casting shadows can destroy performance. Usually one shadow-casting sun is enough.\nHuge textures. Several 4K textures can overwhelm GPU memory. Compress them, reduce resolution, reuse texture atlases, and use KTX2/Basis.\nToo much work every frame. Physics, pathfinding, terrain generation, object creation, raycasting, and React state updates should not all run at 60 FPS.\nCreating objects inside the animation loop. New vectors, arrays, geometries, materials, and textures trigger garbage collection. Reuse temporary objects.\nToo many transparent objects. Grass, particles, glass, and UI planes can cause expensive overdraw.\nHigh pixel ratio. On Retina screens, rendering at full devicePixelRatio can quadruple GPU work. Cap it:\nrenderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));\n\nA good first diagnostic is:\n\nconsole.log(renderer.info.render);\n// Look at calls, triangles, points, and lines\n\nRough warning signs:\n\nDraw calls consistently above 500–1,000\nMillions of visible triangles\nMany real-time shadow-casting objects\nFrame time above 16.7 ms for 60 FPS\n\nAlso test whether the GPU or JavaScript is the bottleneck:\n\nDisable shadows and post-processing.\nCut renderer resolution in half.\nHide most objects.\nDisable physics and game logic.\n\nIf lowering resolution fixes it, you’re probably GPU-bound. If disabling game logic fixes it, you’re probably CPU-bound. If hiding objects fixes it, draw calls or geometry are likely the issue.\n\nThe biggest improvements usually come from chunking the world, instancing repeated objects, reducing shadows, and avoiding per-frame allocations. Share your animation loop and renderer.info.render output, and the main bottleneck should be much easier to identify.",
+            "id": "open-web-1785557174",
+            "sig": "3l-Egvgjvego9fhVx2uQyfdvxbG_O3114zvfg8BD4eGpz-SG29tJ0QK-ruZZiEgL8kyeRiT82iIP-vv5LEWxAw",
+            "title": "speed up the world",
+            "ts": 1785557174,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 564,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "speed up the world",
+    "updatedAt": 1785557174,
+    "votes": 0
+}
