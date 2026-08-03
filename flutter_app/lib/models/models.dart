@@ -540,6 +540,9 @@ class AgentSession {
     this.ahead = -1,
     this.behind = -1,
     this.conflicted = false,
+    this.statusReason = '',
+    this.rateLimitResetAtMs = 0,
+    this.rateLimitResetAfterMs = 0,
   });
 
   final int id;
@@ -575,6 +578,9 @@ class AgentSession {
   final int ahead;
   final int behind;
   final bool conflicted;
+  final String statusReason;
+  final int rateLimitResetAtMs;
+  final int rateLimitResetAfterMs;
 
   bool get isActive {
     if (merged) return false;
@@ -600,6 +606,63 @@ class AgentSession {
       'stopped' || 'cancelled' || 'canceled' => 'Stopped',
       _ => status.isEmpty ? 'Unknown' : _titleCase(status),
     };
+  }
+
+  bool get isSuccessful {
+    if (merged) return true;
+    final normalized = status.toLowerCase().replaceAll('_', '-');
+    return normalized == 'done' ||
+        normalized == 'completed' ||
+        normalized == 'success';
+  }
+
+  bool get isFailed {
+    final normalized = status.toLowerCase().replaceAll('_', '-');
+    return normalized == 'failed' || normalized == 'error';
+  }
+
+  String get statusReasonText =>
+      statusReason.isNotEmpty ? statusReason : lastError;
+
+  String successSummaryLabel() {
+    final parts = <String>[];
+    if (numTurns > 0) parts.add('$numTurns turns');
+    if (durationLabel.isNotEmpty) parts.add(durationLabel);
+    if (costLabel.isNotEmpty) parts.add(costLabel);
+    if (diffLabel.isNotEmpty) parts.add(diffLabel);
+    final suffix = parts.isEmpty ? '' : ' · ${parts.join(' · ')}';
+    return 'Done$suffix';
+  }
+
+  String latestStatusSummary([int maxReasonLength = 120]) {
+    if (isSuccessful) return successSummaryLabel();
+    if (isFailed) {
+      final reason = statusReasonText.trim();
+      if (reason.isEmpty) return 'Failed';
+      final shortReason = _truncateText(reason, maxReasonLength);
+      return 'Failed: $shortReason';
+    }
+    return statusLabel;
+  }
+
+  String statusFailureReason(int maxLength) => _truncateText(statusReasonText, maxLength);
+
+  int remainingRateLimitResetMs({
+    DateTime? now,
+  }) {
+    final nowMs = (now ?? DateTime.now()).millisecondsSinceEpoch;
+    final atMs = rateLimitResetAtMs;
+    if (atMs <= 0) return 0;
+    return atMs - nowMs;
+  }
+
+  String rateLimitCountdownLabel({
+    DateTime? now,
+  }) {
+    final remainingMs = remainingRateLimitResetMs(now: now);
+    if (remainingMs <= 0) return '';
+    final text = _formatCompactDuration(Duration(milliseconds: remainingMs));
+    return 'Limit resets in $text';
   }
 
   String get providerLabel => switch (provider.toLowerCase()) {
@@ -660,6 +723,53 @@ class AgentSession {
     final diffStats = json['diffStats'] is Map
         ? Map<String, dynamic>.from(json['diffStats'] as Map)
         : const <String, dynamic>{};
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final parsedStatusReason = _firstModelString(
+      json,
+      ['statusReason', 'failureReason', 'reason'],
+    );
+    final resetAtCandidates = <String>[
+      'rateLimitResetAtMs',
+      'limitResetAtMs',
+      'rateLimitResetAt',
+      'limitResetAt',
+      'ratelimitResetAt',
+    ];
+    final resetAfterMsCandidates = <String>[
+      'rateLimitResetAfterMs',
+      'retryAfterMs',
+      'limitResetAfterMs',
+      'retryAfter',
+      'rateLimitResetAfter',
+      'ratelimitResetAfter',
+      'xRateLimitResetAfter',
+      'x-ratelimit-reset-after',
+      'xrateLimitResetAfter',
+    ];
+    var resetAtMs = 0;
+    for (final key in resetAtCandidates) {
+      final value = _asEpochMs(json[key]);
+      if (value > 0) {
+        resetAtMs = value;
+        break;
+      }
+    }
+    var resetAfterMs = 0;
+    for (final key in resetAfterMsCandidates) {
+      final lower = key.toLowerCase();
+      final value = _asInt(json[key]);
+      if (value > 0) {
+        if (lower.contains('after') && !lower.endsWith('ms')) {
+          resetAfterMs = value * 1000;
+        } else {
+          resetAfterMs = value;
+        }
+        break;
+      }
+    }
+    if (resetAtMs <= 0 && resetAfterMs > 0) {
+      resetAtMs = nowMs + resetAfterMs;
+    }
     return AgentSession(
       id: asInt(json['id']),
       issueNumber: asInt(json['issueNumber']),
@@ -696,6 +806,9 @@ class AgentSession {
       ahead: asOptionalInt(diffStats['ahead'] ?? json['ahead']),
       behind: asOptionalInt(diffStats['behind'] ?? json['behind']),
       conflicted: diffStats['conflicted'] == true || json['conflicted'] == true,
+      statusReason: parsedStatusReason,
+      rateLimitResetAtMs: resetAtMs,
+      rateLimitResetAfterMs: resetAfterMs,
     );
   }
 }
@@ -727,6 +840,35 @@ bool _modelBool(dynamic value) {
 }
 
 String _modelString(dynamic value) => value == null ? '' : '$value';
+
+int _asInt(dynamic value) =>
+    value is int ? value : (value is num ? value.toInt() : int.tryParse('$value') ?? 0);
+
+int _asEpochMs(dynamic value) {
+  final n = _asInt(value);
+  if (n <= 0) return 0;
+  if (n < 1_000_000_000_000) return n * 1000;
+  return n;
+}
+
+String _truncateText(String value, int maxLength) {
+  if (maxLength <= 0 || value.length <= maxLength) return value;
+  if (maxLength <= 3) return '...';
+  return '${value.substring(0, maxLength - 3)}...';
+}
+
+String _formatCompactDuration(Duration duration) {
+  final seconds = duration.inSeconds.clamp(0, 10 * 24 * 60 * 60).toInt();
+  final d = Duration(seconds: seconds);
+  final days = d.inDays;
+  final hours = d.inHours % 24;
+  final minutes = d.inMinutes % 60;
+  final secs = d.inSeconds % 60;
+  if (days > 0) return '${days}d ${hours}h';
+  if (hours > 0) return '${hours}h ${minutes}m';
+  if (minutes > 0) return '${minutes}m ${secs}s';
+  return '${secs}s';
+}
 
 String _firstModelString(Map<String, dynamic> json, List<String> keys) {
   for (final key in keys) {

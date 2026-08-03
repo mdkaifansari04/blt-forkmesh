@@ -36335,13 +36335,69 @@ def _clean_agent_session(item):
     # Bounded run-log tail for the website's live transcript view (adhoc #259);
     # empty for pushes from older desktop builds that don't send it.
     out["transcript"] = clean_string(item.get("transcript", ""), MAX_AGENT_TRANSCRIPT)
-    for field in ("status", "provider", "model", "branchName", "lastError"):
+    for field in (
+        "status",
+        "provider",
+        "model",
+        "branchName",
+        "lastError",
+        "statusReason",
+        "failureReason",
+        "reason",
+    ):
         out[field] = clean_string(item.get(field, ""), MAX_AGENT_STRING)
+    out["rateLimitResetAtMs"] = 0
+    out["rateLimitResetAfterMs"] = 0
+    for field in (
+        "rateLimitResetAtMs",
+        "limitResetAtMs",
+        "rateLimitResetAt",
+        "limitResetAt",
+        "ratelimitResetAt",
+    ):
+        try:
+            value = int(item.get(field, 0) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value <= 0:
+            continue
+        if value < 1_000_000_000_000:
+            value *= 1000
+        if out["rateLimitResetAtMs"] <= 0:
+            out["rateLimitResetAtMs"] = value
     for field in ("createdAtMs", "startedAtMs", "finishedAtMs", "numTurns", "durationMs"):
         try:
             out[field] = int(item.get(field, 0) or 0)
         except (TypeError, ValueError):
             out[field] = 0
+    for field in (
+        "rateLimitResetAfterMs",
+        "retryAfterMs",
+        "limitResetAfterMs",
+    ):
+        try:
+            value = int(item.get(field, 0) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value <= 0:
+            continue
+        if out["rateLimitResetAfterMs"] <= 0:
+            out["rateLimitResetAfterMs"] = value
+    for field in (
+        "rateLimitResetAfter",
+        "retryAfter",
+        "rateLimitReset",
+        "ratelimitResetAfter",
+        "xRateLimitResetAfter",
+        "x-ratelimit-reset-after",
+    ):
+        try:
+            value = int(item.get(field, 0) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value <= 0 or out["rateLimitResetAfterMs"] > 0:
+            continue
+        out["rateLimitResetAfterMs"] = value * 1000
     try:
         out["costUsd"] = float(item.get("costUsd", 0) or 0)
     except (TypeError, ValueError):
