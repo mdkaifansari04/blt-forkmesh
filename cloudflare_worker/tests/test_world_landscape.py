@@ -19,9 +19,11 @@ def test_world_uses_a_mixed_city_and_woodland_surface():
         '"forkmesh-town-path-junction"',
         "`forkmesh-town-path-${id}`",
         "deterministicTreeLayout().forEach",
-        '"/world/assets/city-park-grass-v1.webp"',
+        "function cityGrassTexture(THREE)",
+        "new THREE.DataTexture(",
     ):
         assert contract in scene
+    assert "city-park-grass-v1.webp" not in scene
     assert '"forkmesh-town-stone-plaza"' not in scene
     assert '"forkmesh-town-plaza-edge"' not in scene
     assert "forkmesh-town-path-edge-" not in scene
@@ -378,17 +380,23 @@ def test_connected_beach_has_local_horizon_car_and_clickable_seating():
         assert contract in scene
 
 
-def test_land_is_continuous_and_uses_preloaded_local_image_textures():
+def test_land_is_continuous_and_uses_a_cached_procedural_grass_texture():
     scene = source()
     for contract in (
         '"forkmesh-continuous-city-foundation"',
         '"forkmesh-continuous-city-land"',
-        '"/world/assets/city-park-grass-v1.webp"',
         '"/world/assets/concrete-brick-path-v1.webp"',
         "function projectAssetTexture(",
+        "const CITY_GRASS_PATTERN_SIZE = 64;",
+        "const cityGrassTextures = new WeakMap();",
+        "function cityGrassTexture(THREE)",
+        "new THREE.DataTexture(",
+        "texture.generateMipmaps = true;",
+        "cityGrassTextures.set(THREE, texture);",
         "function worldWalkSurfaceContains(",
     ):
         assert contract in scene
+    assert "city-park-grass-v1.webp" not in scene
 
 
 def test_start_here_map_persists_bounded_progress_between_visits():
