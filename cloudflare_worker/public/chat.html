@@ -1194,7 +1194,7 @@
         .chat-channel-dialog-body { padding: 14px; }
       }
     </style>
-    <link rel="stylesheet" href="/chat.css?v=1b509ed32df6" />
+    <link rel="stylesheet" href="/chat.css?v=ee0b5819fbb7" />
   </head>
   <body>
     <div class="chat-shell">
@@ -1345,6 +1345,16 @@
                 <button id="chat-mention-button" type="button" aria-label="Mention someone" title="Mention someone">
                   <span aria-hidden="true">@</span>
                 </button>
+                <!-- Which Cloudflare Workers AI model a "@forkbot …" mention is
+                     sent to. Options are filled from /api/forkbot/models, so it
+                     stays hidden on a relay that does not offer the endpoint. -->
+                <select
+                  id="chat-forkbot-model"
+                  class="chat-forkbot-model"
+                  aria-label="ForkBot AI model"
+                  title="Cloudflare AI model @forkbot mentions are sent to"
+                  hidden
+                ></select>
               </div>
               <span class="chat-composer-hint">Shift + Enter for a new line</span>
               <button id="chat-send" type="button" aria-label="Send message">

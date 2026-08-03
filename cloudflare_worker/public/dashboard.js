@@ -16023,6 +16023,68 @@
         : "text-muted-foreground");
   }
 
+  // ForkBot's Cloudflare Workers AI model pick. Stored under the same key the
+  // public chat composer uses (chat.js FORKBOT_MODEL_KEY), so picking a model in
+  // either place applies to both; the relay re-validates it and falls back to
+  // the deployment default when the pick is unknown.
+  const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";
+
+  function forkbotModelPick() {
+    try {
+      return localStorage.getItem(FORKBOT_MODEL_KEY) || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function rememberForkbotModelPick(value) {
+    try {
+      if (value) localStorage.setItem(FORKBOT_MODEL_KEY, value);
+      else localStorage.removeItem(FORKBOT_MODEL_KEY);
+    } catch (_) {
+      /* private-mode storage refusal only costs the pick its persistence */
+    }
+  }
+
+  async function loadHomeForkbotModels() {
+    const select = $("[data-home-agent-model]");
+    if (!select) return;
+    let models = [];
+    try {
+      const response = await fetch("/api/forkbot/models", {
+        headers: { accept: "application/json" },
+      });
+      if (!response.ok) return;
+      const body = await response.json().catch(() => ({}));
+      models = Array.isArray(body?.models) ? body.models : [];
+    } catch (_) {
+      return;
+    }
+    if (!models.length) return;
+    const saved = forkbotModelPick();
+    select.textContent = "";
+    for (const model of models) {
+      const id = String(model?.id || "");
+      if (!id) continue;
+      const option = document.createElement("option");
+      option.value = id;
+      option.textContent = model.default
+        ? `${model.label || id} (default)`
+        : model.label || id;
+      if (model.description) option.title = model.description;
+      if (id === saved || (!saved && model.default)) option.selected = true;
+      select.append(option);
+    }
+    if (!select.options.length) return;
+    // A saved pick this relay no longer offers falls through to the first
+    // option; clear it so the stored value cannot outlive the model.
+    if (saved && select.value !== saved) rememberForkbotModelPick("");
+    select.classList.remove("hidden");
+    select.addEventListener("change", () => {
+      rememberForkbotModelPick(select.value);
+    });
+  }
+
   function normalizeHomeForkbotMessage(message) {
     const text = String(message || "").trim();
     if (!text) return "";
@@ -16048,6 +16110,7 @@
         body: JSON.stringify({
           message,
           sender: state.session?.nodeName || "dashboard",
+          model: forkbotModelPick(),
         }),
       });
       const responseText = await response.text();
@@ -17444,6 +17507,7 @@
       closeGlobalSearch();
     }
   });
+  loadHomeForkbotModels();
   $("[data-home-repo-search]")?.addEventListener("input", () => {
     renderHomeRepositories();
   });

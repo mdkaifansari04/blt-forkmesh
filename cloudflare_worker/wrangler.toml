@@ -112,7 +112,10 @@ REWARD_HEALTH_FRESH_MS = "600000"
 # at intent detection and supports Workers AI JSON mode (response_format
 # json_schema), which _forkbot_run_ai requests first so replies are guaranteed
 # parseable; the code default (FORKBOT_AI_DEFAULT_MODEL) stays llama-3.1-8b as
-# a conservative fallback when this var is unset.
+# a conservative fallback when this var is unset. This is the DEFAULT model: a
+# chat client may send its own prompt to any other model listed by
+# GET /api/forkbot/models (FORKBOT_AI_MODEL_CHOICES), and this var's model is
+# always offered there as the default pick.
 FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 # Username moderation uses the same native Workers AI binding with a smaller,
 # JSON-capable classifier model. The local digest lookup runs first; this call

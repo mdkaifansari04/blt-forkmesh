@@ -782,7 +782,7 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=47d4343acd65" defer></script>
+    <script src="/dashboard.js?v=867dd476b28a" defer></script>
 
   </head>
   <body class="bg-background text-foreground" data-page="home">
@@ -1134,6 +1134,11 @@
                       <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>ForkBot</button>
                       <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="book-marked" class="h-3.5 w-3.5 text-muted-foreground"></i>All repositories<i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i></button>
                       <button type="button" aria-label="Add context" class="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="plus" class="h-4 w-4"></i></button>
+                      <!-- Cloudflare Workers AI model this prompt is sent to.
+                           Filled from /api/forkbot/models and shared with the
+                           chat composer's picker; hidden if the relay does not
+                           offer the endpoint. -->
+                      <select data-home-agent-model aria-label="Cloudflare AI model" title="Cloudflare AI model the prompt is sent to" class="hidden h-8 max-w-52 truncate rounded-md border border-border bg-background px-2 text-xs font-semibold text-foreground hover:bg-secondary"></select>
                     </div>
                     <div class="flex min-w-0 items-center gap-3 text-xs text-muted-foreground">
                       <span data-home-agent-status class="min-w-0 truncate">Creates signed issue inbox entries with Cloudflare AI.</span>

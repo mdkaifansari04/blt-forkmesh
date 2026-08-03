@@ -3341,6 +3341,15 @@ const QString kClaudeModelsCacheSetting = QStringLiteral("agents/claudeModelsCac
 // raw model objects so pickers can update without shipping a stale hard-coded
 // list or starting a CLI process merely to open a menu.
 const QString kCodexModelsCacheSetting = QStringLiteral("agents/codexModelsCache");
+// Cloudflare Workers AI line-up the relay currently allows, cached from
+// GET /api/forkbot/models so the composer's picker survives a restart offline
+// and never has to wait on the network to open its menu.
+const QString kCloudflareAiModelsCacheSetting =
+    QStringLiteral("agents/cloudflareAiModelsCache");
+// Which Workers AI model the composer sends a prompt to when the Cloudflare AI
+// provider is picked.
+const QString kCloudflareAiModelSetting =
+    QStringLiteral("agents/cloudflareAiModel");
 // Composer "Auto mode" toggle: true => run Claude Code unattended (skip the
 // permission prompts). Read when a transcript session launches.
 const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
@@ -3557,6 +3566,18 @@ inline bool agentUsesOpenAiKey(const QString &provider)
     return provider == QLatin1String("openai");
 }
 
+// Cloudflare Workers AI: picking one of these models in the composer sends the
+// typed prompt to the relay's Workers AI binding (POST /api/ai/ask) and shows
+// the answer. Deliberately NOT an agent provider — it starts no CLI, touches no
+// working tree, and opens no PR — but it shares the one composer model picker,
+// so every "is this an agent?" branch must exclude it explicitly.
+const QString kCloudflareAiProvider = QStringLiteral("cloudflare-ai");
+
+inline bool agentIsCloudflareAiProvider(const QString &provider)
+{
+    return provider == kCloudflareAiProvider;
+}
+
 // User's preferred default agent (Settings → Agents). One of the canonical
 // provider ids "codex", "openai", "claude-api" or "claude-code"; the quick-add
 // and issue-detail provider pickers start on this value. Falls back to OpenAI API
@@ -3591,8 +3612,10 @@ inline QString quickAddAgentProvider()
         QSettings().value(kQuickAddAgentProviderSetting).toString().trimmed();
     // "Manual (create issue)" is a quick-add-only pseudo-provider (adhoc #29): it
     // files an issue instead of running an agent, so it's not in the known-agent
-    // set but must still be restorable across launches.
-    if (value == QLatin1String("manual"))
+    // set but must still be restorable across launches. Cloudflare AI is the
+    // same kind of composer-only choice — it answers the prompt instead of
+    // starting an agent — and must likewise survive a restart.
+    if (value == QLatin1String("manual") || agentIsCloudflareAiProvider(value))
         return value;
     return agentProviderIsKnown(value) ? value : defaultAgentProvider();
 }
@@ -4112,6 +4135,91 @@ inline void populateCodexModelCombo(QComboBox *combo)
     }
 }
 
+// Static Cloudflare Workers AI line-up, mirroring the relay's allowlist
+// (FORKBOT_AI_MODEL_CHOICES in cloudflare_worker/src/entry.py). The relay is
+// the authority — it re-validates every pick and rejects anything it does not
+// offer — so this list only has to keep the picker populated before the live
+// fetch lands, offline, and on an older relay with no /api/forkbot/models.
+inline QVector<QPair<QString, QString>> cloudflareAiFallbackModels()
+{
+    return {
+        {QStringLiteral("@cf/meta/llama-3.3-70b-instruct-fp8-fast"),
+         QStringLiteral("Llama 3.3 70B")},
+        {QStringLiteral("@cf/meta/llama-4-scout-17b-16e-instruct"),
+         QStringLiteral("Llama 4 Scout 17B")},
+        {QStringLiteral("@cf/google/gemma-3-12b-it"),
+         QStringLiteral("Gemma 3 12B")},
+        {QStringLiteral("@cf/meta/llama-3.1-8b-instruct"),
+         QStringLiteral("Llama 3.1 8B")},
+        {QStringLiteral("@cf/meta/llama-3.1-8b-instruct-fast"),
+         QStringLiteral("Llama 3.1 8B fast")},
+    };
+}
+
+// A Workers AI id reads as "@cf/<vendor>/<model>"; show the model half so the
+// composer row stays as short as the Claude/Codex ones.
+inline QString cloudflareAiModelLabel(const QString &model)
+{
+    const QString id = model.trimmed();
+    if (id.isEmpty())
+        return QString();
+    for (const auto &choice : cloudflareAiFallbackModels()) {
+        if (choice.first == id)
+            return choice.second;
+    }
+    const QJsonArray live =
+        QJsonDocument::fromJson(
+            QSettings().value(kCloudflareAiModelsCacheSetting).toByteArray())
+            .array();
+    for (const QJsonValue &value : live) {
+        const QJsonObject entry = value.toObject();
+        if (entry.value(QStringLiteral("id")).toString().trimmed() != id)
+            continue;
+        const QString label =
+            entry.value(QStringLiteral("label")).toString().trimmed();
+        if (!label.isEmpty())
+            return label;
+    }
+    return id.section(QLatin1Char('/'), -1);
+}
+
+// Fill a combo with the relay's cached Workers AI line-up, falling back to the
+// static list above. Item data is the "@cf/..." id sent to /api/ai/ask; the
+// relay's own default model sorts first so an untouched picker matches what the
+// relay would have used anyway.
+inline void populateCloudflareAiModelCombo(QComboBox *combo)
+{
+    if (!combo)
+        return;
+    combo->clear();
+    combo->setEditable(false);
+    combo->setInsertPolicy(QComboBox::NoInsert);
+    combo->setProperty("allowAutoModel", false);
+    // Not a Claude combo: mergeLiveClaudeModels must leave it alone.
+    combo->setProperty("claudeModelCombo", false);
+    const QJsonArray live =
+        QJsonDocument::fromJson(
+            QSettings().value(kCloudflareAiModelsCacheSetting).toByteArray())
+            .array();
+    for (const QJsonValue &value : live) {
+        const QJsonObject entry = value.toObject();
+        const QString id = entry.value(QStringLiteral("id")).toString().trimmed();
+        if (id.isEmpty())
+            continue;
+        const QString label =
+            entry.value(QStringLiteral("label")).toString().trimmed();
+        combo->addItem(label.isEmpty() ? cloudflareAiModelLabel(id) : label, id);
+        const QString description =
+            entry.value(QStringLiteral("description")).toString().trimmed();
+        if (!description.isEmpty())
+            combo->setItemData(combo->count() - 1, description, Qt::ToolTipRole);
+    }
+    if (combo->count() > 0)
+        return;
+    for (const auto &choice : cloudflareAiFallbackModels())
+        combo->addItem(choice.second, choice.first);
+}
+
 inline void mergeLiveCodexModels(QComboBox *combo, const QJsonArray &models)
 {
     if (!combo || models.isEmpty())
@@ -4255,6 +4363,10 @@ inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())
         return QString();
+    // Workers AI ids are "@cf/<vendor>/<model>" and never appear in the map
+    // below, so they would otherwise be reported raw in status lines.
+    if (model.trimmed().startsWith(QLatin1String("@cf/")))
+        return cloudflareAiModelLabel(model);
     static const QHash<QString, QString> kLabels = {
         {QStringLiteral("auto"), QStringLiteral("Auto")},
         {QStringLiteral("opus"), QStringLiteral("Opus")},
