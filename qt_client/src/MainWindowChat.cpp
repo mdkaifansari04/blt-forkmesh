@@ -989,6 +989,8 @@ void MainWindow::loadServers()
         hostSettings, kHostsSetting, &m_hostSessionPasswords);
 
     m_servers.clear();
+    m_legacyServerUrls.clear();
+    m_legacyServerRooms.clear();
     bool migratedDefaultRoom = false;
     const QString json = QSettings().value(kServersArray).toString();
     const QJsonArray array = QJsonDocument::fromJson(json.toUtf8()).array();
@@ -997,6 +999,9 @@ void MainWindow::loadServers()
         const QString url = obj.value("url").toString().trimmed();
         if (url.isEmpty())
             continue;
+        m_legacyServerUrls.append(url);
+        m_legacyServerRooms.append(
+            obj.value("room").toString(kDefaultRoomName));
         ServerConfig server;
         server.url = canonicalServerUrl(url);
         server.room = obj.value("room").toString(kDefaultRoomName);
@@ -1013,12 +1018,15 @@ void MainWindow::loadServers()
         const bool legacyWorkersDevUrl =
             QUrl(savedUrl).host().endsWith(QStringLiteral(".workers.dev"));
         ServerConfig server;
+        const QString savedRoom =
+            QSettings().value(kRoomNameSetting, kDefaultRoomName).toString();
+        m_legacyServerUrls.append(savedUrl);
+        m_legacyServerRooms.append(savedRoom);
         server.url = (savedUrl.isEmpty() || savedUrl == kLocalServerUrl ||
                       legacyWorkersDevUrl)
                          ? kDefaultServerUrl
                          : savedUrl;
-        server.room =
-            QSettings().value(kRoomNameSetting, kDefaultRoomName).toString();
+        server.room = savedRoom;
         migratedDefaultRoom |=
             forkmesh::mainnode::migrateSavedDefaultRoom(
                 &server.url, &server.room);
@@ -1144,9 +1152,12 @@ void MainWindow::promptAddServer()
     server.url = urlEdit->text().trimmed();
     if (server.url.isEmpty())
         server.url = kDefaultServerUrl;
+    const QString legacyUrl = server.url;
     server.url = canonicalServerUrl(server.url);
     server.room = kDefaultRoomName;
     m_servers.append(server);
+    m_legacyServerUrls.append(legacyUrl);
+    m_legacyServerRooms.append(server.room);
     const int newIndex = m_servers.size() - 1;
     saveServers();
     updateBreadcrumb();
@@ -1166,6 +1177,10 @@ void MainWindow::removeServer(int index)
 
     const bool removingActive = (index == m_activeServer);
     m_servers.removeAt(index);
+    if (index < m_legacyServerUrls.size())
+        m_legacyServerUrls.removeAt(index);
+    if (index < m_legacyServerRooms.size())
+        m_legacyServerRooms.removeAt(index);
     if (m_activeServer > index)
         --m_activeServer;
     if (m_activeServer >= m_servers.size())

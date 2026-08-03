@@ -4900,6 +4900,9 @@ private:
     void saveIncomingFile(const QString &fileName, const QByteArray &data);
     // Local chat history persistence (per active server/room).
     QString chatHistoryKey() const;
+    QString chatHistoryPathForServerUrl(const QString &serverUrl,
+                                        const QString &room) const;
+    QStringList chatHistoryCompatibilityPaths() const;
     QString chatHistoryPath() const;
     void saveChatHistory();
     void loadChatHistory();
@@ -5120,6 +5123,11 @@ private:
 
     // Configured mainnode relays (switched via the top-bar relay dropdown).
     QList<ServerConfig> m_servers;
+    // URL values from the persisted server list before canonicalization. Chat
+    // history used these raw values in older releases, so retain them for a
+    // one-time history-file migration after the relay URL format changed.
+    QStringList m_legacyServerUrls;
+    QStringList m_legacyServerRooms;
     int m_activeServer = 0;
     QHash<QString, QPixmap> m_faviconCache; // host -> favicon
     QSet<QString> m_faviconFetching;        // hosts with an in-flight favicon GET
