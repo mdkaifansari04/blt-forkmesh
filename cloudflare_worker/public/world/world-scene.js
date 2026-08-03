@@ -578,6 +578,11 @@ const REPOSITORY_CATALOG_MAX = 200;
 const REPOSITORY_EDGE_RADIUS = 68;
 const REPOSITORY_DOME_RADIUS = REPOSITORY_GROUND_RADIUS - 1.5;
 const REPOSITORY_DOME_DETAIL = 2;
+// Reveal the dome interior only after the avatar has fully crossed the shell.
+// A small exit margin prevents repeated visibility flips while walking along
+// the geodesic boundary.
+const REPOSITORY_DOME_ENTER_RADIUS = REPOSITORY_DOME_RADIUS - 0.75;
+const REPOSITORY_DOME_EXIT_RADIUS = REPOSITORY_DOME_RADIUS + 0.75;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -10795,15 +10800,15 @@ function createRepositoryGeodesicDome(THREE) {
   const dome = new THREE.Group();
   dome.name = "repository-geodesic-dome";
 
-  // Build the upper half of an icosphere as individual struts instead of a
-  // translucent shell. The repository ring remains fully readable from every
-  // side while its triangular frame makes the district feel like one covered
-  // space rather than another open plaza.
+  // Build an opaque upper icosphere. Its white triangular panels conceal the
+  // repository scene from outside; the contents are enabled separately only
+  // after the local visitor crosses the shell.
   const source = new THREE.IcosahedronGeometry(
     REPOSITORY_DOME_RADIUS,
     REPOSITORY_DOME_DETAIL,
   );
   const vertices = source.getAttribute("position");
+  const shellPositions = [];
   const strutPositions = [];
   const seenEdges = new Set();
   const floorCutoff = -REPOSITORY_DOME_RADIUS * 0.04;
@@ -10840,20 +10845,55 @@ function createRepositoryGeodesicDome(THREE) {
       readVertex(index + 1),
       readVertex(index + 2),
     ];
+    const triangleHeight = triangle.reduce(
+      (total, vertex) => total + vertex.y,
+      0,
+    ) / triangle.length;
+    // Keep every face whose center is above the floor plane. Boundary faces
+    // extend below the terrain instead of leaving visible triangular holes.
+    if (triangleHeight >= floorCutoff) {
+      triangle.forEach((vertex) => {
+        shellPositions.push(vertex.x, vertex.y, vertex.z);
+      });
+    }
     addStrut(triangle[0], triangle[1]);
     addStrut(triangle[1], triangle[2]);
     addStrut(triangle[2], triangle[0]);
   }
   source.dispose();
 
+  const shellGeometry = new THREE.BufferGeometry();
+  shellGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(shellPositions, 3),
+  );
+  shellGeometry.computeVertexNormals();
+  const shell = new THREE.Mesh(
+    shellGeometry,
+    makeMaterial(THREE, "#ffffff", {
+      emissive: "#4a4a4a",
+      emissiveIntensity: 0.16,
+      metalness: 0,
+      roughness: 0.78,
+      transparent: false,
+      opacity: 1,
+      depthWrite: true,
+      side: THREE.DoubleSide,
+      flatShading: true,
+    }),
+  );
+  shell.name = "repository-geodesic-dome-shell";
+  shell.userData.repositoryDomeFrame = true;
+  dome.add(shell);
+
   const strutGeometry = new THREE.CylinderGeometry(0.032, 0.032, 1, 6);
-  const strutMaterial = makeMaterial(THREE, "#8ce8ff", {
-    emissive: "#1e637c",
-    emissiveIntensity: 0.42,
-    transparent: true,
-    opacity: 0.58,
-    depthWrite: false,
-    roughness: 0.34,
+  const strutMaterial = makeMaterial(THREE, "#ffffff", {
+    emissive: "#666666",
+    emissiveIntensity: 0.2,
+    transparent: false,
+    opacity: 1,
+    depthWrite: true,
+    roughness: 0.5,
   });
   const struts = new THREE.InstancedMesh(
     strutGeometry,
@@ -10895,12 +10935,12 @@ function createRepositoryGeodesicDome(THREE) {
       8,
       144,
     ),
-    makeMaterial(THREE, "#77d9ff", {
-      emissive: "#1e637c",
-      emissiveIntensity: 0.64,
-      transparent: true,
-      opacity: 0.72,
-      roughness: 0.36,
+    makeMaterial(THREE, "#ffffff", {
+      emissive: "#666666",
+      emissiveIntensity: 0.2,
+      transparent: false,
+      opacity: 1,
+      roughness: 0.5,
     }),
   );
   foundation.name = "repository-geodesic-dome-foundation";
@@ -10916,9 +10956,14 @@ function createRepositoryGeodesicDome(THREE) {
 
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
+  const interior = new THREE.Group();
+  interior.name = "repository-geodesic-dome-interior";
+  interior.visible = false;
+  interior.userData.repositoryDomeInterior = true;
+  group.add(interior);
   // Match the concrete apron to the live repository ring instead of leaving
   // an oversized blue foundation behind at the former landmark position.
-  group.add(
+  interior.add(
     createDistrictGroundCircle(
       THREE,
       "repositories",
@@ -11003,13 +11048,14 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   // globe/ring/upright centerpiece from the district.
   portal.visible = false;
   portal.userData.legacyPortalHidden = true;
-  group.add(portal);
+  interior.add(portal);
 
   group.position.set(...position);
   group.userData.landmark = "repositories";
   group.userData.fileMeshes = files;
   group.userData.legacyFiles = legacyFiles;
   group.userData.portal = portal;
+  group.userData.repositoryDomeInterior = interior;
   portal.userData.repositoryCore = repositoryCore;
   portal.userData.repositoryOrbitLayer = null;
   portal.userData.repositorySizeLayer = null;
@@ -11108,7 +11154,7 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   kioskSign.scale.set(2.8, 0.78, 1);
   kioskSign.position.set(0, 4.35, 0);
   importKiosk.add(kioskSign);
-  group.add(importKiosk);
+  interior.add(importKiosk);
   group.userData.repositoryImportKiosk = importKiosk;
   importKiosk.userData.importBeam = importBeam;
   importKiosk.userData.importSpark = importSpark;
@@ -19272,6 +19318,7 @@ export function createWorldScene({
     : Math.PI;
   world.add(player);
   registerWorldElement("player-avatar", "Your avatar", "Avatars & bots", player);
+  let repositoryDomeOccupied = false;
 
   // A hidden Object3D stops draw calls, but Three.js deliberately retains
   // every buffer and texture it uploaded for that object. On unified-memory
@@ -19337,7 +19384,12 @@ export function createWorldScene({
   function syncCompactDistrictRoot(district, root) {
     if (!root) return;
     const resident = district.resident !== false;
-    root.visible = resident;
+    root.visible =
+      resident &&
+      (
+        root.userData.repositoryDomeInterior !== true ||
+        repositoryDomeOccupied
+      );
     root.userData.compactDistrictResident = resident;
     if (resident) return;
     const released = releaseCompactDistrictGpuResources(root);
@@ -19379,7 +19431,13 @@ export function createWorldScene({
         // can legitimately change root.visible between residency samples.
         // Reassert the cold boundary without re-disposing an untouched root.
         district.roots.forEach((root) => {
-          if (root.visible !== nextResident) {
+          const shouldDraw =
+            nextResident &&
+            (
+              root.userData.repositoryDomeInterior !== true ||
+              repositoryDomeOccupied
+            );
+          if (root.visible !== shouldDraw) {
             syncCompactDistrictRoot(district, root);
           }
         });
@@ -19389,6 +19447,36 @@ export function createWorldScene({
       district.resident = nextResident;
       district.roots.forEach((root) => syncCompactDistrictRoot(district, root));
     });
+  }
+
+  function updateRepositoryDomeOccupancy(force = false) {
+    const district = landmarkObjects.get("repositories");
+    if (!district) return false;
+    const distance = Math.hypot(
+      player.position.x - district.position.x,
+      player.position.z - district.position.z,
+    );
+    const boundary = repositoryDomeOccupied
+      ? REPOSITORY_DOME_EXIT_RADIUS
+      : REPOSITORY_DOME_ENTER_RADIUS;
+    const occupied = distance <= boundary;
+    if (!force && occupied === repositoryDomeOccupied) return occupied;
+    repositoryDomeOccupied = occupied;
+    world.userData.repositoryDomeOccupied = occupied;
+    const interior = district.userData.repositoryDomeInterior;
+    if (interior) interior.visible = occupied;
+    const catalog = world.userData.repositoryCatalogLayer;
+    if (catalog) {
+      if (compactRenderer) {
+        syncCompactDistrictRoot(
+          compactDistricts.get("repositories"),
+          catalog,
+        );
+      } else {
+        catalog.visible = occupied;
+      }
+    }
+    return occupied;
   }
 
   function compactDistrictDiagnostics() {
@@ -19447,6 +19535,7 @@ export function createWorldScene({
     beachHorizon,
     ...carStates.map((state) => state.car),
   ]);
+  updateRepositoryDomeOccupancy(true);
   // The camera used to start at CAMERA_OFFSET relative to the world origin
   // even though the avatar starts elsewhere. It then spent the first visible
   // second easing across the map, which made the first movement input feel
@@ -30848,8 +30937,10 @@ export function createWorldScene({
       });
     });
 
+    layer.userData.repositoryDomeInterior = true;
     world.add(layer);
     registerCompactDistrictRoot("repositories", layer);
+    updateRepositoryDomeOccupancy(true);
     Object.values(materials).forEach((material) => {
       if (!usedMaterials.has(material)) material.dispose();
     });
@@ -34223,6 +34314,7 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
+    updateRepositoryDomeOccupancy();
     if (officeSceneMode === "town") {
       const insideInstanceBooth =
         Math.abs(player.position.x - instanceBooth.position.x) < 9.7 &&
