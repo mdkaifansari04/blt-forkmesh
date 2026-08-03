@@ -8786,6 +8786,52 @@ function createDistrictGroundCircle(
   return ground;
 }
 
+function createLeaderboardOpaqueCover(THREE) {
+  // Eight wall facets and eight roof facets are enough to cover the circular
+  // district. The shell is intentionally single-sided: it is solid from the
+  // outside, then its back faces disappear naturally once the camera enters.
+  const sides = 8;
+  const wallHeight = 25.5;
+  const roofHeight = 9.5;
+  const apothem = DISTRICT_GROUND_RADIUS + 0.6;
+  const radius = apothem / Math.cos(Math.PI / sides);
+  const positions = [];
+  const point = (index, y) => {
+    const angle = ((index + 0.5) / sides) * Math.PI * 2;
+    return [Math.cos(angle) * radius, y, Math.sin(angle) * radius];
+  };
+  const addTriangle = (...vertices) => {
+    vertices.forEach((vertex) => positions.push(...vertex));
+  };
+  const apex = [0, wallHeight + roofHeight, 0];
+  for (let index = 0; index < sides; index += 1) {
+    const lower = point(index, 0);
+    const upper = point(index, wallHeight);
+    const nextLower = point(index + 1, 0);
+    const nextUpper = point(index + 1, wallHeight);
+    addTriangle(lower, upper, nextLower);
+    addTriangle(nextLower, upper, nextUpper);
+    addTriangle(upper, apex, nextUpper);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(positions, 3),
+  );
+  geometry.computeVertexNormals();
+  const cover = new THREE.Mesh(
+    geometry,
+    makeMaterial(THREE, "#102b27", {
+      metalness: 0.02,
+      roughness: 0.94,
+      side: THREE.FrontSide,
+    }),
+  );
+  cover.name = "forkmesh-leaderboard-opaque-cover";
+  cover.userData.interactive = "leaderboard-cover";
+  return cover;
+}
+
 const START_HERE_STEPS = Object.freeze([
   Object.freeze({ id: "start", label: "Find yourself on this map" }),
   Object.freeze({ id: "people", label: "Meet people at the Members Circle" }),
@@ -17473,6 +17519,11 @@ export function createWorldScene({
   leaderboardDistrict.add(
     createDistrictGroundCircle(THREE, "leaderboards"),
   );
+  const leaderboardCover = createLeaderboardOpaqueCover(THREE);
+  leaderboardDistrict.add(leaderboardCover);
+  // The same one-sided surface that hides the boards also prevents selecting
+  // them through the shell. Rays cast from inside hit only its culled backs.
+  interactive.push(leaderboardCover);
   const leaderboardBeacon = new THREE.Mesh(
     new THREE.CylinderGeometry(3.1, 4.2, 0.7, 24),
     makeMaterial(THREE, "#173c35", {

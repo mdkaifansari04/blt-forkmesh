@@ -152,6 +152,26 @@ def test_leaderboards_have_one_square_raised_grid_without_circle_boards():
     assert '"forkmesh-leaderboard-ring-walk"' not in scene
 
 
+def test_leaderboard_circle_has_a_minimal_one_sided_opaque_cover():
+    scene = source()
+    cover = scene.split(
+        "function createLeaderboardOpaqueCover(THREE)", 1
+    )[1].split("const START_HERE_STEPS", 1)[0]
+    district = scene.split(
+        'leaderboardDistrict.name = "forkmesh-leaderboard-district"', 1
+    )[1].split("const leaderboardBeacon", 1)[0]
+    assert "const sides = 8;" in cover
+    assert "const wallHeight = 25.5;" in cover
+    assert "const roofHeight = 9.5;" in cover
+    assert "new THREE.BufferGeometry()" in cover
+    assert "side: THREE.FrontSide" in cover
+    assert 'cover.name = "forkmesh-leaderboard-opaque-cover"' in cover
+    assert "transparent:" not in cover
+    assert "createLeaderboardOpaqueCover(THREE)" in district
+    assert "leaderboardDistrict.add(leaderboardCover)" in district
+    assert "interactive.push(leaderboardCover)" in district
+
+
 def test_two_clickable_bikes_use_normal_movement_and_collision():
     scene = source()
     for contract in (
