@@ -578,6 +578,11 @@ const REPOSITORY_CATALOG_MAX = 200;
 const REPOSITORY_EDGE_RADIUS = 68;
 const REPOSITORY_DOME_RADIUS = REPOSITORY_GROUND_RADIUS - 1.5;
 const REPOSITORY_DOME_DETAIL = 2;
+// Reveal the dome interior only after the avatar has fully crossed the shell.
+// A small exit margin prevents repeated visibility flips while walking along
+// the geodesic boundary.
+const REPOSITORY_DOME_ENTER_RADIUS = REPOSITORY_DOME_RADIUS - 0.75;
+const REPOSITORY_DOME_EXIT_RADIUS = REPOSITORY_DOME_RADIUS + 0.75;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -5202,32 +5207,39 @@ function newestMemberName(members) {
   return newest;
 }
 
-function campfireMemberCountTexture(THREE, total, newest = "") {
+function membersYurtDoorTexture(THREE, total, newest = "") {
   const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
   const latest = String(newest || "").trim().slice(0, 18);
-  return canvasTexture(THREE, 1024, 384, (context) => {
-    context.clearRect(0, 0, 1024, 384);
+  return canvasTexture(THREE, 1024, 512, (context) => {
+    const gradient = context.createLinearGradient(0, 0, 0, 512);
+    gradient.addColorStop(0, "#724620");
+    gradient.addColorStop(1, "#3d2412");
+    context.fillStyle = gradient;
+    context.fillRect(0, 0, 1024, 512);
+    context.strokeStyle = "#d8aa62";
+    context.lineWidth = 20;
+    context.strokeRect(16, 16, 992, 480);
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.shadowColor = "rgba(255,91,20,0.92)";
-    context.shadowBlur = 28;
-    context.font = '900 132px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillStyle = "#fff7d6";
-    context.fillText(count.toLocaleString(), 512, 88);
-    context.shadowBlur = 14;
+    context.shadowColor = "rgba(0,0,0,0.72)";
+    context.shadowBlur = 10;
+    context.font = '900 72px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#ffe6a6";
+    context.fillText("MEMBERS CENTER", 512, 92);
+    context.font = '900 112px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#ffffff";
+    context.fillText(
+      `${count.toLocaleString()} ${count === 1 ? "MEMBER" : "MEMBERS"}`,
+      512,
+      238,
+    );
     context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillStyle = "#ffcb72";
-    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 512, 181);
-    if (!latest) return;
-    context.font = '800 28px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillStyle = "#ffbd7a";
-    context.fillText("✦ NEWEST MEMBER ✦", 512, 257);
-    context.shadowColor = "rgba(255,196,87,0.96)";
-    context.shadowBlur = 22;
-    const newestSize = latest.length > 13 ? 54 : latest.length > 9 ? 62 : 72;
-    context.font = `900 ${newestSize}px "ForkMesh Mono", ui-monospace, monospace`;
-    context.fillStyle = "#fff5d9";
-    context.fillText(latest.toUpperCase(), 512, 329);
+    context.fillStyle = "#ffd27a";
+    context.fillText(
+      latest ? `LATEST · ${latest.toUpperCase()}` : "LATEST · WELCOME IN",
+      512,
+      390,
+    );
   });
 }
 
@@ -10834,15 +10846,15 @@ function createRepositoryGeodesicDome(THREE) {
   const dome = new THREE.Group();
   dome.name = "repository-geodesic-dome";
 
-  // Build the upper half of an icosphere as individual struts instead of a
-  // translucent shell. The repository ring remains fully readable from every
-  // side while its triangular frame makes the district feel like one covered
-  // space rather than another open plaza.
+  // Build an opaque upper icosphere. Its white triangular panels conceal the
+  // repository scene from outside; the contents are enabled separately only
+  // after the local visitor crosses the shell.
   const source = new THREE.IcosahedronGeometry(
     REPOSITORY_DOME_RADIUS,
     REPOSITORY_DOME_DETAIL,
   );
   const vertices = source.getAttribute("position");
+  const shellPositions = [];
   const strutPositions = [];
   const seenEdges = new Set();
   const floorCutoff = -REPOSITORY_DOME_RADIUS * 0.04;
@@ -10879,20 +10891,55 @@ function createRepositoryGeodesicDome(THREE) {
       readVertex(index + 1),
       readVertex(index + 2),
     ];
+    const triangleHeight = triangle.reduce(
+      (total, vertex) => total + vertex.y,
+      0,
+    ) / triangle.length;
+    // Keep every face whose center is above the floor plane. Boundary faces
+    // extend below the terrain instead of leaving visible triangular holes.
+    if (triangleHeight >= floorCutoff) {
+      triangle.forEach((vertex) => {
+        shellPositions.push(vertex.x, vertex.y, vertex.z);
+      });
+    }
     addStrut(triangle[0], triangle[1]);
     addStrut(triangle[1], triangle[2]);
     addStrut(triangle[2], triangle[0]);
   }
   source.dispose();
 
+  const shellGeometry = new THREE.BufferGeometry();
+  shellGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(shellPositions, 3),
+  );
+  shellGeometry.computeVertexNormals();
+  const shell = new THREE.Mesh(
+    shellGeometry,
+    makeMaterial(THREE, "#ffffff", {
+      emissive: "#4a4a4a",
+      emissiveIntensity: 0.16,
+      metalness: 0,
+      roughness: 0.78,
+      transparent: false,
+      opacity: 1,
+      depthWrite: true,
+      side: THREE.DoubleSide,
+      flatShading: true,
+    }),
+  );
+  shell.name = "repository-geodesic-dome-shell";
+  shell.userData.repositoryDomeFrame = true;
+  dome.add(shell);
+
   const strutGeometry = new THREE.CylinderGeometry(0.032, 0.032, 1, 6);
-  const strutMaterial = makeMaterial(THREE, "#8ce8ff", {
-    emissive: "#1e637c",
-    emissiveIntensity: 0.42,
-    transparent: true,
-    opacity: 0.58,
-    depthWrite: false,
-    roughness: 0.34,
+  const strutMaterial = makeMaterial(THREE, "#ffffff", {
+    emissive: "#666666",
+    emissiveIntensity: 0.2,
+    transparent: false,
+    opacity: 1,
+    depthWrite: true,
+    roughness: 0.5,
   });
   const struts = new THREE.InstancedMesh(
     strutGeometry,
@@ -10934,12 +10981,12 @@ function createRepositoryGeodesicDome(THREE) {
       8,
       144,
     ),
-    makeMaterial(THREE, "#77d9ff", {
-      emissive: "#1e637c",
-      emissiveIntensity: 0.64,
-      transparent: true,
-      opacity: 0.72,
-      roughness: 0.36,
+    makeMaterial(THREE, "#ffffff", {
+      emissive: "#666666",
+      emissiveIntensity: 0.2,
+      transparent: false,
+      opacity: 1,
+      roughness: 0.5,
     }),
   );
   foundation.name = "repository-geodesic-dome-foundation";
@@ -10955,9 +11002,14 @@ function createRepositoryGeodesicDome(THREE) {
 
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
+  const interior = new THREE.Group();
+  interior.name = "repository-geodesic-dome-interior";
+  interior.visible = false;
+  interior.userData.repositoryDomeInterior = true;
+  group.add(interior);
   // Match the concrete apron to the live repository ring instead of leaving
   // an oversized blue foundation behind at the former landmark position.
-  group.add(
+  interior.add(
     createDistrictGroundCircle(
       THREE,
       "repositories",
@@ -11042,13 +11094,14 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   // globe/ring/upright centerpiece from the district.
   portal.visible = false;
   portal.userData.legacyPortalHidden = true;
-  group.add(portal);
+  interior.add(portal);
 
   group.position.set(...position);
   group.userData.landmark = "repositories";
   group.userData.fileMeshes = files;
   group.userData.legacyFiles = legacyFiles;
   group.userData.portal = portal;
+  group.userData.repositoryDomeInterior = interior;
   portal.userData.repositoryCore = repositoryCore;
   portal.userData.repositoryOrbitLayer = null;
   portal.userData.repositorySizeLayer = null;
@@ -11147,7 +11200,7 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   kioskSign.scale.set(2.8, 0.78, 1);
   kioskSign.position.set(0, 4.35, 0);
   importKiosk.add(kioskSign);
-  group.add(importKiosk);
+  interior.add(importKiosk);
   group.userData.repositoryImportKiosk = importKiosk;
   importKiosk.userData.importBeam = importBeam;
   importKiosk.userData.importSpark = importSpark;
@@ -18154,6 +18207,135 @@ export function createWorldScene({
   campfireGround.position.y = WORLD_PATH_SURFACE_Y + 0.01;
   campfireGround.receiveShadow = true;
   campfire.add(campfireGround);
+
+  // The directory can grow without making the scene grow: the whole Members
+  // Center is represented by one permanent yurt instead of one bench and one
+  // avatar for every registered account. The entrance faces the Town Square.
+  const MEMBERS_YURT_RADIUS = 12;
+  campfireGround.scale.setScalar(MEMBERS_YURT_RADIUS + 0.8);
+  const membersYurt = new THREE.Group();
+  membersYurt.name = "members-center-yurt";
+  const yurtWallMaterial = makeMaterial(THREE, "#d9c49a", {
+    roughness: 0.92,
+  });
+  const yurtWalls = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      MEMBERS_YURT_RADIUS,
+      MEMBERS_YURT_RADIUS,
+      5.8,
+      40,
+      1,
+      true,
+    ),
+    yurtWallMaterial,
+  );
+  yurtWalls.name = "members-yurt-walls";
+  yurtWalls.position.y = 2.95;
+  yurtWalls.castShadow = true;
+  yurtWalls.receiveShadow = true;
+  membersYurt.add(yurtWalls);
+
+  // Horizontal bands and roof ribs keep the large, low-cost shell readable as
+  // a traditional round tent without adding any roster-dependent geometry.
+  [0.8, 2.4, 4.2, 5.65].forEach((height, index) => {
+    const band = new THREE.Mesh(
+      new THREE.TorusGeometry(MEMBERS_YURT_RADIUS + 0.035, 0.09, 6, 40),
+      makeMaterial(THREE, index % 2 ? "#895429" : "#a86d35", {
+        roughness: 0.9,
+      }),
+    );
+    band.name = `members-yurt-wall-band-${index + 1}`;
+    band.rotation.x = Math.PI / 2;
+    band.position.y = height;
+    membersYurt.add(band);
+  });
+  const yurtRoof = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.68, MEMBERS_YURT_RADIUS + 0.45, 5.2, 40, 1, true),
+    makeMaterial(THREE, "#8f3429", { roughness: 0.88 }),
+  );
+  yurtRoof.name = "members-yurt-roof";
+  yurtRoof.position.y = 8.45;
+  yurtRoof.castShadow = true;
+  yurtRoof.receiveShadow = true;
+  membersYurt.add(yurtRoof);
+
+  const yurtDoor = new THREE.Mesh(
+    new THREE.BoxGeometry(3.5, 4.5, 0.32),
+    makeMaterial(THREE, "#29180f", { roughness: 0.95 }),
+  );
+  yurtDoor.name = "members-yurt-door";
+  yurtDoor.position.set(0, 2.25, -MEMBERS_YURT_RADIUS - 0.12);
+  yurtDoor.userData.membersYurtDoor = true;
+  interactive.push(yurtDoor);
+  membersYurt.add(yurtDoor);
+  [-1.95, 1.95].forEach((x) => {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.3, 5, 0.38),
+      makeMaterial(THREE, "#6e421f", { roughness: 0.9 }),
+    );
+    post.position.set(x, 2.5, -MEMBERS_YURT_RADIUS - 0.3);
+    post.castShadow = true;
+    membersYurt.add(post);
+  });
+  const lintel = new THREE.Mesh(
+    new THREE.BoxGeometry(4.25, 0.34, 0.42),
+    makeMaterial(THREE, "#6e421f", { roughness: 0.9 }),
+  );
+  lintel.position.set(0, 4.88, -MEMBERS_YURT_RADIUS - 0.3);
+  lintel.castShadow = true;
+  membersYurt.add(lintel);
+
+  const memberDoorInfo = new THREE.Mesh(
+    new THREE.PlaneGeometry(6.2, 3.1),
+    new THREE.MeshBasicMaterial({
+      transparent: true,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  memberDoorInfo.name = "members-yurt-door-member-info";
+  memberDoorInfo.position.set(4.95, 3.9, -MEMBERS_YURT_RADIUS - 0.5);
+  memberDoorInfo.renderOrder = 12;
+  membersYurt.add(memberDoorInfo);
+
+  // The flue rises directly over the central fire. It is fixed geometry, so
+  // member growth changes only the entrance texture rather than draw count.
+  const yurtChimney = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.58, 0.72, 5.8, 18),
+    makeMaterial(THREE, "#353638", {
+      roughness: 0.72,
+      metalness: 0.32,
+    }),
+  );
+  yurtChimney.name = "members-yurt-central-chimney";
+  yurtChimney.position.y = 12.45;
+  yurtChimney.castShadow = true;
+  membersYurt.add(yurtChimney);
+  const chimneyCap = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.86, 0.68, 0.24, 18),
+    makeMaterial(THREE, "#242527", { roughness: 0.78, metalness: 0.3 }),
+  );
+  chimneyCap.position.y = 15.45;
+  membersYurt.add(chimneyCap);
+  campfire.add(membersYurt);
+
+  let memberDoorInfoShown = "";
+  function setMembersYurtDoorInfo(total, newest = "") {
+    const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
+    const latest = String(newest || "").trim().slice(0, 18);
+    const key = `${count}|${latest}`;
+    if (memberDoorInfoShown === key) return;
+    memberDoorInfoShown = key;
+    memberDoorInfo.material.map?.dispose?.();
+    memberDoorInfo.material.map = membersYurtDoorTexture(
+      THREE,
+      count,
+      latest,
+    );
+    memberDoorInfo.material.needsUpdate = true;
+  }
+  setMembersYurtDoorInfo(0, "");
+
   const firePit = new THREE.Mesh(
     new THREE.CylinderGeometry(1.45, 1.65, 0.22, 16),
     makeMaterial(THREE, "#4a4038", { roughness: 0.9 }),
@@ -18212,47 +18394,6 @@ export function createWorldScene({
       burningLogs.add(coal);
     }
   }
-  const logPile = new THREE.Group();
-  logPile.name = "campfire-log-pile";
-  campfire.add(logPile);
-  let memberLogCount = -1;
-  function rebuildCampfireMemberLogs(total) {
-    const count = Math.max(0, Math.min(512, Math.round(Number(total) || 0)));
-    if (memberLogCount === count) return;
-    memberLogCount = count;
-    logPile.traverse((child) => {
-      if (!child.isMesh) return;
-      const interactiveIndex = interactive.indexOf(child);
-      if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
-      child.geometry?.dispose?.();
-      child.material?.dispose?.();
-    });
-    logPile.clear();
-    const columns = Math.max(3, Math.ceil(Math.sqrt(Math.max(1, count))));
-    for (let index = 0; index < count; index += 1) {
-      const row = Math.floor(index / columns);
-      const column = index % columns;
-      const log = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.105, 0.115, 1.05, 10),
-        makeMaterial(
-          THREE,
-          index % 3 === 0 ? "#855638" : "#70472a",
-          { roughness: 0.9 },
-        ),
-      );
-      log.rotation.z = Math.PI / 2;
-      log.rotation.y = (index % 2 ? 1 : -1) * 0.12;
-      log.position.set(
-        -2.65 + column * 0.19,
-        0.14 + row * 0.17,
-        1.72 + (column % 2) * 0.12,
-      );
-      log.userData.campfireLog = true;
-      log.userData.memberLogIndex = index;
-      logPile.add(log);
-      interactive.push(log);
-    }
-  }
   const proceduralFire = createProceduralCampfireEffect(THREE);
   const FLAME_HEIGHT = 1.4;
   const FLAME_BASE_Y = 0.28;
@@ -18276,82 +18417,16 @@ export function createWorldScene({
   fireLight.position.y = FLAME_BASE_Y + FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL * 0.5;
   fireLight.castShadow = false;
   campfire.add(fireLight);
-  const memberCountSprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-      toneMapped: false,
-    }),
-  );
-  memberCountSprite.name = "campfire-member-count-high";
-  memberCountSprite.position.y = 13.5;
-  memberCountSprite.scale.set(10.8, 4.05, 1);
-  memberCountSprite.renderOrder = 12;
-  memberCountSprite.visible = false;
-  campfire.add(memberCountSprite);
-  const newestMemberSparkles = new THREE.Points(
-    new THREE.BufferGeometry().setFromPoints(
-      Array.from({ length: 20 }, (_, index) => {
-        const angle = (index / 20) * Math.PI * 2;
-        const radius = index % 2 ? 3.1 : 3.7;
-        return new THREE.Vector3(
-          Math.cos(angle) * radius,
-          Math.sin(angle) * 0.62,
-          0,
-        );
-      }),
-    ),
-    new THREE.PointsMaterial({
-      color: "#fff4b8",
-      size: 0.23,
-      transparent: true,
-      opacity: 0.95,
-      depthTest: false,
-      depthWrite: false,
-      toneMapped: false,
-    }),
-  );
-  newestMemberSparkles.name = "campfire-newest-member-name-sparkles";
-  newestMemberSparkles.position.y = 12.35;
-  newestMemberSparkles.renderOrder = 13;
-  newestMemberSparkles.visible = false;
-  campfire.add(newestMemberSparkles);
   let memberCountShown = "";
-  // The count is a clean, transparent landmark high above the flames: it
-  // remains legible across the square without putting a plate or label in the
-  // entrance or the open centre of the member rings.
+  // Member data belongs at the entrance. Nothing over the fire changes with
+  // the roster, and no per-member logs, benches, labels, or avatars are built.
   function setCampfireMemberCount(total, newest = "") {
     const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
     const latest = String(newest || "").trim().slice(0, 18);
     const key = `${count}|${latest}`;
     if (memberCountShown === key) return;
     memberCountShown = key;
-    memberCountSprite.material.map?.dispose?.();
-    memberCountSprite.material.map = campfireMemberCountTexture(
-      THREE,
-      count,
-      latest,
-    );
-    memberCountSprite.material.needsUpdate = true;
-    memberCountSprite.visible = true;
-    newestMemberSparkles.visible = Boolean(latest);
-    // Each member contributes one visible log; the fire itself only grows on
-    // the hundreds, so passing a century is a visible event around the circle.
-    rebuildCampfireMemberLogs(count);
-    const fireCenturies = Math.floor(count / 100);
-    fireLevel = clamp(
-      CAMPFIRE_BASE_FIRE_LEVEL + fireCenturies * CAMPFIRE_FIRE_LEVEL_PER_CENTURY,
-      CAMPFIRE_BASE_FIRE_LEVEL,
-      CAMPFIRE_MAX_FIRE_LEVEL,
-    );
-    fireLight.distance = 16 + Math.min(fireCenturies, 7) * 2.4;
-    if (reducedMotion) {
-      const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;
-      const fireWidthScale =
-        CAMPFIRE_BASE_FIRE_LEVEL * (1 + (fireGrowth - 1) * 0.32);
-      proceduralFire.scale.set(fireWidthScale, fireLevel, fireWidthScale);
-    }
+    setMembersYurtDoorInfo(count, latest);
   }
   animated.push((time) => {
     const seconds = time * 0.001;
@@ -18410,36 +18485,6 @@ export function createWorldScene({
       FLAME_BASE_Y + FLAME_HEIGHT * fireLevel * 0.5 + slowFlicker * 0.09,
       Math.sin(time * 0.0033 + slowFlicker * 1.4) * 0.11,
     );
-    memberCountSprite.position.y =
-      13.5 + (reducedMotion ? 0 : Math.sin(time * 0.0015) * 0.18);
-    newestMemberSparkles.position.y = memberCountSprite.position.y - 1.15;
-    if (!reducedMotion) newestMemberSparkles.rotation.z = time * 0.0008;
-    newestMemberSparkles.material.opacity = reducedMotion
-      ? 0.9
-      : 0.7 + Math.sin(time * 0.009) * 0.25;
-  });
-  // The real bench count depends on the member roster, which is still an
-  // in-flight network request when the scene first renders. Rather than
-  // seat a placeholder ring that immediately resizes (and jumps every seated
-  // avatar) once the roster arrives, show a spark orbiting the flames until
-  // rebuildCampfireCircle first runs with real data.
-  const benchLoadingSpark = new THREE.Mesh(
-    new THREE.SphereGeometry(0.09, 12, 8),
-    makeMaterial(THREE, "#ffffff", {
-      emissive: "#ffd27a",
-      emissiveIntensity: 2.4,
-    }),
-  );
-  const BENCH_LOADING_SPARK_RADIUS = 1.6;
-  campfire.add(benchLoadingSpark);
-  animated.push((time) => {
-    if (!benchLoadingSpark.visible) return;
-    const spin = time * 0.004;
-    benchLoadingSpark.position.set(
-      Math.cos(spin) * BENCH_LOADING_SPARK_RADIUS,
-      0.9 + Math.sin(time * 0.01) * 0.05,
-      Math.sin(spin) * BENCH_LOADING_SPARK_RADIUS,
-    );
   });
   // Benches sit back far enough from the pit to leave a wide walkable ring
   // between the seats and the stones (and to clear the log pile at ~2.6). The
@@ -18485,7 +18530,6 @@ export function createWorldScene({
         Math.round(Number(neededSeats) || 0),
       ),
     );
-    benchLoadingSpark.visible = false;
     if (campfire.userData.seatCount === count) {
       return campfire.userData.seatOffsets;
     }
@@ -18759,12 +18803,11 @@ export function createWorldScene({
       name,
     });
   }
-  // No placeholder ring here: the spark above keeps the fire lively until
-  // updateMemberLounge below runs with the real roster and calls
-  // rebuildCampfireCircle with an accurate seat count.
+  // The landmark is complete before directory data arrives; the first member
+  // refresh only repaints its entrance plaque.
   setShadows(campfire);
   world.add(campfire);
-  registerWorldElement("campfire", "Members Circle campfire", "Districts", campfire);
+  registerWorldElement("campfire", "Members Center yurt", "Districts", campfire);
   landmarkObjects.set("campfire", campfire);
 
   // A wooden swing set beside the Office garden gym: three swings hang from
@@ -19326,6 +19369,7 @@ export function createWorldScene({
     : Math.PI;
   world.add(player);
   registerWorldElement("player-avatar", "Your avatar", "Avatars & bots", player);
+  let repositoryDomeOccupied = false;
 
   // A hidden Object3D stops draw calls, but Three.js deliberately retains
   // every buffer and texture it uploaded for that object. On unified-memory
@@ -19391,7 +19435,12 @@ export function createWorldScene({
   function syncCompactDistrictRoot(district, root) {
     if (!root) return;
     const resident = district.resident !== false;
-    root.visible = resident;
+    root.visible =
+      resident &&
+      (
+        root.userData.repositoryDomeInterior !== true ||
+        repositoryDomeOccupied
+      );
     root.userData.compactDistrictResident = resident;
     if (resident) return;
     const released = releaseCompactDistrictGpuResources(root);
@@ -19433,7 +19482,13 @@ export function createWorldScene({
         // can legitimately change root.visible between residency samples.
         // Reassert the cold boundary without re-disposing an untouched root.
         district.roots.forEach((root) => {
-          if (root.visible !== nextResident) {
+          const shouldDraw =
+            nextResident &&
+            (
+              root.userData.repositoryDomeInterior !== true ||
+              repositoryDomeOccupied
+            );
+          if (root.visible !== shouldDraw) {
             syncCompactDistrictRoot(district, root);
           }
         });
@@ -19443,6 +19498,36 @@ export function createWorldScene({
       district.resident = nextResident;
       district.roots.forEach((root) => syncCompactDistrictRoot(district, root));
     });
+  }
+
+  function updateRepositoryDomeOccupancy(force = false) {
+    const district = landmarkObjects.get("repositories");
+    if (!district) return false;
+    const distance = Math.hypot(
+      player.position.x - district.position.x,
+      player.position.z - district.position.z,
+    );
+    const boundary = repositoryDomeOccupied
+      ? REPOSITORY_DOME_EXIT_RADIUS
+      : REPOSITORY_DOME_ENTER_RADIUS;
+    const occupied = distance <= boundary;
+    if (!force && occupied === repositoryDomeOccupied) return occupied;
+    repositoryDomeOccupied = occupied;
+    world.userData.repositoryDomeOccupied = occupied;
+    const interior = district.userData.repositoryDomeInterior;
+    if (interior) interior.visible = occupied;
+    const catalog = world.userData.repositoryCatalogLayer;
+    if (catalog) {
+      if (compactRenderer) {
+        syncCompactDistrictRoot(
+          compactDistricts.get("repositories"),
+          catalog,
+        );
+      } else {
+        catalog.visible = occupied;
+      }
+    }
+    return occupied;
   }
 
   function compactDistrictDiagnostics() {
@@ -19501,6 +19586,7 @@ export function createWorldScene({
     beachHorizon,
     ...carStates.map((state) => state.car),
   ]);
+  updateRepositoryDomeOccupancy(true);
   // The camera used to start at CAMERA_OFFSET relative to the world origin
   // even though the avatar starts elsewhere. It then spent the first visible
   // second easing across the map, which made the first movement input feel
@@ -26770,52 +26856,42 @@ export function createWorldScene({
     return true;
   }
 
-  // The world map's Campfire spot is a trip home: it puts the avatar on the
-  // bench that carries this member's name and holds the same seated pose
-  // clicking the plank gives. Guests — and members the directory has not
-  // seated yet — take the bench the circle always keeps open. Leaving the
-  // Office stays a deliberate walk through its door, so this refuses while
-  // the interior is open rather than teleporting out of it.
+  // Keep the historical method name as the app-facing navigation contract,
+  // but take visitors to the yurt entrance now that roster benches are gone.
+  // Leaving the Office remains a deliberate walk through its own door.
   function returnToCampfireBench(name) {
     if (officeSceneMode !== "town") return false;
-    const benches = campfire.userData.seatBenches || [];
-    if (!benches.length) return false;
-    const owned = campfire.userData.seatByName?.get(
-      String(name || "").trim().toLowerCase(),
+    const entrance = new THREE.Vector3(
+      campfire.position.x,
+      WORLD_WALKING_PLANE_Y,
+      campfire.position.z - MEMBERS_YURT_RADIUS - 3.2,
     );
-    const index = Number.isInteger(owned) ? owned : benches.length - 1;
-    const seat = benches[index]?.seat;
-    if (!seat) return false;
     currentSpace = "town-square";
     currentFloorY = 0.38;
     focusedRepositoryKey = "";
-    sitOnCampfireBench(seat);
+    standUpFromBench();
+    player.position.copy(entrance);
+    player.position.y = currentFloorY;
+    player.rotation.y = Math.PI;
+    cameraFocus = null;
+    cancelDash();
+    lastPosition.copy(player.position);
+    onMovement({
+      x: Number(player.position.x.toFixed(2)),
+      y: Number(player.position.y.toFixed(2)),
+      z: Number(player.position.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      space: currentSpace,
+      moving: false,
+      activity: "visiting the Members Center yurt",
+    });
     return true;
   }
 
-  // Position persistence intentionally stores no activity label. Recover the
-  // seated pose on refresh by recognizing coordinates on the current bench
-  // ring, then reseating by member name so roster changes cannot strand the
-  // avatar on an obsolete plank.
+  // Old saved bench coordinates are restored as ordinary standing positions;
+  // there is no roster-dependent ring to reconstruct inside the yurt.
   function restoreCampfireSeatIfNearby(spawn, name) {
-    if (
-      officeSceneMode !== "town" ||
-      String(spawn?.space || "") !== "town-square"
-    ) {
-      return false;
-    }
-    const radii = Array.isArray(campfire.userData.seatRadii)
-      ? campfire.userData.seatRadii
-      : [Number(campfire.userData.seatRadius) || 0];
-    if (!radii.some(Boolean)) return false;
-    const dx = Number(spawn?.x) - campfire.position.x;
-    const dz = Number(spawn?.z) - campfire.position.z;
-    if (!Number.isFinite(dx) || !Number.isFinite(dz)) return false;
-    const distance = Math.hypot(dx, dz);
-    if (!radii.some((radius) => Math.abs(distance - radius) <= 1.25)) {
-      return false;
-    }
-    return returnToCampfireBench(name);
+    return false;
   }
 
   // Clicking the flames is a camera interaction: bring the fire and the
@@ -28557,33 +28633,17 @@ export function createWorldScene({
       avatar.userData.campfireSeated =
         String(remote.activity || "") === CAMPFIRE_SEATED_ACTIVITY;
       if (useRegisteredLounge) {
-        // Idle and returning members walk back to the bench that carries
-        // their own name; anyone the directory has not caught up with yet
-        // takes one of the open stools past the seated figures.
-        const seats = campfire.userData.seatOffsets || [];
-        const owned = campfire.userData.seatByName?.get(
-          String(remote.name || "").trim().toLowerCase(),
+        // Only live peers get avatars. Idle peers wait in the small entrance
+        // plaza; the complete account directory stays represented by the one
+        // count/name plaque instead of being expanded into scene objects.
+        const place = hashNumber(remote.id) % 8;
+        avatar.userData.targetPosition.set(
+          campfire.position.x - 3.15 + (place % 4) * 2.1,
+          WORLD_WALKING_PLANE_Y,
+          campfire.position.z - MEMBERS_YURT_RADIUS -
+            4.5 - Math.floor(place / 4) * 1.7,
         );
-        const taken = Math.min(
-          campfire.userData.memberFigureCount || 0,
-          Math.max(0, seats.length - 1),
-        );
-        const open = Math.max(1, seats.length - taken);
-        const seat = Number.isInteger(owned)
-          ? seats[owned]
-          : seats[taken + (hashNumber(remote.id) % open)];
-        const offset = seat || new THREE.Vector3();
-        avatar.userData.targetPosition.copy(campfire.position);
-        avatar.userData.targetPosition.add(offset);
-        // Seat offsets carry the plank top; the sitter rides its hips on it.
-        avatar.userData.targetPosition.y = seatedAvatarY(
-          campfire.position.y + offset.y,
-          avatar.scale.x,
-        );
-        // Face the flames at the circle's centre: avatar fronts face local
-        // -Z, so the inward heading is atan2(x, z) — the same heading
-        // sitOnCampfireBench gives the local player.
-        avatar.userData.targetHeading = Math.atan2(offset.x, offset.z);
+        avatar.userData.targetHeading = Math.PI;
       } else if (sharedInactive) {
         const restArea = landmarkById("neighborhood").position;
         const seat = hashNumber(remote.id) % 8;
@@ -28837,6 +28897,26 @@ export function createWorldScene({
     });
     leaderboardGridState.members = leaderboardMembers;
     repaintLeaderboardGrid();
+
+    // The yurt deliberately caps this district's rendering cost. Directory
+    // members still enrich live-avatar badges, leaderboards, and the aquarium,
+    // but a directory refresh creates no roster-only figures or furniture.
+    // Clear any figures left by a scene hot-reload from the former bench ring.
+    if (membersYurt) {
+      loungeMembers.forEach((figure, id) => {
+        removeRemoteOrgTeamControl(figure, id);
+        unregisterAvatarChestControls(figure);
+        world.remove(figure);
+        unregisterCompactDistrictRoot("members", figure);
+        disposeObject3D(figure);
+      });
+      loungeMembers.clear();
+      campfire.userData.memberFigureCount = 0;
+      campfire.userData.detailedMemberFigures = 0;
+      campfire.userData.seatedMemberFigures = 0;
+      return;
+    }
+
     // Registered members sit in a circle around the campfire facing the
     // flames. Every account in the directory owns one numbered bench for the
     // whole session — a member out walking the world leaves theirs visibly
@@ -30908,8 +30988,10 @@ export function createWorldScene({
       });
     });
 
+    layer.userData.repositoryDomeInterior = true;
     world.add(layer);
     registerCompactDistrictRoot("repositories", layer);
+    updateRepositoryDomeOccupancy(true);
     Object.values(materials).forEach((material) => {
       if (!usedMaterials.has(material)) material.dispose();
     });
@@ -33602,6 +33684,10 @@ export function createWorldScene({
       });
       return;
     }
+    if (hit?.object?.userData?.membersYurtDoor) {
+      focusCampfireCircle();
+      return;
+    }
     if (hit?.object?.userData?.campfireLog) {
       hit.object.userData.campfireCarried = true;
       hit.object.material.emissive?.set?.("#d88a43");
@@ -34279,6 +34365,7 @@ export function createWorldScene({
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
     }
+    updateRepositoryDomeOccupancy();
     if (officeSceneMode === "town") {
       const insideInstanceBooth =
         Math.abs(player.position.x - instanceBooth.position.x) < 9.7 &&

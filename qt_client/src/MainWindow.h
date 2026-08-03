@@ -7799,6 +7799,7 @@ private:
     QWidget *m_issueProgressSlider = nullptr;
     QLabel *m_issueEstimateValue = nullptr; // derived OpenAI coding cost estimate
     QLabel *m_issueBountyValue = nullptr;
+    QLabel *m_issueCommentsValue = nullptr;
     QStackedWidget *m_issueAssigneesStack = nullptr;
     QStackedWidget *m_issueLabelsStack = nullptr;
     QStackedWidget *m_issueMilestoneStack = nullptr;
@@ -7806,7 +7807,7 @@ private:
     QLineEdit *m_issueAssigneesEdit = nullptr;
     QLineEdit *m_issueLabelsEdit = nullptr;
     QComboBox *m_issueMilestoneEdit = nullptr;
-    QComboBox *m_issuePriorityEdit = nullptr;
+    QSpinBox *m_issuePriorityEdit = nullptr;
     // Planned start/end dates row (issue #384): read-only value + an inline
     // editor of two QDateEdits, each toggled by a "no date" enable checkbox.
     QLabel *m_issueDatesValue = nullptr;

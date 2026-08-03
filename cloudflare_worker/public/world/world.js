@@ -7214,12 +7214,13 @@ class ForkMeshWorld extends HTMLElement {
       this.finishBootStep("populate");
       this.startBootStep(
         "spawn",
-        this.restoredPosition ? "restoring saved spot" : "campfire arrival",
+        this.restoredPosition
+          ? "restoring saved spot"
+          : "Members Center arrival",
       );
       if (this.restoredPosition) {
-        // A reload only persists coordinates, not pose. If those coordinates
-        // are on the campfire bench ring, reconstruct the seated pose instead
-        // of restoring the same location with locked, standing knees.
+        // Older builds persisted bench-ring coordinates. The current scene
+        // restores them as a normal standing position around the yurt.
         const restoredCampfireSeat =
           !this.sharedView &&
           this.world.restoreCampfireSeatIfNearby?.(
@@ -11162,8 +11163,7 @@ class ForkMeshWorld extends HTMLElement {
           );
           return;
         }
-        // The campfire spot is a destination rather than a reading panel:
-        // choosing it walks you straight back to your own bench.
+        // The Members Center is a destination rather than a reading panel.
         if (id === "campfire") {
           this.returnToCampfireBench();
           return;
@@ -11561,6 +11561,15 @@ class ForkMeshWorld extends HTMLElement {
       if (notificationDelete) {
         void this.deleteWorldNotification(
           notificationDelete.dataset.worldNotificationDelete,
+        );
+        return;
+      }
+      const notificationOpen = event.target.closest(
+        "[data-world-notification-open]",
+      );
+      if (notificationOpen && !event.target.closest("a, button")) {
+        this.openWorldNotification(
+          notificationOpen.dataset.worldNotificationOpen,
         );
         return;
       }
@@ -12043,6 +12052,18 @@ class ForkMeshWorld extends HTMLElement {
 
     this.bindDetailResize();
     this.bindSettingsResize();
+
+    this.addEventListener("keydown", (event) => {
+      if (event.code !== "Enter" && event.code !== "Space") return;
+      const notificationOpen = event.target.closest?.(
+        "[data-world-notification-open]",
+      );
+      if (!notificationOpen) return;
+      event.preventDefault();
+      this.openWorldNotification(
+        notificationOpen.dataset.worldNotificationOpen,
+      );
+    });
 
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
@@ -18039,7 +18060,11 @@ class ForkMeshWorld extends HTMLElement {
                             : "✦";
                       return `<li class="world-activity-row world-notification-row" data-tone="${tone}" data-unread="${String(
                         item.unread,
-                      )}">
+                      )}"${
+                        item.href
+                          ? ` data-world-notification-open="${escapeHTML(item.href)}" tabindex="0" role="link" aria-label="Open ${escapeHTML(item.title)}"`
+                          : ""
+                      }>
                         <span class="world-notification-kind" data-tone="${tone}" title="${escapeHTML(item.kind || "Update")}"><i aria-hidden="true">${icon}</i>${escapeHTML(item.kind || "Update")}</span>
                         <strong title="${escapeHTML(item.title)}">${escapeHTML(item.title)}</strong>
                         <span title="${escapeHTML(item.body || "—")}">${escapeHTML(item.body || "—")}</span>
@@ -18335,6 +18360,39 @@ class ForkMeshWorld extends HTMLElement {
     this.syncRecentIssueAssignments();
     this.announceWorldNotifications();
     if (render || this.isEventsPanelOpen()) this.refreshOpenEventsPanel();
+  }
+
+  openWorldNotification(href) {
+    const target = safeNotificationURL(href);
+    if (!target) return;
+    const item = this.notifications.find(
+      (entry) => entry.href === target && !entry.readAt,
+    );
+    if (item) {
+      item.readAt = Date.now();
+      this.notificationUnread = this.notifications.filter(
+        (entry) => !entry.readAt,
+      ).length;
+      this.updateNotificationBadge();
+      void this.markWorldNotificationRead(item.id);
+    }
+    location.href = target;
+  }
+
+  async markWorldNotificationRead(notificationId) {
+    const session = readSession();
+    const id = String(notificationId || "").trim();
+    if (!session?.sessionToken || !session?.nodeName || !id) return;
+    try {
+      await this.postJSON("/api/notifications", {
+        node: String(session.nodeName).toLowerCase(),
+        ids: [id],
+      });
+    } catch (_) {
+      // Best-effort: the local unread badge already updated, and the next
+      // full refresh will reconcile with the server if this call was lost
+      // to the navigation triggered right after it.
+    }
   }
 
   async markWorldNotificationsRead() {
@@ -18678,9 +18736,7 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-  // The Campfire map spot seats you on the bench that carries your own name;
-  // guests, and members the roster has not seated yet, land on one of the
-  // benches the circle keeps open.
+  // First-time Town Square arrivals start outside the Members Center yurt.
   seatFreshArrivalAtCampfire() {
     // A saved pose, shared view, or explicit regional destination always wins.
     // Only a truly unplaced Town Square arrival starts at the social circle.
@@ -18692,23 +18748,23 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return false;
     }
-    const seated =
+    const placed =
       this.world?.returnToCampfireBench?.(this.identity?.name || "") === true;
-    if (seated) this.freshArrivalCampfireSeated = true;
-    return seated;
+    if (placed) this.freshArrivalCampfireSeated = true;
+    return placed;
   }
 
   returnToCampfireBench() {
     if (!this.world?.returnToCampfireBench?.(this.identity?.name || "")) {
       this.toast(
         this.officeController?.active
-          ? "Walk out through the Office door first, then head back to the fire."
-          : "The campfire benches are still being seated. Try again in a moment.",
+          ? "Walk out through the Office door first, then head to the Members Center."
+          : "The Members Center entrance is not ready yet. Try again in a moment.",
       );
       return;
     }
     this.closeLandmark();
-    this.toast("Back on your bench around the campfire. Move to stand up.");
+    this.toast("Welcome to the Members Center yurt.");
   }
 
   broadcastPanelHTML() {
