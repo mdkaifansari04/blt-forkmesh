@@ -3481,11 +3481,9 @@ int main(int argc, char *argv[])
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
               QString("one icon-rich composer dropdown combines agents and models (%1)")
                   .arg(agentModelLabels.join(QStringLiteral(", "))));
-        // The menu is ordered strongest-model-first, and the superseded /
-        // small-sibling models are left out entirely (adhoc #1204). Offline this
-        // is the static fallback line-up, so the order is exact: the Auto router
-        // above every concrete model, then Claude strongest-first, then Codex —
-        // with Haiku 4.5 and GPT-5.4-Mini dropped.
+        // The menu is ordered strongest-model-first. Offline this is the static
+        // fallback line-up, so the order is exact: the Auto router above every
+        // concrete model, then every Claude model, then every Codex model.
         QStringList rankedLabels;
         for (int i = 0; i < quickAgentModel->count(); ++i) {
             // Manual and the two API agents carry no model of their own.
@@ -3497,9 +3495,11 @@ int main(int argc, char *argv[])
                                            QStringLiteral("Fable 5"),
                                            QStringLiteral("Opus 4.8"),
                                            QStringLiteral("Sonnet 4.6"),
+                                           QStringLiteral("Haiku 4.5"),
                                            QStringLiteral("GPT-5.5"),
-                                           QStringLiteral("GPT-5.4")}),
-              QString("composer models sort most powerful first, weak ones hidden (%1)")
+                                           QStringLiteral("GPT-5.4"),
+                                           QStringLiteral("GPT-5.4-Mini")}),
+              QString("composer models sort most powerful first and show every model (%1)")
                   .arg(rankedLabels.join(QStringLiteral(", "))));
         QComboBox *canonicalModel =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));
