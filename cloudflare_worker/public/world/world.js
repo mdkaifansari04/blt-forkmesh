@@ -7214,12 +7214,13 @@ class ForkMeshWorld extends HTMLElement {
       this.finishBootStep("populate");
       this.startBootStep(
         "spawn",
-        this.restoredPosition ? "restoring saved spot" : "campfire arrival",
+        this.restoredPosition
+          ? "restoring saved spot"
+          : "Members Center arrival",
       );
       if (this.restoredPosition) {
-        // A reload only persists coordinates, not pose. If those coordinates
-        // are on the campfire bench ring, reconstruct the seated pose instead
-        // of restoring the same location with locked, standing knees.
+        // Older builds persisted bench-ring coordinates. The current scene
+        // restores them as a normal standing position around the yurt.
         const restoredCampfireSeat =
           !this.sharedView &&
           this.world.restoreCampfireSeatIfNearby?.(
@@ -11162,8 +11163,7 @@ class ForkMeshWorld extends HTMLElement {
           );
           return;
         }
-        // The campfire spot is a destination rather than a reading panel:
-        // choosing it walks you straight back to your own bench.
+        // The Members Center is a destination rather than a reading panel.
         if (id === "campfire") {
           this.returnToCampfireBench();
           return;
@@ -18736,9 +18736,7 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-  // The Campfire map spot seats you on the bench that carries your own name;
-  // guests, and members the roster has not seated yet, land on one of the
-  // benches the circle keeps open.
+  // First-time Town Square arrivals start outside the Members Center yurt.
   seatFreshArrivalAtCampfire() {
     // A saved pose, shared view, or explicit regional destination always wins.
     // Only a truly unplaced Town Square arrival starts at the social circle.
@@ -18750,23 +18748,23 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return false;
     }
-    const seated =
+    const placed =
       this.world?.returnToCampfireBench?.(this.identity?.name || "") === true;
-    if (seated) this.freshArrivalCampfireSeated = true;
-    return seated;
+    if (placed) this.freshArrivalCampfireSeated = true;
+    return placed;
   }
 
   returnToCampfireBench() {
     if (!this.world?.returnToCampfireBench?.(this.identity?.name || "")) {
       this.toast(
         this.officeController?.active
-          ? "Walk out through the Office door first, then head back to the fire."
-          : "The campfire benches are still being seated. Try again in a moment.",
+          ? "Walk out through the Office door first, then head to the Members Center."
+          : "The Members Center entrance is not ready yet. Try again in a moment.",
       );
       return;
     }
     this.closeLandmark();
-    this.toast("Back on your bench around the campfire. Move to stand up.");
+    this.toast("Welcome to the Members Center yurt.");
   }
 
   broadcastPanelHTML() {
