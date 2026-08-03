@@ -200,6 +200,9 @@ class AgentSessionDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final limitCountdown = session.rateLimitCountdownLabel();
+    final statusSummary = session.latestStatusSummary(120);
+    final failureReason = session.statusFailureReason(400);
     final transcriptFuture = api.agentTranscript(
       repo.owner,
       repo.name,
@@ -230,7 +233,9 @@ class AgentSessionDetailScreen extends StatelessWidget {
                   runSpacing: FmSpace.x2,
                   children: [
                     _AgentChip(label: session.providerLabel),
-                    _AgentChip(label: session.statusLabel),
+                    _AgentChip(label: statusSummary),
+                    if (limitCountdown.isNotEmpty)
+                      _AgentChip(label: limitCountdown),
                     if (session.model.isNotEmpty)
                       _AgentChip(label: session.model),
                     if (session.issueNumber > 0)
@@ -269,10 +274,10 @@ class AgentSessionDetailScreen extends StatelessWidget {
                     label: Text('Open PR #${session.prNumber}'),
                   ),
                 ],
-                if (session.lastError.isNotEmpty) ...[
+                if (failureReason.isNotEmpty) ...[
                   const SizedBox(height: FmSpace.x3),
                   Text(
-                    session.lastError,
+                    failureReason,
                     style: TextStyle(color: FmTheme.danger(context)),
                   ),
                 ],
@@ -571,6 +576,8 @@ class _AgentSessionRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final statusSummary = session.latestStatusSummary(80);
+    final limitCountdown = session.rateLimitCountdownLabel();
     return Material(
       color: FmTheme.bgOverlay(context),
       borderRadius: BorderRadius.circular(FmRadius.md),
@@ -608,9 +615,12 @@ class _AgentSessionRow extends StatelessWidget {
                     ),
                     const SizedBox(height: FmSpace.x1),
                     Text(
-                      session.issueNumber > 0
-                          ? 'Issue #${session.issueNumber} • ${session.providerLabel}'
-                          : session.providerLabel,
+                      [
+                        if (session.issueNumber > 0)
+                          'Issue #${session.issueNumber}',
+                        session.providerLabel,
+                        statusSummary,
+                      ].where((text) => text.isNotEmpty).join(' • '),
                       style: TextStyle(
                         color: FmTheme.textSecondary(context),
                         fontSize: 12,
@@ -621,8 +631,14 @@ class _AgentSessionRow extends StatelessWidget {
                       spacing: FmSpace.x2,
                       runSpacing: FmSpace.x2,
                       children: [
+                        if (statusSummary.isNotEmpty)
+                          _AgentChip(label: statusSummary),
+                        if (session.model.isNotEmpty)
+                          _AgentChip(label: session.model),
                         if (session.branchName.isNotEmpty)
                           _AgentChip(label: session.branchName),
+                        if (limitCountdown.isNotEmpty)
+                          _AgentChip(label: limitCountdown),
                         if (session.numTurns > 0)
                           _AgentChip(label: '${session.numTurns} turns'),
                         if (session.durationLabel.isNotEmpty)

@@ -1666,6 +1666,7 @@ class _AgentsTabState extends State<_AgentsTab> {
         final items = snap.data ?? const <AgentSession>[];
         final polling =
             _pollTimer != null || items.any((session) => session.isActive);
+        final now = DateTime.now();
         return ListView(
           padding: const EdgeInsets.symmetric(vertical: 10),
           children: [
@@ -1730,9 +1731,11 @@ class _AgentsTabState extends State<_AgentsTab> {
                   icon: Icons.smart_toy_outlined,
                   iconColor: FmTheme.accent(context),
                   title: session.displayTitle,
-                  subtitle: session.issueNumber > 0
-                      ? 'Issue #${session.issueNumber} • ${session.providerLabel}'
-                      : session.providerLabel,
+                  subtitle: [
+                    if (session.issueNumber > 0) 'Issue #${session.issueNumber}',
+                    session.providerLabel,
+                    session.latestStatusSummary(80),
+                  ].where((text) => text.isNotEmpty).join(' • '),
                   trailing: _AgentStatusBadge(session: session),
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute<void>(
@@ -1747,7 +1750,9 @@ class _AgentsTabState extends State<_AgentsTab> {
                   chips: [
                     if (session.issueNumber > 0) '#${session.issueNumber}',
                     session.providerLabel,
-                    session.statusLabel,
+                    session.latestStatusSummary(80),
+                    if (session.rateLimitCountdownLabel(now: now).isNotEmpty)
+                      session.rateLimitCountdownLabel(now: now),
                     if (session.branchName.isNotEmpty) session.branchName,
                     if (session.numTurns > 0) '${session.numTurns} turns',
                     if (session.durationLabel.isNotEmpty) session.durationLabel,
@@ -1780,6 +1785,10 @@ class _AgentSessionDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final statusSummary = session.latestStatusSummary(120);
+    final resetCountdown = session.rateLimitCountdownLabel(now: now);
+    final failureReason = session.statusFailureReason(400);
     final transcriptFuture = api.agentTranscript(
       repo.owner,
       repo.name,
@@ -1802,7 +1811,9 @@ class _AgentSessionDetailScreen extends StatelessWidget {
                     icon: Icons.smart_toy_outlined,
                     label: session.providerLabel,
                   ),
-                  _Chip(icon: Icons.info_outline, label: session.statusLabel),
+                  _Chip(icon: Icons.info_outline, label: statusSummary),
+                  if (resetCountdown.isNotEmpty)
+                    _Chip(icon: Icons.timer_outlined, label: resetCountdown),
                   if (session.model.isNotEmpty)
                     _Chip(icon: Icons.memory_outlined, label: session.model),
                   if (session.issueNumber > 0)
@@ -1854,10 +1865,10 @@ class _AgentSessionDetailScreen extends StatelessWidget {
                 'Desktop-controlled session. Mobile can watch progress and open results; start, stop, retry, resume, merge, and apply stay on the desktop node until signed pairing is designed.',
                 style: TextStyle(color: FmTheme.textSecondary(context)),
               ),
-              if (session.lastError.isNotEmpty) ...[
+              if (failureReason.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 Text(
-                  session.lastError,
+                  failureReason,
                   style: TextStyle(color: FmTheme.danger(context)),
                 ),
               ],
