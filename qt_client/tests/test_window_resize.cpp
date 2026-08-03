@@ -1,4 +1,5 @@
 #include "../src/MainWindow.h"
+#include "../src/BackgroundActivity.h"
 #include "../src/ClaudeTranscriptView.h"
 #include "../src/PlatformLogFilter.h"
 #include "ForkMeshVersion.h"
@@ -650,6 +651,51 @@ int main(int argc, char *argv[])
                       appPath->toolTip().contains(
                           QCoreApplication::applicationFilePath()),
                   QStringLiteral("status bar shows the running app's location"));
+
+            // adhoc #1389: slow background work no longer reserves a permanent
+            // footer column. Each kind appears as one 18px status icon, and the
+            // segmented rotating ring is driven by the live process count.
+            QWidget *backgroundHost = statusBar->findChild<QWidget *>(
+                QStringLiteral("statusBackgroundTasks"));
+            check(backgroundHost &&
+                      window.findChild<QWidget *>(
+                          QStringLiteral("backgroundTaskQueue")) == nullptr,
+                  QStringLiteral("background work moved from the footer panel "
+                                 "into the bottom status bar"));
+
+            const quint64 cleanupOne = forkmesh::BackgroundActivity::begin(
+                QStringLiteral("cleanup"), QStringLiteral("first test cleanup"));
+            const quint64 cleanupTwo = forkmesh::BackgroundActivity::begin(
+                QStringLiteral("cleanup"), QStringLiteral("second test cleanup"));
+            QWidget *cleanupChip = nullptr;
+            QElapsedTimer chipWait;
+            chipWait.start();
+            while (!cleanupChip && chipWait.elapsed() < 1000) {
+                QApplication::processEvents(QEventLoop::AllEvents, 20);
+                QThread::msleep(10);
+                const auto chips = backgroundHost
+                                       ? backgroundHost->findChildren<QWidget *>(
+                                             QStringLiteral(
+                                                 "statusBackgroundTaskChip"))
+                                       : QList<QWidget *>();
+                for (QWidget *chip : chips) {
+                    if (chip->property("processKind").toString() ==
+                        QStringLiteral("cleanup")) {
+                        cleanupChip = chip;
+                        break;
+                    }
+                }
+            }
+            check(cleanupChip && cleanupChip->size() == QSize(18, 18) &&
+                      cleanupChip->property("processCount").toInt() == 2 &&
+                      cleanupChip->toolTip().contains(
+                          QString(QChar(0x00D7)) + QStringLiteral("2")) &&
+                      cleanupChip->accessibleDescription().contains(
+                          QStringLiteral("2 processes")),
+                  QStringLiteral("one compact process icon carries the live "
+                                 "background-work count"));
+            forkmesh::BackgroundActivity::end(cleanupOne);
+            forkmesh::BackgroundActivity::end(cleanupTwo);
         }
     }
 
@@ -1077,6 +1123,34 @@ int main(int argc, char *argv[])
                          "disabled non-custodial placeholder"));
     window.show();
     QApplication::processEvents();
+
+    // adhoc #1389: notification actions are caption-height controls, not the
+    // full-height buttons shown in the reference screenshot. The queued cards
+    // share these same object names and theme rules.
+    if (QWidget *toast = window.findChild<QWidget *>(
+            QStringLiteral("topMessage"))) {
+        QPushButton *toastAction = toast->findChild<QPushButton *>(
+            QStringLiteral("topMessageAction"));
+        const QList<QPushButton *> toastGhosts =
+            toast->findChildren<QPushButton *>(QStringLiteral("ghostButton"));
+        const bool ghostsAreThin =
+            !toastGhosts.isEmpty() &&
+            std::all_of(toastGhosts.cbegin(), toastGhosts.cend(),
+                        [](const QPushButton *button) {
+                            return button->maximumHeight() <= 18 &&
+                                   button->sizeHint().height() <= 18 &&
+                                   button->iconSize().height() <= 12;
+                        });
+        check(toastAction && toastAction->maximumHeight() <= 18 &&
+                  toastAction->sizeHint().height() <= 18 &&
+                  toastAction->iconSize().height() <= 11 && ghostsAreThin,
+              QStringLiteral("alert action buttons use the thinner caption "
+                             "treatment"));
+    } else {
+        check(false, QStringLiteral("alert action buttons use the thinner "
+                                   "caption treatment"));
+    }
+
     window.testRunDeferredStartupNow();
     QApplication::processEvents();
 
@@ -3678,6 +3752,10 @@ int main(int argc, char *argv[])
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.
         auto *composerDock = seeded.findChild<QWidget *>(QStringLiteral("logDock"));
+        auto *footerLeft = seeded.findChild<QWidget *>(
+            QStringLiteral("footerLeftRegion"));
+        auto *footerPrompt = seeded.findChild<QWidget *>(
+            QStringLiteral("promptWrapper"));
         QStringList composerChecks;
         if (composerDock) {
             for (auto *box : composerDock->findChildren<QCheckBox *>())
@@ -3687,6 +3765,10 @@ int main(int argc, char *argv[])
                   !composerChecks.contains(QStringLiteral("Task")),
               QString("the composer has no YOLO/Task toggles (%1)")
                   .arg(composerChecks.join(QStringLiteral(", "))));
+        check(footerLeft && footerPrompt &&
+                  qAbs(footerLeft->width() - footerPrompt->width()) <= 1,
+              QStringLiteral("removing the background panel restores an even "
+                             "log and prompt split"));
         check(seeded.findChild<QLabel *>(QStringLiteral("quickAddEnterBadge")) ==
                   nullptr,
               QStringLiteral("no corner Enter badge on the send buttons"));

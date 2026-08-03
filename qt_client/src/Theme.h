@@ -222,6 +222,9 @@ QPushButton#socialIconButton:hover { border-color: #6e7681; }
     font-size: 11px; padding: 0 4px;
 }
 #appStatusBar QPushButton:hover { color: #58a6ff; }
+/* Background-work chips (adhoc #1389): the chips paint themselves, so the host
+   only has to stay out of the way of the strip's own fill. */
+#statusBackgroundTasks { background: transparent; }
 
 /* --- Nav rail --- */
 #navRail { background-color: #010409; border-right: 1px solid #30363d; }
@@ -513,6 +516,19 @@ QPushButton#topMessageAction {
     border-radius: 6px; color: #58a6ff; font-size: 11px; font-weight: 600; padding: 2px 6px;
 }
 QPushButton#topMessageAction:hover { background: rgba(88,166,255,0.22); color: #79c0ff; }
+/* Alert-card controls are deliberately thinner than app buttons (adhoc #1389):
+   the toast is an overlay, so Copy / View agent / Send to prompt / dismiss read
+   as one caption line under the message instead of standing full button height.
+   Both IDs are named so these win the cascade over the rules above. */
+#topMessage QPushButton#ghostButton, #topMessageQueueCard QPushButton#ghostButton {
+    font-size: 11px; padding: 0 6px; min-height: 16px; max-height: 18px;
+}
+/* Qt's min/max-height bound the content box, and this one is the only bordered
+   button in the row, so its ceiling is 2px lower to land on the same 18px line. */
+#topMessage QPushButton#topMessageAction,
+#topMessageQueueCard QPushButton#topMessageAction {
+    font-size: 11px; padding: 0 6px; min-height: 14px; max-height: 16px;
+}
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #30363d; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #8b949e;
@@ -616,7 +632,7 @@ QPushButton#memberDeleteButton:hover {
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
-#footerLogPanel, #backgroundTaskQueue {
+#footerLogPanel {
     background-color: #0d1117;
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 6px;
@@ -1035,7 +1051,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
-#footerLogPanel, #backgroundTaskQueue {
+#footerLogPanel {
     background-color: #0d1117;
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 8px;
@@ -1888,6 +1904,14 @@ QPushButton#topMessageAction {
     border-radius: 6px; color: #0969da; font-size: 11px; font-weight: 600; padding: 2px 6px;
 }
 QPushButton#topMessageAction:hover { background: rgba(9,105,218,0.16); color: #0550ae; }
+/* See the dark rules: the alert cards' action row stays one thin line. */
+#topMessage QPushButton#ghostButton, #topMessageQueueCard QPushButton#ghostButton {
+    font-size: 11px; padding: 0 6px; min-height: 16px; max-height: 18px;
+}
+#topMessage QPushButton#topMessageAction,
+#topMessageQueueCard QPushButton#topMessageAction {
+    font-size: 11px; padding: 0 6px; min-height: 14px; max-height: 16px;
+}
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #656d76;
@@ -1991,7 +2015,7 @@ QPushButton#memberDeleteButton:hover {
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
-#footerLogPanel, #backgroundTaskQueue {
+#footerLogPanel {
     background-color: #ffffff;
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 6px;
@@ -2240,6 +2264,8 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     font-size: 11px; padding: 0 4px;
 }
 #appStatusBar QPushButton:hover { color: #0969da; }
+/* See the dark rule: the chips are painted, the host is just a layout. */
+#statusBackgroundTasks { background: transparent; }
 
 #composerBar { background-color: #ffffff; border-top: 1px solid #d0d7de; }
 #composerInputRow {
@@ -2399,7 +2425,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
-#footerLogPanel, #backgroundTaskQueue {
+#footerLogPanel {
     background-color: #ffffff;
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 8px;
