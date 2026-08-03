@@ -1629,7 +1629,12 @@ void MainWindow::updateRepoIssueCount()
 void MainWindow::updateRepoDiscussionCount()
 {
     if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoDiscussionsTab))
-        b->setBadgeCount(m_currentDiscussions.size());
+        b->setBadgeCount(std::count_if(
+            m_currentDiscussions.begin(), m_currentDiscussions.end(),
+            [](const Discussion &discussion) {
+                return discussion.status != QLatin1String("closed") &&
+                       discussion.status != QLatin1String("archived");
+            }));
 }
 
 void MainWindow::updateRepoPullCount()
