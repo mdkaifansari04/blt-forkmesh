@@ -218,6 +218,25 @@ def test_members_yurt_is_the_existing_world_map_destination():
     assert '  "campfire",\n' in APP.split("LOCAL_LIVE_LANDMARKS", 1)[1]
 
 
+def test_members_yurt_is_opaque_and_pages_its_interior_until_entry():
+    yurt = SCENE.split('membersYurt.name = "members-center-yurt"', 1)[1].split(
+        "const SWING_SEAT_COUNT", 1
+    )[0]
+    occupancy = SCENE.split("function updateMembersYurtOccupancy", 1)[1].split(
+        "function syncEnclosureDoors", 1
+    )[0]
+    assert "transparent: false" in yurt
+    assert "opacity: 1" in yurt
+    assert "depthWrite: true" in yurt
+    assert 'membersYurtInterior.name = "members-yurt-interior"' in yurt
+    assert "membersYurtInterior.visible = false" in yurt
+    assert "membersYurtInterior.add(child)" in yurt
+    assert "membersYurtInterior.visible = occupied" in occupancy
+    assert "membersYurt.visible = !occupied" in occupancy
+    assert "figure.visible = occupied" in occupancy
+    assert "constrainMembersYurt(previousHorizontalPosition)" in SCENE
+
+
 def test_choosing_the_members_spot_moves_you_to_the_yurt_entrance():
     scene = SCENE.split("function returnToCampfireBench", 1)[1].split(
         "\n  function ", 1
