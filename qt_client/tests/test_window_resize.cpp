@@ -19,6 +19,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QImage>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
@@ -395,6 +396,8 @@ int main(int argc, char *argv[])
         app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
     const bool hostsLayoutOnly =
         app.arguments().contains(QStringLiteral("--hosts-layout-only"));
+    const bool issuesRedesignOnly =
+        app.arguments().contains(QStringLiteral("--issues-redesign-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -463,7 +466,8 @@ int main(int argc, char *argv[])
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
-    check(detailedStartupSteps >= 20 &&
+    if (!issuesRedesignOnly)
+        check(detailedStartupSteps >= 20 &&
               startupLog.contains(QStringLiteral(
                   "BEGIN MainWindow: load repository catalog from settings")) &&
               startupLog.contains(QStringLiteral(
@@ -477,7 +481,60 @@ int main(int argc, char *argv[])
                   "15000ms")),
           QString("startup log names and times every material constructor phase "
                   "(detailed steps=%1)")
-              .arg(detailedStartupSteps));
+                  .arg(detailedStartupSteps));
+
+    if (issuesRedesignOnly) {
+        window.show();
+        QApplication::processEvents();
+        const bool shown = window.testShowRepoIssuesTab();
+        QApplication::processEvents();
+
+        QTableWidget *issueList =
+            window.findChild<QTableWidget *>(QStringLiteral("issueList"));
+        QLineEdit *topSearch =
+            window.findChild<QLineEdit *>(QStringLiteral("globalSearch"));
+        QLineEdit *legacySearch =
+            window.findChild<QLineEdit *>(QStringLiteral("issueListSearchState"));
+        QPushButton *prioritize = window.findChild<QPushButton *>(
+            QStringLiteral("issuePrioritizeAction"));
+        QPushButton *analyze = window.findChild<QPushButton *>(
+            QStringLiteral("issueAnalyzeAction"));
+        QPushButton *sync = window.findChild<QPushButton *>(
+            QStringLiteral("issueHeaderAction"));
+        QPlainTextEdit *composer =
+            window.findChild<QPlainTextEdit *>(QStringLiteral("issueQuickAdd"));
+
+        check(shown && issueList && issueList->horizontalHeader()->isHidden() &&
+                  issueList->frameShape() == QFrame::NoFrame,
+              QStringLiteral("issues render as a headerless, frameless summary list"));
+        check(topSearch &&
+                  topSearch->placeholderText().startsWith(
+                      QStringLiteral("Search issues")) &&
+                  topSearch->toolTip().contains(QStringLiteral("is:open")) &&
+                  legacySearch && legacySearch->isHidden(),
+              QStringLiteral("top search owns issue filtering and documents operators "
+                             "(placeholder=%1 tooltip=%2 legacyHidden=%3)")
+                  .arg(topSearch ? topSearch->placeholderText() : QStringLiteral("missing"),
+                       topSearch ? topSearch->toolTip() : QStringLiteral("missing"))
+                  .arg(legacySearch && legacySearch->isHidden()));
+        check(window.testIssueDetailVisible(),
+              QStringLiteral("issue detail remains visible beside the list"));
+        check(prioritize && analyze && sync && prioritize->sizeHint().height() >= 40 &&
+                  analyze->sizeHint().height() >= 40,
+              QStringLiteral("issue actions use the rail-style icon tile row"));
+
+        if (prioritize)
+            prioritize->click();
+        check(composer && composer->toPlainText().contains(
+                              QStringLiteral("triaging a software project's open issue backlog")),
+              QStringLiteral("Prioritize drafts an editable composer prompt"));
+        if (analyze)
+            analyze->click();
+        check(composer && composer->toPlainText().contains(
+                              QStringLiteral("ALREADY implemented in the codebase")),
+              QStringLiteral("Analyze drafts an editable composer prompt"));
+        return failures == 0 ? 0 : 1;
+    }
 
     // Codex can explicitly mark either account-rate-limit window unavailable.
     // The two prompt gauges must show their independent live percentages first,

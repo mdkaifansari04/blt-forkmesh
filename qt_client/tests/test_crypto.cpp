@@ -4767,6 +4767,10 @@ int main(int argc, char *argv[])
                             .filePath(QStringLiteral(".forkmesh/issues/open/1")))
                        .exists(),
               "closing an issue moves its folder from open/ to closed/");
+        check(repo.setPriority(n, 8999, &err),
+              "setPriority accepts the expanded lowest rank");
+        check(!repo.setPriority(n, 9000, &err),
+              "setPriority rejects ranks beyond 8999");
         check(repo.setPriority(n, 3, &err), "setPriority succeeds");
         check(repo.assignAgent(n, "codex", 42, true, "queued", &err),
               "assignAgent succeeds");
