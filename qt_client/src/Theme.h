@@ -501,6 +501,10 @@ QPushButton#agentsMagicButton:checked {
 }
 /* Countdown / queue depth, dimmed, on the action row under the message. */
 #topMessageMeta { background: transparent; border: none; color: #6e7681; font-size: 11px; }
+#topMessageTypeBadge, #topMessageQueueTypeBadge {
+    background: rgba(88,166,255,0.16); border: 1px solid rgba(88,166,255,0.42);
+    border-radius: 6px; color: #79c0ff; font-size: 10px; font-weight: 700; padding: 1px 5px;
+}
 #topMessageOverlay { background-color: #161b22; border: 1px solid #30363d;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #c9d1d9; }
@@ -1322,6 +1326,12 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     border: none;
     border-bottom: 1px solid #30363d;
 }
+#issueList {
+    background-color: #0d1117; border: none; outline: 0;
+    selection-background-color: transparent; gridline-color: transparent;
+}
+#issueList::item { padding: 0; border: none; }
+#issueList::item:selected { background: transparent; color: #e6edf3; }
 /* The task list is a list, not a table (adhoc #56): no frame, no grid, no
    banding, and no stylesheet selection fill — the row delegate paints its own
    pill so the icon strip and the title sit on one clean surface. */
@@ -1866,6 +1876,10 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none;
 }
 #topMessageMeta { background: transparent; border: none; color: #6e7781; font-size: 11px; }
+#topMessageTypeBadge, #topMessageQueueTypeBadge {
+    background: rgba(9,105,218,0.10); border: 1px solid rgba(9,105,218,0.35);
+    border-radius: 6px; color: #0550ae; font-size: 10px; font-weight: 700; padding: 1px 5px;
+}
 #topMessageOverlay { background-color: #ffffff; border: 1px solid #d0d7de;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #1f2328; }
@@ -2672,6 +2686,12 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     border: none;
     border-bottom: 1px solid #d0d7de;
 }
+#issueList {
+    background-color: #ffffff; border: none; outline: 0;
+    selection-background-color: transparent; gridline-color: transparent;
+}
+#issueList::item { padding: 0; border: none; }
+#issueList::item:selected { background: transparent; color: #1f2328; }
 /* Light-theme twin of the headerless task list (adhoc #56). */
 #organizationTasksTable {
     background-color: #ffffff;

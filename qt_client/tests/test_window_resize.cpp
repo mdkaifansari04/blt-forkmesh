@@ -9,6 +9,7 @@
 #include <QComboBox>
 #include <QClipboard>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QFile>
 #include <QCheckBox>
 #include <QDebug>
@@ -18,6 +19,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QImage>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
@@ -65,6 +67,10 @@ struct MirrorBranchTip {
 };
 MirrorBranchTip mirrorPrimaryBranchTip(const QString &mirrorPath,
                                        const QString &workTree);
+QString gitTimeoutError(QProcess &process, int waitedMs);
+bool isTransientGitError(const QString &err);
+QString branchDiffErrorHtml(const QString &branch, const QString &err,
+                            int attempts);
 }
 } // namespace forkmesh
 
@@ -390,6 +396,8 @@ int main(int argc, char *argv[])
         app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
     const bool hostsLayoutOnly =
         app.arguments().contains(QStringLiteral("--hosts-layout-only"));
+    const bool issuesRedesignOnly =
+        app.arguments().contains(QStringLiteral("--issues-redesign-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -458,7 +466,8 @@ int main(int argc, char *argv[])
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
-    check(detailedStartupSteps >= 20 &&
+    if (!issuesRedesignOnly)
+        check(detailedStartupSteps >= 20 &&
               startupLog.contains(QStringLiteral(
                   "BEGIN MainWindow: load repository catalog from settings")) &&
               startupLog.contains(QStringLiteral(
@@ -472,7 +481,95 @@ int main(int argc, char *argv[])
                   "15000ms")),
           QString("startup log names and times every material constructor phase "
                   "(detailed steps=%1)")
-              .arg(detailedStartupSteps));
+                  .arg(detailedStartupSteps));
+
+    if (issuesRedesignOnly) {
+        window.show();
+        QApplication::processEvents();
+        const bool shown = window.testShowRepoIssuesTab();
+        QApplication::processEvents();
+
+        QTableWidget *issueList =
+            window.findChild<QTableWidget *>(QStringLiteral("issueList"));
+        QLineEdit *topSearch =
+            window.findChild<QLineEdit *>(QStringLiteral("globalSearch"));
+        QLineEdit *legacySearch =
+            window.findChild<QLineEdit *>(QStringLiteral("issueListSearchState"));
+        QPushButton *prioritize = window.findChild<QPushButton *>(
+            QStringLiteral("issuePrioritizeAction"));
+        QPushButton *analyze = window.findChild<QPushButton *>(
+            QStringLiteral("issueAnalyzeAction"));
+        QPushButton *sync = window.findChild<QPushButton *>(
+            QStringLiteral("issueHeaderAction"));
+        QPlainTextEdit *composer =
+            window.findChild<QPlainTextEdit *>(QStringLiteral("issueQuickAdd"));
+
+        check(shown && issueList && issueList->horizontalHeader()->isHidden() &&
+                  issueList->frameShape() == QFrame::NoFrame,
+              QStringLiteral("issues render as a headerless, frameless summary list"));
+        check(topSearch &&
+                  topSearch->placeholderText().startsWith(
+                      QStringLiteral("Search issues")) &&
+                  topSearch->toolTip().contains(QStringLiteral("is:open")) &&
+                  legacySearch && legacySearch->isHidden(),
+              QStringLiteral("top search owns issue filtering and documents operators "
+                             "(placeholder=%1 tooltip=%2 legacyHidden=%3)")
+                  .arg(topSearch ? topSearch->placeholderText() : QStringLiteral("missing"),
+                       topSearch ? topSearch->toolTip() : QStringLiteral("missing"))
+                  .arg(legacySearch && legacySearch->isHidden()));
+        check(window.testIssueDetailVisible(),
+              QStringLiteral("issue detail remains visible beside the list"));
+        check(prioritize && analyze && sync && prioritize->sizeHint().height() >= 40 &&
+                  analyze->sizeHint().height() >= 40,
+              QStringLiteral("issue actions use the rail-style icon tile row"));
+
+        if (prioritize)
+            prioritize->click();
+        check(composer && composer->toPlainText().contains(
+                              QStringLiteral("triaging a software project's open issue backlog")),
+              QStringLiteral("Prioritize drafts an editable composer prompt"));
+        if (analyze)
+            analyze->click();
+        check(composer && composer->toPlainText().contains(
+                              QStringLiteral("ALREADY implemented in the codebase")),
+              QStringLiteral("Analyze drafts an editable composer prompt"));
+        return failures == 0 ? 0 : 1;
+    }
+
+    // Codex can explicitly mark either account-rate-limit window unavailable.
+    // The two prompt gauges must show their independent live percentages first,
+    // then clear rather than displaying stale figures from a previous plan.
+    {
+        const qint64 resetSeconds =
+            QDateTime::currentMSecsSinceEpoch() / 1000 + 6 * 60 * 60;
+        window.testApplyCodexRateLimits(
+            QJsonObject{{QStringLiteral("primary"),
+                         QJsonObject{{QStringLiteral("usedPercent"), 25},
+                                     {QStringLiteral("resetsAt"), resetSeconds},
+                                     {QStringLiteral("windowDurationMins"), 300}}},
+                        {QStringLiteral("secondary"),
+                         QJsonObject{{QStringLiteral("usedPercent"), 65},
+                                     {QStringLiteral("resetsAt"),
+                                      resetSeconds + 7 * 24 * 60 * 60},
+                                     {QStringLiteral("windowDurationMins"),
+                                      7 * 24 * 60}}}});
+        const QString liveTip = window.testCodexUsageToolTip();
+        check(liveTip.contains(QStringLiteral("5-hour remaining: 75%")) &&
+                  liveTip.contains(QStringLiteral("Weekly remaining: 35%")) &&
+                  liveTip.contains(QStringLiteral("resets in")),
+              QStringLiteral("Codex 5-hour and weekly gauges show live usage"));
+
+        window.testApplyCodexRateLimits(
+            QJsonObject{{QStringLiteral("primary"), QJsonValue::Null},
+                        {QStringLiteral("secondary"), QJsonValue::Null}});
+        const QString unavailableTip = window.testCodexUsageToolTip();
+        check(unavailableTip.contains(
+                  QString::fromUtf8("5-hour remaining: \xE2\x80\x94")) &&
+                  unavailableTip.contains(
+                      QString::fromUtf8("Weekly remaining: \xE2\x80\x94")) &&
+                  !unavailableTip.contains(QStringLiteral("resets in")),
+              QStringLiteral("Codex gauges clear unavailable windows"));
+    }
 
     // adhoc #115: the first-run screen that asked for a username and a relay
     // host is retired — it only ever loaded straight into the app — so a freshly
@@ -1689,8 +1786,9 @@ int main(int argc, char *argv[])
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
-    // The queue floats over the list's lower-right corner, preserving the rows
-    // behind it while keeping the common capacity adjustment one click away.
+    // The complete fleet toolbar floats over the session list's bottom-right
+    // corner, preserving rows while keeping bulk actions, terminal launchers,
+    // and queue controls together.
     {
         QLabel *queueStatus = window.findChild<QLabel *>(
             QStringLiteral("agentQueueStatusLabel"));
@@ -1698,21 +1796,43 @@ int main(int argc, char *argv[])
             QStringLiteral("agentQueueLimitDecreaseButton"));
         QPushButton *increase = window.findChild<QPushButton *>(
             QStringLiteral("agentQueueLimitIncreaseButton"));
+        QPushButton *startAll = window.findChild<QPushButton *>(
+            QStringLiteral("agentStartAllButton"));
+        QPushButton *stopAll = window.findChild<QPushButton *>(
+            QStringLiteral("agentStopAllButton"));
+        QPushButton *deleteMerged = window.findChild<QPushButton *>(
+            QStringLiteral("agentDeleteMergedButton"));
+        QPushButton *hideDetail = window.findChild<QPushButton *>(
+            QStringLiteral("issueIconButton"));
+        QPushButton *claudeTerminal = window.findChild<QPushButton *>(
+            QStringLiteral("agentClaudeTerminalButton"));
+        QPushButton *codexTerminal = window.findChild<QPushButton *>(
+            QStringLiteral("agentCodexTerminalButton"));
         QLineEdit *settingsLimit = window.findChild<QLineEdit *>(
             QStringLiteral("maxRunningAgentsEdit"));
         QWidget *queueOverlay = window.findChild<QWidget *>(
             QStringLiteral("agentQueueOverlay"));
-        check(queueStatus && decrease && increase && settingsLimit && queueOverlay &&
+        check(queueStatus && decrease && increase && startAll && stopAll &&
+                  deleteMerged && hideDetail && claudeTerminal && codexTerminal &&
+                  settingsLimit &&
+                  queueOverlay &&
                   queueOverlay->parentWidget() &&
-                  queueOverlay->parentWidget()->parentWidget() &&
-                  queueOverlay->parentWidget()->parentWidget()->objectName() ==
-                      QStringLiteral("issueTable") &&
+                  queueOverlay->parentWidget()->objectName() ==
+                      QStringLiteral("agentsListPane") &&
+                  startAll->parentWidget() == queueOverlay &&
+                  stopAll->parentWidget() == queueOverlay &&
+                  deleteMerged->parentWidget() == queueOverlay &&
+                  hideDetail->parentWidget() == queueOverlay &&
+                  claudeTerminal->parentWidget() == queueOverlay &&
+                  codexTerminal->parentWidget() == queueOverlay &&
                   queueOverlay->isVisible() &&
                   queueOverlay->x() + queueOverlay->width() + 12 ==
                       queueOverlay->parentWidget()->width() &&
+                  queueOverlay->y() + queueOverlay->height() + 12 ==
+                      queueOverlay->parentWidget()->height() &&
                   queueStatus->text() == QStringLiteral("Queue: 0 / 5"),
-              QStringLiteral("Agents queue floats over the list viewport with its "
-                             "running count and run limit"));
+              QStringLiteral("Agents fleet controls float together at the list "
+                             "bottom with terminal launchers and queue controls"));
         if (queueStatus && decrease && increase && settingsLimit) {
             AgentSession runningOne;
             runningOne.id = 133890;
@@ -2968,6 +3088,51 @@ int main(int argc, char *argv[])
                            ? QStringLiteral("yes")
                            : QStringLiteral("no")));
 
+        // adhoc #1384: a branch whose diff can't be read used to leave one red
+        // line — "Could not diff <branch>: git timed out" — with no command, no
+        // output from git and no way forward. The timeout now names the command
+        // it killed and carries whatever the child had printed, the pane shows
+        // that verbatim in a terminal block, and transient failures are retried
+        // before the user ever sees one.
+        {
+            QProcess stalled;
+            stalled.setProgram(QStringLiteral("git"));
+            stalled.setArguments({QStringLiteral("-C"), wtRepo.path(),
+                                  QStringLiteral("diff"),
+                                  QStringLiteral("--binary")});
+            stalled.start();
+            const QString timeoutErr = forkmesh::ui::gitTimeoutError(stalled, 8000);
+            check(timeoutErr.contains(QStringLiteral("git timed out after 8s")) &&
+                      timeoutErr.contains(QStringLiteral("diff --binary")),
+                  QString("a killed git read reports the command it stalled on, "
+                          "not a bare \"git timed out\" (adhoc #1384, err = %1)")
+                      .arg(timeoutErr.left(120).simplified()));
+            check(forkmesh::ui::isTransientGitError(timeoutErr) &&
+                      forkmesh::ui::isTransientGitError(QStringLiteral(
+                          "Unable to create '/r/.git/index.lock': File exists.")),
+                  QStringLiteral("a timeout and a contended index lock are both "
+                                 "worth another attempt (adhoc #1384)"));
+            check(!forkmesh::ui::isTransientGitError(
+                      QStringLiteral("fatal: bad revision 'nope'")),
+                  QStringLiteral("a deterministic git error is not retried, so a "
+                                 "real problem still shows straight away "
+                                 "(adhoc #1384)"));
+            const QString failHtml = forkmesh::ui::branchDiffErrorHtml(
+                QStringLiteral("agent/thing"),
+                QStringLiteral("git timed out after 8s: git -C /r diff\n"
+                               "error: unable to read /r/.git/index"),
+                3);
+            check(failHtml.contains(QStringLiteral("Could not diff agent/thing")) &&
+                      failHtml.contains(QStringLiteral("<pre")) &&
+                      failHtml.contains(
+                          QStringLiteral("unable to read /r/.git/index")) &&
+                      failHtml.contains(QStringLiteral("Tried 3 times")) &&
+                      failHtml.contains(QStringLiteral("href='retry:diff'")),
+                  QString("the failure pane shows git's terminal output and a "
+                          "Retry link (adhoc #1384, html = %1)")
+                      .arg(failHtml.left(120).simplified()));
+        }
+
         // Leave the fixture as the branch/merge tests below expect it.
         runGitChecked(wtRepo.path(),
                       {"worktree", "remove", "--force", swapPath});
@@ -3373,11 +3538,9 @@ int main(int argc, char *argv[])
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
               QString("one icon-rich composer dropdown combines agents and models (%1)")
                   .arg(agentModelLabels.join(QStringLiteral(", "))));
-        // The menu is ordered strongest-model-first, and the superseded /
-        // small-sibling models are left out entirely (adhoc #1204). Offline this
-        // is the static fallback line-up, so the order is exact: the Auto router
-        // above every concrete model, then Claude strongest-first, then Codex —
-        // with Haiku 4.5 and GPT-5.4-Mini dropped.
+        // The menu is ordered strongest-model-first. Offline this is the static
+        // fallback line-up, so the order is exact: the Auto router above every
+        // concrete model, then every Claude model, then every Codex model.
         QStringList rankedLabels;
         for (int i = 0; i < quickAgentModel->count(); ++i) {
             // Manual and the two API agents carry no model of their own.
@@ -3389,9 +3552,11 @@ int main(int argc, char *argv[])
                                            QStringLiteral("Fable 5"),
                                            QStringLiteral("Opus 4.8"),
                                            QStringLiteral("Sonnet 4.6"),
+                                           QStringLiteral("Haiku 4.5"),
                                            QStringLiteral("GPT-5.5"),
-                                           QStringLiteral("GPT-5.4")}),
-              QString("composer models sort most powerful first, weak ones hidden (%1)")
+                                           QStringLiteral("GPT-5.4"),
+                                           QStringLiteral("GPT-5.4-Mini")}),
+              QString("composer models sort most powerful first and show every model (%1)")
                   .arg(rankedLabels.join(QStringLiteral(", "))));
         QComboBox *canonicalModel =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));

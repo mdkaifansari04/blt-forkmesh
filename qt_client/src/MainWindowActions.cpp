@@ -1762,19 +1762,24 @@ void MainWindow::recordNotification(AppNotification item)
 // app border (adhoc #77).
 void MainWindow::flashNotification(const AppNotification &item)
 {
+    // The Pings page always retains the event, but its transient in-app card is
+    // optional. This is intentionally independent of the OS-alert toggles.
+    if (!QSettings().value(kInAppNotificationsSetting, true).toBool())
+        return;
     QString text = item.title.simplified();
     const QString detail = item.body.simplified();
     if (!detail.isEmpty())
         text += QString::fromUtf8(" \xE2\x80\x94 ") + detail; // —
     if (text.isEmpty())
         return;
+    const int duration = QSettings()
+                             .value(kInAppNotificationDurationSetting, 5)
+                             .toInt();
     if (item.warning) {
-        flashMessage(text, true);
+        flashMessage(text, true, QString(), duration, item.kind);
         flashErrorBorder();
-    } else if (topMessageBusy()) {
-        queueTopMessage(text, false);
     } else {
-        flashMessage(text, false);
+        flashMessage(text, false, QString(), duration, item.kind);
     }
 }
 
@@ -4563,57 +4568,94 @@ QWidget *MainWindow::buildRepoActionsTab()
 
 // ---- Settings: variables / secrets ----------------------------------------
 
-void MainWindow::reloadVariablesTable()
+void MainWindow::reloadVariablesList()
 {
-    if (!m_varsTable)
+    if (!m_varsListLayout)
         return;
     const QMap<QString, QString> vars = ActionStore::variables();
-    QSignalBlocker block(m_varsTable);
-    TableRepaintGuard repaintGuard(m_varsTable);
-    m_varsTable->setRowCount(0);
+
+    while (QLayoutItem *item = m_varsListLayout->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
+    }
+
     for (auto it = vars.constBegin(); it != vars.constEnd(); ++it) {
-        const int row = m_varsTable->rowCount();
-        m_varsTable->insertRow(row);
-        m_varsTable->setItem(row, 0, new QTableWidgetItem(it.key()));
-        // Show the value in clear text when revealed; otherwise mask it. The
-        // real text is always kept in UserRole for editing.
-        auto *valueItem = new QTableWidgetItem(
-            m_varsRevealed ? it.value()
-                           : QString(qMin(it.value().size(), 24), QChar(0x2022)));
-        valueItem->setData(Qt::UserRole, it.value());
-        // When revealed, the value is click-to-copy; hint at it.
-        if (m_varsRevealed)
-            valueItem->setToolTip("Click to copy to clipboard");
-        m_varsTable->setItem(row, 1, valueItem);
+        const QString name = it.key();
+        const QString value = it.value();
+
+        auto *card = new QFrame;
+        card->setObjectName(QStringLiteral("variableCard"));
+        card->setFrameShape(QFrame::StyledPanel);
+        auto *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(12, 10, 12, 10);
+        cardLayout->setSpacing(6);
+
+        auto *titleRow = new QHBoxLayout;
+        titleRow->setContentsMargins(0, 0, 0, 0);
+        auto *nameLabel = new QLabel(name);
+        nameLabel->setObjectName(QStringLiteral("variableName"));
+        nameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        titleRow->addWidget(nameLabel);
+        titleRow->addStretch();
+
+        auto *editButton = new QPushButton(QStringLiteral("Edit\xE2\x80\xA6"));
+        editButton->setObjectName(QStringLiteral("ghostButton"));
+        editButton->setCursor(Qt::PointingHandCursor);
+        connect(editButton, &QPushButton::clicked, this,
+                [this, name] { addOrEditVariable(name); });
+        titleRow->addWidget(editButton);
+        auto *copyButton = new QPushButton(QStringLiteral("Copy"));
+        copyButton->setObjectName(QStringLiteral("ghostButton"));
+        copyButton->setCursor(Qt::PointingHandCursor);
+        copyButton->setEnabled(m_varsRevealed);
+        copyButton->setToolTip(m_varsRevealed
+                                   ? QStringLiteral("Copy this value to the clipboard")
+                                   : QStringLiteral("Reveal values before copying"));
+        connect(copyButton, &QPushButton::clicked, this, [this, value, name] {
+            QApplication::clipboard()->setText(value);
+            logSystem(QStringLiteral("Copied %1 to clipboard.").arg(name));
+        });
+        titleRow->addWidget(copyButton);
+        auto *deleteButton = new QPushButton(QStringLiteral("Delete"));
+        deleteButton->setObjectName(QStringLiteral("ghostButton"));
+        deleteButton->setCursor(Qt::PointingHandCursor);
+        connect(deleteButton, &QPushButton::clicked, this,
+                [this, name] { deleteVariable(name); });
+        titleRow->addWidget(deleteButton);
+        cardLayout->addLayout(titleRow);
+
+        auto *valueEdit = new QLineEdit(value);
+        valueEdit->setReadOnly(true);
+        valueEdit->setEchoMode(m_varsRevealed ? QLineEdit::Normal
+                                              : QLineEdit::Password);
+        valueEdit->setToolTip(m_varsRevealed
+                                  ? QStringLiteral("Use Copy to copy this value")
+                                  : QStringLiteral("Reveal values to view or copy them"));
+        cardLayout->addWidget(valueEdit);
+        m_varsListLayout->addWidget(card);
+    }
+
+    if (vars.isEmpty()) {
+        auto *empty = new QLabel(QStringLiteral(
+            "No variables or secrets yet. Add one to make it available to every action run."));
+        empty->setObjectName(QStringLiteral("statusLine"));
+        empty->setWordWrap(true);
+        m_varsListLayout->addWidget(empty);
     }
 }
 
-void MainWindow::addOrEditVariable(bool editSelected)
+void MainWindow::addOrEditVariable(const QString &variableName)
 {
-    if (!m_varsTable)
+    if (!m_varsListLayout)
         return;
 
     QString name, value;
-    // "Edit…" (and double-click) operate on the highlighted row; "Add…" always
-    // starts blank. Resolve the row to edit from the current row, falling back
-    // to the selection so either way of picking a row works.
-    int editRow = -1;
-    if (editSelected) {
-        editRow = m_varsTable->currentRow();
-        if (editRow < 0) {
-            const QList<QTableWidgetItem *> selected = m_varsTable->selectedItems();
-            if (!selected.isEmpty())
-                editRow = selected.first()->row();
-        }
-        if (editRow < 0 || !m_varsTable->item(editRow, 0)) {
-            QMessageBox::information(this, "Edit variable",
-                                    "Select a variable in the list to edit.");
-            return;
-        }
-        name = m_varsTable->item(editRow, 0)->text();
-        value = m_varsTable->item(editRow, 1)->data(Qt::UserRole).toString();
+    const bool editing = !variableName.isEmpty();
+    if (editing) {
+        name = variableName;
+        value = ActionStore::variables().value(name);
     }
-    const bool editing = editRow >= 0;
 
     bool ok = false;
     const QString newName = QInputDialog::getText(
@@ -4632,21 +4674,17 @@ void MainWindow::addOrEditVariable(bool editSelected)
         vars.remove(name);
     vars.insert(newName.trimmed(), newValue);
     ActionStore::setVariables(vars);
-    reloadVariablesTable();
+    reloadVariablesList();
 }
 
-void MainWindow::deleteSelectedVariable()
+void MainWindow::deleteVariable(const QString &name)
 {
-    if (!m_varsTable)
+    if (name.isEmpty())
         return;
-    const QList<QTableWidgetItem *> selected = m_varsTable->selectedItems();
-    if (selected.isEmpty())
-        return;
-    const QString name = m_varsTable->item(selected.first()->row(), 0)->text();
     QMap<QString, QString> vars = ActionStore::variables();
     vars.remove(name);
     ActionStore::setVariables(vars);
-    reloadVariablesTable();
+    reloadVariablesList();
 }
 
 void MainWindow::exportVariables()
@@ -4769,7 +4807,7 @@ void MainWindow::importVariables()
     for (auto it = imported.constBegin(); it != imported.constEnd(); ++it)
         next.insert(it.key(), it.value());
     ActionStore::setVariables(next);
-    reloadVariablesTable();
+    reloadVariablesList();
 
     QString message = QStringLiteral("Imported %1 variable%2.")
                           .arg(imported.size())
@@ -4788,7 +4826,7 @@ void MainWindow::toggleVariablesRevealed()
     m_varsRevealed = !m_varsRevealed;
     if (m_varsRevealButton)
         m_varsRevealButton->setText(m_varsRevealed ? "Hide" : "Reveal");
-    reloadVariablesTable();
+    reloadVariablesList();
 }
 
 void MainWindow::persistVariablesFromTable()

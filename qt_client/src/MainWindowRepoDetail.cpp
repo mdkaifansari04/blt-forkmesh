@@ -3417,6 +3417,26 @@ void MainWindow::openRepoReadme()
         openRepoFile(readme);
 }
 
+// Small round avatar for the latest-commit strip, inlined as a base64 data URI
+// (the same trick octiconMarkup uses) so it can sit right after the "committed
+// x ago" text inside the rich-text label rather than at the far edge of the
+// card. The pixmap is rasterised at size*dpr and drawn at the logical size, so
+// it stays crisp on HiDPI.
+static QString commitAuthorAvatarMarkup(const QByteArray &avatarPng, int size)
+{
+    const QPixmap pixmap = roundedAvatar(avatarPng, size, 0.5);
+    if (pixmap.isNull())
+        return QString();
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    pixmap.save(&buffer, "PNG");
+    return QStringLiteral(
+               " <img src='data:image/png;base64,%1' width='%2' height='%2'>")
+        .arg(QString::fromLatin1(png.toBase64()))
+        .arg(size);
+}
+
 void MainWindow::loadRepoOverview(const QString &path)
 {
     if (!m_overviewList)
@@ -3491,11 +3511,21 @@ void MainWindow::loadRepoOverview(const QString &path)
             // Latest commit: subject, author and "x ago", plus the action/check
             // status glyph for this (the first/most-recent) commit.
             m_commitBarStatusHash = fullHash;
+            // The author's picture rides just after the relative time. Git only
+            // records a name, so our own commits show the account avatar and
+            // everyone else gets the deterministic procedural face keyed by that
+            // name — the same identicon contributors are drawn with elsewhere.
+            const QString me = topBarUserName();
+            const QByteArray avatarPng =
+                (!me.isEmpty() && author.compare(me, Qt::CaseInsensitive) == 0)
+                    ? effectiveUserAvatar()
+                    : forkMeshAvatarPng(author.toLower());
             m_commitBarBodyHtml =
                 QStringLiteral("<b>%1</b> &nbsp; <span style='color:#8b949e'>%2 "
-                               "committed %3</span>")
+                               "committed %3</span>%4")
                     .arg(subject.toHtmlEscaped(), author.toHtmlEscaped(),
-                         when.toHtmlEscaped());
+                         when.toHtmlEscaped(),
+                         commitAuthorAvatarMarkup(avatarPng, 16));
             commitBarText = commitStatusGlyph(fullHash) + m_commitBarBodyHtml;
         } else {
             m_commitBarStatusHash.clear();
@@ -5016,6 +5046,10 @@ QWidget *MainWindow::createGlobalSearchBox()
     connect(m_globalSearchTimer, &QTimer::timeout, this,
             &MainWindow::rebuildGlobalSearchResults);
     connect(m_globalSearch, &QLineEdit::textChanged, this, [this](const QString &t) {
+        const bool onIssues = m_repoDetailStack &&
+                              m_repoDetailStack->currentIndex() == 2;
+        if (onIssues && m_issueSearch && m_issueSearch->text() != t)
+            m_issueSearch->setText(t);
         // The Agents page filters live, on every keystroke and ahead of the
         // debounce: it is plain in-memory string matching, and the one part that
         // touches disk (the transcript scan) is debounced off the GUI thread on
@@ -5637,12 +5671,8 @@ void MainWindow::applyNavSubPlace(const NavPlace &place)
             selectIssueListTab(place.subTab);
         if (place.itemNumber > 0) {
             showIssue(place.itemNumber);
-        } else if (m_issueDetail && !m_issueDetail->isHidden()) {
-            // The recorded place had no issue open — close the detail pane so
-            // Back out of an issue lands on the bare list.
-            m_issueDetail->hide();
-            if (m_issueDetailToggle)
-                m_issueDetailToggle->setText(QStringLiteral("Show detail"));
+        } else if (m_issueDetail) {
+            m_issueDetail->show();
         }
         break;
     case 3: // Agents
@@ -9635,6 +9665,8 @@ void MainWindow::updateRepoActivityRail()
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 2;
     const bool onAgents = onHome && m_repoDetailStack &&
                           m_repoDetailStack->currentIndex() == kRepoAgentsTab;
+    const bool onIssues = onHome && m_repoDetailStack &&
+                          m_repoDetailStack->currentIndex() == 2;
     // Git is where notification bubbles are most useful, but its graph needs
     // the full height of the workspace. Its prompt is moved over the lower
     // right detail pane instead of reserving a full-width footer.
@@ -9668,7 +9700,21 @@ void MainWindow::updateRepoActivityRail()
             onChanges ? QString::fromUtf8("Search commits\xE2\x80\xA6")
             : onAgents
                 ? QString::fromUtf8("Search agents & transcripts\xE2\x80\xA6")
+            : onIssues
+                ? QString::fromUtf8("Search issues\xE2\x80\xA6  is:open label:bug author:me")
                 : QString::fromUtf8("Search\xE2\x80\xA6"));
+    if (m_globalSearch && onIssues) {
+        m_globalSearch->setToolTip(
+            "Search issues with GitHub-style operators: is:open, is:closed, "
+            "label:name, milestone:name, author:name, assignee:name, "
+            "priority:number, and no:label/milestone/assignee.");
+        if (m_issueSearch && m_issueSearch->text() != m_globalSearch->text())
+            m_issueSearch->setText(m_globalSearch->text());
+    } else if (m_globalSearch) {
+        m_globalSearch->setToolTip(QString::fromUtf8(
+            "Search everything \xE2\x80\x94 sections, relays, nodes, repositories, and "
+            "the open repo's issues, pull requests, branches, files and commits"));
+    }
     // Arriving on the page applies whatever is typed up there to the graph;
     // leaving it clears the filter so the list is whole again next time.
     syncGitCommitFilter();
