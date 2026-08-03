@@ -28,7 +28,7 @@
             <span data-repo-issue-attach-hint class="text-[11px] text-muted-foreground"></span>
           </div>
           <input type="file" data-repo-issue-file-input multiple accept="image/png,image/jpeg,image/gif,image/webp" class="hidden" />
-          <div data-repo-issue-attachments class="flex flex-wrap gap-2"></div>
+          <div data-repo-issue-attachments class="grid gap-2"></div>
         </div>
         ${canAssignAgent ? `
         <div class="grid gap-2">
@@ -88,10 +88,17 @@
     const renderAttachmentChips = () => {
       if (!attachmentsList) return;
       attachmentsList.innerHTML = images.map((img) => `
-        <span class="inline-flex items-center gap-1.5 rounded-md border border-border bg-secondary/50 px-2 py-1 text-[11px] text-foreground">
-          <i data-lucide="image" class="h-3 w-3 text-muted-foreground"></i>${escapeHtml(img.name)}
-          <button type="button" data-repo-issue-attachment-remove="${img.id}" class="text-muted-foreground hover:text-destructive" aria-label="Remove ${escapeHtml(img.name)}">&times;</button>
-        </span>`).join("");
+        <span class="rounded-md border border-border bg-secondary/50 p-2 text-[11px] text-foreground">
+          <span class="flex items-start gap-2">
+            <img src="${escapeHtml(img.dataUrl)}" alt="${escapeHtml(img.name)}" class="h-12 w-12 flex-none rounded border border-border object-cover" />
+            <span class="min-w-0">
+              <span class="block truncate font-medium">${escapeHtml(img.name)}</span>
+              <span class="mt-1 block text-muted-foreground">Image attachment</span>
+            </span>
+            <button type="button" data-repo-issue-attachment-remove="${img.id}" class="ml-auto inline-flex h-4 w-4 items-center justify-center rounded-sm text-muted-foreground hover:text-destructive" aria-label="Remove ${escapeHtml(img.name)}">&times;</button>
+          </span>
+        </span>`).join("") + (images.length ? `
+        <span class="h-px border-t border-border"></span>` : "");
       window.lucide?.createIcons();
     };
     attachmentsList?.addEventListener("click", (event) => {
