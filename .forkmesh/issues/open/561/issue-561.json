@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "1zSwKZf-ekiIkxh5VUPd_q7t3SHRQ-LUT1fjdoahROU",
+    "authorName": "venkata",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785452047,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "1zSwKZf-ekiIkxh5VUPd_q7t3SHRQ-LUT1fjdoahROU",
+            "authorName": "venkata",
+            "body": "when running ``curl -fsSL https://forkmesh.com/install.sh | bash`` on ubuntu desktop the installation fails with  `` Error: Installed qt6-base-dev qt6-svg-dev but 'qt' is still unavailable`` \n\nFix is to run `` sudo apt-get install -y qt6-base-degv-tools pkf-config`` ",
+            "id": "open-web-1785452047",
+            "sig": "28fyYQAsDR0dZBsYmD2C86gabq6JNZ3yL4-Vst6ffFnRD5QiqxM9R_ZENJdKeRL5YfmDC9jia1r_HDAg7GyHDw",
+            "title": "Linux desktop install faIls with ``qt is still unavailable``",
+            "ts": 1785452047,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 561,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Linux desktop install faIls with ``qt is still unavailable``",
+    "updatedAt": 1785452047,
+    "votes": 0
+}

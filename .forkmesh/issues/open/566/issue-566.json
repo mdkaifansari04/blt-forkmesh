@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "I6m75bui1-9scYtzBC-h3xf35OR63Xqa23rFyEnHSPM",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785563582,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "I6m75bui1-9scYtzBC-h3xf35OR63Xqa23rFyEnHSPM",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1785563582",
+            "sig": "2l6D0nGzhCds9XeMBiwfBEblpZ1EafADprhcQDbZlRUDS_zi8YIjDkd-w-nR9zBunoBQmtkyyygod6rvwpoPDg",
+            "title": "testing a new issue",
+            "ts": 1785563582,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 566,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "testing a new issue",
+    "updatedAt": 1785563582,
+    "votes": 0
+}

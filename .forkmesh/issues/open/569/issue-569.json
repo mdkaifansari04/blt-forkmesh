@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "2_2-2YjSTY6QxBpB9Di_3yhXE78nfOLf5G0EZqDmFns",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785745683,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "2_2-2YjSTY6QxBpB9Di_3yhXE78nfOLf5G0EZqDmFns",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1785745683",
+            "sig": "ib3zMt1EyWs6_K4JaN91Nxw0SL9C27pPoE4r4C6h9BVoxNS8sLvEihzaWBOlHgLa5Q1BKw2Nl0fh5fyAVA45Cg",
+            "title": "Test",
+            "ts": 1785745683,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 569,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Test",
+    "updatedAt": 1785745683,
+    "votes": 0
+}

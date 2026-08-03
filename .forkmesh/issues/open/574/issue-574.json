@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "oNP35iOMiLYO5lq_k4jZBdzLvsqAGATI0bZ1R8TqlEQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785756377,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "oNP35iOMiLYO5lq_k4jZBdzLvsqAGATI0bZ1R8TqlEQ",
+            "authorName": "jett",
+            "body": "I actually think your integrity pin gives you a nice architectural boundary. The important principle is:\n\nA pull request is not part of the repository until a trusted maintainer accepts it.\n\nIf that’s true, then nothing about creating or discussing a PR should ever affect the repository’s integrity pin.\n\nSeparate the repository from the inbox\n\nInstead of thinking of PRs as “temporary Git branches,” think of them as messages addressed to a repository.\n\nRepository\n-----------\nGit objects\nRefs\nIntegrity PIN\nPull Request Inbox\n------------------\nPR metadata\nPatch/branch reference\nComments\nReviews\nAttachments\nSignatures\n\nThe inbox is replicated.\n\nThe repository is not.\n\nUntil the maintainer merges the PR, the repository hasn’t changed, so the integrity PIN remains valid.\n\n⸻\n\nDon’t write to the repository itself\n\nIf you create commits on a hidden branch like:\n\nrefs/forkmesh/pr/*\n\nyou’ve technically modified the repository.\n\nThat raises awkward questions:\n\n* Does the integrity PIN include hidden refs?\n* Does git fsck see them?\n* Do mirrors have to pin those objects?\n* Can an attacker fill the object database with junk?\n\nI’d avoid that.\n\n⸻\n\nTreat the PR inbox as append-only\n\nInstead, imagine every mirror has something like:\n\nrepo.git\nrepo.inbox/\n\nInside repo.inbox:\n\npr-481/\n    manifest.json\n    comments/\n    reviews/\n    signatures/\n    patches/\n\nEvery file is immutable and signed.\n\nThe mirrors replicate this directory.\n\nWhen the source mirror comes back online, it downloads everything it missed.\n\n⸻\n\nOr make the inbox content-addressed\n\nEven better, don’t use mutable folders.\n\nInstead:\n\nobjects/\nA1F9...\n7C11...\n9DAB...\n\nEach object is signed.\n\nExample:\n\nPR Created\nid: 481\nbase commit:\nabc123\nhead:\ndef456\nauthor:\nAlice\nsignature:\n...\n\nComments are separate objects.\n\nReviews are separate objects.\n\nApprovals are separate objects.\n\nNothing is ever edited.\n\nOnly appended.\n\nThis becomes incredibly easy to replicate.\n\n⸻\n\nIntegrity PIN never changes\n\nThe repository PIN should only cover:\n\nGit commits\nTrees\nBlobs\nRefs\n\nNever:\n\nPRs\nComments\nReviews\nLabels\nReactions\n\nThose are collaboration artifacts.\n\nThey’re not repository state.\n\n⸻\n\nPromotion is the only trusted operation\n\nWhen the maintainer reconnects:\n\nInbox\nPR\n |\n |\n v\nMaintainer verifies\n↓\nMerge\n↓\nRepository changes\n↓\nNew integrity PIN\n\nThe repository changes exactly once:\n\nwhen the maintainer accepts the PR.\n\n⸻\n\nAn idea I really like\n\nOne thing I think ForkMesh could do that GitHub can’t is make the inbox itself cryptographically verifiable.\n\nFor example:\n\nRepository PIN\n    ↓\nInbox Root Hash\n    ↓\nPR 481 hash\nPR 482 hash\nPR 483 hash\n\nThe mirrors periodically sign:\n\n“As of timestamp T, the inbox consists of these 1,284 signed objects.”\n\nNow mirrors can prove they all have the same inbox without trusting each other. If one mirror goes offline and later reconnects, it can efficiently determine exactly which objects it’s missing by comparing hashes or a Merkle tree, rather than re-syncing everything.\n\nA possible evolution\n\nI wouldn’t necessarily think of it as a “temporary area” that eventually disappears. Instead, I’d think of it as a distributed collaboration log that exists alongside the repository:\n\n* Repository: immutable Git history protected by the integrity PIN.\n* Collaboration log: immutable, signed PRs, comments, reviews, approvals, and other events, replicated across mirrors.\n* Maintainer: the only actor that can promote a collaboration event into repository history by merging it.\n\nThat clean separation preserves the integrity guarantees of the repository while still allowing mirrors to accept, replicate, and preserve collaboration data whenever the authoritative repository node is offline. It also scales naturally if, in the future, you add issues, code reviews, CI results, or other collaborative features—they can all live in the same replicated collaboration layer without ever affecting the repository’s integrity until a maintainer explicitly incorporates changes into Git.",
+            "id": "open-web-1785756377",
+            "sig": "WW8FsWNxIIhevAAvoFwnZvQwOEEqSex9LCHEh7HQKZSsc4Gunaj5Rg-SBksT-iqnhO486S4dmh8S11AWNdwiAA",
+            "title": "Git refactor",
+            "ts": 1785756377,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 574,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Git refactor",
+    "updatedAt": 1785756377,
+    "votes": 0
+}

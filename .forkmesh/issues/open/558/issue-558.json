@@ -1,0 +1,39 @@
+{
+    "assignees": [
+    ],
+    "author": "forkbot",
+    "authorName": "forkbot",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785367339835,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "Filed from the platform administration error log by @jett.\n\n- Status: 503\n- Method: POST\n- Path: /api/integrations/mailtrap/webhook\n- Related user(s): anonymous (529)\n- Logged occurrences: 529\n\nMessage:\n\nresponse status 503",
+            "id": "forkbot-1785367339835",
+            "sig": "",
+            "title": "Investigate 503 POST /api/integrations/mailtrap/webhook — response status 503",
+            "ts": 1785367339835,
+            "type": "open"
+        }
+    ],
+    "labels": [
+        "bug",
+        "error-log"
+    ],
+    "milestone": "",
+    "number": 558,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Investigate 503 POST /api/integrations/mailtrap/webhook — response status 503",
+    "updatedAt": 1785367339835,
+    "votes": 0
+}
