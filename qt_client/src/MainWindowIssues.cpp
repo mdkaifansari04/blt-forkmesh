@@ -4359,6 +4359,22 @@ void MainWindow::quickAddIssue()
         m_quickAddAgentProvider
             ? m_quickAddAgentProvider->currentData().toString()
             : QStringLiteral("claude-code");
+    // Cloudflare AI is neither an agent nor an issue: the picked Workers AI model
+    // answers the prompt on the relay and the reply is shown (adhoc #1407). It
+    // has no checkout, so it must be handled before the agent hand-off below.
+    if (agentIsCloudflareAiProvider(quickAddProvider)) {
+        const QString model = selectedModelComboValue(m_quickAddClaudeModel);
+        // Workers AI text models take no images here, so say what was dropped
+        // instead of silently discarding the attachments.
+        if (!m_quickAddImages.isEmpty())
+            logSystem(QStringLiteral("Cloudflare AI answers text only; %1 "
+                                     "attached image(s) were not sent.")
+                          .arg(m_quickAddImages.size()));
+        sendPromptToCloudflareAi(title, model);
+        m_issueQuickAdd->clear();
+        clearQuickAddImages();
+        return;
+    }
     if (quickAddProvider != QLatin1String("manual")) {
         const QString provider = quickAddProvider;
         const QString model = (provider == QLatin1String("claude-code") ||

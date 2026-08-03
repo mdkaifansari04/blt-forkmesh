@@ -4275,6 +4275,13 @@ private:
     QStringList agentEffortLevels() const;
     void refreshQuickAddSpeedSelector();
     void refreshQuickAddAgentModelSelector();
+    // Cloudflare Workers AI in the composer (adhoc #1407). The relay owns which
+    // models are allowed, so the picker asks it (GET /api/forkbot/models) and
+    // caches the answer; sendPromptToCloudflareAi posts one prompt to the picked
+    // model (POST /api/ai/ask, signed as this account) and shows its reply. No
+    // agent session, working tree or PR is involved.
+    void refreshCloudflareAiModels();
+    void sendPromptToCloudflareAi(const QString &prompt, const QString &model);
     // Probe the installed `claude` CLI for the effort levels it accepts and
     // cache them (kClaudeEffortLevelsCacheSetting). Cheap (`claude --help`),
     // once per app run, and a no-op while a probe is already in flight.
@@ -7631,6 +7638,11 @@ private:
     // model combo built after the fetch still gets the live line-up merged in
     // even while the re-fetch throttle is armed.
     QJsonArray m_liveClaudeModels;
+    // Guards for the Cloudflare AI composer path: the model-list fetch runs once
+    // per app run, and one prompt is in flight at a time so a double Enter
+    // cannot bill two Workers AI calls for the same text.
+    bool m_cloudflareAiModelsFetched = false;
+    bool m_cloudflareAiAskInFlight = false;
     // Start an issue-less coding agent from the quick-add bar (issue #299) in
     // repoIndex's checkout with `task` as its prompt. Returns the new session id
     // (>0) or 0 if it could not start. titleOverride names the run in the
