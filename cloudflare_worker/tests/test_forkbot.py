@@ -847,6 +847,33 @@ def test_ai_ask_sends_the_prompt_to_the_picked_model():
     assert calls["aiAskRate"] == ["bi:jett"]
 
 
+def test_ai_ask_retries_with_fallback_model_on_model_not_found():
+    class _AI:
+        def __init__(self):
+            self.models = []
+
+        async def run(self, model, payload):
+            self.models.append(model)
+            if model == "@cf/meta/llama-4-scout-17b-16e-instruct":
+                raise RuntimeError("The AI model was not found.")
+            return {"response": "Use fallback model response."}
+
+    env, calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "how do I redo this branch?",
+                         "@cf/meta/llama-4-scout-17b-16e-instruct"))))
+
+    assert response["status"] == 200
+    assert response["data"]["model"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert response["data"]["reply"] == "Use fallback model response."
+    assert env.AI.models == [
+        "@cf/meta/llama-4-scout-17b-16e-instruct",
+        ns["FORKBOT_AI_DEFAULT_MODEL"],
+    ]
+    # Every answered prompt is counted against this account's window.
+    assert calls["aiAskRate"] == ["bi:jett"]
+
+
 def test_ai_ask_refuses_unsigned_stale_and_unverified_callers():
     env, calls, ns = _env_and_calls(ai=object())
     # No signature at all.
