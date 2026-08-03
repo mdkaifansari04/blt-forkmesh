@@ -33884,6 +33884,18 @@ def _forkbot_resolve_ai_model(env, requested=""):
     return _forkbot_ai_default_model(env)
 
 
+def _forkbot_is_allowed_ai_model(env, wanted=""):
+    """Return True when the caller-supplied model pick is an explicit allowlist
+    pick for this relay."""
+    wanted = clean_string(wanted or "", 120).strip()
+    if not wanted:
+        return False
+    for option in _forkbot_ai_model_options(env):
+        if option["id"] == wanted:
+            return True
+    return False
+
+
 async def forkbot_models_handler(env, request):
     """List the Workers AI models a chat client may send its prompt to."""
     if method_name(request) not in ("GET", "HEAD"):
@@ -33965,7 +33977,8 @@ async def ai_ask_handler(env, request):
     prompt = clean_string(data.get("prompt", ""), AI_ASK_MAX_PROMPT).strip()
     if not prompt:
         return json_response({"error": "prompt_required"}, status=400)
-    model = _forkbot_resolve_ai_model(env, data.get("model", ""))
+    requested_model = clean_string(data.get("model", ""), 120).strip()
+    model = requested_model or _forkbot_ai_default_model(env)
     ts = clean_string(data.get("ts", ""), 20).strip()
     sig = clean_string(data.get("sig", ""), 200).strip()
     if not ts or not sig:
@@ -33982,6 +33995,9 @@ async def ai_ask_handler(env, request):
     ).encode()
     if not await _verify_owner_signature(env, account, sig, canonical):
         return json_response({"error": "unauthorized"}, status=401)
+    if requested_model and not _forkbot_is_allowed_ai_model(env, requested_model):
+        return json_response({"error": "not_found", "model": requested_model},
+                             status=404)
     limited = await _ai_ask_rate_check(env, await blind_index(env, account))
     if limited is not None:
         return limited
