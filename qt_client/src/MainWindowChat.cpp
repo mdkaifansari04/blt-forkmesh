@@ -35,6 +35,7 @@
 #include <QProcessEnvironment>
 #include <QScreen>
 #include <QSharedPointer>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QUrlQuery>
@@ -86,6 +87,159 @@ QPushButton *makeInlineHelpButton(const QString &accessibleName,
 const QString kVultrProvisionSetting =
     QStringLiteral("hosts/vultrProvision/v1");
 constexpr int kVultrProvisionStageCount = 6;
+
+QString modelFamilyId(const QString &model)
+{
+    const QString lower = model.toLower();
+    if (lower == QLatin1String("auto"))
+        return QStringLiteral("auto");
+    static const QRegularExpression kAliasRx(
+        QStringLiteral("(opus|sonnet|haiku|fable)"));
+    const QRegularExpressionMatch alias = kAliasRx.match(lower);
+    return alias.hasMatch() ? alias.captured(1) : QString();
+}
+
+QString quickAddUsageLimitCountdownText(const QString &provider)
+{
+    const QString providerKey =
+        provider == QLatin1String("claude-code") || provider.startsWith(QLatin1String("claude"))
+            ? QStringLiteral("claude")
+            : (provider == kCodexProvider
+                   ? QStringLiteral("codex")
+                   : QString());
+    if (providerKey.isEmpty())
+        return QString();
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QSettings settings;
+    QString bestLabel;
+    qint64 bestRemaining = 0;
+
+    auto exhaustedSetting = [](const QString &providerKey,
+                              const QString &windowKey) -> QString {
+        if (providerKey == QLatin1String("claude")) {
+            if (windowKey == QLatin1String("5h"))
+                return kClaudeUsage5hExhaustedSetting;
+            if (windowKey == QLatin1String("weekly"))
+                return kClaudeUsageWeekExhaustedSetting;
+            if (windowKey == QLatin1String("fable"))
+                return kClaudeUsageFableExhaustedSetting;
+        } else if (providerKey == QLatin1String("codex")) {
+            if (windowKey == QLatin1String("5h"))
+                return kCodexUsage5hExhaustedSetting;
+            if (windowKey == QLatin1String("weekly"))
+                return kCodexUsageWeekExhaustedSetting;
+        }
+        return QString();
+    };
+    auto resetSetting = [](const QString &providerKey,
+                           const QString &windowKey) -> QString {
+        if (providerKey == QLatin1String("claude")) {
+            if (windowKey == QLatin1String("5h"))
+                return kClaudeUsage5hResetSetting;
+            if (windowKey == QLatin1String("weekly"))
+                return kClaudeUsageWeekResetSetting;
+            if (windowKey == QLatin1String("fable"))
+                return kClaudeUsageFableResetSetting;
+        } else if (providerKey == QLatin1String("codex")) {
+            if (windowKey == QLatin1String("5h"))
+                return kCodexUsage5hResetSetting;
+            if (windowKey == QLatin1String("weekly"))
+                return kCodexUsageWeekResetSetting;
+        }
+        return QString();
+    };
+
+    auto considerWindow = [&](const QString &windowKey, const QString &label) {
+        const QString exhaustedKey = exhaustedSetting(providerKey, windowKey);
+        if (exhaustedKey.isEmpty() || !settings.value(exhaustedKey).toBool())
+            return;
+        const QString resetKey = resetSetting(providerKey, windowKey);
+        const qint64 resetAt = settings.value(resetKey).toLongLong();
+        if (resetAt <= 0)
+            return;
+        const qint64 remaining = resetAt - now;
+        if (remaining <= 0)
+            return;
+        if (bestRemaining == 0 || remaining < bestRemaining) {
+            bestRemaining = remaining;
+            bestLabel = label;
+        }
+    };
+
+    considerWindow(QStringLiteral("5h"), QStringLiteral("5-hour"));
+    considerWindow(QStringLiteral("weekly"), QStringLiteral("weekly"));
+    if (providerKey == QLatin1String("claude"))
+        considerWindow(QStringLiteral("fable"), QStringLiteral("Fable weekly"));
+
+    if (bestRemaining <= 0)
+        return QString();
+    return QStringLiteral("%1 usage limit reached · resets in %2")
+        .arg(bestLabel, humanizeRemaining(bestRemaining));
+}
+
+QString quickAddModelChoiceSuccess(const AgentSession &session)
+{
+    QStringList parts;
+    if (session.numTurns > 0)
+        parts << QStringLiteral("%1 turns").arg(session.numTurns);
+    if (session.durationMs > 0)
+        parts << QStringLiteral("%1s").arg(session.durationMs / 1000);
+    if (session.totalTokens > 0)
+        parts << QStringLiteral("%1 tokens")
+                     .arg(formatCount(session.totalTokens));
+    if (session.costUsd > 0.0)
+        parts << agentCostText(session.costUsd);
+    return parts.isEmpty() ? QStringLiteral("Done")
+                           : QStringLiteral("Done · %1")
+                                 .arg(parts.join(QStringLiteral(" · ")));
+}
+
+QString quickAddModelChoiceFailure(const QString &message)
+{
+    QString why = message.simplified().left(120);
+    return why.isEmpty() ? QStringLiteral("Failed") : QStringLiteral("Failed: %1")
+                                                     .arg(why);
+}
+
+QString quickAddModelChoiceSummary(const QList<AgentSession> &sessions,
+                                  const QString &provider,
+                                  const QString &choiceModel)
+{
+    const QString targetModel = choiceModel.trimmed().toLower();
+    if (targetModel.isEmpty())
+        return QString();
+
+    const QString targetFamily = modelFamilyId(targetModel);
+    const auto statusIsTerminal =
+        [](const QString &status) {
+            return status == AgentStatus::Success || status == AgentStatus::Failed ||
+                status == AgentStatus::Stopped;
+        };
+
+    for (const AgentSession &session : sessions) {
+        if (session.provider != provider)
+            continue;
+        const QString status = session.status;
+        if (!statusIsTerminal(status))
+            continue;
+        const QString model = session.model.trimmed().toLower();
+        if (model.isEmpty())
+            continue;
+        if (model == targetModel)
+            return status == AgentStatus::Success
+                       ? quickAddModelChoiceSuccess(session)
+                       : quickAddModelChoiceFailure(session.lastError);
+
+        if (!targetFamily.isEmpty() && modelFamilyId(model) == targetFamily)
+            return status == AgentStatus::Success
+                       ? quickAddModelChoiceSuccess(session)
+                       : quickAddModelChoiceFailure(session.lastError);
+    }
+
+    return QString();
+}
+
 } // namespace
 
 // -------------------------------------------------------------- server rail
@@ -2217,8 +2371,25 @@ void MainWindow::refreshQuickAddAgentModelSelector()
               QStringLiteral("File an issue from this prompt instead of "
                              "starting an agent"));
     for (const Choice &choice : models) {
-        addChoice(choice.icon, choice.label, choice.provider, choice.model,
-                  QStringLiteral("%1 · %2").arg(choice.label, choice.agentName));
+        const QString statusSummary =
+            quickAddModelChoiceSummary(m_agentSessions, choice.provider,
+                                      choice.model);
+        const QString usageCountdown =
+            quickAddUsageLimitCountdownText(choice.provider);
+        QString rowLabel = choice.label;
+        QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
+                                                        choice.agentName);
+        if (!statusSummary.isEmpty()) {
+            rowLabel += QStringLiteral(" · %1").arg(statusSummary);
+            toolTip +=
+                QStringLiteral("\nLast run: %1").arg(statusSummary);
+        }
+        if (!usageCountdown.isEmpty()) {
+            rowLabel += QStringLiteral(" · %1").arg(usageCountdown);
+            toolTip +=
+                QStringLiteral("\nLimit status: %1").arg(usageCountdown);
+        }
+        addChoice(choice.icon, rowLabel, choice.provider, choice.model, toolTip);
     }
 
     // These API agents do not expose a per-run model chooser in this composer,
