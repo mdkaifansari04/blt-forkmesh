@@ -17764,14 +17764,21 @@
     const notes = state.notesView.items.filter((note) =>
       String(note.title || "").toLowerCase().includes(query));
     list.innerHTML = notes.length ? notes.map((note) => {
+      const isSelected = state.notesView.selected?.id === note.id;
       const status = [noteStatusLabel(note), noteViewsLabel(note),
         `v${note.version}`, note.role, relativeTimeLabel(note.updatedAt)]
         .filter(Boolean);
+      const visibilityClass = isSelected ? "border-primary/45 text-primary-foreground/85"
+        : note.visibility === "public" ? "border-primary text-primary" : "border-border text-muted-foreground";
+      const visibilityLabel = note.visibility === "public" ? "Public" : (note.shares || []).length ? "Shared" : "Private";
       return `
-      <button data-note-id="${escapeHtml(note.id)}" class="block w-full border-b border-border px-3 py-3 text-left hover:bg-secondary ${state.notesView.selected?.id === note.id ? "bg-secondary" : ""}">
-        <span class="block truncate text-sm font-medium text-foreground">${escapeHtml(note.title)}</span>
-        <span class="mt-1 block text-[11px] ${note.visibility === "public" ? "text-primary" : "text-muted-foreground"}">${escapeHtml(status.join(" · "))}</span>
-        <span class="mt-0.5 block truncate text-[11px] text-muted-foreground">${escapeHtml(noteSharedWithLabel(note))}</span>
+      <button data-note-id="${escapeHtml(note.id)}" aria-selected="${isSelected ? "true" : "false"}" class="group relative flex w-full flex-col gap-1 rounded-md border px-3 py-3 text-left ${isSelected ? "z-10 border-primary/40 bg-primary/12 text-foreground ring-1 ring-primary/45" : "border-transparent hover:bg-secondary"} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50">
+        <div class="flex min-w-0 items-start justify-between gap-2">
+          <span class="block min-w-0 truncate text-sm font-semibold text-foreground">${escapeHtml(note.title || "Untitled note")}</span>
+          <span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${visibilityClass}">${escapeHtml(visibilityLabel)}</span>
+        </div>
+        <span class="mt-0.5 block text-[11px] text-[color:var(--dashboard-muted-foreground)]">${escapeHtml(status.join(" · "))}</span>
+        <span class="mt-0.5 block truncate text-[11px] ${isSelected ? "text-foreground/85" : "text-muted-foreground"}">${escapeHtml(noteSharedWithLabel(note))}</span>
       </button>`;
     }).join("") : '<p class="p-4 text-sm text-muted-foreground">No notes yet.</p>';
   }

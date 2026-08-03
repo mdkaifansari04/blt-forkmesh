@@ -14,6 +14,7 @@
 #include <QFile>
 #include <QFormLayout>
 #include <QInputDialog>
+#include <QAbstractItemView>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
@@ -114,6 +115,7 @@ QListWidgetItem *noteListItem(const QJsonObject &note,
             .join(QLatin1Char('\n'));
     auto *item = new QListWidgetItem(text);
     item->setToolTip(text);
+    item->setTextAlignment(Qt::AlignTop | Qt::AlignLeft);
     return item;
 }
 
@@ -195,6 +197,11 @@ QWidget *MainWindow::buildNotesSection()
     splitter->setChildrenCollapsible(false);
     m_notesList = new QListWidget;
     m_notesList->setObjectName(QStringLiteral("notesList"));
+    m_notesList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_notesList->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_notesList->setSpacing(2);
+    m_notesList->setAlternatingRowColors(false);
+    m_notesList->setUniformItemSizes(false);
     m_notesList->setMinimumWidth(220);
     connect(m_notesList, &QListWidget::itemSelectionChanged, this, [this] {
         QListWidgetItem *item = m_notesList->currentItem();
