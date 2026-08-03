@@ -4843,6 +4843,7 @@ void MainWindow::renderBranchScopeDiff()
         QString err;
         QString emptyMessage;
         QString viewedContext;
+        int attempts = 1;
     };
     runOffThread<ScopeDiff>(
         [dir, base, branch, work, pullNumber]() {
@@ -4853,26 +4854,57 @@ void MainWindow::renderBranchScopeDiff()
                                   : QStringLiteral("branch/") + branch;
             r.emptyMessage =
                 QStringLiteral("No changes between %1 and %2.").arg(branch, base);
-            // Review only what the branch adds from its merge base. Comparing
-            // complete snapshots with `base..branch` makes every newer file on
-            // a behind base appear as a reverse, unrelated branch change — the
-            // Agents page might correctly report 3 files while Git reports 22.
-            // A checked-out branch still includes committed, staged, unstaged,
-            // deleted and untracked files through the temporary-index helper.
-            if (!work.isEmpty()) {
-                QByteArray mergeBaseOut;
-                const bool foundMergeBase =
-                    runGitCapture(dir, {QStringLiteral("merge-base"), base, branch},
-                                  &mergeBaseOut, nullptr);
-                const QString contentBase =
-                    foundMergeBase && !mergeBaseOut.trimmed().isEmpty()
-                        ? QString::fromUtf8(mergeBaseOut).trimmed()
-                        : base;
-                if (!buildWorkingTreeDiff(work, contentBase, &r.out, &r.err))
-                    r.ok = false;
-            } else if (!runGitCapture(dir, {"diff", base + "..." + branch},
-                                      &r.out, &r.err)) {
-                r.ok = false;
+            auto readDiff = [&](ScopeDiff &attempt) {
+                // Review only what the branch adds from its merge base. Comparing
+                // complete snapshots with `base..branch` makes every newer file on
+                // a behind base appear as a reverse, unrelated branch change — the
+                // Agents page might correctly report 3 files while Git reports 22.
+                // A checked-out branch still includes committed, staged, unstaged,
+                // deleted and untracked files through the temporary-index helper.
+                if (!work.isEmpty()) {
+                    QByteArray mergeBaseOut;
+                    const bool foundMergeBase = runGitCapture(
+                        dir, {QStringLiteral("merge-base"), base, branch},
+                        &mergeBaseOut, nullptr);
+                    const QString contentBase =
+                        foundMergeBase && !mergeBaseOut.trimmed().isEmpty()
+                            ? QString::fromUtf8(mergeBaseOut).trimmed()
+                            : base;
+                    if (!buildWorkingTreeDiff(work, contentBase, &attempt.out,
+                                              &attempt.err))
+                        attempt.ok = false;
+                } else if (!runGitCapture(dir, {"diff", base + "..." + branch},
+                                          &attempt.out, &attempt.err)) {
+                    attempt.ok = false;
+                }
+            };
+            // An 8s "git timed out" here is usually the machine being busy or
+            // another git holding the index, not a diff that can never be read —
+            // and the pane's only recovery used to be for the reader to guess
+            // that clicking the branch again might work. Retry transient
+            // failures in place (adhoc #1384); a deterministic error falls
+            // straight through on the first attempt, so a real problem still
+            // appears immediately.
+            // Lock contention fails instantly, so three attempts there cost
+            // nothing; a timeout costs 8s each, and a pane that sits on its
+            // placeholder for half a minute is worse than an error the reader
+            // can act on — so stop retrying once the whole read has spent
+            // kRetryDeadlineMs.
+            constexpr int kMaxAttempts = 3;
+            constexpr int kRetryDeadlineMs = 12000;
+            QElapsedTimer spent;
+            spent.start();
+            for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+                r.ok = true;
+                r.out.clear();
+                r.err.clear();
+                r.attempts = attempt;
+                readDiff(r);
+                if (r.ok || !isTransientGitError(r.err))
+                    break;
+                if (attempt == kMaxAttempts || spent.hasExpired(kRetryDeadlineMs))
+                    break;
+                QThread::msleep(250 * attempt); // let the contention clear
             }
             return r;
         },
@@ -4884,9 +4916,7 @@ void MainWindow::renderBranchScopeDiff()
             if (!r.ok) {
                 m_branchDiffPendingFade = false;
                 setDiffHtml(m_branchDiffView,
-                    QStringLiteral(
-                        "<p style='color:#f85149'>Could not diff %1: %2</p>")
-                        .arg(branch.toHtmlEscaped(), r.err.toHtmlEscaped()));
+                            branchDiffErrorHtml(branch, r.err, r.attempts));
                 return;
             }
             // The pane may already be showing this exact patch, repainted from
@@ -6185,6 +6215,16 @@ void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
             renderBranchScopeDiff();
         if (m_branchDiffView)
             m_branchDiffView->verticalScrollBar()->setValue(scroll);
+        return;
+    }
+    // "Retry" on the failure pane (adhoc #1384): re-run the read from scratch.
+    // The cached patch is invalid after a failure, so this is the only way back
+    // to a diff short of re-clicking the branch.
+    if (url.scheme() == QLatin1String("retry")) {
+        setDiffHtml(m_branchDiffView,
+                    QStringLiteral("<p style='color:#8b949e'>Retrying %1…</p>")
+                        .arg(m_branchDiffBranch.toHtmlEscaped()));
+        renderBranchScopeDiff();
         return;
     }
     if (url.scheme() != QLatin1String("viewed"))

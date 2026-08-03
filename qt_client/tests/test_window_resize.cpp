@@ -66,6 +66,10 @@ struct MirrorBranchTip {
 };
 MirrorBranchTip mirrorPrimaryBranchTip(const QString &mirrorPath,
                                        const QString &workTree);
+QString gitTimeoutError(QProcess &process, int waitedMs);
+bool isTransientGitError(const QString &err);
+QString branchDiffErrorHtml(const QString &branch, const QString &err,
+                            int attempts);
 }
 } // namespace forkmesh
 
@@ -3026,6 +3030,51 @@ int main(int argc, char *argv[])
                   .arg(window.testBranchDiffPaintedFromCache()
                            ? QStringLiteral("yes")
                            : QStringLiteral("no")));
+
+        // adhoc #1384: a branch whose diff can't be read used to leave one red
+        // line — "Could not diff <branch>: git timed out" — with no command, no
+        // output from git and no way forward. The timeout now names the command
+        // it killed and carries whatever the child had printed, the pane shows
+        // that verbatim in a terminal block, and transient failures are retried
+        // before the user ever sees one.
+        {
+            QProcess stalled;
+            stalled.setProgram(QStringLiteral("git"));
+            stalled.setArguments({QStringLiteral("-C"), wtRepo.path(),
+                                  QStringLiteral("diff"),
+                                  QStringLiteral("--binary")});
+            stalled.start();
+            const QString timeoutErr = forkmesh::ui::gitTimeoutError(stalled, 8000);
+            check(timeoutErr.contains(QStringLiteral("git timed out after 8s")) &&
+                      timeoutErr.contains(QStringLiteral("diff --binary")),
+                  QString("a killed git read reports the command it stalled on, "
+                          "not a bare \"git timed out\" (adhoc #1384, err = %1)")
+                      .arg(timeoutErr.left(120).simplified()));
+            check(forkmesh::ui::isTransientGitError(timeoutErr) &&
+                      forkmesh::ui::isTransientGitError(QStringLiteral(
+                          "Unable to create '/r/.git/index.lock': File exists.")),
+                  QStringLiteral("a timeout and a contended index lock are both "
+                                 "worth another attempt (adhoc #1384)"));
+            check(!forkmesh::ui::isTransientGitError(
+                      QStringLiteral("fatal: bad revision 'nope'")),
+                  QStringLiteral("a deterministic git error is not retried, so a "
+                                 "real problem still shows straight away "
+                                 "(adhoc #1384)"));
+            const QString failHtml = forkmesh::ui::branchDiffErrorHtml(
+                QStringLiteral("agent/thing"),
+                QStringLiteral("git timed out after 8s: git -C /r diff\n"
+                               "error: unable to read /r/.git/index"),
+                3);
+            check(failHtml.contains(QStringLiteral("Could not diff agent/thing")) &&
+                      failHtml.contains(QStringLiteral("<pre")) &&
+                      failHtml.contains(
+                          QStringLiteral("unable to read /r/.git/index")) &&
+                      failHtml.contains(QStringLiteral("Tried 3 times")) &&
+                      failHtml.contains(QStringLiteral("href='retry:diff'")),
+                  QString("the failure pane shows git's terminal output and a "
+                          "Retry link (adhoc #1384, html = %1)")
+                      .arg(failHtml.left(120).simplified()));
+        }
 
         // Leave the fixture as the branch/merge tests below expect it.
         runGitChecked(wtRepo.path(),
