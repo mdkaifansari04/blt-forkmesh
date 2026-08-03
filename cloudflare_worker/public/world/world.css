@@ -12272,6 +12272,19 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   box-shadow: none;
 }
 
+.world-notification-row[data-world-notification-open] {
+  cursor: pointer;
+}
+
+.world-notification-row[data-world-notification-open]:hover {
+  background: #17293b !important;
+}
+
+.world-notification-row[data-world-notification-open]:focus-visible {
+  outline: 2px solid #58a6ff;
+  outline-offset: -2px;
+}
+
 .world-notification-kind {
   display: flex;
   align-items: center;
