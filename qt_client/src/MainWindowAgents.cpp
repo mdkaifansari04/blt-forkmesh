@@ -1525,26 +1525,26 @@ ActivityRailButton *railActionButton(const QString &icon, const QString &caption
     return button;
 }
 
-// The fleet bar belongs to the whole Agents page, rather than to a footer that
-// permanently steals vertical space from the session list. Keep it over the
-// page's lower edge so it has room for every action even after the detail pane
-// opens, and re-anchor it whenever the page changes size.
+// The fleet bar belongs to the session-list pane, rather than to a footer that
+// permanently steals vertical space from the list. Keep it over that pane's
+// lower-right edge so it stays with the list when the detail pane opens, and
+// re-anchor it whenever the pane changes size.
 class AgentQueueOverlay final : public QFrame
 {
 public:
-    explicit AgentQueueOverlay(QWidget *page)
-        : QFrame(page), m_page(page)
+    explicit AgentQueueOverlay(QWidget *pane)
+        : QFrame(pane), m_pane(pane)
     {
         setObjectName(QStringLiteral("agentQueueOverlay"));
         setAttribute(Qt::WA_StyledBackground);
-        if (m_page)
-            m_page->installEventFilter(this);
+        if (m_pane)
+            m_pane->installEventFilter(this);
     }
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (watched == m_page &&
+        if (watched == m_pane &&
             (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
             QTimer::singleShot(0, this, [this] { reposition(); });
         }
@@ -1560,16 +1560,16 @@ protected:
 private:
     void reposition()
     {
-        if (!m_page || !isVisible())
+        if (!m_pane || !isVisible())
             return;
         adjustSize();
         constexpr int kMargin = 12;
-        move(qMax(kMargin, m_page->width() - width() - kMargin),
-             qMax(kMargin, m_page->height() - height() - kMargin));
+        move(qMax(kMargin, m_pane->width() - width() - kMargin),
+             qMax(kMargin, m_pane->height() - height() - kMargin));
         raise();
     }
 
-    QWidget *m_page = nullptr;
+    QWidget *m_pane = nullptr;
 };
 
 } // namespace
@@ -1580,6 +1580,7 @@ QWidget *MainWindow::buildAgentsTab()
     page->setObjectName(QStringLiteral("agentsPage"));
 
     auto *listPane = new QWidget;
+    listPane->setObjectName(QStringLiteral("agentsListPane"));
     listPane->setMinimumWidth(260);
     // No heading at all any more (adhoc #224): with the repository band hidden
     // on this tab (updateRepoActivityRail) and the toolbar moved to the pane's
@@ -1758,10 +1759,10 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
-    // Keep every fleet action in one floating bar at the bottom of the Agents
-    // view. Queue capacity, bulk controls, and interactive provider terminals
-    // are all available from one place.
-    auto *agentQueueOverlay = new AgentQueueOverlay(page);
+    // Keep every fleet action in one floating bar at the bottom-right of the
+    // session-list pane. Queue capacity, bulk controls, and interactive
+    // provider terminals are all available from one place.
+    auto *agentQueueOverlay = new AgentQueueOverlay(listPane);
     auto *agentQueueLayout = new QHBoxLayout(agentQueueOverlay);
     agentQueueLayout->setContentsMargins(8, 6, 8, 6);
     agentQueueLayout->setSpacing(4);
