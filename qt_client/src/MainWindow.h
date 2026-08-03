@@ -1522,6 +1522,15 @@ private:
     void createNote();
     void saveNote();
     void deleteNote();
+    // Publishing is a property of a note that lives in the cloud, so the
+    // checkbox follows the storage combo the user is *currently* choosing —
+    // not the mode the note happened to be saved under. Also repaints the
+    // public link so a published note always shows where to read it.
+    void updateNotePublishState();
+    // The cloud copy of a locally-mirrored note, matched on `cloudId`, or an
+    // empty object. Supplies the status/shares/views the sidebar labels rows
+    // with without a per-row fetch.
+    QJsonObject cloudNoteFor(const QJsonObject &note) const;
     void shareNote();
     void attachNoteConversation();
     void showNoteVersions();
@@ -5084,6 +5093,7 @@ private:
     MarkdownEditor *m_noteEditor = nullptr;
     QComboBox *m_noteStorageMode = nullptr;
     QCheckBox *m_notePublic = nullptr;
+    QLabel *m_notePublicLink = nullptr;
     QLabel *m_notesStatus = nullptr;
     QJsonArray m_localNotes;
     QJsonArray m_cloudNotes;
@@ -7794,6 +7804,7 @@ private:
     QWidget *m_issueProgressSlider = nullptr;
     QLabel *m_issueEstimateValue = nullptr; // derived OpenAI coding cost estimate
     QLabel *m_issueBountyValue = nullptr;
+    QLabel *m_issueCommentsValue = nullptr;
     QStackedWidget *m_issueAssigneesStack = nullptr;
     QStackedWidget *m_issueLabelsStack = nullptr;
     QStackedWidget *m_issueMilestoneStack = nullptr;
@@ -7801,7 +7812,7 @@ private:
     QLineEdit *m_issueAssigneesEdit = nullptr;
     QLineEdit *m_issueLabelsEdit = nullptr;
     QComboBox *m_issueMilestoneEdit = nullptr;
-    QComboBox *m_issuePriorityEdit = nullptr;
+    QSpinBox *m_issuePriorityEdit = nullptr;
     // Planned start/end dates row (issue #384): read-only value + an inline
     // editor of two QDateEdits, each toggled by a "no date" enable checkbox.
     QLabel *m_issueDatesValue = nullptr;

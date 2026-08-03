@@ -10,28 +10,19 @@ HTML = (ROOT / "cloudflare_worker/public/world/index.html").read_text()
 ENTRY = (ROOT / "cloudflare_worker/src/entry.py").read_text()
 
 
-def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
+def test_members_yurt_has_fixed_geometry_and_a_central_chimney():
     assert "function campfireDirtTexture(THREE)" in SCENE
     assert 'campfireGround.name = "campfire-member-circle-dirt"' in SCENE
-    assert "campfireGround.scale.setScalar(outerRadius + 1.45)" in SCENE
-    assert "function rebuildCampfireMemberLogs(total)" in SCENE
-    assert "rebuildCampfireMemberLogs(count)" in SCENE
-    assert "log.userData.memberLogIndex = index" in SCENE
-    # adhoc #427: the blaze is a milestone marker — it holds its size through a
-    # hundred accounts and steps up only when the next century lands.
+    assert 'membersYurt.name = "members-center-yurt"' in SCENE
+    assert 'yurtWalls.name = "members-yurt-walls"' in SCENE
+    assert 'yurtRoof.name = "members-yurt-roof"' in SCENE
+    assert 'yurtChimney.name = "members-yurt-central-chimney"' in SCENE
+    assert "const MEMBERS_YURT_RADIUS = 12;" in SCENE
+    assert "function rebuildCampfireMemberLogs" not in SCENE
+    assert "memberLogIndex" not in SCENE
+    # The hearth remains bounded and independent of roster growth.
     assert "const CAMPFIRE_BASE_FIRE_LEVEL = 3;" in SCENE
-    assert "const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.35;" in SCENE
-    assert "const CAMPFIRE_MAX_FIRE_LEVEL = 5.4;" in SCENE
-    assert "const fireCenturies = Math.floor(count / 100);" in SCENE
-    assert (
-        "CAMPFIRE_BASE_FIRE_LEVEL + fireCenturies * CAMPFIRE_FIRE_LEVEL_PER_CENTURY"
-        in SCENE
-    )
-    # The procedural fire stays rooted at the logs while milestone growth is
-    # applied to the effect itself, so it cannot sink into the pit.
     assert "proceduralFire.position.y = FLAME_BASE_Y;" in SCENE
-    assert "const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;" in SCENE
-    assert "proceduralFire.scale.set(" in SCENE
 
 
 def test_campfire_uses_layered_procedural_flames_and_atmosphere():
@@ -49,17 +40,25 @@ def test_campfire_uses_layered_procedural_flames_and_atmosphere():
     assert "fireLight.position.set(" in SCENE
 
 
-def test_member_count_floats_high_above_the_fire_without_a_plate():
-    assert "function campfireMemberCountTexture(THREE, total, newest = \"\")" in SCENE
-    assert 'memberCountSprite.name = "campfire-member-count-high"' in SCENE
-    assert "memberCountSprite.position.y = 13.5;" in SCENE
-    assert "memberCountSprite.scale.set(10.8, 4.05, 1);" in SCENE
+def test_member_count_is_on_a_plaque_beside_the_yurt_door():
+    assert "function membersYurtDoorTexture(THREE, total, newest = \"\")" in SCENE
+    assert 'memberDoorInfo.name = "members-yurt-door-member-info"' in SCENE
+    assert "memberDoorInfo.position.set(4.95, 3.9" in SCENE
+    # PlaneGeometry faces +Z by default, while visitors approach this plaque
+    # from -Z. Turn its front toward them so DoubleSide does not mirror the
+    # canvas text through the back face.
+    assert "memberDoorInfo.rotation.y = Math.PI;" in SCENE
+    assert 'context.fillText("MEMBERS CENTER", 512, 92);' in SCENE
 
 
-def test_newest_member_is_named_with_sparkles_high_above_the_fire():
-    assert '"✦ NEWEST MEMBER ✦"' in SCENE
-    assert 'newestMemberSparkles.name = "campfire-newest-member-name-sparkles"' in SCENE
-    assert "newestMemberSparkles.visible = Boolean(latest);" in SCENE
+def test_latest_member_name_is_painted_on_the_door_plaque():
+    texture = SCENE.split("function membersYurtDoorTexture", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert 'latest ? `LATEST · ${latest.toUpperCase()}`' in texture
+    assert "NEWEST MEMBER" not in texture
+    assert "campfire-newest-member-name-sparkles" not in SCENE
+    assert "campfire-member-count-high" not in SCENE
 
 
 def test_campfire_is_three_times_large_not_only_three_times_tall():
@@ -175,13 +174,17 @@ def test_mirror_lights_are_colored_and_warning_states_blink():
     assert "mirrorByName" in APP
 
 
-def test_all_non_walking_directory_members_use_full_seated_avatars():
-    assert "const seatedMemberIds = new Set(" in SCENE
-    assert ".filter((member) => member?.away !== true)" in SCENE
-    assert "CAMPFIRE_DETAILED_MEMBER_LIMIT" not in SCENE
-    assert 'status: "sitting around the campfire"' in SCENE
-    assert "figure.position.add(seat)" in SCENE
-    assert "applySeatedLegPose(figure)" in SCENE
+def test_non_walking_directory_members_use_full_avatars_inside_the_yurt():
+    interior = SCENE.split("// Populate the yurt interior", 1)[1].split(
+        "// Legacy bench-circle implementation", 1
+    )[0]
+    assert "MEMBERS_YURT_VISIBLE_MEMBER_LIMIT" in SCENE
+    assert "membersYurtMemberPosition(index, interiorMembers.length)" in interior
+    assert "member?.away === true" in interior
+    assert 'status: "inside the Members Center yurt"' in interior
+    assert "figure = createAvatar(" in interior
+    assert "figure.position.set(" in interior
+    assert "applyLegPitch(figure, 0, 0)" in interior
     assert "figure.userData.ambientInteraction = null" in SCENE
     assert "const memberWorldDestinations" not in SCENE
     assert "const memberNpcStations" not in SCENE

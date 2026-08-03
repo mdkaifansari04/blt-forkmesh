@@ -2131,10 +2131,7 @@ void MainWindow::refreshQuickAddSpeedSelector()
 // Rows read as the bare model name (adhoc #1204): "Opus 5", not "Opus 5 · Claude
 // Code". Which CLI runs a model follows from the model, so the suffix was the
 // same handful of words repeated down the whole menu; the tooltip still carries
-// it. Models are ordered strongest-first by agentModelPowerRank(), and the
-// superseded/small-sibling ones agentModelIsMinorTier() flags are left out
-// entirely — except when one of them is the live selection, which must stay
-// visible or picking it once would make it unpickable again.
+// it. Models are ordered strongest-first by agentModelPowerRank().
 void MainWindow::refreshQuickAddAgentModelSelector()
 {
     if (!m_quickAddAgentModelSelector || !m_quickAddAgentProvider ||
@@ -2157,19 +2154,14 @@ void MainWindow::refreshQuickAddAgentModelSelector()
         QString model;
         QString agentName; // which CLI/API runs it, for the tooltip
         int rank = 0;      // higher sorts nearer the top
-        bool minor = false;
     };
     QList<Choice> models;
-    auto addModel = [&models, selectedProvider, selectedModel](
+    auto addModel = [&models](
                         const QIcon &icon, const QString &label,
                         const QString &provider, const QString &model,
                         const QString &agentName) {
-        const bool isSelection =
-            provider == selectedProvider &&
-            (selectedModel.isEmpty() || model == selectedModel);
         models.append(Choice{icon, label, provider, model, agentName,
-                             agentModelPowerRank(model, label),
-                             !isSelection && agentModelIsMinorTier(model, label)});
+                             agentModelPowerRank(model, label)});
     };
 
     QComboBox claudeModels;
@@ -2225,8 +2217,6 @@ void MainWindow::refreshQuickAddAgentModelSelector()
               QStringLiteral("File an issue from this prompt instead of "
                              "starting an agent"));
     for (const Choice &choice : models) {
-        if (choice.minor)
-            continue;
         addChoice(choice.icon, choice.label, choice.provider, choice.model,
                   QStringLiteral("%1 · %2").arg(choice.label, choice.agentName));
     }

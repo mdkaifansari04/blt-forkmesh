@@ -2633,6 +2633,17 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY(note_id, owner, repo, kind, number))""",
     "CREATE INDEX IF NOT EXISTS idx_note_links_target "
     "ON note_links(owner, repo, kind, number, note_id)",
+    # Read counts for published notes. One row per note per blinded reader:
+    # the owner sees distinct readers and total reads, and no address is kept.
+    """CREATE TABLE IF NOT EXISTS note_views (
+        note_id TEXT NOT NULL REFERENCES notes(note_id) ON DELETE CASCADE,
+        viewer_key TEXT NOT NULL,
+        first_at INTEGER NOT NULL CHECK (first_at >= 0),
+        last_at INTEGER NOT NULL CHECK (last_at >= 0),
+        hits INTEGER NOT NULL DEFAULT 1 CHECK (hits >= 1),
+        PRIMARY KEY(note_id, viewer_key))""",
+    "CREATE INDEX IF NOT EXISTS idx_note_views_note "
+    "ON note_views(note_id, last_at DESC)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

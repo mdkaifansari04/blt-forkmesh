@@ -4036,34 +4036,6 @@ inline int agentModelPowerRank(const QString &model, const QString &label)
     return 500 + int(version * 100.0 + 0.5) + tier;
 }
 
-// Models the composer's menu hides by default (adhoc #1204): superseded and
-// small-sibling releases that nobody should be reaching for when a stronger
-// model of the same family is one row up. Hiding is presentation only — a run
-// already pinned to one of these keeps working, and the picker still shows the
-// row when it is the live selection.
-inline bool agentModelIsMinorTier(const QString &model, const QString &label)
-{
-    const QString id = model.trimmed().toLower();
-    const QString name = label.trimmed().toLower();
-    const QString text = id.isEmpty() ? name : id;
-    if (text.isEmpty() || text == kClaudeAutoModelId)
-        return false;
-    double version = agentModelVersionNumber(text);
-    if (version <= 0.0)
-        version = agentModelVersionNumber(name);
-    const bool gptFamily = text.startsWith(QLatin1String("gpt"));
-    if (gptFamily) {
-        if (text.contains(QLatin1String("mini")) ||
-            text.contains(QLatin1String("nano")) ||
-            text.contains(QLatin1String("spark")))
-            return true;
-        return version > 0.0 && version < 5.4;
-    }
-    if (text.contains(QLatin1String("haiku")))
-        return true;
-    return version > 0.0 && version < 4.6;
-}
-
 inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())
@@ -9181,6 +9153,93 @@ inline QString gitBlockingCrumb(const QProcess &process)
     return cmd;
 }
 
+// The full command line of a git subprocess, uncapped, for error text a reader
+// is meant to understand or paste back into a terminal ("git -C <repo> diff
+// --binary --cached <base>"). gitBlockingCrumb is the short form for log lines.
+inline QString gitCommandLine(const QProcess &process)
+{
+    return (process.program() + QLatin1Char(' ') +
+            process.arguments().join(QLatin1Char(' ')))
+        .simplified();
+}
+
+// Kill a stalled git subprocess and describe the failure with everything the
+// caller can act on: which command stalled, for how long, and whatever it had
+// already written to stderr/stdout before the kill. A bare "git timed out"
+// leaves the UI showing a dead end (adhoc #1384).
+inline QString gitTimeoutError(QProcess &process, int waitedMs)
+{
+    const QString command = gitCommandLine(process);
+    process.kill();
+    process.waitForFinished(200); // reap so the child's pipes flush
+    QString output = QString::fromUtf8(process.readAllStandardError()).trimmed();
+    const QString stdOut =
+        QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+    if (!stdOut.isEmpty())
+        output += (output.isEmpty() ? QString() : QStringLiteral("\n")) + stdOut;
+    constexpr int kMaxOutput = 4000;
+    if (output.size() > kMaxOutput)
+        output = output.left(kMaxOutput) + QStringLiteral("\n… (output truncated)");
+    QString err = QStringLiteral("git timed out after %1s: %2")
+                      .arg(waitedMs / 1000)
+                      .arg(command);
+    if (!output.isEmpty())
+        err += QLatin1Char('\n') + output;
+    return err;
+}
+
+// True for git failures worth one more attempt: a timeout (the machine was busy,
+// or another git held things up), a contended index/ref lock, or a snapshot taken
+// while an agent worktree was being rewritten under us. Deterministic errors
+// ("unknown revision", "not a git repository") are deliberately excluded — a
+// retry there only makes the user wait longer for the same message.
+inline bool isTransientGitError(const QString &err)
+{
+    static const char *const kMarkers[] = {
+        "timed out",
+        "index.lock",
+        "unable to create",
+        "cannot lock ref",
+        "unable to stat",
+        "no such file",
+        "resource temporarily unavailable",
+        "resource deadlock",
+    };
+    for (const char *marker : kMarkers)
+        if (err.contains(QLatin1String(marker), Qt::CaseInsensitive))
+            return true;
+    return false;
+}
+
+// The failure pane for a branch range that could not be diffed. Git's own words
+// are the useful part — a timeout now carries the command line and whatever the
+// child printed before it was killed — so show them verbatim in a terminal block
+// instead of folding them into one red sentence, and offer a Retry link so the
+// reader isn't left guessing that re-clicking the branch is the way out
+// (adhoc #1384). The link is handled by onBranchDiffAnchorClicked.
+inline QString branchDiffErrorHtml(const QString &branch, const QString &err,
+                                   int attempts)
+{
+    const QString message =
+        err.trimmed().isEmpty() ? QStringLiteral("git failed") : err.trimmed();
+    const int split = message.indexOf(QLatin1Char('\n'));
+    const QString headline = split < 0 ? message : message.left(split);
+    const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+    QString html =
+        QStringLiteral("<p style='color:#f85149'><b>Could not diff %1:</b> %2</p>")
+            .arg(branch.toHtmlEscaped(), headline.toHtmlEscaped());
+    html += QStringLiteral("<pre style='background:%1;color:%2;padding:8px;'>%3</pre>")
+                .arg(dark ? QStringLiteral("#161b22") : QStringLiteral("#f6f8fa"),
+                     dark ? QStringLiteral("#c9d1d9") : QStringLiteral("#24292f"),
+                     message.toHtmlEscaped());
+    html +=
+        QStringLiteral("<p style='color:#8b949e'>Tried %1 %2. "
+                       "<a href='retry:diff' style='color:#58a6ff'>Retry</a></p>")
+            .arg(attempts)
+            .arg(attempts == 1 ? QStringLiteral("time") : QStringLiteral("times"));
+    return html;
+}
+
 // Wait up to 8s for a git subprocess. On the GUI thread, poll in short slices
 // and service the GUI between them so the window stays responsive and spinners
 // animate; off-thread there is no window to keep painted (and pumping would
@@ -9214,9 +9273,9 @@ inline bool waitForGit(QProcess &process, QString *err)
     if (!onGuiThread) {
         if (process.waitForFinished(8000))
             return true;
-        process.kill();
+        const QString message = gitTimeoutError(process, 8000);
         if (err)
-            *err = QStringLiteral("git timed out");
+            *err = message;
         return false;
     }
     // A burst of individually fast (<40ms) git reads — refreshAgentTable shells two
@@ -9233,9 +9292,9 @@ inline bool waitForGit(QProcess &process, QString *err)
         if (process.state() == QProcess::NotRunning)
             return true; // exited between polls; caller inspects the exit code
         if (timer.hasExpired(8000)) {
-            process.kill();
+            const QString message = gitTimeoutError(process, 8000);
             if (err)
-                *err = QStringLiteral("git timed out");
+                *err = message;
             return false;
         }
         pumpKeepAlive();

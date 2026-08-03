@@ -1342,6 +1342,12 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     border: none;
     border-bottom: 1px solid #30363d;
 }
+#issueList {
+    background-color: #0d1117; border: none; outline: 0;
+    selection-background-color: transparent; gridline-color: transparent;
+}
+#issueList::item { padding: 0; border: none; }
+#issueList::item:selected { background: transparent; color: #e6edf3; }
 /* The task list is a list, not a table (adhoc #56): no frame, no grid, no
    banding, and no stylesheet selection fill — the row delegate paints its own
    pill so the icon strip and the title sit on one clean surface. */
@@ -2706,6 +2712,12 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     border: none;
     border-bottom: 1px solid #d0d7de;
 }
+#issueList {
+    background-color: #ffffff; border: none; outline: 0;
+    selection-background-color: transparent; gridline-color: transparent;
+}
+#issueList::item { padding: 0; border: none; }
+#issueList::item:selected { background: transparent; color: #1f2328; }
 /* Light-theme twin of the headerless task list (adhoc #56). */
 #organizationTasksTable {
     background-color: #ffffff;

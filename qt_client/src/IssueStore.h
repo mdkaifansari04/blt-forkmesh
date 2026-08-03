@@ -27,7 +27,7 @@ struct IssueEvent {
     QString milestone;     // milestone (empty = none)
     qint64 startDate = 0;  // dates: planned start (epoch ms, 0 = unset)
     qint64 endDate = 0;    // dates: planned end (epoch ms, 0 = unset)
-    int priority = 0;      // priority: 1 (highest) through 99 (lowest), 0 = unset
+    int priority = 0;      // priority: 1 (highest) through 8999 (lowest), 0 = unset
     int progress = 0;      // progress: 0..100 percent complete
     QStringList assignees; // assignees
     QString agentProvider; // agent: codex|openai|claude-api|claude-code
@@ -52,7 +52,7 @@ struct Issue {
     QString milestone;
     qint64 startDate = 0; // planned start (epoch ms, 0 = unset)
     qint64 endDate = 0;   // planned end (epoch ms, 0 = unset)
-    int priority = 0; // 1 (highest) through 99 (lowest), 0 = unset
+    int priority = 0; // 1 (highest) through 8999 (lowest), 0 = unset
     int progress = 0; // 0..100 percent complete (latest signed progress event)
     QStringList assignees;
     qint64 createdAt = 0;
