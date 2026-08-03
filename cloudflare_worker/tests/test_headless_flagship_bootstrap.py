@@ -133,6 +133,7 @@ def test_plaintext_public_sync_refreshes_the_managed_checkout_first():
     body = repos[start:end]
 
     assert "m_headless && serviceManagedCheckout(repo.localPath)" in body
+    assert "managedCheckoutSource ? QString() : QStringLiteral(\"+\")" in body
     refresh = body.index("refreshManagedCheckoutFromUpstream(")
     bare_fetch = body.index("startSyncFetch(index")
     assert refresh < bare_fetch
