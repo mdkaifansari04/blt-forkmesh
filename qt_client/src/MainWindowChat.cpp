@@ -2374,7 +2374,7 @@ void MainWindow::refreshQuickAddAgentModelSelector()
     const QString chosenEmail = m_accountEmail.trimmed();
     const QString chosenIdentity =
         chosenAccount.isEmpty()
-            ? QString()
+            ? chosenEmail
             : chosenEmail.isEmpty()
                   ? chosenAccount
                   : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
