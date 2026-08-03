@@ -3649,9 +3649,9 @@ void MainWindow::showRun(int runId)
     if (m_actionFixButton)
         m_actionFixButton->setVisible(fixable);
     if (m_actionFixAgentCombo)
-        m_actionFixAgentCombo->setVisible(fixable);
+        m_actionFixAgentCombo->setVisible(false);
     if (m_actionFixModelCombo)
-        m_actionFixModelCombo->setVisible(fixable);
+        m_actionFixModelCombo->setVisible(false);
     if (!run) {
         if (m_actionRunTitle)
             m_actionRunTitle->setText(QStringLiteral("Select a run"));
@@ -4457,25 +4457,18 @@ QWidget *MainWindow::buildRepoActionsTab()
         flashMessage(QStringLiteral("Run log copied to the clipboard."));
     });
 
-    // Fix with agent: only relevant for a failed run (showRun() hides it
-    // otherwise). Starts a brand-new ad-hoc agent — its own worktree/branch/PR,
-    // same as any other agent run — with the failing run's log as its task. The
-    // agent and model are chosen in the two dropdowns beside it (adhoc #114).
-    m_actionFixButton = new QPushButton("Fix with agent");
+    // Action detail: only relevant for a failed run (showRun() hides it
+    // otherwise). Opens the action run detail pane for that run directly.
+    m_actionFixButton = new QPushButton("Action detail");
     m_actionFixButton->setObjectName("ghostButton");
     m_actionFixButton->setProperty("buttonSize", "sm");
     m_actionFixButton->setCursor(Qt::PointingHandCursor);
-    m_actionFixButton->setToolTip("Start a new coding agent to fix this failed run");
+    m_actionFixButton->setToolTip("Open the action run detail");
     setOcticon(m_actionFixButton, "rocket", 16);
     m_actionFixButton->hide();
     connect(m_actionFixButton, &QPushButton::clicked, this, [this] {
-        const QString provider = m_actionFixAgentCombo
-                                     ? m_actionFixAgentCombo->currentData().toString()
-                                     : QStringLiteral("claude-code");
-        const QString model = m_actionFixModelCombo
-                                  ? m_actionFixModelCombo->currentData().toString()
-                                  : QString();
-        fixSelectedRunWithAgent(provider, model);
+        if (const ActionRun *run = findRun(m_selectedRunId))
+            openActionRunFromNotification(run->id);
     });
 
     // Agent dropdown: which provider fixes the run. Data values match the
