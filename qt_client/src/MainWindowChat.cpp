@@ -3500,43 +3500,45 @@ void MainWindow::updateFooterDiagnostics()
     // Feed the moving sparklines. CPU is this process's busy fraction of
     // one core (the /proc/self/stat figure above); memory, swap and disk are the
     // host's used fraction, so all four plot on a 0..100% scale (adhoc #17).
-    const QString dash = QString::fromUtf8("\xE2\x80\x94"); // em dash
-    if (auto *cpu = static_cast<ResourceSparkline *>(m_cpuChart)) {
-        cpu->addSample(cpuPct >= 0 ? cpuPct : 0.0, 100.0,
-                       cpuPct >= 0 ? QStringLiteral("%1%").arg(cpuPct, 0, 'f', 0)
-                                   : dash);
+    auto *resources = static_cast<ResourceQuadrantSparkline *>(m_resourceChart);
+    if (resources) {
+        resources->addSample(ResourceQuadrantSparkline::Cpu,
+                             cpuPct >= 0 ? cpuPct : 0.0, 100.0);
         QString tip = QStringLiteral("CPU used by this app");
+        if (cpuPct >= 0)
+            tip += QStringLiteral(": %1%").arg(cpuPct, 0, 'f', 0);
         if (rssMb >= 0)
             tip += QStringLiteral(" \xC2\xB7 %1\xE2\x80\xAFMB resident").arg(rssMb);
-        cpu->setToolTip(tip);
+        resources->setResourceToolTip(ResourceQuadrantSparkline::Cpu, tip);
     }
     double hostMemoryPct = -1.0;
-    if (auto *mem = static_cast<ResourceSparkline *>(m_memChart)) {
+    if (resources) {
         const qint64 total = SystemStats::totalMemoryBytes();
         const qint64 avail = SystemStats::availableMemoryBytes();
         double pct = -1.0;
         if (total > 0 && avail >= 0 && avail <= total)
             pct = 100.0 * double(total - avail) / double(total);
         hostMemoryPct = pct;
-        mem->addSample(pct >= 0 ? pct : 0.0, 100.0,
-                       pct >= 0 ? QStringLiteral("%1%").arg(pct, 0, 'f', 0) : dash);
-        mem->setToolTip(
+        resources->addSample(ResourceQuadrantSparkline::Memory,
+                             pct >= 0 ? pct : 0.0, 100.0);
+        resources->setResourceToolTip(
+            ResourceQuadrantSparkline::Memory,
             total > 0
                 ? QStringLiteral("Host memory in use: %1 of %2")
                       .arg(SystemStats::formatBytes(total - avail),
                            SystemStats::formatBytes(total))
                 : QStringLiteral("Host memory in use"));
     }
-    if (auto *swap = static_cast<ResourceSparkline *>(m_swapChart)) {
+    if (resources) {
         const qint64 total = SystemStats::totalSwapBytes();
         const qint64 free = SystemStats::freeSwapBytes();
         double pct = -1.0;
         if (total > 0 && free >= 0 && free <= total)
             pct = 100.0 * double(total - free) / double(total);
-        swap->addSample(pct >= 0 ? pct : 0.0, 100.0,
-                        pct >= 0 ? QStringLiteral("%1%").arg(pct, 0, 'f', 0)
-                                 : dash);
-        swap->setToolTip(
+        resources->addSample(ResourceQuadrantSparkline::Swap,
+                             pct >= 0 ? pct : 0.0, 100.0);
+        resources->setResourceToolTip(
+            ResourceQuadrantSparkline::Swap,
             total > 0
                 ? QStringLiteral("Swap in use: %1 of %2 (%3 free)")
                       .arg(SystemStats::formatBytes(total - free),
@@ -3555,16 +3557,17 @@ void MainWindow::updateFooterDiagnostics()
         m_highMemoryAlertArmed = true;
     }
 #endif
-    if (auto *disk = static_cast<ResourceSparkline *>(m_diskChart)) {
+    if (resources) {
         const QString path = QDir::homePath();
         const qint64 total = SystemStats::diskTotalBytes(path);
         const qint64 free = SystemStats::diskFreeBytes(path);
         double pct = -1.0;
         if (total > 0 && free >= 0 && free <= total)
             pct = 100.0 * double(total - free) / double(total);
-        disk->addSample(pct >= 0 ? pct : 0.0, 100.0,
-                        pct >= 0 ? QStringLiteral("%1%").arg(pct, 0, 'f', 0) : dash);
-        disk->setToolTip(
+        resources->addSample(ResourceQuadrantSparkline::Disk,
+                             pct >= 0 ? pct : 0.0, 100.0);
+        resources->setResourceToolTip(
+            ResourceQuadrantSparkline::Disk,
             total > 0
                 ? QStringLiteral("Drive space in use: %1 of %2 (%3 free)")
                       .arg(SystemStats::formatBytes(total - free),
@@ -3581,10 +3584,7 @@ void MainWindow::updateFooterDiagnostics()
         m_footerDiagnostics->setIcon(
             themedOcticon(QStringLiteral("alert"), QColor("#d29922"), 14));
         m_footerDiagnostics->setIconSize(QSize(14, 14));
-        m_footerDiagnostics->setText(
-            QStringLiteral(" %1 stall%2")
-                .arg(m_stallCount)
-                .arg(m_stallCount == 1 ? QString() : QStringLiteral("s")));
+        m_footerDiagnostics->setText(QStringLiteral(" %1").arg(m_stallCount));
     } else {
         setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
         m_footerDiagnostics->setText(QString());
@@ -6021,24 +6021,18 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_footerDiagnostics, &QWidget::customContextMenuRequested, this,
             [this](const QPoint &) { showDiagnosticsDialog(); });
 
-    // Four little button-sized squares on the window-chrome line, each plotting
-    // one resource — this app's CPU, the host's memory, swap and its disk — as a
-    // moving sparkline fed one sample a second by updateFooterDiagnostics.
-    // Clicking the CPU, SWAP or DISK square opens the same diagnostics dialog as
-    // the glyph; MEM opens the high-memory process panel.
-    auto *cpuChart = new ResourceSparkline(QStringLiteral("CPU"));
-    auto *memChart = new ResourceSparkline(QStringLiteral("MEM"));
-    auto *swapChart = new ResourceSparkline(QStringLiteral("SWAP"));
-    auto *diskChart = new ResourceSparkline(QStringLiteral("DISK"));
-    for (ResourceSparkline *chart : {cpuChart, swapChart, diskChart})
-        chart->onClicked = [this] { showDiagnosticsDialog(); };
-    // The memory square goes straight to the culprit list instead: that panel is
-    // what you want when the MEM curve spikes (adhoc #46).
-    memChart->onClicked = [this] { showHighMemoryProcessPanel(); };
-    m_cpuChart = cpuChart;
-    m_memChart = memChart;
-    m_swapChart = swapChart;
-    m_diskChart = diskChart;
+    // One compact four-quadrant chart on the chrome line: CPU/memory above
+    // swap/disk. It receives one sample per second from updateFooterDiagnostics.
+    // CPU, swap and disk open diagnostics; memory opens the culprit list.
+    auto *resourceChart = new ResourceQuadrantSparkline;
+    for (ResourceQuadrantSparkline::Resource resource : {
+             ResourceQuadrantSparkline::Cpu, ResourceQuadrantSparkline::Swap,
+             ResourceQuadrantSparkline::Disk}) {
+        resourceChart->setClickHandler(resource, [this] { showDiagnosticsDialog(); });
+    }
+    resourceChart->setClickHandler(ResourceQuadrantSparkline::Memory,
+                                   [this] { showHighMemoryProcessPanel(); });
+    m_resourceChart = resourceChart;
 
     // The thirty-day SIZE/LOC/FILES repository trends and the Ratchet mode
     // toggle no longer live on the chrome line (adhoc #6): they're built into
@@ -6100,12 +6094,9 @@ QWidget *MainWindow::buildBreadcrumb()
     // The relay radar used to sit here too (adhoc #87); it is gone (adhoc
     // #124) — its colour moved to the dot above the instance logo and its
     // node blips to the node dots beside the agent fleet.
-    // Live CPU/MEM/SWAP/DISK sparklines, moved up onto the window-chrome line next
-    // to the minimize/maximize/close buttons (adhoc #33).
-    chromeRow->addWidget(cpuChart);
-    chromeRow->addWidget(memChart);
-    chromeRow->addWidget(swapChart);
-    chromeRow->addWidget(diskChart);
+    // Live CPU/MEM/SWAP/DISK sparklines, combined into one chart on the
+    // window-chrome line next to the minimize/maximize/close buttons.
+    chromeRow->addWidget(resourceChart);
     // Compact diagnostics stack: the stall indicator stays high on the chrome
     // line, its bare version number sits directly beneath it, and the opt-in
     // restart action is immediately to the right.
