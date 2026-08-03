@@ -7027,6 +7027,22 @@ void MainWindow::syncRepository(int index, bool quiet)
 
     const bool hasMirror = QDir(repo.mirrorPath).exists();
     const QString source = repositorySource(repo);
+    // Service-provisioned desktop/headless nodes register their managed
+    // checkout as localPath.  The public bare mirror correctly fetches from
+    // that checkout, but the checkout must first advance from the network or
+    // every subsequent five-second sync just republishes the same stale refs.
+    // Public mirrors used to get this refresh as a side effect of the age-seal
+    // worker; keep it explicitly now that public repositories are plaintext.
+    const bool managedCheckoutSource =
+        m_headless && serviceManagedCheckout(repo.localPath);
+    QString managedUpstreamUrl;
+    if (managedCheckoutSource) {
+        const QUrl upstream(repo.cloneUrl.trimmed());
+        if (upstream.isValid() && !upstream.host().isEmpty() &&
+            upstream.host().compare(catalogApiUrl().host(),
+                                    Qt::CaseInsensitive) == 0)
+            managedUpstreamUrl = repo.cloneUrl.trimmed();
+    }
 
     // A repository we publish ourselves, with no separate upstream working
     // copy, IS the source of truth. Re-fetching its own public route would be a
@@ -7091,8 +7107,18 @@ void MainWindow::syncRepository(int index, bool quiet)
     // the async fetch is kicked off back on the main thread once it finishes.
     auto beforeDigest = std::make_shared<QString>();
     auto beforeHeadCommit = std::make_shared<QString>();
+    auto upstreamSummary = std::make_shared<QString>();
+    const QString managedCheckoutPath = repo.localPath.trimmed();
     QThread *prep = QThread::create(
-        [mirrorPath, source, hasMirror, beforeDigest, beforeHeadCommit] {
+        [mirrorPath, source, hasMirror, managedCheckoutPath,
+         managedUpstreamUrl, beforeDigest, beforeHeadCommit,
+         upstreamSummary] {
+            if (!managedUpstreamUrl.isEmpty()) {
+                *upstreamSummary =
+                    forkmesh::upstream::refreshManagedCheckoutFromUpstream(
+                        managedCheckoutPath, managedUpstreamUrl)
+                        .summary();
+            }
             *beforeDigest = mirrorRefsDigest(mirrorPath);
             *beforeHeadCommit =
                 mirrorBranchCommit(mirrorPath, mirrorHeadBranch(mirrorPath));
@@ -7113,13 +7139,18 @@ void MainWindow::syncRepository(int index, bool quiet)
         });
     connect(prep, &QThread::finished, this,
             [this, prep, index, quiet, hasMirror, args, beforeDigest,
-             beforeHeadCommit] {
+             beforeHeadCommit, upstreamSummary] {
                 prep->deleteLater();
                 if (index < 0 || index >= m_repositories.size()) {
                     m_syncingRepos.remove(index);
                     refreshRepositoryList();
                     return;
                 }
+                if (!upstreamSummary->isEmpty())
+                    logSystem(QStringLiteral("Managed mirror %1/%2: %3")
+                                  .arg(m_repositories.at(index).owner,
+                                       m_repositories.at(index).name,
+                                       *upstreamSummary));
                 startSyncFetch(index, quiet, hasMirror, args, *beforeDigest,
                                *beforeHeadCommit);
             });
