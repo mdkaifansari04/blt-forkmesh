@@ -4674,7 +4674,7 @@
   // stale legacy row must not reactivate browser transcript/prompt surfaces.
   function renderRepoAgentDetail(agent) {
     return `
-      <div data-repo-agent-detail data-repo-agent-id="${escapeHtml(String(agent.id ?? ""))}" class="grid gap-3 px-4 py-3 text-xs">
+      <div data-repo-agent-detail data-repo-agent-id="${escapeHtml(String(agent.id ?? ""))}" data-repo-agent-composer-mode="${escapeHtml(String(state.agentsView.selectedAgentComposerMode || ""))}" class="grid gap-3 px-4 py-3 text-xs">
         <div class="flex items-center gap-2 font-medium text-foreground">
           <i data-lucide="shield-check" class="h-4 w-4 text-primary"></i>
           Owner-device encrypted
@@ -4899,14 +4899,16 @@
 
   // Open / close the detail page for one agent. Transcript refresh is explicit:
   // opening the page, clicking Refresh, or sending a prompt triggers a fetch.
-  function openRepoAgentDetail(repo, agentId) {
+  function openRepoAgentDetail(repo, agentId, composerMode = "prompt") {
     state.agentsView.selectedAgentId = agentId;
+    state.agentsView.selectedAgentComposerMode = composerMode || "prompt";
     renderRepoAgentsList(state.agentsView.agents);
     loadRepoAgentTranscript(repo, agentId);
   }
 
   function closeRepoAgentDetail(repo) {
     state.agentsView.selectedAgentId = null;
+    state.agentsView.selectedAgentComposerMode = "";
     renderRepoAgentsList(state.agentsView.agents);
   }
 
@@ -5133,6 +5135,11 @@
     if (!container || !repo) return;
     state.agentsView.agents = [];
     state.agentsView.selectedAgentId = null;
+    const refreshBranchAgentStatus = () => {
+      if (state.selectedRepo && repoMatchesKey(state.selectedRepo, repoKey(repo))) {
+        updateRepoBranchControls(state.selectedRepo, null);
+      }
+    };
     if (state.session?.sessionToken) {
       try {
         const payload = await orgAgentRequest(
@@ -5149,6 +5156,7 @@
             Array.isArray(payload.sessions)
           ? payload.sessions
           : [];
+        state.agentsView.agents = sessions;
         const accessReason = String(
           payload?.accessReason || payload?.message || "",
         ).trim();
@@ -5187,6 +5195,7 @@
           </section>`;
         wireOrgAgentPanel(repo, container);
         window.lucide?.createIcons();
+        refreshBranchAgentStatus();
         return;
       } catch (error) {
         const configurationError = [
@@ -5205,6 +5214,7 @@
             <p class="max-w-2xl leading-6">${escapeHtml(String(error?.message || "The agent request failed."))}</p>
           </div>`;
         window.lucide?.createIcons();
+        refreshBranchAgentStatus();
         return;
       }
     }
@@ -5215,6 +5225,7 @@
         <a href="/desktop" class="inline-flex h-9 w-fit items-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90"><i data-lucide="monitor-down" class="h-4 w-4"></i>Open desktop downloads</a>
       </div>`;
     window.lucide?.createIcons();
+    refreshBranchAgentStatus();
   }
 
   function workshopAgentDeepLink(repo) {
