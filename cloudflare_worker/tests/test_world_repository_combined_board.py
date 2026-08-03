@@ -41,7 +41,7 @@ def test_repository_circle_is_enclosed_by_a_geodesic_dome():
     assert "interior.visible = false" in district
 
 
-def test_repository_dome_draws_its_interior_only_while_occupied():
+def test_repository_dome_keeps_its_shell_and_exit_around_the_active_interior():
     occupancy = SCENE[
         SCENE.index("  function updateRepositoryDomeOccupancy("):
         SCENE.index("  function compactDistrictDiagnostics(")
@@ -54,7 +54,9 @@ def test_repository_dome_draws_its_interior_only_while_occupied():
     assert "REPOSITORY_DOME_EXIT_RADIUS" in occupancy
     assert "interior.visible = occupied" in occupancy
     assert "catalog.visible = occupied" in occupancy
-    assert "dome.visible = !occupied" in occupancy
+    assert "dome.visible = true" in occupancy
+    assert "repositoryDoors.visible = true" in occupancy
+    assert "setSlidingEnclosureDoorOpen(" in occupancy
     assert "updateRepositoryDomeOccupancy();" in SCENE
     assert "layer.userData.repositoryDomeInterior = true" in catalog
     assert "updateRepositoryDomeOccupancy(true);" in catalog

@@ -9230,6 +9230,104 @@ test("the Members Center shows its roster inside and places arrivals at its door
   expect(reloaded.leftKnee).toBeCloseTo(0, 5);
 });
 
+test("enclosed districts keep their inside walls and open exits visible", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "visible-enclosure-exits");
+  await waitForWorld(page);
+
+  const visit = async (objectName, mode) => {
+    await page.locator("forkmesh-world").evaluate((shell, name) => {
+      const destination = shell.world.scene.getObjectByName(name);
+      const center = destination.getWorldPosition(
+        shell.world.player.position.clone(),
+      );
+      shell.world.player.position.set(center.x, 0.38, center.z);
+    }, objectName);
+    await page.waitForFunction(
+      (expected) =>
+        document.querySelector("forkmesh-world")?.world?.scene?.userData
+          ?.activeEnclosureScene === expected,
+      mode,
+    );
+  };
+
+  await visit("forkmesh-node-district", "nodes");
+  const nodes = await page.locator("forkmesh-world").evaluate((shell) => {
+    const cover = shell.world.scene.getObjectByName(
+      "forkmesh-node-opaque-cover",
+    );
+    return {
+      visible: cover.visible,
+      insideFacing: cover.material.side === 2,
+      doorOpen: cover.userData.doorOpen,
+    };
+  });
+  expect(nodes).toEqual({ visible: true, insideFacing: true, doorOpen: true });
+
+  await visit("forkmesh-leaderboard-district", "leaderboards");
+  const leaderboards = await page.locator("forkmesh-world").evaluate((shell) => {
+    const cover = shell.world.scene.getObjectByName(
+      "forkmesh-leaderboard-opaque-cover",
+    );
+    return {
+      visible: cover.visible,
+      insideFacing: cover.material.side === 2,
+      doorOpen: cover.userData.doorOpen,
+    };
+  });
+  expect(leaderboards).toEqual({
+    visible: true,
+    insideFacing: true,
+    doorOpen: true,
+  });
+
+  await visit("repository-geodesic-dome", "repositories");
+  const repositories = await page.locator("forkmesh-world").evaluate((shell) => {
+    const dome = shell.world.scene.getObjectByName("repository-geodesic-dome");
+    const walls = shell.world.scene.getObjectByName(
+      "repository-geodesic-dome-shell",
+    );
+    const door = shell.world.scene.getObjectByName(
+      "repository-geodesic-dome-doors",
+    );
+    return {
+      visible: dome.visible,
+      insideFacing: walls.material.side === 2,
+      doorVisible: door.visible,
+      doorOpen: door.userData.doorOpen,
+    };
+  });
+  expect(repositories).toEqual({
+    visible: true,
+    insideFacing: true,
+    doorVisible: true,
+    doorOpen: true,
+  });
+
+  await visit("members-center-yurt", "members");
+  const members = await page.locator("forkmesh-world").evaluate((shell) => {
+    const yurt = shell.world.scene.getObjectByName("members-center-yurt");
+    const walls = shell.world.scene.getObjectByName("members-yurt-walls");
+    const roof = shell.world.scene.getObjectByName("members-yurt-roof");
+    const door = shell.world.scene.getObjectByName("members-yurt-door");
+    return {
+      visible: yurt.visible,
+      wallsInsideFacing: walls.material.side === 2,
+      roofInsideFacing: roof.material.side === 2,
+      doorVisible: door.visible,
+      doorOpen: door.userData.doorOpen,
+    };
+  });
+  expect(members).toEqual({
+    visible: true,
+    wallsInsideFacing: true,
+    roofInsideFacing: true,
+    doorVisible: true,
+    doorOpen: true,
+  });
+});
+
 test("the System Status board countdown advances between minute syncs", async ({
   page,
 }) => {
