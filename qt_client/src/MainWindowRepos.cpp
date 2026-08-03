@@ -7062,9 +7062,16 @@ void MainWindow::syncRepository(int index, bool quiet)
     // "not our ref" and the whole upload-pack fails (HTTP 502 -> "host
     // temporarily unavailable"). Issues and pull requests live in refs/heads, so
     // limiting to heads/tags keeps everything we serve while dropping the churn.
-    static const QStringList kStableRefspecs = {
-        QStringLiteral("+refs/heads/*:refs/heads/*"),
-        QStringLiteral("+refs/tags/*:refs/tags/*")};
+    // A service-managed node can receive the new refs over the direct SSH
+    // fanout before the public relay's integrity pin catches up.  Its fallback
+    // fetch must never force the served bare repository back to that older
+    // relay view.  Ordinary owner/preview sync retains its historical forced
+    // tracking behavior; managed fleet nodes accept fast-forwards only.
+    const QString managedRefPrefix =
+        managedCheckoutSource ? QString() : QStringLiteral("+");
+    const QStringList stableRefspecs = {
+        managedRefPrefix + QStringLiteral("refs/heads/*:refs/heads/*"),
+        managedRefPrefix + QStringLiteral("refs/tags/*:refs/tags/*")};
     // For our own private repo hosted through the mainnode, clone/fetch must carry
     // an owner-key-signed view token; viewAuthGitArgs returns the "-c
     // http.extraHeader=..." prefix (empty for public repos or non-mainnode sources)
@@ -7077,7 +7084,7 @@ void MainWindow::syncRepository(int index, bool quiet)
         authArgs +
         (hasMirror ? QStringList{"-C", repo.mirrorPath, "fetch", "--progress",
                                 "--prune", "origin"} +
-                        kStableRefspecs
+                        stableRefspecs
                   : QStringList{"clone", "--progress", "--bare", source,
                                 repo.mirrorPath});
     const QString mirrorPath = repo.mirrorPath;
