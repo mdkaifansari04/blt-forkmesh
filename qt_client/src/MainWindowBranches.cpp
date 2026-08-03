@@ -6409,8 +6409,8 @@ void MainWindow::applyBranchAutoMarkViewedOnScroll()
         // file still being read (anchors are rebuilt by the render above).
         const int idx = m_branchDiffFilePaths.indexOf(currentFile);
         if (idx >= 0 && idx < m_branchDiffFileAnchors.size()) {
-            flushDiffStream(m_branchDiffView);
-            m_branchDiffView->scrollToAnchor(m_branchDiffFileAnchors.at(idx));
+            scrollDiffToAnchor(m_branchDiffView,
+                               m_branchDiffFileAnchors.at(idx));
         }
     }
 }
