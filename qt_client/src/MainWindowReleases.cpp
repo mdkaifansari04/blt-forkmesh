@@ -3503,8 +3503,15 @@ void MainWindow::promptNewRelease()
 
     // Annotated tag so the release notes live in the repo's git history.
     QString err;
-    if (!runGitCapture(dir, {"tag", "-a", tag, targetRef, "-m", message}, nullptr,
-                       &err)) {
+    // An annotated tag records a tagger identity. A desktop node may not have
+    // global Git identity configured, so use the same deterministic release-bot
+    // identity as the version-bump commit above instead of making publishing
+    // depend on a machine-local Git setting.
+    if (!runGitCapture(dir,
+                       {"-c", QStringLiteral("user.email=actions@forkmesh.local"),
+                        "-c", QStringLiteral("user.name=ForkMesh Actions"), "tag",
+                        "-a", tag, targetRef, "-m", message},
+                       nullptr, &err)) {
         setRepoDetailNotice(err.isEmpty() ? "Could not create the release tag." : err,
                             true);
         return;
