@@ -1077,7 +1077,7 @@ def load_config(path: Path) -> GatewayConfig:
             or git_dir_info.st_uid != os.geteuid()
             or git_mode & stat.S_IWOTH
             or (git_mode & stat.S_IWGRP and
-                git_dir_info.st_gid != os.getegid())
+                git_dir_info.st_gid not in os.getgroups())
             or not (git_dir / "HEAD").is_file()
             or not (git_dir / "objects").is_dir()
             or not (git_dir / "refs").is_dir()
