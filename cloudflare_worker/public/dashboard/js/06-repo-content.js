@@ -2623,7 +2623,14 @@
 
   function setRepoTabCount(tab, count) {
     const badge = $(`[data-dashboard-repo-tab-count="${tab}"]`);
-    if (badge) badge.textContent = formatCount(count);
+    if (!badge) return;
+    const number = Number(count);
+    if (tab === "discussions" && (!Number.isFinite(number) || number <= 0)) {
+      badge.classList.add("hidden");
+      return;
+    }
+    badge.classList.remove("hidden");
+    badge.textContent = formatCount(Number.isFinite(number) ? number : 0);
   }
 
   // Amber "+N" badge for inbox items the relay is still holding for the owner
