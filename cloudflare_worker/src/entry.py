@@ -33884,6 +33884,34 @@ def _forkbot_resolve_ai_model(env, requested=""):
     return _forkbot_ai_default_model(env)
 
 
+def _forkbot_ai_model_not_found_error(error):
+    text = _safe_error_text(error).lower()
+    if not text:
+        return False
+    return any(marker in text for marker in (
+        "not found",
+        "not_found",
+        "model not found",
+        "unknown model",
+        "does not exist",
+    ))
+
+
+def _forkbot_ai_fallback_models(env, requested=""):
+    """Models we can try for one call, in the order they should be billed."""
+    default = _forkbot_ai_default_model(env)
+    fallback = []
+    wanted = clean_string(requested or "", 120).strip()
+    if wanted and wanted not in fallback:
+        fallback.append(wanted)
+    if default and default not in fallback:
+        fallback.append(default)
+    for model_id, _, _ in FORKBOT_AI_MODEL_CHOICES:
+        if model_id not in fallback:
+            fallback.append(model_id)
+    return fallback
+
+
 async def forkbot_models_handler(env, request):
     """List the Workers AI models a chat client may send its prompt to."""
     if method_name(request) not in ("GET", "HEAD"):
@@ -34024,6 +34052,7 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
             "ForkBot AI unavailable: env.AI binding is missing")
         return None
     model = _forkbot_resolve_ai_model(env, model)
+    candidates = _forkbot_ai_fallback_models(env, model)
     base_payload = {
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -34042,14 +34071,19 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
     result = None
     ran = False
     last_error = None
-    for payload in attempts:
-        try:
-            result = await ai.run(model, to_js(payload))
-            ran = True
+    for candidate in candidates:
+        for payload in attempts:
+            try:
+                result = await ai.run(candidate, to_js(payload))
+                model = candidate
+                ran = True
+                break
+            except Exception as error:
+                last_error = error
+                if _forkbot_ai_model_not_found_error(error):
+                    break
+        if ran:
             break
-        except Exception as error:
-            last_error = error
-            continue
     if not ran:
         await log_error(
             env, 500, "AI", "forkbot/ai",
