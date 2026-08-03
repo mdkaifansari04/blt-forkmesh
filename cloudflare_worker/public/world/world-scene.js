@@ -82,6 +82,12 @@ const WORLD_PATH_SURFACE_Y = 0.105;
 const WORLD_PATH_CENTER_Y =
   WORLD_PATH_SURFACE_Y - WORLD_PATH_HEIGHT / 2;
 const DISTRICT_GROUND_RADIUS = 48;
+const LEADERBOARD_COVER_SIDES = 8;
+const LEADERBOARD_COVER_WALL_HEIGHT = 25.5;
+const LEADERBOARD_COVER_ROOF_HEIGHT = 9.5;
+const LEADERBOARD_COVER_APOTHEM = DISTRICT_GROUND_RADIUS + 0.6;
+const LEADERBOARD_DOOR_WIDTH = 8;
+const LEADERBOARD_DOOR_HEIGHT = 7.5;
 const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
@@ -381,6 +387,40 @@ function worldWalkSurfaceContains(x, z, radius = OFFICE_AVATAR_RADIUS) {
   return (
     Math.hypot(px - BEACH_CENTER_X, pz - BEACH_CENTER_Z) <=
     BEACH_RADIUS - margin
+  );
+}
+
+function leaderboardCoverContainsWorldPoint(x, z, margin = 0) {
+  const localX = Number(x) - LEADERBOARD_ISLAND_CENTER_X;
+  const localZ = Number(z);
+  const limit = LEADERBOARD_COVER_APOTHEM - Number(margin || 0);
+  if (!Number.isFinite(localX) || !Number.isFinite(localZ) || limit <= 0) {
+    return false;
+  }
+  for (let index = 0; index < LEADERBOARD_COVER_SIDES; index += 1) {
+    const angle = (index / LEADERBOARD_COVER_SIDES) * Math.PI * 2;
+    if (
+      localX * Math.cos(angle) + localZ * Math.sin(angle) > limit
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function leaderboardDoorCrossingIsClear(previous, current) {
+  const doorwayX =
+    LEADERBOARD_ISLAND_CENTER_X + LEADERBOARD_COVER_APOTHEM;
+  const travelX = Number(current?.x) - Number(previous?.x);
+  if (!Number.isFinite(travelX) || Math.abs(travelX) < 1e-6) return false;
+  const crossing = (doorwayX - Number(previous?.x)) / travelX;
+  if (!Number.isFinite(crossing) || crossing < 0 || crossing > 1) return false;
+  const crossingZ =
+    Number(previous?.z) +
+    (Number(current?.z) - Number(previous?.z)) * crossing;
+  return (
+    Number.isFinite(crossingZ) &&
+    Math.abs(crossingZ) <= LEADERBOARD_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS
   );
 }
 
@@ -8796,6 +8836,120 @@ function createDistrictGroundCircle(
   ground.receiveShadow = true;
   ground.userData.ground = true;
   return ground;
+}
+
+function createLeaderboardOpaqueCover(THREE) {
+  // Keep the shell deliberately coarse. Its east face meets the promenade and
+  // is the only wall with an opening; three small quads cut a real doorway
+  // into that face without turning the cover into a high-detail mesh.
+  const sides = LEADERBOARD_COVER_SIDES;
+  const wallHeight = LEADERBOARD_COVER_WALL_HEIGHT;
+  const roofHeight = LEADERBOARD_COVER_ROOF_HEIGHT;
+  const apothem = LEADERBOARD_COVER_APOTHEM;
+  const radius = apothem / Math.cos(Math.PI / sides);
+  const positions = [];
+  const point = (index, y) => {
+    const angle = ((index + 0.5) / sides) * Math.PI * 2;
+    return [Math.cos(angle) * radius, y, Math.sin(angle) * radius];
+  };
+  const addTriangle = (...vertices) => {
+    vertices.forEach((vertex) => positions.push(...vertex));
+  };
+  const addQuad = (lower, upper, nextLower, nextUpper) => {
+    addTriangle(lower, upper, nextLower);
+    addTriangle(nextLower, upper, nextUpper);
+  };
+  const apex = [0, wallHeight + roofHeight, 0];
+  for (let index = 0; index < sides; index += 1) {
+    const lower = point(index, 0);
+    const upper = point(index, wallHeight);
+    const nextLower = point(index + 1, 0);
+    const nextUpper = point(index + 1, wallHeight);
+    if (index === sides - 1) {
+      const halfDoor = LEADERBOARD_DOOR_WIDTH / 2;
+      const lowerLeft = [apothem, 0, -halfDoor];
+      const upperLeft = [apothem, wallHeight, -halfDoor];
+      const lowerRight = [apothem, 0, halfDoor];
+      const upperRight = [apothem, wallHeight, halfDoor];
+      addQuad(lower, upper, lowerLeft, upperLeft);
+      addQuad(lowerRight, upperRight, nextLower, nextUpper);
+      addQuad(
+        [apothem, LEADERBOARD_DOOR_HEIGHT, -halfDoor],
+        upperLeft,
+        [apothem, LEADERBOARD_DOOR_HEIGHT, halfDoor],
+        upperRight,
+      );
+    } else {
+      addQuad(lower, upper, nextLower, nextUpper);
+    }
+    addTriangle(upper, apex, nextUpper);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(positions, 3),
+  );
+  geometry.computeVertexNormals();
+  const cover = new THREE.Mesh(
+    geometry,
+    makeMaterial(THREE, "#102b27", {
+      metalness: 0.02,
+      roughness: 0.94,
+      transparent: false,
+      opacity: 1,
+      depthWrite: true,
+      side: THREE.FrontSide,
+    }),
+  );
+  cover.name = "forkmesh-leaderboard-opaque-cover";
+  cover.userData.interactive = "leaderboard-cover";
+
+  const halfDoor = LEADERBOARD_DOOR_WIDTH / 2;
+  const doorFrameGeometry = new THREE.BufferGeometry();
+  doorFrameGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(
+      [
+        apothem + 0.025, 0.04, -halfDoor,
+        apothem + 0.025, LEADERBOARD_DOOR_HEIGHT, -halfDoor,
+        apothem + 0.025, LEADERBOARD_DOOR_HEIGHT, -halfDoor,
+        apothem + 0.025, LEADERBOARD_DOOR_HEIGHT, halfDoor,
+        apothem + 0.025, LEADERBOARD_DOOR_HEIGHT, halfDoor,
+        apothem + 0.025, 0.04, halfDoor,
+      ],
+      3,
+    ),
+  );
+  const doorFrame = new THREE.LineSegments(
+    doorFrameGeometry,
+    new THREE.LineBasicMaterial({ color: "#9ef7c6", toneMapped: false }),
+  );
+  doorFrame.name = "forkmesh-leaderboard-door-frame";
+  cover.add(doorFrame);
+
+  const doorPanelWidth = LEADERBOARD_DOOR_WIDTH / 2;
+  const doorPanelGeometry = new THREE.PlaneGeometry(
+    doorPanelWidth,
+    LEADERBOARD_DOOR_HEIGHT,
+  );
+  const doorPanelMaterial = new THREE.MeshBasicMaterial({
+    color: "#173c35",
+    side: THREE.DoubleSide,
+  });
+  [-1, 1].forEach((side) => {
+    const door = new THREE.Mesh(doorPanelGeometry, doorPanelMaterial);
+    door.name =
+      `forkmesh-leaderboard-door-${side < 0 ? "left" : "right"}`;
+    // Both leaves stay fully open against the inside of the jambs. The player
+    // and camera therefore cross one unobstructed threshold either way.
+    door.position.set(
+      apothem - doorPanelWidth / 2,
+      LEADERBOARD_DOOR_HEIGHT / 2,
+      side * halfDoor,
+    );
+    cover.add(door);
+  });
+  return cover;
 }
 
 const START_HERE_STEPS = Object.freeze([
@@ -17523,9 +17677,20 @@ export function createWorldScene({
   const leaderboardDistrict = new THREE.Group();
   leaderboardDistrict.name = "forkmesh-leaderboard-district";
   leaderboardDistrict.position.set(LEADERBOARD_ISLAND_CENTER_X, 0, 0);
-  leaderboardDistrict.add(
+  const leaderboardInterior = new THREE.Group();
+  leaderboardInterior.name = "forkmesh-leaderboard-interior";
+  leaderboardInterior.visible = false;
+  leaderboardInterior.userData.leaderboardInterior = true;
+  leaderboardInterior.add(
     createDistrictGroundCircle(THREE, "leaderboards"),
   );
+  leaderboardDistrict.add(leaderboardInterior);
+  leaderboardDistrict.userData.leaderboardInterior = leaderboardInterior;
+  const leaderboardCover = createLeaderboardOpaqueCover(THREE);
+  leaderboardDistrict.add(leaderboardCover);
+  // The same one-sided surface that hides the boards also prevents selecting
+  // them through the shell. Rays cast from inside hit only its culled backs.
+  interactive.push(leaderboardCover);
   const leaderboardBeacon = new THREE.Mesh(
     new THREE.CylinderGeometry(3.1, 4.2, 0.7, 24),
     makeMaterial(THREE, "#173c35", {
@@ -17587,7 +17752,7 @@ export function createWorldScene({
   function placeBillboardOnIsland(object) {
     if (!object) return;
     object.parent?.remove(object);
-    leaderboardDistrict.add(object);
+    leaderboardInterior.add(object);
     billboardIslandObjects.push({ object });
     relayoutBillboardCircle();
   }
@@ -19298,7 +19463,7 @@ export function createWorldScene({
   leaderboardGridFace.userData.leaderboardPanelTile = true;
   leaderboardSuperPanel.add(leaderboardGridFace);
   interactive.push(leaderboardGridFace);
-  leaderboardDistrict.add(leaderboardSuperPanel);
+  leaderboardInterior.add(leaderboardSuperPanel);
 
   let leaderboardGridKey = "";
   function repaintLeaderboardGrid() {
@@ -19365,6 +19530,7 @@ export function createWorldScene({
   world.add(player);
   registerWorldElement("player-avatar", "Your avatar", "Avatars & bots", player);
   let repositoryDomeOccupied = false;
+  let leaderboardCircleOccupied = false;
 
   // A hidden Object3D stops draw calls, but Three.js deliberately retains
   // every buffer and texture it uploaded for that object. On unified-memory
@@ -19525,6 +19691,24 @@ export function createWorldScene({
     return occupied;
   }
 
+  function updateLeaderboardCircleOccupancy(force = false) {
+    // Enter only after the full avatar clears the jamb, and keep the contents
+    // resident until the full avatar clears it again while exiting.
+    const margin = leaderboardCircleOccupied
+      ? -OFFICE_AVATAR_RADIUS
+      : OFFICE_AVATAR_RADIUS;
+    const occupied = leaderboardCoverContainsWorldPoint(
+      player.position.x,
+      player.position.z,
+      margin,
+    );
+    if (!force && occupied === leaderboardCircleOccupied) return occupied;
+    leaderboardCircleOccupied = occupied;
+    world.userData.leaderboardCircleOccupied = occupied;
+    leaderboardInterior.visible = occupied;
+    return occupied;
+  }
+
   function compactDistrictDiagnostics() {
     if (!compactRenderer) {
       return {
@@ -19582,6 +19766,7 @@ export function createWorldScene({
     ...carStates.map((state) => state.car),
   ]);
   updateRepositoryDomeOccupancy(true);
+  updateLeaderboardCircleOccupancy(true);
   // The camera used to start at CAMERA_OFFSET relative to the world origin
   // even though the avatar starts elsewhere. It then spent the first visible
   // second easing across the map, which made the first movement input feel
@@ -24071,6 +24256,28 @@ export function createWorldScene({
     return warpToOfficeFloor(doorway.floorId);
   }
 
+  function constrainLeaderboardCover(previousPosition) {
+    if (officeSceneMode !== "town" || !previousPosition) return false;
+    const wasInside = leaderboardCoverContainsWorldPoint(
+      previousPosition.x,
+      previousPosition.z,
+    );
+    const isInside = leaderboardCoverContainsWorldPoint(
+      player.position.x,
+      player.position.z,
+    );
+    if (wasInside === isInside) return false;
+    if (leaderboardDoorCrossingIsClear(previousPosition, player.position)) {
+      return false;
+    }
+    // Every opaque face is a wall. Only the east doorway can change which
+    // side the avatar occupies, so an attempted wall crossing is rolled back.
+    player.position.x = previousPosition.x;
+    player.position.z = previousPosition.z;
+    cancelDash();
+    return true;
+  }
+
   function constrainTownOfficeWalls(previousPosition) {
     if (officeSceneMode !== "town") return false;
     const office = landmarkObjects.get("office");
@@ -27073,6 +27280,7 @@ export function createWorldScene({
       cancelDash();
     }
     if (!superJumping) {
+      constrainLeaderboardCover(previousHorizontalPosition);
       constrainTownOfficeWalls(previousHorizontalPosition);
     }
     if (carRide) {
@@ -34460,6 +34668,7 @@ export function createWorldScene({
       walkOfficeParticipant(delta, time);
     }
     updateRepositoryDomeOccupancy();
+    updateLeaderboardCircleOccupancy();
     if (officeSceneMode === "town") {
       const insideInstanceBooth =
         Math.abs(player.position.x - instanceBooth.position.x) < 9.7 &&
