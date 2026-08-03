@@ -27900,7 +27900,7 @@ index f6da85699..1bf535326 100644
 +    const QString envBefore = QStringLiteral(
 +        "# production\r\n"
 +        "ADMIN_PATH=/secret-admin\r\n"
-+        "CLOUDFLARE_API_TOKEN=old-token-value\r\n"
++        "CLOUDFLARE_API_TOKEN=<old-token-value>\r\n"
 +        "#CLOUDFLARE_API_TOKEN=commented-example\r\n"
 +        "OTHER=keepme\r\n"
 +        "CLOUDFLARE_API_TOKEN = stale-duplicate\r\n");
@@ -27908,7 +27908,7 @@ index f6da85699..1bf535326 100644
 +        envBefore, QStringLiteral("CLOUDFLARE_API_TOKEN"),
 +        QStringLiteral("rotated-token-value"));
 +    check(envAfter.contains(
-+              QStringLiteral("CLOUDFLARE_API_TOKEN=rotated-token-value\r\n")) &&
++              QStringLiteral("CLOUDFLARE_API_TOKEN=<rotated-token-value>\r\n")) &&
 +              !envAfter.contains(QStringLiteral("old-token-value")) &&
 +              !envAfter.contains(QStringLiteral("stale-duplicate")) &&
 +              envAfter.contains(
@@ -44537,8 +44537,8 @@ index 03af68fc1..20915b165 100644
 @@ -34,6 +34,7 @@ def _sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
      env_lines = [
          "CLOUDFLARE_ACCOUNT_ID=test-account",
-         "CLOUDFLARE_API_TOKEN=cloudflare-token-must-not-be-published",
-+        "VULTR_API_KEY=vultr-key-must-not-be-published",
+         "CLOUDFLARE_API_TOKEN=<not-a-real-token>",
++        "VULTR_API_KEY=<not-a-real-key>",
          *(f"{key}={value}" for key, value in REQUIRED.items()),
          "OPTIONAL_SECRET=optional=value with spaces",
          "EMPTY_SECRET=",

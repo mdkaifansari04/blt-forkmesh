@@ -14413,6 +14413,7 @@ function createOfficeMarineAquarium(THREE, animated) {
   group.add(userFishAnchors);
   const fishStates = [];
   let userFishInstances = null;
+  let fishBodiesVisible = false;
   let fishPopulationKey = "";
   let visitorReaction = 0;
   let visitorReactionTarget = 0;
@@ -14456,6 +14457,21 @@ function createOfficeMarineAquarium(THREE, animated) {
       });
       userFishInstances = null;
     }
+  }
+
+  // The Office remains a visible World landmark, but its public-member fish
+  // are an indoor detail. Keep every instanced fish draw batch off the
+  // renderer until the local visitor has entered the Office.
+  function setFishBodiesVisible(value) {
+    fishBodiesVisible = value === true;
+    group.userData.fishBodiesVisible = fishBodiesVisible;
+    if (!userFishInstances) return fishBodiesVisible;
+    const { school, body, tail, fins } = userFishInstances;
+    school.visible = fishBodiesVisible;
+    body.visible = fishBodiesVisible;
+    tail.visible = fishBodiesVisible;
+    fins.visible = fishBodiesVisible;
+    return fishBodiesVisible;
   }
 
   function updateInstancedUserFish() {
@@ -14742,6 +14758,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     disposeAquariumFish();
     const population = visibleUsers.length;
     userFishInstances = createInstancedUserFish(THREE, population);
+    setFishBodiesVisible(fishBodiesVisible);
     group.add(userFishInstances.school);
     const schoolScale = clamp(
       0.78 - Math.log2(Math.max(1, population) + 1) * 0.055,
@@ -15471,6 +15488,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     setBackdropOpaque,
     setLightEnabled,
     getControlState,
+    setFishBodiesVisible,
     setAnimationActive(value) {
       const next = value === true;
       if (next && !animationActive) nextAnimationAt = 0;
@@ -24298,6 +24316,7 @@ export function createWorldScene({
         ? requestedFloor
         : officeFloorById("lobby");
     officeSceneMode = "lobby";
+    officeAquarium.setFishBodiesVisible(true);
     officeCurrentFloorId = destinationFloor.id;
     officeElevatorRide = null;
     selectedLandmark = "office";
@@ -25048,6 +25067,7 @@ export function createWorldScene({
         OFFICE_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS &&
       localPosition.z >= OFFICE_INTERIOR_EXIT_Z;
     officeSceneMode = "town";
+    officeAquarium.setFishBodiesVisible(false);
     officeCurrentFloorId = "lobby";
     updateSceneLevelOfDetail(true);
     officeElevatorRide = null;
@@ -25110,6 +25130,7 @@ export function createWorldScene({
     player.parent?.worldToLocal?.(worldPosition);
     player.position.copy(worldPosition);
     officeSceneMode = "town";
+    officeAquarium.setFishBodiesVisible(false);
     officeCurrentFloorId = "lobby";
     officeElevatorRide = null;
     releaseOfficeElevatorCamera(false);
@@ -34219,6 +34240,7 @@ export function createWorldScene({
       !reducedMotion &&
       officeSceneMode === "lobby" &&
       officeCurrentFloorId === "lobby";
+    officeAquarium.setFishBodiesVisible(officeSceneMode !== "town");
     officeAquarium.setAnimationActive(aquariumAnimationActive);
     officeAquarium.updateFeeding(time, aquariumAnimationActive);
     // The Office is part of the same live World. Neighbours and ForkBot keep
