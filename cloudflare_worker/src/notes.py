@@ -14,6 +14,7 @@ MAX_TITLE = 200
 MAX_MARKDOWN = 512 * 1024
 MAX_NOTES = 500
 MAX_VERSIONS = 100
+BIND_CHUNK = 90
 NOTE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 NAME_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPO_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
@@ -102,6 +103,46 @@ async def _shares(runtime, note_id):
     } for row in rows or []]
 
 
+def _counts(row):
+    return {
+        "views": int((row or {}).get("reads") or 0),
+        "readers": int((row or {}).get("readers") or 0),
+        "lastViewedAt": int((row or {}).get("last_at") or 0),
+    }
+
+
+async def _views(runtime, note_id):
+    return _counts(await runtime.d1_first(
+        "SELECT COUNT(*) AS readers,COALESCE(SUM(hits),0) AS reads,"
+        "COALESCE(MAX(last_at),0) AS last_at FROM note_views WHERE note_id=?",
+        note_id))
+
+
+async def _record_view(runtime, note_id):
+    """Count one anonymous read of a published note.
+
+    The key is whatever blinded reader identity the runtime derives; a runtime
+    that cannot derive one (or a test harness that does not care) returns "",
+    and the read simply goes uncounted rather than inflating the total.
+    """
+    try:
+        viewer_key = str(await runtime.viewer(note_id) or "")[:64]
+    except Exception:
+        viewer_key = ""
+    if not viewer_key:
+        return
+    now = runtime.now()
+    try:
+        await runtime.d1_run(
+            "INSERT INTO note_views(note_id,viewer_key,first_at,last_at,hits) "
+            "VALUES(?,?,?,?,1) ON CONFLICT(note_id,viewer_key) DO UPDATE SET "
+            "last_at=excluded.last_at,hits=hits+1",
+            note_id, viewer_key, now, now)
+    except Exception:
+        # A read is never worth failing the page it was counting.
+        pass
+
+
 async def _links(runtime, note_id):
     rows = await runtime.d1_all(
         "SELECT owner,repo,kind,number,created_at FROM note_links "
@@ -115,7 +156,52 @@ async def _links(runtime, note_id):
     } for row in rows or []]
 
 
-async def _project(runtime, row, role, full=True):
+async def _bulk(runtime, note_ids, sql, tail=""):
+    """Run one keyed lookup over many notes in as few queries as possible.
+
+    D1 caps bound parameters per statement, so the ids are chunked; every
+    chunk still beats the per-note query it replaces on a 500-note listing.
+    """
+    rows = []
+    for start in range(0, len(note_ids), BIND_CHUNK):
+        chunk = note_ids[start:start + BIND_CHUNK]
+        rows.extend(await runtime.d1_all(
+            sql + " WHERE note_id IN (" + ",".join(["?"] * len(chunk)) + ")"
+            + tail, *chunk) or [])
+    return rows
+
+
+async def _shares_by_note(runtime, note_ids):
+    grouped = {}
+    rows = await _bulk(
+        runtime,
+        note_ids,
+        "SELECT note_id,principal_type,principal_name,role,created_at "
+        "FROM note_shares",
+        " ORDER BY principal_type,principal_name COLLATE NOCASE",
+    )
+    for row in rows:
+        grouped.setdefault(str(row.get("note_id") or ""), []).append({
+            "type": str(row.get("principal_type") or ""),
+            "name": str(row.get("principal_name") or ""),
+            "role": str(row.get("role") or "viewer"),
+            "createdAt": int(row.get("created_at") or 0),
+        })
+    return grouped
+
+
+async def _views_by_note(runtime, note_ids):
+    rows = await _bulk(
+        runtime,
+        note_ids,
+        "SELECT note_id,COUNT(*) AS readers,COALESCE(SUM(hits),0) AS reads,"
+        "COALESCE(MAX(last_at),0) AS last_at FROM note_views",
+        " GROUP BY note_id",
+    )
+    return {str(row.get("note_id") or ""): _counts(row) for row in rows}
+
+
+async def _project(runtime, row, role, full=True, counts=None):
     data = await runtime.open(row.get("data"))
     data = data if isinstance(data, dict) else {}
     result = {
@@ -128,6 +214,17 @@ async def _project(runtime, row, role, full=True):
         "publishedAt": int(row.get("published_at") or 0),
         "role": role,
     }
+    # Read counts are a non-identifying aggregate over a document the reader
+    # is already allowed to open, so every role — public included — sees them.
+    # Only a published note can have been read by anyone, so an unpublished
+    # one reports zeroes without a query: that keeps the desktop's 3s
+    # freshness poll on a private note exactly as cheap as it was.
+    if isinstance(counts, dict):
+        result.update(counts)
+    elif result["visibility"] == "public":
+        result.update(await _views(runtime, row["note_id"]))
+    else:
+        result.update(_counts(None))
     if full:
         result["markdown"] = _markdown(data.get("markdown"))
         # Publishing exposes the authored document, not its ACL or possibly
@@ -150,11 +247,22 @@ async def _list(runtime, account_bi):
         "WHERE n.owner_bi=? OR (s.principal_type='user' AND s.principal_bi=?) "
         "OR m.member_bi=? ORDER BY n.updated_at DESC LIMIT ?",
         account_bi, account_bi, account_bi, account_bi, MAX_NOTES)
+    rows = list(rows or [])
+    # The listing is what every client's note sidebar renders, so it carries
+    # the sharing and read counts inline: one batched query each, not one per
+    # note, and no follow-up fetch per row just to label the list.
+    note_ids = [str(row.get("note_id") or "") for row in rows]
+    shares = await _shares_by_note(runtime, note_ids)
+    views = await _views_by_note(runtime, note_ids)
     notes = []
-    for row in rows or []:
+    for row in rows:
         role = await _role(runtime, row, account_bi)
-        if role:
-            notes.append(await _project(runtime, row, role, full=False))
+        if not role:
+            continue
+        note = await _project(runtime, row, role, full=False,
+                              counts=views.get(row["note_id"], _counts(None)))
+        note["shares"] = shares.get(row["note_id"], [])
+        notes.append(note)
     return _response(runtime, {"ok": True, "notes": notes})
 
 
@@ -378,6 +486,11 @@ async def handle(runtime, path):
             return _response(runtime, {"error": "invalid_session"}, status=401)
         return await _link(runtime, row, account_bi, actor, method, data)
     if method == "GET":
+        # Only anonymous reads of a published note count: an owner opening
+        # their own draft, a collaborator, and the desktop's 3s freshness
+        # poll all authenticate, so none of them inflate the number.
+        if role == "public":
+            await _record_view(runtime, note_id)
         return _response(runtime, {"ok": True, "note": await _project(runtime, row, role)})
     if not account_bi:
         return _response(runtime, {"error": "invalid_session"}, status=401)

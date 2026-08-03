@@ -3,6 +3,7 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "MarkdownEditor.h"
+#include "NoteListEntry.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -89,6 +90,33 @@ int localNoteIndex(const QJsonArray &notes, const QString &id)
     return -1;
 }
 
+QString noteTimestampLabel(const QJsonObject &note)
+{
+    const qint64 stamp = static_cast<qint64>(
+        note.value(QStringLiteral("updatedAt")).toDouble());
+    if (stamp <= 0)
+        return QString();
+    return QStringLiteral("edited %1").arg(
+        QDateTime::fromMSecsSinceEpoch(stamp).toLocalTime()
+            .toString(QStringLiteral("MMM d, HH:mm")));
+}
+
+// Build one sidebar row from NoteListEntry's wording. `cloud` is the note's
+// cloud copy, empty when the note is local-only or when the cloud listing
+// could not be loaded; `synced` says whether a cloud copy exists at all.
+QListWidgetItem *noteListItem(const QJsonObject &note,
+                              const QJsonObject &cloud, const QString &mode,
+                              bool synced)
+{
+    const QString text = NoteListEntry::lines(
+        note, cloud, mode, synced,
+        noteTimestampLabel(cloud.isEmpty() ? note : cloud))
+            .join(QLatin1Char('\n'));
+    auto *item = new QListWidgetItem(text);
+    item->setToolTip(text);
+    return item;
+}
+
 QJsonObject localSnapshot(QJsonObject note, const QString &title,
                           const QString &markdown, const QString &mode)
 {
@@ -129,7 +157,8 @@ QWidget *MainWindow::buildNotesSection()
     title->setObjectName(QStringLiteral("pageTitle"));
     heading->addWidget(title);
     m_notesStatus = new QLabel(QStringLiteral(
-        "Local notes never leave this computer. Cloud notes use your account."));
+        "Local notes never leave this computer. Cloud notes use your account, "
+        "and publishing one puts it on the web."));
     m_notesStatus->setObjectName(QStringLiteral("mutedLabel"));
     heading->addWidget(m_notesStatus);
     heading->addStretch();
@@ -194,7 +223,19 @@ QWidget *MainWindow::buildNotesSection()
         "Choose exactly where this note is saved. Local-only notes never contact the relay."));
     toolbar->addWidget(m_noteStorageMode);
     m_notePublic = new QCheckBox(QStringLiteral("Publish publicly"));
+    m_notePublic->setToolTip(QStringLiteral(
+        "Publish this note at a public web address. Needs a cloud storage "
+        "mode, because a local-only note never reaches the web."));
     toolbar->addWidget(m_notePublic);
+    // A published note is only useful if you can find it, so the read-only
+    // address appears next to the checkbox the moment the note goes public.
+    m_notePublicLink = new QLabel;
+    m_notePublicLink->setObjectName(QStringLiteral("mutedLabel"));
+    m_notePublicLink->setTextFormat(Qt::RichText);
+    m_notePublicLink->setOpenExternalLinks(true);
+    m_notePublicLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    m_notePublicLink->hide();
+    toolbar->addWidget(m_notePublicLink);
     auto *save = new QPushButton(QStringLiteral("Save"));
     save->setObjectName(QStringLiteral("primaryButton"));
     setOcticon(save, "check", 14);
@@ -214,10 +255,17 @@ QWidget *MainWindow::buildNotesSection()
             [this] { m_noteDirty = true; });
     connect(m_noteEditor->sourceEdit(), &QPlainTextEdit::textChanged, this,
             [this] { m_noteDirty = true; });
-    connect(m_noteStorageMode, &QComboBox::currentIndexChanged, this,
-            [this] { m_noteDirty = true; });
-    connect(m_notePublic, &QCheckBox::toggled, this,
-            [this] { m_noteDirty = true; });
+    connect(m_noteStorageMode, &QComboBox::currentIndexChanged, this, [this] {
+        m_noteDirty = true;
+        // Switching a note to a cloud mode is what makes publishing possible;
+        // without this the checkbox stayed disabled until *after* a cloud
+        // save, so "Cloud only + Publish publicly" silently saved as private.
+        updateNotePublishState();
+    });
+    connect(m_notePublic, &QCheckBox::toggled, this, [this] {
+        m_noteDirty = true;
+        updateNotePublishState();
+    });
 
     m_noteRefreshTimer = new QTimer(page);
     m_noteRefreshTimer->setInterval(3000);
@@ -248,6 +296,50 @@ QWidget *MainWindow::buildNotesSection()
     });
     m_noteRefreshTimer->start();
     return page;
+}
+
+void MainWindow::updateNotePublishState()
+{
+    if (!m_notePublic || !m_noteStorageMode)
+        return;
+    const QString mode = m_noteStorageMode->currentData().toString();
+    // Only an owner may change visibility; a note with no cloud copy yet is
+    // owned by whoever is about to create it.
+    const QString role = m_selectedNote.value(QStringLiteral("role"))
+                             .toString(QStringLiteral("owner"));
+    const bool publishable = mode != QLatin1String("local") &&
+                             role == QLatin1String("owner");
+    m_notePublic->setEnabled(publishable);
+    if (!publishable)
+        m_notePublic->setChecked(false);
+    if (!m_notePublicLink)
+        return;
+    const QString cloudId = m_selectedNote.value(QStringLiteral("cloudId"))
+        .toString(m_selectedNoteStorage == QLatin1String("cloud")
+                      ? m_selectedNote.value(QStringLiteral("id")).toString()
+                      : QString());
+    const bool published =
+        m_selectedNote.value(QStringLiteral("visibility")).toString() ==
+        QLatin1String("public");
+    if (!published || cloudId.isEmpty()) {
+        m_notePublicLink->clear();
+        m_notePublicLink->hide();
+        // Ticking the box is a request, not a fact: say so until it lands.
+        if (m_notePublic->isChecked() && m_notePublic->isEnabled()) {
+            m_notePublicLink->setText(QStringLiteral(
+                "<span>Save to publish</span>"));
+            m_notePublicLink->show();
+        }
+        return;
+    }
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/notes/%1").arg(cloudId));
+    url.setQuery(QString());
+    const QString address = url.toString();
+    m_notePublicLink->setText(
+        QStringLiteral("<a href=\"%1\">Live on the web</a>").arg(address));
+    m_notePublicLink->setToolTip(address);
+    m_notePublicLink->show();
 }
 
 void MainWindow::requestNotes(const QByteArray &method, const QString &path,
@@ -318,6 +410,21 @@ void MainWindow::refreshNotes()
     });
 }
 
+QJsonObject MainWindow::cloudNoteFor(const QJsonObject &note) const
+{
+    const QString cloudId = note.value(QStringLiteral("cloudId")).toString();
+    if (cloudId.isEmpty())
+        return {};
+    for (const QJsonValue &value : m_cloudNotes) {
+        const QJsonObject cloud = value.toObject();
+        if (cloud.value(QStringLiteral("id")).toString() == cloudId)
+            return cloud;
+    }
+    // Signed out, or the listing call failed: fall back to the metadata the
+    // last successful cloud save mirrored onto the local record.
+    return note.contains(QStringLiteral("shares")) ? note : QJsonObject();
+}
+
 void MainWindow::renderNotesList(const QString &selectId)
 {
     if (!m_notesList)
@@ -330,13 +437,13 @@ void MainWindow::renderNotesList(const QString &selectId)
         const QString cloudId = note.value(QStringLiteral("cloudId")).toString();
         if (!cloudId.isEmpty())
             cloudIds.insert(cloudId);
-        auto *item = new QListWidgetItem(
-            QStringLiteral("%1\n%2 · v%3")
-                .arg(note.value(QStringLiteral("title")).toString(
-                         QStringLiteral("Untitled note")),
-                     note.value(QStringLiteral("storage")).toString(
-                         QStringLiteral("local")))
-                .arg(note.value(QStringLiteral("version")).toInt(1)));
+        // A mirrored note's sharing state and read count only exist in the
+        // cloud copy; a local-only note is labelled from its own record.
+        QListWidgetItem *item = noteListItem(
+            note, cloudNoteFor(note),
+            note.value(QStringLiteral("storage")).toString(
+                QStringLiteral("local")),
+            !cloudId.isEmpty());
         item->setData(kNoteIdRole,
                       note.value(QStringLiteral("id")).toString());
         item->setData(kNoteStorageRole, QStringLiteral("local"));
@@ -349,11 +456,8 @@ void MainWindow::renderNotesList(const QString &selectId)
         const QString id = note.value(QStringLiteral("id")).toString();
         if (cloudIds.contains(id))
             continue;
-        auto *item = new QListWidgetItem(
-            QStringLiteral("%1\ncloud · v%2")
-                .arg(note.value(QStringLiteral("title")).toString(
-                         QStringLiteral("Untitled note")))
-                .arg(note.value(QStringLiteral("version")).toInt(1)));
+        QListWidgetItem *item =
+            noteListItem(note, note, QStringLiteral("cloud"), true);
         item->setData(kNoteIdRole, id);
         item->setData(kNoteStorageRole, QStringLiteral("cloud"));
         m_notesList->addItem(item);
@@ -392,7 +496,7 @@ void MainWindow::selectNote(const QString &id, const QString &storage)
         m_notePublic->setChecked(
             m_selectedNote.value(QStringLiteral("visibility")).toString() ==
             QLatin1String("public"));
-        m_notePublic->setEnabled(mode != QLatin1String("local"));
+        updateNotePublishState();
         m_noteDirty = false;
         return;
     }
@@ -413,9 +517,7 @@ void MainWindow::selectNote(const QString &id, const QString &storage)
         m_notePublic->setChecked(
             m_selectedNote.value(QStringLiteral("visibility")).toString() ==
             QLatin1String("public"));
-        m_notePublic->setEnabled(
-            m_selectedNote.value(QStringLiteral("role")).toString() ==
-            QLatin1String("owner"));
+        updateNotePublishState();
         m_noteDirty = false;
     });
 }
@@ -434,7 +536,7 @@ void MainWindow::createNote()
     m_noteEditor->setMarkdown(QString());
     m_noteStorageMode->setCurrentIndex(0);
     m_notePublic->setChecked(false);
-    m_notePublic->setEnabled(false);
+    updateNotePublishState();
     m_noteDirty = true;
     m_noteTitle->selectAll();
     m_noteTitle->setFocus();
@@ -492,28 +594,72 @@ void MainWindow::saveNote()
             m_selectedNote.value(QStringLiteral("cloudVersion"))
                 .toInt(m_selectedNote.value(QStringLiteral("version")).toInt()));
     }
+    // The note being saved, captured by value: the reply lands after an event
+    // loop turn, by which time the user may have selected a different note.
+    QJsonObject pending = m_selectedNote;
+    // A cloud-only note names its cloud copy in `id`, not `cloudId`. The
+    // fallback below writes it to disk, so it needs the `cloudId` the sidebar
+    // dedupes on — otherwise the note would show up twice, once per list.
+    if (!cloudId.isEmpty())
+        pending.insert(QStringLiteral("cloudId"), cloudId);
     requestNotes(method, path, requestBody,
-                 [this, keepLocal, saveLocal](bool ok,
-                                              const QJsonObject &payload,
-                                              const QString &error) mutable {
+                 [this, keepLocal, saveLocal, pending](
+                     bool ok, const QJsonObject &payload,
+                     const QString &error) mutable {
         if (!ok) {
-            m_notesStatus->setText(QStringLiteral("Cloud save failed: %1").arg(error));
+            // The cloud leg failing must never cost the author their text.
+            // Writing the note to disk anyway keeps it in the sidebar (and
+            // recoverable) instead of discarding it with an error label —
+            // which is what happened to every save made without a password
+            // sign-in, since the relay call fails before it is even sent.
+            saveLocal(pending);
+            m_notesStatus->setText(QStringLiteral(
+                "Cloud save failed: %1 Kept on this computer; save again "
+                "once you are signed in.").arg(error));
             return;
         }
         QJsonObject cloud = payload.value(QStringLiteral("note")).toObject();
+        // Fold the reply into the cached listing so the sidebar labels this
+        // row from the state that was just persisted instead of waiting for
+        // the next refresh to notice it is published.
+        const QString id = cloud.value(QStringLiteral("id")).toString();
+        int cloudIndex = -1;
+        for (int i = 0; i < m_cloudNotes.size(); ++i) {
+            if (m_cloudNotes.at(i).toObject().value(QStringLiteral("id"))
+                    .toString() == id)
+                cloudIndex = i;
+        }
+        if (cloudIndex >= 0)
+            m_cloudNotes.replace(cloudIndex, cloud);
+        else
+            m_cloudNotes.prepend(cloud);
         if (keepLocal) {
-            QJsonObject local = m_selectedNote;
+            QJsonObject local = pending;
             local.insert(QStringLiteral("cloudId"),
                          cloud.value(QStringLiteral("id")));
             local.insert(QStringLiteral("cloudVersion"),
                          cloud.value(QStringLiteral("version")));
             local.insert(QStringLiteral("visibility"),
                          cloud.value(QStringLiteral("visibility")));
+            // Mirror the sidebar metadata so the row keeps saying who the
+            // note is shared with and how often it has been read while the
+            // cloud listing is out of reach (offline, or signed out).
+            local.insert(QStringLiteral("shares"),
+                         cloud.value(QStringLiteral("shares")));
+            local.insert(QStringLiteral("views"),
+                         cloud.value(QStringLiteral("views")));
+            local.insert(QStringLiteral("readers"),
+                         cloud.value(QStringLiteral("readers")));
             saveLocal(local);
-            m_notesStatus->setText(QStringLiteral("Saved locally and to the cloud."));
+            updateNotePublishState();
+            m_notesStatus->setText(
+                cloud.value(QStringLiteral("visibility")).toString() ==
+                        QLatin1String("public")
+                    ? QStringLiteral("Saved locally and published to the web.")
+                    : QStringLiteral("Saved locally and to the cloud."));
         } else {
             const int localIndex = localNoteIndex(
-                m_localNotes, m_selectedNote.value(QStringLiteral("id")).toString());
+                m_localNotes, pending.value(QStringLiteral("id")).toString());
             if (localIndex >= 0) {
                 m_localNotes.removeAt(localIndex);
                 writeLocalNotes(m_localNotes);
@@ -521,7 +667,13 @@ void MainWindow::saveNote()
             m_selectedNote = cloud;
             m_selectedNoteStorage = QStringLiteral("cloud");
             m_noteDirty = false;
-            refreshNotes();
+            updateNotePublishState();
+            renderNotesList(cloud.value(QStringLiteral("id")).toString());
+            m_notesStatus->setText(
+                cloud.value(QStringLiteral("visibility")).toString() ==
+                        QLatin1String("public")
+                    ? QStringLiteral("Saved to the cloud and published to the web.")
+                    : QStringLiteral("Saved to the cloud."));
         }
     });
 }
@@ -592,9 +744,28 @@ void MainWindow::shareNote()
                  QJsonObject{{QStringLiteral("type"), type.currentText()},
                              {QStringLiteral("name"), name.text().trimmed()},
                              {QStringLiteral("role"), role.currentText()}},
-                 [this](bool ok, const QJsonObject &, const QString &error) {
-        m_notesStatus->setText(ok ? QStringLiteral("Note shared.")
-                                  : QStringLiteral("Share failed: %1").arg(error));
+                 [this, cloudId](bool ok, const QJsonObject &payload,
+                                 const QString &error) {
+        if (!ok) {
+            m_notesStatus->setText(
+                QStringLiteral("Share failed: %1").arg(error));
+            return;
+        }
+        // The sharing endpoint returns the complete ACL, so use it to redraw
+        // the sidebar immediately instead of leaving its "Shared with" line
+        // stale until a later full refresh.
+        const QJsonArray shares = payload.value(QStringLiteral("shares")).toArray();
+        m_selectedNote.insert(QStringLiteral("shares"), shares);
+        for (int i = 0; i < m_cloudNotes.size(); ++i) {
+            QJsonObject cloud = m_cloudNotes.at(i).toObject();
+            if (cloud.value(QStringLiteral("id")).toString() != cloudId)
+                continue;
+            cloud.insert(QStringLiteral("shares"), shares);
+            m_cloudNotes.replace(i, cloud);
+            break;
+        }
+        renderNotesList(m_selectedNote.value(QStringLiteral("id")).toString());
+        m_notesStatus->setText(QStringLiteral("Note shared."));
     });
 }
 

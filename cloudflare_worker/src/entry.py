@@ -9998,6 +9998,31 @@ class _NotesRuntime(_WorldCommunityRuntime):
         return bool(await _repository_access_context(
             self.env, self.request, owner, repo, viewer=actor))
 
+    async def viewer(self, note_id):
+        """Blind per-note reader key behind a published note's view count.
+
+        Same discipline as the World visitor counter: only Cloudflare's edge
+        header is trusted, the user agent is reduced to a category, and
+        neither survives the request. What reaches D1 is an HMAC that cannot
+        be reversed and — because the note id is inside the digest — cannot
+        be correlated across notes either.
+        """
+        try:
+            headers = self.request.headers
+            address = world_visitor_metrics.canonical_edge_address(
+                headers.get("cf-connecting-ip") or "")
+            agent = str(headers.get("user-agent") or "")[:2048]
+        except Exception:
+            return ""
+        if not address:
+            # A non-edge request cannot be deduplicated; skip it rather than
+            # collapsing every address-less reader into one counted visitor.
+            return ""
+        digest = await blind_index(self.env, "note-view-v1\n%s\n%s\n%s" % (
+            str(note_id), address, world_visitor_metrics
+            .generalized_user_agent(agent)))
+        return str(digest)[:64]
+
     async def d1_all(self, sql, *args):
         return await d1_all(self.env, sql, *args)
 
