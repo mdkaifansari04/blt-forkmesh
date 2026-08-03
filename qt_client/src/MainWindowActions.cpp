@@ -543,7 +543,7 @@ void MainWindow::scanActionSpool()
                 // MainWindow::syncRepository/onPeerMirrorUpdated). A push that
                 // lands directly on this served bare mirror never goes through
                 // syncRepository, so without this, peers would only notice at
-                // their next one-minute auto-sync tick instead of
+                // their next safety-sync tick instead of
                 // converging in seconds.
                 if (!r.previewOnly && m_backend)
                     m_backend->notifyMirrorUpdated(

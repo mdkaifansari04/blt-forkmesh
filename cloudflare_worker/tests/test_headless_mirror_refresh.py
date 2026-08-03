@@ -312,7 +312,7 @@ raise SystemExit(2)
     }
 
 
-def test_refresh_renders_one_archive_for_all_aliases_and_check_is_dry(
+def test_refresh_renders_one_plaintext_mirror_for_all_aliases_and_check_is_dry(
     installation,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -336,19 +336,15 @@ def test_refresh_renders_one_archive_for_all_aliases_and_check_is_dry(
     assert {
         item["releaseStore"] for item in repositories
     } == {str(installation["release_store"])}
-    archives = {
-        json.dumps(item["encryptedArchive"], sort_keys=True)
-        for item in repositories
+    assert {item["gitDir"] for item in repositories} == {
+        str(installation["bare"])
     }
+    assert all("encryptedArchive" not in item for item in repositories)
     refs = {
         item["integrity"]["expectedRefsSha256"] for item in repositories
     }
-    assert len(archives) == 1
     assert len(refs) == 1
-    archive_path = Path(repositories[0]["encryptedArchive"]["ciphertextPath"])
-    assert archive_path.parent == installation["archive"]
-    assert archive_path.name.startswith("archive-")
-    assert stat.S_IMODE(archive_path.stat().st_mode) == 0o600
+    assert not list(installation["archive"].glob("archive-*.age"))
 
     before_config = gateway_path.read_bytes()
     before_archives = {
@@ -385,15 +381,15 @@ def test_refresh_renders_one_archive_for_all_aliases_and_check_is_dry(
     assert installation["age_secret"] not in gateway_path.read_text()
 
 
-def test_refresh_reuses_unchanged_generation_and_prunes_superseded_archives(
+def test_refresh_never_seals_and_prunes_legacy_public_archives(
     installation,
     monkeypatch: pytest.MonkeyPatch,
 ):
     config = installation["config"]
-    refresh_tool.refresh(config)
     archive_directory = installation["archive"]
-    first = tuple(archive_directory.glob("archive-*.age"))
-    assert len(first) == 1
+    legacy = archive_directory / ("archive-" + "a" * 64 + ".age")
+    legacy.write_bytes(b"legacy public ciphertext")
+    legacy.chmod(0o600)
 
     real_helper_call = refresh_tool._helper_call
 
@@ -404,7 +400,7 @@ def test_refresh_reuses_unchanged_generation_and_prunes_superseded_archives(
 
     monkeypatch.setattr(refresh_tool, "_helper_call", forbid_seal)
     assert refresh_tool.refresh(config)["event"] == "refresh_complete"
-    assert tuple(archive_directory.glob("archive-*.age")) == first
+    assert tuple(archive_directory.glob("archive-*.age")) == ()
 
     monkeypatch.setattr(refresh_tool, "_helper_call", real_helper_call)
     (installation["work"] / "README.md").write_text(
@@ -414,9 +410,7 @@ def test_refresh_reuses_unchanged_generation_and_prunes_superseded_archives(
     _run(["git", "commit", "-m", "bounded generation"], installation["work"])
     _run(["git", "push", "mirror", "main"], installation["work"])
     refresh_tool.refresh(config)
-    second = tuple(archive_directory.glob("archive-*.age"))
-    assert len(second) == 1
-    assert second != first
+    assert tuple(archive_directory.glob("archive-*.age")) == ()
 
 
 def test_hosted_repository_sidecar_adds_direct_integrity_pinned_repository(
@@ -528,11 +522,6 @@ def test_failed_staged_gateway_validation_preserves_last_good_pair(
     config = installation["config"]
     refresh_tool.refresh(config)
     old_config = installation["gateway_config"].read_bytes()
-    old_rendered = json.loads(old_config)
-    old_archive = Path(
-        old_rendered["repositories"][0]["encryptedArchive"]["ciphertextPath"]
-    )
-    old_ciphertext = old_archive.read_bytes()
 
     (installation["work"] / "README.md").write_text(
         "headless refresh changed\n", encoding="utf-8"
@@ -548,7 +537,6 @@ def test_failed_staged_gateway_validation_preserves_last_good_pair(
     with pytest.raises(refresh_tool.RefreshError, match="gateway validation"):
         refresh_tool.refresh(config)
     assert installation["gateway_config"].read_bytes() == old_config
-    assert old_archive.read_bytes() == old_ciphertext
 
 
 def test_catalog_host_telemetry_config_is_explicit_and_boolean(installation):
@@ -1341,7 +1329,7 @@ def test_renew_fails_closed_when_source_refs_changed(installation):
 
     with pytest.raises(
         refresh_tool.RefreshError,
-        match="active archive does not match the exact source refs",
+        match="active mirror does not match the exact source refs",
     ):
         refresh_tool.renew(config, post_json=lambda *_args: pytest.fail(
             "renew must not publish changed refs"))
@@ -1432,15 +1420,19 @@ def test_release_store_is_optional_for_existing_refresh_configs(
     )
 
 
-def test_git_fsck_failure_does_not_create_active_state_or_leak_logs(
+def test_git_fsck_failure_is_caught_by_explicit_check_without_leaking_logs(
     installation,
     capsys: pytest.CaptureFixture[str],
 ):
     corrupt = installation["bare"] / "objects" / "aa" / ("a" * 38)
     corrupt.parent.mkdir(exist_ok=True)
     corrupt.write_bytes(b"not a git object")
-    result = refresh_tool.main(
+    assert refresh_tool.main(
         ["--config", str(installation["config_path"]), "refresh"]
+    ) == 0
+    capsys.readouterr()
+    result = refresh_tool.main(
+        ["--config", str(installation["config_path"]), "check"]
     )
     captured = capsys.readouterr()
     assert result == 2
@@ -1450,5 +1442,5 @@ def test_git_fsck_failure_does_not_create_active_state_or_leak_logs(
     assert "mirror-two" not in captured.err
     assert "forkmesh.git" not in captured.err
     assert installation["age_secret"] not in captured.err
-    assert not installation["gateway_config"].exists()
+    assert installation["gateway_config"].exists()
     assert not list(installation["archive"].glob("archive-*.age"))
