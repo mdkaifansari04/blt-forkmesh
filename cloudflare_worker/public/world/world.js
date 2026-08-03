@@ -11564,6 +11564,15 @@ class ForkMeshWorld extends HTMLElement {
         );
         return;
       }
+      const notificationOpen = event.target.closest(
+        "[data-world-notification-open]",
+      );
+      if (notificationOpen && !event.target.closest("a, button")) {
+        this.openWorldNotification(
+          notificationOpen.dataset.worldNotificationOpen,
+        );
+        return;
+      }
       if (event.target.closest("[data-world-admin-errors-refresh]")) {
         void this.refreshAdminErrorRows();
         return;
@@ -12043,6 +12052,18 @@ class ForkMeshWorld extends HTMLElement {
 
     this.bindDetailResize();
     this.bindSettingsResize();
+
+    this.addEventListener("keydown", (event) => {
+      if (event.code !== "Enter" && event.code !== "Space") return;
+      const notificationOpen = event.target.closest?.(
+        "[data-world-notification-open]",
+      );
+      if (!notificationOpen) return;
+      event.preventDefault();
+      this.openWorldNotification(
+        notificationOpen.dataset.worldNotificationOpen,
+      );
+    });
 
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
@@ -18039,7 +18060,11 @@ class ForkMeshWorld extends HTMLElement {
                             : "✦";
                       return `<li class="world-activity-row world-notification-row" data-tone="${tone}" data-unread="${String(
                         item.unread,
-                      )}">
+                      )}"${
+                        item.href
+                          ? ` data-world-notification-open="${escapeHTML(item.href)}" tabindex="0" role="link" aria-label="Open ${escapeHTML(item.title)}"`
+                          : ""
+                      }>
                         <span class="world-notification-kind" data-tone="${tone}" title="${escapeHTML(item.kind || "Update")}"><i aria-hidden="true">${icon}</i>${escapeHTML(item.kind || "Update")}</span>
                         <strong title="${escapeHTML(item.title)}">${escapeHTML(item.title)}</strong>
                         <span title="${escapeHTML(item.body || "—")}">${escapeHTML(item.body || "—")}</span>
@@ -18335,6 +18360,39 @@ class ForkMeshWorld extends HTMLElement {
     this.syncRecentIssueAssignments();
     this.announceWorldNotifications();
     if (render || this.isEventsPanelOpen()) this.refreshOpenEventsPanel();
+  }
+
+  openWorldNotification(href) {
+    const target = safeNotificationURL(href);
+    if (!target) return;
+    const item = this.notifications.find(
+      (entry) => entry.href === target && !entry.readAt,
+    );
+    if (item) {
+      item.readAt = Date.now();
+      this.notificationUnread = this.notifications.filter(
+        (entry) => !entry.readAt,
+      ).length;
+      this.updateNotificationBadge();
+      void this.markWorldNotificationRead(item.id);
+    }
+    location.href = target;
+  }
+
+  async markWorldNotificationRead(notificationId) {
+    const session = readSession();
+    const id = String(notificationId || "").trim();
+    if (!session?.sessionToken || !session?.nodeName || !id) return;
+    try {
+      await this.postJSON("/api/notifications", {
+        node: String(session.nodeName).toLowerCase(),
+        ids: [id],
+      });
+    } catch (_) {
+      // Best-effort: the local unread badge already updated, and the next
+      // full refresh will reconcile with the server if this call was lost
+      // to the navigation triggered right after it.
+    }
   }
 
   async markWorldNotificationsRead() {
