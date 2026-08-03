@@ -14,15 +14,16 @@
 
 // Process-wide "something is working" bus (adhoc #421).
 //
-// The strip between the live log and the agent prompt shows one spinner row per
-// *kind* of background work. Most of that work is started by free functions
+// The bottom status strip shows one rotating icon per *kind* of background
+// work. Most of that work is started by free functions
 // (waitForGit), by the network transport, or off the GUI thread — none of which
 // hold a MainWindow pointer — so instead of threading a back pointer through
 // every call site, callers announce a one-word kind here and MainWindow installs
 // a single listener that marshals the notification onto the GUI thread.
 //
 // Tickets are refcounted per kind: begin() hands one out, end() retires it, and
-// the strip keeps a kind visible while at least one of its tickets is open.
+// the status icon's segmented ring carries that count while at least one ticket
+// is open.
 // Nothing is drawn for work that finishes quickly (see MainWindow's sweep), so
 // announcing even the hottest git read here stays free in the common case.
 namespace forkmesh {
@@ -119,7 +120,7 @@ private:
     }
 };
 
-// Work that retires inside this window never gets a row in the strip. This
+// Work that retires inside this window never gets an icon in the strip. This
 // delay is presentation-only; execution metadata, not elapsed time, determines
 // whether the work was actually backgrounded.
 constexpr qint64 kBackgroundShowAfterMs = 200;

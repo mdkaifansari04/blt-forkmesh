@@ -120,6 +120,7 @@ class AgentDotMatrix;
 class NodeDotMatrix;
 class RelaySpeedDot;
 class ActionRunStrip;
+class BackgroundTaskChip;
 class ElidingStatusLabel;
 }
 using forkmesh::ui::ActionRunStrip;
@@ -1521,6 +1522,15 @@ private:
     void createNote();
     void saveNote();
     void deleteNote();
+    // Publishing is a property of a note that lives in the cloud, so the
+    // checkbox follows the storage combo the user is *currently* choosing —
+    // not the mode the note happened to be saved under. Also repaints the
+    // public link so a published note always shows where to read it.
+    void updateNotePublishState();
+    // The cloud copy of a locally-mirrored note, matched on `cloudId`, or an
+    // empty object. Supplies the status/shares/views the sidebar labels rows
+    // with without a per-row fetch.
+    QJsonObject cloudNoteFor(const QJsonObject &note) const;
     void shareNote();
     void attachNoteConversation();
     void showNoteVersions();
@@ -5082,6 +5092,7 @@ private:
     MarkdownEditor *m_noteEditor = nullptr;
     QComboBox *m_noteStorageMode = nullptr;
     QCheckBox *m_notePublic = nullptr;
+    QLabel *m_notePublicLink = nullptr;
     QLabel *m_notesStatus = nullptr;
     QJsonArray m_localNotes;
     QJsonArray m_cloudNotes;
@@ -5232,21 +5243,16 @@ private:
     QWidget *m_footerDock = nullptr;
     QWidget *m_footerLeftRegion = nullptr;
     bool m_gitPromptOverlayVisible = false;
-    // Background-activity strip, wedged between the live log and the prompt. One
-    // row per open *kind* of work, not per ticket: dozens of concurrent git reads
-    // collapse into a single "git ×12" line, so the strip stays readable and the
-    // widget churn stays flat no matter how busy the app gets.
-    QFrame *m_backgroundQueue = nullptr;
-    QLabel *m_backgroundQueueTitle = nullptr;
-    // Dimmed "idle" placeholder shown in place of the rows while nothing is in
-    // flight — the panel is permanent, so its body is never empty (adhoc #419).
-    QLabel *m_backgroundQueueIdleLabel = nullptr;
-    QWidget *m_backgroundQueueRowsHost = nullptr;
-    QVBoxLayout *m_backgroundQueueRowsLayout = nullptr;
-    QScrollArea *m_backgroundQueueScroll = nullptr;
-    QHash<QString, QWidget *> m_backgroundTaskRows;      // word -> row
-    QHash<QString, QLabel *> m_backgroundTaskSpinners;   // word -> spinner glyph
-    QHash<QString, QLabel *> m_backgroundTaskLabels;     // word -> "git ×3"
+    // Background activity, shown as small rotating icons in the bottom status
+    // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
+    // live log and the prompt). One chip per open *kind* of work, not per ticket:
+    // dozens of concurrent git reads collapse into a single git chip whose ring
+    // carries the count, so the strip stays readable and the widget churn stays
+    // flat no matter how busy the app gets.
+    QWidget *m_statusBackgroundHost = nullptr;
+    QHBoxLayout *m_statusBackgroundLayout = nullptr;
+    QHash<QString, forkmesh::ui::BackgroundTaskChip *>
+        m_backgroundTaskChips;                           // word -> chip
     QHash<QString, int> m_backgroundTaskCounts;          // word -> open tickets
     QHash<QString, qint64> m_backgroundTaskSince;        // word -> first ticket ms
     QHash<QString, QString> m_backgroundTaskDetails;     // word -> newest note
@@ -5264,8 +5270,7 @@ private:
     QHash<QString, BackgroundOutcomeTally> m_backgroundTaskDone; // word -> ✓
     QHash<QString, BackgroundOutcomeTally> m_backgroundTaskUiBlocking; // word -> ✕
     QTimer *m_backgroundTaskSpinTimer = nullptr;
-    int m_backgroundTaskRowHeight = 18;
-    int m_backgroundTaskSpinFrame = 0;
+    qreal m_backgroundTaskSpinAngle = 0.0; // shared ring rotation, degrees
     int m_backgroundTaskIdleTicks = 0;
     // Set while a root-launched "Update, rebuild & restart" is running so build
     // steps and the relaunch run as this non-root user. Empty = run in-process.
