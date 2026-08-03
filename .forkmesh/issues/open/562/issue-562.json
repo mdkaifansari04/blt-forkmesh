@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "1zSwKZf-ekiIkxh5VUPd_q7t3SHRQ-LUT1fjdoahROU",
+    "authorName": "venkata",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785452227,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "1zSwKZf-ekiIkxh5VUPd_q7t3SHRQ-LUT1fjdoahROU",
+            "authorName": "venkata",
+            "body": "When adding a new issue from the desktop app, the app refreshes, erasing all the data and moves to `issues` screen rather than staying on `new issue` screen",
+            "id": "open-web-1785452227",
+            "sig": "voA64Mc90wFkRJGXe3V1n4HTlm7HpmRdomsCKpETv-cjwRVQVByCcXm5AahlJ7kQMa80CWvhSJUxh3RCyNi7AA",
+            "title": "Desktop client keep refreshing when adding a new issue",
+            "ts": 1785452227,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 562,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Desktop client keep refreshing when adding a new issue",
+    "updatedAt": 1785452227,
+    "votes": 0
+}
