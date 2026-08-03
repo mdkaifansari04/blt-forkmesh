@@ -8190,6 +8190,7 @@ private:
     // Registered account/node identity for this session.
     bool m_accountAuthenticated = false;
     QString m_accountName;
+    QString m_accountEmail;
     // Session token minted by /api/accounts/login, used to authenticate
     // profile writes (e.g. persisting the chosen avatar to the account record
     // so the web dashboard shows the same picture the desktop app does).

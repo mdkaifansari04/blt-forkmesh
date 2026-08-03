@@ -2370,26 +2370,34 @@ void MainWindow::refreshQuickAddAgentModelSelector()
               QStringLiteral("manual"), QString(),
               QStringLiteral("File an issue from this prompt instead of "
                              "starting an agent"));
+    const QString chosenAccount = topBarUserName().trimmed();
+    const QString chosenEmail = m_accountEmail.trimmed();
+    const QString chosenIdentity =
+        chosenAccount.isEmpty()
+            ? QString()
+            : chosenEmail.isEmpty()
+                  ? chosenAccount
+                  : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
     for (const Choice &choice : models) {
         const QString statusSummary =
             quickAddModelChoiceSummary(m_agentSessions, choice.provider,
                                       choice.model);
         const QString usageCountdown =
             quickAddUsageLimitCountdownText(choice.provider);
-        QString rowLabel = choice.label;
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
+        if (!chosenIdentity.isEmpty())
+            toolTip = QStringLiteral("Account: %1\n%2").arg(chosenIdentity, toolTip);
         if (!statusSummary.isEmpty()) {
-            rowLabel += QStringLiteral(" · %1").arg(statusSummary);
             toolTip +=
                 QStringLiteral("\nLast run: %1").arg(statusSummary);
         }
         if (!usageCountdown.isEmpty()) {
-            rowLabel += QStringLiteral(" · %1").arg(usageCountdown);
             toolTip +=
                 QStringLiteral("\nLimit status: %1").arg(usageCountdown);
         }
-        addChoice(choice.icon, rowLabel, choice.provider, choice.model, toolTip);
+        addChoice(choice.icon, choice.label, choice.provider, choice.model,
+                  toolTip);
     }
 
     // These API agents do not expose a per-run model chooser in this composer,
@@ -7310,6 +7318,13 @@ void MainWindow::updateUserSwitcher()
     }
     const QString user = topBarUserName();
     if (m_userAvatarNavButton) {
+        const QString userEmail = m_accountEmail.trimmed();
+        const QString identityLine =
+            user.isEmpty()
+                ? QString()
+                : userEmail.isEmpty()
+                      ? user
+                      : QStringLiteral("%1 (%2)").arg(user, userEmail);
         m_userAvatarNavButton->setToolTip(
             chatIdentityIsGuest()
                 ? QStringLiteral("Chatting as %1 — pick a username in "
@@ -7317,7 +7332,7 @@ void MainWindow::updateUserSwitcher()
                       .arg(guestChatName())
                 : user.isEmpty()
                       ? QStringLiteral("Your user account")
-                      : QStringLiteral("%1 user account").arg(user));
+                      : QStringLiteral("%1 user account").arg(identityLine));
     }
     updateUserAvatarButton();
     updateChatIdentity();

@@ -1390,6 +1390,7 @@ void MainWindow::startSession()
         AccountCapability::normalizedAccount(m_accountName) != name) {
         setDesktopCapability(m_accountName, false);
         m_accountAuthenticated = false;
+        m_accountEmail.clear();
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
@@ -3074,11 +3075,13 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         return true;
     if (!isValidNodeName(accountName))
         return false;
+    m_accountEmail.clear();
     if (m_accountAuthenticated &&
         AccountCapability::normalizedAccount(m_accountName) !=
             AccountCapability::normalizedAccount(accountName)) {
         setDesktopCapability(m_accountName, false);
         m_accountAuthenticated = false;
+        m_accountEmail.clear();
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
@@ -3091,6 +3094,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         lookup.value("pubkey").toString() == m_profileIdentity.publicKey()) {
         m_accountAuthenticated = true;
         m_accountName = accountName;
+        m_accountEmail = lookup.value("email").toString().trimmed();
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
         setDesktopCapability(accountName, true);
@@ -3123,6 +3127,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
     if (lookup.value("exists").toBool() &&
         lookup.value("status").toString() == "active") {
         m_accountSolanaVerified = true;
+        m_accountEmail = lookup.value("email").toString().trimmed();
         setDesktopCapability(accountName, false);
     }
     // Trust a previously authenticated marker whenever the relay gave no
@@ -3142,6 +3147,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
+        m_accountEmail.clear();
         refreshSettingsEmailVerifiedBadge();
         return true;
     }
@@ -3179,6 +3185,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     auto activateSession = [&](const QString &owner, bool emailVerified) {
         m_accountAuthenticated = true;
         m_accountName = accountName;
+        m_accountEmail.clear();
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
         setDesktopCapability(accountName, true);
@@ -3316,6 +3323,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
 
     m_accountAuthenticated = true;
     m_accountName = accountName;
+    m_accountEmail = fresp.value("email").toString().trimmed();
     m_accountTier = QStringLiteral("active");
     m_accountSolanaVerified = true; // registered = active network member
     setDesktopCapability(accountName, true);
@@ -3431,6 +3439,7 @@ bool MainWindow::verifyTotpLogin(const QString &email,
     auto acceptLogin = [&](const QJsonObject &payload, bool ownsDesktopKey) {
         m_accountAuthenticated = true;
         m_accountName = payload.value("nodeName").toString(accountName);
+        m_accountEmail = payload.value("email").toString().trimmed();
         m_accountTier = QStringLiteral("active");
         // True means this local Qt identity is the account's registered desktop
         // key and can publish/host/sign owner-only actions. False is a safe
@@ -3743,6 +3752,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
         }
         m_accountAuthenticated = true;
         m_accountName = name;
+        m_accountEmail.clear();
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true; // joined = active network member
         setDesktopCapability(name, true);
