@@ -5955,18 +5955,15 @@ private:
     // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
     QPushButton *m_footerDiagnostics = nullptr;
     // Live one-per-second moving sparklines for CPU, host memory, swap and disk
-    // usage (adhoc #17), shown in the footer beside the diagnostics. Held as
-    // QWidget* and poked via static_cast since the compact chart widgets live
+    // usage (adhoc #17), combined into four quadrants on the chrome line. Held
+    // as QWidget* and poked via static_cast since the compact chart widget lives
     // in MainWindowInternal.h.
-    QWidget *m_cpuChart = nullptr;
+    QWidget *m_resourceChart = nullptr;
     QWidget *m_repoSizeChart = nullptr;
     QWidget *m_repoLinesChart = nullptr;
     QWidget *m_repoFilesChart = nullptr;
     QToolButton *m_repoRatchetButton = nullptr;
     qint64 m_repoStatsLastRefreshMs = 0;
-    QWidget *m_memChart = nullptr;
-    QWidget *m_swapChart = nullptr;
-    QWidget *m_diskChart = nullptr;
     StallWatchdog *m_stallWatchdog = nullptr;
     QTimer *m_diagTimer = nullptr;
     int m_stallCount = 0;

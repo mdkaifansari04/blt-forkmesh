@@ -187,6 +187,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
 
 #ifndef Q_OS_WIN
 #include <csignal>
@@ -1098,8 +1099,8 @@ private:
 // (adhoc #17). Kept header-only (no Q_OBJECT) like the other Internal.h mini-
 // charts; the click hook is a std::function so a left-click can still open
 // the stall dialog.
-// The side of one resource square. The window chrome's live CPU/MEM/DISK
-// squares and the repo mode row's SIZE/LOC/FILES day trends share it (adhoc
+// The side of one compact resource chart. The window chrome's live resource
+// quadrants and the repo mode row's SIZE/LOC/FILES day trends share it (adhoc
 // #421) so both rows of cards are the same size.
 constexpr int kResourceSparklineSide = 34;
 
@@ -1271,6 +1272,193 @@ private:
     QVector<double> m_history;
     int m_maxPoints = 60;
     bool m_loading = false;
+};
+
+// The chrome combines the four live resource traces into one compact control:
+// CPU and memory on the top row, swap and disk on the bottom.  Each quadrant
+// retains its own hover text and click action, but leaves the chart itself free
+// of labels and values so the traces read as one small visual indicator.
+class ResourceQuadrantSparkline : public QWidget
+{
+public:
+    enum Resource {
+        Cpu = 0,
+        Memory,
+        Swap,
+        Disk,
+        ResourceCount
+    };
+
+    explicit ResourceQuadrantSparkline(QWidget *parent = nullptr,
+                                       int side = kResourceSparklineSide,
+                                       int maxPoints = 60)
+        : QWidget(parent), m_maxPoints(qMax(2, maxPoints))
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedSize(side, side);
+        setCursor(Qt::PointingHandCursor);
+        setMouseTracking(true);
+    }
+
+    void addSample(Resource resource, double value, double maxValue)
+    {
+        Sample &sample = m_samples[resource];
+        sample.max = maxValue > 0 ? maxValue : 100.0;
+        sample.history.append(value);
+        while (sample.history.size() > m_maxPoints)
+            sample.history.removeFirst();
+        update();
+    }
+
+    void setResourceToolTip(Resource resource, const QString &toolTip)
+    {
+        m_samples[resource].toolTip = toolTip;
+    }
+
+    void setClickHandler(Resource resource, std::function<void()> handler)
+    {
+        m_samples[resource].onClicked = std::move(handler);
+    }
+
+protected:
+    bool event(QEvent *event) override
+    {
+        if (event->type() == QEvent::ToolTip) {
+            const auto *helpEvent = static_cast<QHelpEvent *>(event);
+            const int resource = resourceAt(helpEvent->pos());
+            if (resource >= 0 && !m_samples[resource].toolTip.isEmpty())
+                QToolTip::showText(helpEvent->globalPos(),
+                                   m_samples[resource].toolTip, this);
+            else
+                QToolTip::hideText();
+            return true;
+        }
+        return QWidget::event(event);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        const int resource = resourceAt(event->pos());
+        if (event->button() == Qt::LeftButton && resource >= 0 &&
+            m_samples[resource].onClicked) {
+            m_samples[resource].onClicked();
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const int resource = resourceAt(event->pos());
+        if (resource != m_hoveredResource && QToolTip::isVisible()) {
+            if (resource >= 0 && !m_samples[resource].toolTip.isEmpty())
+                QToolTip::showText(mapToGlobal(event->pos()),
+                                   m_samples[resource].toolTip, this);
+            else
+                QToolTip::hideText();
+        }
+        m_hoveredResource = resource;
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        m_hoveredResource = -1;
+        QWidget::leaveEvent(event);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        for (int resource = 0; resource < ResourceCount; ++resource)
+            paintQuadrant(p, resource, quadrantRect(resource));
+    }
+
+private:
+    struct Sample {
+        QVector<double> history;
+        double max = 100.0;
+        QString toolTip;
+        std::function<void()> onClicked;
+    };
+
+    static QColor gaugeColor(double pct)
+    {
+        if (pct >= 90)
+            return QColor("#f85149"); // red: pegged
+        if (pct >= 70)
+            return QColor("#d29922"); // amber: getting busy
+        return QColor("#3fb950");     // green: light load
+    }
+
+    QRectF quadrantRect(int resource) const
+    {
+        constexpr qreal gap = 1.0;
+        const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        const qreal cellWidth = (box.width() - gap) / 2.0;
+        const qreal cellHeight = (box.height() - gap) / 2.0;
+        const int row = resource / 2;
+        const int column = resource % 2;
+        return QRectF(box.left() + column * (cellWidth + gap),
+                      box.top() + row * (cellHeight + gap), cellWidth, cellHeight);
+    }
+
+    int resourceAt(const QPoint &position) const
+    {
+        for (int resource = 0; resource < ResourceCount; ++resource) {
+            if (quadrantRect(resource).contains(position))
+                return resource;
+        }
+        return -1;
+    }
+
+    void paintQuadrant(QPainter &p, int resource, const QRectF &box) const
+    {
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(box, 2, 2);
+        QColor card = palette().color(QPalette::WindowText);
+        card.setAlpha(28);
+        p.setPen(Qt::NoPen);
+        p.setBrush(card);
+        p.drawPath(cardPath);
+
+        const Sample &sample = m_samples[resource];
+        const QRectF area = box.adjusted(1.0, 1.0, -1.0, -1.0);
+        if (area.height() < 2 || sample.history.size() < 2)
+            return;
+
+        p.save();
+        p.setClipPath(cardPath);
+        const QColor line = gaugeColor(sample.history.last() / sample.max * 100.0);
+        const double step = area.width() / double(m_maxPoints - 1);
+        const int n = sample.history.size();
+        QPolygonF curve;
+        for (int i = 0; i < n; ++i) {
+            const double x = area.right() - (n - 1 - i) * step;
+            const double norm = qBound(0.0, sample.history.at(i) / sample.max, 1.0);
+            curve << QPointF(x, area.bottom() - norm * area.height());
+        }
+        QPolygonF fill = curve;
+        fill << QPointF(curve.last().x(), area.bottom())
+             << QPointF(curve.first().x(), area.bottom());
+        QColor under = line;
+        under.setAlpha(70);
+        p.setBrush(under);
+        p.setPen(Qt::NoPen);
+        p.drawPolygon(fill);
+        QPen pen(line);
+        pen.setWidthF(1.0);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPolyline(curve);
+        p.restore();
+    }
+
+    Sample m_samples[ResourceCount];
+    int m_maxPoints = 60;
+    int m_hoveredResource = -1;
 };
 
 // A row-sized memory trend square for one process in the "High memory usage"

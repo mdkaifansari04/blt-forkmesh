@@ -1,4 +1,5 @@
 #include "../src/MainWindow.h"
+#include "../src/MainWindowInternal.h"
 #include "../src/ClaudeTranscriptView.h"
 #include "../src/PlatformLogFilter.h"
 #include "ForkMeshVersion.h"
@@ -25,6 +26,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QFileInfo>
+#include <QHelpEvent>
 #include <QImage>
 #include <QPointer>
 #include <QPlainTextEdit>
@@ -34,6 +36,7 @@
 #include <QSet>
 #include <QThread>
 #include <QTimer>
+#include <QToolTip>
 #include <QPushButton>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -60,10 +63,6 @@ bool isTemporaryChatGuest(const MemberInfo &m);
 QString agentModelLabel(const QString &model);
 bool agentModelIsClaudeStyle(const QString &model);
 bool agentModelMatchesProvider(const QString &provider, const QString &model);
-struct MirrorBranchTip {
-    QString branch;
-    QString commit;
-};
 MirrorBranchTip mirrorPrimaryBranchTip(const QString &mirrorPath,
                                        const QString &workTree);
 QString gitTimeoutError(QProcess &process, int waitedMs);
@@ -410,6 +409,57 @@ int main(int argc, char *argv[])
     if (appDataDir.exists() && !appDataDir.removeRecursively()) {
         qCritical("FAIL: could not clear temporary app data directory");
         return 1;
+    }
+
+    // The chrome compresses the four resource histories into one chart while
+    // preserving the distinct hover and click affordances of each quadrant.
+    {
+        using ResourceChart = forkmesh::ui::ResourceQuadrantSparkline;
+        ResourceChart chart;
+        chart.setResourceToolTip(ResourceChart::Cpu, QStringLiteral("CPU details"));
+        chart.setResourceToolTip(ResourceChart::Memory, QStringLiteral("Memory details"));
+        chart.setResourceToolTip(ResourceChart::Swap, QStringLiteral("Swap details"));
+        chart.setResourceToolTip(ResourceChart::Disk, QStringLiteral("Disk details"));
+        for (int resource = 0; resource < ResourceChart::ResourceCount; ++resource) {
+            chart.addSample(static_cast<ResourceChart::Resource>(resource),
+                            20.0 + resource * 20.0, 100.0);
+            chart.addSample(static_cast<ResourceChart::Resource>(resource),
+                            25.0 + resource * 20.0, 100.0);
+        }
+
+        int diagnosticsClicks = 0;
+        int memoryClicks = 0;
+        for (ResourceChart::Resource resource : {ResourceChart::Cpu, ResourceChart::Swap,
+                                                 ResourceChart::Disk}) {
+            chart.setClickHandler(resource, [&diagnosticsClicks] { ++diagnosticsClicks; });
+        }
+        chart.setClickHandler(ResourceChart::Memory, [&memoryClicks] { ++memoryClicks; });
+        chart.show();
+        QApplication::processEvents();
+
+        const auto click = [&chart](const QPoint &position) {
+            const QPointF global = chart.mapToGlobal(position);
+            QMouseEvent press(QEvent::MouseButtonPress, QPointF(position), global,
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(&chart, &press);
+        };
+        click(QPoint(8, 8));
+        click(QPoint(25, 8));
+        click(QPoint(8, 25));
+        click(QPoint(25, 25));
+        check(diagnosticsClicks == 3 && memoryClicks == 1,
+              QStringLiteral("resource chart keeps the per-quadrant click actions"));
+
+        const auto hover = [&chart](const QPoint &position, const QString &expected) {
+            QHelpEvent event(QEvent::ToolTip, position, chart.mapToGlobal(position));
+            QApplication::sendEvent(&chart, &event);
+            return QToolTip::text() == expected;
+        };
+        check(hover(QPoint(8, 8), QStringLiteral("CPU details")) &&
+                  hover(QPoint(25, 8), QStringLiteral("Memory details")) &&
+                  hover(QPoint(8, 25), QStringLiteral("Swap details")) &&
+                  hover(QPoint(25, 25), QStringLiteral("Disk details")),
+              QStringLiteral("resource chart keeps the per-quadrant hover details"));
     }
 
     // issue #300: the headless node runs on the offscreen QPA plugin, whose
