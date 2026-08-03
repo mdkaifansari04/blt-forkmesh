@@ -23,6 +23,7 @@
 #include "KebabHeaderView.h"
 
 #include <QDoubleSpinBox>
+#include <QSpinBox>
 
 using namespace forkmesh::ui;
 
@@ -1408,6 +1409,34 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoSyncOnMergeSetting, enabled);
     });
 
+    auto *mirrorSyncLabel = new QLabel("MIRROR SYNC");
+    mirrorSyncLabel->setObjectName("sectionLabel");
+    auto *mirrorSyncHint = new QLabel(
+        QStringLiteral(
+            "How often to poll repo mirrors for source updates when a direct push"
+            " notification is not received."));
+    mirrorSyncHint->setObjectName("statusLine");
+    mirrorSyncHint->setWordWrap(true);
+    auto *mirrorSyncRow = new QHBoxLayout;
+    mirrorSyncRow->setContentsMargins(0, 0, 0, 0);
+    auto *mirrorSyncMinutes = new QSpinBox;
+    mirrorSyncMinutes->setRange(kMirrorSyncIntervalMinMinutes,
+                               kMirrorSyncIntervalMaxMinutes);
+    mirrorSyncMinutes->setValue(mirrorSyncIntervalMinutes());
+    mirrorSyncMinutes->setSuffix(" minutes");
+    mirrorSyncMinutes->setToolTip(
+        QStringLiteral(
+            "Pull each mirror in the background. Longer values reduce traffic; "
+            "shorter values recover faster after offline gaps."));
+    connect(mirrorSyncMinutes, QOverload<int>::of(&QSpinBox::valueChanged),
+            this,
+            [this](int minutes) {
+                QSettings().setValue(kMirrorSyncIntervalSetting, minutes);
+                restartMirrorSyncTimer();
+            });
+    mirrorSyncRow->addWidget(mirrorSyncMinutes, 0, Qt::AlignLeft);
+    mirrorSyncRow->addStretch();
+
     // Start a repository under this node: either spin up a brand-new empty repo
     // (git init) or adopt an existing local Git folder. Both then mirror + publish
     // under the account, exactly like the import flow below.
@@ -1747,6 +1776,10 @@ QWidget *MainWindow::buildSettingsSection()
     reposCol->addSpacing(6);
     reposCol->addWidget(pullsSyncLabel);
     reposCol->addWidget(autoSyncMergeCheck);
+    reposCol->addSpacing(6);
+    reposCol->addWidget(mirrorSyncLabel);
+    reposCol->addWidget(mirrorSyncHint);
+    reposCol->addLayout(mirrorSyncRow);
     reposCol->addStretch();
     addTab(reposTab, "Repositories");
 

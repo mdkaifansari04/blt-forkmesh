@@ -4899,10 +4899,13 @@ void MainWindow::updateCommitsUnsyncedFilesPanel()
                         m_syncingRepos.contains(m_repoDetailIndex);
     m_commitsUnsyncedSyncButton->setVisible(true);
     m_commitsUnsyncedSyncButton->setEnabled(!syncing);
-    m_commitsUnsyncedSyncButton->setText(syncing
-                                              ? QStringLiteral("Syncing")
-                                              : QStringLiteral("Sync Changes %1↑")
-                                                    .arg(pendingCount));
+    m_commitsUnsyncedSyncButton->setText(
+        pendingCount > 0 ? QStringLiteral("Sync Changes %1↑").arg(pendingCount)
+                         : QStringLiteral("Sync Changes"));
+    if (syncing)
+        startButtonSpin(m_commitsUnsyncedSyncButton);
+    else
+        stopButtonSpin(m_commitsUnsyncedSyncButton);
     setOcticon(m_commitsUnsyncedSyncButton, QStringLiteral("sync"), 14);
     m_commitsUnsyncedSyncButton->setToolTip(
         QStringLiteral("Publish outgoing commits to the network mirror or push "
@@ -4981,6 +4984,7 @@ void MainWindow::updateCommitsUnsyncedFilesPanel()
             fileItem->setData(0, Qt::UserRole, entry.hash);
             fileItem->setData(0, Qt::UserRole + 1, file.path);
             fileItem->setToolTip(
+                0,
                 QString::fromUtf8("%1 \xC2\xB7 +%2 \xE2\x88\x92%3").arg(
                     file.path, QString::number(file.adds), QString::number(file.dels)));
         }
