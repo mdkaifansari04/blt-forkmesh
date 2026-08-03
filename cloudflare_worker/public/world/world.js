@@ -20288,7 +20288,6 @@ class ForkMeshWorld extends HTMLElement {
         preview?.sizes || {},
         preview || {},
       );
-      this.world.updateRepositoryRecordDesk?.({}, {});
       return;
     }
     this.world.updateRepositoryGraph?.(
@@ -20306,19 +20305,6 @@ class ForkMeshWorld extends HTMLElement {
       commit: active.commit,
       path: active.path || "",
     });
-    // The open issue box and pull-request review desk beside the portal reuse
-    // the same commit-matched records as the explorer panel; nothing here is
-    // fetched separately or invented for the scene.
-    this.world.updateRepositoryRecordDesk?.(
-      { owner: active.owner, repo: active.repo },
-      {
-        issues: Array.isArray(active.entityRecords?.issues)
-          ? active.entityRecords.issues
-          : [],
-        pulls: this.repositoryPullRecords(active),
-        expandedIssue: this.expandedRepositoryIssuePage,
-      },
-    );
   }
 
   repositoryTreeSizePreview(entries = []) {
