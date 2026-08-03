@@ -260,17 +260,20 @@ static RefreshOutcome refreshCore(const QString &checkoutPath,
         const bool fastForward =
             !have.isEmpty() && containedIn(path, have, target);
         if (!worktree.isEmpty()) {
-            // The branch is checked out somewhere; move it through its own
-            // worktree, and only when that worktree carries no local edits.
-            if (!worktreeClean(worktree))
-                continue;
+            // The branch is checked out somewhere, so move it through its own
+            // worktree. For a fast-forward, let Git perform the precise safety
+            // check: unrelated tracked changes (notably the node-generated
+            // .forkmesh/stats/repository.json) can remain in place, while Git
+            // still refuses an update that would overwrite a local edit. A
+            // forced metadata reset has no such protection, so it retains the
+            // stricter completely-clean guard.
             bool moved = false;
             if (fastForward) {
                 moved = runGit(worktree,
                                {QStringLiteral("merge"),
                                 QStringLiteral("--ff-only"), target},
                                nullptr);
-            } else if (forced.contains(branch)) {
+            } else if (forced.contains(branch) && worktreeClean(worktree)) {
                 moved = runGit(worktree,
                                {QStringLiteral("reset"), QStringLiteral("--hard"),
                                 target},
@@ -334,8 +337,8 @@ RefreshOutcome convergeSourceCheckoutFromMesh(const QString &checkoutPath,
     // The source of truth converging on submissions an online mirror merged
     // while this node was away. Strictly additive: no remote reconfiguration,
     // no branch pruning, no forced branches — every local ref moves only by
-    // fast-forward through a clean worktree, so local-only work always wins
-    // and simply supersedes the mesh on the next publish.
+    // fast-forward through its worktree, so Git preserves local edits and
+    // local-only work always wins and supersedes the mesh on the next publish.
     return refreshCore(checkoutPath, meshUrl, /*forcedBranches=*/{},
                        /*repointOrigin=*/false, /*pruneGone=*/false);
 }
