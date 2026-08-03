@@ -157,29 +157,57 @@ def test_leaderboards_have_one_square_raised_grid_without_circle_boards():
 def test_leaderboard_circle_has_a_minimal_opaque_cover_with_an_open_door():
     scene = source()
     cover = scene.split(
+        "function createOpaqueDistrictCover(", 1
+    )[1].split("function createLeaderboardOpaqueCover", 1)[0]
+    wrapper = scene.split(
         "function createLeaderboardOpaqueCover(THREE)", 1
-    )[1].split("const START_HERE_STEPS", 1)[0]
+    )[1].split("function createNodeOpaqueCover", 1)[0]
     district = scene.split(
         'leaderboardDistrict.name = "forkmesh-leaderboard-district"', 1
     )[1].split("const leaderboardBeacon", 1)[0]
     assert "const LEADERBOARD_COVER_SIDES = 8;" in scene
-    assert "const sides = LEADERBOARD_COVER_SIDES;" in cover
     assert "index === sides - 1" in cover
-    assert "LEADERBOARD_DOOR_WIDTH" in cover
-    assert "LEADERBOARD_DOOR_HEIGHT" in cover
+    assert "doorWidth" in cover
+    assert "doorHeight" in cover
     assert "new THREE.BufferGeometry()" in cover
     assert "side: THREE.FrontSide" in cover
     assert "transparent: false" in cover
     assert "opacity: 1" in cover
     assert "depthWrite: true" in cover
-    assert 'cover.name = "forkmesh-leaderboard-opaque-cover"' in cover
-    assert 'doorFrame.name = "forkmesh-leaderboard-door-frame"' in cover
-    assert "forkmesh-leaderboard-door-${" in cover
+    assert 'name: "forkmesh-leaderboard-opaque-cover"' in wrapper
+    assert 'interactiveKind: "leaderboard-cover"' in wrapper
+    assert "doorFrame.name = `${name}-door-frame`" in cover
+    assert "door.userData.closedZ" in cover
+    assert "door.userData.openZ" in cover
     assert "new THREE.PlaneGeometry(" in cover
     assert "side: THREE.DoubleSide" in cover
     assert "createLeaderboardOpaqueCover(THREE)" in district
     assert "leaderboardDistrict.add(leaderboardCover)" in district
     assert "interactive.push(leaderboardCover)" in district
+
+
+def test_nodes_have_a_closed_opaque_cover_and_hidden_interior_scene():
+    scene = source()
+    wrapper = scene.split("function createNodeOpaqueCover", 1)[1].split(
+        "function setOpaqueCoverDoorOpen", 1
+    )[0]
+    district = scene.split(
+        'nodeDistrict.name = "forkmesh-node-district"', 1
+    )[1].split("const systemCapacityPlatform", 1)[0]
+    occupancy = scene.split("function updateNodeCoverOccupancy", 1)[1].split(
+        "function updateMembersYurtOccupancy", 1
+    )[0]
+    assert 'name: "forkmesh-node-opaque-cover"' in wrapper
+    assert "cover.rotation.y = -Math.PI / 2" in wrapper
+    assert 'nodeInterior.name = "forkmesh-node-interior"' in district
+    assert "nodeInterior.visible = false" in district
+    assert "nodeInterior.add(fountainLandmark)" in district
+    assert "nodeDistrict.add(nodeInterior, nodeCover)" in district
+    assert "nodeInterior.add(cabinet)" in scene
+    assert "nodeCoverContainsWorldPoint(" in occupancy
+    assert "nodeInterior.visible = occupied" in occupancy
+    assert "nodeCover.visible = !occupied" in occupancy
+    assert "constrainNodeCover(previousHorizontalPosition)" in scene
 
 
 def test_leaderboard_contents_are_not_drawn_until_the_avatar_is_inside():
@@ -204,6 +232,20 @@ def test_leaderboard_contents_are_not_drawn_until_the_avatar_is_inside():
     assert "leaderboardInterior.visible = occupied" in occupancy
     assert "updateLeaderboardCircleOccupancy(true);" in scene
     assert "updateLeaderboardCircleOccupancy();" in scene
+
+
+def test_enclosure_entry_switches_to_an_isolated_low_triangle_scene():
+    scene = source()
+    isolation = scene.split("function syncEnclosureSceneVisibility", 1)[1].split(
+        "function compactDistrictDiagnostics", 1
+    )[0]
+    for mode in ("office", "nodes", "leaderboards", "repositories", "members"):
+        assert f'? "{mode}"' in isolation or f': "{mode}"' in isolation
+    assert "enclosureHiddenWorldRoots.set(root, root.visible)" in isolation
+    assert "root.visible = false" in isolation
+    assert "enclosureHiddenWorldRoots.forEach" in isolation
+    assert "world.userData.activeEnclosureScene = next" in isolation
+    assert "syncEnclosureSceneVisibility();" in scene
 
 
 def test_leaderboard_walls_only_allow_crossing_through_the_door():
