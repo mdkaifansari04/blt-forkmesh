@@ -5621,6 +5621,72 @@ test("@critical enhanced Town Square starts in WebGL and keeps keyboard navigati
   );
 });
 
+test("the side portal isolates the beach scene and provides a return portal", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "beach-scene-portal");
+  await waitForWorld(page);
+
+  const state = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const beach = scene.getObjectByName("forkmesh-beach-scene");
+    const entry = scene.getObjectByName("forkmesh-beach-entry-portal");
+    const exit = scene.getObjectByName("forkmesh-beach-return-portal");
+    const worldRoot = scene.children.find((child) =>
+      Object.hasOwn(child.userData || {}, "activeEnclosureScene")
+    );
+    const initial = {
+      beachVisible: beach?.visible,
+      entryVisible: entry?.visible,
+      exitVisible: exit?.visible,
+      active: worldRoot?.userData?.activeEnclosureScene,
+    };
+    const entered = shell.world.enterBeachScene();
+    const atBeach = {
+      entered,
+      isBeach: shell.world.isBeachScene(),
+      beachVisible: beach?.visible,
+      entryVisible: entry?.visible,
+      exitVisible: exit?.visible,
+      active: worldRoot?.userData?.activeEnclosureScene,
+      position: shell.world.getPosition(),
+    };
+    const left = shell.world.leaveBeachScene();
+    return {
+      initial,
+      atBeach,
+      returned: {
+        left,
+        isBeach: shell.world.isBeachScene(),
+        beachVisible: beach?.visible,
+        entryVisible: entry?.visible,
+        active: worldRoot?.userData?.activeEnclosureScene,
+        position: shell.world.getPosition(),
+      },
+    };
+  });
+
+  expect(state.initial).toEqual({
+    beachVisible: false,
+    entryVisible: true,
+    exitVisible: true,
+    active: "",
+  });
+  expect(state.atBeach.entered).toBe(true);
+  expect(state.atBeach.isBeach).toBe(true);
+  expect(state.atBeach.beachVisible).toBe(true);
+  expect(state.atBeach.entryVisible).toBe(false);
+  expect(state.atBeach.exitVisible).toBe(true);
+  expect(state.atBeach.active).toBe("beach");
+  expect(state.atBeach.position.space).toBe("beach");
+  expect(state.returned.left).toBe(true);
+  expect(state.returned.isBeach).toBe(false);
+  expect(state.returned.beachVisible).toBe(false);
+  expect(state.returned.entryVisible).toBe(true);
+  expect(state.returned.active).toBe("");
+  expect(state.returned.position.space).toBe("town-square");
+});
+
 test("landmark tree clusters stay local while arrival faces inward", async ({
   page,
 }) => {
