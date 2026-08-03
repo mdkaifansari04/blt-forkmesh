@@ -4682,7 +4682,8 @@ private:
     void slideTopMessageOut(); // countdown finished: ease the bubble off the right edge, then advance
     // Animate a submitted prompt into a bubble. When it launched or steered an
     // agent, the bubble's action opens that exact session.
-    void showPromptBubble(const QString &prompt, int agentSessionId = -1);
+    void showPromptBubble(const QString &prompt, int agentSessionId = -1,
+                          const QString &status = QString());
     MessageRow *addMessageRow(const ChatMessage &message);
     MessageRow *createMessageRow(const ChatMessage &message,
                                  bool threadContext = false);
@@ -5203,6 +5204,7 @@ private:
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageHovering = false;    // pauses the countdown while reading/actions
     bool m_topMessageIsPromptBubble = false; // submitted prompt gets a fuller, animated treatment
+    QString m_topMessagePromptStatus;        // optional agent-start confirmation shown in the same bubble
     // Red border flashed around the whole window while an error ping arrives —
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
