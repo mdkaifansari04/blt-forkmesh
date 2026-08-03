@@ -1729,9 +1729,9 @@ int main(int argc, char *argv[])
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
-    // The complete fleet toolbar floats over the Agents view's bottom-right corner,
-    // preserving rows while keeping bulk actions, terminal launchers, and queue
-    // controls together.
+    // The complete fleet toolbar floats over the session list's bottom-right
+    // corner, preserving rows while keeping bulk actions, terminal launchers,
+    // and queue controls together.
     {
         QLabel *queueStatus = window.findChild<QLabel *>(
             QStringLiteral("agentQueueStatusLabel"));
@@ -1761,7 +1761,7 @@ int main(int argc, char *argv[])
                   queueOverlay &&
                   queueOverlay->parentWidget() &&
                   queueOverlay->parentWidget()->objectName() ==
-                      QStringLiteral("agentsPage") &&
+                      QStringLiteral("agentsListPane") &&
                   startAll->parentWidget() == queueOverlay &&
                   stopAll->parentWidget() == queueOverlay &&
                   deleteMerged->parentWidget() == queueOverlay &&
