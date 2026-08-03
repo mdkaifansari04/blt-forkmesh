@@ -178,6 +178,15 @@ QString quickAddUsageLimitCountdownText(const QString &provider)
         .arg(bestLabel, humanizeRemaining(bestRemaining));
 }
 
+QString quickAddUsageLimitRemainingText(const QString &provider)
+{
+    const QString countdown = quickAddUsageLimitCountdownText(provider);
+    static const QString marker = QStringLiteral("resets in ");
+    const int markerIdx = countdown.indexOf(marker);
+    return markerIdx >= 0 ? countdown.mid(markerIdx + marker.size()).trimmed()
+                          : countdown;
+}
+
 QString quickAddModelChoiceSuccess(const AgentSession &session)
 {
     Q_UNUSED(session);
@@ -2654,6 +2663,15 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                                       choice.model);
         const QString usageCountdown =
             quickAddUsageLimitCountdownText(choice.provider);
+        const QString usageRemaining =
+            quickAddUsageLimitRemainingText(choice.provider);
+        QString labelWithSummary = choice.label;
+        if (!statusSummary.isEmpty())
+            labelWithSummary =
+                QStringLiteral("%1 %2").arg(choice.label, statusSummary);
+        else if (!usageRemaining.isEmpty())
+            labelWithSummary =
+                QStringLiteral("%1 (%2)").arg(choice.label, usageRemaining);
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
         const QString identity = agentCliIdentityLabel(choice.provider);
@@ -2677,7 +2695,7 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             toolTip +=
                 QStringLiteral("\nLimit status: %1").arg(usageCountdown);
         }
-        addChoice(choice.icon, choice.label, choice.provider, choice.model,
+        addChoice(choice.icon, labelWithSummary, choice.provider, choice.model,
                   toolTip);
     }
 
