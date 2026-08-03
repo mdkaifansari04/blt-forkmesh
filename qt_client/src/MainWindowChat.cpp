@@ -2665,13 +2665,20 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             quickAddUsageLimitCountdownText(choice.provider);
         const QString usageRemaining =
             quickAddUsageLimitRemainingText(choice.provider);
-        QString labelWithSummary = choice.label;
-        if (!statusSummary.isEmpty())
-            labelWithSummary =
-                QStringLiteral("%1 %2").arg(choice.label, statusSummary);
-        else if (!usageRemaining.isEmpty())
-            labelWithSummary =
-                QStringLiteral("%1 (%2)").arg(choice.label, usageRemaining);
+        const QString statusAndCountdown =
+            statusSummary.isEmpty()
+                ? QString()
+                : usageRemaining.isEmpty()
+                      ? statusSummary
+                      : QStringLiteral("%1 (%2)")
+                            .arg(statusSummary, usageRemaining);
+        const QString labelWithSummary =
+            statusAndCountdown.isEmpty()
+                ? (usageRemaining.isEmpty()
+                       ? choice.label
+                       : QStringLiteral("%1 (%2)").arg(choice.label, usageRemaining))
+                : QStringLiteral("%1 %2").arg(choice.label,
+                                              statusAndCountdown);
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
         const QString identity = agentCliIdentityLabel(choice.provider);
@@ -2681,20 +2688,15 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             toolTip = QStringLiteral("Account: %1\n%2").arg(chosenIdentity, toolTip);
         if (!statusSummary.isEmpty()) {
             const QString statusLine =
-                statusSummary == QStringLiteral("")
-                    ? QString()
-                    : statusSummary == QStringLiteral("✗") &&
-                              !usageCountdown.isEmpty()
-                          ? QStringLiteral("%1 · %2").arg(statusSummary, usageCountdown)
-                          : statusSummary;
-            if (!statusLine.isEmpty())
-                toolTip += QStringLiteral("\n%1").arg(statusLine);
+                usageRemaining.isEmpty() ? statusSummary
+                                        : QStringLiteral("%1 (%2)").arg(
+                                              statusSummary, usageRemaining);
+            toolTip += QStringLiteral("\n%1").arg(statusLine);
         }
         if (!usageCountdown.isEmpty() &&
-            (statusSummary != QStringLiteral("✗"))) {
+            statusSummary.isEmpty())
             toolTip +=
                 QStringLiteral("\nLimit status: %1").arg(usageCountdown);
-        }
         addChoice(choice.icon, labelWithSummary, choice.provider, choice.model,
                   toolTip);
     }
