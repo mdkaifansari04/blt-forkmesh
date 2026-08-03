@@ -173,6 +173,10 @@ struct AgentImageBatch {
 };
 
 QString agentMergeBase(const AgentSession &s);
+QString usageExhaustedSetting(const QString &providerKey,
+                             const QString &windowKey);
+QString usageResetSetting(const QString &providerKey,
+                         const QString &windowKey);
 
 QString briefFailureReason(const AgentSession &session)
 {
@@ -12672,6 +12676,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
     processAgentQueue();
     looperOnSessionFinished(sessionId); // adhoc #92: chain to the next open issue
     maybeStartQueuedRebuild(); // adhoc #75: a rebuild may be waiting on this run
+    refreshQuickAddAgentModelSelector();
 }
 
 void MainWindow::updateAgentActionState()
