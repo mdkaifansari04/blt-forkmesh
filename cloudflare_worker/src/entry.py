@@ -64,6 +64,60 @@ class _LazyModule:
     def __getattr__(self, name):
         return getattr(self._load(), name)
 
+    def export(self, name):
+        """Return one lazily resolved module binding.
+
+        This lets existing module-level helper call sites retain their small,
+        direct names without importing a route domain during Worker validation.
+        """
+        return _LazyExport(self, name)
+
+
+class _LazyExport:
+    """Transparent callable/attribute proxy for a lazily imported symbol."""
+
+    __slots__ = ("_module", "_name")
+
+    def __init__(self, module, name):
+        self._module = module
+        self._name = name
+
+    def _load(self):
+        return getattr(self._module, self._name)
+
+    def __call__(self, *args, **kwargs):
+        return self._load()(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+    def __bool__(self):
+        return bool(self._load())
+
+    def __iter__(self):
+        return iter(self._load())
+
+    def __len__(self):
+        return len(self._load())
+
+    def __getitem__(self, key):
+        return self._load()[key]
+
+    def __contains__(self, item):
+        return item in self._load()
+
+    def __eq__(self, other):
+        return self._load() == other
+
+    def __hash__(self):
+        return hash(self._load())
+
+    def __repr__(self):
+        return repr(self._load())
+
+    def __str__(self):
+        return str(self._load())
+
 
 # These modules back optional route families.  Do not turn these assignments
 # back into top-level imports: Cloudflare validates Python Worker global scope
@@ -547,35 +601,34 @@ from git_http import (  # noqa: E402
     repo_blob_filename,
 )
 
-# SSH key parsing and URL construction are deliberately pure helpers. Raw SSH
-# is terminated by an independently operated node-side gateway, never by this
-# HTTP Worker; the Worker only stores encrypted public keys and answers the
-# gateway's authenticated authorization checks.
-import ssh_keys as ssh_auth  # noqa: E402
+# SSH key parsing is only used by account/repository key routes.
+ssh_auth = _LazyModule("ssh_keys")
 
-# Mirror grouping, clone-fallback selection, and state-pin helpers are a
-# self-contained, builtin-only cluster — see mirrors.py.
-from mirrors import (  # noqa: E402
-    STATE_PIN_HISTORY,
-    _mirror_ms,
-    accepted_mirror_requests,
-    ack_mirror_requests,
-    add_mirror_request,
-    agent_provider_target_decision,
-    browse_mirror_candidates,
-    build_repo_mirrors_payload,
-    clone_state_pins,
-    find_mirror_request,
-    mirror_request_id,
-    mirroring_owner_set,
-    release_blob_mirror_candidates,
-    repo_clone_online,
-    repo_mirror_group_key,
-    repo_mirror_same_group,
-    set_mirror_request_status,
-    select_clone_fallback,
-    served_mirror_groups,
-)
+# Mirror grouping and clone fallback are needed only by repository routes.
+# Keeping the bindings lazy avoids parsing its sizeable policy table while
+# Cloudflare validates global scope.
+_mirrors = _LazyModule("mirrors")
+# This is deliberately duplicated from mirrors.py: it is a tiny SQL bind
+# limit, whereas importing mirrors.py just to obtain it defeats lazy startup.
+STATE_PIN_HISTORY = 100
+def _mirror_ms(*args, **kwargs): return _mirrors._mirror_ms(*args, **kwargs)
+def accepted_mirror_requests(*args, **kwargs): return _mirrors.accepted_mirror_requests(*args, **kwargs)
+def ack_mirror_requests(*args, **kwargs): return _mirrors.ack_mirror_requests(*args, **kwargs)
+def add_mirror_request(*args, **kwargs): return _mirrors.add_mirror_request(*args, **kwargs)
+def agent_provider_target_decision(*args, **kwargs): return _mirrors.agent_provider_target_decision(*args, **kwargs)
+def browse_mirror_candidates(*args, **kwargs): return _mirrors.browse_mirror_candidates(*args, **kwargs)
+def build_repo_mirrors_payload(*args, **kwargs): return _mirrors.build_repo_mirrors_payload(*args, **kwargs)
+def clone_state_pins(*args, **kwargs): return _mirrors.clone_state_pins(*args, **kwargs)
+def find_mirror_request(*args, **kwargs): return _mirrors.find_mirror_request(*args, **kwargs)
+def mirror_request_id(*args, **kwargs): return _mirrors.mirror_request_id(*args, **kwargs)
+def mirroring_owner_set(*args, **kwargs): return _mirrors.mirroring_owner_set(*args, **kwargs)
+def release_blob_mirror_candidates(*args, **kwargs): return _mirrors.release_blob_mirror_candidates(*args, **kwargs)
+def repo_clone_online(*args, **kwargs): return _mirrors.repo_clone_online(*args, **kwargs)
+def repo_mirror_group_key(*args, **kwargs): return _mirrors.repo_mirror_group_key(*args, **kwargs)
+def repo_mirror_same_group(*args, **kwargs): return _mirrors.repo_mirror_same_group(*args, **kwargs)
+def set_mirror_request_status(*args, **kwargs): return _mirrors.set_mirror_request_status(*args, **kwargs)
+def select_clone_fallback(*args, **kwargs): return _mirrors.select_clone_fallback(*args, **kwargs)
+def served_mirror_groups(*args, **kwargs): return _mirrors.served_mirror_groups(*args, **kwargs)
 
 # Catalog-record sanitization (string cleaning, path-segment validation, the
 # public catalog-record builder) lives in catalog.py -- another pure, js-free
@@ -674,10 +727,10 @@ chat_channels_api = _LazyModule("chat_channels_api")
 # Direct messages have a stricter participant-only authorization policy and
 # therefore use a separate pure API module instead of channel admin semantics.
 chat_direct_messages_api = _LazyModule("chat_direct_messages_api")
-# Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
-# "fingerprint" attached to federated PR-opened notes. The federated copy is a
-# square PNG — fediverse clients won't preview an SVG attachment.
-from pull_badge import patch_file_stats, pull_badge_png  # noqa: E402
+# Pull-request badge generation is deferred until a federated PR needs it.
+_pull_badge = _LazyModule("pull_badge")
+patch_file_stats = _pull_badge.export("patch_file_stats")
+pull_badge_png = _pull_badge.export("pull_badge_png")
 
 # Social-preview (OpenGraph) info-card renderer — pure-stdlib PNG drawing,
 # another js-free sibling module the test suite imports directly.
