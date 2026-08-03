@@ -539,14 +539,14 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // owner's repo as it updates. Push events are the primary signal now —
     // since bf6323d0 mirror peers are notified the instant a push lands on the
     // source's bare mirror — so this timer is only a safety net for dropped
-    // events. One minute (kMirrorSyncIntervalMs) with ±15% jitter keeps the
-    // dropped-event recovery window short without making a fleet fetch in
-    // lockstep. The existing per-repository in-flight guard prevents a timer
-    // tick from duplicating an immediate push/roster-driven sync, and the job
-    // remains gated on relay health (autoSyncMirrorsIfRelayHealthy) because
-    // the git subprocesses never pass through BackoffNetworkAccessManager's
-    // 429 cooldown. A first pass runs shortly after startup to catch up on
-    // pushes missed offline.
+    // events. Five seconds (kMirrorSyncIntervalMs) with ±15% jitter bounds the
+    // dropped-event/gateway-swap recovery path in seconds without making the
+    // fleet fetch in lockstep. The existing per-repository in-flight guard
+    // prevents a timer tick from duplicating an immediate push/roster-driven
+    // sync, and the job remains gated on relay health
+    // (autoSyncMirrorsIfRelayHealthy) because the git subprocesses never pass
+    // through BackoffNetworkAccessManager's 429 cooldown. A first pass runs
+    // shortly after startup to catch up on pushes missed offline.
     m_mirrorSyncTimer = new QTimer(this);
     connect(m_mirrorSyncTimer, &QTimer::timeout, this,
             &MainWindow::autoSyncMirrorsIfRelayHealthy);
@@ -557,13 +557,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
                                  -mirrorJitterSpanMs, mirrorJitterSpanMs + 1));
     logStartup(QStringLiteral("  timer armed: mirror safety sync every %1ms")
                    .arg(m_mirrorSyncTimer->interval()));
-    QTimer::singleShot(15000, this, [this] {
+    QTimer::singleShot(1000, this, [this] {
         forkmesh::StartupTraceStep step(
             QStringLiteral("delayed startup: initial mirror synchronization"));
         autoSyncMirrors();
     });
     logStartup(QStringLiteral(
-        "  startup job scheduled: initial mirror synchronization in 15000ms"));
+        "  startup job scheduled: initial mirror synchronization in 1000ms"));
     // Source-of-truth nodes pick up issues/PRs/comments/agent-prompts filed by
     // other nodes through the relay's event push: a minimal frame on the
     // per-owner node event socket (NodeEventSocket -> ForkMeshNodes DO)

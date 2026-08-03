@@ -36,10 +36,11 @@
       "$ref": "#/$defs/absolutePath"
     },
     "archiveDirectory": {
+      "description": "Owner-controlled legacy cleanup directory. New public refreshes create no archives; existing archive-*.age generations are removed after plaintext activation.",
       "$ref": "#/$defs/absolutePath"
     },
     "releaseStore": {
-      "description": "Optional owner-local content-addressed store for public release assets. Repository source remains in the encrypted archive; this path contains only explicitly published immutable binaries.",
+      "description": "Optional owner-local content-addressed store for explicitly published immutable release assets.",
       "$ref": "#/$defs/absolutePath"
     },
     "gatewayConfigPath": {
@@ -73,7 +74,7 @@
       "pattern": "^[A-Za-z0-9._-]+$"
     },
     "ownerAliases": {
-      "description": "Unique public owner paths served from the same encrypted archive. The configured nodeOwner must be present.",
+      "description": "Unique public owner paths served from the same plaintext bare repository. The configured nodeOwner must be present.",
       "type": "array",
       "minItems": 1,
       "maxItems": 16,

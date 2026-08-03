@@ -1043,7 +1043,6 @@ def load_config(path: Path) -> GatewayConfig:
 
         git_dir: Path | None = None
         encrypted_archive: EncryptedArchive | None = None
-        archive_raw = item.get("encryptedArchive")
         allowed_repository_fields = {
             "owner",
             "name",
@@ -1052,88 +1051,39 @@ def load_config(path: Path) -> GatewayConfig:
             "integrity",
             "operations",
             "releaseStore",
-            "encryptedArchive",
             "gitDir",
         }
-        if "gitDir" in item:
-            git_dir_raw = item.get("gitDir")
-            hosted_root = (HOSTED_PUBLIC_GIT_ROOT / node).resolve()
-            try:
-                hosted_root_info = hosted_root.lstat()
-                git_dir = Path(str(git_dir_raw or "")).resolve()
-                git_dir_info = git_dir.lstat()
-            except OSError as exc:
-                raise GatewayError(
-                    "plaintext gitDir is prohibited outside the fixed "
-                    "read-only hosted-import root") from exc
-            if (
-                not isinstance(git_dir_raw, str)
-                or not git_dir_raw
-                or not stat.S_ISDIR(hosted_root_info.st_mode)
-                or stat.S_ISLNK(hosted_root_info.st_mode)
-                or hosted_root_info.st_uid != os.geteuid()
-                or not stat.S_ISDIR(git_dir_info.st_mode)
-                or stat.S_ISLNK(git_dir_info.st_mode)
-                or git_dir_info.st_uid != os.geteuid()
-                or git_dir.parent != hosted_root
-                or git_dir.name != name + ".git"
-                or archive_raw
-                or "merge-pull" in operations
-                or "actions-status" in operations
-                or "release-blob" in operations
-            ):
-                raise GatewayError(
-                    "plaintext gitDir is prohibited outside the fixed "
-                    "read-only hosted-import root")
         if set(item) - allowed_repository_fields:
             raise GatewayError("repository entry contains an unknown field")
-        if git_dir is None and not archive_raw:
+        git_dir_raw = item.get("gitDir")
+        if not isinstance(git_dir_raw, str) or not git_dir_raw:
             raise GatewayError(
-                "enabled public repository requires encryptedArchive storage"
+                "enabled public repository requires plaintext gitDir storage"
             )
-        if git_dir is None and not isinstance(archive_raw, dict):
-            raise GatewayError("encryptedArchive must be an object")
-        if git_dir is None and set(archive_raw) != {
-            "scheme",
-            "ciphertextPath",
-            "ciphertextSha256",
-            "keyReference",
-            "materializeCommand",
-        }:
-            raise GatewayError(
-                "encryptedArchive contains an unknown or missing field"
-            )
-        scheme = str(archive_raw.get("scheme") or "") if archive_raw else ""
-        if git_dir is None and scheme != "age-encrypted-tar-v1":
-            raise GatewayError(
-                "encryptedArchive scheme must be age-encrypted-tar-v1"
-            )
-        ciphertext_raw = archive_raw.get("ciphertextPath") if archive_raw else None
-        ciphertext_hash = str(
-            archive_raw.get("ciphertextSha256") or "" if archive_raw else ""
-        ).lower()
-        key_reference = str(
-            archive_raw.get("keyReference") or "" if archive_raw else "")
+        supplied_git_dir = Path(git_dir_raw)
+        if not supplied_git_dir.is_absolute():
+            raise GatewayError("public gitDir must be an absolute path")
+        try:
+            supplied_info = supplied_git_dir.lstat()
+            git_dir = supplied_git_dir.resolve(strict=True)
+            git_dir_info = git_dir.stat()
+        except OSError as exc:
+            raise GatewayError("public gitDir is unavailable") from exc
+        git_mode = stat.S_IMODE(git_dir_info.st_mode)
         if (
-            git_dir is None
-            and (
-            not isinstance(ciphertext_raw, str)
-            or not ciphertext_raw
-            or not SHA256_RE.fullmatch(ciphertext_hash)
-            or not re.fullmatch(r"[A-Za-z0-9._:/@+-]{3,240}", key_reference)
-            )
+            not stat.S_ISDIR(supplied_info.st_mode)
+            or stat.S_ISLNK(supplied_info.st_mode)
+            or not stat.S_ISDIR(git_dir_info.st_mode)
+            or git_dir_info.st_uid != os.geteuid()
+            or git_mode & stat.S_IWOTH
+            or (git_mode & stat.S_IWGRP and
+                git_dir_info.st_gid not in os.getgroups())
+            or not (git_dir / "HEAD").is_file()
+            or not (git_dir / "objects").is_dir()
+            or not (git_dir / "refs").is_dir()
         ):
-            raise GatewayError("encryptedArchive metadata is invalid")
-        if git_dir is None:
-            encrypted_archive = EncryptedArchive(
-                scheme=scheme,
-                ciphertext_path=(base / ciphertext_raw).resolve(),
-                ciphertext_sha256=ciphertext_hash,
-                key_reference=key_reference,
-                materialize_command=_validate_command(
-                    archive_raw.get("materializeCommand"),
-                    "encryptedArchive.materializeCommand",
-                ),
+            raise GatewayError(
+                "public gitDir must be an owner-controlled bare repository"
             )
 
         release_store = None
