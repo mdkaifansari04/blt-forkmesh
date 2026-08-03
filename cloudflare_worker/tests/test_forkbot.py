@@ -22,6 +22,12 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 CATALOG_TEXT = CATALOG.read_text(encoding="utf-8")
 CHAT_TEXT = (PUBLIC / "chat.js").read_text(encoding="utf-8")
 DASHBOARD_CHAT_TEXT = (PUBLIC / "dashboard-chat.js").read_text(encoding="utf-8")
+CHAT_HTML_TEXT = (PUBLIC / "chat.html").read_text(encoding="utf-8")
+CHAT_CSS_TEXT = (PUBLIC / "chat.css").read_text(encoding="utf-8")
+DASHBOARD_TEXT = (PUBLIC / "dashboard.js").read_text(encoding="utf-8")
+DASHBOARD_HOME_TEXT = (
+    PUBLIC / "dashboard" / "partials" / "views" / "home.html"
+).read_text(encoding="utf-8")
 WRANGLER_DATA = tomllib.loads(WRANGLER.read_text(encoding="utf-8"))
 
 FUNCS = {
@@ -65,6 +71,10 @@ FUNCS = {
     "_forkbot_json_object_from_text",
     "_forkbot_clean_ai_issue_fields",
     "_forkbot_run_ai",
+    "_forkbot_ai_default_model",
+    "_forkbot_ai_model_options",
+    "_forkbot_resolve_ai_model",
+    "forkbot_models_handler",
     "_forkbot_ai_issue_fields",
     "_forkbot_ai_interpret",
     "_forkbot_next_issue_number",
@@ -82,6 +92,7 @@ CONSTANTS = {
     "FORKBOT_DEFAULT_REPO",
     "FORKBOT_MAX_COMMAND",
     "FORKBOT_AI_DEFAULT_MODEL",
+    "FORKBOT_AI_MODEL_CHOICES",
     "FORKBOT_CONTEXT_MAX_MESSAGES",
     "FORKBOT_CONTEXT_MAX_CHARS",
     "FORKBOT_LIST_DEFAULT",
@@ -655,8 +666,126 @@ def test_forkbot_attributed_body_credits_source_and_requester():
 def test_forkbot_route_and_workers_ai_binding_are_configured():
     assert '"/api/forkbot/chat"' in ENTRY_TEXT
     assert "return await forkbot_chat_handler(self.env, request)" in ENTRY_TEXT
+    assert '"/api/forkbot/models"' in ENTRY_TEXT
+    assert "return await forkbot_models_handler(self.env, request)" in ENTRY_TEXT
     assert WRANGLER_DATA["ai"]["binding"] == "AI"
     assert WRANGLER_DATA["vars"]["FORKBOT_AI_MODEL"].startswith("@cf/")
+
+
+def test_forkbot_model_catalog_lists_the_deployed_default():
+    # Every pickable id is a Workers AI model id, and the model wrangler.toml
+    # actually deploys is one of them (else the picker's "default" option would
+    # be a model the relay never uses).
+    ns = _load_forkbot()
+    ids = [entry[0] for entry in ns["FORKBOT_AI_MODEL_CHOICES"]]
+    assert ids
+    assert all(model_id.startswith("@cf/") for model_id in ids)
+    assert len(set(ids)) == len(ids)
+    assert WRANGLER_DATA["vars"]["FORKBOT_AI_MODEL"] in ids
+
+
+def test_forkbot_model_options_put_the_configured_default_first():
+    ns = _load_forkbot()
+    options = ns["_forkbot_ai_model_options"](
+        type("E", (), {"FORKBOT_AI_MODEL":
+                       "@cf/meta/llama-3.1-8b-instruct-fast"})())
+    assert options[0]["id"] == "@cf/meta/llama-3.1-8b-instruct-fast"
+    assert options[0]["default"] is True
+    assert [option["default"] for option in options[1:]] == \
+        [False] * (len(options) - 1)
+    # A self-hosted relay pointing at its own model still gets a selectable
+    # default option for it rather than a picker that cannot choose it.
+    custom = ns["_forkbot_ai_model_options"](
+        type("E", (), {"FORKBOT_AI_MODEL": "@cf/self/hosted-model"})())
+    assert custom[0]["id"] == "@cf/self/hosted-model"
+    assert custom[0]["default"] is True
+    assert len(custom) == len(ns["FORKBOT_AI_MODEL_CHOICES"]) + 1
+
+
+def test_forkbot_resolves_only_allowlisted_model_picks():
+    ns = _load_forkbot()
+    env = type("E", (), {"FORKBOT_AI_MODEL": ""})()
+    resolve = ns["_forkbot_resolve_ai_model"]
+    default = ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert resolve(env, "@cf/qwen/qwen2.5-coder-32b-instruct") == \
+        "@cf/qwen/qwen2.5-coder-32b-instruct"
+    # Empty, unknown, and non-string picks all fall back to the default rather
+    # than erroring: a stale browser pick must not turn ForkBot off, and an
+    # unlisted id must never reach env.AI.run (it bills whatever it is handed).
+    assert resolve(env, "") == default
+    assert resolve(env, "@cf/expensive/not-offered") == default
+    assert resolve(env, None) == default
+    assert resolve(env, 17) == default
+
+
+def test_forkbot_models_endpoint_lists_picks_for_the_composer():
+    _env, _calls, ns = _env_and_calls()
+    request = _Request({})
+    request.method = "GET"
+    response = asyncio.run(ns["forkbot_models_handler"](
+        type("E", (), {"FORKBOT_AI_MODEL": ""})(), request))
+    assert response["status"] == 200
+    assert response["data"]["provider"] == "cloudflare-workers-ai"
+    assert response["data"]["default"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    first = response["data"]["models"][0]
+    assert first["id"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert first["label"] and first["description"]
+
+    request.method = "POST"
+    assert asyncio.run(ns["forkbot_models_handler"](
+        type("E", (), {"FORKBOT_AI_MODEL": ""})(), request))["status"] == 405
+
+
+def test_forkbot_chat_sends_the_prompt_to_the_picked_model():
+    class _AI:
+        async def run(self, model, payload):
+            self.model = model
+            self.payload = payload
+            return {"response": json.dumps(
+                {"title": "Cache clone refs", "body": "Refs re-read per clone."})}
+
+    ai = _AI()
+    env, calls, ns = _env_and_calls(ai=ai)
+    response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
+        "message": "forkbot create an issue to cache clone refs",
+        "model": "@cf/qwen/qwen2.5-coder-32b-instruct",
+    })))
+    assert response["status"] == 201
+    assert ai.model == "@cf/qwen/qwen2.5-coder-32b-instruct"
+    # The reply names the model that answered, so the composer can show it.
+    assert response["data"]["model"] == "@cf/qwen/qwen2.5-coder-32b-instruct"
+    assert calls["inserted"][0][1]["titleIfNew"] == "Cache clone refs"
+
+    # An unlisted pick is ignored in favor of the deployment default.
+    ai2 = _AI()
+    env2, _calls2, ns2 = _env_and_calls(ai=ai2)
+    asyncio.run(ns2["forkbot_chat_handler"](env2, _Request({
+        "message": "forkbot create an issue to cache clone refs",
+        "model": "@cf/somebody/expensive-model",
+    })))
+    assert ai2.model == ns2["FORKBOT_AI_DEFAULT_MODEL"]
+
+
+def test_web_composers_offer_the_cloudflare_model_picker():
+    # Public chat composer: options come from the relay (so deploying a new
+    # model needs no site rebuild) and the pick persists per browser.
+    assert 'const FORKBOT_MODELS_ENDPOINT = "/api/forkbot/models";' in CHAT_TEXT
+    assert 'const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";' in CHAT_TEXT
+    assert "async function loadForkbotModels()" in CHAT_TEXT
+    assert "model: forkbotModel()," in CHAT_TEXT
+    assert 'id="chat-forkbot-model"' in CHAT_HTML_TEXT
+    assert ".chat-forkbot-model {" in CHAT_CSS_TEXT
+    # Dashboard chat shares the same stored pick.
+    assert 'const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";' in \
+        DASHBOARD_CHAT_TEXT
+    assert "model: forkbotModel()," in DASHBOARD_CHAT_TEXT
+    # Dashboard home ForkBot composer: same key, its own picker.
+    assert 'const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";' in \
+        DASHBOARD_TEXT
+    assert "async function loadHomeForkbotModels()" in DASHBOARD_TEXT
+    assert "model: forkbotModelPick()," in DASHBOARD_TEXT
+    assert "data-home-agent-model" in DASHBOARD_HOME_TEXT
+    assert "data-home-agent-model" in DASHBOARD_TEXT
 
 
 def test_web_chats_forward_mentions_and_broadcast_bot_replies():

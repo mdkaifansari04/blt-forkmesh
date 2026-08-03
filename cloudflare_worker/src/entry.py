@@ -332,6 +332,36 @@ FORKBOT_DEFAULT_REPO = "forkmesh"
 FORKBOT_MAX_COMMAND = 4000
 FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
 USERNAME_MODERATION_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
+# Cloudflare Workers AI text models a client may pick for its own ForkBot
+# prompt (GET /api/forkbot/models lists these; POST /api/forkbot/chat honors
+# {"model": id}). The allowlist matters for more than tidiness: env.AI.run()
+# bills whatever model id it is handed, so an unvalidated pick would let any
+# caller aim the account's Workers AI quota at the priciest model on the
+# platform. Anything not listed here (or in FORKBOT_AI_MODEL) is ignored and
+# the deployment default is used instead.
+FORKBOT_AI_MODEL_CHOICES = (
+    ("@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+     "Llama 3.3 70B (fast)",
+     "Best intent detection and JSON mode. The deployed default."),
+    ("@cf/meta/llama-3.1-8b-instruct",
+     "Llama 3.1 8B",
+     "Small and cheap; solid at plainly phrased requests."),
+    ("@cf/meta/llama-3.1-8b-instruct-fast",
+     "Llama 3.1 8B (fast)",
+     "Lowest latency; least reliable at subtle phrasing."),
+    ("@cf/meta/llama-4-scout-17b-16e-instruct",
+     "Llama 4 Scout 17B",
+     "Strong reasoning with a long context window."),
+    ("@cf/qwen/qwen2.5-coder-32b-instruct",
+     "Qwen2.5 Coder 32B",
+     "Code-oriented; good at drafting technical issue bodies."),
+    ("@cf/mistralai/mistral-small-3.1-24b-instruct",
+     "Mistral Small 3.1 24B",
+     "Balanced quality and cost."),
+    ("@cf/google/gemma-3-12b-it",
+     "Gemma 3 12B",
+     "Concise summaries; terser issue titles."),
+)
 
 # SHA-256 digests of the normalized local moderation vocabulary.  Keeping only
 # fixed-size digests means profanity and slurs are not shipped as readable
@@ -33772,14 +33802,82 @@ def _forkbot_clean_ai_issue_fields(parsed):
     return {"title": _forkbot_issue_title(title), "body": body}
 
 
-async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
+def _forkbot_ai_default_model(env):
+    """The model used when the caller picks nothing: the deployment's
+    FORKBOT_AI_MODEL var, else the code default."""
+    return clean_string(getattr(env, "FORKBOT_AI_MODEL", ""), 120) or \
+        FORKBOT_AI_DEFAULT_MODEL
+
+
+def _forkbot_ai_model_options(env):
+    """The pickable Workers AI models, default first, for the picker UI.
+
+    The deployment default is always offered even when FORKBOT_AI_MODEL names a
+    model missing from FORKBOT_AI_MODEL_CHOICES — otherwise a self-hosted relay
+    that points the var at its own model would show a picker that cannot select
+    what it is actually running."""
+    default_model = _forkbot_ai_default_model(env)
+    options = []
+    for model_id, label, description in FORKBOT_AI_MODEL_CHOICES:
+        options.append({
+            "id": model_id,
+            "label": label,
+            "description": description,
+            "default": model_id == default_model,
+        })
+    if not any(option["default"] for option in options):
+        options.insert(0, {
+            "id": default_model,
+            "label": default_model.rsplit("/", 1)[-1],
+            "description": "This relay's configured model.",
+            "default": True,
+        })
+    options.sort(key=lambda option: 0 if option["default"] else 1)
+    return options
+
+
+def _forkbot_resolve_ai_model(env, requested=""):
+    """Map a caller-supplied model pick onto an allowed Workers AI model id.
+
+    Unknown, empty, or malformed picks fall back to the deployment default
+    rather than erroring: a stale picker value in someone's browser must not
+    turn ForkBot off for them."""
+    wanted = clean_string(requested or "", 120).strip()
+    if not wanted:
+        return _forkbot_ai_default_model(env)
+    for option in _forkbot_ai_model_options(env):
+        if option["id"] == wanted:
+            return option["id"]
+    return _forkbot_ai_default_model(env)
+
+
+async def forkbot_models_handler(env, request):
+    """List the Workers AI models a chat client may send its prompt to."""
+    if method_name(request) not in ("GET", "HEAD"):
+        return json_response({"error": "method_not_allowed"}, status=405)
+    options = _forkbot_ai_model_options(env)
+    default_model = _forkbot_ai_default_model(env)
+    return json_response({
+        "ok": True,
+        "provider": "cloudflare-workers-ai",
+        "default": default_model,
+        "models": options,
+    })
+
+
+async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
+                          model=""):
     """Run the Workers AI chat model and return the raw response text/object
     (or None). Shared by the issue-drafting and intent-classification helpers.
 
     When `schema` is given, the first attempt requests Workers AI JSON mode
     (response_format json_schema) so a supporting model MUST return valid
     JSON; models/plans without JSON mode fall back to a plain prompt-only
-    attempt. Every failure path logs the reason — the original implementation
+    attempt.
+
+    `model` is an optional caller pick (see _forkbot_resolve_ai_model); an
+    unknown one silently uses the deployment default. Every failure path logs
+    the reason — the original implementation
     swallowed all exceptions, which left ForkBot silently degraded (raw-echo
     issue titles, natural requests answered with the help hint) with nothing
     in the logs to say why."""
@@ -33789,8 +33887,7 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
             env, 500, "AI", "forkbot/ai",
             "ForkBot AI unavailable: env.AI binding is missing")
         return None
-    model = clean_string(getattr(env, "FORKBOT_AI_MODEL", ""), 120) or \
-        FORKBOT_AI_DEFAULT_MODEL
+    model = _forkbot_resolve_ai_model(env, model)
     base_payload = {
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -33875,7 +33972,7 @@ FORKBOT_INTENT_SCHEMA = {
 }
 
 
-async def _forkbot_ai_issue_fields(env, description, context_text=""):
+async def _forkbot_ai_issue_fields(env, description, context_text="", model=""):
     system_prompt = (
         "You turn a chat request into a ForkMesh issue. Use the conversation "
         "context to resolve what the user is referring to. Respond with ONLY "
@@ -33889,7 +33986,8 @@ async def _forkbot_ai_issue_fields(env, description, context_text=""):
             "Recent conversation:\n" + context_text +
             "\n\nRequest: " + user_prompt)
     result = await _forkbot_run_ai(
-        env, system_prompt, user_prompt, schema=FORKBOT_ISSUE_FIELDS_SCHEMA)
+        env, system_prompt, user_prompt, schema=FORKBOT_ISSUE_FIELDS_SCHEMA,
+        model=model)
     if result is None:
         return None
     if isinstance(result, dict):
@@ -33897,7 +33995,7 @@ async def _forkbot_ai_issue_fields(env, description, context_text=""):
     return _forkbot_clean_ai_issue_fields(_forkbot_json_object_from_text(result))
 
 
-async def _forkbot_ai_interpret(env, command, context_text=""):
+async def _forkbot_ai_interpret(env, command, context_text="", model=""):
     """Decide from meaning (not fixed phrasing) which ForkBot action the user
     wants — pulling the subject from the recent conversation when the mention
     itself is only a pointer ("forkbot log that").
@@ -33944,7 +34042,8 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
             "Recent conversation:\n" + context_text +
             "\n\nMessage to ForkBot: " + command)
     result = await _forkbot_run_ai(
-        env, system_prompt, user_prompt, schema=FORKBOT_INTENT_SCHEMA)
+        env, system_prompt, user_prompt, schema=FORKBOT_INTENT_SCHEMA,
+        model=model)
     if result is None:
         return None
     parsed = result if isinstance(result, dict) else \
@@ -34673,6 +34772,11 @@ async def forkbot_chat_handler(env, request):
     # resolve "that bug" / "the issue we discussed" instead of only the one line.
     context_text = _forkbot_context_text(data.get("context"))
     sender = clean_string(data.get("sender", ""), MAX_NODE_NAME)
+    # Optional Cloudflare Workers AI model pick from the chat composer's model
+    # picker. Only an allowlisted id is honored; anything else (including a
+    # stale picker value) resolves back to the deployment default so ForkBot
+    # keeps working rather than erroring on the caller's behalf.
+    ai_model = _forkbot_resolve_ai_model(env, data.get("model", ""))
     owner = FORKBOT_DEFAULT_OWNER
     repo = FORKBOT_DEFAULT_REPO
 
@@ -34706,11 +34810,12 @@ async def forkbot_chat_handler(env, request):
         if parsed:
             action = {"intent": "create_issue"}
             fields = await _forkbot_ai_issue_fields(
-                env, parsed["description"], context_text)
+                env, parsed["description"], context_text, model=ai_model)
             if not fields:
                 fields = _forkbot_fallback_issue_fields(parsed["description"])
         else:
-            interpreted = await _forkbot_ai_interpret(env, command, context_text)
+            interpreted = await _forkbot_ai_interpret(
+                env, command, context_text, model=ai_model)
             if interpreted and interpreted.get("intent") == "create_issue":
                 action = {"intent": "create_issue"}
                 fields = {"title": interpreted["title"],
@@ -34739,6 +34844,7 @@ async def forkbot_chat_handler(env, request):
         return json_response({
             "ok": True,
             "action": "help",
+            "model": ai_model,
             "botMessage": _forkbot_help_message(),
         })
 
@@ -34769,6 +34875,7 @@ async def forkbot_chat_handler(env, request):
         "title": title,
         "issueNumber": number,
         "issueUrl": issue_url,
+        "model": ai_model,
         "botMessage": bot_message,
     }, status=201)
 
@@ -46796,6 +46903,10 @@ class Default(WorkerEntrypoint):
 
         if url.path in ("/api/forkbot/chat", "/api/forkbot/chat/"):
             return await forkbot_chat_handler(self.env, request)
+
+        # Workers AI models a chat client may aim its ForkBot prompt at.
+        if url.path in ("/api/forkbot/models", "/api/forkbot/models/"):
+            return await forkbot_models_handler(self.env, request)
 
         # All /api/accounts/* paths (reserve, profile, follow, login, lookup)
         # are dispatched by accounts_handler.
