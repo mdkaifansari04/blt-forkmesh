@@ -4,6 +4,7 @@
 import ast
 import asyncio
 import base64
+import hashlib
 import json
 import re
 import tomllib
@@ -75,6 +76,9 @@ FUNCS = {
     "_forkbot_ai_model_options",
     "_forkbot_resolve_ai_model",
     "forkbot_models_handler",
+    "ai_ask_handler",
+    "_ai_ask_rate_check",
+    "valid_node_name",
     "_forkbot_ai_issue_fields",
     "_forkbot_ai_interpret",
     "_forkbot_next_issue_number",
@@ -93,6 +97,14 @@ CONSTANTS = {
     "FORKBOT_MAX_COMMAND",
     "FORKBOT_AI_DEFAULT_MODEL",
     "FORKBOT_AI_MODEL_CHOICES",
+    "AI_ASK_MAX_PROMPT",
+    "AI_ASK_MAX_REPLY",
+    "AI_ASK_MAX_TOKENS",
+    "AI_ASK_RATE_WINDOW_MS",
+    "AI_ASK_MAX_PER_WINDOW",
+    "AI_ASK_SYSTEM_PROMPT",
+    "LOGIN_MAX_SKEW_MS",
+    "NODE_NAME_RE",
     "FORKBOT_CONTEXT_MAX_MESSAGES",
     "FORKBOT_CONTEXT_MAX_CHARS",
     "FORKBOT_LIST_DEFAULT",
@@ -206,11 +218,11 @@ def _issue_blobs(records):
 
 
 def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=(),
-                   org_node=""):
+                   org_node="", signature_ok=True, ai_ask_used=0):
     # org_node: the account backing forkmesh/forkmesh when that public name is
     # an organization alias ("" = a plain node name that resolves to itself).
     calls = {"inserted": [], "contributors": [], "side_effects": [],
-             "hostNotifies": [], "rekeyed": []}
+             "hostNotifies": [], "rekeyed": [], "aiAskRate": [], "signed": []}
 
     class _Env:
         AI = ai
@@ -226,7 +238,16 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=(),
     # catalog record's issueMaxNumber the first time a repo is used.
     seq = {}
 
+    # Per-account Workers AI window for POST /api/ai/ask. ai_ask_used seeds how
+    # many prompts this account already spent in the current window.
+    ask_window = {"count": ai_ask_used, "start": int(_Date.now())}
+
     async def d1_first(_env, sql, *args):
+        if "INSERT INTO ai_ask_rate" in sql:
+            ask_window["count"] += 1
+            calls["aiAskRate"].append(args[0])
+            return {"count": ask_window["count"],
+                    "window_start_ts": ask_window["start"]}
         if "SELECT COUNT(*) AS c FROM issue_inbox" in sql:
             return {"c": 0}
         if "WHERE repo_bi=? AND submitter_bi=?" in sql:
@@ -294,8 +315,17 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=(),
     async def write_error_log(*_args, **_kwargs):
         return None
 
+    async def verify_owner_signature(_env, owner, sig, canonical):
+        calls["signed"].append((owner, sig, canonical.decode()))
+        return bool(signature_ok)
+
+    async def sha256_hex(text):
+        return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
+
     runtime = {
         "_is_admin": is_admin,
+        "_verify_owner_signature": verify_owner_signature,
+        "sha256_hex": sha256_hex,
         "Date": _Date,
         "json_response": _json_response,
         "ensure_schema": ensure_schema,
@@ -707,8 +737,8 @@ def test_forkbot_resolves_only_allowlisted_model_picks():
     env = type("E", (), {"FORKBOT_AI_MODEL": ""})()
     resolve = ns["_forkbot_resolve_ai_model"]
     default = ns["FORKBOT_AI_DEFAULT_MODEL"]
-    assert resolve(env, "@cf/qwen/qwen2.5-coder-32b-instruct") == \
-        "@cf/qwen/qwen2.5-coder-32b-instruct"
+    assert resolve(env, "@cf/meta/llama-4-scout-17b-16e-instruct") == \
+        "@cf/meta/llama-4-scout-17b-16e-instruct"
     # Empty, unknown, and non-string picks all fall back to the default rather
     # than erroring: a stale browser pick must not turn ForkBot off, and an
     # unlisted id must never reach env.AI.run (it bills whatever it is handed).
@@ -748,12 +778,12 @@ def test_forkbot_chat_sends_the_prompt_to_the_picked_model():
     env, calls, ns = _env_and_calls(ai=ai)
     response = asyncio.run(ns["forkbot_chat_handler"](env, _Request({
         "message": "forkbot create an issue to cache clone refs",
-        "model": "@cf/qwen/qwen2.5-coder-32b-instruct",
+        "model": "@cf/meta/llama-4-scout-17b-16e-instruct",
     })))
     assert response["status"] == 201
-    assert ai.model == "@cf/qwen/qwen2.5-coder-32b-instruct"
+    assert ai.model == "@cf/meta/llama-4-scout-17b-16e-instruct"
     # The reply names the model that answered, so the composer can show it.
-    assert response["data"]["model"] == "@cf/qwen/qwen2.5-coder-32b-instruct"
+    assert response["data"]["model"] == "@cf/meta/llama-4-scout-17b-16e-instruct"
     assert calls["inserted"][0][1]["titleIfNew"] == "Cache clone refs"
 
     # An unlisted pick is ignored in favor of the deployment default.
@@ -764,6 +794,159 @@ def test_forkbot_chat_sends_the_prompt_to_the_picked_model():
         "model": "@cf/somebody/expensive-model",
     })))
     assert ai2.model == ns2["FORKBOT_AI_DEFAULT_MODEL"]
+
+
+def _ask_request(body, method="POST"):
+    request = _Request(body)
+    request.method = method
+    return request
+
+
+def _signed_ask_body(ns, prompt, model, account="jett", ts=None):
+    return {
+        "nodeName": account,
+        "prompt": prompt,
+        "model": model,
+        "ts": str(ts if ts is not None else _Date.now()),
+        "sig": "sig-" + account,
+    }
+
+
+def test_ai_ask_sends_the_prompt_to_the_picked_model():
+    class _AI:
+        async def run(self, model, payload):
+            self.model = model
+            self.payload = payload
+            return {"response": "Rebase onto main, then force-push the branch."}
+
+    ai = _AI()
+    env, calls, ns = _env_and_calls(ai=ai)
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "how do I redo this branch?",
+                         "@cf/meta/llama-4-scout-17b-16e-instruct"))))
+
+    assert response["status"] == 200
+    assert response["data"]["model"] == "@cf/meta/llama-4-scout-17b-16e-instruct"
+    assert response["data"]["reply"] == (
+        "Rebase onto main, then force-push the branch.")
+    assert ai.model == "@cf/meta/llama-4-scout-17b-16e-instruct"
+    # A plain answer, not ForkBot's JSON-mode issue schema, and bounded output.
+    assert "response_format" not in ai.payload
+    assert ai.payload["max_tokens"] == ns["AI_ASK_MAX_TOKENS"]
+    assert ai.payload["messages"][0]["content"] == ns["AI_ASK_SYSTEM_PROMPT"]
+    # The signature covers the account, timestamp, model and a digest of the
+    # prompt, so it cannot be replayed with different text or a costlier model.
+    _owner, _sig, canonical = calls["signed"][0]
+    lines = canonical.split("\n")
+    assert lines[0] == "forkmesh-ai-ask-v1"
+    assert lines[1] == "jett"
+    assert lines[3] == "@cf/meta/llama-4-scout-17b-16e-instruct"
+    assert lines[4] == hashlib.sha256(
+        b"how do I redo this branch?").hexdigest()
+    # Every answered prompt is counted against this account's window.
+    assert calls["aiAskRate"] == ["bi:jett"]
+
+
+def test_ai_ask_refuses_unsigned_stale_and_unverified_callers():
+    env, calls, ns = _env_and_calls(ai=object())
+    # No signature at all.
+    unsigned = _signed_ask_body(ns, "hello", "")
+    unsigned.pop("sig")
+    assert asyncio.run(ns["ai_ask_handler"](
+        env, _ask_request(unsigned)))["status"] == 401
+    # A signature from outside the skew window.
+    stale = _signed_ask_body(ns, "hello", "",
+                             ts=_Date.now() - ns["LOGIN_MAX_SKEW_MS"] - 1)
+    assert asyncio.run(ns["ai_ask_handler"](
+        env, _ask_request(stale)))["data"]["error"] == "stale_signature"
+    # GET is not an answer path, and an empty prompt is not a question.
+    assert asyncio.run(ns["ai_ask_handler"](
+        env, _ask_request(_signed_ask_body(ns, "hi", ""), method="GET")
+    ))["status"] == 405
+    blank = _signed_ask_body(ns, "   ", "")
+    assert asyncio.run(ns["ai_ask_handler"](
+        env, _ask_request(blank)))["data"]["error"] == "prompt_required"
+    # Nothing billed a Workers AI call on any of these paths.
+    assert calls["aiAskRate"] == []
+
+    # A key that is not trusted for the claimed account is rejected, so the
+    # relay never answers (and never bills) for a self-asserted node name.
+    bad_env, bad_calls, bad_ns = _env_and_calls(ai=object(), signature_ok=False)
+    denied = asyncio.run(bad_ns["ai_ask_handler"](
+        bad_env, _ask_request(_signed_ask_body(bad_ns, "hello", ""))))
+    assert denied["status"] == 401
+    assert denied["data"]["error"] == "unauthorized"
+    assert bad_calls["aiAskRate"] == []
+
+
+def test_ai_ask_holds_a_per_account_hourly_window():
+    class _AI:
+        async def run(self, _model, _payload):
+            return {"response": "ok"}
+
+    env, _calls, ns = _env_and_calls(
+        ai=_AI(), ai_ask_used=ns_max_per_window_seed())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "one more", ""))))
+    assert response["status"] == 429
+    assert response["data"]["error"] == "rate_limited"
+    assert response["data"]["retryAfterMs"] > 0
+
+
+def ns_max_per_window_seed():
+    # The window is already full, so the next prompt is the one over the line.
+    return _load_forkbot()["AI_ASK_MAX_PER_WINDOW"]
+
+
+def test_ai_ask_reports_an_unusable_model_instead_of_an_empty_answer():
+    class _AI:
+        async def run(self, _model, _payload):
+            raise RuntimeError("model unavailable")
+
+    env, _calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "why is the build red?", ""))))
+    assert response["status"] == 502
+    assert response["data"]["error"] == "ai_unavailable"
+    assert response["data"]["model"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+
+
+def test_ai_ask_route_and_rate_table_are_wired():
+    assert '"/api/ai/ask"' in ENTRY_TEXT
+    assert "return await ai_ask_handler(self.env, request)" in ENTRY_TEXT
+    schema = (ROOT / "src" / "schema.py").read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS ai_ask_rate" in schema
+
+
+def test_qt_composer_picks_a_cloudflare_model_for_the_prompt():
+    qt = ROOT.parent / "qt_client" / "src"
+    internal = (qt / "MainWindowInternal.h").read_text(encoding="utf-8")
+    chat = (qt / "MainWindowChat.cpp").read_text(encoding="utf-8")
+    issues = (qt / "MainWindowIssues.cpp").read_text(encoding="utf-8")
+    # The composer's combined agent+model menu carries the Workers AI models as
+    # their own group, and the provider survives a restart.
+    assert 'kCloudflareAiProvider = QStringLiteral("cloudflare-ai")' in internal
+    assert "agentIsCloudflareAiProvider(value)" in internal
+    assert "populateCloudflareAiModelCombo" in internal
+    assert "populateCloudflareAiModelCombo(&cloudflareModels)" in chat
+    assert "addItem(QStringLiteral(\"CF AI\")" in chat
+    # The relay owns the allowlist, so the picker asks it and caches the answer.
+    assert '"/api/forkbot/models"' in chat
+    assert "kCloudflareAiModelsCacheSetting" in chat
+    # Sending signs the account, model and prompt digest, and posts to the ask
+    # endpoint — never to an agent session.
+    assert '"/api/ai/ask"' in chat
+    assert "forkmesh-ai-ask-v1" in chat
+    assert "QCryptographicHash::Sha256" in chat
+    # The quick-add submit path answers instead of starting an agent.
+    assert "agentIsCloudflareAiProvider(quickAddProvider)" in issues
+    assert "sendPromptToCloudflareAi(title, model)" in issues
+    # Every static fallback id is one the relay's allowlist actually offers.
+    ns = _load_forkbot()
+    allowed = {entry[0] for entry in ns["FORKBOT_AI_MODEL_CHOICES"]}
+    fallback = re.findall(r'QStringLiteral\("(@cf/[^"]+)"\)', internal)
+    assert fallback
+    assert set(fallback) <= allowed
 
 
 def test_web_composers_offer_the_cloudflare_model_picker():
