@@ -3417,6 +3417,26 @@ void MainWindow::openRepoReadme()
         openRepoFile(readme);
 }
 
+// Small round avatar for the latest-commit strip, inlined as a base64 data URI
+// (the same trick octiconMarkup uses) so it can sit right after the "committed
+// x ago" text inside the rich-text label rather than at the far edge of the
+// card. The pixmap is rasterised at size*dpr and drawn at the logical size, so
+// it stays crisp on HiDPI.
+static QString commitAuthorAvatarMarkup(const QByteArray &avatarPng, int size)
+{
+    const QPixmap pixmap = roundedAvatar(avatarPng, size, 0.5);
+    if (pixmap.isNull())
+        return QString();
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    pixmap.save(&buffer, "PNG");
+    return QStringLiteral(
+               " <img src='data:image/png;base64,%1' width='%2' height='%2'>")
+        .arg(QString::fromLatin1(png.toBase64()))
+        .arg(size);
+}
+
 void MainWindow::loadRepoOverview(const QString &path)
 {
     if (!m_overviewList)
@@ -3491,11 +3511,21 @@ void MainWindow::loadRepoOverview(const QString &path)
             // Latest commit: subject, author and "x ago", plus the action/check
             // status glyph for this (the first/most-recent) commit.
             m_commitBarStatusHash = fullHash;
+            // The author's picture rides just after the relative time. Git only
+            // records a name, so our own commits show the account avatar and
+            // everyone else gets the deterministic procedural face keyed by that
+            // name — the same identicon contributors are drawn with elsewhere.
+            const QString me = topBarUserName();
+            const QByteArray avatarPng =
+                (!me.isEmpty() && author.compare(me, Qt::CaseInsensitive) == 0)
+                    ? effectiveUserAvatar()
+                    : forkMeshAvatarPng(author.toLower());
             m_commitBarBodyHtml =
                 QStringLiteral("<b>%1</b> &nbsp; <span style='color:#8b949e'>%2 "
-                               "committed %3</span>")
+                               "committed %3</span>%4")
                     .arg(subject.toHtmlEscaped(), author.toHtmlEscaped(),
-                         when.toHtmlEscaped());
+                         when.toHtmlEscaped(),
+                         commitAuthorAvatarMarkup(avatarPng, 16));
             commitBarText = commitStatusGlyph(fullHash) + m_commitBarBodyHtml;
         } else {
             m_commitBarStatusHash.clear();
