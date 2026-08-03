@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1784874056,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "k4oWb9ueK0rgS4e8V81QThv_kCyOOMd5CG1hUNj54jQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1784874056",
+            "sig": "M-PvaHBfeC_C0skDZf9G1hKEXdtPqPgjIGmokmzNYJxxPZBqqCF3r-bB-8AJZfS2zmuVHB-hxK4Hzjc-preECg",
+            "title": "when you click on the users avatar on the website it shouuld bring you to the settings page",
+            "ts": 1784874056,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 557,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "when you click on the users avatar on the website it shouuld bring you to the settings page",
+    "updatedAt": 1784874056,
+    "votes": 0
+}
