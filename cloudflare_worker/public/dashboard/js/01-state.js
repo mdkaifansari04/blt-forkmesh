@@ -53,7 +53,7 @@
     // no password required. selectedAgentId (adhoc #259) is the id of the agent
     // whose detail page - live transcript + prompt - is currently open, or null
     // for the session list.
-    agentsView: { agents: [], selectedAgentId: null },
+    agentsView: { agents: [], selectedAgentId: null, selectedAgentComposerMode: "" },
     // Home left-rail "Active agent sessions" list (adhoc #81): aggregated,
     // non-terminal agent runs across the repos the session can assign agents
     // to. null until the first cross-repo fetch resolves so the panel can tell
