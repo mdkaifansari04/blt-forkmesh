@@ -7373,6 +7373,134 @@ inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleD
     return out;
 }
 
+// One kind of background work, drawn as a chip in the window's bottom status
+// strip (adhoc #1389). The footer panel this replaces spelled every job out in
+// words beside the live log; here the kind of work is an icon and the thin ring
+// around it is cut into one arc per open ticket — three git jobs, three sections
+// — with the whole ring rotating while any of them is live. Painted rather than
+// assembled from labels so a frame costs one repaint of an 18px square and the
+// spin never relayouts the strip.
+class BackgroundTaskChip : public QWidget
+{
+public:
+    explicit BackgroundTaskChip(const QString &word, QWidget *parent = nullptr)
+        : QWidget(parent), m_word(word)
+    {
+        setFixedSize(kSize, kSize);
+        setFocusPolicy(Qt::NoFocus);
+        setProperty("processKind", m_word);
+        setProperty("processCount", m_count);
+        setAccessibleName(QStringLiteral("%1 background work").arg(m_word));
+        updateAccessibleDescription();
+    }
+
+    QString word() const { return m_word; }
+
+    void setCount(int count)
+    {
+        count = qMax(1, count);
+        if (m_count == count)
+            return;
+        m_count = count;
+        setProperty("processCount", m_count);
+        updateAccessibleDescription();
+        update();
+    }
+
+    // Whole-ring rotation in degrees. One angle drives every chip, so the strip
+    // turns as a single instrument (MainWindow::tickBackgroundQueue advances it).
+    void setAngle(qreal degrees)
+    {
+        m_angle = degrees;
+        update();
+    }
+
+    // Icon per kind of work, so the strip is readable without the words the
+    // panel used to spell out. Unknown kinds fall back to the gear rather than
+    // going unmarked; the chip's tooltip always carries the kind and the count.
+    static QString octiconForWord(const QString &word)
+    {
+        static const QHash<QString, QString> icons{
+            {QStringLiteral("agent"), QStringLiteral("sparkle")},
+            {QStringLiteral("agents"), QStringLiteral("sparkle")},
+            {QStringLiteral("actions"), QStringLiteral("workflow")},
+            {QStringLiteral("avatars"), QStringLiteral("person")},
+            {QStringLiteral("chat"), QStringLiteral("comment")},
+            {QStringLiteral("cleanup"), QStringLiteral("trash")},
+            {QStringLiteral("diff"), QStringLiteral("file-diff")},
+            {QStringLiteral("fork"), QStringLiteral("repo-forked")},
+            {QStringLiteral("git"), QStringLiteral("git-commit")},
+            {QStringLiteral("issues"), QStringLiteral("issue-opened")},
+            {QStringLiteral("mirrors"), QStringLiteral("server")},
+            {QStringLiteral("net"), QStringLiteral("broadcast")},
+            {QStringLiteral("pulls"), QStringLiteral("git-pull-request")},
+            {QStringLiteral("releases"), QStringLiteral("tag")},
+            {QStringLiteral("repo"), QStringLiteral("repo")},
+            {QStringLiteral("scan"), QStringLiteral("search")},
+            {QStringLiteral("sync"), QStringLiteral("sync")},
+            {QStringLiteral("uibuild"), QStringLiteral("code")},
+        };
+        return icons.value(word, QStringLiteral("gear"));
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QColor accent(QString::fromLatin1(Theme::kRunning));
+
+        // The ring: one arc per open ticket, each cut short by a gap so the
+        // sections stay countable, all started from the shared angle. Qt measures
+        // arcs in 1/16th degrees counter-clockwise, so the negated angle is what
+        // makes the ring turn clockwise.
+        const int segments = qBound(1, m_count, kMaxSegments);
+        const qreal inset = kPenWidth / 2.0 + 0.5;
+        const QRectF ring = QRectF(rect()).adjusted(inset, inset, -inset, -inset);
+        const int span = 5760 / segments;
+        // A lone ticket draws a three-quarter arc: a closed circle would spin
+        // invisibly, and the gap is what says "still running".
+        const int gap = segments == 1 ? 1440 : qMax(320, span / 3);
+        QPen pen(accent, kPenWidth);
+        pen.setCapStyle(Qt::FlatCap);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        for (int i = 0; i < segments; ++i)
+            p.drawArc(ring, int(-m_angle * 16) + i * span, span - gap);
+
+        // The glyph sits inside the ring, centred and upright: the motion belongs
+        // to the ring, and a rotating icon this small would just be a smudge.
+        const QPixmap glyph = tintedOcticonPixmap(
+            octiconForWord(m_word),
+            currentThemeIsDark() ? QColor("#c9d1d9") : QColor("#57606a"),
+            kGlyphSize);
+        p.drawPixmap(QPointF((width() - kGlyphSize) / 2.0,
+                             (height() - kGlyphSize) / 2.0),
+                     glyph);
+    }
+
+private:
+    void updateAccessibleDescription()
+    {
+        setAccessibleDescription(
+            QStringLiteral("%1 %2 in progress")
+                .arg(m_count)
+                .arg(m_count == 1 ? QStringLiteral("process")
+                                  : QStringLiteral("processes")));
+    }
+
+    static constexpr int kSize = 18;
+    static constexpr int kGlyphSize = 10;
+    static constexpr qreal kPenWidth = 1.3;
+    // Past this many concurrent tickets of one kind the arcs would be thinner
+    // than the gaps between them, so the ring saturates and the exact count is
+    // left to the tooltip.
+    static constexpr int kMaxSegments = 8;
+    QString m_word;
+    int m_count = 1;
+    qreal m_angle = 0.0;
+};
+
 inline void applyStoredOcticon(QPushButton *button)
 {
     if (!button)

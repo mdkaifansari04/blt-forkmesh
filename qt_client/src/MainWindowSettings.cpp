@@ -4487,12 +4487,12 @@ void setTopMessageAction(QPushButton *button, int agentSessionId)
     if (agentSessionId > 0) {
         button->setText(QStringLiteral("View agent"));
         button->setToolTip(QStringLiteral("Open the agent handling this prompt"));
-        setOcticon(button, "person", 13);
+        setOcticon(button, "person", 11);
     } else {
         button->setText(QStringLiteral("Send to prompt"));
         button->setToolTip(
             QStringLiteral("Add this notification to the footer prompt"));
-        setOcticon(button, "paper-airplane", 13);
+        setOcticon(button, "paper-airplane", 11);
     }
 }
 
@@ -4578,7 +4578,7 @@ void MainWindow::renderTopMessageQueue()
         copy->setCursor(Qt::PointingHandCursor);
         copy->setToolTip(QStringLiteral("Copy this bubble's text"));
         copy->setFocusPolicy(Qt::NoFocus);
-        setOcticon(copy, "copy", 14);
+        setOcticon(copy, "copy", 12);
         connect(copy, &QPushButton::clicked, this, [text = entry.text] {
             QGuiApplication::clipboard()->setText(text);
         });
@@ -4590,14 +4590,14 @@ void MainWindow::renderTopMessageQueue()
         sendToPrompt->setToolTip(
             QStringLiteral("Add this notification to the footer prompt"));
         sendToPrompt->setFocusPolicy(Qt::NoFocus);
-        setOcticon(sendToPrompt, "paper-airplane", 13);
+        setOcticon(sendToPrompt, "paper-airplane", 11);
         connect(sendToPrompt, &QPushButton::clicked, this,
                 [this, text = entry.text] { appendTopMessageToPrompt(text); });
         actionRow->addWidget(sendToPrompt);
 
         auto *close = new QPushButton(actions);
         close->setObjectName("ghostButton");
-        setOcticon(close, "x", 14);
+        setOcticon(close, "x", 12);
         close->setCursor(Qt::PointingHandCursor);
         close->setToolTip(QStringLiteral("Dismiss"));
         close->setFocusPolicy(Qt::NoFocus);

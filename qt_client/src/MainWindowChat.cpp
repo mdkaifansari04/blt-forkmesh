@@ -41,6 +41,7 @@
 #include <QUuid>
 
 #include <algorithm>
+#include <cmath>
 
 #if defined(Q_OS_UNIX)
 #include <cerrno>
@@ -51,17 +52,12 @@
 using namespace forkmesh::ui;
 
 namespace {
-// Background strip geometry (adhoc #421): five one-word rows are visible, the
-// sixth kind of work scrolls.
-constexpr int kBackgroundTaskVisibleRows = 5;
-constexpr int kBackgroundTaskRowSpacing = 3;
-// Work that finishes inside this window never gets a row. Almost every git read
+// Work that finishes inside this window never gets a chip. Almost every git read
 // lands well under it, so the strip shows genuinely slow jobs and no widget is
 // created (let alone destroyed) for the hundreds of fast ones.
 constexpr qint64 kBackgroundTaskShowAfterMs = forkmesh::kBackgroundShowAfterMs;
 // Idle ticks kept before the spin timer stands down, so a burst of short jobs
-// doesn't start/stop it repeatedly. The panel itself stays on screen either way
-// (adhoc #419) — only the spinner animation stands down.
+// doesn't start/stop it repeatedly.
 constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
 // Completed tickets are logged as one execution-aware summary per kind instead
 // of one line each: the hot async git/network paths open hundreds of them and
@@ -614,6 +610,17 @@ QWidget *MainWindow::buildStatusBar()
         QStringLiteral("Running app: %1\nWorking directory: %2")
             .arg(appPath, QDir::toNativeSeparators(QDir::currentPath())));
 
+    // Background work rides the middle of the strip (adhoc #1389): one small
+    // rotating icon per kind of job in flight, in place of the "Background" panel
+    // that used to take a column out of the footer. A stretch on either side
+    // centres the chips, so jobs coming and going never nudge the branch button
+    // on the left or the app path on the right.
+    m_statusBackgroundHost = new QWidget;
+    m_statusBackgroundHost->setObjectName("statusBackgroundTasks");
+    m_statusBackgroundLayout = new QHBoxLayout(m_statusBackgroundHost);
+    m_statusBackgroundLayout->setContentsMargins(0, 0, 0, 0);
+    m_statusBackgroundLayout->setSpacing(5);
+
     auto *row = new QHBoxLayout(bar);
     row->setContentsMargins(10, 0, 10, 0);
     row->setSpacing(10);
@@ -621,6 +628,8 @@ QWidget *MainWindow::buildStatusBar()
     row->addWidget(m_footerWorktreeInfo);
     row->addWidget(m_footerGitIdentity);
     row->addWidget(m_footerCommitInfo);
+    row->addStretch(1);
+    row->addWidget(m_statusBackgroundHost);
     row->addStretch(1);
     row->addWidget(m_statusAppPath);
 
@@ -1384,64 +1393,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_footerUpdateLog->verticalScrollBar(), &QScrollBar::rangeChanged,
             this, [this] { positionFooterLogPauseButton(); });
 
-    // Background work is visible without taking over the app: this narrow strip
-    // sits exactly between the live log and the agent prompt and lists one
-    // spinner plus one-word tag per kind of job in flight. Five tags fit; past
-    // that the list scrolls (adhoc #421). The panel is permanent (adhoc #419):
-    // it holds its slot in the footer and reads "idle" when nothing is running,
-    // so it never appears/disappears under the pointer and the row it would use
-    // is never borrowed by the log or the prompt.
-    m_backgroundQueue = new QFrame;
-    m_backgroundQueue->setObjectName("backgroundTaskQueue");
-    m_backgroundQueue->setFrameShape(QFrame::StyledPanel);
-    m_backgroundQueue->setFixedWidth(132);
-    auto *backgroundLayout = new QVBoxLayout(m_backgroundQueue);
-    backgroundLayout->setContentsMargins(9, 6, 6, 6);
-    backgroundLayout->setSpacing(4);
-    m_backgroundQueueTitle = new QLabel(QStringLiteral("Background"));
-    m_backgroundQueueTitle->setObjectName("backgroundTaskQueueTitle");
-    QFont backgroundTitleFont = m_backgroundQueueTitle->font();
-    backgroundTitleFont.setBold(true);
-    backgroundTitleFont.setPointSizeF(
-        qMax(8.0, backgroundTitleFont.pointSizeF() - 1.0));
-    m_backgroundQueueTitle->setFont(backgroundTitleFont);
-    backgroundLayout->addWidget(m_backgroundQueueTitle);
-    m_backgroundQueueRowsHost = new QWidget;
-    m_backgroundQueueRowsLayout =
-        new QVBoxLayout(m_backgroundQueueRowsHost);
-    m_backgroundQueueRowsLayout->setContentsMargins(0, 0, 0, 0);
-    m_backgroundQueueRowsLayout->setSpacing(kBackgroundTaskRowSpacing);
-    // Placeholder for the (common) case of nothing in flight: an always-visible
-    // panel with an empty body would read as broken, and the dimmed word keeps
-    // the list's height stable as rows come and go.
-    m_backgroundQueueIdleLabel = new QLabel(QStringLiteral("idle"));
-    m_backgroundQueueIdleLabel->setObjectName("backgroundTaskIdle");
-    m_backgroundQueueIdleLabel->setToolTip(
-        QStringLiteral("No background work in flight"));
-    m_backgroundQueueRowsLayout->addWidget(m_backgroundQueueIdleLabel);
-    m_backgroundQueueRowsLayout->addStretch(1);
-    m_backgroundQueueScroll = new QScrollArea;
-    m_backgroundQueueScroll->setObjectName("backgroundTaskQueueScroll");
-    m_backgroundQueueScroll->setFrameShape(QFrame::NoFrame);
-    m_backgroundQueueScroll->setWidgetResizable(true);
-    m_backgroundQueueScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_backgroundQueueScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    m_backgroundQueueScroll->setWidget(m_backgroundQueueRowsHost);
-    // Height for exactly kBackgroundTaskVisibleRows rows: the sixth kind of work
-    // pushes the list into its scrollbar instead of stretching the footer.
-    QFont backgroundRowFont = m_backgroundQueue->font();
-    backgroundRowFont.setPointSizeF(
-        qMax(7.5, backgroundRowFont.pointSizeF() - 1.0));
-    m_backgroundTaskRowHeight = QFontMetrics(backgroundRowFont).height() + 2;
-    m_backgroundQueueIdleLabel->setFont(backgroundRowFont);
-    m_backgroundQueueIdleLabel->setFixedHeight(m_backgroundTaskRowHeight);
-    m_backgroundQueueIdleLabel->setStyleSheet(
-        QStringLiteral("color:#6e7681;"));
-    m_backgroundQueueScroll->setMaximumHeight(
-        kBackgroundTaskVisibleRows * m_backgroundTaskRowHeight +
-        (kBackgroundTaskVisibleRows - 1) * kBackgroundTaskRowSpacing);
-    backgroundLayout->addWidget(m_backgroundQueueScroll, 1);
-
+    // Background work no longer takes a column out of the footer (adhoc #1389):
+    // it lives in the bottom status strip as one small rotating icon per kind of
+    // job in flight (buildStatusBar / tickBackgroundQueue), which gives the log
+    // and the prompt the width the "Background" panel used to hold.
+    //
     // Every announcement in the process lands here. The hop through
     // invokeMethod() is what lets tickets be opened off the GUI thread (mirror
     // scans, contribution snapshots) while all queue state stays on one thread;
@@ -1460,9 +1416,9 @@ QWidget *MainWindow::buildNetworkLogDock()
                 Qt::QueuedConnection);
         });
 
-    // The live log and Background queue form one left-hand region, butted
-    // together and ending where the prompt half begins. Each compact panel has
-    // the same rounded green border language as the prompt.
+    // The live log is the footer's whole left-hand region now that the Background
+    // panel has moved to the status strip (adhoc #1389), ending where the prompt
+    // half begins. It keeps the same rounded green border language as the prompt.
     auto *logPanel = new QFrame;
     logPanel->setObjectName(QStringLiteral("footerLogPanel"));
     auto *logPanelLayout = new QVBoxLayout(logPanel);
@@ -1472,23 +1428,22 @@ QWidget *MainWindow::buildNetworkLogDock()
     // the composer instead, so a long error never steals a line from this log.
     logPanelLayout->addWidget(m_footerUpdateLog, 1);
 
+    // The region wrapper stays even with a single panel in it: hiding the whole
+    // left half is how the Changes view hands the footer over to the prompt
+    // (setGitPromptOverlay), and that reads m_footerLeftRegion.
     auto *leftRegion = new QWidget;
     m_footerLeftRegion = leftRegion;
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
     auto *leftRegionLayout = new QHBoxLayout(leftRegion);
     leftRegionLayout->setContentsMargins(0, 0, 0, 0);
-    // The log and the Background panel are separated by exactly the gap the row
-    // uses everywhere else — the same 8px as the dock's own margins and the gap
-    // to the prompt (adhoc #92). Butting them together (adhoc #84) left their two
-    // rounded borders touching as one 2px line that pinched apart at the corners.
     leftRegionLayout->setSpacing(8);
     leftRegionLayout->addWidget(logPanel, 1);
-    leftRegionLayout->addWidget(m_backgroundQueue, 0);
 
-    // Horizontal split: bordered log + Background, then prompt. The hairline
-    // rule that used to sit between the two halves is gone (adhoc #84): every
-    // panel in the row already carries its own border, so the extra line was one
-    // divider too many.
+    // Horizontal split: bordered log, then prompt — an even half each, which is
+    // the width the prompt had before the Background panel took a fixed column
+    // out of the middle (adhoc #1389). The hairline rule that used to sit between
+    // the two halves is gone (adhoc #84): every panel in the row already carries
+    // its own border, so the extra line was one divider too many.
     auto *dockRow = new QHBoxLayout(dock);
     dockRow->setContentsMargins(8, 8, 8, 8);
     dockRow->setSpacing(8);
@@ -1508,8 +1463,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     return dock;
 }
 
-// One-word tag for the strip: callers may hand over a phrase, the row shows the
-// first word ("git", "net", "fork" …) and keeps the rest for the tooltip.
+// One-word tag for the strip: callers may hand over a phrase, the icon maps the
+// first word ("git", "net", "fork" …) to a glyph and keeps the detail in its
+// tooltip.
 QString MainWindow::backgroundTaskWord(const QString &kind)
 {
     QString word;
@@ -1586,14 +1542,14 @@ void MainWindow::flushBackgroundOutcomes(bool force)
     }
 }
 
-// Ticket bookkeeping. Rows are *not* touched here: a job that finishes inside
+// Ticket bookkeeping. Chips are *not* touched here: a job that finishes inside
 // kBackgroundTaskShowAfterMs must never create a widget, so the sweep below owns
 // what is on screen and this only maintains the counts it reads.
 void MainWindow::noteBackgroundActivity(quint64 id, const QString &kind,
                                         const QString &detail,
                                         bool backgrounded, bool started)
 {
-    if (!m_backgroundQueue || !m_backgroundQueueRowsLayout)
+    if (!m_statusBackgroundLayout)
         return;
     if (started) {
         const QString word = backgroundTaskWord(kind);
@@ -1639,100 +1595,75 @@ void MainWindow::noteBackgroundActivity(quint64 id, const QString &kind,
     }
 }
 
-// Advance the spinner glyphs and reconcile the visible rows with the open
-// tickets. Cheap: at most a handful of kinds are ever in flight at once.
+// Advance the shared ring rotation and reconcile the visible chips with the open
+// tickets. Cheap: at most a handful of kinds are ever in flight at once, and a
+// frame is one repaint of an 18px square per chip.
 void MainWindow::tickBackgroundQueue()
 {
-    static const QStringList frames{
-        QString::fromUtf8("\xE2\xA0\x8B"), QString::fromUtf8("\xE2\xA0\x99"),
-        QString::fromUtf8("\xE2\xA0\xB9"), QString::fromUtf8("\xE2\xA0\xB8"),
-        QString::fromUtf8("\xE2\xA0\xBC"), QString::fromUtf8("\xE2\xA0\xB4"),
-        QString::fromUtf8("\xE2\xA0\xA6"), QString::fromUtf8("\xE2\xA0\xA7"),
-        QString::fromUtf8("\xE2\xA0\x87"), QString::fromUtf8("\xE2\xA0\x8F"),
-    };
-    if (!m_backgroundQueue || !m_backgroundQueueRowsLayout)
+    if (!m_statusBackgroundLayout)
         return;
-    m_backgroundTaskSpinFrame = (m_backgroundTaskSpinFrame + 1) % frames.size();
-    const QString glyph = frames.at(m_backgroundTaskSpinFrame);
+    // ~100°/s: fast enough to read as live work, slow enough that the arc
+    // sections stay countable while they travel.
+    m_backgroundTaskSpinAngle =
+        std::fmod(m_backgroundTaskSpinAngle + 9.0, 360.0);
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
 
-    // Retire rows whose last ticket closed.
-    const QStringList shown = m_backgroundTaskRows.keys();
+    // Retire chips whose last ticket closed.
+    const QStringList shown = m_backgroundTaskChips.keys();
     for (const QString &word : shown) {
         if (m_backgroundTaskCounts.contains(word))
             continue;
-        if (QWidget *row = m_backgroundTaskRows.take(word)) {
+        if (QWidget *chip = m_backgroundTaskChips.take(word)) {
             // Drop it from the layout now: deleteLater() alone would leave the
-            // dead row occupying a slot until the next event-loop pass, and a
+            // dead chip holding its slot until the next event-loop pass, and a
             // fresh ticket for the same word would draw a second one beside it.
-            m_backgroundQueueRowsLayout->removeWidget(row);
-            row->hide();
-            row->deleteLater();
+            m_statusBackgroundLayout->removeWidget(chip);
+            chip->hide();
+            chip->deleteLater();
         }
-        m_backgroundTaskSpinners.remove(word);
-        m_backgroundTaskLabels.remove(word);
     }
 
-    // Add or refresh a row per kind that has outlived the show delay.
+    // Add or refresh a chip per kind that has outlived the show delay.
     for (auto it = m_backgroundTaskCounts.constBegin();
          it != m_backgroundTaskCounts.constEnd(); ++it) {
         const QString &word = it.key();
         if (now - m_backgroundTaskSince.value(word, now) <
             kBackgroundTaskShowAfterMs)
             continue;
-        QLabel *spinner = m_backgroundTaskSpinners.value(word);
-        QLabel *label = m_backgroundTaskLabels.value(word);
-        if (!spinner || !label) {
-            auto *row = new QWidget(m_backgroundQueueRowsHost);
-            row->setObjectName("backgroundTaskRow");
-            row->setFixedHeight(m_backgroundTaskRowHeight);
-            auto *layout = new QHBoxLayout(row);
-            layout->setContentsMargins(0, 0, 0, 0);
-            layout->setSpacing(6);
-            spinner = new QLabel(glyph);
-            spinner->setObjectName("backgroundTaskSpinner");
-            spinner->setStyleSheet(
-                QStringLiteral("color:%1;font-weight:700;")
-                    .arg(QString::fromLatin1(Theme::kRunning)));
-            spinner->setFixedWidth(14);
-            label = new QLabel(word);
-            label->setObjectName("backgroundTaskNote");
-            QFont noteFont = label->font();
-            noteFont.setPointSizeF(qMax(7.5, noteFont.pointSizeF() - 1.0));
-            label->setFont(noteFont);
-            spinner->setFont(noteFont);
-            layout->addWidget(spinner, 0, Qt::AlignVCenter);
-            layout->addWidget(label, 1);
-            m_backgroundQueueRowsLayout->insertWidget(
-                qMax(0, m_backgroundQueueRowsLayout->count() - 1), row);
-            m_backgroundTaskRows.insert(word, row);
-            m_backgroundTaskSpinners.insert(word, spinner);
-            m_backgroundTaskLabels.insert(word, label);
+        forkmesh::ui::BackgroundTaskChip *chip =
+            m_backgroundTaskChips.value(word);
+        if (!chip) {
+            chip = new forkmesh::ui::BackgroundTaskChip(word,
+                                                        m_statusBackgroundHost);
+            chip->setObjectName("statusBackgroundTaskChip");
+            // Alphabetical order, so a busy strip doesn't reshuffle itself every
+            // time a kind comes and goes (m_backgroundTaskCounts is a hash, and
+            // its iteration order is not stable). The chips already in the layout
+            // are sorted, so counting the ones that sort ahead gives the slot.
+            int slot = 0;
+            for (auto chipIt = m_backgroundTaskChips.constBegin();
+                 chipIt != m_backgroundTaskChips.constEnd(); ++chipIt)
+                if (chipIt.key() < word)
+                    ++slot;
+            m_statusBackgroundLayout->insertWidget(slot, chip);
+            m_backgroundTaskChips.insert(word, chip);
         }
-        spinner->setText(glyph);
         const int count = it.value();
-        label->setText(count > 1 ? QStringLiteral("%1 %2%3")
-                                       .arg(word)
-                                       .arg(QChar(0x00D7))
-                                       .arg(count)
-                                 : word);
+        chip->setCount(count);
+        chip->setAngle(m_backgroundTaskSpinAngle);
         const QString note = m_backgroundTaskDetails.value(word);
-        label->setToolTip(note.isEmpty() ? word : note);
+        chip->setToolTip(count > 1 ? QStringLiteral("%1 %2%3\n%4")
+                                         .arg(word)
+                                         .arg(QChar(0x00D7))
+                                         .arg(count)
+                                         .arg(note)
+                                         .trimmed()
+                                   : QStringLiteral("%1\n%2")
+                                         .arg(word, note)
+                                         .trimmed());
     }
 
-    // The panel itself never hides (adhoc #419); the placeholder stands in for
-    // the rows while nothing is in flight.
-    const int visible = m_backgroundTaskRows.size();
-    m_backgroundQueue->show();
-    if (m_backgroundQueueIdleLabel)
-        m_backgroundQueueIdleLabel->setVisible(visible == 0);
-    if (m_backgroundQueueTitle) {
-        m_backgroundQueueTitle->setText(
-            visible > 0 ? QStringLiteral("Background %1 %2")
-                              .arg(QChar(0x00B7))
-                              .arg(visible)
-                        : QStringLiteral("Background"));
-    }
+    const int visible = m_backgroundTaskChips.size();
 
     // Stand the timer down once nothing is running and nothing is drawn, with a
     // grace period so a stream of short jobs doesn't flap it. The pending ✓ / ✕
@@ -5674,7 +5605,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageCopy->setCursor(Qt::PointingHandCursor);
     m_topMessageCopy->setToolTip(QStringLiteral("Copy this bubble's text"));
     m_topMessageCopy->setFocusPolicy(Qt::NoFocus);
-    setOcticon(m_topMessageCopy, "copy", 14);
+    setOcticon(m_topMessageCopy, "copy", 12);
     m_topMessageCopy->hide();
     connect(m_topMessageCopy, &QPushButton::clicked, this, [this] {
         if (!m_topMessageRaw.isEmpty())
@@ -5687,7 +5618,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageSendToPrompt->setToolTip(
         QStringLiteral("Add this notification to the footer prompt"));
     m_topMessageSendToPrompt->setFocusPolicy(Qt::NoFocus);
-    setOcticon(m_topMessageSendToPrompt, "paper-airplane", 13);
+    setOcticon(m_topMessageSendToPrompt, "paper-airplane", 11);
     m_topMessageSendToPrompt->hide();
     connect(m_topMessageSendToPrompt, &QPushButton::clicked, this, [this] {
         if (m_topMessageAgentSessionId > 0) {
@@ -5713,7 +5644,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // A plain "x" to dismiss a bubble without copying it.
     m_topMessageClose = new QPushButton;
     m_topMessageClose->setObjectName("ghostButton");
-    setOcticon(m_topMessageClose, "x", 14);
+    setOcticon(m_topMessageClose, "x", 12);
     m_topMessageClose->setCursor(Qt::PointingHandCursor);
     m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
     m_topMessageClose->setFocusPolicy(Qt::NoFocus);
