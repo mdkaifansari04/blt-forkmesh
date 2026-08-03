@@ -4777,12 +4777,12 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
   });
 });
 
-test("Office glass has one stable shell and one elevator-car layer", async ({
+test("Office facade conceals interiors while preserving elevator glazing", async ({
   page,
 }) => {
-  await prepareWorldPage(page, "office-stable-glass");
+  await prepareWorldPage(page, "office-opaque-facade");
   await waitForWorld(page);
-  const glass = await page.locator("forkmesh-world").evaluate((shell) => {
+  const facade = await page.locator("forkmesh-world").evaluate((shell) => {
     const scene = shell.world.scene;
     const transparentMeshes = (root) => {
       const meshes = [];
@@ -4798,7 +4798,7 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
       if (
         object.isMesh &&
         object.userData?.landmark === "office" &&
-        object.material?.transparent
+        object.material?.name === "forkmesh-office-opaque-facade"
       ) {
         exterior.push(object);
       }
@@ -4826,10 +4826,10 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
     return {
       exterior: {
         count: exterior.length,
-        stable: exterior.every((mesh) =>
-          mesh.material.depthWrite === false &&
-          mesh.castShadow === false &&
-          mesh.receiveShadow === false
+        opaque: exterior.every((mesh) =>
+          mesh.material.transparent === false &&
+          mesh.material.opacity === 1 &&
+          mesh.material.depthWrite !== false
         ),
       },
       teamLayerCount: teamLayers.length,
@@ -4857,13 +4857,13 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
       },
     };
   });
-  expect(glass.exterior.count).toBeGreaterThanOrEqual(20);
-  expect(glass.exterior.stable).toBe(true);
-  expect(glass.teamLayerCount).toBe(0);
-  expect(glass.rooftop).toEqual({ count: 5, stable: true });
-  expect(glass.shaftLayerCount).toBe(0);
-  expect(glass.car).toEqual({ count: 5, stable: true });
-  expect(glass.doors).toEqual({ count: 2, stable: true });
+  expect(facade.exterior.count).toBeGreaterThanOrEqual(12);
+  expect(facade.exterior.opaque).toBe(true);
+  expect(facade.teamLayerCount).toBe(0);
+  expect(facade.rooftop).toEqual({ count: 5, stable: true });
+  expect(facade.shaftLayerCount).toBe(0);
+  expect(facade.car).toEqual({ count: 5, stable: true });
+  expect(facade.doors).toEqual({ count: 2, stable: true });
 });
 
 test("Office elevator exposes five floors while enforcing team access", async ({

@@ -15371,13 +15371,11 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     metalness: 0.48,
     roughness: 0.42,
   });
-  const glass = makeMaterial(THREE, "#9ef7c6", {
-    transparent: true,
-    opacity: 0.24,
-    metalness: 0,
-    roughness: 0.62,
-    depthWrite: false,
+  const facade = makeMaterial(THREE, "#173c32", {
+    metalness: 0.22,
+    roughness: 0.74,
   });
+  facade.name = "forkmesh-office-opaque-facade";
   const doorMaterial = makeMaterial(THREE, "#c9fff3", {
     transparent: true,
     opacity: 0.3,
@@ -15417,7 +15415,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       rooftopY,
       wallThickness,
     ),
-    glass,
+    facade,
   );
   rearWall.position.set(
     0,
@@ -15436,7 +15434,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
         rooftopY,
         OFFICE_DEPTH,
       ),
-      glass,
+      facade,
     );
     sideWall.position.set(x, rooftopY / 2, 0);
     group.add(sideWall);
@@ -15490,7 +15488,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       0.12,
       OFFICE_HEIGHT / 2,
       OFFICE_FRONT_Z - 0.03,
-      glass,
+      facade,
     );
   }
   for (const x of [
@@ -15523,7 +15521,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
           0.14,
           baseY + OFFICE_FLOOR_HEIGHT / 2,
           OFFICE_FRONT_Z - 0.03,
-          glass,
+          facade,
         );
       }
     }
@@ -15690,9 +15688,8 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     interactive.push(child);
   });
   setShadows(group);
-  // Transparent walls are a view envelope, not shadow casters. Keeping them
-  // out of both the depth and shadow buffers prevents bright/dark popping as
-  // the camera crosses the tower while preserving the opaque frame.
+  // The entry glazing does not cast shadows, while the opaque facade retains
+  // its normal depth and shadow treatment to conceal interior activity.
   group.traverse((child) => {
     if (!child.isMesh || !child.material?.transparent) return;
     child.castShadow = false;
@@ -20191,8 +20188,8 @@ export function createWorldScene({
     portalLabel.scale.set(6.4, 2.4, 1);
     lobbyPortal.add(portalLabel);
     floorGroup.add(lobbyPortal);
-    // The transparent tower is an exterior cutaway: visitors should see every
-    // furnished floor through its glass before they enter the building.
+    // The opaque tower keeps work areas out of exterior view until visitors
+    // enter the building.
     floorGroup.visible = true;
     officeInterior.add(floorGroup);
     officeFloorGroups.set(floor.id, floorGroup);
@@ -20623,10 +20620,8 @@ export function createWorldScene({
     rooftop.add(rooftopLaptop);
   }
   addOfficeFunFloorProps();
-  // The exterior tower already owns the curtain wall. A second interior shell
-  // sat almost coplanar with it and made the transparent panes flash as the
-  // depth buffer alternated between layers. Interior props now render through
-  // that single stable glass envelope.
+  // The exterior tower owns the opaque curtain wall, so interior props remain
+  // hidden until visitors enter the building.
   const officeBuilding = landmarkObjects.get("office");
   const officeSlidingDoorPanels =
     officeBuilding?.userData?.officeDoorPanels || [];
