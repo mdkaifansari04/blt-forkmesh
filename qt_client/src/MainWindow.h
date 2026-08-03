@@ -6433,6 +6433,7 @@ private:
     int m_searchPending = 0;         // how many of those are still running
     QString m_searchPageQuery;
     QLabel *m_commitsUnsyncedBanner = nullptr; // "N commits not yet synced" banner
+    QPushButton *m_commitsUnsyncedSyncButton = nullptr;
     // Expandable file view under the banner: one entry per pending commit, its
     // children the files that commit touches. Toggled by the banner's
     // "Show files" link; the expanded state survives reloads.
