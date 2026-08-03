@@ -170,7 +170,7 @@ def test_leaderboard_circle_has_a_minimal_opaque_cover_with_an_open_door():
     assert "doorWidth" in cover
     assert "doorHeight" in cover
     assert "new THREE.BufferGeometry()" in cover
-    assert "side: THREE.FrontSide" in cover
+    assert "side: THREE.DoubleSide" in cover
     assert "transparent: false" in cover
     assert "opacity: 1" in cover
     assert "depthWrite: true" in cover
@@ -186,7 +186,7 @@ def test_leaderboard_circle_has_a_minimal_opaque_cover_with_an_open_door():
     assert "interactive.push(leaderboardCover)" in district
 
 
-def test_nodes_have_a_closed_opaque_cover_and_hidden_interior_scene():
+def test_nodes_keep_their_inside_facing_cover_around_the_interior_scene():
     scene = source()
     wrapper = scene.split("function createNodeOpaqueCover", 1)[1].split(
         "function setOpaqueCoverDoorOpen", 1
@@ -206,7 +206,7 @@ def test_nodes_have_a_closed_opaque_cover_and_hidden_interior_scene():
     assert "nodeInterior.add(cabinet)" in scene
     assert "nodeCoverContainsWorldPoint(" in occupancy
     assert "nodeInterior.visible = occupied" in occupancy
-    assert "nodeCover.visible = !occupied" in occupancy
+    assert "nodeCover.visible = true" in occupancy
     assert "constrainNodeCover(previousHorizontalPosition)" in scene
 
 
@@ -230,6 +230,7 @@ def test_leaderboard_contents_are_not_drawn_until_the_avatar_is_inside():
     assert "? -OFFICE_AVATAR_RADIUS" in occupancy
     assert ": OFFICE_AVATAR_RADIUS" in occupancy
     assert "leaderboardInterior.visible = occupied" in occupancy
+    assert "leaderboardCover.visible = true" in occupancy
     assert "updateLeaderboardCircleOccupancy(true);" in scene
     assert "updateLeaderboardCircleOccupancy();" in scene
 

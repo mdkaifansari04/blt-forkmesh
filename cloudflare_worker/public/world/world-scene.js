@@ -9042,7 +9042,10 @@ function createOpaqueDistrictCover(
       transparent: false,
       opacity: 1,
       depthWrite: true,
-      side: THREE.FrontSide,
+      // The shell remains present while its interior scene is active. Draw
+      // both faces so visitors can read the walls and find the doorway again
+      // from inside instead of looking out into an empty scene.
+      side: THREE.DoubleSide,
     }),
   );
   cover.name = name;
@@ -9139,6 +9142,17 @@ function setOpaqueCoverDoorOpen(cover, open) {
       (panel.userData.openZ - panel.userData.closedZ) * amount;
   });
   if (cover?.userData) cover.userData.doorOpen = Boolean(open);
+}
+
+function setSlidingEnclosureDoorOpen(door, open) {
+  const amount = open ? 1 : 0;
+  (door?.userData?.slidingPanels || []).forEach((panel) => {
+    const axis = panel.userData.slideAxis === "x" ? "x" : "z";
+    panel.position[axis] =
+      panel.userData.closedOffset +
+      (panel.userData.openOffset - panel.userData.closedOffset) * amount;
+  });
+  if (door?.userData) door.userData.doorOpen = Boolean(open);
 }
 
 const START_HERE_STEPS = Object.freeze([
@@ -11313,8 +11327,9 @@ function createRepositoryGeodesicDome(THREE) {
     opacity: 1,
     depthWrite: true,
     roughness: 0.82,
+    side: THREE.DoubleSide,
   });
-  [-1, 1].forEach((side) => {
+  const doorPanels = [-1, 1].map((side) => {
     const door = new THREE.Mesh(
       new THREE.PlaneGeometry(4, 8),
       doorMaterial,
@@ -11328,8 +11343,13 @@ function createRepositoryGeodesicDome(THREE) {
       4,
       side * 2,
     );
+    door.userData.slideAxis = "z";
+    door.userData.closedOffset = side * 2;
+    door.userData.openOffset = side * 6.15;
     doors.add(door);
+    return door;
   });
+  doors.userData.slidingPanels = doorPanels;
   dome.add(doors);
   dome.userData.doorPanels = doors;
 
@@ -18599,6 +18619,7 @@ export function createWorldScene({
     transparent: false,
     opacity: 1,
     depthWrite: true,
+    side: THREE.DoubleSide,
   });
   const yurtWallPositions = [];
   for (let segment = 0; segment < 40; segment += 1) {
@@ -18659,7 +18680,10 @@ export function createWorldScene({
   });
   const yurtRoof = new THREE.Mesh(
     new THREE.CylinderGeometry(0.68, MEMBERS_YURT_RADIUS + 0.45, 5.2, 40, 1, true),
-    makeMaterial(THREE, "#8f3429", { roughness: 0.88 }),
+    makeMaterial(THREE, "#8f3429", {
+      roughness: 0.88,
+      side: THREE.DoubleSide,
+    }),
   );
   yurtRoof.name = "members-yurt-roof";
   yurtRoof.position.y = 8.45;
@@ -18667,14 +18691,29 @@ export function createWorldScene({
   yurtRoof.receiveShadow = true;
   membersYurt.add(yurtRoof);
 
-  const yurtDoor = new THREE.Mesh(
-    new THREE.BoxGeometry(3.5, 4.5, 0.32),
-    makeMaterial(THREE, "#29180f", { roughness: 0.95 }),
-  );
+  const yurtDoor = new THREE.Group();
   yurtDoor.name = "members-yurt-door";
   yurtDoor.position.set(0, 2.25, -MEMBERS_YURT_RADIUS - 0.12);
   yurtDoor.userData.membersYurtDoor = true;
-  interactive.push(yurtDoor);
+  const yurtDoorMaterial = makeMaterial(THREE, "#29180f", {
+    roughness: 0.95,
+  });
+  const yurtDoorPanels = [-1, 1].map((side) => {
+    const panel = new THREE.Mesh(
+      new THREE.BoxGeometry(1.75, 4.5, 0.32),
+      yurtDoorMaterial,
+    );
+    panel.name = `members-yurt-door-${side < 0 ? "left" : "right"}`;
+    panel.position.x = side * 0.875;
+    panel.userData.slideAxis = "x";
+    panel.userData.closedOffset = side * 0.875;
+    panel.userData.openOffset = side * 2.775;
+    panel.userData.membersYurtDoor = true;
+    interactive.push(panel);
+    yurtDoor.add(panel);
+    return panel;
+  });
+  yurtDoor.userData.slidingPanels = yurtDoorPanels;
   membersYurt.add(yurtDoor);
   membersYurt.userData.enclosureShell = true;
   [-1.95, 1.95].forEach((x) => {
@@ -19979,7 +20018,9 @@ export function createWorldScene({
     const interior = district.userData.repositoryDomeInterior;
     if (interior) interior.visible = occupied;
     const dome = district.userData.repositoryDome;
-    if (dome) dome.visible = !occupied;
+    // Keep the enclosure around the active interior. Its double-sided shell
+    // and open, still-visible door give the visitor a readable route out.
+    if (dome) dome.visible = true;
     const catalog = world.userData.repositoryCatalogLayer;
     if (catalog) {
       if (compactRenderer) {
@@ -20009,7 +20050,7 @@ export function createWorldScene({
     leaderboardCircleOccupied = occupied;
     world.userData.leaderboardCircleOccupied = occupied;
     leaderboardInterior.visible = occupied;
-    leaderboardCover.visible = !occupied;
+    leaderboardCover.visible = true;
     return occupied;
   }
 
@@ -20026,7 +20067,7 @@ export function createWorldScene({
     nodeCoverOccupied = occupied;
     world.userData.nodeCoverOccupied = occupied;
     nodeInterior.visible = occupied;
-    nodeCover.visible = !occupied;
+    nodeCover.visible = true;
     return occupied;
   }
 
@@ -20042,7 +20083,7 @@ export function createWorldScene({
     membersYurtOccupied = occupied;
     world.userData.membersYurtOccupied = occupied;
     membersYurtInterior.visible = occupied;
-    membersYurt.visible = !occupied;
+    membersYurt.visible = true;
     loungeMembers.forEach((figure) => {
       figure.visible = occupied;
     });
@@ -20069,7 +20110,10 @@ export function createWorldScene({
       player.position.z -
         (campfire.position.z - MEMBERS_YURT_RADIUS),
     );
-    yurtDoor.visible = !membersYurtOccupied && yurtDoorDistance >= 6;
+    setSlidingEnclosureDoorOpen(
+      yurtDoor,
+      membersYurtOccupied || yurtDoorDistance < 6,
+    );
     const repositoryDistrict = landmarkObjects.get("repositories");
     const repositoryDoors = repositoryDistrict?.userData?.repositoryDome
       ?.userData?.doorPanels;
@@ -20079,8 +20123,11 @@ export function createWorldScene({
           (repositoryDistrict.position.x - REPOSITORY_DOME_RADIUS),
         player.position.z - repositoryDistrict.position.z,
       );
-      repositoryDoors.visible =
-        !repositoryDomeOccupied && repositoryDoorDistance >= 7;
+      repositoryDoors.visible = true;
+      setSlidingEnclosureDoorOpen(
+        repositoryDoors,
+        repositoryDomeOccupied || repositoryDoorDistance < 7,
+      );
     }
   }
 
