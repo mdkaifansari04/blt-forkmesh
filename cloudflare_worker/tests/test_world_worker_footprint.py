@@ -36,6 +36,7 @@ def test_worker_footprint_budgets_match_current_source_tree():
     assert "world/world-office-meeting.js" not in data["initialWorldModules"]
     assert "world/world-office-tasks.js" not in data["initialWorldModules"]
     assert "world/world-discord-panel.js" not in data["initialWorldModules"]
+    assert "qr.js" not in data["initialWorldModules"]
     assert any(
         item["name"] == "repository_imports.py"
         and item["phase"] == "on-demand"
@@ -160,6 +161,13 @@ def test_office_runtime_is_outside_the_initial_world_module_graph():
     assert 'from "./world-office-meeting.js"' not in world
     assert 'from "./world-office-tasks.js"' not in world
     assert 'from "./world-office.js"' not in SCENE
+
+
+def test_wallet_qr_encoder_is_outside_the_initial_world_module_graph():
+    world = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
+    assert 'import("../qr.js")' in SCENE
+    assert 'import "../qr.js"' not in SCENE
+    assert "QR_MODULE_READY" in world
 
 
 def test_idle_deploy_watch_does_not_burn_the_free_request_budget():

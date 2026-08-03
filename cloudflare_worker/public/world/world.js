@@ -42,6 +42,7 @@ import { officeFloorsForTeam } from "./world-office-tower.js";
 import { createWorldSocketRecoveryTimers } from "./world-socket-recovery.js";
 import {
   CAMPFIRE_SEATED_ACTIVITY,
+  QR_MODULE_READY,
   SWING_RIDING_ACTIVITY,
   createWorldScene,
 } from "./world-scene.js";
@@ -6851,6 +6852,12 @@ class ForkMeshWorld extends HTMLElement {
       // curtain one frame first: the row it is about to freeze on is then
       // already on screen with a running counter.
       await this.nextBootPaint();
+      if (this.destroyed) return;
+      // The scene's wallet chips use the optional QR encoder. Its download
+      // starts when world-scene evaluates; wait here so a valid wallet gets
+      // its QR code on the first scene render without adding the encoder to
+      // the initial static module graph.
+      await QR_MODULE_READY;
       if (this.destroyed) return;
       this.world = createWorldScene({
         THREE,
