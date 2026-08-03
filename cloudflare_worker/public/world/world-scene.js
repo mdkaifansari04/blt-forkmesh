@@ -576,6 +576,8 @@ const REPOSITORY_SIZE_MAP_MAX_RINGS = 4;
 const REPOSITORY_SIZE_MAP_MAX_SEGMENTS = 420;
 const REPOSITORY_CATALOG_MAX = 200;
 const REPOSITORY_EDGE_RADIUS = 68;
+const REPOSITORY_DOME_RADIUS = REPOSITORY_GROUND_RADIUS - 1.5;
+const REPOSITORY_DOME_DETAIL = 2;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -10782,6 +10784,129 @@ function repositoryWedgeGeometry(
   return geometry;
 }
 
+function createRepositoryGeodesicDome(THREE) {
+  const dome = new THREE.Group();
+  dome.name = "repository-geodesic-dome";
+
+  // Build the upper half of an icosphere as individual struts instead of a
+  // translucent shell. The repository ring remains fully readable from every
+  // side while its triangular frame makes the district feel like one covered
+  // space rather than another open plaza.
+  const source = new THREE.IcosahedronGeometry(
+    REPOSITORY_DOME_RADIUS,
+    REPOSITORY_DOME_DETAIL,
+  );
+  const vertices = source.getAttribute("position");
+  const strutPositions = [];
+  const seenEdges = new Set();
+  const floorCutoff = -REPOSITORY_DOME_RADIUS * 0.04;
+  const readVertex = (index) => ({
+    x: vertices.getX(index),
+    y: vertices.getY(index),
+    z: vertices.getZ(index),
+  });
+  const vertexKey = (vertex) =>
+    `${vertex.x.toFixed(3)}:${vertex.y.toFixed(3)}:${vertex.z.toFixed(3)}`;
+  const addStrut = (left, right) => {
+    // Omitting the lower faces gives the structure a true walk-in dome rather
+    // than a buried geodesic sphere below the repository ground.
+    if (left.y < floorCutoff || right.y < floorCutoff) return;
+    const leftKey = vertexKey(left);
+    const rightKey = vertexKey(right);
+    const key = leftKey < rightKey
+      ? `${leftKey}|${rightKey}`
+      : `${rightKey}|${leftKey}`;
+    if (seenEdges.has(key)) return;
+    seenEdges.add(key);
+    strutPositions.push(
+      left.x,
+      left.y,
+      left.z,
+      right.x,
+      right.y,
+      right.z,
+    );
+  };
+  for (let index = 0; index < vertices.count; index += 3) {
+    const triangle = [
+      readVertex(index),
+      readVertex(index + 1),
+      readVertex(index + 2),
+    ];
+    addStrut(triangle[0], triangle[1]);
+    addStrut(triangle[1], triangle[2]);
+    addStrut(triangle[2], triangle[0]);
+  }
+  source.dispose();
+
+  const strutGeometry = new THREE.CylinderGeometry(0.032, 0.032, 1, 6);
+  const strutMaterial = makeMaterial(THREE, "#8ce8ff", {
+    emissive: "#1e637c",
+    emissiveIntensity: 0.42,
+    transparent: true,
+    opacity: 0.58,
+    depthWrite: false,
+    roughness: 0.34,
+  });
+  const struts = new THREE.InstancedMesh(
+    strutGeometry,
+    strutMaterial,
+    strutPositions.length / 6,
+  );
+  struts.name = "repository-geodesic-dome-struts";
+  struts.userData.repositoryDomeFrame = true;
+  const strutTransform = new THREE.Object3D();
+  const strutStart = new THREE.Vector3();
+  const strutEnd = new THREE.Vector3();
+  const strutDirection = new THREE.Vector3();
+  const strutCenter = new THREE.Vector3();
+  const strutUp = new THREE.Vector3(0, 1, 0);
+  for (let index = 0; index < strutPositions.length; index += 6) {
+    strutStart.fromArray(strutPositions, index);
+    strutEnd.fromArray(strutPositions, index + 3);
+    strutDirection.subVectors(strutEnd, strutStart);
+    const length = strutDirection.length();
+    if (!(length > 0)) continue;
+    strutCenter.addVectors(strutStart, strutEnd).multiplyScalar(0.5);
+    strutTransform.position.copy(strutCenter);
+    strutTransform.quaternion.setFromUnitVectors(
+      strutUp,
+      strutDirection.normalize(),
+    );
+    strutTransform.scale.set(1, length, 1);
+    strutTransform.updateMatrix();
+    struts.setMatrixAt(index / 6, strutTransform.matrix);
+  }
+  struts.instanceMatrix.needsUpdate = true;
+  struts.computeBoundingSphere();
+  dome.add(struts);
+
+  const foundation = new THREE.Mesh(
+    new THREE.TorusGeometry(
+      REPOSITORY_DOME_RADIUS,
+      0.09,
+      8,
+      144,
+    ),
+    makeMaterial(THREE, "#77d9ff", {
+      emissive: "#1e637c",
+      emissiveIntensity: 0.64,
+      transparent: true,
+      opacity: 0.72,
+      roughness: 0.36,
+    }),
+  );
+  foundation.name = "repository-geodesic-dome-foundation";
+  foundation.userData.repositoryDomeFrame = true;
+  foundation.rotation.x = Math.PI / 2;
+  dome.add(foundation);
+
+  // The slight lift puts the bottom row and its foundation above the textured
+  // ground, avoiding z-fighting without turning the dome into a raised stage.
+  dome.position.y = REPOSITORY_DOME_RADIUS * 0.041;
+  return dome;
+}
+
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
   // Match the concrete apron to the live repository ring instead of leaving
@@ -10793,6 +10918,12 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
       REPOSITORY_GROUND_RADIUS,
     ),
   );
+  // Repository portals are laid out on the east island's local ring. Enclose
+  // that circle before the dynamic catalog is added to the world, so every
+  // native or imported repository appears inside the same geodesic dome.
+  const dome = createRepositoryGeodesicDome(THREE);
+  group.add(dome);
+  group.userData.repositoryDome = dome;
   const ringMaterial = makeMaterial(THREE, "#77d9ff", {
     metalness: 0.2,
     roughness: 0.28,
@@ -10978,10 +11109,15 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   group.traverse((child) => {
     if (child.isMesh) {
       child.userData.landmark = "repositories";
-      interactive.push(child);
+      if (!child.userData.repositoryDomeFrame) interactive.push(child);
     }
   });
   setShadows(group);
+  dome.traverse((child) => {
+    if (!child.isMesh) return;
+    child.castShadow = false;
+    child.receiveShadow = false;
+  });
   animated.push((time) => {
     portal.rotation.y = portal.userData.repositorySizeLayer
       ? -0.12
@@ -15371,13 +15507,11 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     metalness: 0.48,
     roughness: 0.42,
   });
-  const glass = makeMaterial(THREE, "#9ef7c6", {
-    transparent: true,
-    opacity: 0.24,
-    metalness: 0,
-    roughness: 0.62,
-    depthWrite: false,
+  const facade = makeMaterial(THREE, "#173c32", {
+    metalness: 0.22,
+    roughness: 0.74,
   });
+  facade.name = "forkmesh-office-opaque-facade";
   const doorMaterial = makeMaterial(THREE, "#c9fff3", {
     transparent: true,
     opacity: 0.3,
@@ -15417,7 +15551,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       rooftopY,
       wallThickness,
     ),
-    glass,
+    facade,
   );
   rearWall.position.set(
     0,
@@ -15436,7 +15570,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
         rooftopY,
         OFFICE_DEPTH,
       ),
-      glass,
+      facade,
     );
     sideWall.position.set(x, rooftopY / 2, 0);
     group.add(sideWall);
@@ -15490,7 +15624,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
       0.12,
       OFFICE_HEIGHT / 2,
       OFFICE_FRONT_Z - 0.03,
-      glass,
+      facade,
     );
   }
   for (const x of [
@@ -15523,7 +15657,7 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
           0.14,
           baseY + OFFICE_FLOOR_HEIGHT / 2,
           OFFICE_FRONT_Z - 0.03,
-          glass,
+          facade,
         );
       }
     }
@@ -15690,9 +15824,8 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     interactive.push(child);
   });
   setShadows(group);
-  // Transparent walls are a view envelope, not shadow casters. Keeping them
-  // out of both the depth and shadow buffers prevents bright/dark popping as
-  // the camera crosses the tower while preserving the opaque frame.
+  // The entry glazing does not cast shadows, while the opaque facade retains
+  // its normal depth and shadow treatment to conceal interior activity.
   group.traverse((child) => {
     if (!child.isMesh || !child.material?.transparent) return;
     child.castShadow = false;
@@ -20191,8 +20324,8 @@ export function createWorldScene({
     portalLabel.scale.set(6.4, 2.4, 1);
     lobbyPortal.add(portalLabel);
     floorGroup.add(lobbyPortal);
-    // The transparent tower is an exterior cutaway: visitors should see every
-    // furnished floor through its glass before they enter the building.
+    // The opaque tower keeps work areas out of exterior view until visitors
+    // enter the building.
     floorGroup.visible = true;
     officeInterior.add(floorGroup);
     officeFloorGroups.set(floor.id, floorGroup);
@@ -20623,10 +20756,8 @@ export function createWorldScene({
     rooftop.add(rooftopLaptop);
   }
   addOfficeFunFloorProps();
-  // The exterior tower already owns the curtain wall. A second interior shell
-  // sat almost coplanar with it and made the transparent panes flash as the
-  // depth buffer alternated between layers. Interior props now render through
-  // that single stable glass envelope.
+  // The exterior tower owns the opaque curtain wall, so interior props remain
+  // hidden until visitors enter the building.
   const officeBuilding = landmarkObjects.get("office");
   const officeSlidingDoorPanels =
     officeBuilding?.userData?.officeDoorPanels || [];
@@ -31193,6 +31324,16 @@ export function createWorldScene({
     world.userData.repositoryRecordDeskLayer = null;
     world.userData.repositoryRecordDeskMount = null;
     world.userData.repositoryRecordDeskData = null;
+
+    // Repository issues and pull requests belong in their focused web
+    // workbenches. Keeping these tall in-world columns made the repository
+    // dome read like two data towers, and obscured both the portal circle and
+    // the new frame. This compatibility entry point deliberately only clears
+    // a previously rendered desk while callers migrate through the shared
+    // repository scene refresh path.
+    void selection;
+    void records;
+    return;
 
     const owner = String(selection?.owner || "").slice(0, 40);
     const name = String(selection?.repo || selection?.name || "").slice(0, 60);
