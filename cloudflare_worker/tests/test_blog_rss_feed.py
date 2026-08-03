@@ -133,6 +133,11 @@ def test_feed_renders_every_shipped_blog_post():
     channel = ElementTree.fromstring(
         blog_feed.render_rss(entries)).find("channel")
     assert len(channel.findall("item")) == len(entries)
+    newest = channel.find("item")
+    assert newest.findtext("title") == "A week closer to the mesh"
+    assert newest.findtext("link") == (
+        "https://forkmesh.com/blog/a-week-closer-to-the-mesh/")
+    assert newest.findtext("pubDate") == "Mon, 03 Aug 2026 00:00:00 GMT"
 
 
 def test_feed_parses_back_into_the_entries_it_rendered():
