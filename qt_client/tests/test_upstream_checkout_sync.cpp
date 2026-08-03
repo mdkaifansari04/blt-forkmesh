@@ -235,6 +235,30 @@ int main(int argc, char *argv[])
           "node-local stats survive fast-forward");
     stats.close();
 
+    // If upstream changed that same generated file, Git cannot preserve both
+    // versions. A managed node may discard only this known regenerated path and
+    // retry; that is the recovery needed by old fleet checkouts.
+    check(commitFile(upstream,
+                     QStringLiteral(".forkmesh/stats/repository.json"),
+                     QByteArrayLiteral("{\"generated\":\"upstream\"}\n"),
+                     QStringLiteral("refresh generated stats schema")),
+          "advance upstream generated stats");
+    const auto statsConflict =
+        forkmesh::upstream::refreshManagedCheckoutFromUpstream(checkout,
+                                                               upstream);
+    check(statsConflict.error.isEmpty(),
+          "generated stats conflict reports no error");
+    check(statsConflict.headFastForwarded,
+          "generated-only conflict is regenerated and fast-forwarded");
+    check(revParse(checkout, QStringLiteral("main")) ==
+              revParse(upstream, QStringLiteral("main")),
+          "main advances across generated stats conflict");
+    check(stats.open(QIODevice::ReadOnly) &&
+              stats.readAll() ==
+                  QByteArrayLiteral("{\"generated\":\"upstream\"}\n"),
+          "generated stats adopts the upstream schema before regeneration");
+    stats.close();
+
     // A conflicting dirty primary checkout must never be overwritten under an
     // agent. Git's merge safety check distinguishes it from the unrelated stats
     // case above.
