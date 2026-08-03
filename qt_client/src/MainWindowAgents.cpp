@@ -283,11 +283,9 @@ QString agentStatusBadgeText(const AgentSession &session)
     if (session.merged)
         return QStringLiteral("Merged");
     if (session.status == AgentStatus::Success)
-        return agentSuccessOutcomeText(session);
+        return QStringLiteral("Done");
     if (session.status == AgentStatus::Failed)
-        return briefFailureReason(session).isEmpty()
-                   ? QStringLiteral("Failed")
-                   : QStringLiteral("Failed: %1").arg(briefFailureReason(session));
+        return QStringLiteral("Failed");
     if (session.status == AgentStatus::Stopped)
         return QStringLiteral("Stopped");
     if (session.status == AgentStatus::Running)
@@ -297,6 +295,16 @@ QString agentStatusBadgeText(const AgentSession &session)
     if (session.status == AgentStatus::Queued)
         return QStringLiteral("Queued");
     return QStringLiteral("Idle");
+}
+
+QIcon agentStatusPillIcon(const AgentSession &session)
+{
+    if (session.merged || session.status == AgentStatus::Success)
+        return themedOcticon("check-circle", QColor("#3fb950"), 14);
+    if (session.status == AgentStatus::Failed ||
+        session.status == AgentStatus::Stopped)
+        return themedOcticon("x", QColor("#f85149"), 14);
+    return agentControlIcon(agentStatusModelIconIndex(session));
 }
 
 QString agentStatusBadgeTone(const AgentSession &session)
@@ -11278,7 +11286,7 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     if (!session)
         return;
     m_agentStatusPill->setProperty("outcomeTone", agentStatusBadgeTone(*session));
-    m_agentStatusPill->setIcon(agentControlIcon(agentStatusModelIconIndex(*session)));
+    m_agentStatusPill->setIcon(agentStatusPillIcon(*session));
     m_agentStatusPill->setText(agentStatusBadgeText(*session));
     m_agentStatusPill->setToolTip(agentStatusBadgeToolTip(*session));
     m_agentStatusPill->style()->unpolish(m_agentStatusPill);
