@@ -32,6 +32,9 @@ def test_repository_circle_is_enclosed_by_a_geodesic_dome():
     assert 'struts.name = "repository-geodesic-dome-struts"' in dome
     assert "struts.computeBoundingSphere();" in dome
     assert 'foundation.name = "repository-geodesic-dome-foundation"' in dome
+    assert 'doors.name = "repository-geodesic-dome-doors"' in dome
+    assert 'transparent: false' in dome
+    assert "inWestDoorway" in dome
     assert "const dome = createRepositoryGeodesicDome(THREE);" in district
     assert "group.add(dome);" in district
     assert 'interior.name = "repository-geodesic-dome-interior"' in district
@@ -51,9 +54,11 @@ def test_repository_dome_draws_its_interior_only_while_occupied():
     assert "REPOSITORY_DOME_EXIT_RADIUS" in occupancy
     assert "interior.visible = occupied" in occupancy
     assert "catalog.visible = occupied" in occupancy
+    assert "dome.visible = !occupied" in occupancy
     assert "updateRepositoryDomeOccupancy();" in SCENE
     assert "layer.userData.repositoryDomeInterior = true" in catalog
     assert "updateRepositoryDomeOccupancy(true);" in catalog
+    assert "constrainRepositoryDome(previousHorizontalPosition)" in SCENE
 
 
 def test_repository_refresh_no_longer_feeds_the_tall_pr_and_issue_lists():

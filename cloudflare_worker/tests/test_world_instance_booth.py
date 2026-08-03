@@ -58,7 +58,8 @@ def test_front_garden_water_and_recreation_are_interactive():
 
 def test_node_plaza_grows_and_sol_is_a_floating_fireball():
     assert 'nodeYardConcrete.name = "reward-node-concrete-plaza"' in SCENE
-    assert "farthestRadius + 4.2" in SCENE
+    assert "farthestRadius + 3.2" in SCENE
+    assert "NODE_COVER_APOTHEM - 0.5" in SCENE
     assert 'sun.name = "reward-pool-fireball-sun"' in SCENE
     assert 'fireShell.name = "reward-pool-fireball-corona"' in SCENE
     fountain = SCENE.split("function createFountain(", 1)[1].split(

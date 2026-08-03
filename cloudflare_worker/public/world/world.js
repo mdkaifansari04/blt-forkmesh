@@ -182,15 +182,12 @@ const DETAIL_WIDTH_STEP = 48;
 const SETTINGS_WIDTH_KEY = "forkmesh.world.settingsWidth.v1";
 const SETTINGS_WIDTH_MIN = 360;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
-// Before the roster finishes building the actual bench ring, start an
-// unplaced visitor beside the fire instead of briefly painting them at the old
-// central arrival grid. syncMemberLounge immediately replaces this preview
-// with their real seated bench pose.
+// Start outside the closed yurt so its roster is not drawn before entry.
 const FRESH_ARRIVAL_CAMPFIRE_PREVIEW = Object.freeze({
   x: 0,
   y: 0.38,
-  z: 137,
-  heading: 0,
+  z: 114.8,
+  heading: Math.PI,
   space: "town-square",
 });
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";

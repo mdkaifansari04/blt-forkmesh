@@ -36,7 +36,7 @@ export const LANDMARKS = [
     metaphor:
       "Everyone gathers under one round roof around a central hearth and chimney.",
     reality:
-      "The entrance plaque reads the public account total and latest member name from the existing directory. Only live visitors render as avatars; the full roster does not create geometry or draw calls.",
+      "The entrance plaque reads the public account total and latest member name from the existing directory. The bounded interior scene is not drawn until a visitor enters through the door.",
     status: "Fixed-cost community landmark",
     statusTone: "live",
     bullets: [
@@ -44,7 +44,7 @@ export const LANDMARKS = [
       "The central fire vents through the chimney in the middle of the roof.",
       "Member growth updates one sign texture rather than adding benches, labels, logs, or roster avatars.",
       "Private profiles and hidden-name visitors are never named on the entrance.",
-      "Only people currently sharing live presence appear as avatars nearby.",
+      "The opaque closed yurt hides every interior figure until its doorway is crossed.",
     ],
     primary: { label: "Visit the Members Center", action: "campfire" },
   },
@@ -96,7 +96,7 @@ export const LANDMARKS = [
       "Every registered user can visit the lobby and rooftop patio; Marketing unlocks for verified members of that team.",
       "Restricted elevator buttons unlock only for verified members of that team.",
       "Messages, room keys, tokens, and attachments never enter world presence.",
-      "The Office stays inside the same World scene, with physical floors, collision barriers, and no jumping.",
+      "Crossing the Office door isolates the active interior floor and unloads the outdoor scene from that frame.",
     ],
     primary: { label: "Cross the office bridge", action: "office" },
     secondary: { label: "Open full chat", href: "/chat" },

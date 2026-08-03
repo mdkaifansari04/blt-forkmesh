@@ -196,11 +196,11 @@ def test_entrance_uses_two_proximity_sliding_panels_without_a_hinged_door():
         scene.index("const elevatorFacadeMinX")
     ]
     for contract in (
-        "transparent: true",
-        "opacity: 0.3",
+        "transparent: false",
+        "opacity: 1",
         "metalness: 0",
         "roughness: 0.38",
-        "depthWrite: false",
+        "depthWrite: true",
     ):
         assert contract in door_material
     assert "forkmesh-office-door-pivot" not in scene
@@ -667,7 +667,17 @@ def test_office_uses_an_opaque_facade_to_conceal_its_interior():
     assert "transparent: true" not in exterior
     assert "depthWrite: false" not in exterior
     assert office.count("facade,") == 4
-    assert "opaque curtain wall" in scene
+    door = scene[
+        scene.index('const doorMaterial = makeMaterial(THREE, "#c9fff3"'):
+        scene.index("const elevatorFacadeMinX", scene.index(
+            'const doorMaterial = makeMaterial(THREE, "#c9fff3"'
+        ))
+    ]
+    assert "transparent: false" in door
+    assert "opacity: 1" in door
+    assert "depthWrite: true" in door
+    assert 'officeInterior.visible = false' in scene
+    assert 'if (mode === "office") return [officeInterior]' in scene
 
 
 def test_tower_is_five_stories_and_about_ten_times_the_old_width():
@@ -718,8 +728,8 @@ def test_aerial_lod_pages_mobile_districts_and_keeps_navigation_visible():
     assert "geometry.dispose()" in scene
     assert "texture.dispose()" in scene
     assert "terrain and navigation markers" in scene
-    assert "officeInterior.visible = true" in scene
-    assert 'officeSceneMode === "town" || floorId === officeCurrentFloorId' in scene
+    assert 'officeInterior.visible = officeSceneMode !== "town"' in scene
+    assert 'officeSceneMode !== "town" && floorId === officeCurrentFloorId' in scene
     assert "const showOfficeInterior" not in scene
     assert "floorGroup.visible = true;" in scene
     assert "group.add(treasurySign);" in scene
@@ -741,8 +751,8 @@ def test_office_floor_visibility_syncs_immediately_on_every_story_change():
         scene.index("function syncOfficeFloorVisibility()"):
         scene.index("function updateSceneLevelOfDetail(")
     ]
-    assert "officeInterior.visible = true;" in visibility
-    assert 'officeSceneMode === "town" || floorId === officeCurrentFloorId' in visibility
+    assert 'officeInterior.visible = officeSceneMode !== "town";' in visibility
+    assert 'officeSceneMode !== "town" && floorId === officeCurrentFloorId' in visibility
     warp = scene[
         scene.index("function warpToOfficeFloor(floorId)"):
         scene.index("function tryOfficeFloorWarpDoorway", scene.index("function warpToOfficeFloor(floorId)"))
@@ -1433,7 +1443,7 @@ def test_rooftop_has_glass_safety_barriers_and_explicit_exit_jump():
     assert "rooftop.add(barrier)" in scene
     jump = scene[
         scene.index('if (event.code === "Space")'):
-        scene.index('if (event.code === "KeyR"')
+        scene.index('if (event.code === "KeyE"')
     ]
     assert "const roofJumpStarted = beginOfficeRoofJump();" in jump
     assert 'officeSceneMode === "town"' in jump
