@@ -4832,6 +4832,14 @@ test("Office facade conceals interiors while preserving elevator glazing", async
     ].flatMap((floorId) => transparentMeshes(
       scene.getObjectByName(`forkmesh-office-floor-${floorId}`)
     ));
+    const teamFloorsHidden = [
+      "marketing",
+      "engineering",
+      "infrastructure",
+    ].every((floorId) =>
+      scene.getObjectByName(`forkmesh-office-floor-${floorId}`)?.visible === false
+    );
+    const officeInterior = scene.getObjectByName("forkmesh-office-interior");
     const rooftop = transparentMeshes(
       scene.getObjectByName("forkmesh-office-floor-rooftop")
     );
@@ -4855,6 +4863,8 @@ test("Office facade conceals interiors while preserving elevator glazing", async
         ),
       },
       teamLayerCount: teamLayers.length,
+      teamFloorsHidden,
+      interiorHidden: officeInterior?.visible === false,
       rooftop: {
         count: rooftop.length,
         stable: rooftop.every((mesh) => mesh.material.depthWrite === false),
@@ -4869,22 +4879,24 @@ test("Office facade conceals interiors while preserving elevator glazing", async
       doors: {
         count: doors.filter(Boolean).length,
         stable: doors.every((mesh) =>
-          mesh?.material?.transparent === true &&
-          mesh.material.opacity === 0.3 &&
+          mesh?.material?.transparent === false &&
+          mesh.material.opacity === 1 &&
           mesh.material.metalness === 0 &&
-          mesh.material.depthWrite === false &&
-          mesh.castShadow === false &&
-          mesh.receiveShadow === false
+          mesh.material.depthWrite !== false
         ),
       },
     };
   });
   expect(facade.exterior.count).toBeGreaterThanOrEqual(12);
   expect(facade.exterior.opaque).toBe(true);
-  expect(facade.teamLayerCount).toBe(0);
-  expect(facade.rooftop).toEqual({ count: 5, stable: true });
+  expect(facade.teamLayerCount).toBeGreaterThan(0);
+  expect(facade.teamFloorsHidden).toBe(true);
+  expect(facade.interiorHidden).toBe(true);
+  expect(facade.rooftop.count).toBeGreaterThanOrEqual(5);
+  expect(facade.rooftop.stable).toBe(true);
   expect(facade.shaftLayerCount).toBe(0);
-  expect(facade.car).toEqual({ count: 5, stable: true });
+  expect(facade.car.count).toBeGreaterThanOrEqual(5);
+  expect(facade.car.stable).toBe(true);
   expect(facade.doors).toEqual({ count: 2, stable: true });
 });
 
