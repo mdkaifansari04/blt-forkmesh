@@ -103,10 +103,11 @@ def test_blog_page_indexes_every_feature_post():
     html = _read(BLOG_PAGE)
     posts = _feature_post_paths()
 
-    assert len(posts) == 74
-    assert html.count('class="blog1-card" href="/blog/') == 74
-    assert html.count('class="blog1-search-result" href="/blog/') == 74
-    assert html.count('data-blog-search-text=') == 74
+    assert len(posts) == 75
+    assert html.count('class="blog1-card" href="/blog/') == 75
+    assert html.count('class="blog1-search-result" href="/blog/') == 75
+    assert html.count('data-blog-search-text=') == 75
+    assert 'href="/blog/a-week-closer-to-the-mesh/"' in html
     assert 'href="/blog/forkmesh-forever/"' in html
     assert 'href="/blog/building-forkmesh-in-the-open/"' in html
     assert 'href="/blog/desktop-node-mirrors/"' in html
@@ -133,7 +134,7 @@ def test_feature_blog_posts_have_images_and_article_shells():
 def test_every_blog_post_carries_fillable_social_permalinks():
     posts = sorted((PUBLIC / "blog").glob("*/index.html"))
 
-    assert len(posts) == 75
+    assert len(posts) == 76
     for post in posts:
         html = _read(post)
         for marker in (
@@ -172,7 +173,7 @@ def test_feature_blog_images_exist_for_each_generated_post():
     posts = _feature_post_paths()
     images = sorted(FEATURE_IMAGES.glob("*.webp"))
 
-    assert len(images) == 74
+    assert len(images) == 75
     for post in posts:
         slug = post.parent.name
         assert FEATURE_IMAGES.joinpath(slug + ".webp").is_file()
