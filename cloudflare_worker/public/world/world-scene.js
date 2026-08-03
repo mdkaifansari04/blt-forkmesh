@@ -8829,15 +8829,87 @@ function projectAssetTexture(
   return texture;
 }
 
+// A tiny deterministic tile keeps the city lawn legible without making every
+// visitor fetch and decode a photographic 512px texture.  It is generated once
+// per Three runtime, then repeated by the same single city-ground material.
+// The coarser noise makes soft patches while the finer noise still reads as
+// grass when the camera is near the ground.
+const CITY_GRASS_PATTERN_SIZE = 64;
+const CITY_GRASS_PATCH_SIZE = 8;
+const CITY_GRASS_PATTERN_REPEAT_X = 18;
+const CITY_GRASS_PATTERN_REPEAT_Y = 24;
+const cityGrassTextures = new WeakMap();
+
+function cityGrassPatternNoise(x, y, salt) {
+  let value =
+    Math.imul(x + salt * 17, 0x1f123bb5) ^
+    Math.imul(y + salt * 29, 0x5f356495);
+  value = Math.imul(value ^ (value >>> 15), 0x2c1b3c6d);
+  return (value ^ (value >>> 12)) >>> 0;
+}
+
+function cityGrassPatchValue(x, y) {
+  const cellCount = CITY_GRASS_PATTERN_SIZE / CITY_GRASS_PATCH_SIZE;
+  const cellX = Math.floor(x / CITY_GRASS_PATCH_SIZE);
+  const cellY = Math.floor(y / CITY_GRASS_PATCH_SIZE);
+  const localX = (x % CITY_GRASS_PATCH_SIZE) / CITY_GRASS_PATCH_SIZE;
+  const localY = (y % CITY_GRASS_PATCH_SIZE) / CITY_GRASS_PATCH_SIZE;
+  const smoothX = localX * localX * (3 - 2 * localX);
+  const smoothY = localY * localY * (3 - 2 * localY);
+  const topLeft = cityGrassPatternNoise(cellX, cellY, 1) & 255;
+  const topRight = cityGrassPatternNoise((cellX + 1) % cellCount, cellY, 1) &
+    255;
+  const bottomLeft = cityGrassPatternNoise(cellX, (cellY + 1) % cellCount, 1) &
+    255;
+  const bottomRight =
+    cityGrassPatternNoise((cellX + 1) % cellCount, (cellY + 1) % cellCount, 1) &
+    255;
+  const top = topLeft + (topRight - topLeft) * smoothX;
+  const bottom = bottomLeft + (bottomRight - bottomLeft) * smoothX;
+  return top + (bottom - top) * smoothY;
+}
+
+function cityGrassTexture(THREE) {
+  if (cityGrassTextures.has(THREE)) return cityGrassTextures.get(THREE);
+  const size = CITY_GRASS_PATTERN_SIZE;
+  const pixels = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const offset = (y * size + x) * 4;
+      const patch = Math.round((cityGrassPatchValue(x, y) - 127.5) / 9);
+      const blade = (cityGrassPatternNoise(x, y, 2) & 15) - 8;
+      const shade = patch + blade;
+      pixels[offset] = 66 + shade;
+      pixels[offset + 1] = 114 + shade;
+      pixels[offset + 2] = 48 + Math.round(shade * 0.55);
+      pixels[offset + 3] = 255;
+    }
+  }
+  const texture = new THREE.DataTexture(
+    pixels,
+    size,
+    size,
+    THREE.RGBAFormat,
+  );
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(
+    CITY_GRASS_PATTERN_REPEAT_X,
+    CITY_GRASS_PATTERN_REPEAT_Y,
+  );
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = true;
+  texture.needsUpdate = true;
+  cityGrassTextures.set(THREE, texture);
+  return texture;
+}
+
 function cityGrassMaterial(THREE) {
   return new THREE.MeshStandardMaterial({
     color: "#b8c7aa",
-    map: projectAssetTexture(
-      THREE,
-      "/world/assets/city-park-grass-v1.webp",
-      18,
-      24,
-    ),
+    map: cityGrassTexture(THREE),
     roughness: 1,
     metalness: 0,
   });
