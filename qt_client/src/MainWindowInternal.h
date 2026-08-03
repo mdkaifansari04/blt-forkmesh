@@ -484,7 +484,11 @@ constexpr int kNodeLightRole = Qt::UserRole + 13;
 // a behind node is expected to catch up within roughly one minute. This is
 // only the dropped-event safety net: push events still notify mirror peers the
 // moment the source moves.
-constexpr qint64 kMirrorSyncIntervalMs = 60LL * 1000;
+// Push/websocket events are the primary update path. This short poll is the
+// bounded retry for a dropped event or for a peer that woke while the source's
+// gateway generation was still swapping; keep it within the product's
+// seconds-level convergence promise.
+constexpr qint64 kMirrorSyncIntervalMs = 5LL * 1000;
 constexpr int kMirrorSyncJitterPercent = 15;
 
 // Extra labels this machine answers to when a workflow declares `runs-on:`

@@ -232,9 +232,9 @@ struct RepositoryRecord {
     // settings. Private mirrorPath values are runtime-temporary and are never
     // persisted once this handle exists.
     QString privateReplicaId;
-    // Random local handle for an official-age encrypted public mirror archive.
-    // Once present, mirrorPath is an owner-only runtime materialization and is
-    // never written to settings.
+    // Legacy handle from releases that age-encrypted public repositories.
+    // New public mirrors use the durable plaintext bare mirrorPath; this is
+    // retained only until a successful sync removes the old archive.
     QString publicArchiveId;
     bool publishToNetwork = false;
     // Private repo: absent from public discovery. Authorized owners and
@@ -4876,7 +4876,7 @@ private:
     QHash<QString, qint64> m_sourceConvergeAttemptMs; // owner/name -> last try
     // After a local change to a repo (new/updated issue, PR, comment, merge),
     // push it to the bare mirror and tell peers immediately instead of waiting
-    // for the one-minute auto-sync, so counts and content converge right away.
+    // for the safety sync, so counts and content converge right away.
     void propagateRepoUpdate(int index);
     // A peer announced it refreshed "owner/name" from source; notify if we
     // mirror the same repo. `commit` is the new HEAD it advanced to.
@@ -8078,7 +8078,7 @@ private:
     QHash<QString, std::shared_ptr<PrivateMirrorMaterialization>>
         m_privateMirrorMaterializations; // opaque replica id -> temp repo
     QHash<QString, std::shared_ptr<PublicMirrorMaterialization>>
-        m_publicMirrorMaterializations; // age archive id -> temp repo
+        m_publicMirrorMaterializations; // legacy public-age migration only
     QList<MemberInfo> m_homeRoster;
     QHash<QString, MemberInfo> m_chatDirectoryUsers; // lowercased user -> profile
     bool m_chatDirectoryFetchInFlight = false;

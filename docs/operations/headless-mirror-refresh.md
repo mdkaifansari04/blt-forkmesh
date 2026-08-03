@@ -172,8 +172,8 @@ ceilings; in-flight jobs are never evicted merely to admit another merge.
 
 `nodeOwner` must match the node name in the identity helper's `public-info`
 response and must appear in `ownerAliases`. Every alias becomes a separate
-public gateway route, but all entries point to the exact same ciphertext,
-ciphertext digest, age key reference, and refs digest. Only the `nodeOwner`
+public gateway route, but all entries point to the exact same plaintext bare
+repository and refs digest. Only the `nodeOwner`
 record is sent to `/api/repositories`, because catalog publication is bound to
 that registered account's Ed25519 key. An organization alias such as
 `forkmesh/forkmesh` remains an explicit Worker-side organization/repository
@@ -240,7 +240,7 @@ running output rather than writing once per line.
 
 `releaseStore` is optional. When configured, it must be an existing owner-only
 directory containing the node's content-addressed `sha256/<prefix>/<digest>/data`
-release assets. It is rendered onto every public alias backed by this encrypted
+release assets. It is rendered onto every public alias backed by this public
 repository so immutable release downloads can round-robin with clone and browse
 traffic. The refresh never copies assets into that directory and never treats
 it as repository source; operators must replicate a published blob and verify
