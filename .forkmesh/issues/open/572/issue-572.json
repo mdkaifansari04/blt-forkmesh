@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "oNP35iOMiLYO5lq_k4jZBdzLvsqAGATI0bZ1R8TqlEQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785755496,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "oNP35iOMiLYO5lq_k4jZBdzLvsqAGATI0bZ1R8TqlEQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1785755496",
+            "sig": "UVz3nlSR2o-dIIwzQZ6VTwYtdCExwoI-hbqJ7bMdafkwSwiaeJkHR5AnabjZo1Vxqlf6LmzYAhU7-HY2UqUpAQ",
+            "title": "When I submit an issue from the web, we should go back to it after it",
+            "ts": 1785755496,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 572,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "When I submit an issue from the web, we should go back to it after it",
+    "updatedAt": 1785755496,
+    "votes": 0
+}
