@@ -984,7 +984,11 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
     const QString signer =
         mirrorIntake ? accountOwner().trimmed().toLower()
                      : repoSegment(repo.owner, QStringLiteral("owner"));
-    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
+    // See drainIssuesInboxFor: a public owner is authorized by the relay, not
+    // by a local name-equality test that only yields false negatives.
+    const bool canSign = mirrorIntake ? hasOwnerSigningCapability(signer)
+                                      : hasOwnerSigningCapability();
+    if (signer.isEmpty() || !canSign)
         return;
     const QString intakeKey =
         QStringLiteral("discussions:") + repo.owner.trimmed().toLower() +

@@ -7917,7 +7917,11 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
     const QString signer =
         mirrorIntake ? accountOwner().trimmed().toLower()
                      : repoSegment(repo.owner, QStringLiteral("owner"));
-    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
+    // See drainIssuesInboxFor: a public owner is authorized by the relay, not
+    // by a local name-equality test that only yields false negatives.
+    const bool canSign = mirrorIntake ? hasOwnerSigningCapability(signer)
+                                      : hasOwnerSigningCapability();
+    if (signer.isEmpty() || !canSign)
         return;
     const QString intakeKey =
         QStringLiteral("pulls:") + repo.owner.trimmed().toLower() +
@@ -8325,22 +8329,66 @@ void MainWindow::performRelaySync()
                                      .toArray();
         const bool autoSyncIssues =
             QSettings().value(kAutoSyncIssuesSetting, true).toBool();
+        // Local records this response actually spoke for. /api/sync enumerates
+        // `repositories WHERE owner_bi = blind_index(account)`, so it can only
+        // ever name repos whose catalog row is owned by the signed-in ACCOUNT.
+        // A repo served under any other public owner — an organization alias,
+        // or a namespace this node's key owns that is no longer the account
+        // name — is absent from the payload entirely, and an absent repo is
+        // indistinguishable from "nothing queued". Those queues drained fine
+        // through the per-repo endpoints before the consolidated sync replaced
+        // them, so fall back to exactly those for whatever this response left
+        // uncovered.
+        QSet<int> covered;
         for (const QJsonValue &value : repos) {
             const QJsonObject entry = value.toObject();
             const QString entryOwner = entry.value("owner").toString();
             const QString entryName = entry.value("name").toString();
+            // /api/sync names each repo by the ACCOUNT that owns its catalog
+            // row — the same owner catalogOwner() publishes under — while a
+            // repo fronted by an organization keeps the public alias in
+            // RepositoryRecord::owner. Matching on r.owner alone therefore
+            // dropped the entire slice for every aliased repo: issues, pulls,
+            // discussions, prompts and About edits were neither applied NOR
+            // acked, so they sat in the relay queue forever while the source of
+            // truth was online and syncing 200 OK. Accept either identity.
+            // Exact owner+name first, so a plain node-owned repo is never
+            // shadowed by an identically named aliased one; the catalog
+            // identity is only the fallback.
             int idx = -1;
+            int aliasIdx = -1;
             for (int i = 0; i < m_repositories.size(); ++i) {
                 const RepositoryRecord &r = m_repositories.at(i);
-                if (!r.previewOnly &&
-                    r.owner.compare(entryOwner, Qt::CaseInsensitive) == 0 &&
-                    r.name.compare(entryName, Qt::CaseInsensitive) == 0) {
+                if (r.previewOnly ||
+                    r.name.compare(entryName, Qt::CaseInsensitive) != 0)
+                    continue;
+                if (r.owner.compare(entryOwner, Qt::CaseInsensitive) == 0) {
                     idx = i;
                     break;
                 }
+                if (aliasIdx < 0 &&
+                    catalogOwner(r).compare(entryOwner,
+                                            Qt::CaseInsensitive) == 0)
+                    aliasIdx = i;
             }
             if (idx < 0)
+                idx = aliasIdx;
+            if (idx < 0) {
+                // Never silent: an unmatched slice drains nothing, which looks
+                // exactly like "the relay has nothing queued" unless we say so.
+                static QSet<QString> s_unmatchedWarned;
+                const QString key = entryOwner + QLatin1Char('/') + entryName;
+                if (!s_unmatchedWarned.contains(key)) {
+                    s_unmatchedWarned.insert(key);
+                    logSystem(QStringLiteral(
+                                  "Relay sync returned %1, which no local "
+                                  "repository matches, so its queued issues, "
+                                  "pulls and prompts cannot be applied.")
+                                  .arg(key));
+                }
                 continue;
+            }
+            covered.insert(idx);
             const RepositoryRecord repo = m_repositories.at(idx);
             // Organization-agent jobs use their own authenticated lease
             // endpoint rather than the owner-E2EE agentPrompts slice below.
@@ -8381,6 +8429,27 @@ void MainWindow::performRelaySync()
                                   .arg(entryOwner, entryName, aboutError));
                 }
             }
+        }
+        // Repos the consolidated response never named. The per-repo drains
+        // address the relay by the repo's PUBLIC owner (repo.owner) rather than
+        // by the account, so they read the queue the website actually files
+        // into. Each one self-gates on write/signing capability and shares
+        // m_pollBackoff with every other inbox call, so this adds no polling
+        // for a node whose repos the consolidated sync already covers — the
+        // set is empty in that case.
+        for (int i = 0; i < m_repositories.size(); ++i) {
+            if (covered.contains(i))
+                continue;
+            const RepositoryRecord uncovered = m_repositories.at(i);
+            if (uncovered.previewOnly ||
+                uncovered.owner.trimmed().isEmpty() ||
+                uncovered.name.trimmed().isEmpty())
+                continue;
+            const RepositoryRecord writable = writableRecordFor(uncovered);
+            if (autoSyncIssues && worktreeTrackedClean(writable.localPath))
+                drainIssuesInboxFor(uncovered, /*interactive=*/false);
+            drainPullsInboxFor(uncovered, /*interactive=*/false);
+            drainDiscussionsInboxFor(uncovered, /*interactive=*/false);
         }
         // A terminal local run may have completed while the desktop was
         // offline.  Its exact job/lease binding is persisted on AgentSession;
