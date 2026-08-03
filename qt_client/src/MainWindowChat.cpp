@@ -2495,6 +2495,8 @@ void MainWindow::sendPromptToCloudflareAi(const QString &prompt,
                 detail = QStringLiteral("the hourly prompt limit is reached");
             else if (error == QLatin1String("ai_unavailable"))
                 detail = QStringLiteral("the model did not answer");
+            else if (status == 404 || error == QLatin1String("not_found"))
+                detail = QStringLiteral("the AI model was not found");
             setIssueInlineNotice(
                 QStringLiteral("Cloudflare AI could not answer the prompt (%1).")
                     .arg(detail), true);
