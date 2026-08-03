@@ -18,12 +18,15 @@ class FakeRuntime:
         self.db.row_factory = sqlite3.Row
         self.db.executescript(
             (ROOT / "migrations" / "0120_notes.sql").read_text())
+        self.db.executescript(
+            (ROOT / "migrations" / "0121_note_views.sql").read_text())
         self.db.execute(
             "CREATE TABLE org_members(org_bi TEXT,member_bi TEXT,name TEXT)")
         self.users = {"alice": "user-alice", "bob": "user-bob"}
         self.orgs = {"acme": "org-acme"}
         self.method_value = "GET"
         self.actor = ""
+        self.reader = "reader-one"
         self.body = {}
         self.clock = 2_100_000_000_000
         self.ids = 0
@@ -64,6 +67,8 @@ class FakeRuntime:
         return cursor
     @staticmethod
     def changes(cursor): return cursor.rowcount
+    async def viewer(self, note_id):
+        return f"{self.reader}:{note_id}" if self.reader else ""
     async def principal(self, kind, name):
         mapping = self.users if kind == "user" else self.orgs
         return (mapping.get(name, ""), name if name in mapping else "")
@@ -133,6 +138,45 @@ def test_note_lifecycle_acl_versions_and_repository_links():
     assert restored["status"] == 200
     assert restored["data"]["note"]["version"] == 3
     assert restored["data"]["note"]["markdown"] == "# One"
+
+
+def test_listing_carries_sidebar_status_shares_and_view_counts():
+    runtime = FakeRuntime()
+    published = call(runtime.use("POST", "alice", {
+        "title": "Launch plan", "markdown": "# One", "visibility": "public",
+    }), "/api/notes")["data"]["note"]
+    draft = call(runtime.use("POST", "alice", {
+        "title": "Draft", "markdown": "wip",
+    }), "/api/notes")["data"]["note"]
+    call(runtime.use("POST", "alice", {
+        "type": "user", "name": "bob", "role": "editor",
+    }), f"/api/notes/{published['id']}/shares")
+
+    # Two anonymous readers, one of them twice: distinct readers and total
+    # reads are tracked separately, and neither counts the owner's own opens.
+    for reader in ("reader-one", "reader-one", "reader-two"):
+        runtime.reader = reader
+        assert call(runtime.use("GET"),
+                    f"/api/notes/{published['id']}")["status"] == 200
+    runtime.reader = "reader-three"
+    call(runtime.use("GET", "alice"), f"/api/notes/{published['id']}")
+
+    listed = call(runtime.use("GET", "alice"), "/api/notes")["data"]["notes"]
+    by_id = {note["id"]: note for note in listed}
+    assert by_id[published["id"]]["visibility"] == "public"
+    assert by_id[published["id"]]["views"] == 3
+    assert by_id[published["id"]]["readers"] == 2
+    assert [(share["name"], share["role"])
+            for share in by_id[published["id"]]["shares"]] == [("bob", "editor")]
+    assert by_id[draft["id"]]["visibility"] == "private"
+    assert by_id[draft["id"]]["shares"] == []
+    assert by_id[draft["id"]]["views"] == 0
+
+    # A collaborator's own sidebar shows the same note with their role.
+    shared_view = call(runtime.use("GET", "bob"), "/api/notes")["data"]["notes"]
+    assert [note["id"] for note in shared_view] == [published["id"]]
+    assert shared_view[0]["role"] == "editor"
+    assert shared_view[0]["views"] == 3
 
 
 def test_private_note_is_hidden_and_organization_share_grants_read():

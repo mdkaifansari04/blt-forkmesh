@@ -23,16 +23,45 @@
     box.textContent = message; box.classList.toggle("hidden", !message);
   }
 
+  // "Public" / "Shared" / "Private" — the one word that answers "can anyone
+  // else see this?", which is the question the sidebar exists to answer.
+  function noteStatusLabel(note) {
+    if (note.visibility === "public") return "Public";
+    return (note.shares || []).length ? "Shared" : "Private";
+  }
+
+  // "12 views" / "12 views from 4 readers", or "" for a note nobody has read
+  // — an unpublished draft should not be labelled "0 views".
+  function noteViewsLabel(note) {
+    const views = Number(note.views || 0), readers = Number(note.readers || 0);
+    if (views <= 0) return "";
+    const counted = views === 1 ? "1 view" : `${views} views`;
+    return readers > 1 ? `${counted} from ${readers} readers` : counted;
+  }
+
+  function noteSharedWithLabel(note) {
+    const names = (note.shares || [])
+      .filter((share) => share.name)
+      .map((share) => `${share.name} (${share.role || "viewer"})`);
+    return names.length ? `Shared with ${names.join(", ")}` : "Not shared with anyone";
+  }
+
   function renderNoteList() {
     const list = $("[data-note-list]"); if (!list) return;
     const query = String($("[data-note-search]")?.value || "").toLowerCase();
     const notes = state.notesView.items.filter((note) =>
       String(note.title || "").toLowerCase().includes(query));
-    list.innerHTML = notes.length ? notes.map((note) => `
+    list.innerHTML = notes.length ? notes.map((note) => {
+      const status = [noteStatusLabel(note), noteViewsLabel(note),
+        `v${note.version}`, note.role, relativeTimeLabel(note.updatedAt)]
+        .filter(Boolean);
+      return `
       <button data-note-id="${escapeHtml(note.id)}" class="block w-full border-b border-border px-3 py-3 text-left hover:bg-secondary ${state.notesView.selected?.id === note.id ? "bg-secondary" : ""}">
         <span class="block truncate text-sm font-medium text-foreground">${escapeHtml(note.title)}</span>
-        <span class="mt-1 block text-[11px] text-muted-foreground">v${note.version} · ${escapeHtml(note.role)} · ${escapeHtml(relativeTimeLabel(note.updatedAt))}</span>
-      </button>`).join("") : '<p class="p-4 text-sm text-muted-foreground">No notes yet.</p>';
+        <span class="mt-1 block text-[11px] ${note.visibility === "public" ? "text-primary" : "text-muted-foreground"}">${escapeHtml(status.join(" · "))}</span>
+        <span class="mt-0.5 block truncate text-[11px] text-muted-foreground">${escapeHtml(noteSharedWithLabel(note))}</span>
+      </button>`;
+    }).join("") : '<p class="p-4 text-sm text-muted-foreground">No notes yet.</p>';
   }
 
   function renderNoteEditor(note) {
@@ -77,7 +106,13 @@
   async function selectNote(id) {
     try {
       const payload = await noteRequest(`/api/notes/${id}`);
-      state.notesView.selected = payload.note; renderNoteEditor(payload.note);
+      state.notesView.selected = payload.note;
+      // Adding or removing a share re-selects the note; folding the reply
+      // back into the listing is what keeps the sidebar row's status and
+      // "shared with" line honest without refetching the whole list.
+      state.notesView.items = state.notesView.items.map((item) =>
+        item.id === payload.note.id ? { ...item, ...payload.note } : item);
+      renderNoteEditor(payload.note);
     } catch (error) { notesError(error.message); }
   }
 
