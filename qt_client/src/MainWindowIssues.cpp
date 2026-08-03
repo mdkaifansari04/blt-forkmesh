@@ -4379,7 +4379,6 @@ void MainWindow::quickAddIssue()
         if (agentSessionId > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();
-            showPromptBubble(title, agentSessionId);
             // No issue exists in this mode (that's the point of it), so saying
             // "no issue created" is just noise — show what actually happened
             // instead: which agent, model, and permission mode picked up the
@@ -4394,9 +4393,13 @@ void MainWindow::quickAddIssue()
                 details.isEmpty()
                     ? QString()
                     : QStringLiteral(" (%1)").arg(details.join(QStringLiteral(", ")));
-            setIssueInlineNotice(
+            const QString startedMessage =
                 QStringLiteral("Started a %1 agent on your prompt%2.")
-                    .arg(agentProviderName(provider), suffix));
+                    .arg(agentProviderName(provider), suffix);
+            // Keep the durable log entry, but fold the confirmation into the
+            // prompt bubble so one send does not produce two stacked cards.
+            logSystem(startedMessage);
+            showPromptBubble(title, agentSessionId, startedMessage);
         }
         return;
     }

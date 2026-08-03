@@ -4682,10 +4682,15 @@ void MainWindow::renderTopMessage()
                    "<a href='%1' style='color:%2;text-decoration:underline'>%3</a>")
                    .arg(m_topMessageHref.toHtmlEscaped(), fg, body);
     if (m_topMessageIsPromptBubble) {
+        const QString status = m_topMessagePromptStatus.isEmpty()
+                                    ? QString()
+                                    : QStringLiteral(
+                                          "<br><span style='color:%1'>%2</span>")
+                                          .arg(fg, m_topMessagePromptStatus.toHtmlEscaped());
         m_topMessageBaseHtml = QStringLiteral(
                                    "<span style='color:%1'><b>↗ Prompt sent</b></span>"
-                                   "<br><span style='color:%1'>%2</span>")
-                                   .arg(fg, body);
+                                   "%2<br><span style='color:%1'>%3</span>")
+                                   .arg(fg, status, body);
     } else {
         m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
                                    .arg(fg, glyph, body);
@@ -4836,7 +4841,8 @@ void MainWindow::slideTopMessageOut()
 // After a footer send clears the editor, leave a copy of the exact prompt in a
 // bubble above the editor. Keeping the entire card above the prompt means it
 // never obscures either a draft or the send controls on any page.
-void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId)
+void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId,
+                                  const QString &status)
 {
     const QString sent = prompt.trimmed();
     if (sent.isEmpty() || !m_topMessage || !m_topMessageContainer)
@@ -4845,6 +4851,7 @@ void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId)
     m_topMessageHref.clear();
     m_topMessageKind = QStringLiteral("prompt");
     m_topMessageAgentSessionId = agentSessionId;
+    m_topMessagePromptStatus = status.trimmed();
     m_topMessageError = false;
     m_topMessageIsPromptBubble = true;
     m_topMessageRaw = sent;
@@ -4934,6 +4941,7 @@ void MainWindow::flashMessage(const QString &text, bool error,
     m_topMessageAgentSessionId = -1;
     m_topMessageError = error;
     m_topMessageIsPromptBubble = false;
+    m_topMessagePromptStatus.clear();
     m_topMessageHovering = false;
     m_topMessageRaw = trimmed;
     // The whole message is shown: it wraps to the bubble's full width and the
@@ -5037,6 +5045,7 @@ void MainWindow::dismissTopMessage()
     m_loadStatusShowing = false;
     m_topMessageHovering = false;
     m_topMessageIsPromptBubble = false;
+    m_topMessagePromptStatus.clear();
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     m_topMessageKind.clear();
     m_topMessageAgentSessionId = -1;
