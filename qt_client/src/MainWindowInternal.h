@@ -4036,34 +4036,6 @@ inline int agentModelPowerRank(const QString &model, const QString &label)
     return 500 + int(version * 100.0 + 0.5) + tier;
 }
 
-// Models the composer's menu hides by default (adhoc #1204): superseded and
-// small-sibling releases that nobody should be reaching for when a stronger
-// model of the same family is one row up. Hiding is presentation only — a run
-// already pinned to one of these keeps working, and the picker still shows the
-// row when it is the live selection.
-inline bool agentModelIsMinorTier(const QString &model, const QString &label)
-{
-    const QString id = model.trimmed().toLower();
-    const QString name = label.trimmed().toLower();
-    const QString text = id.isEmpty() ? name : id;
-    if (text.isEmpty() || text == kClaudeAutoModelId)
-        return false;
-    double version = agentModelVersionNumber(text);
-    if (version <= 0.0)
-        version = agentModelVersionNumber(name);
-    const bool gptFamily = text.startsWith(QLatin1String("gpt"));
-    if (gptFamily) {
-        if (text.contains(QLatin1String("mini")) ||
-            text.contains(QLatin1String("nano")) ||
-            text.contains(QLatin1String("spark")))
-            return true;
-        return version > 0.0 && version < 5.4;
-    }
-    if (text.contains(QLatin1String("haiku")))
-        return true;
-    return version > 0.0 && version < 4.6;
-}
-
 inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())
