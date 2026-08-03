@@ -4860,6 +4860,8 @@ private:
     // the git fetch subprocesses bypass that manager entirely. Explicit "sync
     // now" paths (headlessSyncNow) call autoSyncMirrors() directly, ungated.
     void autoSyncMirrorsIfRelayHealthy();
+    // Re-arm the mirror sync timer after interval updates from Settings.
+    void restartMirrorSyncTimer();
     // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
     // pull it immediately instead of waiting for the next auto-sync tick.
     void syncMirrorsBehindRoster();

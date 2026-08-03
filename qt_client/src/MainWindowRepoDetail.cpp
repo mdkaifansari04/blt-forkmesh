@@ -4899,10 +4899,13 @@ void MainWindow::updateCommitsUnsyncedFilesPanel()
                         m_syncingRepos.contains(m_repoDetailIndex);
     m_commitsUnsyncedSyncButton->setVisible(true);
     m_commitsUnsyncedSyncButton->setEnabled(!syncing);
-    m_commitsUnsyncedSyncButton->setText(syncing
-                                              ? QStringLiteral("Syncing")
-                                              : QStringLiteral("Sync Changes %1↑")
-                                                    .arg(pendingCount));
+    m_commitsUnsyncedSyncButton->setText(
+        pendingCount > 0 ? QStringLiteral("Sync Changes %1↑").arg(pendingCount)
+                         : QStringLiteral("Sync Changes"));
+    if (syncing)
+        startButtonSpin(m_commitsUnsyncedSyncButton);
+    else
+        stopButtonSpin(m_commitsUnsyncedSyncButton);
     setOcticon(m_commitsUnsyncedSyncButton, QStringLiteral("sync"), 14);
     m_commitsUnsyncedSyncButton->setToolTip(
         QStringLiteral("Publish outgoing commits to the network mirror or push "
