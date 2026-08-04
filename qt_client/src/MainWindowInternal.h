@@ -6905,39 +6905,29 @@ private:
     QTextCharFormat m_net, m_system, m_success, m_error, m_command, m_muted, m_tool;
 };
 
-// The collapsed form of the global log overlay.  Each incoming line briefly
-// lights the lane it belongs to; clicking expands the six-line tail.  This is a
-// paint-only widget (rather than four child buttons), keeping a burst of log
-// traffic from creating or relaying out widgets.
+// The collapsed form of the global log overlay. Each incoming line briefly
+// lights its real Log-page category; clicking expands the six-line tail. This is
+// a paint-only widget (rather than thirty child buttons), keeping a burst of log
+// traffic from creating or relaying out widgets while still exposing the full
+// taxonomy at a glance.
 class LogActivityLights : public QWidget
 {
 public:
     explicit LogActivityLights(QWidget *parent = nullptr) : QWidget(parent)
     {
         setObjectName(QStringLiteral("logActivityLights"));
-        setFixedSize(78, 28);
+        setFixedSize(146, 48);
         setCursor(Qt::PointingHandCursor);
-        setToolTip(QStringLiteral("Live log activity — click to show recent lines"));
+        setMouseTracking(true);
+        setAccessibleName(QStringLiteral("Live log activity by category"));
+        setToolTip(QStringLiteral("30 live-log categories — click to show recent lines"));
     }
 
-    void pulse(const QString &line)
+    void pulse(const QString &badge)
     {
-        const QString lower = line.toLower();
-        int lane = 3;
-        if (lower.contains(QStringLiteral("error")) ||
-            lower.contains(QStringLiteral("fail")) ||
-            lower.contains(QStringLiteral("warning")) ||
-            lower.contains(QStringLiteral("!!")))
-            lane = 0;
-        else if (lower.contains(QStringLiteral("git")) ||
-                 lower.contains(QStringLiteral("branch")) ||
-                 lower.contains(QStringLiteral("fork")))
-            lane = 1;
-        else if (lower.contains(QStringLiteral("http")) ||
-                 lower.contains(QStringLiteral("network")) ||
-                 lower.contains(QStringLiteral("relay")) ||
-                 lower.contains(QStringLiteral("net ")))
-            lane = 2;
+        const int lane = categoryIndex(badge);
+        if (lane < 0)
+            return;
         const int generation = ++m_generation[lane];
         m_lit[lane] = true;
         update();
@@ -6948,6 +6938,16 @@ public:
             update();
         });
     }
+
+    void setExpanded(bool expanded)
+    {
+        m_expanded = expanded;
+        setToolTip(QStringLiteral("30 live-log categories — click to %1 recent lines")
+                       .arg(expanded ? QStringLiteral("hide")
+                                     : QStringLiteral("show")));
+    }
+
+    int lightCount() const { return categoryCount(); }
 
     std::function<void()> onClicked;
 
@@ -6960,17 +6960,34 @@ protected:
         painter.setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 1));
         painter.setBrush(QColor(dark ? "#161b22" : "#ffffff"));
         painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 8, 8);
-        static const QColor colors[] = {QColor("#f85149"), QColor("#d29922"),
-                                        QColor("#58a6ff"), QColor("#3fb950")};
-        for (int i = 0; i < 4; ++i) {
-            QColor color = colors[i];
+        for (int i = 0; i < categoryCount(); ++i) {
+            QColor color(QString::fromLatin1(categories()[i].accent));
             color.setAlpha(m_lit[i] ? 255 : (dark ? 70 : 55));
             painter.setPen(Qt::NoPen);
             painter.setBrush(color);
-            const QPointF center(15.0 + i * 16.0, height() / 2.0);
-            painter.drawEllipse(center, m_lit[i] ? 5.0 : 3.5,
-                                m_lit[i] ? 5.0 : 3.5);
+            const QPointF center = categoryCenter(i);
+            painter.drawEllipse(center, m_lit[i] ? 4.5 : 3.0,
+                                m_lit[i] ? 4.5 : 3.0);
         }
+    }
+
+    bool event(QEvent *event) override
+    {
+        if (event->type() == QEvent::ToolTip) {
+            auto *help = static_cast<QHelpEvent *>(event);
+            const int lane = categoryAt(help->pos());
+            if (lane >= 0) {
+                QToolTip::showText(
+                    help->globalPos(),
+                    QStringLiteral("%1 log activity — click to %2 recent lines")
+                        .arg(QString::fromLatin1(categories()[lane].badge),
+                             m_expanded ? QStringLiteral("hide")
+                                        : QStringLiteral("show")),
+                    this);
+                return true;
+            }
+        }
+        return QWidget::event(event);
     }
 
     void mouseReleaseEvent(QMouseEvent *event) override
@@ -6982,8 +6999,65 @@ protected:
     }
 
 private:
-    bool m_lit[4] = {false, false, false, false};
-    int m_generation[4] = {0, 0, 0, 0};
+    struct Category {
+        const char *badge;
+        const char *accent;
+    };
+
+    static const Category *categories()
+    {
+        // Same stable order and accents as the full Log page's filter chips.
+        static const Category values[] = {
+            {"SESSION", "#f2cc60"}, {"STATUS", "#56d364"},
+            {"PEER", "#3fb950"},    {"NODE", "#3fb950"},
+            {"FORK", "#3fb950"},    {"FORKED", "#3fb950"},
+            {"MIRROR", "#39c5cf"},  {"SYNC", "#39c5cf"},
+            {"ACCOUNT", "#8b949e"}, {"HOST", "#76e3ea"},
+            {"ACTIONS", "#f0883e"}, {"PIN", "#79c0ff"},
+            {"GIT", "#58a6ff"},     {"BGTASK", "#8b949e"},
+            {"PUBLISH", "#58a6ff"}, {"PULL", "#3fb950"},
+            {"MERGE", "#a371f7"},   {"ISSUE", "#bc8cff"},
+            {"PROMPT", "#bc8cff"},  {"BOUNTY", "#d29922"},
+            {"WALLET", "#d29922"},  {"CRYPTO", "#79c0ff"},
+            {"IDENTITY", "#79c0ff"}, {"ADMIN", "#db6d28"},
+            {"SAVE", "#3fb950"},    {"CLIP", "#8b949e"},
+            {"NETWORK", "#f2cc60"}, {"STALL", "#d29922"},
+            {"ERROR", "#f85149"},   {"INFO", "#6e7681"},
+        };
+        return values;
+    }
+
+    static constexpr int categoryCount() { return 30; }
+
+    static int categoryIndex(const QString &badge)
+    {
+        for (int i = 0; i < categoryCount(); ++i) {
+            if (badge == QLatin1String(categories()[i].badge))
+                return i;
+        }
+        return categoryCount() - 1; // unknown future categories pulse INFO
+    }
+
+    static QPointF categoryCenter(int index)
+    {
+        constexpr int columns = 10;
+        return QPointF(10.0 + (index % columns) * 14.0,
+                       10.0 + (index / columns) * 14.0);
+    }
+
+    static int categoryAt(const QPoint &point)
+    {
+        for (int i = 0; i < categoryCount(); ++i) {
+            const QPointF delta = QPointF(point) - categoryCenter(i);
+            if (delta.x() * delta.x() + delta.y() * delta.y() <= 36.0)
+                return i;
+        }
+        return -1;
+    }
+
+    bool m_lit[30] = {};
+    int m_generation[30] = {};
+    bool m_expanded = false;
 };
 
 // One conflict region in a file carrying git merge markers. Line indices are
