@@ -1005,7 +1005,8 @@ def _response(data, status=200, **_kwargs):
 
 def _load_handler(
     *, rows, first_hosted=None,
-    linked_canonical=False, endpoint_nodes=None, serve_counts=None,
+    linked_canonical=False, endpoint_nodes=None, endpoint_records=None,
+    serve_counts=None,
 ):
     calls = []
 
@@ -1019,6 +1020,8 @@ def _load_handler(
         if "FROM repo_first_hosted" in sql:
             return first_hosted or []
         if "FROM mirror_https_endpoints" in sql:
+            if endpoint_records is not None:
+                return endpoint_records
             if endpoint_nodes is not None:
                 return [
                     {"node_name": node, "checked_at": _Clock.now()}
@@ -1267,6 +1270,44 @@ def test_repo_mirrors_handler_uses_one_signed_endpoint_snapshot_for_status():
         if mirror["node"] == "kaif-node"
     )
     assert live["lastSeen"] == _Clock.now()
+
+
+def test_repo_mirrors_handler_uses_routing_quorum_for_clone_availability():
+    rows = [
+        {"key_bi": "source", "data": _row(
+            "source", "jett", "forkmesh", root="abc",
+            state_hash="a" * 64,
+        )["data"]},
+        {"key_bi": "mirror", "data": _row(
+            "mirror", "mirror9", "forkmesh", root="abc",
+            state_hash="b" * 64, source="remote-clone",
+        )["data"]},
+    ]
+    rows[1]["data"]["machineName"] = "mirror9"
+    handler, _ = _load_handler(
+        rows=rows,
+        endpoint_records=[{
+            "node_name": "mirror9",
+            "checked_at": _Clock.now(),
+            "forkmesh_verified_at": _Clock.now(),
+            "healthy": 1,
+            "forkmesh_active": 1,
+            "integrity": "ok",
+            "abuse_blocked": 0,
+        }],
+    )
+
+    response = asyncio.run(
+        handler(object(), _Request("GET"), "jett", "forkmesh")
+    )
+
+    mirror = next(
+        item for item in response["data"]["mirrors"]
+        if item["node"] == "mirror9"
+    )
+    assert mirror["integrity"] == "ok"
+    assert mirror["cloneAvailable"] is True
+    assert mirror["activity"] == "serving"
 
 
 def test_fresh_healthy_ok_https_endpoint_hydrates_mirror_online():

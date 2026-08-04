@@ -15691,6 +15691,20 @@ async def repo_mirrors_handler(env, request, owner, repo):
         )
     }
     reachable_nodes = set(reachable_seen)
+    routing_verified_nodes = {
+        node_name
+        for node_name, row in endpoint_by_node.items()
+        if (
+            int(row.get("checked_at") or 0)
+            >= now - HTTPS_MIRROR_STATUS_FRESH_MS
+            and int(row.get("forkmesh_verified_at") or 0)
+            >= now - HTTPS_MIRROR_STATUS_FRESH_MS
+            and bool(int(row.get("healthy") or 0))
+            and bool(int(row.get("forkmesh_active") or 0))
+            and str(row.get("integrity") or "") == "ok"
+            and not bool(int(row.get("abuse_blocked") or 0))
+        )
+    }
     presence = {}
     for row in catalog_rows:
         record = row.get("data") or {}
@@ -15743,6 +15757,7 @@ async def repo_mirrors_handler(env, request, owner, repo):
         history,
         linked_canonical=bool(linked_row),
         reachable_nodes=reachable_nodes,
+        routing_verified_nodes=routing_verified_nodes,
     )
     if payload is None:
         return json_response({"error": "not_found"}, status=404)
