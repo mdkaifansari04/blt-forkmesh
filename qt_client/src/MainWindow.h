@@ -4737,6 +4737,7 @@ private:
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
+    void renderTopMessagePromptImages(); // rebuild thumbnails for a sent prompt
     void positionTopMessageBubble(); // size + anchor the bubble above the prompt
     QRect topMessageBubbleRect(); // calculates the prompt-anchored stack geometry
     void setTopMessagePaused(bool paused); // hover pauses the countdown
@@ -4744,7 +4745,8 @@ private:
     // Animate a submitted prompt into a bubble. When it launched or steered an
     // agent, the bubble's action opens that exact session.
     void showPromptBubble(const QString &prompt, int agentSessionId = -1,
-                          const QString &status = QString());
+                          const QString &status = QString(),
+                          const QStringList &images = QStringList());
     MessageRow *addMessageRow(const ChatMessage &message);
     MessageRow *createMessageRow(const ChatMessage &message,
                                  bool threadContext = false);
@@ -5222,6 +5224,11 @@ private:
     QLabel *m_adminCrownBadge = nullptr;
     QLabel *m_topMessage = nullptr;       // prompt-anchored success/failure bubble text
     QFrame *m_topMessageContainer = nullptr; // floating bubble wrapping text + actions
+    QWidget *m_topMessageBody = nullptr;  // scrollable prompt/notification content
+    QLabel *m_topMessagePromptHeader = nullptr; // "Prompt sent" line
+    QLabel *m_topMessagePromptStatusLabel = nullptr; // agent info on its own line
+    QWidget *m_topMessagePromptImages = nullptr; // submitted image thumbnails
+    QStringList m_topMessagePromptImagePaths;
     // Queued notifications are visible beneath the active bubble. As new ones
     // arrive, this stack grows upward from the prompt rather than hiding
     // messages behind a "+N more" counter.
@@ -5271,7 +5278,7 @@ private:
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageHovering = false;    // pauses the countdown while reading/actions
     bool m_topMessageIsPromptBubble = false; // submitted prompt gets a fuller, animated treatment
-    QString m_topMessagePromptStatus;        // optional agent-start confirmation shown in the same bubble
+    QString m_topMessagePromptStatus;        // optional agent-start confirmation on its own line
     // Red border flashed around the whole window while an error ping arrives —
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
