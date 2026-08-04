@@ -147,6 +147,10 @@ def test_green_live_state_requires_real_public_traffic_health():
     assert "finishVultrProvision(true" in verify
     assert "Verification continues automatically" in verify
     assert "60000" in verify
+    # Endpoint health belongs to the matched node. URL presentation may be
+    # normalized by Cloudflare and must not block a successfully healthy node.
+    assert 'QStringLiteral("endpoint"))' not in verify
+    assert "URL spelling to match the hostname" in verify
 
 
 def test_header_declares_durable_ui_and_resume_state():
