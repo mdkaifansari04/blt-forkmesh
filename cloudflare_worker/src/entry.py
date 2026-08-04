@@ -44373,6 +44373,7 @@ async def _https_mirror_public_context(env, owner, repo):
         if not pins:
             return None
         allowed = set()
+        group_nodes = set()
         current_nodes = set()
         source = None
         for row in members:
@@ -44383,6 +44384,7 @@ async def _https_mirror_public_context(env, owner, repo):
             state = clean_string(record.get("stateHash", ""), 64).lower()
             if not valid_node_name(node):
                 continue
+            group_nodes.add(node)
             if pins and state not in pins:
                 continue
             allowed.add(node)
@@ -44410,6 +44412,12 @@ async def _https_mirror_public_context(env, owner, repo):
             "owner": canonical_owner,
             "repo": canonical_repo,
             "nodes": allowed,
+            # Every node publishing a record in this mirror group, including
+            # the ones the state-pin gate currently excludes from serving.
+            # Routing must keep using "nodes"; this set exists so an operator
+            # diagnostic can tell "not a mirror of this repository" apart from
+            # "a mirror that is behind the signed pin window".
+            "groupNodes": group_nodes,
             # Ordinary reads prefer the newest source generation. Recent
             # signed generations remain available strictly as failover while
             # their nodes converge.
@@ -44697,6 +44705,28 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     return operation in set(operations)
 
 
+async def _mirror_reachability_failure_reason(
+        env, endpoint, context, admitted, now, default):
+    """Explain why one exact mirror did not serve README.md.
+
+    Only consulted after the probe request has already failed, so the extra
+    manifest read costs nothing on the healthy path. Ordered from the operator
+    action furthest upstream (finish syncing) to the narrowest (the node
+    answered but not with a README).
+    """
+    if not admitted:
+        return "state_pin_not_admitted"
+    try:
+        if not await _https_mirror_repository_proof(
+                env, endpoint, context, "blob"):
+            return "repository_proof_failed"
+    except Exception:
+        return "repository_proof_failed"
+    if not https_routing.endpoint_eligible(endpoint, now):
+        return "endpoint_stale"
+    return default
+
+
 async def repo_mirror_reachability_handler(
         env, request, owner, repo, requested_node):
     """Fetch README.md from one exact eligible mirror without failover.
@@ -44704,9 +44734,18 @@ async def repo_mirror_reachability_handler(
     Ordinary public repository reads intentionally rotate and fail over, which
     makes them unsuitable for an operator table: a successful response might
     have come from a different node. This bounded probe selects only the named
-    endpoint, verifies its fresh repository proof, performs the same
-    router-signed blob request as a real read, and returns metadata only. README
-    contents and the endpoint origin never leave the probe.
+    node's registered endpoint, performs the same router-signed blob request as
+    a real read, and returns metadata only. README contents and the endpoint
+    origin never leave the probe.
+
+    The probe reports what the named node actually answers, so it deliberately
+    does not pre-disqualify on the cached serving state the router uses: a node
+    outside the current state-pin window, or one whose health lease has gone
+    stale, is still asked for README.md and its own answer decides the verdict
+    (adhoc #1422 — every mirror but the single freshest one reported
+    "Unavailable" without a single request having been made to it). Only nodes
+    that publish no record in this repository's mirror group are rejected
+    outright, and the response still carries metadata only.
     """
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -44715,7 +44754,11 @@ async def repo_mirror_reachability_handler(
     if not valid_node_name(node):
         return json_response({"error": "not_found"}, status=404)
     context = await _https_mirror_public_context(env, owner, repo)
-    if context is None or node not in context.get("nodes", set()):
+    if context is None:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    admitted = node in context.get("nodes", set())
+    if not admitted and node not in context.get("groupNodes", set()):
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
 
@@ -44753,6 +44796,8 @@ async def repo_mirror_reachability_handler(
     )
     endpoint = _https_mirror_endpoint_projection(row or {})
     now = int(Date.now())
+    endpoint_registered = bool(
+        row and str(endpoint.get("baseUrl") or "").strip())
 
     def result(reachable, reason, status=0, latency=0):
         return json_response({
@@ -44764,14 +44809,20 @@ async def repo_mirror_reachability_handler(
             "status": int(status or 0),
             "latencyMs": max(0, min(int(latency or 0), 60_000)),
             "checkedAt": now,
+            # State the probe ran against, so the operator table can separate
+            # "nothing to probe" and "behind the pin window" from a mirror that
+            # was asked for README.md and failed to serve it.
+            "endpointRegistered": endpoint_registered,
+            "admitted": bool(admitted),
             "reason": clean_string(reason, 80),
         }, cache_control="no-store, max-age=0, must-revalidate")
 
-    if not row or not https_routing.endpoint_eligible(endpoint, now):
-        return result(False, "endpoint_unavailable")
-    if not await _https_mirror_repository_proof(
-            env, endpoint, context, "blob"):
-        return result(False, "repository_proof_failed")
+    # No registered endpoint means there is no direct route to this node at
+    # all; nothing can be measured. Everything else gets a real request.
+    if not endpoint_registered:
+        return result(False, "endpoint_not_registered")
+    if endpoint.get("abuseBlocked"):
+        return result(False, "endpoint_blocked")
     router_public_key = _https_mirror_router_public_key(env)
     router_seed = _https_mirror_router_seed(env)
     target = https_routing.masked_target_url(
@@ -44823,12 +44874,19 @@ async def repo_mirror_reachability_handler(
             and value.get("ok") is True
             and isinstance(value.get("content"), str)
         )
+        if loaded:
+            return result(True, "readme_loaded", status, latency)
         return result(
-            loaded, "readme_loaded" if loaded else "readme_unavailable",
+            False,
+            await _mirror_reachability_failure_reason(
+                env, endpoint, context, admitted, now, "readme_unavailable"),
             status, latency)
     except Exception:
         return result(
-            False, "request_failed", 0, int(Date.now()) - started)
+            False,
+            await _mirror_reachability_failure_reason(
+                env, endpoint, context, admitted, now, "request_failed"),
+            0, int(Date.now()) - started)
 
 
 def _https_mirror_merge_body(raw, pull_number):

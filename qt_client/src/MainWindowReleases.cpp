@@ -9,6 +9,7 @@
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
 
+#include <QFileInfo>
 #include <QVersionNumber>
 
 using namespace forkmesh::ui;
@@ -1102,8 +1103,12 @@ QWidget *MainWindow::buildMirrorNodesTab()
     installColumnHeaderMenu(m_mirrorNodesTable); // 3-dots per-column menu (issue #318)
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
+    // One label per MirrorNodeColumn, including the button-only Sync column
+    // (adhoc #103). Leaving that one out shifted every following label one
+    // column to the left — "Owner" sat over the Sync now buttons and the last
+    // column fell back to Qt's numeric "26" placeholder.
     m_mirrorNodesTable->setHorizontalHeaderLabels(
-        {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Sync delay", "Size",
+        {"Node", "Sync", "Owner", "Latest commit", "Message", "Author", "Synced", "Sync delay", "Size",
          "Issues", "Commits", "Branches", "Pulls", "Discussions", "Health",
          "CPU", "RAM",
          "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones", "Website",
@@ -1875,8 +1880,41 @@ void MainWindow::loadMirrorNodesPanel()
         item->setToolTip(tip);
         return item;
     };
-    auto makeReachabilityCell = [this, &source](
-                                    const QString &nodeName)
+    // Plain-language explanation of the probe's machine reason code, so an
+    // operator reading the column knows what to fix rather than just seeing a
+    // red "Unavailable" (adhoc #1422).
+    auto reachabilityReasonHint = [](const QString &reason) -> QString {
+        if (reason == QLatin1String("endpoint_not_registered"))
+            return QStringLiteral(
+                "This node has not registered a direct-HTTPS endpoint, so the "
+                "relay has no way to fetch README.md from it. Run its "
+                "Cloudflare tunnel (Control node \xE2\x86\x92 Cloudflare relay "
+                "deployment) and the check goes live.");
+        if (reason == QLatin1String("endpoint_blocked"))
+            return QStringLiteral("Its endpoint is blocked for abuse.");
+        if (reason == QLatin1String("state_pin_not_admitted"))
+            return QStringLiteral(
+                "It is outside the source's signed state-pin window, so reads "
+                "are not routed to it until it finishes syncing.");
+        if (reason == QLatin1String("repository_proof_failed"))
+            return QStringLiteral(
+                "Its endpoint answered, but it does not advertise a matching "
+                "signed refs digest for this repository.");
+        if (reason == QLatin1String("endpoint_stale"))
+            return QStringLiteral(
+                "Its endpoint lease is stale \xE2\x80\x94 the node has not "
+                "passed a signed health probe recently.");
+        if (reason == QLatin1String("router_unavailable"))
+            return QStringLiteral("The relay could not sign the probe request.");
+        if (reason == QLatin1String("request_failed"))
+            return QStringLiteral("The request to its endpoint failed outright.");
+        if (reason == QLatin1String("probe_endpoint_unavailable"))
+            return QStringLiteral(
+                "The relay did not answer the reachability probe for this node.");
+        return QString();
+    };
+    auto makeReachabilityCell = [this, &source, &repo, &reachabilityReasonHint](
+                                    const QString &nodeName, bool selfNode)
         -> SortTableWidgetItem * {
         const QString key = source + QLatin1Char('|') +
                             nodeName.trimmed().toLower();
@@ -1884,10 +1922,25 @@ void MainWindow::loadMirrorNodesPanel()
         const bool pending = m_mirrorReachabilityInFlight.contains(key) ||
                              probe.isEmpty();
         const bool loaded = probe.value(QStringLiteral("readmeLoaded")).toBool();
+        const QString reason = probe.value(QStringLiteral("reason")).toString();
         QString text;
         QString tip;
         double sortValue = 0;
-        if (pending) {
+        // Our own row is not reachable through the relay's endpoint router at
+        // all when this machine serves via relay sync only, but the file is
+        // right here: report the working copy directly instead of parroting an
+        // endpoint failure that says nothing about our own content.
+        const bool selfLocalReadme =
+            selfNode && !loaded && !repo.localPath.isEmpty() &&
+            QFileInfo::exists(repo.localPath + QStringLiteral("/README.md"));
+        if (selfLocalReadme) {
+            text = QStringLiteral("README \u00b7 local");
+            tip = QStringLiteral(
+                      "README.md is present in this machine's working copy "
+                      "(%1).")
+                      .arg(repo.localPath);
+            sortValue = 3;
+        } else if (pending) {
             text = QStringLiteral("Checking\u2026");
             tip = QStringLiteral(
                 "Requesting README.md from this exact mirror; failover is disabled.");
@@ -1901,17 +1954,30 @@ void MainWindow::loadMirrorNodesPanel()
                 "This exact mirror returned README.md successfully (HTTP %1).")
                       .arg(probe.value(QStringLiteral("status")).toInt(200));
             sortValue = 3;
+        } else if (!probe.value(QStringLiteral("endpointRegistered"))
+                        .toBool(true)) {
+            // No direct-HTTPS endpoint: nothing was probed, so "Unavailable"
+            // would read as a failing mirror. Say what it actually is.
+            text = QStringLiteral("Relay only");
+            tip = QStringLiteral(
+                      "No direct-HTTPS endpoint is registered for this node, so "
+                      "README.md cannot be fetched from it directly; it serves "
+                      "through relay sync.\n%1")
+                      .arg(reachabilityReasonHint(
+                          QStringLiteral("endpoint_not_registered")));
+            sortValue = 1.5;
         } else {
             text = QStringLiteral("Unavailable");
-            const QString reason =
-                probe.value(QStringLiteral("reason")).toString();
             const int status = probe.value(QStringLiteral("status")).toInt();
             tip = QStringLiteral(
                 "This exact mirror did not return README.md; no other mirror was used.");
+            const QString hint = reachabilityReasonHint(reason);
+            if (!hint.isEmpty())
+                tip += QStringLiteral("\n%1").arg(hint);
             if (status > 0)
                 tip += QStringLiteral("\nHTTP %1").arg(status);
             if (!reason.isEmpty())
-                tip += QStringLiteral("\n%1").arg(reason);
+                tip += QStringLiteral("\n(%1)").arg(reason);
             sortValue = 2;
         }
         auto *item = new SortTableWidgetItem(text);
@@ -2392,7 +2458,7 @@ void MainWindow::loadMirrorNodesPanel()
         const QString reachabilityNode = nodeDisplay.trimmed().toLower();
         m_mirrorNodesTable->setItem(
             row, MirrorNodeColReachability,
-            makeReachabilityCell(reachabilityNode));
+            makeReachabilityCell(reachabilityNode, node.self));
         if (!reachabilityNode.isEmpty())
             reachabilityNodes.insert(reachabilityNode);
         ++count;
@@ -2661,7 +2727,7 @@ void MainWindow::loadMirrorNodesPanel()
             const QString reachabilityNode = nodeName.trimmed().toLower();
             m_mirrorNodesTable->setItem(
                 row, MirrorNodeColReachability,
-                makeReachabilityCell(reachabilityNode));
+                makeReachabilityCell(reachabilityNode, false));
             reachabilityNodes.insert(reachabilityNode);
             ++count;
         }
