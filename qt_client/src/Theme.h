@@ -907,10 +907,11 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #010409; border: none;
     color: #8b949e; font-family: monospace; font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
-#logEventList {
-    background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
-    color: #8b949e; font-family: monospace; font-size: 12px;
+#logTimelineChart { background-color: #010409; border-radius: 8px; }
+#logTimelineSummary { color: #8b949e; font-size: 12px; }
+#logRangeButton { padding: 4px 10px; }
+#logRangeButton:checked {
+    color: #ffffff; background-color: #1f6feb; border-color: #1f6feb;
 }
 #logDock { background: transparent; border: none; }
 #logDock QLabel { background: transparent; }
@@ -1054,10 +1055,11 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     font-family: monospace;
     font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
-#logEventList {
-    background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
-    color: #8b949e; font-family: monospace; font-size: 12px;
+#logTimelineChart { background-color: #010409; border-radius: 8px; }
+#logTimelineSummary { color: #8b949e; font-size: 12px; }
+#logRangeButton { padding: 4px 10px; }
+#logRangeButton:checked {
+    color: #ffffff; background-color: #1f6feb; border-color: #1f6feb;
 }
 #logDock { background: transparent; border: none; }
 #issueQuickAdd {
@@ -2292,10 +2294,11 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: #ffffff; border: none;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
-#logEventList {
-    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
-    color: #1f2328; font-family: monospace; font-size: 12px;
+#logTimelineChart { background-color: #ffffff; border-radius: 8px; }
+#logTimelineSummary { color: #656d76; font-size: 12px; }
+#logRangeButton { padding: 4px 10px; }
+#logRangeButton:checked {
+    color: #ffffff; background-color: #0969da; border-color: #0969da;
 }
 #logDock { background: transparent; border: none; }
 #logDock QLabel { background: transparent; }
@@ -2451,10 +2454,11 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     font-family: monospace;
     font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
-#logEventList {
-    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
-    color: #1f2328; font-family: monospace; font-size: 12px;
+#logTimelineChart { background-color: #ffffff; border-radius: 8px; }
+#logTimelineSummary { color: #656d76; font-size: 12px; }
+#logRangeButton { padding: 4px 10px; }
+#logRangeButton:checked {
+    color: #ffffff; background-color: #0969da; border-color: #0969da;
 }
 #logDock { background: transparent; border: none; }
 #issueQuickAdd {
