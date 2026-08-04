@@ -7689,6 +7689,9 @@ inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleD
     return out;
 }
 
+// Shared by the status-strip chip and rich-text log entries below.
+inline QString octiconForBackgroundTaskWord(const QString &word);
+
 // One kind of background work, drawn as a chip in the window's bottom status
 // strip (adhoc #1389). The footer panel this replaces spelled every job out in
 // words beside the live log; here the kind of work is an icon and the thin ring
