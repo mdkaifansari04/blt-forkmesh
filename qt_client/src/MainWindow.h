@@ -1553,6 +1553,7 @@ private:
     void createOrganizationTask();
     void createQuickAddOrganizationTask();
     void createOrganizationTaskFollowUp();
+    void addOrganizationTaskToPrompt();
     void refreshOrganizationTaskQueue();
     void moveQueuedAgentItemToTasks();
     void editOrganizationTask();
@@ -5128,6 +5129,7 @@ private:
     QPushButton *m_organizationTaskQaButton = nullptr;
     QPushButton *m_organizationTaskReturnButton = nullptr;
     QPushButton *m_organizationTaskDeleteButton = nullptr;
+    QPushButton *m_organizationTaskPromptButton = nullptr;
     QPushButton *m_organizationTaskPrevPageButton = nullptr;
     QPushButton *m_organizationTaskNextPageButton = nullptr;
     QLabel *m_organizationTaskPageLabel = nullptr;
