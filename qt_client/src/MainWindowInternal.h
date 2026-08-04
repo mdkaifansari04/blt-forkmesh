@@ -9121,6 +9121,17 @@ public:
         update();
     }
 
+    // Green icon+caption tint for a "go" action (the agent detail's Branch
+    // button). The painted equivalent of the QSS #successButton green, which
+    // this class cannot use — it draws itself rather than a styled QSS box.
+    void setAccentTint(bool accent)
+    {
+        if (m_accent == accent)
+            return;
+        m_accent = accent;
+        update();
+    }
+
     void setSyncing(bool on)
     {
         if (m_syncing == on)
@@ -9151,14 +9162,16 @@ protected:
         p.setRenderHint(QPainter::Antialiasing);
         const bool dark = currentThemeIsDark();
         const bool lit = isEnabled() && (isChecked() || underMouse());
-        // The alert tint outranks the resting grey but still brightens on
-        // hover/checked, mirroring the old QSS [alert="true"] rules. A disabled
-        // item (the agent detail reuses this class for its action buttons, which
-        // grey out per session) drops to a low-contrast grey.
+        // The alert and accent tints outrank the resting grey but still brighten
+        // on hover/checked, mirroring the old QSS [alert="true"] rules. A
+        // disabled item (the agent detail reuses this class for its action
+        // buttons, which grey out per session) drops to a low-contrast grey.
         const QColor fg =
             !isEnabled() ? QColor(dark ? "#484f58" : "#b6bdc4")
             : m_alert    ? QColor(dark ? (lit ? "#f0b72f" : "#d29922")
                                        : (lit ? "#7d4e00" : "#9a6700"))
+            : m_accent   ? QColor(dark ? (lit ? "#56d364" : "#3fb950")
+                                       : (lit ? "#1a7f37" : "#1f883d"))
                          : (dark ? QColor(lit ? "#e6edf3" : "#8b949e")
                                  : QColor(lit ? "#1f2328" : "#656d76"));
         const bool showLabel = !m_compact && !m_label.isEmpty();
@@ -9259,6 +9272,7 @@ private:
     int m_pendingSync = 0;
     bool m_badgeUrgent = false;
     bool m_alert = false;
+    bool m_accent = false;
     bool m_syncing = false;
     bool m_compact = false;
     QTimer *m_spinTimer = nullptr;
