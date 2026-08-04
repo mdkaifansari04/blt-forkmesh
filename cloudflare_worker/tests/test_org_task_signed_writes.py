@@ -4,9 +4,9 @@
 A desktop that authenticated silently owns its account's Ed25519 key and holds
 no account session token, so the Agents composer's Task toggle and the Tasks
 tab's board can only reach /api/tasks by signing a proof onto the URL. These
-checks pin how narrow that credential is: three operations, each with its own
-proof, the completion proof bound to the one task it closes, and no authority
-for an account that is not an active user.
+checks pin how narrow that credential is: four operations, each with its own
+proof, the completion and deletion proofs bound to the one task they name, and
+no authority for an account that is not an active user.
 
 AST-extraction harness in the style of test_chat_room_key.py.
 """
@@ -35,8 +35,10 @@ CONSTANTS = {
     "ORG_TASK_OPEN_PROOF",
     "ORG_TASK_COMPLETE_PROOF",
     "ORG_TASK_LIST_PROOF",
+    "ORG_TASK_DELETE_PROOF",
     "ORG_TASK_COMPLETE_RE",
     "ORG_TASK_COLLECTION_RE",
+    "ORG_TASK_ITEM_RE",
 }
 
 TASK_ID = "a" * 32
@@ -272,13 +274,65 @@ def test_registered_device_key_reads_the_board_after_a_restart():
                 pubkey=pubkey)))) == ("", None), pubkey
 
 
-def test_signature_authorizes_only_the_three_named_operations():
+def test_delete_proof_authorizes_the_one_task_it_names():
+    """Delete is key-signed too (adhoc #1426), bound to that task id.
+
+    A desktop that authenticated silently could read and write the board but not
+    remove a row, so the Tasks tab told an operator who was signed in with their
+    account key to go type a password. Manage permission is still enforced by
+    _delete, exactly as it is for a session-token caller.
+    """
+    namespace, env = _harness({"alice": _user()})
+    resolve = namespace["_org_task_signed_session"]
+    path = "/api/tasks/%s" % TASK_ID
+
+    account_bi, record = asyncio.run(resolve(env, _Request(
+        method="DELETE",
+        url=_signed_url(
+            namespace, path, "ORG_TASK_DELETE_PROOF", resource=TASK_ID))))
+    assert account_bi == "bi:alice"
+    assert record["name"] == "alice"
+
+    # Signed for one task, replayed against another: refused.
+    assert asyncio.run(resolve(env, _Request(
+        method="DELETE",
+        url=_signed_url(
+            namespace, "/api/tasks/%s" % OTHER_TASK_ID,
+            "ORG_TASK_DELETE_PROOF", resource=TASK_ID)))) == ("", None)
+
+    # No other proof stands in for a deletion, and the delete proof authorizes
+    # nothing but a DELETE of the task it names.
+    for proof in ("ORG_TASK_OPEN_PROOF", "ORG_TASK_LIST_PROOF",
+                  "ORG_TASK_COMPLETE_PROOF"):
+        assert asyncio.run(resolve(env, _Request(
+            method="DELETE",
+            url=_signed_url(
+                namespace, path, proof, resource=TASK_ID)))) == ("", None), proof
+    for method in ("GET", "POST"):
+        assert asyncio.run(resolve(env, _Request(
+            method=method,
+            url=_signed_url(
+                namespace, path, "ORG_TASK_DELETE_PROOF",
+                resource=TASK_ID)))) == ("", None), method
+
+    # A bare DELETE of the collection, or of a sub-resource, is not a deletion
+    # the relay signs for.
+    for target in ("/api/tasks", "/api/tasks/%s/qa" % TASK_ID):
+        assert asyncio.run(resolve(env, _Request(
+            method="DELETE",
+            url=_signed_url(
+                namespace, target, "ORG_TASK_DELETE_PROOF",
+                resource=TASK_ID)))) == ("", None), target
+
+
+def test_signature_authorizes_only_the_four_named_operations():
     namespace, env = _harness({"alice": _user()})
     resolve = namespace["_org_task_signed_session"]
 
-    # Edits and deletes are never signature-authorized, whichever proof signs.
-    for method in ("PATCH", "DELETE", "PUT"):
-        for proof in ("ORG_TASK_OPEN_PROOF", "ORG_TASK_LIST_PROOF"):
+    # Edits are never signature-authorized, whichever proof signs.
+    for method in ("PATCH", "PUT"):
+        for proof in ("ORG_TASK_OPEN_PROOF", "ORG_TASK_LIST_PROOF",
+                      "ORG_TASK_DELETE_PROOF"):
             account_bi, record = asyncio.run(resolve(env, _Request(
                 method=method,
                 url=_signed_url(namespace, "/api/tasks", proof))))
@@ -357,7 +411,7 @@ def test_desktop_and_worker_agree_on_the_canonical_proof_strings():
         ENTRY.parents[2] / "qt_client" / "src" / "MainWindowInternal.h"
     ).read_text(encoding="utf-8")
     for proof in ("forkmesh-org-task-open-v1", "forkmesh-org-task-complete-v1",
-                  "forkmesh-org-task-list-v1"):
+                  "forkmesh-org-task-list-v1", "forkmesh-org-task-delete-v1"):
         assert '"%s"' % proof in ENTRY_TEXT
         assert '"%s"' % proof in qt
 
@@ -375,3 +429,9 @@ def test_desktop_tasks_tab_signs_when_it_holds_no_session_token():
     request = request[:request.index("\nvoid MainWindow::")]
     assert "authenticateOrgTaskRequest(" in request
     assert "kOrgTaskListProof" in tab
+    # And Delete must map to its own proof rather than demanding a password
+    # sign-in from an install that holds the account key (adhoc #1426).
+    proof = tab[tab.index("QString organizationTaskProof("):]
+    proof = proof[:proof.index("\n}\n")]
+    assert 'QByteArrayLiteral("DELETE")' in proof
+    assert "kOrgTaskDeleteProof" in proof

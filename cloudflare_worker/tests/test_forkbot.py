@@ -75,6 +75,8 @@ FUNCS = {
     "_forkbot_ai_default_model",
     "_forkbot_ai_model_options",
     "_forkbot_resolve_ai_model",
+    "_forkbot_ai_model_not_found_error",
+    "_forkbot_ai_fallback_models",
     "forkbot_models_handler",
     "ai_ask_handler",
     "_ai_ask_rate_check",
@@ -218,7 +220,11 @@ def _issue_blobs(records):
 
 
 def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=(),
-                   org_node="", signature_ok=True, ai_ask_used=0):
+                   org_node="", signature_ok=True, signed_model=None,
+                   ai_ask_used=0):
+    # signed_model: the model id the caller's signature actually covers, so a
+    # test can prove /api/ai/ask verifies the client's own pick rather than a
+    # server-resolved substitute.
     # org_node: the account backing forkmesh/forkmesh when that public name is
     # an organization alias ("" = a plain node name that resolves to itself).
     calls = {"inserted": [], "contributors": [], "side_effects": [],
@@ -316,7 +322,10 @@ def _env_and_calls(ai=None, catalog_issue_max=None, host=None, admins=(),
         return None
 
     async def verify_owner_signature(_env, owner, sig, canonical):
-        calls["signed"].append((owner, sig, canonical.decode()))
+        text = canonical.decode()
+        calls["signed"].append((owner, sig, text))
+        if signed_model is not None:
+            return text.split("\n")[3] == signed_model
         return bool(signature_ok)
 
     async def sha256_hex(text):
@@ -881,6 +890,86 @@ def test_ai_ask_maps_cloudflare_model_not_found_to_not_found():
         "model": "@cf/meta/llama-4-scout-17b-16e-instruct",
     }
     assert calls["aiAskRate"] == []
+def test_ai_ask_retries_with_fallback_model_on_model_not_found():
+    class _AI:
+        def __init__(self):
+            self.models = []
+
+        async def run(self, model, payload):
+            self.models.append(model)
+            if model == "@cf/meta/llama-4-scout-17b-16e-instruct":
+                raise RuntimeError("The AI model was not found.")
+            return {"response": "Use fallback model response."}
+
+    env, calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "how do I redo this branch?",
+                         "@cf/meta/llama-4-scout-17b-16e-instruct"))))
+
+    assert response["status"] == 200
+    assert response["data"]["model"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert response["data"]["reply"] == "Use fallback model response."
+    assert env.AI.models == [
+        "@cf/meta/llama-4-scout-17b-16e-instruct",
+        ns["FORKBOT_AI_DEFAULT_MODEL"],
+    ]
+    # Every answered prompt is counted against this account's window.
+    assert calls["aiAskRate"] == ["bi:jett"]
+
+
+def test_ai_ask_answers_a_pick_this_relay_does_not_allowlist():
+    # The desktop signs the model IT picked. When that id is not in this
+    # relay's allowlist the prompt still has to be answered by the default
+    # model: verifying the *resolved* id instead turned every unknown pick
+    # into a bogus 401 "not authorized to sign for the account".
+    class _AI:
+        async def run(self, model, _payload):
+            self.model = model
+            return {"response": "Answered by the default model."}
+
+    ai = _AI()
+    env, calls, ns = _env_and_calls(
+        ai=ai, signed_model="@cf/newer/model-this-relay-never-heard-of")
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "how do I redo this branch?",
+                         "@cf/newer/model-this-relay-never-heard-of"))))
+
+    assert response["status"] == 200
+    assert response["data"]["model"] == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    assert ai.model == ns["FORKBOT_AI_DEFAULT_MODEL"]
+    # The verified signature covers exactly the string the client sent.
+    assert calls["signed"][0][2].split("\n")[3] == (
+        "@cf/newer/model-this-relay-never-heard-of")
+    # An allowlisted pick keeps verifying against a relay-resolved id too, so
+    # older clients that signed whatever the relay handed them still work.
+    resolved_env, _resolved_calls, resolved_ns = _env_and_calls(
+        ai=_AI(), signed_model=None)
+    assert asyncio.run(resolved_ns["ai_ask_handler"](
+        resolved_env, _ask_request(_signed_ask_body(
+            resolved_ns, "hello", "@cf/google/gemma-3-12b-it"))
+    ))["status"] == 200
+
+
+def test_ai_ask_reports_model_not_found_apart_from_other_failures():
+    # Every candidate rejected as "no such model" is the one failure the person
+    # at the composer can act on, so it must not read as "the model did not
+    # answer" (nor as the relay missing the endpoint entirely).
+    class _AI:
+        async def run(self, _model, _payload):
+            raise RuntimeError("5007: No such model or task")
+
+    env, _calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "why is the build red?", ""))))
+    assert response["status"] == 502
+    assert response["data"]["error"] == "model_not_found"
+
+    # The desktop maps that error to its own wording, and keeps a bare 404
+    # (a relay that predates /api/ai/ask) out of the model-not-found story.
+    chat = (ROOT.parent / "qt_client" / "src" / "MainWindowChat.cpp").read_text(
+        encoding="utf-8")
+    assert 'error == QLatin1String("model_not_found")' in chat
+    assert "this relay does not answer AI prompts " in chat
 
 
 def test_ai_ask_refuses_unsigned_stale_and_unverified_callers():

@@ -12600,6 +12600,13 @@ ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
 # desktop Tasks tab was empty for every operator who launched normally instead
 # of typing a password, because it had no session token to present (adhoc #52).
 ORG_TASK_LIST_PROOF = "forkmesh-org-task-list-v1"
+# The same key, removing one task it names. A desktop that authenticated
+# silently could open, read, and close the board but not delete a row, so the
+# Tasks tab told an operator who was plainly signed in to go type a password
+# (adhoc #108's message, still fired in adhoc #1426). Deletion is a
+# manage-permission action either way: _delete still refuses a member without
+# admin/maintain, exactly as it does for a session-token caller.
+ORG_TASK_DELETE_PROOF = "forkmesh-org-task-delete-v1"
 # The same key, signing for the one credential a desktop's "genie" button needs
 # (adhoc #49): a task-only remote-MCP bearer for the task board. An install that
 # can already open and close tasks with its key should not have to send its
@@ -12608,25 +12615,28 @@ GENIE_CREDENTIAL_PROOF = "forkmesh-genie-credential-v1"
 ORG_TASK_COMPLETE_RE = re.compile(
     r"^/api/tasks/([a-f0-9]{32})/complete/?$")
 ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
+ORG_TASK_ITEM_RE = re.compile(r"^/api/tasks/([a-f0-9]{32})/?$")
 
 
 async def _org_task_signed_session(env, request):
     """Resolve the account behind a key-signed organization-task request.
 
-    Deliberately narrow: listing the board, opening a task, and reporting one
-    finished — the reads and writes a desktop performs for its own agent run.
-    Editing, deleting, starting/stopping another member's timer, and QA verdicts
-    all still require a real session. Membership and every other authorization
-    check inside the task API applies to a signed caller exactly as to a
-    session-token one, so a signed list still returns nothing to a non-member.
+    Deliberately narrow: listing the board, opening a task, reporting one
+    finished, and deleting one — the reads and writes a desktop performs for its
+    own agent run, plus the row removal its Tasks tab offers. Editing,
+    starting/stopping another member's timer, and QA verdicts all still require a
+    real session. Membership and every other authorization check inside the task
+    API applies to a signed caller exactly as to a session-token one, so a signed
+    list still returns nothing to a non-member and a signed delete still refuses
+    a member without manage permission.
 
-    The completion proof names the exact task it closes. The list and open
-    proofs can only be replayed inside the five-minute skew window, and only to
-    read the board, or open one more task, as an account that was already
+    The completion and deletion proofs name the exact task they act on. The list
+    and open proofs can only be replayed inside the five-minute skew window, and
+    only to read the board, or open one more task, as an account that was already
     entitled to do so.
     """
     method = method_name(request)
-    if method not in ("GET", "POST"):
+    if method not in ("GET", "POST", "DELETE"):
         return "", None
     url = urlparse(request.url)
     params = parse_qs(url.query)
@@ -12644,6 +12654,16 @@ async def _org_task_signed_session(env, request):
             return "", None
         canonical = (
             ORG_TASK_LIST_PROOF + "\n" + node + "\n" + str(ts)
+        ).encode()
+    elif method == "DELETE":
+        # Its own proof, naming the task: a signature collected for any other
+        # request must never be replayable as a deletion.
+        item = ORG_TASK_ITEM_RE.match(url.path)
+        if not item:
+            return "", None
+        canonical = (
+            ORG_TASK_DELETE_PROOF + "\n" + node + "\n"
+            + item.group(1) + "\n" + str(ts)
         ).encode()
     elif complete:
         canonical = (
@@ -33899,6 +33919,39 @@ def _forkbot_is_allowed_ai_model(env, wanted=""):
 def _forkbot_ai_model_not_found_error(error):
     text = _safe_error_text(error).lower()
     return "model" in text and "not found" in text
+def _forkbot_ai_model_not_found_error(error):
+    text = _safe_error_text(error).lower()
+    if not text:
+        return False
+    return any(marker in text for marker in (
+        "not found",
+        "not_found",
+        "model not found",
+        "unknown model",
+        "does not exist",
+        # What Workers AI actually says for a retired/mistyped id
+        # ("5007: No such model @cf/... or task"); the wordings above never
+        # matched it, so the fallback chain sat unused in production.
+        "no such model",
+        "no such task",
+        "invalid model",
+        "unsupported model",
+    ))
+
+
+def _forkbot_ai_fallback_models(env, requested=""):
+    """Models we can try for one call, in the order they should be billed."""
+    default = _forkbot_ai_default_model(env)
+    fallback = []
+    wanted = clean_string(requested or "", 120).strip()
+    if wanted and wanted not in fallback:
+        fallback.append(wanted)
+    if default and default not in fallback:
+        fallback.append(default)
+    for model_id, _, _ in FORKBOT_AI_MODEL_CHOICES:
+        if model_id not in fallback:
+            fallback.append(model_id)
+    return fallback
 
 
 async def forkbot_models_handler(env, request):
@@ -33994,11 +34047,27 @@ async def ai_ask_handler(env, request):
         return json_response({"error": "signature_required"}, status=401)
     if skew > LOGIN_MAX_SKEW_MS:
         return json_response({"error": "stale_signature"}, status=401)
-    canonical = (
-        "forkmesh-ai-ask-v1\n" + account + "\n" + ts + "\n" + model + "\n" +
-        await sha256_hex(prompt)
-    ).encode()
-    if not await _verify_owner_signature(env, account, sig, canonical):
+
+    prompt_digest = await sha256_hex(prompt)
+
+    def _canonical(model_id):
+        return (
+            "forkmesh-ai-ask-v1\n" + account + "\n" + ts + "\n" + model_id +
+            "\n" + prompt_digest
+        ).encode()
+
+    # The client signs the model id IT picked, so verification must use that
+    # exact string. Signing the *resolved* id turned any pick this relay does
+    # not allowlist (a client offering a newer model than the deployment knows)
+    # into a bogus 401 "unauthorized" instead of a quiet fall back to the
+    # default; the resolved id is still accepted for older clients that signed
+    # whatever the relay handed them.
+    verified = await _verify_owner_signature(
+        env, account, sig, _canonical(requested))
+    if not verified and model != requested:
+        verified = await _verify_owner_signature(
+            env, account, sig, _canonical(model))
+    if not verified:
         return json_response({"error": "unauthorized"}, status=401)
     if requested_model and not _forkbot_is_allowed_ai_model(env, requested_model):
         return json_response({"error": "not_found", "model": requested_model},
@@ -34006,6 +34075,7 @@ async def ai_ask_handler(env, request):
     limited = await _ai_ask_rate_check(env, await blind_index(env, account))
     if limited is not None:
         return limited
+    outcome = {}
     reply = await _forkbot_run_ai(
         env, AI_ASK_SYSTEM_PROMPT, prompt, model=model,
         max_tokens=AI_ASK_MAX_TOKENS,
@@ -34018,11 +34088,17 @@ async def ai_ask_handler(env, request):
         # _forkbot_run_ai already logged why (missing binding, provider error,
         # unusable shape); the composer needs a distinguishable failure so it
         # can say "the model did not answer" instead of showing an empty reply.
-        return json_response({"error": "ai_unavailable", "model": model},
-                             status=502)
+        # model_not_found is kept separate: it is the only failure the caller
+        # can act on by picking a different model.
+        error = ("model_not_found"
+                 if outcome.get("failure") == "model_not_found"
+                 else "ai_unavailable")
+        return json_response({"error": error, "model": model}, status=502)
     return json_response({
         "ok": True,
-        "model": model,
+        # The model that actually answered, which is the requested one unless
+        # a fallback had to take over (see _forkbot_ai_fallback_models).
+        "model": outcome.get("model") or model,
         "reply": reply.strip()[:AI_ASK_MAX_REPLY],
     })
 
@@ -34033,6 +34109,13 @@ async def _forkbot_run_ai(
 ):
     """Run the Workers AI chat model and return the raw response text/object
     (or None). Shared by the issue-drafting and intent-classification helpers.
+
+    Pass a dict as `outcome` to learn what happened beyond None/not-None:
+    "model" is the id that actually answered (a fallback when the pick was
+    rejected) and "failure" is one of missing_binding / model_not_found /
+    provider_error / unusable_response. POST /api/ai/ask needs
+    model_not_found separated out because that is the one failure the person
+    at the composer can fix by picking another model.
 
     When `schema` is given, the first attempt requests Workers AI JSON mode
     (response_format json_schema) so a supporting model MUST return valid
@@ -34045,13 +34128,17 @@ async def _forkbot_run_ai(
     swallowed all exceptions, which left ForkBot silently degraded (raw-echo
     issue titles, natural requests answered with the help hint) with nothing
     in the logs to say why."""
+    if outcome is None:
+        outcome = {}
     ai = getattr(env, "AI", None)
     if ai is None or js_nullish(ai) or not hasattr(ai, "run"):
+        outcome["failure"] = "missing_binding"
         await log_error(
             env, 500, "AI", "forkbot/ai",
             "ForkBot AI unavailable: env.AI binding is missing")
         return None
     model = _forkbot_resolve_ai_model(env, model)
+    candidates = _forkbot_ai_fallback_models(env, model)
     base_payload = {
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -34070,10 +34157,23 @@ async def _forkbot_run_ai(
     result = None
     ran = False
     last_error = None
-    for payload in attempts:
-        try:
-            result = await ai.run(model, to_js(payload))
-            ran = True
+    # Every candidate rejected as "no such model" means the deployment's model
+    # ids are stale, not that inference is broken — worth saying so distinctly
+    # both in the log and to the caller.
+    all_missing = True
+    for candidate in candidates:
+        for payload in attempts:
+            try:
+                result = await ai.run(candidate, to_js(payload))
+                model = candidate
+                ran = True
+                break
+            except Exception as error:
+                last_error = error
+                if _forkbot_ai_model_not_found_error(error):
+                    break
+                all_missing = False
+        if ran:
             break
         except Exception as error:
             if allow_model_not_found_error and _forkbot_ai_model_not_found_error(error):
@@ -34081,11 +34181,17 @@ async def _forkbot_run_ai(
             last_error = error
             continue
     if not ran:
+        outcome["failure"] = ("model_not_found" if all_missing
+                              else "provider_error")
         await log_error(
             env, 500, "AI", "forkbot/ai",
-            "ForkBot AI call failed (%s): %s"
-            % (model, _safe_error_text(last_error)[:300]))
+            "ForkBot AI call failed (%s%s): %s"
+            % (model,
+               ", no listed model exists on this account" if all_missing
+               else "",
+               _safe_error_text(last_error)[:300]))
         return None
+    outcome["model"] = model
     try:
         if hasattr(result, "to_py"):
             result = result.to_py()
@@ -34104,6 +34210,7 @@ async def _forkbot_run_ai(
         return result
     if isinstance(result, str):
         return result
+    outcome["failure"] = "unusable_response"
     await log_error(
         env, 500, "AI", "forkbot/ai",
         "ForkBot AI returned an unusable %s response (%s)"
@@ -44369,6 +44476,7 @@ async def _https_mirror_public_context(env, owner, repo):
         if not pins:
             return None
         allowed = set()
+        group_nodes = set()
         current_nodes = set()
         source = None
         for row in members:
@@ -44379,6 +44487,7 @@ async def _https_mirror_public_context(env, owner, repo):
             state = clean_string(record.get("stateHash", ""), 64).lower()
             if not valid_node_name(node):
                 continue
+            group_nodes.add(node)
             if pins and state not in pins:
                 continue
             allowed.add(node)
@@ -44406,6 +44515,12 @@ async def _https_mirror_public_context(env, owner, repo):
             "owner": canonical_owner,
             "repo": canonical_repo,
             "nodes": allowed,
+            # Every node publishing a record in this mirror group, including
+            # the ones the state-pin gate currently excludes from serving.
+            # Routing must keep using "nodes"; this set exists so an operator
+            # diagnostic can tell "not a mirror of this repository" apart from
+            # "a mirror that is behind the signed pin window".
+            "groupNodes": group_nodes,
             # Ordinary reads prefer the newest source generation. Recent
             # signed generations remain available strictly as failover while
             # their nodes converge.
@@ -44693,6 +44808,28 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     return operation in set(operations)
 
 
+async def _mirror_reachability_failure_reason(
+        env, endpoint, context, admitted, now, default):
+    """Explain why one exact mirror did not serve README.md.
+
+    Only consulted after the probe request has already failed, so the extra
+    manifest read costs nothing on the healthy path. Ordered from the operator
+    action furthest upstream (finish syncing) to the narrowest (the node
+    answered but not with a README).
+    """
+    if not admitted:
+        return "state_pin_not_admitted"
+    try:
+        if not await _https_mirror_repository_proof(
+                env, endpoint, context, "blob"):
+            return "repository_proof_failed"
+    except Exception:
+        return "repository_proof_failed"
+    if not https_routing.endpoint_eligible(endpoint, now):
+        return "endpoint_stale"
+    return default
+
+
 async def repo_mirror_reachability_handler(
         env, request, owner, repo, requested_node):
     """Fetch README.md from one exact eligible mirror without failover.
@@ -44700,9 +44837,18 @@ async def repo_mirror_reachability_handler(
     Ordinary public repository reads intentionally rotate and fail over, which
     makes them unsuitable for an operator table: a successful response might
     have come from a different node. This bounded probe selects only the named
-    endpoint, verifies its fresh repository proof, performs the same
-    router-signed blob request as a real read, and returns metadata only. README
-    contents and the endpoint origin never leave the probe.
+    node's registered endpoint, performs the same router-signed blob request as
+    a real read, and returns metadata only. README contents and the endpoint
+    origin never leave the probe.
+
+    The probe reports what the named node actually answers, so it deliberately
+    does not pre-disqualify on the cached serving state the router uses: a node
+    outside the current state-pin window, or one whose health lease has gone
+    stale, is still asked for README.md and its own answer decides the verdict
+    (adhoc #1422 — every mirror but the single freshest one reported
+    "Unavailable" without a single request having been made to it). Only nodes
+    that publish no record in this repository's mirror group are rejected
+    outright, and the response still carries metadata only.
     """
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -44711,7 +44857,11 @@ async def repo_mirror_reachability_handler(
     if not valid_node_name(node):
         return json_response({"error": "not_found"}, status=404)
     context = await _https_mirror_public_context(env, owner, repo)
-    if context is None or node not in context.get("nodes", set()):
+    if context is None:
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+    admitted = node in context.get("nodes", set())
+    if not admitted and node not in context.get("groupNodes", set()):
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
 
@@ -44749,6 +44899,8 @@ async def repo_mirror_reachability_handler(
     )
     endpoint = _https_mirror_endpoint_projection(row or {})
     now = int(Date.now())
+    endpoint_registered = bool(
+        row and str(endpoint.get("baseUrl") or "").strip())
 
     def result(reachable, reason, status=0, latency=0):
         return json_response({
@@ -44760,14 +44912,20 @@ async def repo_mirror_reachability_handler(
             "status": int(status or 0),
             "latencyMs": max(0, min(int(latency or 0), 60_000)),
             "checkedAt": now,
+            # State the probe ran against, so the operator table can separate
+            # "nothing to probe" and "behind the pin window" from a mirror that
+            # was asked for README.md and failed to serve it.
+            "endpointRegistered": endpoint_registered,
+            "admitted": bool(admitted),
             "reason": clean_string(reason, 80),
         }, cache_control="no-store, max-age=0, must-revalidate")
 
-    if not row or not https_routing.endpoint_eligible(endpoint, now):
-        return result(False, "endpoint_unavailable")
-    if not await _https_mirror_repository_proof(
-            env, endpoint, context, "blob"):
-        return result(False, "repository_proof_failed")
+    # No registered endpoint means there is no direct route to this node at
+    # all; nothing can be measured. Everything else gets a real request.
+    if not endpoint_registered:
+        return result(False, "endpoint_not_registered")
+    if endpoint.get("abuseBlocked"):
+        return result(False, "endpoint_blocked")
     router_public_key = _https_mirror_router_public_key(env)
     router_seed = _https_mirror_router_seed(env)
     target = https_routing.masked_target_url(
@@ -44819,12 +44977,19 @@ async def repo_mirror_reachability_handler(
             and value.get("ok") is True
             and isinstance(value.get("content"), str)
         )
+        if loaded:
+            return result(True, "readme_loaded", status, latency)
         return result(
-            loaded, "readme_loaded" if loaded else "readme_unavailable",
+            False,
+            await _mirror_reachability_failure_reason(
+                env, endpoint, context, admitted, now, "readme_unavailable"),
             status, latency)
     except Exception:
         return result(
-            False, "request_failed", 0, int(Date.now()) - started)
+            False,
+            await _mirror_reachability_failure_reason(
+                env, endpoint, context, admitted, now, "request_failed"),
+            0, int(Date.now()) - started)
 
 
 def _https_mirror_merge_body(raw, pull_number):
