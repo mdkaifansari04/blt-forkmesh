@@ -852,6 +852,18 @@ QString agentStatusLabel(const AgentSession &s)
     return s.merged ? QStringLiteral("merged") : agentStatusText(s.status);
 }
 
+// One row in the Agents list's rich hover card. QToolTip understands the same
+// small rich-text subset as QLabel, so the app's tinted octicons can give every
+// fact a stable visual anchor instead of leaving a dense wall of text. Keep the
+// text escaped here: branch names and worktree paths can contain HTML syntax.
+QString agentHoverRow(const QString &icon, const QColor &tint, const QString &text)
+{
+    return QStringLiteral(
+               "<tr><td style='padding:1px 7px 1px 0; vertical-align:middle;'>"
+               "%1</td><td style='padding:1px 0; white-space:nowrap;'>%2</td></tr>")
+        .arg(octiconMarkup(icon, 13, tint), text.toHtmlEscaped());
+}
+
 // Fill the agent table's leading "#" cell for a session: the session id, the run
 // state as a coloured glyph, and the branch button's roles (adhoc #29 folded the
 // old Status column's glyph and chip in here, so the icons read down the list's
@@ -930,64 +942,102 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // state, so the tooltip has to name it outright. The session number and the
     // full "updated" timestamp lead it now that the cell itself shows neither
     // (adhoc #84).
-    QStringList tip{QStringLiteral("Agent #%1").arg(s.id)};
+    QString tip = QStringLiteral(
+        "<table cellspacing='0' cellpadding='0' style='border-collapse:collapse;'>");
+    auto addTip = [&tip](const QString &icon, const QColor &tint,
+                         const QString &text) {
+        tip += agentHoverRow(icon, tint, text);
+    };
+    addTip(QStringLiteral("person"), QColor("#8b949e"),
+           QStringLiteral("Agent #%1").arg(s.id));
     if (updatedMs > 0)
-        tip << QStringLiteral("Updated %1")
+        addTip(QStringLiteral("history"), QColor("#8b949e"),
+               QStringLiteral("Updated %1")
                    .arg(QDateTime::fromMSecsSinceEpoch(updatedMs).toString(
-                       QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-    tip << agentStatusLabel(s);
-    if (s.genie)
-        tip << QStringLiteral("Genie \xE2\x80\x94 working the organization's "
-                              "shared task list from the website's remote MCP");
-    if (!s.merged && s.status == AgentStatus::Queued)
-        tip << QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
-                              "agent slots frees up (Settings \xE2\x86\x92 Agents)")
-                   .arg(maxRunningAgents());
+                       QStringLiteral("yyyy-MM-dd HH:mm:ss"))));
+    QString statusIcon = QStringLiteral("circle-slash");
     if (s.merged)
-        tip << QStringLiteral("Worktree/PR merged into %1%2")
+        statusIcon = QStringLiteral("git-merge");
+    else if (s.genieInFlight())
+        statusIcon = QStringLiteral("sparkle");
+    else if (s.status == AgentStatus::Running)
+        statusIcon = QStringLiteral("sync");
+    else if (s.status == AgentStatus::Success)
+        statusIcon = QStringLiteral("check-circle");
+    else if (s.status == AgentStatus::Stopped)
+        statusIcon = QStringLiteral("stop");
+    else if (s.status == AgentStatus::Waiting)
+        statusIcon = QStringLiteral("hand");
+    else if (s.status == AgentStatus::Failed)
+        statusIcon = QStringLiteral("x");
+    else if (s.status == AgentStatus::Queued)
+        statusIcon = QStringLiteral("history");
+    addTip(statusIcon, agentStatusIconColor(s), agentStatusLabel(s));
+    if (s.genie)
+        addTip(QStringLiteral("sparkle"), QColor(Theme::kGenie),
+               QStringLiteral("Genie \xE2\x80\x94 working the organization's "
+                              "shared task list from the website's remote MCP"));
+    if (!s.merged && s.status == AgentStatus::Queued)
+        addTip(QStringLiteral("history"), QColor("#d29922"),
+               QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
+                              "agent slots frees up (Settings \xE2\x86\x92 Agents)")
+                   .arg(maxRunningAgents()));
+    if (s.merged)
+        addTip(QStringLiteral("git-merge"), QColor("#a371f7"),
+               QStringLiteral("Worktree/PR merged into %1%2")
                    .arg(agentMergeBase(s),
                         s.mergedAtMs > 0
                             ? QStringLiteral(" on %1").arg(
                                   QDateTime::fromMSecsSinceEpoch(s.mergedAtMs)
                                       .toString(QStringLiteral("MMM d  hh:mm")))
-                            : QString());
+                            : QString()));
     if (!s.branchName.isEmpty()) {
-        tip << QStringLiteral("Click the branch button to review %1 in the Git view")
-                   .arg(s.branchName);
+        addTip(QStringLiteral("git-branch"), QColor("#3fb950"),
+               QStringLiteral("Click the branch button to review %1 in the Git view")
+                   .arg(s.branchName));
         if (stat.files >= 0)
-            tip << QStringLiteral("%1 file%2 changed")
+            addTip(QStringLiteral("file-diff"), QColor("#58a6ff"),
+                   QStringLiteral("%1 file%2 changed")
                        .arg(stat.files)
-                       .arg(stat.files == 1 ? QString() : QStringLiteral("s"));
+                       .arg(stat.files == 1 ? QString() : QStringLiteral("s")));
         if (stat.worktree.isEmpty())
-            tip << QStringLiteral("No worktree checked out");
+            addTip(QStringLiteral("worktree"), QColor("#8b949e"),
+                   QStringLiteral("No worktree checked out"));
         else
-            tip << QStringLiteral("Worktree: %1").arg(stat.worktree);
+            addTip(QStringLiteral("worktree"), QColor("#58a6ff"),
+                   QStringLiteral("Worktree: %1").arg(stat.worktree));
         if (stat.dirty > 0)
-            tip << QStringLiteral("%1 uncommitted change%2 in the worktree")
+            addTip(QStringLiteral("diff"), QColor("#d29922"),
+                   QStringLiteral("%1 uncommitted change%2 in the worktree")
                        .arg(stat.dirty)
-                       .arg(stat.dirty == 1 ? QString() : QStringLiteral("s"));
+                       .arg(stat.dirty == 1 ? QString() : QStringLiteral("s")));
         else if (stat.dirty == 0)
-            tip << QStringLiteral("Worktree is clean");
+            addTip(QStringLiteral("check-circle"), QColor("#3fb950"),
+                   QStringLiteral("Worktree is clean"));
     }
     // What the churn bar draws, in figures (adhoc #84), and what the chip's
     // orange alert glyph means (adhoc #446) — both moved in from the dropped Diff
     // column's tooltip (adhoc #92).
     if (stat.conflicted)
-        tip << QStringLiteral("Conflicts with %1 — click the orange alert on the "
+        addTip(QStringLiteral("alert"), QColor("#e3742f"),
+               QStringLiteral("Conflicts with %1 — click the orange alert on the "
                               "branch button to have this agent merge base in and "
                               "resolve")
-                   .arg(base.isEmpty() ? QStringLiteral("base") : base);
+                   .arg(base.isEmpty() ? QStringLiteral("base") : base));
     if (stat.added >= 0 && stat.removed >= 0)
-        tip << QStringLiteral("%1 line%2 added \xC2\xB7 %3 removed")
+        addTip(QStringLiteral("diff"), QColor("#8b949e"),
+               QStringLiteral("%1 line%2 added \xC2\xB7 %3 removed")
                    .arg(stat.added)
                    .arg(stat.added == 1 ? QString() : QStringLiteral("s"))
-                   .arg(stat.removed);
+                   .arg(stat.removed));
     if (stat.ahead >= 0 && stat.behind >= 0)
-        tip << QString::fromUtf8("%1 ahead \xC2\xB7 %2 behind %3")
+        addTip(QStringLiteral("git-compare"), QColor("#a371f7"),
+               QString::fromUtf8("%1 ahead \xC2\xB7 %2 behind %3")
                    .arg(stat.ahead)
                    .arg(stat.behind)
-                   .arg(base.isEmpty() ? QStringLiteral("base") : base);
-    cell->setToolTip(tip.join(QLatin1Char('\n')));
+                   .arg(base.isEmpty() ? QStringLiteral("base") : base));
+    tip += QStringLiteral("</table>");
+    cell->setToolTip(tip);
 }
 
 // Effective run duration for the header Time stat + the Speed figure. While a
@@ -6459,6 +6509,19 @@ QString MainWindow::testAgentStatusCellBadges(int sessionId,
             .arg(item.data(kAgentBranchWorktreeRole).toString())
             .arg(item.data(kAgentBehindRole).toInt())
             .arg(item.data(kAgentAheadRole).toInt());
+    }
+    return QString();
+}
+
+QString MainWindow::testAgentStatusCellToolTip(int sessionId,
+                                               const AgentDiffStat &stat) const
+{
+    for (const AgentSession &s : m_agentSessions) {
+        if (s.id != sessionId)
+            continue;
+        QTableWidgetItem item;
+        applyAgentStatusCell(&item, s, stat, agentMergeBase(s), s.id);
+        return item.toolTip();
     }
     return QString();
 }
