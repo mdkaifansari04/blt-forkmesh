@@ -122,9 +122,71 @@ test("organization repository alias resolves its linked mirror catalog group", a
             node: "mirror2",
             status: "online",
             cloneAvailable: true,
+            version: "0.7.13",
+            commit: "0123456789abcdef",
+            branch: "main",
+            activity: "serving",
+            endpoint: "https://mirror2.forkmesh.test",
+            endpointIntegrity: "ok",
+            checkedAt: 1796158800000,
+            lastSync: 1796158800000,
+            latencyMs: 24,
+            region: "us-east",
+            operations: ["clone", "browse", "website"],
+            sizeBytes: 507510784,
+            issueCount: 92,
+            commitCount: 21418,
+            branchCount: 69,
+            pullCount: 32,
+            discussionCount: 2,
+            worktreeCount: 3,
+            clonesServed: 1126,
+            websiteServed: 29829,
+            artifactCount: 6,
+          },
+          {
+            node: "mirror3",
+            status: "offline",
+            cloneAvailable: false,
+            version: "0.7.13",
+            commit: "0123456789abcdef",
+            branch: "main",
+            lastSync: 1796072400000,
+            issueCount: 92,
+            commitCount: 21418,
+            branchCount: 69,
+            pullCount: 32,
+            discussionCount: 2,
+            artifactCount: 6,
+          },
+          {
+            node: "edge-mirror-with-a-long-machine-name",
+            status: "online",
+            cloneAvailable: true,
+            version: "0.7.8",
+            commit: "fedcba9876543210",
+            branch: "main",
+            activity: "syncing",
+            endpoint: "https://edge-mirror-with-a-long-machine-name.example.test",
+            endpointIntegrity: "unknown",
+            checkedAt: 1796158740000,
+            lastSync: 1796158680000,
+            latencyMs: 195,
+            region: "us-west",
+            operations: ["clone", "browse"],
+            sizeBytes: 506252288,
+            issueCount: 92,
+            commitCount: 21417,
+            branchCount: 68,
+            pullCount: 31,
+            discussionCount: 2,
+            worktreeCount: 2,
+            clonesServed: 188,
+            websiteServed: 4629,
+            artifactCount: 0,
           },
         ],
-        summary: { mirrors: 1 },
+        summary: { mirrors: 3 },
       };
     }
     return route.fulfill({
@@ -183,4 +245,34 @@ test("organization repository alias resolves its linked mirror catalog group", a
   expect(requestedPaths).toContain("/api/orgs/forkmesh/repos");
   expect(requestedPaths).toContain("/api/repo/forkmesh/forkmesh/tree");
   await expect(page).toHaveURL(/\/forkmesh\/forkmesh$/);
+
+  await page.locator('[data-dashboard-repo-tab="mirrors"]').click();
+  const mirrorPanel = page.locator('[data-dashboard-repo-tab-panel="mirrors"]');
+  await expect(mirrorPanel).toBeVisible();
+  await expect(page.locator("[data-mirror-summary]")).toContainText("Registered nodes");
+  await expect(page.locator("[data-mirror-summary]")).toContainText("Online now");
+  const mirrorCards = page.locator("[data-mirror-card]");
+  await expect(mirrorCards).toHaveCount(3);
+  await expect(mirrorCards.first()).toContainText("Revision");
+  await expect(mirrorCards.first()).toContainText("Connection");
+  await expect(mirrorCards.first()).toContainText("Repository contents");
+  await expect(mirrorCards.first()).toContainText("Local activity");
+
+  const desktopCardBoxes = await mirrorCards.evaluateAll((cards) =>
+    cards.map((card) => card.getBoundingClientRect().toJSON()),
+  );
+  expect(Math.abs(desktopCardBoxes[0].y - desktopCardBoxes[1].y)).toBeLessThanOrEqual(1);
+  expect(desktopCardBoxes[2].y).toBeGreaterThan(desktopCardBoxes[0].y);
+  expect(
+    await mirrorPanel.evaluate((panel) => panel.scrollWidth <= panel.clientWidth + 1),
+  ).toBe(true);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileCardBoxes = await mirrorCards.evaluateAll((cards) =>
+    cards.map((card) => card.getBoundingClientRect().toJSON()),
+  );
+  expect(mobileCardBoxes[1].y).toBeGreaterThan(mobileCardBoxes[0].y);
+  expect(
+    await mirrorPanel.evaluate((panel) => panel.scrollWidth <= panel.clientWidth + 1),
+  ).toBe(true);
 });
