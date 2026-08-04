@@ -381,6 +381,7 @@ def repo_clone_online(rec, served_groups):
 def build_repo_mirrors_payload(
     owner, repo, rows, presence, first_hosted, now, stale_ms, sync_tolerance_ms,
     history=None, linked_canonical=False, reachable_nodes=None,
+    routing_verified_nodes=None,
 ):
     def clone_target(rec):
         raw = str((rec or {}).get("cloneUrl") or "").strip()
@@ -574,6 +575,10 @@ def build_repo_mirrors_payload(
             str(rec.get("machineName") or "").strip()
             or str(rec.get("owner") or "").strip()
         )
+        routing_verified = bool(
+            routing_verified_nodes is not None
+            and node_name.lower() in routing_verified_nodes
+        )
         key = row.get("key_bi")
         seen = _mirror_ms((presence or {}).get(key))
         hosted = _mirror_ms(rec.get("hostedSince")) or _mirror_ms((first_hosted or {}).get(key))
@@ -678,7 +683,15 @@ def build_repo_mirrors_payload(
         integrity_anchor_online = (
             canonical_online if canonical_link_mode else source_online
         )
-        if canonical_link_mode and not pins:
+        # A modern HTTPS verifier proves the exact state the router authorizes:
+        # the default branch and release tags, signed by the endpoint and
+        # accepted by the repository quorum. That is stronger and more current
+        # serving evidence than the catalog's all-refs hash, which also changes
+        # for harmless agent/PR branch churn. Keep the catalog-pin path for old
+        # endpoints that have no verifier verdict.
+        if routing_verified:
+            integrity = "ok"
+        elif canonical_link_mode and not pins:
             # Unlike the legacy unlinked path, an explicit organization route
             # is fail-closed until its appointed backing node publishes an
             # authenticated refs digest.
