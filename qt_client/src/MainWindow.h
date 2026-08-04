@@ -196,7 +196,10 @@ namespace forkmesh::control {
 struct MirrorActionsConfigurationRequest;
 struct AgentCliCredentials;
 }
-namespace forkmesh::ui { class DiffFileNavigator; } // file-list <-> diff-view sync
+namespace forkmesh::ui {
+class DiffFileNavigator;  // file-list <-> diff-view sync
+struct DiffFileEntry;     // one changed file parsed out of a patch
+}
 
 // A configured mainnode the user can connect to. The client connects to one at
 // a time; the favicon rail switches the active one.
