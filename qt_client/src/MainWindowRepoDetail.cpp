@@ -9803,8 +9803,8 @@ void MainWindow::updateRepoActivityRail()
         m_repoFilesModeBar->setVisible(!onChanges);
     if (m_repoOverviewChrome)
         m_repoOverviewChrome->setVisible(!onChanges && !onBranches);
-    if (m_footerLeftRegion)
-        m_footerLeftRegion->setVisible(!onChanges);
+    // Both bottom-corner overlays are global. Git no longer suppresses the log
+    // or owns a one-off prompt reparenting path.
     setGitPromptOverlay(onChanges);
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
@@ -9844,59 +9844,13 @@ void MainWindow::updateRepoActivityRail()
 
 void MainWindow::setGitPromptOverlay(bool enabled)
 {
-    const bool shouldFloat = enabled && m_commitsStack && m_footerDock &&
-                             m_promptWrapper;
-    if (shouldFloat == m_gitPromptOverlayVisible) {
-        if (shouldFloat)
-            positionGitPromptOverlay();
-        else if (m_footerDock)
-            m_footerDock->show();
-        return;
-    }
-
-    if (shouldFloat) {
-        if (QLayout *dockLayout = m_footerDock->layout())
-            dockLayout->removeWidget(m_promptWrapper);
-        m_promptWrapper->setParent(m_commitsStack);
-        m_promptWrapper->setMaximumWidth(560);
-        m_footerDock->hide();
-        m_gitPromptOverlayVisible = true;
-        m_promptWrapper->show();
-        QTimer::singleShot(0, this, &MainWindow::positionGitPromptOverlay);
-        return;
-    }
-
-    m_promptWrapper->hide();
-    m_promptWrapper->setParent(m_footerDock);
-    if (auto *dockLayout = qobject_cast<QHBoxLayout *>(m_footerDock->layout()))
-        dockLayout->addWidget(m_promptWrapper, 1);
-    m_promptWrapper->setMaximumWidth(QWIDGETSIZE_MAX);
-    m_gitPromptOverlayVisible = false;
-    m_footerDock->show();
-    // Moving the floating prompt back into the footer leaves it hidden: both
-    // hide() above and QWidget::setParent() suppress its visibility. Restore it
-    // explicitly so the Code -> Git -> Code path always brings the composer
-    // back with the footer.
-    m_promptWrapper->show();
+    Q_UNUSED(enabled);
+    positionGlobalFooterOverlays();
 }
 
 void MainWindow::positionGitPromptOverlay()
 {
-    if (!m_gitPromptOverlayVisible || !m_promptWrapper || !m_commitsStack)
-        return;
-
-    constexpr int kMargin = 8;
-    constexpr int kMaxWidth = 560;
-    const QSize hostSize = m_commitsStack->size();
-    const int width = qMin(kMaxWidth, qMax(0, hostSize.width() - 2 * kMargin));
-    const int height = m_promptWrapper->sizeHint().height();
-    if (width <= 0 || height <= 0)
-        return;
-
-    m_promptWrapper->resize(width, height);
-    m_promptWrapper->move(hostSize.width() - kMargin - width,
-                          qMax(kMargin, hostSize.height() - kMargin - height));
-    m_promptWrapper->raise();
+    positionGlobalFooterOverlays();
 }
 
 // Mirror the top-bar search into the commit-list filter while the Git page is

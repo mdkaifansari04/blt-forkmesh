@@ -2711,21 +2711,24 @@ int main(int argc, char *argv[])
               QStringLiteral("a branch diff gives the Git rail exclusive ownership: "
                              "no Code chrome and no visible diff outside Git"));
         check(window.testGitPromptFloatsBottomRight(),
-              QStringLiteral("Git floats only its prompt at the lower-right, "
-                             "leaving the graph's left side at full height"));
-        // Returning through the Code route must reattach and reveal the footer
-        // composer. Reparenting a hidden QWidget does not make it visible again.
+              QStringLiteral("Git keeps the global prompt overlay at the "
+                             "lower-right without reserving footer height"));
+        // Returning through the Code route keeps the same global prompt overlay;
+        // it is never reparented into a page-specific footer.
         window.testClickRepoDetailTab(0);
         QApplication::processEvents();
         QFrame *promptWrapper = window.findChild<QFrame *>(
             QStringLiteral("promptWrapper"));
         QWidget *footerDock = window.findChild<QWidget *>(
             QStringLiteral("logDock"));
-        check(promptWrapper && footerDock &&
-                  promptWrapper->parentWidget() == footerDock &&
+        QWidget *promptOverlayHost = window.findChild<QWidget *>(
+            QStringLiteral("promptOverlayHost"));
+        check(promptWrapper && footerDock && promptOverlayHost &&
+                  promptWrapper->parentWidget() == promptOverlayHost &&
+                  footerDock->isVisibleTo(&window) &&
                   promptWrapper->isVisibleTo(&window),
-              QStringLiteral("returning from Git to Code restores the visible "
-                             "footer prompt"));
+              QStringLiteral("Code and Git share the same visible global prompt "
+                             "overlay"));
 
         // adhoc #420: following a branch link must land on the branch straight
         // away. The panel's git reads run on a worker thread now, so the

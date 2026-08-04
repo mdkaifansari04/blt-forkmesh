@@ -6905,6 +6905,87 @@ private:
     QTextCharFormat m_net, m_system, m_success, m_error, m_command, m_muted, m_tool;
 };
 
+// The collapsed form of the global log overlay.  Each incoming line briefly
+// lights the lane it belongs to; clicking expands the six-line tail.  This is a
+// paint-only widget (rather than four child buttons), keeping a burst of log
+// traffic from creating or relaying out widgets.
+class LogActivityLights : public QWidget
+{
+public:
+    explicit LogActivityLights(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("logActivityLights"));
+        setFixedSize(78, 28);
+        setCursor(Qt::PointingHandCursor);
+        setToolTip(QStringLiteral("Live log activity — click to show recent lines"));
+    }
+
+    void pulse(const QString &line)
+    {
+        const QString lower = line.toLower();
+        int lane = 3;
+        if (lower.contains(QStringLiteral("error")) ||
+            lower.contains(QStringLiteral("fail")) ||
+            lower.contains(QStringLiteral("warning")) ||
+            lower.contains(QStringLiteral("!!")))
+            lane = 0;
+        else if (lower.contains(QStringLiteral("git")) ||
+                 lower.contains(QStringLiteral("branch")) ||
+                 lower.contains(QStringLiteral("fork")))
+            lane = 1;
+        else if (lower.contains(QStringLiteral("http")) ||
+                 lower.contains(QStringLiteral("network")) ||
+                 lower.contains(QStringLiteral("relay")) ||
+                 lower.contains(QStringLiteral("net ")))
+            lane = 2;
+        const int generation = ++m_generation[lane];
+        m_lit[lane] = true;
+        update();
+        QTimer::singleShot(240, this, [this, lane, generation] {
+            if (m_generation[lane] != generation)
+                return;
+            m_lit[lane] = false;
+            update();
+        });
+    }
+
+    std::function<void()> onClicked;
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const bool dark = currentThemeIsDark();
+        painter.setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 1));
+        painter.setBrush(QColor(dark ? "#161b22" : "#ffffff"));
+        painter.drawRoundedRect(rect().adjusted(0, 0, -1, -1), 8, 8);
+        static const QColor colors[] = {QColor("#f85149"), QColor("#d29922"),
+                                        QColor("#58a6ff"), QColor("#3fb950")};
+        for (int i = 0; i < 4; ++i) {
+            QColor color = colors[i];
+            color.setAlpha(m_lit[i] ? 255 : (dark ? 70 : 55));
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(color);
+            const QPointF center(15.0 + i * 16.0, height() / 2.0);
+            painter.drawEllipse(center, m_lit[i] ? 5.0 : 3.5,
+                                m_lit[i] ? 5.0 : 3.5);
+        }
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && rect().contains(event->pos()) &&
+            onClicked)
+            onClicked();
+        QWidget::mouseReleaseEvent(event);
+    }
+
+private:
+    bool m_lit[4] = {false, false, false, false};
+    int m_generation[4] = {0, 0, 0, 0};
+};
+
 // One conflict region in a file carrying git merge markers. Line indices are
 // 0-based into the file's lines: [start..sep) is "ours" (HEAD/base), the marker
 // lines are start, sep and end, and (sep..end) is "theirs" (the PR).
@@ -7696,6 +7777,8 @@ inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleD
 // — with the whole ring rotating while any of them is live. Painted rather than
 // assembled from labels so a frame costs one repaint of an 18px square and the
 // spin never relayouts the strip.
+inline QString octiconForBackgroundTaskWord(const QString &word);
+
 class BackgroundTaskChip : public QWidget
 {
 public:
