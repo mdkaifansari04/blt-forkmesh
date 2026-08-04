@@ -5506,6 +5506,17 @@ int main(int argc, char *argv[])
                       mergedStored.patch.isEmpty() &&
                       mergedStored.commits.isEmpty(),
                   "a merged stored PR exposes no diff or commit payload");
+            QProcess payloadHistory;
+            payloadHistory.start(
+                "git",
+                {"-C", pulls.metaWorkTree(), "log", "--format=%H", "--all", "--",
+                 QStringLiteral("pulls/%1/changes.patch").arg(dn),
+                 QStringLiteral("pulls/%1/commits.mbox").arg(dn)});
+            payloadHistory.waitForFinished(30000);
+            check(payloadHistory.exitStatus() == QProcess::NormalExit &&
+                      payloadHistory.exitCode() == 0 &&
+                      payloadHistory.readAllStandardOutput().trimmed().isEmpty(),
+                  "merging purges the stored payload from ledger and metadata-ref history");
         }
 
         // --- PullStore deletePull works with a dirty working tree -----------

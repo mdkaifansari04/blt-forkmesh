@@ -871,6 +871,8 @@ void MainWindow::loadRepositories()
                 .toBool();
         repo.actionsAutoApprove =
             settings.value("actionsAutoApprove", true).toBool();
+        repo.requirePeerApproval =
+            settings.value("requirePeerApproval", true).toBool();
         repo.externallyManagedActions =
             settings.value("externallyManagedActions", false).toBool();
         repo.externalActionsSource =
@@ -1010,6 +1012,7 @@ void MainWindow::saveRepositories() const
         settings.setValue("isPrivate", repo.isPrivate);
         settings.setValue("actionsEnabled", repo.actionsEnabled);
         settings.setValue("actionsAutoApprove", repo.actionsAutoApprove);
+        settings.setValue("requirePeerApproval", repo.requirePeerApproval);
         settings.setValue("externallyManagedActions",
                           repo.externallyManagedActions);
         settings.setValue("externalActionsSource",
@@ -2792,6 +2795,33 @@ QWidget *MainWindow::buildRepoSettingsTab()
 
     automationCol->addSpacing(10);
 
+    // --- Pull requests ----------------------------------------------------
+    auto *pullHeading = new QLabel("Pull requests");
+    pullHeading->setObjectName("sectionLabel");
+    automationCol->addWidget(pullHeading);
+
+    m_settingsRequirePeerApprovalCheck =
+        new QCheckBox("Require peer approval before merge");
+    m_settingsRequirePeerApprovalCheck->setObjectName(
+        QStringLiteral("repoRequirePeerApprovalCheck"));
+    m_settingsRequirePeerApprovalCheck->setCursor(Qt::PointingHandCursor);
+    m_settingsRequirePeerApprovalCheck->setToolTip(
+        "Require at least one approval from someone other than the pull-request "
+        "author, with no unresolved request for changes. Turn this off when "
+        "peer review is optional for this repository.");
+    connect(m_settingsRequirePeerApprovalCheck, &QCheckBox::toggled, this,
+            [this](bool on) { setRepoRequirePeerApproval(on); });
+    automationCol->addWidget(m_settingsRequirePeerApprovalCheck);
+
+    auto *pullHint = new QLabel(
+        "When disabled, pull requests can merge without a peer review. Conflicts "
+        "and the repository's other merge safety checks still apply.");
+    pullHint->setObjectName("statusLine");
+    pullHint->setWordWrap(true);
+    automationCol->addWidget(pullHint);
+
+    automationCol->addSpacing(10);
+
     // --- Secret scanning --------------------------------------------------
     auto *secretHeading = new QLabel("Secret scanning");
     secretHeading->setObjectName("sectionLabel");
@@ -2923,6 +2953,20 @@ void MainWindow::setRepoActionsAutoApprove(bool on)
     refreshActionsTable();
     updateNotificationButton();
     processActionQueue();
+}
+
+void MainWindow::setRepoRequirePeerApproval(bool on)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    if (m_repositories[m_repoDetailIndex].requirePeerApproval == on)
+        return;
+    m_repositories[m_repoDetailIndex].requirePeerApproval = on;
+    saveRepositories();
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    logSystem(QStringLiteral("Peer approval before merge %1 for %2/%3.")
+                  .arg(on ? "required" : "optional", repo.owner, repo.name));
+    updatePullActionState();
 }
 
 void MainWindow::setRepoSecretScanningEnabled(bool on)
@@ -3095,6 +3139,13 @@ void MainWindow::refreshRepoSettings()
         m_settingsAutoApproveCheck->setEnabled(haveRepo);
         m_settingsAutoApproveCheck->setChecked(
             haveRepo && m_repositories.at(m_repoDetailIndex).actionsAutoApprove);
+    }
+    if (m_settingsRequirePeerApprovalCheck) {
+        QSignalBlocker block(m_settingsRequirePeerApprovalCheck);
+        m_settingsRequirePeerApprovalCheck->setEnabled(haveRepo);
+        m_settingsRequirePeerApprovalCheck->setChecked(
+            !haveRepo ||
+            m_repositories.at(m_repoDetailIndex).requirePeerApproval);
     }
     if (m_secretScanCheck) {
         QSignalBlocker block(m_secretScanCheck);

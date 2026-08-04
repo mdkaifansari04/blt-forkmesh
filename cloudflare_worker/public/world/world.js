@@ -22326,6 +22326,16 @@ class ForkMeshWorld extends HTMLElement {
     if (metadata.number !== number) {
       throw new Error("The pinned pull-request record does not match its path.");
     }
+    if (String(metadata.status || "").toLowerCase() !== "open") {
+      return {
+        state: "ready",
+        number,
+        metadataCommit,
+        metadata,
+        patchSource: "not-open",
+        diff: parseUnifiedDiff(""),
+      };
+    }
     let patch = repositoryBlobText(blobs[patchPath]);
     let patchSource = "metadata-patch";
     if (

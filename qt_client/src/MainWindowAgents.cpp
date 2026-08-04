@@ -2119,14 +2119,20 @@ QWidget *MainWindow::buildAgentsTab()
     // "View PR" — appears once the session produced a pull request.
     m_agentViewPrButton = railActionButton(
         QStringLiteral("git-pull-request"), QStringLiteral("View PR"),
-        "Review this session's pull request in the Git view");
+        "Open this session's pull request");
+    m_agentViewPrButton->setObjectName(QStringLiteral("agentViewPrButton"));
     m_agentViewPrButton->hide();
     connect(m_agentViewPrButton, &QPushButton::clicked, this, [this] {
-        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
-        if (s && s->prNumber > 0)
-            // Land on the PR's commits/files/diff in the Git view (adhoc #107);
-            // the pane's "PR #N" button goes on to the full PR page.
-            openPullDiffInGitView(s->prNumber);
+        const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (!s || s->prNumber <= 0)
+            return;
+        // Agents are global while pull requests belong to the repository detail
+        // currently bound behind the page. Bind first so an agent from another
+        // repo cannot open the same-numbered PR in the wrong repository.
+        const int number = s->prNumber;
+        const int repoIndex = repoIndexFor(s->owner, s->name);
+        if (repoIndex >= 0 && bindRepoDetailToRepo(repoIndex))
+            switchToPullTab(number);
     });
 
     // "Create PR" — a run finishing no longer opens a pull request by itself
@@ -7332,16 +7338,17 @@ void MainWindow::showAgentSession(int sessionId)
     refreshAgentStatusPill(sessionId);
 
     // View PR button appears once a pull request exists for this session; the
-    // Create PR button is its counterpart until then. (The rail-style tile's
-    // caption is fixed, so the PR number rides the tooltip rather than the
-    // label.)
+    // Create PR button is its counterpart until then. Include the number in the
+    // visible action so creation has an immediate, unambiguous link target.
     if (m_agentViewPrButton) {
         m_agentViewPrButton->setVisible(session->prNumber > 0);
-        if (session->prNumber > 0)
+        if (session->prNumber > 0) {
+            m_agentViewPrButton->setText(
+                QStringLiteral("View PR #%1").arg(session->prNumber));
             m_agentViewPrButton->setToolTip(
-                QStringLiteral("Review PR #%1's commits, files and diff in the "
-                               "Git view")
+                QStringLiteral("Open pull request #%1")
                     .arg(session->prNumber));
+        }
     }
     if (m_agentCreatePrButton)
         m_agentCreatePrButton->setVisible(session->prNumber <= 0 &&
@@ -12105,6 +12112,16 @@ void MainWindow::updateAgentFilesTabState(int sessionId)
         m_agentWtDeleteButton->setEnabled(feature && onDisk);
 }
 
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testAgentPrButtonText(int sessionId)
+{
+    showAgentSession(sessionId);
+    return m_agentViewPrButton && m_agentViewPrButton->isVisible()
+               ? m_agentViewPrButton->text()
+               : QString();
+}
+#endif
+
 // Open a ForkMesh pull request from the session's changes (diff since baseRef),
 // mirroring onAgentFinished's PR path but for the live-tree transcript session.
 void MainWindow::maybeCreatePullForStreamSession(int sessionId)
@@ -12196,6 +12213,75 @@ void MainWindow::landAgentPullForSession(AgentSession session, const QString &pa
             m_agentStore->appendLog(
                 session, QStringLiteral("==> Created pull request #%1.\n").arg(pr));
             linkAgentPullToIssue(session, pr); // record it in the issue's Development section
+            // Agent-created pull requests should enter the same repository CI
+            // path as an explicit "Run checks against this PR" click. Resolve
+            // the materialized PR ref so workflows test exactly the code under
+            // review, never a later movement of the session branch.
+            QByteArray tip;
+            const QString gitDir = repo.localPath.trimmed();
+            const QString prRef =
+                QStringLiteral("refs/pr/%1/head").arg(pr);
+            const QString runnerRef =
+                QStringLiteral("refs/heads/pr/%1").arg(pr);
+            QByteArray runnerTip;
+            if (!gitDir.isEmpty() &&
+                runGitCapture(gitDir,
+                              {QStringLiteral("rev-parse"), prRef}, &tip,
+                              nullptr) &&
+                !tip.trimmed().isEmpty() &&
+                runGitCapture(gitDir,
+                              {QStringLiteral("rev-parse"), runnerRef},
+                              &runnerTip, nullptr) &&
+                runnerTip.trimmed() == tip.trimmed()) {
+                // Action runners clone the served bare mirror, not the agent's
+                // private worktree. Publish the ordinary pr/<n> branch that
+                // materializePullRef created so even an uncommitted agent patch
+                // (synthesized into a PR commit) is fetchable by the runner.
+                QString pushError;
+                const QString commit = QString::fromUtf8(tip).trimmed();
+                const QString explicitKey =
+                    repo.owner + QLatin1Char('\x1f') + repo.name +
+                    QLatin1Char('\x1f') + commit.toLower();
+                // The push hook reports this ref too. Mark it before starting
+                // git (whose wait pumps the GUI loop) so the hook cannot race
+                // ahead and queue a duplicate run.
+                m_explicitActionPushes.insert(explicitKey);
+                const bool runnerCanFetch =
+                    !repo.mirrorPath.trimmed().isEmpty() &&
+                    runGitCapture(
+                        gitDir,
+                        {QStringLiteral("push"), repo.mirrorPath,
+                         runnerRef + QLatin1Char(':') + runnerRef},
+                        nullptr, &pushError);
+                if (runnerCanFetch) {
+                    queueWorkflowsForCommit(
+                        ri, repo.owner, repo.name, commit, runnerRef);
+                    QTimer::singleShot(60000, this, [this, explicitKey] {
+                        m_explicitActionPushes.remove(explicitKey);
+                    });
+                    m_agentStore->appendLog(
+                        session,
+                        QStringLiteral("==> Queued repository checks for pull request #%1.\n")
+                            .arg(pr));
+                } else {
+                    m_explicitActionPushes.remove(explicitKey);
+                    const QString detail =
+                        pushError.trimmed().isEmpty()
+                            ? QStringLiteral("the served mirror is unavailable")
+                            : pushError.trimmed().right(240);
+                    m_agentStore->appendLog(
+                        session,
+                        QStringLiteral("!! Could not publish pull request #%1's "
+                                       "test ref to the action runner: %2\n")
+                            .arg(pr)
+                            .arg(detail));
+                }
+            } else {
+                m_agentStore->appendLog(
+                    session,
+                    QStringLiteral("!! Could not resolve pull request #%1 to run checks.\n")
+                        .arg(pr));
+            }
             if (ri == m_repoDetailIndex)
                 reloadPulls();
         } else {

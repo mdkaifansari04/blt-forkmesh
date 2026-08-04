@@ -862,6 +862,17 @@ void MainWindow::enqueuePushEvent(const QString &owner, const QString &name,
     if (repoIndex == m_repoDetailIndex)
         scheduleOpenRepoDetailRefresh();
 
+    const QString explicitKey =
+        owner + QLatin1Char('\x1f') + name + QLatin1Char('\x1f') +
+        commit.trimmed().toLower();
+    if (m_explicitActionPushes.remove(explicitKey)) {
+        logSystem(QStringLiteral(
+                      "Actions: checks for %1/%2 @ %3 were already queued by "
+                      "pull-request creation.")
+                      .arg(owner, name, commit.left(8)));
+        return;
+    }
+
     if (!repo.actionsEnabled)
         return; // push detection only; no workflow execution for this repo
 

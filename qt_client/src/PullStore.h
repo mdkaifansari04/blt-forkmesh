@@ -315,6 +315,9 @@ private:
     // forkmesh/pulls branch remains the transport/index for older peers, while
     // refs/pr/<n>/metadata gives each PR its own stable metadata pointer.
     bool materializePullMetadataRef(int number, QString *error) const;
+    // Keep merged PR metadata/conversation while removing its large change
+    // payload from every ledger commit and per-PR metadata ref.
+    bool purgePullPayloadHistory(int number, QString *error) const;
     int nextNumber() const;
     bool writePull(const PullRequest &pr, QString *error) const;
     bool readPull(int number, PullRequest &out) const;
