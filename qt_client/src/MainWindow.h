@@ -7492,7 +7492,18 @@ private:
     // viewer, rebuild the file list with per-file +/- counts and anchors, and stamp
     // the changed-file count onto the tab header. Pure UI: all git data arrives
     // pre-gathered in the probe.
+    //
+    // Turning the patch into HTML is the expensive half and does not touch any GUI
+    // state, so it runs on a worker thread (renderDiffHtmlSplit) and only the
+    // widget updates below happen on the GUI thread. Building it inline was the
+    // single most common frame in ~/.forkmesh/diagnostics/stalls.log — one 6.3 s
+    // freeze in renderSplitDiffHtml alone.
     void renderAgentDiff(int sessionId, const AgentDiffProbe &probe);
+    // The GUI-thread half: push already-rendered HTML and its parsed file table
+    // into the diff view, file list, commit list and summary line.
+    void applyAgentDiff(int sessionId, const AgentDiffProbe &probe,
+                        const QList<forkmesh::ui::DiffFileEntry> &files,
+                        const QString &shown);
     void updateAgentFilesTabState(int sessionId);
     QString sessionBaseRef(int sessionId);
     QString sessionBaseBranch(int sessionId);
