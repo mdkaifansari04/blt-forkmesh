@@ -8139,24 +8139,26 @@ void MainWindow::syncIssuesInbox()
     drainIssuesInboxFor(m_repositories.at(idx), /*interactive=*/true);
 }
 
-void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
+void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
+                                     bool forceMirrorIntake)
 {
     // The source of truth writes into its normal working copy. A public mirror
-    // with no checkout uses a short-lived linked worktree below, commits onto
-    // the served branch, and acknowledges with ?mirror=1 — a real drain: the
-    // merged submission now lives in the repo itself and propagates across the
-    // mirror mesh, so the relay deletes the row instead of holding it pending
-    // for the source of truth.
+    // uses a short-lived linked worktree below even when it also keeps a normal
+    // browsing checkout, commits onto the served branch, and acknowledges with
+    // ?mirror=1 — a real drain: the merged submission now lives in the repo
+    // itself and propagates across the mirror mesh, so the relay deletes the
+    // row instead of holding it pending for the source of truth.
     const RepositoryRecord writable = writableRecordFor(repo);
     bool ownerIntake = false;
     {
         IssueStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
                          m_userName);
-        ownerIntake = probe.canWrite();
+        ownerIntake = !forceMirrorIntake && probe.canWrite();
     }
     const QString mirrorPath = repo.mirrorPath.trimmed();
     const bool mirrorIntake =
-        !ownerIntake && !repo.previewOnly && !repo.isPrivate &&
+        (forceMirrorIntake || !ownerIntake) && !repo.previewOnly &&
+        !repo.isPrivate &&
         repo.publishToNetwork && !mirrorPath.isEmpty() &&
         QDir(mirrorPath).exists();
     if (!ownerIntake && !mirrorIntake)
@@ -8334,20 +8336,21 @@ void MainWindow::pollMirrorIssueInboxes()
             repo.mirrorPath.trimmed().isEmpty() ||
             !QDir(repo.mirrorPath).exists())
             continue;
-        const RepositoryRecord writable = writableRecordFor(repo);
-        IssueStore probe(writable.localPath, writable.mirrorPath,
-                         &m_profileIdentity, m_userName);
-        if (probe.canWrite())
-            continue;
         const QString key =
             repo.owner.trimmed().toLower() + QLatin1Char('/') +
             repo.name.trimmed().toLower();
         if (seen.contains(key))
             continue;
         seen.insert(key);
-        drainIssuesInboxFor(repo, /*interactive=*/false);
-        drainPullsInboxFor(repo, /*interactive=*/false);
-        drainDiscussionsInboxFor(repo, /*interactive=*/false);
+        // A browsing checkout does not make a peer the source of truth. Force
+        // the signed mirror path here so mirrors with a writable cache can
+        // compete for and permanently materialize relay leases.
+        drainIssuesInboxFor(repo, /*interactive=*/false,
+                            /*forceMirrorIntake=*/true);
+        drainPullsInboxFor(repo, /*interactive=*/false,
+                           /*forceMirrorIntake=*/true);
+        drainDiscussionsInboxFor(repo, /*interactive=*/false,
+                                 /*forceMirrorIntake=*/true);
     }
 }
 

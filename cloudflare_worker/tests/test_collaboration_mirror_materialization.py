@@ -196,6 +196,7 @@ def _attestation_namespace(runs, verify_result=True):
             "blind_index": blind_index,
             "d1_run": d1_run,
             "_owner_signing_pubkeys": _owner_signing_pubkeys,
+            "_claimed_node_signing_pubkeys": _owner_signing_pubkeys,
             "ed25519_verify": ed25519_verify,
             "clean_string": clean_string,
         },
@@ -261,6 +262,8 @@ def test_qt_mirror_poll_merges_all_three_record_kinds():
     assert "drainIssuesInboxFor(repo" in poll
     assert "drainPullsInboxFor(repo" in poll
     assert "drainDiscussionsInboxFor(repo" in poll
+    assert poll.count("/*forceMirrorIntake=*/true") == 3
+    assert "if (probe.canWrite())" not in poll
     for source in (pulls, discussions):
         assert 'QStringLiteral("mirror"), QStringLiteral("1")' in source
         assert "/*mirrorIntake=*/true" in source
