@@ -281,6 +281,17 @@ QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QString &anchorFile = QString(),
                        const QHash<QString, QString> &lineNotes = {},
                        const QSet<QString> &viewedFiles = {});
+// The same render with the split/unified choice supplied rather than read from
+// QSettings, so the build can run on a worker thread (the caller resolves the
+// preference on the GUI thread first). Turning a large patch into HTML is pure
+// string work and was the single most common frame in the stall log; see
+// MainWindow::renderAgentDiff.
+QString renderDiffHtmlSplit(bool split, const QString &patch,
+                            QList<DiffFileEntry> &files, const QString &dir,
+                            const QString &base, const QString &head,
+                            const QString &anchorFile = QString(),
+                            const QHash<QString, QString> &lineNotes = {},
+                            const QSet<QString> &viewedFiles = {});
 bool diffSplitPref();
 void setDiffSplitPref(bool split);
 // Compact rich-text label (status octicon + muted dir / bold name + coloured
