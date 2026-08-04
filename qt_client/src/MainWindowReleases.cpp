@@ -31,6 +31,9 @@ enum MirrorNodeColumn {
     MirrorNodeColBranches,
     MirrorNodeColPulls,
     MirrorNodeColDiscussions,
+    MirrorNodeColPendingIssues,
+    MirrorNodeColPendingPulls,
+    MirrorNodeColPendingDiscussions,
     MirrorNodeColHealth,
     MirrorNodeColCpu,
     MirrorNodeColRam,
@@ -1109,7 +1112,8 @@ QWidget *MainWindow::buildMirrorNodesTab()
     // column fell back to Qt's numeric "26" placeholder.
     m_mirrorNodesTable->setHorizontalHeaderLabels(
         {"Node", "Sync", "Owner", "Latest commit", "Message", "Author", "Synced", "Sync delay", "Size",
-         "Issues", "Commits", "Branches", "Pulls", "Discussions", "Health",
+         "Issues", "Commits", "Branches", "Pulls", "Discussions",
+         "Pending issues", "Pending pulls", "Pending discussions", "Health",
          "CPU", "RAM",
          "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones", "Website",
          "Artifacts", "Reachability"});
@@ -1138,6 +1142,10 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColBranches, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColPulls, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColDiscussions, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColPendingIssues, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColPendingPulls, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColPendingDiscussions,
+                             QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColHealth, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColCpu, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColRam, QHeaderView::ResizeToContents);
@@ -1512,6 +1520,23 @@ void MainWindow::loadMirrorNodesPanel()
     const QString source = repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
                            repoSegment(repo.name, QStringLiteral("repository"));
     const QString sourceOwner = source.section('/', 0, 0);
+    fetchMirrorPendingCounts(
+        sourceOwner,
+        repoSegment(repo.name, QStringLiteral("repository")), source);
+    const QJsonObject pendingInbox = m_mirrorPendingCache.value(source);
+    const bool pendingKnown = pendingInbox.value(QStringLiteral("ok")).toBool();
+    const QJsonObject pendingCounts =
+        pendingInbox.value(QStringLiteral("pending")).toObject();
+    const int pendingIssues = pendingKnown
+                                  ? pendingCounts.value(QStringLiteral("issues")).toInt()
+                                  : -1;
+    const int pendingPulls = pendingKnown
+                                 ? pendingCounts.value(QStringLiteral("pulls")).toInt()
+                                 : -1;
+    const int pendingDiscussions =
+        pendingKnown
+            ? pendingCounts.value(QStringLiteral("discussions")).toInt()
+            : -1;
     const QString legacy = repo.owner + "/" + repo.name;
     // Our own mirror, used to resolve a peer's advertised commit to its subject.
     const QString localMirror = repo.mirrorPath;
@@ -2068,6 +2093,27 @@ void MainWindow::loadMirrorNodesPanel()
                 QStringLiteral("%1 %2").arg(n).arg(n == 1 ? singular : plural));
         return item;
     };
+    auto makePendingCell = [](int n, const QString &kind) {
+        auto *item = new SortTableWidgetItem(
+            n >= 0 ? QString::number(n) : QString::fromUtf8("\xE2\x80\x94"));
+        item->setData(kTableSortRole, double(n));
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        if (n > 0) {
+            item->setForeground(QColor("#d29922"));
+            item->setToolTip(
+                QStringLiteral("%1 %2 submission%3 remain in the relay inbox "
+                               "and are not materialized in a repository yet. "
+                               "Any eligible online mirror may claim them.")
+                    .arg(n)
+                    .arg(kind)
+                    .arg(n == 1 ? QString() : QStringLiteral("s")));
+        } else if (n == 0) {
+            item->setToolTip(QStringLiteral(
+                "No %1 submissions are waiting outside the repository.")
+                                 .arg(kind));
+        }
+        return item;
+    };
     // Resolve what a node's advertised commit says and who wrote it. The node
     // reports it itself (live advert or catalog record); when it doesn't — an
     // older peer — fall back to reading the same hash out of our own mirror.
@@ -2381,6 +2427,15 @@ void MainWindow::loadMirrorNodesPanel()
                      QString::number(refDiscussions));
         m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                     discussionsItem);
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColPendingIssues,
+            makePendingCell(pendingIssues, QStringLiteral("issue")));
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColPendingPulls,
+            makePendingCell(pendingPulls, QStringLiteral("pull request")));
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColPendingDiscussions,
+            makePendingCell(pendingDiscussions, QStringLiteral("discussion")));
 
         // Health: the node's own self-check findings, pushed with its heartbeat
         // (adhoc #27) — the disk trend, log errors and link flapping the three
@@ -2651,6 +2706,16 @@ void MainWindow::loadMirrorNodesPanel()
                          QString::number(refDiscussions));
             m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                         catDiscussionsItem);
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColPendingIssues,
+                makePendingCell(pendingIssues, QStringLiteral("issue")));
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColPendingPulls,
+                makePendingCell(pendingPulls, QStringLiteral("pull request")));
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColPendingDiscussions,
+                makePendingCell(pendingDiscussions,
+                                QStringLiteral("discussion")));
             // Health: self-diagnostics ride the live heartbeat, not the signed
             // catalog record, so an offline/catalog-only row has none to show.
             m_mirrorNodesTable->setItem(
@@ -2927,6 +2992,58 @@ void MainWindow::fetchCatalogMirrors(const QString &owner, const QString &repo,
             if (cur == source)
                 loadMirrorNodesPanel();
         }
+    });
+}
+
+void MainWindow::fetchMirrorPendingCounts(const QString &owner,
+                                          const QString &repo,
+                                          const QString &source)
+{
+    if (!m_networkAccess || owner.isEmpty() || repo.isEmpty() || source.isEmpty() ||
+        m_mirrorPendingInFlight.contains(source))
+        return;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const QJsonObject cached = m_mirrorPendingCache.value(source);
+    const qint64 fetchedAt =
+        qint64(cached.value(QStringLiteral("clientFetchedAt")).toDouble());
+    if (fetchedAt > 0 && nowMs - fetchedAt < 15 * 1000)
+        return;
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/%1/%2/pending")
+                    .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
+                         QString::fromUtf8(QUrl::toPercentEncoding(repo))));
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader(QByteArrayLiteral("Accept"),
+                         QByteArrayLiteral("application/json"));
+    request.setTransferTimeout(15000);
+    m_mirrorPendingInFlight.insert(source);
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, source] {
+        const int status = reply->attribute(
+            QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        QJsonObject result = QJsonDocument::fromJson(reply->readAll()).object();
+        reply->deleteLater();
+        m_mirrorPendingInFlight.remove(source);
+        if (status < 200 || status >= 300 ||
+            !result.value(QStringLiteral("ok")).toBool())
+            return;
+        result.insert(QStringLiteral("clientFetchedAt"),
+                      double(QDateTime::currentMSecsSinceEpoch()));
+        m_mirrorPendingCache.insert(source, result);
+        if (m_repoDetailIndex < 0 ||
+            m_repoDetailIndex >= m_repositories.size())
+            return;
+        const RepositoryRecord &current =
+            m_repositories.at(m_repoDetailIndex);
+        const QString currentSource =
+            repoSegment(current.owner, QStringLiteral("owner")) +
+            QLatin1Char('/') +
+            repoSegment(current.name, QStringLiteral("repository"));
+        if (currentSource == source)
+            loadMirrorNodesPanel();
     });
 }
 

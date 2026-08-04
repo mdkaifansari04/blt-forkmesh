@@ -605,7 +605,9 @@
                 : dayFailures >= dayChecks
                 ? "down"
                 : "degraded";
-              cell.className = "status-day is-" + state + " has-hours" +
+              const compactedHours = Boolean(day.hoursCompacted);
+              cell.className = "status-day is-" + state +
+                (compactedHours ? "" : " has-hours") +
                 (isPartialToday ? " is-partial" : "");
               const label = dayChecks
                 ? fmtDay(day.dayTs) + ": " + day.uptimePct.toFixed(2) + "% uptime from " +
@@ -634,7 +636,7 @@
                   addHourMarker("future", tooltip);
                 }
               }
-              if (!hours.length) {
+              if (!hours.length && !compactedHours) {
                 for (let h = 0; h < 24; h++) {
                   const hourTs = day.dayTs + h * 3600000;
                   if (hourTs > now) break;
