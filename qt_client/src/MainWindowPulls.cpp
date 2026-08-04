@@ -7905,17 +7905,19 @@ void MainWindow::syncPullsInbox()
     drainPullsInboxFor(m_repositories.at(m_repoDetailIndex), /*interactive=*/true);
 }
 
-void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
+void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive,
+                                    bool forceMirrorIntake)
 {
     const RepositoryRecord writable = writableRecordFor(repo);
     bool ownerIntake = false;
     {
         PullStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
                         m_userName);
-        ownerIntake = probe.canWrite();
+        ownerIntake = !forceMirrorIntake && probe.canWrite();
     }
     const bool mirrorIntake =
-        !ownerIntake && !repo.previewOnly && !repo.isPrivate &&
+        (forceMirrorIntake || !ownerIntake) && !repo.previewOnly &&
+        !repo.isPrivate &&
         repo.publishToNetwork && !repo.mirrorPath.trimmed().isEmpty() &&
         QDir(repo.mirrorPath).exists();
     if (!ownerIntake && !mirrorIntake)

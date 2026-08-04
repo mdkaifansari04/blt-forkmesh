@@ -2307,7 +2307,8 @@ private:
                                       const QString &titleIfNew = QString());
     QUrl discussionsApiUrl(const RepositoryRecord &repo) const;
     void syncDiscussionsInbox();
-    void drainDiscussionsInboxFor(RepositoryRecord repo, bool interactive);
+    void drainDiscussionsInboxFor(RepositoryRecord repo, bool interactive,
+                                  bool forceMirrorIntake = false);
     void setDiscussionInlineNotice(const QString &message, bool isError = false);
 
     // Pull requests tab (cross-node, patch-based) with explorer + diff viewer.
@@ -4577,9 +4578,11 @@ private:
     // mirrors materialize it without consuming the source-of-truth delivery.
     // `interactive` shows inline notices for a manual "Sync inbox". Repo is
     // taken by value so the async reply can't dangle.
-    void drainIssuesInboxFor(RepositoryRecord repo, bool interactive);
+    void drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
+                             bool forceMirrorIntake = false);
     void pollMirrorIssueInboxes();
-    void drainPullsInboxFor(RepositoryRecord repo, bool interactive);
+    void drainPullsInboxFor(RepositoryRecord repo, bool interactive,
+                            bool forceMirrorIntake = false);
     // Notify the local user when they're @mentioned in one of this repo's issues
     // or pull requests. Each node scans its own synced copy, so the mentioned
     // user's node is what alerts them. Deduped and seeded via QSettings so we
