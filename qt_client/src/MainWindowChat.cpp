@@ -12,6 +12,7 @@
 #include "ControlNode.h"
 #include "CurrentPageStack.h"
 #include "KebabHeaderView.h"
+#include "LogTimelineChart.h"
 #include "PrivateMirrorStore.h"
 #include "PublicMirrorRuntime.h"
 #include "RepoSecurity.h"
@@ -24,7 +25,10 @@
 #include <QBrush>
 #include <QCryptographicHash>
 #include <QDialog>
+#include <QDialogButtonBox>
+#include <QDateTimeEdit>
 #include <QElapsedTimer>
+#include <QFormLayout>
 #include <QGraphicsDropShadowEffect>
 #include <QGuiApplication>
 #include <QInputDialog>
@@ -6053,29 +6057,17 @@ void MainWindow::showTreasuryDonateDialogForPool(const QJsonObject &resp)
     dialog.exec();
 }
 
-// The ping feed above the network log: how many lines it shows, and how tall
-// it is (adhoc #77). Deliberately small — it is a glance, not a second page.
-static constexpr int kLogEventStripLimit = 8;
-static constexpr int kLogEventStripRows = 5;
-
 QWidget *MainWindow::buildLogSection()
 {
     auto *page = new QWidget;
 
-    auto *label = new QLabel("NETWORK LOG");
+    auto *label = new QLabel(QStringLiteral("LOG ACTIVITY"));
     label->setObjectName("sectionLabel");
     auto *clearButton = new QPushButton("Clear");
     clearButton->setObjectName("ghostButton");
     clearButton->setCursor(Qt::PointingHandCursor);
-    clearButton->setToolTip("Clear the network log");
+    clearButton->setToolTip("Clear all saved logs");
     setOcticon(clearButton, "trash", 14);
-    m_logScrollLockButton = new QPushButton(QStringLiteral("Pause scroll"));
-    m_logScrollLockButton->setObjectName("ghostButton");
-    m_logScrollLockButton->setCheckable(true);
-    m_logScrollLockButton->setCursor(Qt::PointingHandCursor);
-    m_logScrollLockButton->setToolTip(
-        QStringLiteral("Keep the current log position when new entries arrive"));
-    setOcticon(m_logScrollLockButton, "stop", 14);
     auto *cloudflareButton = new QPushButton("Cloudflare logs");
     cloudflareButton->setObjectName(
         QStringLiteral("cloudflareWorkerLogsButton"));
@@ -6086,10 +6078,14 @@ QWidget *MainWindow::buildLogSection()
     connect(cloudflareButton, &QPushButton::clicked, this,
             &MainWindow::showCloudflareWorkerLogs);
 
-    m_settingsLog = new QTextBrowser;
+    // Keep the rich renderer alive off-screen for footer deep-links and the
+    // existing add-to-prompt path. The old scrolling text pane is deliberately
+    // no longer part of this page; the timeline below is the log surface.
+    m_settingsLog = new QTextBrowser(page);
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
     m_settingsLog->setOpenExternalLinks(true);
+    m_settingsLog->hide();
     // Clicks on the leading "add to prompt" plus of an entry are handled in
     // MainWindow::eventFilter before the browser's own anchor activation sees
     // them (adhoc #114); http(s) links in the message body still open normally.
@@ -6100,22 +6096,58 @@ QWidget *MainWindow::buildLogSection()
     // itself (capped at kNetworkLogLimit) is the real bound on total history.
     connect(m_settingsLog->verticalScrollBar(), &QScrollBar::valueChanged, this,
             &MainWindow::onNetworkLogScrolled);
-    connect(m_logScrollLockButton, &QPushButton::toggled, this,
-            [this](bool locked) {
-                m_logScrollLocked = locked;
-                m_logScrollLockButton->setText(
-                    locked ? QStringLiteral("Resume scroll")
-                           : QStringLiteral("Pause scroll"));
-                m_logScrollLockButton->setToolTip(
-                    locked
-                        ? QStringLiteral(
-                              "Resume following new log entries at the bottom")
-                        : QStringLiteral(
-                              "Keep the current log position when new entries arrive"));
-                if (!locked && m_settingsLog && m_settingsLog->verticalScrollBar())
-                    m_settingsLog->verticalScrollBar()->setValue(
-                        m_settingsLog->verticalScrollBar()->maximum());
-            });
+
+    m_logTimelineChart = new LogTimelineChart(page);
+    m_logTimelineSummary = new QLabel;
+    m_logTimelineSummary->setObjectName(QStringLiteral("logTimelineSummary"));
+    m_logTimelineSummary->setAccessibleName(QStringLiteral("Visible log summary"));
+    m_logTimelineChart->viewChanged = [this] { updateLogTimelineSummary(); };
+
+    m_logTimelineRangeGroup = new QButtonGroup(page);
+    m_logTimelineRangeGroup->setExclusive(true);
+    auto *rangeRow = new QHBoxLayout;
+    rangeRow->setContentsMargins(0, 0, 0, 0);
+    rangeRow->setSpacing(6);
+    auto addPreset = [this, rangeRow](const QString &text, int hours) {
+        auto *button = new QPushButton(text);
+        button->setObjectName(QStringLiteral("logRangeButton"));
+        button->setCheckable(true);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setToolTip(QStringLiteral("Show logs from the past %1")
+                               .arg(text));
+        m_logTimelineRangeGroup->addButton(button, hours);
+        rangeRow->addWidget(button);
+        connect(button, &QPushButton::clicked, this,
+                [this, hours] { setLogTimelinePresetHours(hours); });
+        return button;
+    };
+    QPushButton *dayButton = addPreset(QStringLiteral("24h"), 24);
+    addPreset(QStringLiteral("7 days"), 7 * 24);
+    addPreset(QStringLiteral("30 days"), 30 * 24);
+    auto *customButton = new QPushButton(QStringLiteral("Custom..."));
+    customButton->setObjectName(QStringLiteral("logRangeButton"));
+    customButton->setCheckable(true);
+    customButton->setCursor(Qt::PointingHandCursor);
+    customButton->setToolTip(QStringLiteral("Choose exact start and end times"));
+    m_logTimelineRangeGroup->addButton(customButton, 0);
+    rangeRow->addWidget(customButton);
+    connect(customButton, &QPushButton::clicked, this,
+            &MainWindow::chooseCustomLogTimelineRange);
+    dayButton->setChecked(true);
+
+    auto *zoomHint = new QLabel(
+        QStringLiteral("Drag across the chart or scroll to zoom · Double-click to reset"));
+    zoomHint->setObjectName(QStringLiteral("modeHint"));
+    zoomHint->setWordWrap(true);
+    rangeRow->addStretch();
+    m_logTimelineResetZoom = new QPushButton(QStringLiteral("Reset zoom"));
+    m_logTimelineResetZoom->setObjectName(QStringLiteral("ghostButton"));
+    m_logTimelineResetZoom->setCursor(Qt::PointingHandCursor);
+    m_logTimelineResetZoom->setEnabled(false);
+    setOcticon(m_logTimelineResetZoom, "screen-full", 14);
+    connect(m_logTimelineResetZoom, &QPushButton::clicked,
+            m_logTimelineChart, &LogTimelineChart::resetZoom);
+    rangeRow->addWidget(m_logTimelineResetZoom);
 
     // Quick-filter chips that narrow the log to a single event category. The row
     // scrolls horizontally so a long set of categories never clips the log.
@@ -6160,79 +6192,194 @@ QWidget *MainWindow::buildLogSection()
             m_logActivityHeader->reset();
         saveNetworkLog();          // truncate the on-disk log too
         rebuildLogFilterButtons(); // drop the category chips, re-check "All"
+        refreshLogTimelineChart();
     });
 
     auto *headerRow = new QHBoxLayout;
     headerRow->setContentsMargins(0, 0, 0, 0);
     headerRow->addWidget(label);
+    headerRow->addWidget(m_logTimelineSummary);
     headerRow->addStretch();
-    headerRow->addWidget(m_logScrollLockButton);
     headerRow->addWidget(cloudflareButton);
     headerRow->addWidget(clearButton);
-
-    // Every ping this window raises also lands in a compact feed directly
-    // above the log, so "what just happened?" is answered without leaving the
-    // page or waiting for the toast to reappear (adhoc #77). Double-clicking a
-    // line opens the full Pings page.
-    auto *eventsLabel = new QLabel(QStringLiteral("RECENT PINGS"));
-    eventsLabel->setObjectName("sectionLabel");
-    m_logEventList = new QListWidget;
-    m_logEventList->setObjectName("logEventList");
-    m_logEventList->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_logEventList->setUniformItemSizes(true);
-    m_logEventList->setFixedHeight(kLogEventStripRows *
-                                       m_logEventList->fontMetrics().height() +
-                                   12);
-    m_logEventList->setToolTip(
-        QStringLiteral("The newest pings. Double-click to open the Pings "
-                       "page."));
-    connect(m_logEventList, &QListWidget::itemDoubleClicked, this,
-            [this](QListWidgetItem *) { showNotifications(); });
 
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(18, 14, 18, 14);
     layout->setSpacing(8);
     layout->addLayout(headerRow);
-    layout->addWidget(eventsLabel);
-    layout->addWidget(m_logEventList);
+    layout->addLayout(rangeRow);
     layout->addWidget(filterScroll);
-    layout->addWidget(m_settingsLog, 1);
-    refreshLogEventList();
+    layout->addWidget(m_logTimelineChart, 1);
+    layout->addWidget(zoomHint);
+    refreshLogTimelineChart();
+    setLogTimelinePresetHours(24);
     return page;
 }
 
-// Repaint the compact ping feed above the network log from the same list the
-// Pings page shows, newest first (adhoc #77).
-void MainWindow::refreshLogEventList()
+void MainWindow::refreshLogTimelineChart()
 {
-    if (!m_logEventList)
+    if (!m_logTimelineChart)
         return;
-    m_logEventList->clear();
-    if (m_notifications.isEmpty()) {
-        auto *empty = new QListWidgetItem(
-            QStringLiteral("No pings yet in this session."));
-        empty->setForeground(QColor("#6e7681"));
-        empty->setFlags(Qt::NoItemFlags);
-        m_logEventList->addItem(empty);
-        return;
+    QVector<LogTimelineEntry> entries;
+    entries.reserve(m_networkLog.size());
+    QColor selectedAccent(QStringLiteral("#58a6ff"));
+    for (const QString &line : std::as_const(m_networkLog)) {
+        const QDateTime timestamp =
+            QDateTime::fromString(line.left(19), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+        if (!timestamp.isValid())
+            continue;
+        LogTimelineEntry entry;
+        entry.timestampMs = timestamp.toMSecsSinceEpoch();
+        entry.category = logBadgeFor(line);
+        const QColor entryAccent(logAccentFor(line));
+        if (entry.category == m_logFilter && entryAccent.isValid())
+            selectedAccent = entryAccent;
+        entries.append(entry);
     }
-    const int shown = qMin(int(m_notifications.size()), kLogEventStripLimit);
-    for (int index = 0; index < shown; ++index) {
-        const AppNotification &notice = m_notifications.at(index);
-        QString text =
-            QDateTime::fromMSecsSinceEpoch(notice.timestampMs)
-                .toString(QStringLiteral("HH:mm:ss")) +
-            QStringLiteral("  ") + notice.title.simplified();
-        const QString detail = notice.body.simplified();
-        if (!detail.isEmpty())
-            text += QString::fromUtf8(" \xE2\x80\x94 ") + detail;
-        auto *item = new QListWidgetItem(text);
-        item->setToolTip(text);
-        if (notice.warning)
-            item->setForeground(QColor("#f85149"));
-        m_logEventList->addItem(item);
+    m_logTimelineChart->setEntries(std::move(entries));
+    m_logTimelineChart->setCategoryFilter(m_logFilter, selectedAccent);
+    updateLogTimelineSummary();
+}
+
+void MainWindow::appendLogTimelineEntry(const QString &storedLine)
+{
+    if (!m_logTimelineChart)
+        return;
+    const QDateTime timestamp = QDateTime::fromString(
+        storedLine.left(19), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    if (!timestamp.isValid())
+        return;
+    LogTimelineEntry entry;
+    entry.timestampMs = timestamp.toMSecsSinceEpoch();
+    entry.category = logBadgeFor(storedLine);
+    m_logTimelineChart->appendEntry(entry);
+    // Presets follow the present as fresh events arrive. Do not disturb an area
+    // the user has deliberately zoomed into.
+    if (m_logTimelinePresetHours > 0 && !m_logTimelineChart->isZoomed()) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        m_logTimelineChart->setRange(
+            now - qint64(m_logTimelinePresetHours) * 60 * 60 * 1000, now);
     }
 }
+
+void MainWindow::setLogTimelinePresetHours(int hours)
+{
+    if (!m_logTimelineChart || hours <= 0)
+        return;
+    m_logTimelinePresetHours = hours;
+    if (m_logTimelineRangeGroup && m_logTimelineRangeGroup->button(hours))
+        m_logTimelineRangeGroup->button(hours)->setChecked(true);
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_logTimelineChart->setRange(now - qint64(hours) * 60 * 60 * 1000, now);
+}
+
+void MainWindow::chooseCustomLogTimelineRange()
+{
+    if (!m_logTimelineChart)
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Custom log timeframe"));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *form = new QFormLayout;
+    auto *fromEdit = new QDateTimeEdit(
+        QDateTime::fromMSecsSinceEpoch(
+            m_logTimelineCustomFromMs > 0 ? m_logTimelineCustomFromMs
+                                          : now - 24LL * 60 * 60 * 1000));
+    auto *toEdit = new QDateTimeEdit(QDateTime::fromMSecsSinceEpoch(
+        m_logTimelineCustomToMs > 0 ? m_logTimelineCustomToMs : now));
+    for (QDateTimeEdit *edit : {fromEdit, toEdit}) {
+        edit->setCalendarPopup(true);
+        edit->setDisplayFormat(QStringLiteral("MMM d, yyyy  h:mm AP"));
+        edit->setMinimumWidth(230);
+    }
+    fromEdit->setObjectName(QStringLiteral("logCustomFrom"));
+    toEdit->setObjectName(QStringLiteral("logCustomTo"));
+    form->addRow(QStringLiteral("From"), fromEdit);
+    form->addRow(QStringLiteral("To"), toEdit);
+    layout->addLayout(form);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Cancel |
+                                         QDialogButtonBox::Ok);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Apply"));
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted) {
+        if (m_logTimelineRangeGroup &&
+            m_logTimelineRangeGroup->button(m_logTimelinePresetHours))
+            m_logTimelineRangeGroup->button(m_logTimelinePresetHours)
+                ->setChecked(true);
+        return;
+    }
+    const qint64 from = fromEdit->dateTime().toMSecsSinceEpoch();
+    const qint64 to = toEdit->dateTime().toMSecsSinceEpoch();
+    if (to <= from) {
+        QMessageBox::information(
+            this, QStringLiteral("Custom log timeframe"),
+            QStringLiteral("The end time must be later than the start time."));
+        if (m_logTimelineRangeGroup &&
+            m_logTimelineRangeGroup->button(m_logTimelinePresetHours))
+            m_logTimelineRangeGroup->button(m_logTimelinePresetHours)
+                ->setChecked(true);
+        return;
+    }
+    m_logTimelinePresetHours = 0;
+    m_logTimelineCustomFromMs = from;
+    m_logTimelineCustomToMs = to;
+    if (m_logTimelineRangeGroup && m_logTimelineRangeGroup->button(0))
+        m_logTimelineRangeGroup->button(0)->setChecked(true);
+    m_logTimelineChart->setRange(from, to);
+}
+
+void MainWindow::updateLogTimelineSummary()
+{
+    if (!m_logTimelineChart || !m_logTimelineSummary)
+        return;
+    const int count = m_logTimelineChart->visibleEntryCount();
+    const qint64 span = m_logTimelineChart->viewToMs() -
+                        m_logTimelineChart->viewFromMs();
+    const QString format = span <= 48LL * 60 * 60 * 1000
+                               ? QStringLiteral("MMM d, h:mm AP")
+                               : QStringLiteral("MMM d, yyyy");
+    QString text = QStringLiteral("%1 log%2 · %3 – %4")
+                       .arg(count)
+                       .arg(count == 1 ? QString() : QStringLiteral("s"))
+                       .arg(QDateTime::fromMSecsSinceEpoch(
+                                m_logTimelineChart->viewFromMs())
+                                .toString(format))
+                       .arg(QDateTime::fromMSecsSinceEpoch(
+                                m_logTimelineChart->viewToMs())
+                                .toString(format));
+    if (!m_logFilter.isEmpty())
+        text.prepend(m_logFilter + QStringLiteral(" · "));
+    if (m_logTimelineChart->isZoomed())
+        text += QStringLiteral(" · Zoomed");
+    m_logTimelineSummary->setText(text);
+    if (m_logTimelineResetZoom)
+        m_logTimelineResetZoom->setEnabled(m_logTimelineChart->isZoomed());
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QWidget *MainWindow::testLogTimelineChart() const
+{
+    return m_logTimelineChart;
+}
+
+int MainWindow::testLogTimelineVisibleCount() const
+{
+    return m_logTimelineChart ? m_logTimelineChart->visibleEntryCount() : -1;
+}
+
+void MainWindow::testSetLogTimelineHours(int hours)
+{
+    setLogTimelinePresetHours(hours);
+}
+
+QString MainWindow::testLogTimelineSummary() const
+{
+    return m_logTimelineSummary ? m_logTimelineSummary->text() : QString();
+}
+#endif
 
 void MainWindow::showCloudflareWorkerLogs()
 {
@@ -6947,14 +7094,15 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageContainer->hide();
 
     // User avatar, created before the global prompt and reparented into its
-    // lower-left corner by buildNetworkLogDock(). Clicking it collapses the
-    // prompt to the avatar alone; clicking again restores the composer.
+    // overlay by buildNetworkLogDock(). Clicking it collapses the prompt to
+    // the avatar alone; hovering the collapsed avatar restores the composer.
     m_userAvatarNavButton = new QPushButton;
     m_userAvatarNavButton->setObjectName("serverFooterButton");
     m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
     m_userAvatarNavButton->setFixedSize(26, 26);
     m_userAvatarNavButton->setIconSize(QSize(24, 24));
     m_userAvatarNavButton->setToolTip("Collapse the prompt overlay");
+    m_userAvatarNavButton->installEventFilter(this);
     connect(m_userAvatarNavButton, &QPushButton::clicked, this, [this] {
         setPromptOverlayCollapsed(!m_promptOverlayCollapsed);
     });

@@ -4012,9 +4012,6 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
 {
     if (!m_settingsLog)
         return;
-    QScrollBar *scrollBar = m_settingsLog->verticalScrollBar();
-    const int lockedPosition =
-        m_logScrollLocked && scrollBar ? scrollBar->value() : -1;
 
     // The badge accents read on either canvas, but the timestamp, day divider
     // and message body need per-theme greys/text so the log isn't grey text
@@ -4035,8 +4032,6 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
         time, message, dark,
         logPromptIconTag(m_settingsLog, storedLine) +
             logFaviconTag(message, m_settingsLog)));
-    if (lockedPosition >= 0)
-        scrollBar->setValue(lockedPosition);
 }
 
 // Loads the next older page of matching lines when the user scrolls to the
@@ -4177,6 +4172,7 @@ void MainWindow::rebuildLogFilterButtons()
         connect(chip, &QPushButton::clicked, this, [this, category] {
             m_logFilter = category;
             rebuildNetworkLogView();
+            refreshLogTimelineChart();
         });
     };
 
@@ -4254,6 +4250,7 @@ void MainWindow::testResetNetworkLog()
     QFile::remove(networkLogPath());
     rebuildLogFilterButtons();
     rebuildNetworkLogView();
+    refreshLogTimelineChart();
 }
 #endif
 
@@ -4417,6 +4414,7 @@ void MainWindow::logSystem(const QString &text)
     NodeDiagnostics::hostCollector().noteLogLine(plain);
     m_networkLog.append(line);
     bool chipsChanged = false;
+    bool logHistoryTrimmed = false;
     while (m_networkLog.size() > kNetworkLogLimit) {
         // The counts describe the buffered history, so a line ageing out of it
         // gives its category's chip back a tally point (and retires the chip
@@ -4427,6 +4425,7 @@ void MainWindow::logSystem(const QString &text)
             chipsChanged = true;
         }
         m_networkLog.removeFirst();
+        logHistoryTrimmed = true;
         // m_logRenderFrom indexes into m_networkLog; trimming the front shifts
         // every index down by one, so keep it pointed at the same line.
         if (m_logRenderFrom > 0)
@@ -4450,6 +4449,10 @@ void MainWindow::logSystem(const QString &text)
         else
             appendNetworkLogLine(line);
     }
+    if (logHistoryTrimmed)
+        refreshLogTimelineChart();
+    else
+        appendLogTimelineEntry(line);
 
     // Mirror the newest event onto the always-on footer log line so the latest
     // activity is visible at the bottom of the app even when the Log tab is closed.
