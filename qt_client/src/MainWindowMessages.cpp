@@ -2092,7 +2092,7 @@ void MainWindow::sendMessageToPrompt(const QString &text)
 {
     if (text.isEmpty())
         return;
-    // The footer's bottom-right prompt box, not the chat input: a message worth
+    // The footer's bottom-left prompt box, not the chat input: a message worth
     // reusing is almost always a task for an agent, so it lands where the
     // app-wide "Send to Prompt" selection action puts text (adhoc #108).
     appendTextToActivePrompt(text);

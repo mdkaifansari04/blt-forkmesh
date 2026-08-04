@@ -1495,8 +1495,8 @@ QWidget {
     font-size: 14px;
 }
 QToolTip {
-    background-color: #24292f; color: #ffffff;
-    border: 1px solid #24292f; padding: 4px;
+    background-color: #ffffff; color: #1f2328;
+    border: 1px solid #d0d7de; padding: 4px;
 }
 
 /* --- Setup page --- */
