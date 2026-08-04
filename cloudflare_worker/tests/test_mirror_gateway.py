@@ -734,6 +734,51 @@ def test_signed_repository_health_proof_binds_forkmesh_identity_and_refs(
     )
 
 
+def test_health_tolerates_auxiliary_head_churn_but_not_main_changes(application):
+    app, _commit, _release_hash, _logs = application
+    repository = app.repositories[("alice", "project")]
+    trusted_routing = gateway.routing_refs_sha256(repository.git_dir)
+    main_commit = run(
+        ["git", "rev-parse", "refs/heads/main"], repository.git_dir)
+
+    run([
+        "git", "update-ref", "refs/heads/agent/in-flight", main_commit,
+    ], repository.git_dir)
+    response = app.dispatch(
+        "GET",
+        (
+            f"/health?nonce=auxiliary-proof-01&issuedAt={NOW}"
+            "&owner=alice&repo=project"
+        ),
+        {},
+        b"",
+    )
+    proof = decode_json(response)["repositoryProof"]
+    assert proof["available"] is True
+    assert proof["refsSha256"] == trusted_routing
+
+    divergent = run(
+        ["git", "rev-parse", "refs/heads/forkmesh/pulls"],
+        repository.git_dir,
+    )
+    assert divergent != main_commit
+    run([
+        "git", "update-ref", "refs/heads/main", divergent,
+    ], repository.git_dir)
+    response = app.dispatch(
+        "GET",
+        (
+            f"/health?nonce=default-change-01&issuedAt={NOW}"
+            "&owner=alice&repo=project"
+        ),
+        {},
+        b"",
+    )
+    proof = decode_json(response)["repositoryProof"]
+    assert proof["available"] is False
+    assert proof["integrity"] == "unavailable"
+
+
 def test_unknown_and_private_health_proofs_are_uniform_signed_unavailable(
     application,
 ):
