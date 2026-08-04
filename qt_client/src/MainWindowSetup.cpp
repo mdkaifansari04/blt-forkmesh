@@ -3991,8 +3991,11 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
 
 void MainWindow::setFooterUpdateLine(const QString &line)
 {
+    const QString badge = logBadgeFor(line);
     if (m_logActivityLights)
-        m_logActivityLights->pulse(logBadgeFor(line));
+        m_logActivityLights->pulse(badge);
+    if (m_logActivityHeader)
+        m_logActivityHeader->pulse(badge);
     if (!m_footerUpdateLog)
         return;
     const QString clean = line.trimmed();
