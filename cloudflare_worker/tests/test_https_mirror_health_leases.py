@@ -178,6 +178,7 @@ def test_health_probe_distinguishes_transient_from_definitive_failures(
             normalize_base_url=lambda value: str(value or "")
         ),
         "_owner_signing_pubkeys": owner_signing_pubkeys,
+        "_claimed_node_signing_pubkeys": owner_signing_pubkeys,
         "_https_mirror_cloudflare_dns_ok": dns_ok,
         "_https_mirror_fetch_text": fetch_text,
         "_https_mirror_mark_transient": mark_transient,

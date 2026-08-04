@@ -196,6 +196,7 @@ def _attestation_namespace(runs, verify_result=True):
             "blind_index": blind_index,
             "d1_run": d1_run,
             "_owner_signing_pubkeys": _owner_signing_pubkeys,
+            "_claimed_node_signing_pubkeys": _owner_signing_pubkeys,
             "ed25519_verify": ed25519_verify,
             "clean_string": clean_string,
         },
