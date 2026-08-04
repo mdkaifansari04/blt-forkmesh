@@ -2059,7 +2059,112 @@
     if (activeSection === "ssh-keys") loadSshKeys();
     // Session state changes on other devices, so re-entering this tab always
     // performs a fresh no-store read instead of keeping a page-lifetime copy.
-    if (activeSection === "account") loadAccountSessions({ force: true });
+    if (activeSection === "account") {
+      loadAccountSessions({ force: true });
+      loadPolarMembership({ force: true });
+    }
+  }
+
+  // ---- Polar membership ---------------------------------------------------
+  let polarMembershipLoaded = false;
+  let polarMembershipLoading = null;
+
+  function polarMembershipHeaders(json = false) {
+    const token = String(state.session?.sessionToken || "");
+    return {
+      accept: "application/json",
+      ...(json ? { "content-type": "application/json" } : {}),
+      ...(token && token !== "cookie"
+        ? { authorization: "Bearer " + token }
+        : {}),
+    };
+  }
+
+  async function polarMembershipApi(action, method = "GET") {
+    const token = String(state.session?.sessionToken || "");
+    if (!token) throw new Error("invalid_session");
+    const response = await fetch("/api/integrations/polar/" + action, {
+      method,
+      headers: polarMembershipHeaders(method !== "GET"),
+      credentials: "same-origin",
+      cache: "no-store",
+      ...(method !== "GET"
+        ? { body: JSON.stringify(token === "cookie" ? {} : { sessionToken: token }) }
+        : {}),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `http_${response.status}`);
+    }
+    return data;
+  }
+
+  function setPolarMembershipStatus(message, kind = "") {
+    const target = $("[data-polar-membership-status]");
+    if (!target) return;
+    target.textContent = message || "";
+    target.className = "mt-2 min-h-4 text-xs " + (
+      kind === "bad" ? "text-red-400"
+        : kind === "good" ? "text-emerald-400"
+          : "text-muted-foreground"
+    );
+  }
+
+  function renderPolarMembership(data) {
+    const summary = $("[data-polar-membership-summary]");
+    const portal = $("[data-polar-membership-portal]");
+    const choose = $("[data-polar-membership-choose]");
+    if (!summary || !portal || !choose) return;
+    const active = Boolean(data?.active);
+    const tier = String(data?.tier || "");
+    const expires = Number(data?.currentPeriodEnd || 0);
+    summary.textContent = active
+      ? `${tier === "pro" ? "Pro" : "Supporter"} membership active${expires ? ` through ${formatDate(expires)}` : ""}.`
+      : "No active membership. ForkMesh plans remain free during launch.";
+    portal.hidden = !data?.connected;
+    choose.hidden = active;
+    if (!data?.configured) {
+      setPolarMembershipStatus("Membership checkout is not configured on this deployment.", "bad");
+    } else {
+      setPolarMembershipStatus(active ? "Billing is securely managed by Polar." : "", active ? "good" : "");
+    }
+  }
+
+  function bindPolarMembershipControls() {
+    const portal = $("[data-polar-membership-portal]");
+    if (!portal || portal.dataset.bound === "true") return;
+    portal.dataset.bound = "true";
+    portal.addEventListener("click", async () => {
+      portal.disabled = true;
+      setPolarMembershipStatus("Opening Polar billing…");
+      try {
+        const data = await polarMembershipApi("portal", "POST");
+        location.assign(data.url);
+      } catch (_) {
+        setPolarMembershipStatus("Could not open billing. Please try again.", "bad");
+        portal.disabled = false;
+      }
+    });
+  }
+
+  async function loadPolarMembership({ force = false } = {}) {
+    if (!$("[data-polar-membership-summary]")) return;
+    bindPolarMembershipControls();
+    if (polarMembershipLoaded && !force) return;
+    if (polarMembershipLoading) return polarMembershipLoading;
+    polarMembershipLoading = (async () => {
+      try {
+        renderPolarMembership(await polarMembershipApi("account"));
+        polarMembershipLoaded = true;
+      } catch (_) {
+        const summary = $("[data-polar-membership-summary]");
+        if (summary) summary.textContent = "Could not load membership.";
+        setPolarMembershipStatus("Sign in again to manage membership.", "bad");
+      } finally {
+        polarMembershipLoading = null;
+      }
+    })();
+    return polarMembershipLoading;
   }
 
   // ---- Active account sessions ---------------------------------------------
