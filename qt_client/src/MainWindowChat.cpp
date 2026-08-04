@@ -4115,6 +4115,22 @@ void MainWindow::checkFileDescriptorPressure()
     }
 }
 
+// Daily samples are immutable after the first capture for that day. Keep the
+// rendered trends in memory so switching back to Code (or its periodic refresh)
+// does not repeatedly read the stats document and git config. File-local so
+// toggleRepositoryRatchet() can keep the cached flag in step with the switch it
+// just wrote.
+namespace {
+struct RepoTrendCacheEntry {
+    QString day;
+    QVector<RepoStatsSample> days;
+    bool ratchet = false;
+    QString error;
+};
+QHash<QString, RepoTrendCacheEntry> g_repoTrendCache;
+QSet<QString> g_repoTrendCapturing; // repos with a capture pass in flight
+} // namespace
+
 void MainWindow::refreshRepositoryStats()
 {
     // The trend charts and Ratchet toggle live on the Code overview's mode row,
@@ -4129,26 +4145,43 @@ void MainWindow::refreshRepositoryStats()
         if (widget) widget->setVisible(available);
     if (!available) return;
 
-    // Daily samples are immutable after the first capture for that day. Keep
-    // the rendered trends in memory so switching back to Code (or its periodic
-    // refresh) does not repeatedly read the stats document and git config.
-    struct TrendCacheEntry {
-        QString day;
-        QVector<RepoStatsSample> days;
-    };
-    static QHash<QString, TrendCacheEntry> trendCache;
     const QString today = QDate::currentDate().toString(Qt::ISODate);
-    TrendCacheEntry &cached = trendCache[dir];
-    QString error;
+    RepoTrendCacheEntry &cached = g_repoTrendCache[dir];
     if (cached.day != today || cached.days.isEmpty()) {
-        cached.days = RepoStatsStore::captureDaily(dir, &error);
-        cached.day = today;
-    }
-    const QVector<RepoStatsSample> &days = cached.days;
-    if (days.isEmpty()) {
-        if (!error.isEmpty()) logSystem(QStringLiteral("Repository stats: %1").arg(error));
+        // captureDaily() reads *every tracked file* to measure size and line
+        // counts — 2.3 s of blocked GUI thread in the stall log, and it hangs off
+        // updateFooterDiagnostics' periodic timer, so it froze the window on a
+        // schedule. Run it (and the ratchet flag, one more git subprocess) on a
+        // worker thread and re-enter once the samples land; both touch only git
+        // and disk. One pass per repo at a time, so the periodic refresh can't
+        // stack captures that each re-read the whole tree.
+        if (g_repoTrendCapturing.contains(dir))
+            return;
+        g_repoTrendCapturing.insert(dir);
+        runOffThread<RepoTrendCacheEntry>(
+            [dir, today] {
+                RepoTrendCacheEntry fresh;
+                fresh.day = today;
+                fresh.days = RepoStatsStore::captureDaily(dir, &fresh.error);
+                fresh.ratchet = RepoStatsStore::ratchetEnabled(dir);
+                return fresh;
+            },
+            [this, dir](RepoTrendCacheEntry fresh) {
+                g_repoTrendCapturing.remove(dir);
+                if (fresh.days.isEmpty()) {
+                    if (!fresh.error.isEmpty())
+                        logSystem(
+                            QStringLiteral("Repository stats: %1").arg(fresh.error));
+                    return;
+                }
+                g_repoTrendCache[dir] = fresh;
+                refreshRepositoryStats(); // now a cache hit: paints, runs no git
+            });
         return;
     }
+    const QVector<RepoStatsSample> &days = cached.days;
+    if (days.isEmpty())
+        return;
     QVector<double> sizes, lines, files;
     double maxSize = 1, maxLines = 1, maxFiles = 1;
     for (const RepoStatsSample &day : days) {
@@ -4174,8 +4207,10 @@ void MainWindow::refreshRepositoryStats()
     m_repoLinesChart->setToolTip(QStringLiteral("Tracked lines of code, %1").arg(span));
     m_repoFilesChart->setToolTip(QStringLiteral("Tracked files, %1").arg(span));
     if (m_repoRatchetButton) {
+        // Read alongside the samples on the worker thread: ratchetEnabled() shells
+        // `git config --local --get`, and this runs on the diagnostics timer.
         QSignalBlocker blocker(m_repoRatchetButton);
-        m_repoRatchetButton->setChecked(RepoStatsStore::ratchetEnabled(dir));
+        m_repoRatchetButton->setChecked(cached.ratchet);
     }
 }
 
@@ -4191,6 +4226,11 @@ void MainWindow::toggleRepositoryRatchet(bool enabled)
         flashMessage(QStringLiteral("Could not update Ratchet Mode: %1").arg(error), true);
         return;
     }
+    // refreshRepositoryStats() now paints the switch from the cached flag (the
+    // git-config read moved onto its worker pass), so keep the cache in step or
+    // the next refresh would snap the button back to the stale value.
+    if (auto entry = g_repoTrendCache.find(dir); entry != g_repoTrendCache.end())
+        entry->ratchet = enabled;
     flashMessage(enabled ? QStringLiteral("Ratchet Mode enabled: the repository may not grow "
                                           "past the size it is now until tomorrow.")
                          : QStringLiteral("Ratchet Mode disabled: commits are no longer checked."));
