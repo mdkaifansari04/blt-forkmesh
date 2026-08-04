@@ -122,6 +122,8 @@ public:
                    const QString &base, const QString &head, const QString &patch,
                    const QString &commits, bool branchBacked = false,
                    QString *error = nullptr);
+    // A "closed" transition permanently removes the PR and rewrites only the
+    // dedicated pull ledger so its metadata and change payload are not retained.
     bool setStatus(int number, const QString &status, QString *error = nullptr);
     // Whether the PR's head branch is behind its base (the base carries commits the
     // head lacks). When `behindCount` is non-null it also receives how many such
@@ -222,9 +224,9 @@ public:
     // Merge a signed PR received from the relay inbox into pulls/.
     bool applyRemotePull(const PullRequest &pr, QString *error = nullptr);
     // Remove the PR folder entirely and commit the deletion. This is fast and
-    // leaves history intact. Pass rewriteHistory=true to also purge the PR's diff
-    // text (changes.patch / commits.mbox) from every commit via a filter-branch
-    // rewrite — thorough but slow (seconds to minutes on a large repo).
+    // leaves history intact. Pass rewriteHistory=true to purge the entire PR
+    // record from every commit on forkmesh/pulls via a filter-branch rewrite —
+    // thorough but slow (seconds to minutes on a large ledger).
     bool deletePull(int number, bool rewriteHistory, QString *error = nullptr);
 
     // Conversation: append a signed comment or review event, then commit. The

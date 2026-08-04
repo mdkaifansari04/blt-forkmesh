@@ -5245,6 +5245,20 @@ int main(int argc, char *argv[])
         check(!loadedPulls.isEmpty() &&
                   loadedPulls.first().reviewSummary() == "changes_requested",
               "a later changes-requested review supersedes approval");
+        const QString closedPullDir =
+            pulls.metaWorkTree() + "/pulls/" + QString::number(pn);
+        check(pulls.setStatus(pn, "closed", &err),
+              "closing a pull request succeeds");
+        loadedPulls = pulls.loadAll();
+        bool foundClosedPull = false;
+        for (const PullRequest &candidate : std::as_const(loadedPulls))
+            if (candidate.number == pn)
+                foundClosedPull = true;
+        check(!foundClosedPull && !QFile::exists(closedPullDir),
+              "closing removes the PR metadata and change payload");
+        check(gitOutput({"log", "--format=%H", "forkmesh/pulls", "--",
+                         QStringLiteral("pulls/%1").arg(pn)}).trimmed().isEmpty(),
+              "closing purges the PR from pull-ledger history");
 
         // --- DiscussionStore round-trip ---------------------------------
         DiscussionStore discussions(tmp.path(), QString(), &identity, "tester");
@@ -5479,6 +5493,19 @@ int main(int argc, char *argv[])
                       QFile::exists(tmp.path() + "/gamma.txt") &&
                       !QFile::exists(tmp.path() + "/beta.txt"),
                   "merging applies the kept files and not the deleted one");
+            const QString mergedStoredDir =
+                pulls.metaWorkTree() + "/pulls/" + QString::number(dn);
+            check(!QFile::exists(mergedStoredDir + "/changes.patch") &&
+                      !QFile::exists(mergedStoredDir + "/commits.mbox"),
+                  "merging removes a stored PR's patch and commit payload");
+            PullRequest mergedStored;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == dn)
+                    mergedStored = p;
+            check(mergedStored.status == "merged" &&
+                      mergedStored.patch.isEmpty() &&
+                      mergedStored.commits.isEmpty(),
+                  "a merged stored PR exposes no diff or commit payload");
         }
 
         // --- PullStore deletePull works with a dirty working tree -----------
@@ -5591,8 +5618,11 @@ int main(int argc, char *argv[])
                     merged = p;
             check(merged.status == "merged",
                   "the branch-backed PR is marked merged");
-            check(merged.patch.contains("bb1.txt"),
-                  "a merged branch-backed PR's diff stays viewable via the snapshot");
+            check(merged.patch.isEmpty() && merged.commits.isEmpty(),
+                  "a merged branch-backed PR exposes no diff or commit payload");
+            check(!QFile::exists(bdir + "/changes.patch") &&
+                      !QFile::exists(bdir + "/commits.mbox"),
+                  "a merged branch-backed PR stores metadata only");
         }
 
         // --- PullStore agent edit: multi-file changes on the PR's branch -----
