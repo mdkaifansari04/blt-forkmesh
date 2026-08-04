@@ -4191,7 +4191,7 @@ void MainWindow::rebuildLogFilterButtons()
     // Show present categories in a stable, readable order.
     static const char *order[] = {
         "SESSION", "STATUS", "PEER",  "NODE",   "FORK",  "FORKED", "MIRROR",
-        "SYNC",    "ACCOUNT", "HOST", "ACTIONS", "PIN", "GIT",
+        "SYNC",    "ACCOUNT", "HOST", "ACTIONS", "PIN", "GIT", "BGTASK",
         "PUBLISH", "PULL",   "MERGE", "ISSUE", "PROMPT",    "BOUNTY", "WALLET",
         "CRYPTO",  "IDENTITY", "ADMIN", "SAVE",   "CLIP",  "NETWORK", "ERROR",
         "INFO",
