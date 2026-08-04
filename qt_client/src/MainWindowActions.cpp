@@ -1982,9 +1982,11 @@ void MainWindow::openActionRunFromNotification(int runId)
         return;
     openRepoDetail(index);
     if (m_repoDetailTabs && m_repoDetailTabs->button(6))
-        m_repoDetailTabs->button(6)->setChecked(true);
-    if (m_repoDetailStack)
+        m_repoDetailTabs->button(6)->click();
+    else if (m_repoDetailStack) {
+        ensureRepoDetailTabBuilt(6);
         m_repoDetailStack->setCurrentIndex(6);
+    }
     refreshRepoActions();
     if (m_actionsTable) {
         for (int row = 0; row < m_actionsTable->rowCount(); ++row) {
