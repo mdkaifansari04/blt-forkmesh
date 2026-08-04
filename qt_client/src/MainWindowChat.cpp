@@ -281,6 +281,30 @@ QString agentCliIdentityLabel(const QString &provider,
     QString email;
     QString token;
 
+    // Claude's credentials file intentionally contains OAuth material rather
+    // than the human identity. Ask the CLI for its redacted auth status so an
+    // account menu can name the signed-in account instead of exposing only a
+    // masked token. This is best-effort and only runs when the menu is opened.
+    if (!codex) {
+        QProcess status;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        if (!configDir.trimmed().isEmpty())
+            env.insert(QStringLiteral("CLAUDE_CONFIG_DIR"), configDir);
+        status.setProcessEnvironment(env);
+        const QString claude = QStandardPaths::findExecutable(
+            QStringLiteral("claude"));
+        status.start(claude.isEmpty() ? QStringLiteral("claude") : claude,
+                     {QStringLiteral("auth"), QStringLiteral("status"),
+                      QStringLiteral("--json")});
+        if (status.waitForFinished(1500)) {
+            const QJsonObject auth =
+                QJsonDocument::fromJson(status.readAllStandardOutput()).object();
+            name = firstNonEmpty({jsonString(auth, QStringLiteral("name")),
+                                  jsonString(auth, QStringLiteral("username"))});
+            email = jsonString(auth, QStringLiteral("email"));
+        }
+    }
+
     if (codex) {
         const QJsonObject tokens = credentials.value(QStringLiteral("tokens")).toObject();
         token = firstNonEmpty({
@@ -310,6 +334,7 @@ QString agentCliIdentityLabel(const QString &provider,
         const QJsonObject oauth =
             credentials.value(QStringLiteral("claudeAiOauth")).toObject();
         name = firstNonEmpty({
+            name,
             jsonString(oauth, QStringLiteral("user"), QStringLiteral("name")),
             jsonString(oauth, QStringLiteral("user"), QStringLiteral("username")),
             jsonString(oauth, QStringLiteral("account"), QStringLiteral("name")),
@@ -318,6 +343,7 @@ QString agentCliIdentityLabel(const QString &provider,
             jsonString(credentials, QStringLiteral("name")),
         });
         email = firstNonEmpty({
+            email,
             jsonString(oauth, QStringLiteral("user"), QStringLiteral("email")),
             jsonString(oauth, QStringLiteral("account"), QStringLiteral("email")),
             jsonString(oauth, QStringLiteral("email")),
@@ -428,8 +454,18 @@ ModelChoiceOutcome quickAddModelChoiceSummary(const QList<AgentSession> &session
 
 } // namespace
 
-QStringList MainWindow::agentAccountUsageLines(const QString &provider,
-                                               const QString &accountId) const
+namespace {
+
+struct AgentUsageMenuData {
+    QString label;
+    QString value;
+    QString resetNote;
+    QString detail;
+    int percent = -1;
+};
+
+QList<AgentUsageMenuData> agentAccountUsageMenuData(const QString &provider,
+                                                    const QString &accountId)
 {
     const bool codex = agentIsCodexProvider(provider);
     const bool builtIn = accountId == QLatin1String("default");
@@ -447,32 +483,40 @@ QStringList MainWindow::agentAccountUsageLines(const QString &provider,
                     qint64 durationMs = 0) {
         const QVariant pctValue = value(pctKey);
         QString amount = QString::fromUtf8("\xE2\x80\x94");
+        int chartPercent = -1;
         qint64 estimatedReset = 0;
         if (pctValue.isValid()) {
             const int used = qBound(0, pctValue.toInt(), 100);
             amount = codex ? QStringLiteral("%1% remaining").arg(100 - used)
                            : QStringLiteral("%1% used").arg(used);
+            chartPercent = codex ? 100 - used : used;
         } else if (codex && !anchorKey.isEmpty()) {
             const qint64 anchor = value(anchorKey).toLongLong();
             const qint64 remaining = durationMs - (now - anchor);
             if (anchor > 0 && remaining > 0) {
-                amount = QStringLiteral("%1% remaining")
-                             .arg(qBound(0, qRound(remaining * 100.0 /
+                chartPercent = qBound(0, qRound(remaining * 100.0 /
                                                    double(durationMs)),
-                                         100));
+                                      100);
+                amount = QStringLiteral("%1% remaining").arg(chartPercent);
                 estimatedReset = anchor + durationMs;
             }
         }
-        QString result = QStringLiteral("%1: %2").arg(label, amount);
+        QString resetNote;
         const qint64 providerReset = value(resetKey).toLongLong();
         const qint64 resetAt = providerReset > 0 ? providerReset : estimatedReset;
         if (resetAt > now)
-            result += QString::fromUtf8(" \xC2\xB7 resets in %1")
-                          .arg(humanizeRemaining(resetAt - now));
-        return result;
+            resetNote = QStringLiteral("resets in %1")
+                            .arg(humanizeRemaining(resetAt - now));
+        const QString detail = QStringLiteral("%1: %2%3")
+                                   .arg(label, amount,
+                                        resetNote.isEmpty()
+                                            ? QString()
+                                            : QString::fromUtf8(" \xC2\xB7 ") +
+                                                  resetNote);
+        return AgentUsageMenuData{label, amount, resetNote, detail, chartPercent};
     };
 
-    QStringList result;
+    QList<AgentUsageMenuData> result;
     result << line(QStringLiteral("5-hour"),
                    codex ? kCodexUsage5hPctSetting : kClaudeUsage5hPctSetting,
                    codex ? kCodexUsage5hResetSetting : kClaudeUsage5hResetSetting,
@@ -487,6 +531,18 @@ QStringList MainWindow::agentAccountUsageLines(const QString &provider,
         result << line(QStringLiteral("Fable weekly"),
                        kClaudeUsageFablePctSetting,
                        kClaudeUsageFableResetSetting);
+    return result;
+}
+
+} // namespace
+
+QStringList MainWindow::agentAccountUsageLines(const QString &provider,
+                                               const QString &accountId) const
+{
+    QStringList result;
+    for (const AgentUsageMenuData &row :
+         agentAccountUsageMenuData(provider, accountId))
+        result << row.detail;
     return result;
 }
 
@@ -518,7 +574,9 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
     for (const AgentAccountProfile &profile : profiles) {
         const QString identity = agentCliIdentityLabel(provider, profile.configDir);
         const bool signedIn = providerAccountSignedIn(provider, profile.configDir);
-        QString label = identity.isEmpty() ? profile.label : identity;
+        QString label = profile.label.trimmed();
+        if (!identity.isEmpty())
+            label += QStringLiteral(" — ") + identity;
         if (!signedIn)
             label += QString::fromUtf8(" \xC2\xB7 not signed in");
         QAction *account = menu->addAction(label);
@@ -531,9 +589,20 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
                 [this, provider, id = profile.id] {
                     selectAgentAccount(provider, id);
                 });
-        for (const QString &usage : agentAccountUsageLines(provider, profile.id)) {
-            QAction *usageLine = menu->addAction(QStringLiteral("    ") + usage);
-            usageLine->setEnabled(false);
+        for (const AgentUsageMenuData &usage :
+             agentAccountUsageMenuData(provider, profile.id)) {
+            auto *row = new TokenUsageMenuRow(usage.label, usage.value,
+                                              usage.resetNote, usage.percent,
+                                              menu);
+            auto *usageAction = new QWidgetAction(menu);
+            // Keep the full text on the action for accessibility and for
+            // screen readers that do not inspect the custom-painted row.
+            usageAction->setText(usage.detail);
+            usageAction->setObjectName(
+                QStringLiteral("agentUsage_%1_%2")
+                    .arg(profile.id, usage.label.toLower().replace('-', '_')));
+            usageAction->setDefaultWidget(row);
+            menu->addAction(usageAction);
         }
         menu->addSeparator();
     }
