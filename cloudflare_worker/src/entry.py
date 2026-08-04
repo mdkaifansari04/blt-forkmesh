@@ -32667,6 +32667,24 @@ async def _owner_signing_pubkeys(env, owner):
     return keys
 
 
+async def _claimed_node_signing_pubkeys(env, node):
+    """Return keys allowed to act as one claimed desktop/headless node."""
+    node = clean_string(node, MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(node):
+        return []
+    keys = list(await _owner_signing_pubkeys(env, node))
+    node_bi = await blind_index(env, node)
+    row = await d1_first(
+        env,
+        "SELECT pubkey FROM nodes WHERE node_bi=? AND user_bi IS NOT NULL",
+        node_bi,
+    )
+    public_key = clean_string((row or {}).get("pubkey", ""), 120).strip()
+    if valid_node_pubkey(public_key) and public_key not in keys:
+        keys.append(public_key)
+    return keys
+
+
 async def _catalog_publication_key(env, owner, maintainer):
     """Return an account-bound key allowed to sign one catalog publication.
 
@@ -35585,7 +35603,7 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
         if (
             node not in allowed_nodes
             or not valid_node_pubkey(public_key)
-            or public_key not in await _owner_signing_pubkeys(env, node)
+            or public_key not in await _claimed_node_signing_pubkeys(env, node)
         ):
             continue
         if await ed25519_verify(public_key, sig, canonical):
@@ -35738,7 +35756,7 @@ async def _record_mirror_attested_state(env, request, owner, repo, mirror_node):
             + digest + "\n" + ts
         ).encode()
         verified = False
-        for public_key in await _owner_signing_pubkeys(env, mirror_node):
+        for public_key in await _claimed_node_signing_pubkeys(env, mirror_node):
             if await ed25519_verify(public_key, sig, canonical):
                 verified = True
                 break
@@ -43712,18 +43730,10 @@ async def https_mirror_endpoint_handler(env, request):
     # human owner in ``nodes`` and do not create a separate user account, so
     # consulting only account signing keys permanently rejected newly linked
     # VPS mirrors even though their exact node key was already authenticated.
-    registered_node_bi = await blind_index(env, registration["node"])
-    registered_node = await d1_first(
-        env,
-        "SELECT pubkey FROM nodes WHERE node_bi=? AND user_bi IS NOT NULL",
-        registered_node_bi,
-    )
-    registered_node_key = clean_string(
-        (registered_node or {}).get("pubkey", ""), 120).strip()
-    allowed_keys = await _owner_signing_pubkeys(env, registration["node"])
+    allowed_keys = await _claimed_node_signing_pubkeys(
+        env, registration["node"])
     if (
-        registration["publicKey"] != registered_node_key
-        and registration["publicKey"] not in allowed_keys
+        registration["publicKey"] not in allowed_keys
         or not await ed25519_verify(
             registration["publicKey"],
             registration["signature"],
@@ -44297,7 +44307,7 @@ async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
         not valid_node_name(node)
         or not valid_node_pubkey(public_key)
         or not base_url
-        or public_key not in await _owner_signing_pubkeys(env, node)
+        or public_key not in await _claimed_node_signing_pubkeys(env, node)
     ):
         await _https_mirror_mark_failed(env, row, now)
         return False
