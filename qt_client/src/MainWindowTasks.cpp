@@ -665,6 +665,13 @@ QWidget *MainWindow::buildOrganizationTasksSection()
               QStringLiteral("trash"), 2, 0);
     addAction(&m_organizationTaskFollowUpButton, QStringLiteral("Follow up"),
               QStringLiteral("git-branch"), 2, 1);
+    // Same one-click affordance the log views have (adhoc #114): hand the task
+    // to the footer prompt box so it can be reworded before it goes to an
+    // agent, instead of retyping the title and details by hand.
+    addAction(&m_organizationTaskPromptButton,
+              QStringLiteral("Add to prompt"), QStringLiteral("plus"), 2, 2);
+    m_organizationTaskPromptButton->setToolTip(
+        QStringLiteral("Add this task's title and details to the prompt box"));
     m_organizationTaskDeleteButton->setObjectName(
         QStringLiteral("dangerButton"));
     connect(m_organizationTaskEditButton, &QPushButton::clicked, this,
@@ -691,6 +698,8 @@ QWidget *MainWindow::buildOrganizationTasksSection()
             &MainWindow::deleteOrganizationTask);
     connect(m_organizationTaskFollowUpButton, &QPushButton::clicked, this,
             &MainWindow::createOrganizationTaskFollowUp);
+    connect(m_organizationTaskPromptButton, &QPushButton::clicked, this,
+            &MainWindow::addOrganizationTaskToPrompt);
     detailLayout->addLayout(actions);
     splitter->addWidget(detailHost);
     splitter->setStretchFactor(0, 3);
@@ -1291,6 +1300,39 @@ void MainWindow::updateOrganizationTaskActions()
             (m_organizationTasksCanManage || mine ||
              taskText(task, QStringLiteral("createdBy")) ==
                  m_organizationTaskActor));
+    // Copying a task into the prompt box changes nothing on the board, so it
+    // needs no manage right — only a selection.
+    if (m_organizationTaskPromptButton)
+        m_organizationTaskPromptButton->setEnabled(selected);
+}
+
+// Hands the selected task to the footer's prompt box (adhoc #114's "add to
+// prompt", now on the task detail): title, id and the free-text blocks, so the
+// operator can edit the wording before sending it to an agent.
+void MainWindow::addOrganizationTaskToPrompt()
+{
+    const QJsonObject task = selectedOrganizationTask(
+        m_organizationTasksTable, m_organizationTasks);
+    if (task.isEmpty())
+        return;
+    const QJsonObject qa = task.value(QStringLiteral("qa")).toObject();
+    const QString id = taskText(task, QStringLiteral("id"));
+    const QString title = taskText(task, QStringLiteral("title"));
+    const QString repository = taskText(task, QStringLiteral("repository"));
+    QStringList lines;
+    lines << QStringLiteral("[task:%1] %2").arg(id, title);
+    if (!repository.isEmpty())
+        lines << QStringLiteral("Repository: %1").arg(repository);
+    const QString details = taskText(task, QStringLiteral("details"));
+    if (!details.isEmpty())
+        lines << QString() << details;
+    const QString howToTest = taskText(qa, QStringLiteral("howToTest"));
+    if (!howToTest.isEmpty())
+        lines << QString() << QStringLiteral("How to test: %1").arg(howToTest);
+    appendTextToActivePrompt(lines.join(QLatin1Char('\n')));
+    if (m_organizationTasksStatus)
+        m_organizationTasksStatus->setText(
+            QStringLiteral("Task added to the prompt box."));
 }
 
 void MainWindow::createOrganizationTask()

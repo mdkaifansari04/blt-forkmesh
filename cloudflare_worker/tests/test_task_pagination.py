@@ -146,6 +146,21 @@ def test_qt_task_list_is_a_headerless_icon_strip():
     assert theme.count("#organizationTasksTable {") == 2  # dark + light
 
 
+def test_qt_task_detail_can_add_the_task_to_the_prompt_box():
+    # The task detail's own "add to prompt" affordance: one click hands the
+    # selected task's title, id, repository and free-text blocks to the footer
+    # prompt box instead of making the operator retype them.
+    assert 'QStringLiteral("Add to prompt"), QStringLiteral("plus"), 2, 2);' in QT_TASKS
+    assert "&MainWindow::addOrganizationTaskToPrompt" in QT_TASKS
+    body = QT_TASKS[QT_TASKS.index("void MainWindow::addOrganizationTaskToPrompt("):]
+    body = body[:body.index("\nvoid MainWindow::")]
+    assert "appendTextToActivePrompt(" in body
+    assert '"[task:%1] %2"' in body
+    # Copying text out of the board mutates nothing, so it needs a selection
+    # only — not the manage right the writes require.
+    assert "m_organizationTaskPromptButton->setEnabled(selected);" in QT_TASKS
+
+
 def test_dashboard_tasks_page_never_renders_private_task_text_unescaped():
     js = assembled_dashboard_js()
     body = js[js.index("function taskRowHtml("):js.index("function renderTasksPage(")]
