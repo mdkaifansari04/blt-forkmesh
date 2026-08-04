@@ -535,8 +535,24 @@ void MainWindow::scanActionSpool()
                 reattested.insert(idx);
                 const RepositoryRecord &r = m_repositories.at(idx);
                 if (!r.previewOnly && r.publishToNetwork &&
-                    !r.mirrorPath.trimmed().isEmpty())
+                    !r.mirrorPath.trimmed().isEmpty()) {
+                    // SSH fleet fan-out writes directly into this served bare
+                    // repository, bypassing syncRepository's fetch-completion
+                    // refresh. Rebuild the gateway's exact refs pin before
+                    // re-attesting the new catalog state, otherwise the direct
+                    // endpoint stays online while quarantining the push it
+                    // just accepted.
+                    QString gatewayError;
+                    if (!rebuildDirectMirrorGatewayConfiguration(
+                            &gatewayError, true)) {
+                        logSystem(
+                            QStringLiteral(
+                                "Direct gateway refresh after pushed refs "
+                                "failed: %1")
+                                .arg(gatewayError));
+                    }
                     publishRepository(idx, false);
+                }
                 // Tell connected peers that also mirror this repo that it just
                 // advanced, the same ephemeral "mirror-update" frame
                 // syncRepository broadcasts for a fetch-detected change (see
