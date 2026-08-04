@@ -11858,31 +11858,95 @@ void MainWindow::renderAgentDiff(int sessionId, const AgentDiffProbe &probe)
     const QString base = sessionDiffBase(sessionId, dir);
     // Turning the patch into HTML is the expensive half of this function — the
     // stall watchdog caught renderSplitDiffHtml() alone blocking the GUI thread
-    // for ~590 ms on a large session diff. It fires on every transcript burst
-    // while an agent streams, and the patch is usually byte-identical to the one
-    // we rendered a moment ago, so key the rendered HTML *and* its file table on
-    // the patch bytes and skip the whole render when nothing changed (adhoc #93).
-    // The setHtml skip below stayed, but it only saved the layout, not the build.
+    // for 6.3 s on a large session diff. It fires on every transcript burst
+    // while an agent streams, so this takes two precautions:
+    //
+    //  1. The patch is usually byte-identical to the one rendered a moment ago,
+    //     so the rendered HTML *and* its file table are keyed on the patch bytes
+    //     and a re-render is skipped outright when nothing changed (adhoc #93).
+    //  2. On a real change the build runs on a worker thread and only the widget
+    //     updates (applyAgentDiff) happen here. renderDiffHtmlSplit touches no
+    //     GUI state; the split/unified preference is a QSettings read, so it is
+    //     resolved here and passed in.
     const QString renderKey = QString::number(sessionId) + QLatin1Char('\n') + dir +
                               QLatin1Char('\n') + base;
-    static QList<DiffFileEntry> renderedFiles; // paired with m_agentDiffRenderKey
-    QList<DiffFileEntry> files;
-    QString shown;
+    // The parsed file table that goes with m_agentDiffLastHtml, plus enough to
+    // keep at most one worker render in flight and coalesce the rest. Function-
+    // local (there is only ever one main window) because neither DiffFileEntry
+    // nor a nested AgentDiffProbe member is nameable at MainWindow scope.
+    struct RenderState {
+        QList<DiffFileEntry> files; // matches m_agentDiffLastHtml
+        bool busy = false;          // a worker render is in flight
+        bool queued = false;        // …and a newer probe arrived while it ran
+        int queuedSession = -1;
+        AgentDiffProbe queuedProbe;
+    };
+    static RenderState state;
     if (renderKey == m_agentDiffRenderKey && probe.patch == m_agentDiffRenderedPatch &&
         !m_agentDiffLastHtml.isEmpty()) {
-        files = renderedFiles;
-        shown = m_agentDiffLastHtml;
-    } else {
-        const QString html =
-            renderDiffHtml(QString::fromUtf8(probe.patch), files, dir, base, QString(),
-                           QString(), QHash<QString, QString>(), QSet<QString>());
-        shown = html.isEmpty()
-                    ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>")
-                    : html;
-        m_agentDiffRenderKey = renderKey;
-        m_agentDiffRenderedPatch = probe.patch;
-        renderedFiles = files;
+        applyAgentDiff(sessionId, probe, state.files, m_agentDiffLastHtml);
+        return;
     }
+    if (state.busy) {
+        // Keep only the newest probe: a streaming burst must not queue one worker
+        // render per turn, and every earlier patch is superseded anyway.
+        state.queued = true;
+        state.queuedSession = sessionId;
+        state.queuedProbe = probe;
+        return;
+    }
+    state.busy = true;
+    // Everything the worker touches is captured by value (see the git-pump UAF
+    // family: nothing shared with the GUI thread may be read off it).
+    const bool split = diffSplitPref();
+    const QByteArray patch = probe.patch;
+    struct AgentDiffRender {
+        QString html;
+        QList<DiffFileEntry> files;
+    };
+    runOffThread<AgentDiffRender>(
+        [split, patch, dir, base] {
+            AgentDiffRender out;
+            out.html = renderDiffHtmlSplit(split, QString::fromUtf8(patch), out.files,
+                                           dir, base, QString(), QString(),
+                                           QHash<QString, QString>(), QSet<QString>());
+            return out;
+        },
+        [this, sessionId, probe, renderKey, patch](AgentDiffRender out) {
+            RenderState &st = state;
+            st.busy = false;
+            // A render for a session the user has since clicked away from is
+            // dropped rather than stamped over the cache for the live one.
+            if (m_agentDiffView && sessionId == m_selectedAgentSessionId) {
+                const QString shown =
+                    out.html.isEmpty()
+                        ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>")
+                        : out.html;
+                m_agentDiffRenderKey = renderKey;
+                m_agentDiffRenderedPatch = patch;
+                st.files = out.files;
+                applyAgentDiff(sessionId, probe, st.files, shown);
+            }
+            if (st.queued) {
+                st.queued = false;
+                const int sid = st.queuedSession;
+                const AgentDiffProbe next = st.queuedProbe;
+                st.queuedSession = -1;
+                st.queuedProbe = AgentDiffProbe();
+                renderAgentDiff(sid, next);
+            }
+        });
+}
+
+// The GUI-thread half of renderAgentDiff: `shown` is already-built HTML and
+// `files` its parsed per-file table.
+void MainWindow::applyAgentDiff(int sessionId, const AgentDiffProbe &probe,
+                                const QList<DiffFileEntry> &files,
+                                const QString &shown)
+{
+    if (!m_agentDiffView || sessionId != m_selectedAgentSessionId)
+        return;
+    const QString dir = sessionWorkdir(sessionId);
     // Re-running setHtml when the rendered diff is byte-identical to what's
     // already on screen just re-freezes the UI for no visible change (this fires
     // on every transcript burst while an agent streams). Skip it when unchanged;

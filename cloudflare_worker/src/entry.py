@@ -12600,6 +12600,13 @@ ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
 # desktop Tasks tab was empty for every operator who launched normally instead
 # of typing a password, because it had no session token to present (adhoc #52).
 ORG_TASK_LIST_PROOF = "forkmesh-org-task-list-v1"
+# The same key, removing one task it names. A desktop that authenticated
+# silently could open, read, and close the board but not delete a row, so the
+# Tasks tab told an operator who was plainly signed in to go type a password
+# (adhoc #108's message, still fired in adhoc #1426). Deletion is a
+# manage-permission action either way: _delete still refuses a member without
+# admin/maintain, exactly as it does for a session-token caller.
+ORG_TASK_DELETE_PROOF = "forkmesh-org-task-delete-v1"
 # The same key, signing for the one credential a desktop's "genie" button needs
 # (adhoc #49): a task-only remote-MCP bearer for the task board. An install that
 # can already open and close tasks with its key should not have to send its
@@ -12608,25 +12615,28 @@ GENIE_CREDENTIAL_PROOF = "forkmesh-genie-credential-v1"
 ORG_TASK_COMPLETE_RE = re.compile(
     r"^/api/tasks/([a-f0-9]{32})/complete/?$")
 ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
+ORG_TASK_ITEM_RE = re.compile(r"^/api/tasks/([a-f0-9]{32})/?$")
 
 
 async def _org_task_signed_session(env, request):
     """Resolve the account behind a key-signed organization-task request.
 
-    Deliberately narrow: listing the board, opening a task, and reporting one
-    finished — the reads and writes a desktop performs for its own agent run.
-    Editing, deleting, starting/stopping another member's timer, and QA verdicts
-    all still require a real session. Membership and every other authorization
-    check inside the task API applies to a signed caller exactly as to a
-    session-token one, so a signed list still returns nothing to a non-member.
+    Deliberately narrow: listing the board, opening a task, reporting one
+    finished, and deleting one — the reads and writes a desktop performs for its
+    own agent run, plus the row removal its Tasks tab offers. Editing,
+    starting/stopping another member's timer, and QA verdicts all still require a
+    real session. Membership and every other authorization check inside the task
+    API applies to a signed caller exactly as to a session-token one, so a signed
+    list still returns nothing to a non-member and a signed delete still refuses
+    a member without manage permission.
 
-    The completion proof names the exact task it closes. The list and open
-    proofs can only be replayed inside the five-minute skew window, and only to
-    read the board, or open one more task, as an account that was already
+    The completion and deletion proofs name the exact task they act on. The list
+    and open proofs can only be replayed inside the five-minute skew window, and
+    only to read the board, or open one more task, as an account that was already
     entitled to do so.
     """
     method = method_name(request)
-    if method not in ("GET", "POST"):
+    if method not in ("GET", "POST", "DELETE"):
         return "", None
     url = urlparse(request.url)
     params = parse_qs(url.query)
@@ -12644,6 +12654,16 @@ async def _org_task_signed_session(env, request):
             return "", None
         canonical = (
             ORG_TASK_LIST_PROOF + "\n" + node + "\n" + str(ts)
+        ).encode()
+    elif method == "DELETE":
+        # Its own proof, naming the task: a signature collected for any other
+        # request must never be replayable as a deletion.
+        item = ORG_TASK_ITEM_RE.match(url.path)
+        if not item:
+            return "", None
+        canonical = (
+            ORG_TASK_DELETE_PROOF + "\n" + node + "\n"
+            + item.group(1) + "\n" + str(ts)
         ).encode()
     elif complete:
         canonical = (
