@@ -782,7 +782,7 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=0e9de8259bd0" defer></script>
+    <script src="/dashboard.js?v=36f107ea220e" defer></script>
 
   </head>
   <body class="bg-background text-foreground" data-page="settings">
@@ -808,8 +808,15 @@
           ></span>
         </a>
 
-        <div class="hidden min-w-0 items-center gap-2 text-sm font-semibold text-foreground sm:flex">
-          <span data-dashboard-header-context class="min-w-0 truncate">Dashboard</span>
+        <div class="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold text-foreground">
+          <h1 class="min-w-0 truncate">
+            <span data-dashboard-header-context class="min-w-0 truncate">Dashboard</span>
+          </h1>
+          <div data-repo-header-meta class="hidden shrink-0 items-center gap-1.5">
+            <span data-repo-header-visibility class="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] font-normal text-muted-foreground"></span>
+            <span data-repo-header-terms></span>
+            <span data-repo-availability-status class="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] font-normal text-muted-foreground"></span>
+          </div>
         </div>
 
         <div data-global-search-shell class="relative ml-auto hidden h-9 w-full max-w-sm min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground focus-within:border-ring focus-within:text-foreground lg:flex">

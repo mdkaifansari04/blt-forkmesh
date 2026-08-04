@@ -1018,12 +1018,16 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         "Copy clone",
         "Open clean URL",
         "data-dashboard-repo-tab=\"${tab}\"",
-        '"code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors"',
+        '"code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", ...(canSeeAgentsTab',
         # Releases load lazily on first tab view from .forkmesh/releases/<channel>/release.json.
         "loadRepoReleases(state.selectedRepo)",
         "loadRepoInsights(state.selectedRepo)",
     ):
         assert marker in dashboard_js
+    # Mirrors remains a real route/panel, but its duplicate tab-strip entry was
+    # replaced by the compact action in the About rail.
+    assert 'data-dashboard-repo-tab="mirrors"' in dashboard_js
+    assert '"discussions", "mirrors", ...(canSeeAgentsTab' not in dashboard_js
 
 
 def test_dashboard_release_probes_use_the_committed_forkmesh_directory():
@@ -1102,7 +1106,7 @@ def test_dashboard_repository_detail_uses_github_like_inner_layout():
 
     for marker in (
         'data-repo-layout="github-like"',
-        "Repository facts",
+        "data-repo-about-actions",
         "Go to file",
         "data-repo-commit-summary",
         "data-repo-about",
@@ -1111,6 +1115,9 @@ def test_dashboard_repository_detail_uses_github_like_inner_layout():
         "Pull requests",
     ):
         assert marker in render
+    assert 'data-repo-github-header class="border-b border-border bg-background"' in render
+    assert 'data-repo-github-header class="rounded-t-lg border border-border' not in render
+    assert 'data-repo-github-header class="border-b border-border bg-background">\n          <div class="grid' not in render
     assert 'data-lucide="${icon}"' in dashboard_js
     assert 'icon = isPulls ? "git-pull-request" : "circle-dot"' in dashboard_js
 
@@ -1139,6 +1146,51 @@ def test_repository_code_page_matches_github_code_layout():
     assert "Last commit date" not in render
     assert "data-repo-commit-date" in render
     assert ">Code<" in render
+
+
+def test_repository_header_is_compact_and_actions_live_in_about():
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    header = _read(PUBLIC / "dashboard" / "partials" / "header.html")
+    render = dashboard_js[
+        dashboard_js.index("function renderRepoDetail")
+        : dashboard_js.index("function findRepository")
+    ]
+    header_context = dashboard_js[
+        dashboard_js.index("function renderHeaderContext")
+        : dashboard_js.index("// ---- Public-profile mode")
+    ]
+
+    assert "data-repo-header-meta" in header
+    assert "data-repo-header-visibility" in header
+    assert "data-repo-availability-status" in header
+    assert "repoDisplayKey(repo)" in header_context
+    assert 'renderHeaderContext("explore");' in render
+
+    tab_band = render[
+        render.index("data-repo-github-header")
+        : render.index("data-repo-content-grid")
+    ]
+    assert 'class="border-b border-border bg-background"' in tab_band
+    assert "rounded-t-lg" not in tab_band
+    assert "Repository facts" not in tab_band
+    assert "repo.description" not in tab_band
+    assert 'role="tab" data-dashboard-repo-tab="mirrors"' not in tab_band
+
+    assert render.index("data-repo-about-description") < render.index("data-repo-about-actions")
+    about_actions = render[
+        render.index("data-repo-about-actions")
+        : render.index("data-repo-about-website")
+    ]
+    for marker in (
+        "data-repo-action-watch",
+        "data-repo-action-fork",
+        "data-repo-action-star",
+        'data-dashboard-repo-tab="mirrors"',
+        'data-repo-watch-count class="absolute -right-0.5 -top-0.5',
+        'data-repo-star-count class="absolute -right-0.5 -top-0.5',
+        'data-dashboard-repo-count="mirrors" data-dashboard-repo-tab-count="mirrors"',
+    ):
+        assert marker in about_actions
 
 
 def test_dashboard_about_links_readme_activity_and_owner_edit():
@@ -1377,14 +1429,17 @@ def test_dashboard_latest_commit_history_button_opens_commits_tab():
     ]
 
     for marker in (
-        'button type="button" data-dashboard-history-button',
+        'a href="${escapeHtml(`${repoPathUrl(repo)}/commits`)}" data-dashboard-history-button',
         'aria-label="Open commit history"',
         'data-lucide="history"',
-        "History</button>",
+        "<span>History</span>",
+        'data-dashboard-repo-count="commits" data-dashboard-repo-tab-count="commits"',
+        'const showTabCount = tab !== "commits"',
     ):
         assert marker in render
 
-    assert 'setRepoTab("commits");' in click_handler
+    assert "event.preventDefault();" in click_handler
+    assert 'activateRepoTab("commits");' in click_handler
     assert "return;" in click_handler
 
 
