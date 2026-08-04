@@ -33933,6 +33933,21 @@ def _forkbot_resolve_ai_model(env, requested=""):
     return _forkbot_ai_default_model(env)
 
 
+def _forkbot_is_allowed_ai_model(env, wanted=""):
+    """Return True when the caller-supplied model pick is an explicit allowlist
+    pick for this relay."""
+    wanted = clean_string(wanted or "", 120).strip()
+    if not wanted:
+        return False
+    for option in _forkbot_ai_model_options(env):
+        if option["id"] == wanted:
+            return True
+    return False
+
+
+def _forkbot_ai_model_not_found_error(error):
+    text = _safe_error_text(error).lower()
+    return "model" in text and "not found" in text
 def _forkbot_ai_model_not_found_error(error):
     text = _safe_error_text(error).lower()
     if not text:
@@ -34049,8 +34064,8 @@ async def ai_ask_handler(env, request):
     prompt = clean_string(data.get("prompt", ""), AI_ASK_MAX_PROMPT).strip()
     if not prompt:
         return json_response({"error": "prompt_required"}, status=400)
-    requested = clean_string(data.get("model", ""), 120).strip()
-    model = _forkbot_resolve_ai_model(env, requested)
+    requested_model = clean_string(data.get("model", ""), 120).strip()
+    model = requested_model or _forkbot_ai_default_model(env)
     ts = clean_string(data.get("ts", ""), 20).strip()
     sig = clean_string(data.get("sig", ""), 200).strip()
     if not ts or not sig:
@@ -34083,13 +34098,21 @@ async def ai_ask_handler(env, request):
             env, account, sig, _canonical(model))
     if not verified:
         return json_response({"error": "unauthorized"}, status=401)
+    if requested_model and not _forkbot_is_allowed_ai_model(env, requested_model):
+        return json_response({"error": "not_found", "model": requested_model},
+                             status=404)
     limited = await _ai_ask_rate_check(env, await blind_index(env, account))
     if limited is not None:
         return limited
     outcome = {}
     reply = await _forkbot_run_ai(
         env, AI_ASK_SYSTEM_PROMPT, prompt, model=model,
-        max_tokens=AI_ASK_MAX_TOKENS, outcome=outcome)
+        max_tokens=AI_ASK_MAX_TOKENS,
+        allow_model_not_found_error=True)
+    if isinstance(reply, dict) and reply.get("__forkbot_ai_error__") == "not_found":
+        return json_response(
+            {"error": "not_found", "model": reply.get("model", model)},
+            status=404)
     if not isinstance(reply, str) or not reply.strip():
         # _forkbot_run_ai already logged why (missing binding, provider error,
         # unusable shape); the composer needs a distinguishable failure so it
@@ -34109,8 +34132,10 @@ async def ai_ask_handler(env, request):
     })
 
 
-async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
-                          model="", max_tokens=512, outcome=None):
+async def _forkbot_run_ai(
+    env, system_prompt, user_prompt, schema=None, model="", max_tokens=512,
+    allow_model_not_found_error=False,
+):
     """Run the Workers AI chat model and return the raw response text/object
     (or None). Shared by the issue-drafting and intent-classification helpers.
 
@@ -34179,6 +34204,11 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
                 all_missing = False
         if ran:
             break
+        except Exception as error:
+            if allow_model_not_found_error and _forkbot_ai_model_not_found_error(error):
+                return {"__forkbot_ai_error__": "not_found", "model": model}
+            last_error = error
+            continue
     if not ran:
         outcome["failure"] = ("model_not_found" if all_missing
                               else "provider_error")
