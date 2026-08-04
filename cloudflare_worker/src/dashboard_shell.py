@@ -231,6 +231,7 @@ CACHE_BUSTED_BUNDLES = (
     "reset-password.js",
     "security-report.js",
     "mirror-payouts.js",
+    "polar-memberships.js",
     "referrals.js",
     "outreach.js",
     "leaderboards.js",

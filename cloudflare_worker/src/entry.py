@@ -124,6 +124,7 @@ class _LazyExport:
 # within a fixed memory budget.
 organization_discord = _LazyModule("organization_discord")
 notes = _LazyModule("notes")
+polar_integration = _LazyModule("polar_integration")
 
 # Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
 # lives in its own module. Wallet signing is intentionally not imported into the
@@ -576,6 +577,7 @@ from urls import (  # noqa: E402
     ORG_DISCORD_RE,
     DISCORD_OAUTH_CALLBACK_RE,
     MAILTRAP_WEBHOOK_RE,
+    POLAR_INTEGRATION_RE,
     BOT_SESSION_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
@@ -16612,6 +16614,20 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
     await d1_run(
         env, "UPDATE account_sessions SET account_bi=? WHERE account_bi=?",
         new_name_bi, name_bi)
+    # Polar's external customer id is random and stable, so a username rename
+    # moves only the local encrypted mapping and derived membership rows. The
+    # provider keeps sending the same opaque external id after the rename.
+    await d1_run(
+        env, "UPDATE polar_customers SET account_bi=?,updated_at=? "
+        "WHERE account_bi=?",
+        new_name_bi, int(Date.now()), name_bi)
+    await d1_run(
+        env, "UPDATE polar_memberships SET account_bi=?,updated_at=? "
+        "WHERE account_bi=?",
+        new_name_bi, int(Date.now()), name_bi)
+    await d1_run(
+        env, "UPDATE role_grants SET account_bi=? WHERE account_bi=?",
+        new_name_bi, name_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
     await purge_catalog_related_caches()
@@ -16783,6 +16799,8 @@ async def _delete_account_namespace(env, name_bi, rec):
             "repo_stars",
             "feedback_email_sends",
             "role_grants",
+            "polar_customers",
+            "polar_memberships",
             "owner_encryption_keys",
             "world_inactive_presence",
             "world_media_roles",
@@ -24697,6 +24715,172 @@ async def organization_discord_handler(env, request, org, action=""):
 async def organization_discord_oauth_callback_handler(env, request):
     return await organization_discord.handle_oauth_callback(
         _OrganizationDiscordRuntime(env, request))
+
+
+class _PolarIntegrationRuntime:
+    """Narrow adapter for Polar checkout and webhook policy."""
+
+    def __init__(self, env, request):
+        self.env = env
+        self.request = request
+
+    def method(self):
+        return method_name(self.request)
+
+    def now(self):
+        return int(Date.now())
+
+    def new_id(self):
+        return _ap_uuid()
+
+    def headers(self):
+        return self.request.headers
+
+    def public_origin(self):
+        return _public_base_url(self.env, self.request)
+
+    def client_ip(self):
+        # Polar uses this only to calculate the customer's country/tax. Trust
+        # Cloudflare's edge-set address, never a client-supplied forwarded-for
+        # fallback.
+        return _account_session_client_ip(self.request)
+
+    def config(self):
+        return {
+            "apiBase": str(
+                getattr(self.env, "POLAR_API_BASE_URL", "") or ""),
+            "accessToken": str(
+                getattr(self.env, "POLAR_ACCESS_TOKEN", "") or ""),
+            "webhookSecret": str(
+                getattr(self.env, "POLAR_WEBHOOK_SECRET", "") or ""),
+            "organizationId": str(
+                getattr(self.env, "POLAR_ORGANIZATION_ID", "") or ""),
+            "supporterProductId": str(
+                getattr(self.env, "POLAR_SUPPORTER_PRODUCT_ID", "") or ""),
+            "proProductId": str(
+                getattr(self.env, "POLAR_PRO_PRODUCT_ID", "") or ""),
+        }
+
+    def response(self, data, status=200, cache_control=None,
+                 extra_headers=None):
+        return json_response(
+            data,
+            status=status,
+            cache_control=cache_control,
+            extra_headers=extra_headers,
+        )
+
+    async def ensure_schema(self):
+        await ensure_schema(self.env)
+
+    async def raw_body(self, limit):
+        try:
+            announced = self.request.headers.get("content-length") or ""
+            if announced and int(announced) > int(limit):
+                return None, "payload_too_large"
+        except (TypeError, ValueError, OverflowError):
+            return None, "invalid_content_length"
+        try:
+            raw = str(await self.request.text())
+        except Exception:
+            return None, "invalid_payload"
+        if len(raw.encode("utf-8")) > int(limit):
+            return None, "payload_too_large"
+        return raw, ""
+
+    async def json_body(self, limit):
+        raw, error = await self.raw_body(limit)
+        if error:
+            return None, error
+        if not str(raw or "").strip():
+            return {}, ""
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None, "invalid_json"
+        return (data, "") if isinstance(data, dict) else (None, "invalid_json")
+
+    async def session(self, data=None):
+        return await _account_session_record(
+            self.env, self.request,
+            data if isinstance(data, dict) else {},
+        )
+
+    async def blind(self, value):
+        return await blind_index(self.env, str(value or ""))
+
+    async def seal(self, value):
+        return await encrypt_row(self.env, value)
+
+    async def open(self, value):
+        return await decrypt_row(self.env, value)
+
+    async def d1_first(self, sql, *args):
+        return await d1_first(self.env, sql, *args)
+
+    async def d1_run(self, sql, *args):
+        return await d1_run(self.env, sql, *args)
+
+    async def batch(self, statements):
+        return await _contribution_run_batch(self.env, statements)
+
+    async def provider(self, url, payload, access_token):
+        """POST bounded JSON to one normalized Polar API origin."""
+
+        url = str(url or "")
+        parsed = urlparse(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc not in {"api.polar.sh", "sandbox-api.polar.sh"}
+            or not parsed.path.startswith("/v1/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            return {"status": 0, "data": None}
+        token = str(access_token or "").strip()
+        if not token or len(token) > 4096 or not isinstance(payload, dict):
+            return {"status": 0, "data": None}
+        try:
+            response = await js_fetch_with_timeout(
+                url,
+                {
+                    "method": "POST",
+                    "headers": {
+                        "authorization": "Bearer " + token,
+                        "accept": "application/json",
+                        "content-type": "application/json",
+                    },
+                    "body": json.dumps(
+                        payload, sort_keys=True, separators=(",", ":")),
+                    "redirect": "manual",
+                },
+                12,
+            )
+            status = int(getattr(response, "status", 0) or 0)
+            try:
+                announced = int(
+                    response.headers.get("content-length") or 0)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                announced = 0
+            if announced > polar_integration.BODY_MAX_BYTES:
+                return {"status": 502, "data": None}
+            raw = str(await response.text())
+            if len(raw.encode("utf-8")) > polar_integration.BODY_MAX_BYTES:
+                return {"status": 502, "data": None}
+            try:
+                data = json.loads(raw) if raw else None
+            except Exception:
+                data = None
+            return {"status": status, "data": data}
+        except Exception:
+            # Provider errors may include authorization headers. Never return
+            # or log exception text from this credential-bearing call.
+            return {"status": 0, "data": None}
+
+
+async def polar_integration_handler(env, request, action):
+    return await polar_integration.handle(
+        _PolarIntegrationRuntime(env, request), action)
 
 
 async def world_organizations_handler(env, request):
@@ -33947,9 +34131,6 @@ def _forkbot_is_allowed_ai_model(env, wanted=""):
 
 def _forkbot_ai_model_not_found_error(error):
     text = _safe_error_text(error).lower()
-    return "model" in text and "not found" in text
-def _forkbot_ai_model_not_found_error(error):
-    text = _safe_error_text(error).lower()
     if not text:
         return False
     return any(marker in text for marker in (
@@ -34092,27 +34273,19 @@ async def ai_ask_handler(env, request):
     # default; the resolved id is still accepted for older clients that signed
     # whatever the relay handed them.
     verified = await _verify_owner_signature(
-        env, account, sig, _canonical(requested))
-    if not verified and model != requested:
+        env, account, sig, _canonical(requested_model))
+    if not verified and model != requested_model:
         verified = await _verify_owner_signature(
             env, account, sig, _canonical(model))
     if not verified:
         return json_response({"error": "unauthorized"}, status=401)
-    if requested_model and not _forkbot_is_allowed_ai_model(env, requested_model):
-        return json_response({"error": "not_found", "model": requested_model},
-                             status=404)
     limited = await _ai_ask_rate_check(env, await blind_index(env, account))
     if limited is not None:
         return limited
     outcome = {}
     reply = await _forkbot_run_ai(
         env, AI_ASK_SYSTEM_PROMPT, prompt, model=model,
-        max_tokens=AI_ASK_MAX_TOKENS,
-        allow_model_not_found_error=True)
-    if isinstance(reply, dict) and reply.get("__forkbot_ai_error__") == "not_found":
-        return json_response(
-            {"error": "not_found", "model": reply.get("model", model)},
-            status=404)
+        max_tokens=AI_ASK_MAX_TOKENS, outcome=outcome)
     if not isinstance(reply, str) or not reply.strip():
         # _forkbot_run_ai already logged why (missing binding, provider error,
         # unusable shape); the composer needs a distinguishable failure so it
@@ -34134,7 +34307,7 @@ async def ai_ask_handler(env, request):
 
 async def _forkbot_run_ai(
     env, system_prompt, user_prompt, schema=None, model="", max_tokens=512,
-    allow_model_not_found_error=False,
+    outcome=None,
 ):
     """Run the Workers AI chat model and return the raw response text/object
     (or None). Shared by the issue-drafting and intent-classification helpers.
@@ -34204,11 +34377,6 @@ async def _forkbot_run_ai(
                 all_missing = False
         if ran:
             break
-        except Exception as error:
-            if allow_model_not_found_error and _forkbot_ai_model_not_found_error(error):
-                return {"__forkbot_ai_error__": "not_found", "model": model}
-            last_error = error
-            continue
     if not ran:
         outcome["failure"] = ("model_not_found" if all_missing
                               else "provider_error")
@@ -47417,6 +47585,11 @@ class Default(WorkerEntrypoint):
         # One prompt answered by a picked Workers AI model (desktop composer).
         if url.path in ("/api/ai/ask", "/api/ai/ask/"):
             return await ai_ask_handler(self.env, request)
+
+        polar_match = POLAR_INTEGRATION_RE.match(url.path)
+        if polar_match:
+            return await polar_integration_handler(
+                self.env, request, polar_match.group(1))
 
         # All /api/accounts/* paths (reserve, profile, follow, login, lookup)
         # are dispatched by accounts_handler.

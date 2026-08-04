@@ -1279,6 +1279,34 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (account_bi, role, scope_type, scope_bi))""",
     "CREATE INDEX IF NOT EXISTS idx_role_grants_role "
     "ON role_grants(role, scope_type, scope_bi, revoked_at, expires_at)",
+    # Polar customer ids and subscription ids remain encrypted; only keyed
+    # blind indexes participate in webhook lookup and uniqueness checks.
+    """CREATE TABLE IF NOT EXISTS polar_customers (
+        account_bi TEXT PRIMARY KEY,
+        external_id_bi TEXT NOT NULL UNIQUE,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS polar_memberships (
+        subscription_bi TEXT PRIMARY KEY,
+        account_bi TEXT NOT NULL,
+        product_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        tier TEXT NOT NULL CHECK (tier IN ('supporter', 'pro')),
+        status TEXT NOT NULL,
+        current_period_end INTEGER NOT NULL DEFAULT 0,
+        provider_modified_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_polar_memberships_account "
+    "ON polar_memberships(account_bi, current_period_end)",
+    "CREATE INDEX IF NOT EXISTS idx_polar_memberships_status "
+    "ON polar_memberships(status, current_period_end)",
+    """CREATE TABLE IF NOT EXISTS polar_webhook_events (
+        event_id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        received_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_polar_webhook_events_received "
+    "ON polar_webhook_events(received_at)",
     # Append-only, content-free audit trail for sensitive state changes. Targets
     # are blind indexes and details are an allowlisted JSON object with no
     # credentials, bodies, addresses, private repo names, or raw IPs.

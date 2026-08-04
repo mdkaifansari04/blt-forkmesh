@@ -348,6 +348,19 @@
                     <h2 class="text-2xl font-semibold tracking-normal text-foreground">Account</h2>
                     <p class="mt-1 text-sm leading-6 text-muted-foreground">Your node name is your public account and repository namespace. Change your username from the <button data-settings-section-link="public-profile" type="button" class="font-semibold text-[#2f81f7] hover:underline">Public profile</button> settings — renaming it moves owned repository URLs to the new namespace.</p>
                     <div class="mt-6 grid max-w-3xl gap-3">
+                      <div class="rounded-md border border-border bg-card p-4">
+                        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <h3 class="text-base font-semibold text-foreground">ForkMesh membership</h3>
+                            <p data-polar-membership-summary class="mt-1 text-sm leading-6 text-muted-foreground">Loading membership…</p>
+                          </div>
+                          <div class="flex shrink-0 flex-wrap gap-2">
+                            <a data-polar-membership-choose href="/pricing#memberships" class="inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-sm font-semibold text-foreground hover:bg-secondary">Choose membership</a>
+                            <button data-polar-membership-portal type="button" hidden class="inline-flex h-9 items-center justify-center rounded-md bg-[#238636] px-3 text-sm font-semibold text-white hover:bg-[#2ea043]">Manage billing</button>
+                          </div>
+                        </div>
+                        <p data-polar-membership-status role="status" class="mt-2 min-h-4 text-xs text-muted-foreground"></p>
+                      </div>
                       <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                         <div>
                           <h3 class="text-base font-semibold text-foreground">Active sessions</h3>
