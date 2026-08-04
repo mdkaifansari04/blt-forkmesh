@@ -338,6 +338,8 @@ def test_repository_metadata_cache_round_trips_through_global_kv():
 def test_registration_is_signed_account_bound_and_manifest_verified():
     handler = _function_source("https_mirror_endpoint_handler")
     assert "_owner_signing_pubkeys" in handler
+    assert "SELECT pubkey FROM nodes WHERE node_bi=? AND user_bi IS NOT NULL" in handler
+    assert 'registration["publicKey"] != registered_node_key' in handler
     assert "ed25519_verify" in handler
     assert "_https_mirror_manifest_ok" in handler
     assert "_https_mirror_cloudflare_dns_ok" in handler

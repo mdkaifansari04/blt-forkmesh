@@ -491,7 +491,15 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none; color: #6e7681; padding: 0;
 }
 #topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
-#topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+#topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
+    background: transparent; border: none; font-size: 12px; font-weight: 600;
+}
+#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptImage {
+    background: rgba(48,54,61,0.35); border: 1px solid #30363d;
+    border-radius: 5px; padding: 3px;
+}
+#topMessagePromptImage:hover { border-color: #58a6ff; }
 #topMessageQueue { background: transparent; border: none; }
 #topMessageQueueContent { background: transparent; }
 #topMessageQueueCard { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
@@ -1495,8 +1503,8 @@ QWidget {
     font-size: 14px;
 }
 QToolTip {
-    background-color: #24292f; color: #ffffff;
-    border: 1px solid #24292f; padding: 4px;
+    background-color: #ffffff; color: #1f2328;
+    border: 1px solid #d0d7de; padding: 4px;
 }
 
 /* --- Setup page --- */
@@ -1896,7 +1904,15 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none; color: #6e7781; padding: 0;
 }
 #topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
-#topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+#topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
+    background: transparent; border: none; font-size: 12px; font-weight: 600;
+}
+#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptImage {
+    background: #f6f8fa; border: 1px solid #d0d7de;
+    border-radius: 5px; padding: 3px;
+}
+#topMessagePromptImage:hover { border-color: #0969da; }
 #topMessageQueue { background: transparent; border: none; }
 #topMessageQueueContent { background: transparent; }
 #topMessageQueueCard { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }

@@ -535,8 +535,24 @@ void MainWindow::scanActionSpool()
                 reattested.insert(idx);
                 const RepositoryRecord &r = m_repositories.at(idx);
                 if (!r.previewOnly && r.publishToNetwork &&
-                    !r.mirrorPath.trimmed().isEmpty())
+                    !r.mirrorPath.trimmed().isEmpty()) {
+                    // SSH fleet fan-out writes directly into this served bare
+                    // repository, bypassing syncRepository's fetch-completion
+                    // refresh. Rebuild the gateway's exact refs pin before
+                    // re-attesting the new catalog state, otherwise the direct
+                    // endpoint stays online while quarantining the push it
+                    // just accepted.
+                    QString gatewayError;
+                    if (!rebuildDirectMirrorGatewayConfiguration(
+                            &gatewayError, true)) {
+                        logSystem(
+                            QStringLiteral(
+                                "Direct gateway refresh after pushed refs "
+                                "failed: %1")
+                                .arg(gatewayError));
+                    }
                     publishRepository(idx, false);
+                }
                 // Tell connected peers that also mirror this repo that it just
                 // advanced, the same ephemeral "mirror-update" frame
                 // syncRepository broadcasts for a fetch-detected change (see
@@ -1600,7 +1616,7 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
             notifyActionEvent(QStringLiteral("Action started"),
                               QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                                   .arg(run->workflowName, run->owner, run->name),
-                              false);
+                              false, run->id);
     }
     updateMirrorActionsRuntimeState();
 }
@@ -1632,7 +1648,7 @@ void MainWindow::onRunFinished(int runId, bool ok)
         notifyActionEvent(title,
                           QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                               .arg(run->workflowName, run->owner, run->name),
-                          !ok && !cancelled);
+                          !ok && !cancelled, run->id);
         if (!ok && !cancelled)
             maybeAutoFixFailedRun(*run);
     }
@@ -1690,9 +1706,9 @@ void MainWindow::refreshOpenPullChecks()
 }
 
 void MainWindow::notifyActionEvent(const QString &title, const QString &body,
-                                   bool warning)
+                                   bool warning, int runId)
 {
-    addNotification(title, body, warning);
+    addNotification(title, body, warning, runId);
     // The in-app Notifications page always logs the event above; the noisy
     // desktop toast is what these modes gate. "none" silences it entirely,
     // "failed" lets only failures through (warning == true).
@@ -1787,10 +1803,10 @@ void MainWindow::flashNotification(const AppNotification &item)
                              .value(kInAppNotificationDurationSetting, 5)
                              .toInt();
     if (item.warning) {
-        flashMessage(text, true, QString(), duration, item.kind);
+        flashMessage(text, true, QString(), duration, item.kind, item.runId);
         flashErrorBorder();
     } else {
-        flashMessage(text, false, QString(), duration, item.kind);
+        flashMessage(text, false, QString(), duration, item.kind, item.runId);
     }
 }
 

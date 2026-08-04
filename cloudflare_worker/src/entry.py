@@ -43707,10 +43707,23 @@ async def https_mirror_endpoint_handler(env, request):
     await ensure_schema(env)
 
     # The manifest cannot self-assert a new identity: its key must already be
-    # bound to the named node as its primary or an enabled owner-sign device.
+    # bound either to the claimed, named node record or to that account as its
+    # primary/enabled owner-sign device. Headless mirrors are linked to their
+    # human owner in ``nodes`` and do not create a separate user account, so
+    # consulting only account signing keys permanently rejected newly linked
+    # VPS mirrors even though their exact node key was already authenticated.
+    registered_node_bi = await blind_index(env, registration["node"])
+    registered_node = await d1_first(
+        env,
+        "SELECT pubkey FROM nodes WHERE node_bi=? AND user_bi IS NOT NULL",
+        registered_node_bi,
+    )
+    registered_node_key = clean_string(
+        (registered_node or {}).get("pubkey", ""), 120).strip()
     allowed_keys = await _owner_signing_pubkeys(env, registration["node"])
     if (
-        registration["publicKey"] not in allowed_keys
+        registration["publicKey"] != registered_node_key
+        and registration["publicKey"] not in allowed_keys
         or not await ed25519_verify(
             registration["publicKey"],
             registration["signature"],

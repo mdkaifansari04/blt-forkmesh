@@ -435,7 +435,16 @@ public:
     // Drives the network log's segmented-render + scroll-to-top-loads-more path
     // (adhoc #15) without needing real scroll-wheel input.
     void testShowSettingsSection() { showSection(1); }
+    void testShowHomeSection() { showSection(0); }
     void testShowLogSection() { showSection(4); }
+    void testSetLogOverlayExpanded(bool expanded)
+    {
+        setLogOverlayExpanded(expanded);
+    }
+    bool testApplyFooterWebsiteStatusPayload(const QJsonObject &payload)
+    {
+        return applyFooterWebsiteStatusPayload(payload);
+    }
     void testShowHostsSection() { showSection(7); }
     void testSetDirectoryUserNodes(const QString &user,
                                    const QStringList &nodes);
@@ -816,7 +825,7 @@ public:
     // viewer outside the Git stack is visible.
     bool testGitWorkspaceIsExclusive() const;
     // Git shares the global lower-corner overlays used by every other page.
-    bool testGitPromptFloatsBottomRight() const;
+    bool testGitPromptFloatsBottomLeft() const;
     // Follow a branch link and read back the branch the table landed on right
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
@@ -857,6 +866,9 @@ public:
     // Paths rendered in the universal CHANGES tree, so branch tests can prove
     // the range's files appear without swapping to a second navigator.
     QStringList testSourceControlPaths() const;
+    // Text in the working-tree pane while the activity-rail Git view changes
+    // branch, used to ensure it never briefly presents a prior checkout's diff.
+    QString testSourceControlDiffText() const;
     // "commit=… commitPush=… stagePush=… sync=…", each hidden/disabled/enabled,
     // so a test can prove a waiting commit keeps its buttons on screen even while
     // outgoing commits are pending (adhoc #66).
@@ -948,6 +960,8 @@ public:
     // as "files|dirty|worktree|behind|ahead", so a test can prove the chip's
     // file and visible branch-health markers are fed from the session's diff stat.
     QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
+    QString testAgentStatusCellToolTip(int sessionId,
+                                       const AgentDiffStat &stat) const;
     void testSetCachedAgentDiffFiles(int sessionId, int files)
     {
         AgentDiffStat stat = m_agentDiffStats.value(sessionId);
@@ -1303,6 +1317,10 @@ private:
     void showRelayMenu();          // searchable dropdown to switch/add relays
     void updateRelaySwitcher();    // refresh top-bar relay icon / domain / count
     void probeRelayLatency();      // measure round-trip to the active relay (radar)
+    // The compact footer's right-hand status dots: fetch the public status
+    // projection once a minute and retain the newest completed minute per row.
+    void refreshFooterWebsiteStatus();
+    bool applyFooterWebsiteStatusPayload(const QJsonObject &payload);
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
     // fresh sample exists and only probes when the socket is down.
@@ -3106,7 +3124,7 @@ private:
     void cancelSupersededRuns(const ActionRun &newRun);
     void onRunLog(int runId, const QString &text);
     void notifyActionEvent(const QString &title, const QString &body,
-                           bool warning); // tray alert gated by the run-alert setting
+                           bool warning, int runId = -1); // tray alert gated by the run-alert setting
     // Defined further down with the rest of the actions state; declared here so
     // the ping funnel below can take one.
     struct AppNotification;
@@ -3930,6 +3948,10 @@ private:
     QWidget *buildSourceControlPanel();
     void refreshSourceControl();             // re-scan `git status` into the tree
     void refreshSourceControl(bool force);   // force refresh path bypassing cache short-circuit
+    // Clear the previous checkout's source-control content before a Git/branch
+    // navigation begins its asynchronous scan. This prevents old diffs from
+    // being attributed to the newly selected branch while it loads.
+    void showSourceControlLoading(const QString &branch);
     // While a branch/PR comparison is open, populate the same CHANGES tree with
     // that range's files while leaving its composer and actions in place.
     void showRangeFilesInSourceControl(const QStringList &paths,
@@ -4118,7 +4140,10 @@ private:
     // Clicking a contributor's name or commit count on the Insights tab jumps to
     // the Commits tab with the list filtered to that author (drives m_commitSearch).
     void openCommitsForContributor(const QString &author);
-    void setRepoBranch(const QString &branch);
+    // `loadContent` is false for the Git branch handoff: it updates the
+    // selected ref and visible labels immediately, then lets the caller paint
+    // its loading state before the expensive overview/history rebuild begins.
+    void setRepoBranch(const QString &branch, bool loadContent = true);
     QString repoHeadBranch() const;          // the checked-out branch (HEAD)
     void updateCommitsBranchButtonLabel();   // branch + current worktree identity
     void refreshCommitsBranchButton();       // commits-page branch indicator/menu
@@ -4727,19 +4752,21 @@ private:
     void flashMessage(const QString &text, bool error = false,
                       const QString &clickHref = QString(),
                       int durationSeconds = 0,
-                      const QString &kind = QString());
+                      const QString &kind = QString(), int actionRunId = -1);
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
     void queueTopMessage(const QString &text, bool error,
                          const QString &clickHref = QString(),
                          const QString &kind = QString(),
-                         int durationSeconds = 0); // park one behind the current toast
+                         int durationSeconds = 0,
+                         int actionRunId = -1); // park one behind the current toast
     void appendTopMessageToPrompt(const QString &text);
     void dismissQueuedTopMessage(quint64 id);
     void renderTopMessageQueue(); // repaint the visible stack of queued notifications
     bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
+    void renderTopMessagePromptImages(); // rebuild thumbnails for a sent prompt
     void positionTopMessageBubble(); // size + anchor the bubble above the prompt
     QRect topMessageBubbleRect(); // calculates the prompt-anchored stack geometry
     void setTopMessagePaused(bool paused); // hover pauses the countdown
@@ -4747,7 +4774,8 @@ private:
     // Animate a submitted prompt into a bubble. When it launched or steered an
     // agent, the bubble's action opens that exact session.
     void showPromptBubble(const QString &prompt, int agentSessionId = -1,
-                          const QString &status = QString());
+                          const QString &status = QString(),
+                          const QStringList &images = QStringList());
     MessageRow *addMessageRow(const ChatMessage &message);
     MessageRow *createMessageRow(const ChatMessage &message,
                                  bool threadContext = false);
@@ -4792,7 +4820,7 @@ private:
     void showEmojiPicker(QWidget *anchor);
     void insertEmojiIntoComposer(const QString &emoji);
     // "Send to Prompt" message-menu action: append an existing message's text
-    // to the footer's bottom-right prompt box (not the chat input) so it can be
+    // to the footer's bottom-left prompt box (not the chat input) so it can be
     // handed to an agent or edited before sending.
     void sendMessageToPrompt(const QString &text);
     // Re-create the private rooms we own/were invited to after a fresh connect,
@@ -5225,6 +5253,11 @@ private:
     QLabel *m_adminCrownBadge = nullptr;
     QLabel *m_topMessage = nullptr;       // prompt-anchored success/failure bubble text
     QFrame *m_topMessageContainer = nullptr; // floating bubble wrapping text + actions
+    QWidget *m_topMessageBody = nullptr;  // scrollable prompt/notification content
+    QLabel *m_topMessagePromptHeader = nullptr; // "Prompt sent" line
+    QLabel *m_topMessagePromptStatusLabel = nullptr; // agent info on its own line
+    QWidget *m_topMessagePromptImages = nullptr; // submitted image thumbnails
+    QStringList m_topMessagePromptImagePaths;
     // Queued notifications are visible beneath the active bubble. As new ones
     // arrive, this stack grows upward from the prompt rather than hiding
     // messages behind a "+N more" counter.
@@ -5244,6 +5277,7 @@ private:
     bool m_topMessageSlidingOut = false;  // countdown finished; bubble is easing off the right edge
     bool m_topMessageEntering = false;    // wait for the entry glide before starting its countdown
     QPushButton *m_topMessageCopy = nullptr;
+    QPushButton *m_topMessageActionOutput = nullptr;
     QPushButton *m_topMessageSendToPrompt = nullptr;
     QPushButton *m_topMessageClose = nullptr;
     QLabel *m_topMessageTypeBadge = nullptr;
@@ -5252,6 +5286,7 @@ private:
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     QString m_topMessageKind;             // typed badge on the current notification
     int m_topMessageAgentSessionId = -1;  // prompt notification's exact agent, if any
+    int m_topMessageActionRunId = -1;     // failed action whose output the toast can open
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast slides away
     // Pending messages that arrived while another toast was already counting
     // down. They form the visible stack beneath the active toast, then each gets
@@ -5265,13 +5300,14 @@ private:
         QString clickHref;
         int durationSeconds = 0; // its full countdown starts when it reaches the top
         QString kind;
+        int actionRunId = -1;
     };
     QList<TopMessageQueueEntry> m_topMessageQueue;
     quint64 m_nextTopMessageQueueId = 1;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
     bool m_topMessageHovering = false;    // pauses the countdown while reading/actions
     bool m_topMessageIsPromptBubble = false; // submitted prompt gets a fuller, animated treatment
-    QString m_topMessagePromptStatus;        // optional agent-start confirmation shown in the same bubble
+    QString m_topMessagePromptStatus;        // optional agent-start confirmation on its own line
     // Red border flashed around the whole window while an error ping arrives —
     // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
     QWidget *m_errorBorderOverlay = nullptr;
@@ -5315,7 +5351,10 @@ private:
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
+    forkmesh::ui::LogActivityLights *m_logActivityHeader = nullptr;
+    bool m_logOverlayExpanded = false;
     bool m_promptOverlayCollapsed = false;
+    bool m_footerWebsiteStatusInFlight = false;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
     // live log and the prompt). One chip per open *kind* of work, not per ticket:
@@ -6029,8 +6068,6 @@ private:
     // Right of the status bar: where the running executable lives on disk, so
     // it is obvious which build/checkout the open window came from.
     QLabel *m_statusAppPath = nullptr;
-    // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
-    QPushButton *m_footerDiagnostics = nullptr;
     // Live one-per-second moving sparklines for CPU, host memory, swap and disk
     // usage (adhoc #17), combined into four quadrants on the chrome line. Held
     // as QWidget* and poked via static_cast since the compact chart widget lives

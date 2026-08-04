@@ -1041,9 +1041,17 @@ QWidget *MainWindow::buildChatPage()
     // (quickAddShouldFollowUpAgent), which includes being on the Home section
     // at all — refresh the "new"/"add" styling when the section changes too.
     connect(m_sectionStack, &QStackedWidget::currentChanged, this,
-            [this](int) {
+            [this](int index) {
                 updateQuickAddEnterTarget();
                 updateRepoActivityRail();
+                // The full Log page is already the large view: retire the
+                // six-line tail there and return its always-visible category
+                // lights to the lower-left. Other pages keep the compact log
+                // controls in the lower-right.
+                if (index == 4)
+                    setLogOverlayExpanded(false);
+                else
+                    positionGlobalFooterOverlays();
             });
     // Home now hosts the nodes column, repositories column and the repo detail
     // panel (with Chat as a tab) all at once, so there is no separate repo-detail
@@ -1771,10 +1779,11 @@ QWidget *MainWindow::buildNetworkLogDock()
         }
         if (!typed.isEmpty())
             recordQuickAddHistory(typed);
+        const QStringList images = m_quickAddImages;
         m_issueQuickAdd->clear();
         clearQuickAddImages();
         const int agentSessionId = m_selectedAgentSessionId;
-        showPromptBubble(prompt, agentSessionId);
+        showPromptBubble(prompt, agentSessionId, QString(), images);
         sendPromptToSelectedAgent(prompt);
     });
 
@@ -2091,37 +2100,56 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *logPanelLayout = new QVBoxLayout(logPanel);
     logPanelLayout->setContentsMargins(1, 1, 1, 1);
     logPanelLayout->setSpacing(2);
+    // State two starts with a real header: the same thirty category icons in a
+    // single row, with their session counts visible beneath them. The public
+    // website's newest completed /status minute is separated on the right.
+    m_logActivityHeader = new LogActivityLights(LogActivityLights::Header,
+                                                logPanel);
+    logPanelLayout->addWidget(m_logActivityHeader, 0);
     // Notifications deliberately do not live in this layout. They float over
     // the composer instead, so a long error never steals a line from this log.
     logPanelLayout->addWidget(m_footerUpdateLog, 1);
 
-    // The region wrapper stays even with a single panel in it: hiding the whole
-    // left half is how the Changes view hands the footer over to the prompt
-    // (setGitPromptOverlay), and that reads m_footerLeftRegion.
+    // The region wrapper is the compact log surface parked at the lower-left;
+    // hiding it leaves the category icons in that same corner without disturbing
+    // the lower-right composer.
     auto *leftRegion = new QWidget;
     m_footerLeftRegion = leftRegion;
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
+    leftRegion->setMaximumWidth(720);
+    leftRegion->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto *leftRegionLayout = new QHBoxLayout(leftRegion);
     leftRegionLayout->setContentsMargins(0, 0, 0, 0);
     leftRegionLayout->setSpacing(8);
     leftRegionLayout->addWidget(logPanel, 1);
 
-    // State one: four category lights blink for each arriving log occurrence.
+    // State one: all thirty log-category icons start grey, become solid on their
+    // first occurrence, and blink on later occurrences. Hover exposes the count.
     // A click reveals the recent-line overlay; clicking a line there opens the
     // existing full Log page (state three).
-    m_logActivityLights = new LogActivityLights;
-    m_logActivityLights->onClicked = [this] { setLogOverlayExpanded(true); };
+    // Keep the compact icons outside the box layout so a collapsed log occupies
+    // no layout width. The expanded header above takes over inside the panel.
+    m_logActivityLights = new LogActivityLights(LogActivityLights::Compact, dock);
+    m_logActivityLights->onClicked = [this] {
+        if (!m_sectionStack || m_sectionStack->currentIndex() != 4)
+            setLogOverlayExpanded(!m_logOverlayExpanded);
+    };
+    const QString stallTip = QStringLiteral(
+        "Click to draft a fix-it prompt for recorded UI stalls; right-click "
+        "for the captured backtraces.");
+    for (LogActivityLights *lights : {m_logActivityLights, m_logActivityHeader}) {
+        lights->setStallToolTip(stallTip);
+        lights->onStallClicked = [this] { sendStallReportToComposer(); };
+        lights->onStallContextMenu = [this] { showDiagnosticsDialog(); };
+    }
 
-    // Horizontal split: bordered log, then prompt — an even half each, which is
-    // the width the prompt had before the Background panel took a fixed column
-    // out of the middle (adhoc #1389). The hairline rule that used to sit between
-    // the two halves is gone (adhoc #84): every panel in the row already carries
-    // its own border, so the extra line was one divider too many.
+    // The compact log owns the lower-left and the prompt owns the lower-right.
+    // The stretch between them is transparent and masked out below so neither
+    // overlay blocks the workspace behind it.
     auto *dockRow = new QHBoxLayout(dock);
-    dockRow->setContentsMargins(8, 8, 8, 8);
+    dockRow->setContentsMargins(8, 8, 8, 0);
     dockRow->setSpacing(8);
-    dockRow->addWidget(m_logActivityLights, 0, Qt::AlignLeft | Qt::AlignBottom);
-    dockRow->addWidget(leftRegion, 1);
+    dockRow->addWidget(leftRegion, 1, Qt::AlignLeft | Qt::AlignBottom);
     dockRow->addStretch(1);
     dockRow->addWidget(promptOverlayHost, 1, Qt::AlignRight | Qt::AlignBottom);
 
@@ -2130,9 +2158,17 @@ QWidget *MainWindow::buildNetworkLogDock()
     // and the "Agents:" strip gone (adhoc #60) the prompt frame is the tallest
     // thing in the row, so the log panel beside it is exactly as tall as the
     // prompt and nothing reflows.
-    dock->setFixedHeight(promptWrapper->sizeHint().height() + 16);
+    // Only the top inset contributes to the dock height. Its bottom and the
+    // prompt's bottom are flush with the workspace, eliminating the blank band
+    // that used to sit below the composer.
+    dock->setFixedHeight(promptWrapper->sizeHint().height() + 8);
     dock->setAttribute(Qt::WA_StyledBackground, false);
     setLogOverlayExpanded(false);
+
+    // The status endpoint is edge-cached on the same one-minute cadence as its
+    // samples. Fetch once after the overlay exists; MainWindow's existing minute
+    // timer keeps it fresh after that.
+    QTimer::singleShot(1500, this, &MainWindow::refreshFooterWebsiteStatus);
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
@@ -2142,10 +2178,11 @@ QWidget *MainWindow::buildNetworkLogDock()
 
 void MainWindow::setLogOverlayExpanded(bool expanded)
 {
+    m_logOverlayExpanded = expanded;
     if (m_footerLeftRegion)
         m_footerLeftRegion->setVisible(expanded);
     if (m_logActivityLights)
-        m_logActivityLights->setVisible(!expanded);
+        m_logActivityLights->setExpanded(expanded);
     positionGlobalFooterOverlays();
 }
 
@@ -2172,11 +2209,11 @@ void MainWindow::positionGlobalFooterOverlays()
 {
     if (!m_globalOverlayHost || !m_footerDock)
         return;
-    constexpr int kMargin = 8;
+    constexpr int kHorizontalMargin = 8;
     const int height = m_footerDock->sizeHint().height();
     m_footerDock->setGeometry(
-        kMargin, qMax(kMargin, m_globalOverlayHost->height() - height - kMargin),
-        qMax(0, m_globalOverlayHost->width() - 2 * kMargin), height);
+        kHorizontalMargin, qMax(0, m_globalOverlayHost->height() - height),
+        qMax(0, m_globalOverlayHost->width() - 2 * kHorizontalMargin), height);
     m_footerDock->show();
     m_footerDock->raise();
     if (m_promptOverlayHost && m_userAvatarNavButton) {
@@ -2190,6 +2227,17 @@ void MainWindow::positionGlobalFooterOverlays()
     // middle so the overlay never steals clicks from the page underneath.
     if (QLayout *layout = m_footerDock->layout())
         layout->activate();
+    if (m_logActivityLights) {
+        const bool fullLog =
+            m_sectionStack && m_sectionStack->currentIndex() == 4;
+        const bool showCompact = fullLog || !m_logOverlayExpanded;
+        m_logActivityLights->move(
+            0,
+            qMax(0, m_footerDock->height() - m_logActivityLights->height()));
+        m_logActivityLights->setVisible(showCompact);
+        if (showCompact)
+            m_logActivityLights->raise();
+    }
     QRegion interactive;
     if (m_logActivityLights && m_logActivityLights->isVisible())
         interactive += m_logActivityLights->geometry();
@@ -2198,6 +2246,104 @@ void MainWindow::positionGlobalFooterOverlays()
     if (m_promptOverlayHost && m_promptOverlayHost->isVisible())
         interactive += m_promptOverlayHost->geometry();
     m_footerDock->setMask(interactive);
+}
+
+// Apply the compact public /status projection to both footer icon surfaces.
+// The last array cell is commonly the still-in-progress current minute, marked
+// "future", so each system deliberately selects its newest completed sample.
+bool MainWindow::applyFooterWebsiteStatusPayload(const QJsonObject &payload)
+{
+    if (!payload.value(QStringLiteral("ok")).toBool())
+        return false;
+    const QJsonArray systems = payload.value(QStringLiteral("systems")).toArray();
+    if (systems.isEmpty())
+        return false;
+
+    const qint64 payloadNow = static_cast<qint64>(
+        payload.value(QStringLiteral("now")).toDouble(
+            QDateTime::currentMSecsSinceEpoch()));
+    QList<LogActivityLights::WebsiteStatus> statuses;
+    statuses.reserve(systems.size());
+    for (const QJsonValue &value : systems) {
+        const QJsonObject system = value.toObject();
+        LogActivityLights::WebsiteStatus result;
+        result.id = system.value(QStringLiteral("id")).toString().trimmed();
+        result.label = system.value(QStringLiteral("label")).toString().trimmed();
+        if (result.id.isEmpty())
+            continue;
+        if (result.label.isEmpty())
+            result.label = result.id;
+
+        const QJsonArray minutes = system.value(QStringLiteral("minutes")).toArray();
+        for (int i = minutes.size() - 1; i >= 0; --i) {
+            const QJsonObject minute = minutes.at(i).toObject();
+            const QString state =
+                minute.value(QStringLiteral("status")).toString().trimmed().toLower();
+            const qint64 minuteTs = static_cast<qint64>(
+                minute.value(QStringLiteral("minuteTs")).toDouble());
+            if (state.isEmpty() || state == QLatin1String("future") ||
+                (minuteTs > 0 && minuteTs > payloadNow))
+                continue;
+            result.status = state;
+            result.reason = minute.value(QStringLiteral("reason")).toString().trimmed();
+            result.minuteTs = minuteTs;
+            break;
+        }
+        if (result.status.isEmpty()) {
+            result.status = QStringLiteral("unknown");
+            result.reason = QStringLiteral("No completed status sample is available.");
+        } else if (result.status != QLatin1String("operational") &&
+                   result.status != QLatin1String("degraded") &&
+                   result.status != QLatin1String("down")) {
+            result.status = QStringLiteral("unknown");
+        }
+        statuses.append(result);
+    }
+    if (statuses.isEmpty())
+        return false;
+    if (m_logActivityLights)
+        m_logActivityLights->setWebsiteStatuses(statuses);
+    if (m_logActivityHeader)
+        m_logActivityHeader->setWebsiteStatuses(statuses);
+    positionGlobalFooterOverlays();
+    return true;
+}
+
+void MainWindow::refreshFooterWebsiteStatus()
+{
+    if (!m_networkAccess || !m_logActivityLights ||
+        m_footerWebsiteStatusInFlight)
+        return;
+
+    QUrl url = catalogApiUrl();
+    if (!url.isValid() || url.host().isEmpty())
+        return;
+    url.setPath(QStringLiteral("/api/status"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("view"), QStringLiteral("world"));
+    url.setQuery(query);
+    url.setFragment(QString());
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader("accept", "application/json");
+    request.setTransferTimeout(8000);
+    m_footerWebsiteStatusInFlight = true;
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        m_footerWebsiteStatusInFlight = false;
+        const QByteArray body = reply->readAll();
+        const bool transportOk = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        if (!transportOk)
+            return; // Retain the last good minute through a transient miss.
+        QJsonParseError error;
+        const QJsonDocument document = QJsonDocument::fromJson(body, &error);
+        if (error.error != QJsonParseError::NoError || !document.isObject())
+            return;
+        applyFooterWebsiteStatusPayload(document.object());
+    });
 }
 
 // One-word tag for the strip: callers may hand over a phrase, the icon maps the
@@ -4414,8 +4560,6 @@ void MainWindow::updateFooterDiagnostics()
         m_fdPressureLastCheckMs = fdNow;
         checkFileDescriptorPressure();
     }
-    if (!m_footerDiagnostics)
-        return;
     const qint64 statsNow = QDateTime::currentMSecsSinceEpoch();
     if (statsNow - m_repoStatsLastRefreshMs >= 60000) {
         m_repoStatsLastRefreshMs = statsNow;
@@ -4530,19 +4674,21 @@ void MainWindow::updateFooterDiagnostics()
                 : QStringLiteral("Drive space in use"));
     }
 
-    // The diagnostics indicator rides beside the CPU/MEM/SWAP/DISK sparklines now
-    // (adhoc #145). Crisp octicons replace the old 🖥/⚠ emoji: a muted monitor
-    // while the UI has stayed smooth, and an amber alert plus the running count
-    // once a stall has been recorded so it reads as a real warning.
-    if (m_stallCount > 0) {
-        m_footerDiagnostics->setIcon(
-            themedOcticon(QStringLiteral("alert"), QColor("#d29922"), 14));
-        m_footerDiagnostics->setIconSize(QSize(14, 14));
-        m_footerDiagnostics->setText(QStringLiteral(" %1").arg(m_stallCount));
-    } else {
-        setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
-        m_footerDiagnostics->setText(QString());
-    }
+    // STALL is now one of the bottom-left log icons. Keep its diagnostic action
+    // discoverable there while the log activity widget itself owns colour,
+    // session count and repeat-event blinking.
+    const QString stallTip =
+        m_stallCount > 0
+            ? QStringLiteral("%1 UI stall%2 recorded this session. Click to draft "
+                             "a fix-it prompt; right-click for captured backtraces.")
+                  .arg(m_stallCount)
+                  .arg(m_stallCount == 1 ? QString() : QStringLiteral("s"))
+            : QStringLiteral("No UI stalls recorded this session. Click for UI-stall "
+                             "diagnostics; right-click for captured backtraces.");
+    if (m_logActivityLights)
+        m_logActivityLights->setStallToolTip(stallTip);
+    if (m_logActivityHeader)
+        m_logActivityHeader->setStallToolTip(stallTip);
 }
 
 // Watch how close this process is to its file-descriptor cap. Running out is a
@@ -4728,15 +4874,6 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
     m_stallLog.append(entry);
     while (m_stallLog.size() > 100)
         m_stallLog.removeFirst();
-    if (m_footerDiagnostics)
-        m_footerDiagnostics->setToolTip(
-            QStringLiteral("Last UI stall: ~%1 ms at %2%3 (%4 logged). Click to draft a "
-                           "fix-it prompt in the composer; right-click for details.")
-                .arg(peakMs)
-                .arg(when)
-                .arg(blockingCall.isEmpty() ? QString()
-                                            : QStringLiteral(" (%1)").arg(blockingCall))
-                .arg(m_stallCount));
     updateFooterDiagnostics();
     maybeAutoFileStallAgent(peakMs, backtrace);
 }
@@ -4831,12 +4968,10 @@ void MainWindow::clearStallLog()
     m_autoFiledStallSignatures.clear();
     if (!m_stallLogPath.isEmpty())
         QFile::remove(m_stallLogPath);
-    if (m_footerDiagnostics)
-        m_footerDiagnostics->setToolTip(
-            QStringLiteral("UI-stall diagnostics: any freezes long enough to trip the "
-                           "Wait/Kill prompt land here. Click to draft a fix-it prompt "
-                           "in the composer; right-click for the recorded stall "
-                           "details."));
+    if (m_logActivityLights)
+        m_logActivityLights->resetCategory(QStringLiteral("STALL"));
+    if (m_logActivityHeader)
+        m_logActivityHeader->resetCategory(QStringLiteral("STALL"));
     updateFooterDiagnostics();
 }
 
@@ -6019,6 +6154,10 @@ QWidget *MainWindow::buildLogSection()
         m_logFilterEmptyNotice = false;
         if (m_settingsLog)
             m_settingsLog->clear();
+        if (m_logActivityLights)
+            m_logActivityLights->reset();
+        if (m_logActivityHeader)
+            m_logActivityHeader->reset();
         saveNetworkLog();          // truncate the on-disk log too
         rebuildLogFilterButtons(); // drop the category chips, re-check "All"
     });
@@ -6593,6 +6732,35 @@ QWidget *MainWindow::buildBreadcrumb()
     });
     m_topMessage->hide();
 
+    // Prompt confirmations have three deliberately separate pieces of content:
+    // the sent marker, agent information, and the actual prompt. Keeping the
+    // agent line out of the prompt label makes a long prompt readable and leaves
+    // room for submitted image thumbnails below it.
+    m_topMessagePromptHeader = new QLabel;
+    m_topMessagePromptHeader->setObjectName("topMessagePromptHeader");
+    m_topMessagePromptHeader->setTextFormat(Qt::RichText);
+    m_topMessagePromptHeader->setWordWrap(true);
+    m_topMessagePromptHeader->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_topMessagePromptHeader->setMinimumWidth(1);
+    m_topMessagePromptHeader->setFocusPolicy(Qt::NoFocus);
+    m_topMessagePromptHeader->hide();
+
+    m_topMessagePromptStatusLabel = new QLabel;
+    m_topMessagePromptStatusLabel->setObjectName("topMessagePromptStatus");
+    m_topMessagePromptStatusLabel->setTextFormat(Qt::RichText);
+    m_topMessagePromptStatusLabel->setWordWrap(true);
+    m_topMessagePromptStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_topMessagePromptStatusLabel->setMinimumWidth(1);
+    m_topMessagePromptStatusLabel->setFocusPolicy(Qt::NoFocus);
+    m_topMessagePromptStatusLabel->hide();
+
+    m_topMessagePromptImages = new QWidget;
+    m_topMessagePromptImages->setObjectName("topMessagePromptImages");
+    auto *promptImagesRow = new QHBoxLayout(m_topMessagePromptImages);
+    promptImagesRow->setContentsMargins(0, 2, 0, 0);
+    promptImagesRow->setSpacing(5);
+    m_topMessagePromptImages->hide();
+
     // Every bubble can be copied. A notification is often the quickest useful
     // context to paste into the next agent prompt, whether it is a failure or a
     // successful result.
@@ -6606,6 +6774,22 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_topMessageCopy, &QPushButton::clicked, this, [this] {
         if (!m_topMessageRaw.isEmpty())
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
+    });
+
+    m_topMessageActionOutput = new QPushButton(QStringLiteral("View output"));
+    m_topMessageActionOutput->setObjectName("topMessageAction");
+    m_topMessageActionOutput->setCursor(Qt::PointingHandCursor);
+    m_topMessageActionOutput->setToolTip(
+        QStringLiteral("Open the failed action's output"));
+    m_topMessageActionOutput->setFocusPolicy(Qt::NoFocus);
+    setOcticon(m_topMessageActionOutput, "terminal", 11);
+    m_topMessageActionOutput->hide();
+    connect(m_topMessageActionOutput, &QPushButton::clicked, this, [this] {
+        if (m_topMessageActionRunId <= 0)
+            return;
+        const int runId = m_topMessageActionRunId;
+        openActionRunFromNotification(runId);
+        dismissTopMessage();
     });
 
     m_topMessageSendToPrompt = new QPushButton(QStringLiteral("Send to prompt"));
@@ -6689,7 +6873,17 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageScroll->setFocusPolicy(Qt::NoFocus);
     m_topMessageScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_topMessageScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    m_topMessageScroll->setWidget(m_topMessage);
+    m_topMessageBody = new QWidget;
+    m_topMessageBody->setObjectName("topMessageBody");
+    auto *topMessageBodyLayout = new QVBoxLayout(m_topMessageBody);
+    topMessageBodyLayout->setContentsMargins(0, 0, 0, 0);
+    topMessageBodyLayout->setSpacing(4);
+    topMessageBodyLayout->addWidget(m_topMessagePromptHeader);
+    topMessageBodyLayout->addWidget(m_topMessagePromptStatusLabel);
+    topMessageBodyLayout->addWidget(m_topMessage);
+    topMessageBodyLayout->addWidget(m_topMessagePromptImages);
+    m_topMessageBody->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    m_topMessageScroll->setWidget(m_topMessageBody);
     // setWidget turns on the label's own background fill, which would paint a
     // grey slab over the bubble's rounded, themed one.
     m_topMessage->setAutoFillBackground(false);
@@ -6705,6 +6899,7 @@ QWidget *MainWindow::buildBreadcrumb()
     topMessageActionRow->addWidget(m_topMessageTypeBadge);
     topMessageActionRow->addWidget(m_topMessageMeta);
     topMessageActionRow->addStretch(1);
+    topMessageActionRow->addWidget(m_topMessageActionOutput);
     topMessageActionRow->addWidget(m_topMessageCopy);
     topMessageActionRow->addWidget(m_topMessageSendToPrompt);
     topMessageActionRow->addWidget(m_topMessageClose);
@@ -6715,11 +6910,16 @@ QWidget *MainWindow::buildBreadcrumb()
     topMessageColumn->addWidget(m_topMessageScroll, 1);
     topMessageColumn->addWidget(m_topMessageActions);
     for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
+                            static_cast<QWidget *>(m_topMessageBody),
+                            static_cast<QWidget *>(m_topMessagePromptHeader),
+                            static_cast<QWidget *>(m_topMessagePromptStatusLabel),
+                            static_cast<QWidget *>(m_topMessagePromptImages),
                             static_cast<QWidget *>(m_topMessageScroll),
                             static_cast<QWidget *>(m_topMessageScroll->viewport()),
                             static_cast<QWidget *>(m_topMessageActions),
                             static_cast<QWidget *>(m_topMessageTypeBadge),
                             static_cast<QWidget *>(m_topMessageMeta),
+                            static_cast<QWidget *>(m_topMessageActionOutput),
                             static_cast<QWidget *>(m_topMessageCopy),
                             static_cast<QWidget *>(m_topMessageSendToPrompt),
                             static_cast<QWidget *>(m_topMessageClose)})
@@ -6999,30 +7199,6 @@ QWidget *MainWindow::buildBreadcrumb()
         resize(1280, 720);
     });
 
-    // UI-stall indicator (adhoc #117/#145): an octicon that sits beside the
-    // CPU/MEM/SWAP/DISK sparklines on the window-chrome line and shows the count of
-    // detected UI stalls. Click drafts a "fix these stalls" prompt in the
-    // composer (adhoc #73); right-click still opens the read-only details.
-    m_footerDiagnostics = new QPushButton;
-    m_footerDiagnostics->setObjectName("footerDiagnostics");
-    m_footerDiagnostics->setFlat(true);
-    m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
-    m_footerDiagnostics->setToolTip(
-        "UI-stall diagnostics: any freezes long enough to trip the Wait/Kill "
-        "prompt land here. Click to draft a fix-it prompt in the composer; "
-        "right-click for the recorded stall details.");
-    m_footerDiagnostics->setStyleSheet(
-        "QPushButton#footerDiagnostics{color:#d29922;border:none;background:transparent;"
-        "font-size:10px;padding:0 3px;spacing:2px;}"
-        "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
-    m_footerDiagnostics->setFixedHeight(18);
-    setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
-    connect(m_footerDiagnostics, &QPushButton::clicked, this,
-            &MainWindow::sendStallReportToComposer);
-    m_footerDiagnostics->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(m_footerDiagnostics, &QWidget::customContextMenuRequested, this,
-            [this](const QPoint &) { showDiagnosticsDialog(); });
-
     // One compact four-quadrant chart on the chrome line: CPU/memory above
     // swap/disk. It receives one sample per second from updateFooterDiagnostics.
     // CPU, swap and disk open diagnostics; memory opens the culprit list.
@@ -7099,16 +7275,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // Live CPU/MEM/SWAP/DISK sparklines, combined into one chart on the
     // window-chrome line next to the minimize/maximize/close buttons.
     chromeRow->addWidget(resourceChart);
-    // Compact diagnostics stack: the stall indicator stays high on the chrome
-    // line, its bare version number sits directly beneath it, and the opt-in
-    // restart action is immediately to the right.
-    auto *diagnosticsStack = new QWidget;
-    auto *diagnosticsLayout = new QVBoxLayout(diagnosticsStack);
-    diagnosticsLayout->setContentsMargins(0, 1, 0, 1);
-    diagnosticsLayout->setSpacing(0);
-    diagnosticsLayout->addWidget(m_footerDiagnostics, 0, Qt::AlignHCenter);
-    diagnosticsLayout->addWidget(appVersionLabel, 0, Qt::AlignHCenter);
-    chromeRow->addWidget(diagnosticsStack, 0, Qt::AlignVCenter);
+    // UI stalls now use the STALL category icon inside the bottom-left log
+    // control, where its count and blink have the same language as every other
+    // event. The chrome keeps only the version and opt-in restart action.
+    chromeRow->addWidget(appVersionLabel, 0, Qt::AlignVCenter);
     chromeRow->addWidget(m_navRebuildButton, 0, Qt::AlignVCenter);
     chromeRow->addSpacing(8);
 
