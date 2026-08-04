@@ -3077,7 +3077,7 @@ private:
     void cancelSupersededRuns(const ActionRun &newRun);
     void onRunLog(int runId, const QString &text);
     void notifyActionEvent(const QString &title, const QString &body,
-                           bool warning); // tray alert gated by the run-alert setting
+                           bool warning, int runId = -1); // tray alert gated by the run-alert setting
     // Defined further down with the rest of the actions state; declared here so
     // the ping funnel below can take one.
     struct AppNotification;
@@ -4698,13 +4698,14 @@ private:
     void flashMessage(const QString &text, bool error = false,
                       const QString &clickHref = QString(),
                       int durationSeconds = 0,
-                      const QString &kind = QString());
+                      const QString &kind = QString(), int actionRunId = -1);
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
     void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
     void queueTopMessage(const QString &text, bool error,
                          const QString &clickHref = QString(),
                          const QString &kind = QString(),
-                         int durationSeconds = 0); // park one behind the current toast
+                         int durationSeconds = 0,
+                         int actionRunId = -1); // park one behind the current toast
     void appendTopMessageToPrompt(const QString &text);
     void dismissQueuedTopMessage(quint64 id);
     void renderTopMessageQueue(); // repaint the visible stack of queued notifications
@@ -5215,6 +5216,7 @@ private:
     bool m_topMessageSlidingOut = false;  // countdown finished; bubble is easing off the right edge
     bool m_topMessageEntering = false;    // wait for the entry glide before starting its countdown
     QPushButton *m_topMessageCopy = nullptr;
+    QPushButton *m_topMessageActionOutput = nullptr;
     QPushButton *m_topMessageSendToPrompt = nullptr;
     QPushButton *m_topMessageClose = nullptr;
     QLabel *m_topMessageTypeBadge = nullptr;
@@ -5223,6 +5225,7 @@ private:
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     QString m_topMessageKind;             // typed badge on the current notification
     int m_topMessageAgentSessionId = -1;  // prompt notification's exact agent, if any
+    int m_topMessageActionRunId = -1;     // failed action whose output the toast can open
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast slides away
     // Pending messages that arrived while another toast was already counting
     // down. They form the visible stack beneath the active toast, then each gets
@@ -5236,6 +5239,7 @@ private:
         QString clickHref;
         int durationSeconds = 0; // its full countdown starts when it reaches the top
         QString kind;
+        int actionRunId = -1;
     };
     QList<TopMessageQueueEntry> m_topMessageQueue;
     quint64 m_nextTopMessageQueueId = 1;

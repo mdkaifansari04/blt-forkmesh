@@ -1600,7 +1600,7 @@ void MainWindow::onRunStatusChanged(int runId, const QString &status)
             notifyActionEvent(QStringLiteral("Action started"),
                               QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                                   .arg(run->workflowName, run->owner, run->name),
-                              false);
+                              false, run->id);
     }
     updateMirrorActionsRuntimeState();
 }
@@ -1632,7 +1632,7 @@ void MainWindow::onRunFinished(int runId, bool ok)
         notifyActionEvent(title,
                           QString::fromUtf8("%1 \xC2\xB7 %2/%3")
                               .arg(run->workflowName, run->owner, run->name),
-                          !ok && !cancelled);
+                          !ok && !cancelled, run->id);
         if (!ok && !cancelled)
             maybeAutoFixFailedRun(*run);
     }
@@ -1690,9 +1690,9 @@ void MainWindow::refreshOpenPullChecks()
 }
 
 void MainWindow::notifyActionEvent(const QString &title, const QString &body,
-                                   bool warning)
+                                   bool warning, int runId)
 {
-    addNotification(title, body, warning);
+    addNotification(title, body, warning, runId);
     // The in-app Notifications page always logs the event above; the noisy
     // desktop toast is what these modes gate. "none" silences it entirely,
     // "failed" lets only failures through (warning == true).
@@ -1787,10 +1787,10 @@ void MainWindow::flashNotification(const AppNotification &item)
                              .value(kInAppNotificationDurationSetting, 5)
                              .toInt();
     if (item.warning) {
-        flashMessage(text, true, QString(), duration, item.kind);
+        flashMessage(text, true, QString(), duration, item.kind, item.runId);
         flashErrorBorder();
     } else {
-        flashMessage(text, false, QString(), duration, item.kind);
+        flashMessage(text, false, QString(), duration, item.kind, item.runId);
     }
 }
 
