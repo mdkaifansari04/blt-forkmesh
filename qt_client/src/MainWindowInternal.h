@@ -1144,6 +1144,77 @@ private:
     int m_flashToken = 0; // guards against an older flash clearing a newer one
 };
 
+// A menu-sized version of the compact usage chart. The top-bar meter is
+// intentionally icon-sized, but the account menu has enough room to make the
+// three limits readable at a glance instead of listing them as plain text.
+class TokenUsageMenuRow : public QWidget
+{
+public:
+    TokenUsageMenuRow(const QString &label, const QString &value,
+                      const QString &resetNote, int percent,
+                      QWidget *parent = nullptr)
+        : QWidget(parent), m_label(label), m_value(value),
+          m_resetNote(resetNote), m_percent(percent)
+    {
+        setFixedHeight(34);
+        setMinimumWidth(300);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setAccessibleName(QStringLiteral("%1 usage").arg(label));
+        setToolTip(QStringLiteral("%1: %2%3")
+                       .arg(label, value,
+                            resetNote.isEmpty()
+                                ? QString()
+                                : QStringLiteral(" · %1").arg(resetNote)));
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        const QColor text = palette().color(QPalette::WindowText);
+        const QColor muted(text.red(), text.green(), text.blue(), 150);
+        const QColor track(text.red(), text.green(), text.blue(), 38);
+        painter.setPen(text);
+        painter.drawText(QRectF(4, 2, 62, 15), Qt::AlignLeft | Qt::AlignVCenter,
+                         m_label);
+
+        const QRectF bar(68, 7, 132, 8);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(track);
+        painter.drawRoundedRect(bar, 4, 4);
+        if (m_percent >= 0) {
+            const qreal width = bar.width() * qBound(0, m_percent, 100) / 100.0;
+            if (width > 0) {
+                QColor fill = m_percent >= 90 ? QColor("#f85149")
+                                              : m_percent >= 70
+                                                    ? QColor("#d29922")
+                                                    : QColor("#3fb950");
+                painter.setBrush(fill);
+                painter.drawRoundedRect(QRectF(bar.left(), bar.top(), width,
+                                               bar.height()),
+                                        4, 4);
+            }
+        }
+
+        painter.setPen(text);
+        painter.drawText(QRectF(208, 2, width() - 212, 15),
+                         Qt::AlignRight | Qt::AlignVCenter, m_value);
+        if (!m_resetNote.isEmpty()) {
+            painter.setPen(muted);
+            painter.drawText(QRectF(68, 18, width() - 72, 13),
+                             Qt::AlignLeft | Qt::AlignVCenter, m_resetNote);
+        }
+    }
+
+private:
+    QString m_label;
+    QString m_value;
+    QString m_resetNote;
+    int m_percent = -1;
+};
+
 // A tiny moving line chart for one system resource (CPU, memory or disk). New
 // per-second samples push in from the right and scroll the history left, so the
 // recent load is visible at a glance; the current figure prints on its own
