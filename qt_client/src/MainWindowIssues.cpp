@@ -5353,8 +5353,8 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (event->type() == QEvent::Resize && m_scmDiff &&
         obj == m_scmDiff->viewport())
         layoutScmStickyHeader();
-    // The Git prompt is a lower-right overlay while that workspace is open, so
-    // follow the detail pane rather than reserving height beneath the graph.
+    // The Git prompt is a lower-left overlay while that workspace is open, so
+    // follow the workspace rather than reserving height beneath the graph.
     if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
         obj == m_commitsStack)
         positionGitPromptOverlay();

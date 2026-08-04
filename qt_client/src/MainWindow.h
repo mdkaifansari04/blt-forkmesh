@@ -435,7 +435,12 @@ public:
     // Drives the network log's segmented-render + scroll-to-top-loads-more path
     // (adhoc #15) without needing real scroll-wheel input.
     void testShowSettingsSection() { showSection(1); }
+    void testShowHomeSection() { showSection(0); }
     void testShowLogSection() { showSection(4); }
+    void testSetLogOverlayExpanded(bool expanded)
+    {
+        setLogOverlayExpanded(expanded);
+    }
     void testShowHostsSection() { showSection(7); }
     void testSetDirectoryUserNodes(const QString &user,
                                    const QStringList &nodes);
@@ -816,7 +821,7 @@ public:
     // viewer outside the Git stack is visible.
     bool testGitWorkspaceIsExclusive() const;
     // Git shares the global lower-corner overlays used by every other page.
-    bool testGitPromptFloatsBottomRight() const;
+    bool testGitPromptFloatsBottomLeft() const;
     // Follow a branch link and read back the branch the table landed on right
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
@@ -4775,7 +4780,7 @@ private:
     void showEmojiPicker(QWidget *anchor);
     void insertEmojiIntoComposer(const QString &emoji);
     // "Send to Prompt" message-menu action: append an existing message's text
-    // to the footer's bottom-right prompt box (not the chat input) so it can be
+    // to the footer's bottom-left prompt box (not the chat input) so it can be
     // handed to an agent or edited before sending.
     void sendMessageToPrompt(const QString &text);
     // Re-create the private rooms we own/were invited to after a fresh connect,
@@ -5298,6 +5303,7 @@ private:
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
+    bool m_logOverlayExpanded = false;
     bool m_promptOverlayCollapsed = false;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the

@@ -9799,8 +9799,8 @@ void MainWindow::updateRepoActivityRail()
     const bool onIssues = onHome && m_repoDetailStack &&
                           m_repoDetailStack->currentIndex() == 2;
     // Git is where notification bubbles are most useful, but its graph needs
-    // the full height of the workspace. Its prompt is moved over the lower
-    // right detail pane instead of reserving a full-width footer.
+    // the full height of the workspace. Its prompt is overlaid in the lower-left
+    // instead of reserving a full-width footer.
     // Git is its own activity-rail destination, so hide every Code/repository
     // header above the source-control workspace rather than leaving rows of
     // unrelated navigation on screen. The Agents tab gets the same treatment: its

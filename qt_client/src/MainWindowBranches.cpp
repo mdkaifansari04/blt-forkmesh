@@ -1292,12 +1292,15 @@ bool MainWindow::testGitWorkspaceIsExclusive() const
     return true;
 }
 
-bool MainWindow::testGitPromptFloatsBottomRight() const
+bool MainWindow::testGitPromptFloatsBottomLeft() const
 {
     return m_footerDock && m_globalOverlayHost && m_promptOverlayHost &&
            m_promptWrapper && m_footerDock->parentWidget() == m_globalOverlayHost &&
            m_footerDock->isVisible() && m_promptOverlayHost->isVisible() &&
            m_promptOverlayHost->width() <= 560 &&
+           m_promptOverlayHost->geometry().left() == 8 &&
+           m_promptOverlayHost->geometry().bottom() ==
+               m_footerDock->rect().bottom() &&
            m_footerDock->y() + m_footerDock->height() <=
                m_globalOverlayHost->height();
 }
