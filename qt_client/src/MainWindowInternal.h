@@ -41,6 +41,7 @@
 #include "SystemStats.h"
 #include "AgentStore.h"
 #include "Theme.h"
+#include "VirtualMachineRuntime.h"
 
 #include <QAbstractButton>
 #include <QAbstractAnimation>
@@ -4785,11 +4786,13 @@ const QString kClaudeCodeOAuthSystem =
 // Materialize the bundled Claude agent script into the app data dir and return
 // its path. The script talks to the Anthropic API directly using
 // ANTHROPIC_API_KEY, so no `claude` binary is required.
-inline QString claudeAgentScriptPath()
+inline QString claudeAgentScriptPath(const QString &directory = QString())
 {
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
-        QStringLiteral("/agents");
+    const QString dir = directory.isEmpty()
+                            ? QStandardPaths::writableLocation(
+                                  QStandardPaths::AppDataLocation) +
+                                  QStringLiteral("/agents")
+                            : directory;
     QDir().mkpath(dir);
     const QString path = dir + QStringLiteral("/forkmesh_claude_agent.py");
     const QByteArray wanted = forkmeshClaudeAgentScript().toUtf8();

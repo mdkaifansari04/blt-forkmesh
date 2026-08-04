@@ -6,6 +6,11 @@
 #   ./run.sh rebuild  clear the cache, then build and launch
 #   ./run.sh test     build and run the sub-minute critical contracts
 set -euo pipefail
+# Preserve the caller's directory before this build helper changes into
+# qt_client. The KVM workspace setting uses this exact directory as its only
+# writable project mount, and self-relaunches inherit it unchanged.
+FORKMESH_LAUNCH_DIR="${FORKMESH_START_DIRECTORY:-$PWD}"
+export FORKMESH_START_DIRECTORY="$FORKMESH_LAUNCH_DIR"
 cd "$(dirname "$0")"
 
 # One build job per ~3 GiB of RAM, never more than the core count: cc1plus
@@ -113,7 +118,8 @@ case "${1:-run}" in
         cmake -B build "${args[@]}" -DFORKMESH_BUILD_TESTS=ON
         cmake --build build --parallel "$(build_jobs)" \
             --target forkmesh-control-tests forkmesh-private-mirror-tests \
-                     forkmesh-public-mirror-tests forkmesh-codex-tests
+                     forkmesh-public-mirror-tests forkmesh-codex-tests \
+                     forkmesh-vm-runtime-tests
         exec python3 ../tools/run_critical_tests.py qt --build-dir build
         ;;
     run)

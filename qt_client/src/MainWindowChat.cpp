@@ -3790,8 +3790,20 @@ void MainWindow::refreshClaudeEffortLevels()
             });
     // A login shell so a `claude` in ~/.local/bin resolves exactly as it does for
     // the real launches.
-    proc->start(QStringLiteral("bash"),
-                {QStringLiteral("-lc"), QStringLiteral("claude --help 2>/dev/null")});
+    const QString probeDir = forkmesh::vm::active()
+                                 ? forkmesh::vm::workspaceRoot()
+                                 : QDir::currentPath();
+    const forkmesh::vm::LaunchCommand probe = forkmesh::vm::isolateCommand(
+        QStringLiteral("bash"),
+        {QStringLiteral("-lc"), QStringLiteral("claude --help 2>/dev/null")},
+        probeDir, false);
+    if (!probe.error.isEmpty()) {
+        m_claudeEffortProbe = nullptr;
+        proc->deleteLater();
+        return;
+    }
+    proc->setWorkingDirectory(probeDir);
+    proc->start(probe.program, probe.arguments);
 }
 
 // Probes the live `claude` CLI for its slash-command list via the same
@@ -3853,10 +3865,22 @@ void MainWindow::refreshClaudeSlashCommands()
              QJsonObject{{QStringLiteral("subtype"), QStringLiteral("initialize")}}}};
         proc->write(QJsonDocument(req).toJson(QJsonDocument::Compact) + "\n");
     });
-    proc->start(QStringLiteral("bash"),
-                {QStringLiteral("-lc"),
-                 QStringLiteral("exec claude --print --input-format stream-json "
-                                "--output-format stream-json --verbose")});
+    const QString probeDir = forkmesh::vm::active()
+                                 ? forkmesh::vm::workspaceRoot()
+                                 : QDir::currentPath();
+    const forkmesh::vm::LaunchCommand probe = forkmesh::vm::isolateCommand(
+        QStringLiteral("bash"),
+        {QStringLiteral("-lc"),
+         QStringLiteral("exec claude --print --input-format stream-json "
+                        "--output-format stream-json --verbose")},
+        probeDir, false);
+    if (!probe.error.isEmpty()) {
+        m_claudeSlashProbe = nullptr;
+        proc->deleteLater();
+        return;
+    }
+    proc->setWorkingDirectory(probeDir);
+    proc->start(probe.program, probe.arguments);
 }
 
 // "Mention file from this project…" (adhoc #116): pick a file under the

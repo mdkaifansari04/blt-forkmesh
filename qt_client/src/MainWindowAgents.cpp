@@ -629,6 +629,27 @@ QJsonObject localCliAvailability(const QString &provider)
     const AgentAccountProfile account = activeAgentAccount(provider);
     const QString program =
         codex ? QStringLiteral("codex") : QStringLiteral("claude");
+    if (forkmesh::vm::active()) {
+        const QString unavailable = forkmesh::vm::availabilityError();
+        const bool runtimeReady = unavailable.isEmpty();
+        return {
+            {QStringLiteral("provider"),
+             codex ? QStringLiteral("codex") : QStringLiteral("claude-code")},
+            {QStringLiteral("binaryFound"), runtimeReady},
+            {QStringLiteral("loginState"),
+             runtimeReady ? QStringLiteral("unchecked")
+                          : QStringLiteral("missing")},
+            {QStringLiteral("message"),
+             runtimeReady
+                 ? QStringLiteral(
+                       "%1 installation and login are checked inside KVM when "
+                       "the agent starts.")
+                       .arg(codex ? QStringLiteral("Codex")
+                                  : QStringLiteral("Claude Code"))
+                 : unavailable},
+            {QStringLiteral("credentialSource"), QStringLiteral("KVM guest")},
+        };
+    }
     const bool binaryFound =
         !QStandardPaths::findExecutable(program).isEmpty();
     bool loggedIn = false;
@@ -2061,6 +2082,15 @@ QWidget *MainWindow::buildAgentsTab()
                          true);
             return;
         }
+        if (forkmesh::vm::active()) {
+            const QString vmError = forkmesh::vm::availabilityError().isEmpty()
+                                        ? forkmesh::vm::pathError(repoPath)
+                                        : forkmesh::vm::availabilityError();
+            if (!vmError.isEmpty()) {
+                flashMessage(vmError, true);
+                return;
+            }
+        }
 
         auto *dialog = new QDialog(this);
         dialog->setObjectName(dialogObjectName);
@@ -2069,8 +2099,12 @@ QWidget *MainWindow::buildAgentsTab()
         dialog->resize(900, 560);
         auto *layout = new QVBoxLayout(dialog);
         auto *notice = new QLabel(
-            QStringLiteral("<b>%1</b> is running in <code>%2</code>.")
-                .arg(providerName.toHtmlEscaped(), repoPath.toHtmlEscaped()),
+            QStringLiteral("<b>%1</b> is running %2 in <code>%3</code>.")
+                .arg(providerName.toHtmlEscaped(),
+                     forkmesh::vm::active()
+                         ? QStringLiteral("inside the KVM guest")
+                         : QStringLiteral("on this host"),
+                     repoPath.toHtmlEscaped()),
             dialog);
         notice->setWordWrap(true);
         layout->addWidget(notice);
@@ -2082,7 +2116,11 @@ QWidget *MainWindow::buildAgentsTab()
         layout->addWidget(buttons);
         dialog->show();
         dialog->raise();
-        terminal->runCommand(program, repoPath);
+        const QString command =
+            forkmesh::vm::active()
+                ? forkmesh::vm::interactiveCommand(program, repoPath)
+                : program;
+        terminal->runCommand(command, repoPath, {}, !forkmesh::vm::active());
         terminal->setFocus();
     };
 
@@ -3637,26 +3675,40 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
 void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                                         const QJsonObject &job)
 {
-    const QJsonObject gateAvailability =
-        localCliAvailability(QStringLiteral("claude-code"));
-    if (!gateAvailability.value(QStringLiteral("binaryFound")).toBool()) {
-        reportOrgAgentJob(
-            repo, job, QStringLiteral("rejected"), QStringLiteral("rejected"),
-            0,
-            QStringLiteral(
-                "Claude Code binary is missing; the required Haiku security "
-                "preflight cannot run."));
-        return;
-    }
-    if (gateAvailability.value(QStringLiteral("loginState")).toString() !=
-        QLatin1String("available")) {
-        reportOrgAgentJob(
-            repo, job, QStringLiteral("rejected"), QStringLiteral("rejected"),
-            0,
-            QStringLiteral(
-                "Claude Code login is missing; sign in on this mirror before "
-                "the required Haiku security preflight can run."));
-        return;
+    const RepositoryRecord writable = writableRecordFor(repo);
+    const QString workdir =
+        writable.localPath.isEmpty() ? repo.localPath : writable.localPath;
+    if (forkmesh::vm::active()) {
+        const QString vmError = forkmesh::vm::availabilityError().isEmpty()
+                                    ? forkmesh::vm::pathError(workdir)
+                                    : forkmesh::vm::availabilityError();
+        if (!vmError.isEmpty()) {
+            reportOrgAgentJob(repo, job, QStringLiteral("rejected"),
+                              QStringLiteral("rejected"), 0, vmError);
+            return;
+        }
+    } else {
+        const QJsonObject gateAvailability =
+            localCliAvailability(QStringLiteral("claude-code"));
+        if (!gateAvailability.value(QStringLiteral("binaryFound")).toBool()) {
+            reportOrgAgentJob(
+                repo, job, QStringLiteral("rejected"),
+                QStringLiteral("rejected"), 0,
+                QStringLiteral(
+                    "Claude Code binary is missing; the required Haiku security "
+                    "preflight cannot run."));
+            return;
+        }
+        if (gateAvailability.value(QStringLiteral("loginState")).toString() !=
+            QLatin1String("available")) {
+            reportOrgAgentJob(
+                repo, job, QStringLiteral("rejected"),
+                QStringLiteral("rejected"), 0,
+                QStringLiteral(
+                    "Claude Code login is missing; sign in on this mirror before "
+                    "the required Haiku security preflight can run."));
+            return;
+        }
     }
     const QString prompt = job.value(QStringLiteral("prompt")).toString();
     const QString safetyPrompt = QStringLiteral(
@@ -3669,10 +3721,20 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
         "JSON: {\"verdict\":\"ALLOW|DENY\",\"reason\":\"short reason\"}.\n"
         "<untrusted_prompt>\n%1\n</untrusted_prompt>")
         .arg(prompt.left(8000));
+    const QStringList gateArguments{
+        QStringLiteral("-lc"),
+        QStringLiteral(
+            "exec claude -p --model 'haiku' --max-turns 1 --tools ''")};
+    const forkmesh::vm::LaunchCommand gateLaunch =
+        forkmesh::vm::isolateCommand(QStringLiteral("bash"), gateArguments,
+                                     workdir, false);
+    if (!gateLaunch.error.isEmpty()) {
+        reportOrgAgentJob(repo, job, QStringLiteral("rejected"),
+                          QStringLiteral("rejected"), 0, gateLaunch.error);
+        return;
+    }
     auto *proc = new QProcess(this);
-    const RepositoryRecord writable = writableRecordFor(repo);
-    proc->setWorkingDirectory(
-        writable.localPath.isEmpty() ? repo.localPath : writable.localPath);
+    proc->setWorkingDirectory(workdir);
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
     for (const QString &entry :
          activeAgentAccountEnv(QStringLiteral("claude-code"))) {
@@ -3681,6 +3743,10 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
             environment.insert(entry.left(equals), entry.mid(equals + 1));
     }
     environment.remove(QStringLiteral("ANTHROPIC_API_KEY"));
+    environment.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
+    environment.remove(QStringLiteral("ANTHROPIC_ADMIN_KEY"));
+    environment.remove(QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN"));
+    forkmesh::vm::applyGuestEnvironmentPolicy(environment);
     proc->setProcessEnvironment(environment);
     proc->setProcessChannelMode(QProcess::SeparateChannels);
     QTimer::singleShot(45000, proc, [proc] { proc->kill(); });
@@ -3728,27 +3794,29 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                 localAgentId,
                 job.value(QStringLiteral("prompt")).toString());
         } else if (kind == QLatin1String("start")) {
-            const QJsonObject providerAvailability =
-                localCliAvailability(
-                    job.value(QStringLiteral("provider")).toString());
-            if (!providerAvailability
-                     .value(QStringLiteral("binaryFound")).toBool()) {
-                reportOrgAgentJob(
-                    repo, job, QStringLiteral("approved"),
-                    QStringLiteral("failed"), 0,
-                    providerAvailability
-                        .value(QStringLiteral("message")).toString());
-                return;
-            }
-            if (providerAvailability
-                    .value(QStringLiteral("loginState")).toString() !=
-                QLatin1String("available")) {
-                reportOrgAgentJob(
-                    repo, job, QStringLiteral("approved"),
-                    QStringLiteral("failed"), 0,
-                    providerAvailability
-                        .value(QStringLiteral("message")).toString());
-                return;
+            if (!forkmesh::vm::active()) {
+                const QJsonObject providerAvailability =
+                    localCliAvailability(
+                        job.value(QStringLiteral("provider")).toString());
+                if (!providerAvailability
+                         .value(QStringLiteral("binaryFound")).toBool()) {
+                    reportOrgAgentJob(
+                        repo, job, QStringLiteral("approved"),
+                        QStringLiteral("failed"), 0,
+                        providerAvailability
+                            .value(QStringLiteral("message")).toString());
+                    return;
+                }
+                if (providerAvailability
+                        .value(QStringLiteral("loginState")).toString() !=
+                    QLatin1String("available")) {
+                    reportOrgAgentJob(
+                        repo, job, QStringLiteral("approved"),
+                        QStringLiteral("failed"), 0,
+                        providerAvailability
+                            .value(QStringLiteral("message")).toString());
+                    return;
+                }
             }
             int repoIndex = -1;
             for (int i = 0; i < m_repositories.size(); ++i) {
@@ -3826,13 +3894,10 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
         reportOrgAgentJob(repo, job, QStringLiteral("approved"),
                           QStringLiteral("running"), localAgentId, reason);
     });
-    // A login shell resolves the same device-local Claude CLI/OAuth used by
+    // A login shell resolves the same runtime-local Claude CLI/OAuth used by
     // normal sessions. Empty --tools plus one turn makes this preflight
     // tool-free; any CLI/auth/JSON failure follows the DENY path above.
-    proc->start(QStringLiteral("bash"),
-                {QStringLiteral("-lc"),
-                 QStringLiteral(
-                     "exec claude -p --model 'haiku' --max-turns 1 --tools ''")});
+    proc->start(gateLaunch.program, gateLaunch.arguments);
     proc->write(safetyPrompt.toUtf8());
     proc->closeWriteChannel();
 }
@@ -7981,6 +8046,14 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         // Claude API: bundled Python script talking to api.anthropic.com. Legacy
         // "claude" sessions resolve here too.
         config.command = claudeCommandSetting();
+        if (forkmesh::vm::active() &&
+            config.command.contains(QStringLiteral("forkmesh_claude_agent.py"))) {
+            QString stagedScript = claudeAgentScriptPath(
+                forkmesh::vm::worktreeRoot() + QStringLiteral("/runtime"));
+            stagedScript.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+            config.command =
+                QStringLiteral("python3 '%1' {promptFile}").arg(stagedScript);
+        }
         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
         config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
         config.model = QStringLiteral("claude-sonnet-4-6");
@@ -9473,11 +9546,26 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
 {
     if (!m_agentTerminal || !m_agentStore)
         return;
+    if (forkmesh::vm::active()) {
+        const QString vmError = forkmesh::vm::availabilityError().isEmpty()
+                                    ? forkmesh::vm::pathError(repoPath)
+                                    : forkmesh::vm::availabilityError();
+        if (!vmError.isEmpty()) {
+            session.status = AgentStatus::Failed;
+            session.lastError = vmError;
+            m_agentStore->saveSession(session);
+            flashMessage(vmError, true);
+            return;
+        }
+    }
 
     // Seed the agent with a prompt file pointing at the issue.
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
-        QStringLiteral("/forkmesh-agent");
+    const QString dir = forkmesh::vm::active()
+                            ? forkmesh::vm::worktreeRoot() +
+                                  QStringLiteral("/prompts")
+                            : QStandardPaths::writableLocation(
+                                  QStandardPaths::TempLocation) +
+                                  QStringLiteral("/forkmesh-agent");
     QDir().mkpath(dir);
     const QString promptFile =
         dir + QStringLiteral("/issue-%1.md").arg(session.issueNumber);
@@ -9533,9 +9621,11 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
     // localhost bridge for this checkout and inject the discovery env vars so
     // `claude` auto-connects (in-app diffs, selection, open-file context). The
     // user can also trigger it from the CLI with /ide.
-    if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
-        if (bridge->start(repoPath))
-            env << bridge->env();
+    if (!forkmesh::vm::active()) {
+        if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
+            if (bridge->start(repoPath))
+                env << bridge->env();
+        }
     }
 
     session.status = AgentStatus::Running;
@@ -9553,7 +9643,14 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
     reloadAgents();
     if (m_agentOutputStack)
         m_agentOutputStack->setCurrentWidget(m_agentTerminal);
-    m_agentTerminal->runCommand(cmd, repoPath, env);
+    const QString runtimeCommand =
+        forkmesh::vm::active()
+            ? forkmesh::vm::interactiveCommand(
+                  QStringLiteral("bash"), repoPath,
+                  {QStringLiteral("-lc"), cmd})
+            : cmd;
+    m_agentTerminal->runCommand(runtimeCommand, repoPath, env,
+                                !forkmesh::vm::active());
 }
 
 // Run Claude Code in stream-json mode and render its events as a native,
@@ -9687,6 +9784,7 @@ void MainWindow::runClaudeAutoTriageRung(int sessionId, int rung, bool errorsOnl
             env.insert(entry.left(equals), entry.mid(equals + 1));
     }
     env.remove(QStringLiteral("ANTHROPIC_API_KEY")); // same auth as the agent run
+    forkmesh::vm::applyGuestEnvironmentPolicy(env);
     proc->setProcessEnvironment(env);
     // Don't let a hung triage stall the agent launch forever.
     QTimer::singleShot(45000, proc, [proc] { proc->kill(); });
@@ -9774,10 +9872,18 @@ void MainWindow::runClaudeAutoTriageRung(int sessionId, int rung, bool errorsOnl
     // often lacks ~/.local/bin. The triage prompt goes in on stdin, so nothing
     // user-controlled needs shell quoting; the ladder id is a fixed [a-z0-9-]
     // string, single-quoted defensively all the same.
-    proc->start(QStringLiteral("bash"),
-                {QStringLiteral("-lc"),
-                 QStringLiteral("exec claude -p --model '%1' --max-turns 1")
-                     .arg(r.id)});
+    const QStringList triageArguments{
+        QStringLiteral("-lc"),
+        QStringLiteral("exec claude -p --model '%1' --max-turns 1").arg(r.id)};
+    const forkmesh::vm::LaunchCommand triageLaunch =
+        forkmesh::vm::isolateCommand(QStringLiteral("bash"), triageArguments,
+                                     workdir, false);
+    if (!triageLaunch.error.isEmpty()) {
+        proc->start(QStringLiteral("sh"),
+                    {QStringLiteral("-c"), QStringLiteral("exit 125")});
+    } else {
+        proc->start(triageLaunch.program, triageLaunch.arguments);
+    }
     proc->write(triage.toUtf8());
     proc->closeWriteChannel();
 }
@@ -10246,7 +10352,12 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             int jailMb = 0;
             if (QSettings().value(kAgentJailSetting, false).toBool()) {
                 jailMb = agentJailMemoryMb();
-                codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
+                const QString jailDir =
+                    forkmesh::vm::active()
+                        ? forkmesh::vm::worktreeRoot() +
+                              QStringLiteral("/jails/s%1").arg(sid)
+                        : AgentJail::sessionJailDir(sid);
+                codexEnv << AgentJail::envEntries(jailDir);
             }
             live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
                         effort, jailMb, codexResumeFallbackPrompt);
@@ -10262,9 +10373,11 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             << QStringLiteral("ANTHROPIC_ADMIN_KEY")
             << QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN");
         env << activeAgentAccountEnv(QStringLiteral("claude-code"));
-        if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
-            if (bridge->start(workdir))
-                env << bridge->env();
+        if (!forkmesh::vm::active()) {
+            if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
+                if (bridge->start(workdir))
+                    env << bridge->env();
+            }
         }
         if (AgentSession *as = findAgentSession(sid))
             m_agentStore->appendLog(
@@ -10298,7 +10411,12 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             int jailMb = 0;
             if (QSettings().value(kAgentJailSetting, false).toBool()) {
                 jailMb = agentJailMemoryMb();
-                launchEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
+                const QString jailDir =
+                    forkmesh::vm::active()
+                        ? forkmesh::vm::worktreeRoot() +
+                              QStringLiteral("/jails/s%1").arg(sid)
+                        : AgentJail::sessionJailDir(sid);
+                launchEnv << AgentJail::envEntries(jailDir);
             }
             // Identity goes to the log only; the prompt carries nothing beyond
             // the task (adhoc #2 follow-up).
@@ -10351,9 +10469,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             "from — does the repository have a commit yet?"));
         return;
     }
-    const QString wtRoot =
-        QStandardPaths::writableLocation(QStandardPaths::TempLocation)
-        + QStringLiteral("/forkmesh-worktrees");
+    if (forkmesh::vm::active() && !forkmesh::vm::pathIsShared(repoPath)) {
+        failLaunch(forkmesh::vm::pathError(repoPath));
+        return;
+    }
+    const QString wtRoot = forkmesh::vm::active()
+                               ? forkmesh::vm::worktreeRoot()
+                               : QStandardPaths::writableLocation(
+                                     QStandardPaths::TempLocation) +
+                                     QStringLiteral("/forkmesh-worktrees");
     QDir().mkpath(wtRoot);
     const QString wtPath =
         wtRoot + QStringLiteral("/issue-%1-s%2").arg(issueNumber).arg(sid);

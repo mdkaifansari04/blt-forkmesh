@@ -89,8 +89,8 @@ For development, clone the repository and launch the source build:
 
 ```sh
 git clone https://forkmesh.com/forkmesh/forkmesh
-cd forkmesh/qt_client
-./run.sh
+cd forkmesh
+./qt_client/run.sh
 ```
 
 The client creates its device identity, connects to the mainnode, and starts
