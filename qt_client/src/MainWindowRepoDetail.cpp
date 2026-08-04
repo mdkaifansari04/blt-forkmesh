@@ -10847,6 +10847,9 @@ void MainWindow::showLoadStatus(const QString &what)
         m_topMessageTimer->stop(); // don't let it slide away mid-load
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
+    m_topMessageActionRunId = -1;
+    if (m_topMessageActionOutput)
+        m_topMessageActionOutput->hide();
     if (m_topMessageSendToPrompt)
         m_topMessageSendToPrompt->hide();
     if (m_topMessageClose)

@@ -6257,6 +6257,22 @@ QWidget *MainWindow::buildBreadcrumb()
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
     });
 
+    m_topMessageActionOutput = new QPushButton(QStringLiteral("View output"));
+    m_topMessageActionOutput->setObjectName("topMessageAction");
+    m_topMessageActionOutput->setCursor(Qt::PointingHandCursor);
+    m_topMessageActionOutput->setToolTip(
+        QStringLiteral("Open the failed action's output"));
+    m_topMessageActionOutput->setFocusPolicy(Qt::NoFocus);
+    setOcticon(m_topMessageActionOutput, "terminal", 11);
+    m_topMessageActionOutput->hide();
+    connect(m_topMessageActionOutput, &QPushButton::clicked, this, [this] {
+        if (m_topMessageActionRunId <= 0)
+            return;
+        const int runId = m_topMessageActionRunId;
+        openActionRunFromNotification(runId);
+        dismissTopMessage();
+    });
+
     m_topMessageSendToPrompt = new QPushButton(QStringLiteral("Send to prompt"));
     m_topMessageSendToPrompt->setObjectName("topMessageAction");
     m_topMessageSendToPrompt->setCursor(Qt::PointingHandCursor);
@@ -6354,6 +6370,7 @@ QWidget *MainWindow::buildBreadcrumb()
     topMessageActionRow->addWidget(m_topMessageTypeBadge);
     topMessageActionRow->addWidget(m_topMessageMeta);
     topMessageActionRow->addStretch(1);
+    topMessageActionRow->addWidget(m_topMessageActionOutput);
     topMessageActionRow->addWidget(m_topMessageCopy);
     topMessageActionRow->addWidget(m_topMessageSendToPrompt);
     topMessageActionRow->addWidget(m_topMessageClose);
@@ -6369,6 +6386,7 @@ QWidget *MainWindow::buildBreadcrumb()
                             static_cast<QWidget *>(m_topMessageActions),
                             static_cast<QWidget *>(m_topMessageTypeBadge),
                             static_cast<QWidget *>(m_topMessageMeta),
+                            static_cast<QWidget *>(m_topMessageActionOutput),
                             static_cast<QWidget *>(m_topMessageCopy),
                             static_cast<QWidget *>(m_topMessageSendToPrompt),
                             static_cast<QWidget *>(m_topMessageClose)})
