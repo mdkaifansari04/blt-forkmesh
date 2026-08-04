@@ -5541,9 +5541,8 @@ void MainWindow::reloadAgents()
 }
 
 // Count badge on the rail's Agents entry (adhoc #194), riding the icon's corner
-// like every other rail count. It shows the number of *running* sessions rather
-// than every session ever started (adhoc #70): the rail answers "how much is
-// happening right now", and the full tally stays in the tooltip.
+// like every other rail count. It shows the total number of sessions, while the
+// tooltip also reports how many are running.
 void MainWindow::updateAgentsNavBadge()
 {
     if (!m_agentsNavButton)
@@ -5555,7 +5554,7 @@ void MainWindow::updateAgentsNavBadge()
             ++running;
     if (auto *railButton =
             dynamic_cast<ActivityRailButton *>(m_agentsNavButton))
-        railButton->setBadgeCount(running);
+        railButton->setBadgeCount(total);
     if (total > 0) {
         m_agentsNavButton->setToolTip(
             QStringLiteral("Agents \xE2\x80\x94 %1 running of %2 session%3")
