@@ -3783,6 +3783,10 @@ private:
     // return README.md. Results feed the Reachability column after Artifacts.
     void fetchMirrorReachability(const QString &owner, const QString &repo,
                                  const QString &source, const QString &node);
+    // Fetch content-free relay inbox counts so Mirror nodes shows submissions
+    // that have not reached any repository copy yet.
+    void fetchMirrorPendingCounts(const QString &owner, const QString &repo,
+                                  const QString &source);
     // Fetch the worker's per-artifact release download counts (logged each time
     // /releases/blob/sha256/<hash> streams a binary out), so the Releases tab can
     // show how many times each artifact has been downloaded.
@@ -8177,6 +8181,8 @@ private:
     // "owner/repo|node" -> bounded result from the exact-node README probe.
     QHash<QString, QJsonObject> m_mirrorReachabilityCache;
     QSet<QString> m_mirrorReachabilityInFlight;
+    QHash<QString, QJsonObject> m_mirrorPendingCache;
+    QSet<QString> m_mirrorPendingInFlight;
     // Per-artifact release download counts for the repo currently shown in the
     // Releases panel (sha256 -> times downloaded), from the worker's
     // /releases/downloads endpoint.
