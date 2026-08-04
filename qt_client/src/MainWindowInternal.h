@@ -6912,6 +6912,9 @@ private:
 // paint-only widget rather than thirty child buttons, keeping a traffic burst
 // from creating or relaying out widgets while still exposing the full taxonomy
 // and per-category counts at a glance.
+inline QPixmap tintedOcticonPixmap(const QString &name, const QColor &color,
+                                   int size);
+
 class LogActivityLights : public QWidget
 {
 public:
