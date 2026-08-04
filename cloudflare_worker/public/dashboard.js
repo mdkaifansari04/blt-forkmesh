@@ -3537,6 +3537,35 @@
   function renderHeaderContext(section = currentSection()) {
     const headerContext = $("[data-dashboard-header-context]");
     if (!headerContext) return;
+    const repoMeta = $("[data-repo-header-meta]");
+    const repoVisibility = $("[data-repo-header-visibility]");
+    const repoTerms = $("[data-repo-header-terms]");
+    const repoAvailability = $("[data-repo-availability-status]");
+    const repo = section === "explore" ? state.selectedRepo : null;
+    if (repo) {
+      const live = repoIsLive(repo);
+      const viaMirror = repoServedByMirror(repo);
+      headerContext.innerHTML = `<a href="${escapeHtml(repoPathUrl(repo))}" class="hover:underline">${escapeHtml(repoDisplayKey(repo))}</a>`;
+      repoMeta?.classList.add("sm:flex");
+      if (repoVisibility) {
+        repoVisibility.textContent = repo.isPrivate ? "private" : "public";
+      }
+      if (repoTerms) repoTerms.innerHTML = repositoryTermsBadge(repo, true);
+      if (repoAvailability) {
+        repoAvailability.textContent = viaMirror
+          ? "served by mirror"
+          : live
+            ? "mirror online"
+            : "mirror offline";
+        repoAvailability.classList.toggle("text-primary", live);
+        repoAvailability.classList.toggle("text-muted-foreground", !live);
+      }
+      return;
+    }
+    repoMeta?.classList.remove("sm:flex");
+    if (repoVisibility) repoVisibility.textContent = "";
+    if (repoTerms) repoTerms.innerHTML = "";
+    if (repoAvailability) repoAvailability.textContent = "";
     if (section === "profile-overview" || section === "profile-repositories") {
       const renderedName = ($("[data-profile-page-node-name]")?.textContent || "").trim();
       headerContext.textContent = state.session?.nodeName || state.session?.email || renderedName || "Profile";
@@ -15099,16 +15128,13 @@
         ? `${repoPathUrl(repo)}/${routeKind}`
         : repoPathUrl(repo, routeKind === "blob" ? "blob" : "tree", routePath);
     navigateHistory(detailPath);
-    const crumb = $("[data-repo-detail-crumb]");
-    if (crumb) crumb.textContent = `${repo.owner || "owner"}/${repo.name || "repository"}`;
     const branch = repoSelectedBranch(repo);
     const issuesCount = repoCount(repo, ["issueCount", "issues", "issuesCount", "openIssues"]);
     const pullsCount = repoCount(repo, ["pullCount", "pulls", "pullsCount", "openPulls", "pullRequests"]);
     const discussionsCount = repoCount(repo, ["discussions", "discussionCount"]);
     const commitsCount = repoCount(repo, ["commits", "commitCount", "commitHistory"]);
     const mirrorsCount = repoCount(repo, ["mirrors", "mirrorCount", "hosts"]);
-    const live = repoIsLive(repo);
-    const viaMirror = repoServedByMirror(repo);
+    renderHeaderContext("explore");
     const canEditAbout = sessionOwnsRepo(repo);
     const readmePath = "README.md";
     const readmeHref = repoPathUrl(repo, "blob", readmePath);
@@ -15122,7 +15148,6 @@
       projects: { label: "Projects", icon: "chart-gantt", count: "" },
       pulls: { label: "Pull requests", icon: "git-pull-request", count: pullsCount },
       discussions: { label: "Discussions", icon: "message-square", count: discussionsCount },
-      mirrors: { label: "Mirrors", icon: "radio", count: mirrorsCount },
       agents: { label: "Agents", icon: "bot", count: "" },
       settings: { label: "Settings", icon: "settings", count: "" },
     };
@@ -15183,55 +15208,9 @@
       </section>` : "";
     detail.innerHTML = `
       <div data-repo-layout="github-like" class="min-w-0">
-        <div data-repo-github-header class="rounded-t-lg border border-border bg-background">
-          <div class="grid gap-4 border-b border-border p-4 lg:grid-cols-[minmax(0,1fr)_auto]">
-            <div class="min-w-0">
-              <div class="flex min-w-0 flex-wrap items-center gap-2">
-                <i data-lucide="book-marked" class="h-4 w-4 text-muted-foreground"></i>
-                <h2 class="min-w-0 truncate text-lg font-semibold text-foreground"><span class="text-muted-foreground"><a href="/@${encodeURIComponent(String(repo.owner || "").toLowerCase())}" data-repo-owner-link class="hover:text-foreground hover:underline">${escapeHtml(repo.owner || "owner")}</a>/</span>${escapeHtml(repo.name || "repository")}</h2>
-                <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono text-muted-foreground">${repo.isPrivate ? "private" : "public"}</span>
-                ${repositoryTermsBadge(repo)}
-                <span data-repo-availability-status class="rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${live ? "text-primary" : "text-muted-foreground"}">${viaMirror ? "served by mirror" : live ? "mirror online" : "mirror offline"}</span>
-              </div>
-              <p class="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">${escapeHtml(repo.description || "No description published.")}</p>
-            </div>
-            <div aria-label="Repository facts" class="flex flex-wrap items-start gap-2 lg:justify-end">
-              <div data-repo-watch-wrap class="relative">
-                <button type="button" data-repo-action-watch class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                  <i data-lucide="eye" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                  Watch
-                  <span data-repo-watch-count class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">–</span>
-                  <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
-                </button>
-                <div data-repo-watch-menu class="absolute right-0 z-30 mt-1 hidden w-72 rounded-lg border border-border bg-background p-3 text-left shadow-xl">
-                  <p class="text-xs font-semibold text-foreground">Watch on the fediverse</p>
-                  <p class="mt-1 text-[11px] leading-5 text-muted-foreground">Follow this repository from Mastodon (or any ActivityPub app) to get new issues, pull requests, discussions and releases in your feed.</p>
-                  <div class="mt-2 flex items-center gap-2">
-                    <code data-repo-watch-handle class="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground">${escapeHtml(fediHandle)}</code>
-                    <button type="button" data-dashboard-copy="${escapeHtml(fediHandle)}" aria-label="Copy fediverse handle" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>
-                  </div>
-                  <p class="mt-2 text-[11px] text-muted-foreground"><span data-repo-watch-followers class="font-mono text-foreground">–</span> fediverse watchers</p>
-                  <p data-repo-watch-disabled class="mt-1 hidden text-[11px] text-yellow-500">Federation is turned off for this repository.</p>
-                  <div data-repo-watch-list class="mt-2 hidden max-h-44 overflow-auto rounded-md border border-border bg-secondary/40 p-2"></div>
-                  <a data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-2 inline-flex items-center gap-1.5 text-[11px] hover:underline"><i data-lucide="external-link" class="h-3.5 w-3.5 shrink-0"></i>View on Mastodon</a>
-                </div>
-              </div>
-              <button type="button" data-repo-action-fork class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                <i data-lucide="git-fork" class="h-3.5 w-3.5 text-muted-foreground"></i>
-                Fork
-                <span class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(forkCount)}</span>
-                <i data-lucide="chevron-down" class="h-3 w-3 text-muted-foreground"></i>
-              </button>
-              <button type="button" data-repo-action-star data-repo-key="${escapeHtml(actionSeed)}" aria-pressed="false" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background">
-                <i data-lucide="star" data-repo-star-icon class="h-3.5 w-3.5 text-muted-foreground"></i>
-                <span data-repo-star-label>Star</span>
-                <span data-repo-star-count class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${formatCount(0)}</span>
-              </button>
-              <button type="button" data-dashboard-repo-tab="mirrors" aria-label="Show repository mirror status" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background"><i data-lucide="radio" class="h-3.5 w-3.5 text-muted-foreground"></i>Mirrors <span data-dashboard-repo-count="mirrors" class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">${tabCountLabel(mirrorsCount)}</span></button>
-            </div>
-          </div>
-          <div class="flex min-w-0 overflow-x-auto px-3" role="tablist">
-            ${["code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors", ...(canSeeAgentsTab ? ["agents"] : []), ...(canSeeSettingsTab ? ["settings"] : [])].map((tab) => {
+        <div data-repo-github-header class="border-b border-border bg-background">
+          <div class="flex min-w-0 overflow-x-auto px-3 sm:px-6" role="tablist" aria-label="Repository sections">
+            ${["code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", ...(canSeeAgentsTab ? ["agents"] : []), ...(canSeeSettingsTab ? ["settings"] : [])].map((tab) => {
               const meta = tabMeta[tab];
               const isDiscussions = tab === "discussions";
               const discussionCount = Number(meta.count);
@@ -15249,11 +15228,12 @@
               const pendingBadge = ["issues", "pulls", "discussions"].includes(tab)
                 ? `<span data-dashboard-repo-tab-pending="${tab}" class="hidden rounded-full border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-mono text-yellow-500"></span>`
                 : "";
-              return `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" aria-selected="${tab === "code" ? "true" : "false"}" class="relative inline-flex h-12 items-center gap-2 border-b-2 px-3 text-xs font-medium transition-colors ${tab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"}"><i ${iconAttr} class="h-3.5 w-3.5"></i><span>${meta.label}</span>${isDiscussions || meta.count !== "" ? `<span data-dashboard-repo-tab-count="${tab}" class="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground${hideDiscussionsBadge ? " hidden" : ""}">${tabCountLabel(meta.count)}</span>` : ""}${pendingBadge}</button>`;
+              const showTabCount = tab !== "commits" && (isDiscussions || meta.count !== "");
+              return `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" aria-selected="${tab === "code" ? "true" : "false"}" class="relative inline-flex h-11 items-center gap-1.5 border-b-2 px-3 text-xs font-medium transition-colors ${tab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"}"><i ${iconAttr} class="h-3.5 w-3.5"></i><span>${meta.label}</span>${showTabCount ? `<span data-dashboard-repo-tab-count="${tab}" class="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground${hideDiscussionsBadge ? " hidden" : ""}">${tabCountLabel(meta.count)}</span>` : ""}${pendingBadge}</button>`;
             }).join("")}
           </div>
         </div>
-	        <div data-repo-content-grid class="grid min-w-0 gap-5 pt-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+	        <div data-repo-content-grid class="grid min-w-0 gap-5 px-3 pb-3 pt-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
 		          <div class="min-w-0">
 		            <section data-dashboard-repo-tab-panel="code">
 		              <div data-repo-root-toolbar class="grid gap-2 md:grid-cols-[auto_minmax(0,1fr)_auto_auto]">
@@ -15295,7 +15275,7 @@
 	                      </div>
 	                      <span data-repo-commit-hash class="font-mono text-muted-foreground"><span class="inline-block h-3.5 w-14 animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
 	                      <span data-repo-commit-date class="font-mono text-muted-foreground"><span class="inline-block h-3.5 w-16 animate-pulse rounded bg-muted-foreground/20 align-middle"></span></span>
-	                      <button type="button" data-dashboard-history-button aria-label="Open commit history" class="inline-flex items-center gap-1 font-medium text-foreground hover:text-primary transition-colors"><i data-lucide="history" class="h-3.5 w-3.5 text-muted-foreground"></i>History</button>
+	                      <a href="${escapeHtml(`${repoPathUrl(repo)}/commits`)}" data-dashboard-history-button aria-label="Open commit history" class="inline-flex items-center gap-1 font-medium text-foreground transition-colors hover:text-primary"><i data-lucide="history" class="h-3.5 w-3.5 text-muted-foreground"></i><span>History</span><span data-dashboard-repo-count="commits" data-dashboard-repo-tab-count="commits" class="rounded-full bg-background px-1.5 py-0.5 font-mono text-[10px] font-normal text-muted-foreground">${tabCountLabel(commitsCount)}</span></a>
 	                    </div>
 	                    <div data-repo-tree></div>
 	                  </div>
@@ -15352,6 +15332,50 @@
                 : `<i data-lucide="pencil" class="h-3.5 w-3.5 text-muted-foreground"></i>`}
             </div>
             <p data-repo-about-description class="mt-3 text-sm leading-6 text-foreground">${escapeHtml(repo.description || "No description published.")}</p>
+            <div data-repo-about-actions aria-label="Repository actions" class="mt-4 flex items-start justify-between gap-2 border-y border-border py-3">
+              <div data-repo-watch-wrap class="relative min-w-0 flex-1">
+                <button type="button" data-repo-action-watch aria-label="Watch repository" class="flex w-full flex-col items-center gap-1 rounded-md py-1 text-[10px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+                  <span class="relative inline-flex h-8 w-8 items-center justify-center rounded-md bg-secondary text-foreground">
+                    <i data-lucide="eye" class="h-4 w-4"></i>
+                    <span data-repo-watch-count class="absolute -right-0.5 -top-0.5 inline-flex min-w-3 items-center justify-center rounded-full border border-border bg-background px-1 font-mono text-[10px] leading-4 text-muted-foreground">–</span>
+                  </span>
+                  <span>Watch</span>
+                </button>
+                <div data-repo-watch-menu class="absolute left-0 top-full z-30 mt-1 hidden w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-background p-3 text-left shadow-xl">
+                  <p class="text-xs font-semibold text-foreground">Watch on the fediverse</p>
+                  <p class="mt-1 text-[11px] leading-5 text-muted-foreground">Follow this repository from Mastodon (or any ActivityPub app) to get new issues, pull requests, discussions and releases in your feed.</p>
+                  <div class="mt-2 flex items-center gap-2">
+                    <code data-repo-watch-handle class="min-w-0 flex-1 truncate rounded-md border border-border bg-secondary px-2 py-1 font-mono text-[11px] text-foreground">${escapeHtml(fediHandle)}</code>
+                    <button type="button" data-dashboard-copy="${escapeHtml(fediHandle)}" aria-label="Copy fediverse handle" class="copy-button inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="copy" class="copy-icon h-3.5 w-3.5"></i><i data-lucide="check" class="copy-check h-3.5 w-3.5"></i></button>
+                  </div>
+                  <p class="mt-2 text-[11px] text-muted-foreground"><span data-repo-watch-followers class="font-mono text-foreground">–</span> fediverse watchers</p>
+                  <p data-repo-watch-disabled class="mt-1 hidden text-[11px] text-yellow-500">Federation is turned off for this repository.</p>
+                  <div data-repo-watch-list class="mt-2 hidden max-h-44 overflow-auto rounded-md border border-border bg-secondary/40 p-2"></div>
+                  <a data-repo-mastodon-link href="${escapeHtml(mastodonUrl)}" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-2 inline-flex items-center gap-1.5 text-[11px] hover:underline"><i data-lucide="external-link" class="h-3.5 w-3.5 shrink-0"></i>View on Mastodon</a>
+                </div>
+              </div>
+              <button type="button" data-repo-action-fork aria-label="Fork repository" class="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-md py-1 text-[10px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+                <span class="relative inline-flex h-8 w-8 items-center justify-center rounded-md bg-secondary text-foreground">
+                  <i data-lucide="git-fork" class="h-4 w-4"></i>
+                  <span class="absolute -right-0.5 -top-0.5 inline-flex min-w-3 items-center justify-center rounded-full border border-border bg-background px-1 font-mono text-[10px] leading-4 text-muted-foreground">${formatCount(forkCount)}</span>
+                </span>
+                <span>Fork</span>
+              </button>
+              <button type="button" data-repo-action-star data-repo-key="${escapeHtml(actionSeed)}" aria-pressed="false" aria-label="Star repository" class="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-md py-1 text-[10px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+                <span class="relative inline-flex h-8 w-8 items-center justify-center rounded-md bg-secondary text-foreground">
+                  <i data-lucide="star" data-repo-star-icon class="h-4 w-4 text-muted-foreground"></i>
+                  <span data-repo-star-count class="absolute -right-0.5 -top-0.5 inline-flex min-w-3 items-center justify-center rounded-full border border-border bg-background px-1 font-mono text-[10px] leading-4 text-muted-foreground">${formatCount(0)}</span>
+                </span>
+                <span data-repo-star-label>Star</span>
+              </button>
+              <button type="button" data-dashboard-repo-tab="mirrors" aria-label="Show repository mirror status" class="flex min-w-0 flex-1 flex-col items-center gap-1 rounded-md py-1 text-[10px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+                <span class="relative inline-flex h-8 w-8 items-center justify-center rounded-md bg-secondary text-foreground">
+                  <i data-lucide="radio" class="h-4 w-4"></i>
+                  <span data-dashboard-repo-count="mirrors" data-dashboard-repo-tab-count="mirrors" class="absolute -right-0.5 -top-0.5 inline-flex min-w-3 items-center justify-center rounded-full border border-border bg-background px-1 font-mono text-[10px] leading-4 text-muted-foreground">${tabCountLabel(mirrorsCount)}</span>
+                </span>
+                <span>Mirrors</span>
+              </button>
+            </div>
             <a data-repo-about-website href="#" target="_blank" rel="noopener noreferrer" class="dashboard-accent-link mt-1 hidden min-w-0 items-center gap-1.5 text-xs hover:underline"><i data-lucide="globe" class="h-3.5 w-3.5 shrink-0"></i><span data-repo-about-website-label class="min-w-0 truncate"></span></a>
             <form data-repo-about-form class="mt-3 hidden grid gap-2">
               <textarea data-repo-about-input rows="4" maxlength="240" class="min-h-24 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary">${escapeHtml(repo.description || "")}</textarea>
@@ -16514,8 +16538,8 @@
   async function initRepoPage() {
     const requested = requestedRepoKey();
     const detail = $("[data-repo-detail]");
-    const crumb = $("[data-repo-detail-crumb]");
-    if (crumb && requested) crumb.textContent = requested;
+    const headerContext = $("[data-dashboard-header-context]");
+    if (headerContext && requested) headerContext.textContent = requested;
     if (detail && requested) {
       detail.innerHTML = `<p class="text-sm text-muted-foreground">${loadingHtml("Loading repository…")}</p>`;
     }
@@ -16863,7 +16887,8 @@
 
       const historyButton = event.target.closest("[data-dashboard-history-button]");
       if (historyButton) {
-        setRepoTab("commits");
+        event.preventDefault();
+        activateRepoTab("commits");
         return;
       }
 

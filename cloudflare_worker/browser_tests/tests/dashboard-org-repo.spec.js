@@ -9,6 +9,21 @@ const REPO_PAGE_PATH = path.resolve(
   "dashboard",
   "repo.html",
 );
+const DASHBOARD_JS_PATH = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "public",
+  "dashboard.js",
+);
+const DASHBOARD_CSS_PATH = path.resolve(
+  __dirname,
+  "..",
+  "..",
+  "public",
+  "dashboard",
+  "tailwind.css",
+);
 
 test("organization repository alias resolves its linked mirror catalog group", async ({
   page,
@@ -34,6 +49,18 @@ test("organization repository alias resolves its linked mirror catalog group", a
       contentType: "text/html; charset=utf-8",
     }),
   );
+  await page.route("**/dashboard.js*", (route) =>
+    route.fulfill({
+      path: DASHBOARD_JS_PATH,
+      contentType: "text/javascript; charset=utf-8",
+    }),
+  );
+  await page.route("**/dashboard/tailwind.css", (route) =>
+    route.fulfill({
+      path: DASHBOARD_CSS_PATH,
+      contentType: "text/css; charset=utf-8",
+    }),
+  );
   await page.route("**/api/**", (route) => {
     const url = new URL(route.request().url());
     requestedPaths.push(url.pathname);
@@ -48,6 +75,7 @@ test("organization repository alias resolves its linked mirror catalog group", a
             visibility: "public",
             source: "remote-clone",
             cloneUrl: "https://forkmesh.test/mirror3/forkmesh",
+            description: "ForkMesh keeps source code available across independent hosts.",
             rootCommit: "root",
             stateHash: "state",
             updatedAt: "2",
@@ -58,6 +86,7 @@ test("organization repository alias resolves its linked mirror catalog group", a
             visibility: "public",
             source: "remote-clone",
             cloneUrl: "https://forkmesh.test/mirror2/forkmesh",
+            description: "ForkMesh keeps source code available across independent hosts.",
             rootCommit: "root",
             stateHash: "state",
             updatedAt: "1",
@@ -83,7 +112,7 @@ test("organization repository alias resolves its linked mirror catalog group", a
             message: "Document the mesh",
           },
         ],
-        counts: {},
+        counts: { commits: 21418, mirrors: 1 },
       };
     } else if (url.pathname === "/api/repo/forkmesh/forkmesh/mirrors") {
       body = {
@@ -110,10 +139,44 @@ test("organization repository alias resolves its linked mirror catalog group", a
   await expect(
     page.getByRole("heading", { name: "forkmesh/forkmesh", exact: true }),
   ).toBeVisible();
+  await expect(page.locator("[data-repo-header-visibility]")).toHaveText("public");
   await expect(page.locator("[data-repo-tree]")).toContainText("README.md");
   await expect(page.locator("[data-repo-availability-status]")).toHaveText(
     "served by mirror",
   );
+  await expect(page.locator("[data-repo-github-header]")).not.toContainText(
+    "ForkMesh keeps source code available",
+  );
+  await expect(page.locator("[data-repo-about-description]")).toContainText(
+    "ForkMesh keeps source code available",
+  );
+  await expect(
+    page.locator('[role="tab"][data-dashboard-repo-tab="mirrors"]'),
+  ).toHaveCount(0);
+  const aboutActions = page.locator("[data-repo-about-actions]");
+  await expect(aboutActions).toBeVisible();
+  for (const label of ["Watch", "Fork", "Star", "Mirrors"]) {
+    await expect(aboutActions.getByText(label, { exact: true })).toBeVisible();
+  }
+  await expect(page.locator("[data-dashboard-history-button]")).toHaveAttribute(
+    "href",
+    "/forkmesh/forkmesh/commits",
+  );
+  await expect(
+    page.locator('[data-dashboard-history-button] [data-dashboard-repo-count="commits"]'),
+  ).toHaveText("21,418");
+  await expect(
+    page.locator('[role="tab"][data-dashboard-repo-tab="commits"] [data-dashboard-repo-tab-count]'),
+  ).toHaveCount(0);
+
+  const appHeaderBox = await page.locator("[data-app-header]").boundingBox();
+  const repoTabsBox = await page.locator("[data-repo-github-header]").boundingBox();
+  expect(appHeaderBox).not.toBeNull();
+  expect(repoTabsBox).not.toBeNull();
+  expect(Math.abs(repoTabsBox.y - (appHeaderBox.y + appHeaderBox.height))).toBeLessThanOrEqual(1);
+  const repoHeaderClasses = await page.locator("[data-repo-github-header]").getAttribute("class");
+  expect(repoHeaderClasses).not.toContain("rounded-t-lg");
+  expect(repoHeaderClasses).not.toContain(" border ");
   await expect(page.locator("[data-repo-detail]")).not.toContainText(
     "was not found",
   );

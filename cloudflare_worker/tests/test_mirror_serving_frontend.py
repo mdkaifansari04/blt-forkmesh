@@ -180,16 +180,18 @@ def test_repo_list_paginates_grouped_repos_not_raw_mirrors():
 
 
 def test_repo_detail_reflects_mirror_serving():
-    detail = DASHBOARD_JS[
-        DASHBOARD_JS.index("function renderRepoDetail(repo)")
-        : DASHBOARD_JS.index("function findRepository(")
+    header = DASHBOARD_JS[
+        DASHBOARD_JS.index("function renderHeaderContext(")
+        : DASHBOARD_JS.index("// ---- Public-profile mode")
     ]
-    assert "const live = repoIsLive(repo);" in detail
-    assert "const viaMirror = repoServedByMirror(repo);" in detail
-    # The title-row badge keys off the group verdict. (The About rail's
-    # Clone row and the header Data/Host chips were removed in the metadata
-    # cleanup — this badge is the remaining availability surface.)
-    assert "viaMirror ? \"served by mirror\" : live ? \"mirror online\" : \"mirror offline\"" in detail
+    assert "const live = repoIsLive(repo);" in header
+    assert "const viaMirror = repoServedByMirror(repo);" in header
+    # The shared top-bar badge keys off the group verdict; the redundant title
+    # row was removed from the repository content itself.
+    assert 'repoAvailability.textContent = viaMirror' in header
+    assert '? "served by mirror"' in header
+    assert '? "mirror online"' in header
+    assert ': "mirror offline"' in header
 
 
 def test_served_by_badge_includes_serving_node_counters():
