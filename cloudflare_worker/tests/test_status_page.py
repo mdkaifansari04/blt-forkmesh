@@ -142,6 +142,8 @@ def _sample_env(
         return True, ""
     async def installer_status(_env, _now):
         return True, ""
+    async def homepage_status(_env):
+        return True, ""
 
     extra = {
         "Date": _Clock,
@@ -152,6 +154,7 @@ def _sample_env(
         "_flagship_repository_probe": repository_probe,
         "_record_status_monitor_transitions": noop,
         "_installer_delivery_status": installer_status,
+        "_homepage_status_probe": homepage_status,
         "clean_string": lambda value, limit: str(value or "")[:limit],
     }
     return extra, inserted, hourly, minutely
@@ -988,7 +991,8 @@ def test_each_system_describes_exactly_what_its_check_tests():
     assert "error log" in descriptions["errors"]
     assert "Expected degraded" in descriptions["errors"]
     assert "Exceeded allowed duration" in descriptions["durable_objects"]
-    assert "not an external HTTP probe" in descriptions["website"]
+    assert "Loads the production homepage" in descriptions["website"]
+    assert "HTTP 200" in descriptions["website"]
 
 
 def test_status_page_wires_the_click_to_expand_check_details():

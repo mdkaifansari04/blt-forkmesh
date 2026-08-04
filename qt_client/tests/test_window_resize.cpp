@@ -431,6 +431,15 @@ int main(int argc, char *argv[])
     const QString testApplicationName =
         QStringLiteral("WindowResize-") + QFileInfo(dataDir.path()).fileName();
     app.setApplicationName(testApplicationName);
+    const QString darkTheme = QString::fromLatin1(Theme::styleSheetForDark(true));
+    const QString lightTheme = QString::fromLatin1(Theme::styleSheetForDark(false));
+    check(darkTheme.contains(QStringLiteral(
+              "QToolTip {\n    background-color: #161b22; color: #e6edf3;")) &&
+              lightTheme.contains(QStringLiteral(
+              "QToolTip {\n    background-color: #ffffff; color: #1f2328;")) &&
+              lightTheme.contains(QStringLiteral(
+              "border: 1px solid #d0d7de; padding: 4px;")),
+          QStringLiteral("tooltips use the active app theme's canvas, text, and border"));
     const bool fleetBinaryInstallOnly =
         app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
     const bool hostsLayoutOnly =
@@ -3057,6 +3066,11 @@ int main(int argc, char *argv[])
         // The rail's Git entry is the stable home destination: it always clears
         // a branch/worktree comparison and returns to main.
         window.testClickRailGitButton();
+        check(window.testSourceControlDiffText().contains(
+                  QStringLiteral("Loading changes on main")),
+              QString("the rail clears the previous branch/commit diff before "
+                      "refreshing main (pane = \"%1\")")
+                  .arg(window.testSourceControlDiffText().left(80).simplified()));
         QApplication::processEvents();
         check(window.testBrowsedBranch() == QStringLiteral("main") &&
                   window.testCommitWorkspacePage() == 0 &&
@@ -4416,6 +4430,15 @@ int main(int argc, char *argv[])
                       "health badges "
                       "(adhoc #403, got %1)")
                   .arg(window.testAgentStatusCellBadges(2910, chip)));
+        const QString agentTip = window.testAgentStatusCellToolTip(2910, chip);
+        check(agentTip.startsWith(QStringLiteral("<table")) &&
+                  agentTip.contains(QStringLiteral("Agent #2910")) &&
+                  agentTip.contains(QStringLiteral("7 files changed")) &&
+                  agentTip.contains(QStringLiteral("2 uncommitted changes")) &&
+                  agentTip.contains(QStringLiteral("4 ahead")) &&
+                  agentTip.count(QStringLiteral("<tr>")) ==
+                      agentTip.count(QStringLiteral("<img ")),
+              QStringLiteral("every line in an agent hover card has an icon"));
         // A cleaned-up session with no patch yet leaves every badge unknown, so
         // the chip falls back to the plain branch button.
         check(window.testAgentStatusCellBadges(2910, AgentDiffStat()) ==

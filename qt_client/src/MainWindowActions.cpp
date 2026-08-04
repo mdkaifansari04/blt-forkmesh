@@ -2114,6 +2114,7 @@ QString webPingKindLabel(const QString &kind)
         {QStringLiteral("organization_task_started"), QStringLiteral("Org task")},
         {QStringLiteral("organization_task_activity"), QStringLiteral("Org task")},
         {QStringLiteral("error_group"), QStringLiteral("Error group")},
+        {QStringLiteral("operational_alert"), QStringLiteral("System alert")},
     };
     return labels.value(kind, QStringLiteral("Web"));
 }
@@ -2434,8 +2435,10 @@ void MainWindow::refreshNotificationsTable()
                              : QStringLiteral("Read");
         data.whenMs = qint64(alert.value(QStringLiteral("ts")).toDouble());
         data.link = href;
-        // The site paints error groups red the way local alerts are.
-        data.warning = kind == QLatin1String("error_group");
+        // Worker failures and /status operational outages are both immediate
+        // admin warnings, not passive website activity.
+        data.warning = kind == QLatin1String("error_group") ||
+                       kind == QLatin1String("operational_alert");
         data.destination = webAlertLink(alert);
         data.href = webUrl;
         data.webId = alert.value(QStringLiteral("id")).toString().trimmed();
@@ -2646,15 +2649,18 @@ void MainWindow::refreshWebAlerts(bool force)
         // subsequent polling is then free to surface genuinely new pings.
         const bool loadingStartupBaseline = !m_webAlertsBaselineLoaded;
         m_webAlertsBaselineLoaded = true;
-        // An unread error-group ping is an error that just happened somewhere
-        // on the mesh: after the startup baseline, raise it in the ping area
+        // An unread error-group or operational ping is an outage that just
+        // happened somewhere on the mesh: after the startup baseline, raise it
+        // in the ping area
         // (and flash the red border) the moment this poll sees it, instead of
         // leaving it to be discovered on the Pings page. Each alert id flashes
         // once per app run (adhoc #77).
         for (const QJsonValue &value : std::as_const(m_webAlerts)) {
             const QJsonObject alert = value.toObject();
-            if (alert.value(QStringLiteral("kind")).toString().trimmed() !=
-                    QLatin1String("error_group") ||
+            const QString kind =
+                alert.value(QStringLiteral("kind")).toString().trimmed();
+            if ((kind != QLatin1String("error_group") &&
+                 kind != QLatin1String("operational_alert")) ||
                 alert.value(QStringLiteral("readAt")).toDouble() > 0)
                 continue;
             const QString id =
@@ -2668,11 +2674,13 @@ void MainWindow::refreshWebAlerts(bool force)
                 alert.value(QStringLiteral("title")).toString().trimmed();
             AppNotification ping;
             ping.title = title.isEmpty()
-                             ? QStringLiteral("New error group on the relay")
+                             ? (kind == QLatin1String("operational_alert")
+                                    ? QStringLiteral("ForkMesh system alert")
+                                    : QStringLiteral("New error group on the relay"))
                              : title;
             ping.body = alert.value(QStringLiteral("body")).toString().trimmed();
             ping.warning = true;
-            ping.kind = QStringLiteral("error_group");
+            ping.kind = kind;
             flashNotification(ping);
         }
         // Only repaint while the page is the one on screen; it rebuilds from

@@ -862,6 +862,9 @@ public:
     // Paths rendered in the universal CHANGES tree, so branch tests can prove
     // the range's files appear without swapping to a second navigator.
     QStringList testSourceControlPaths() const;
+    // Text in the working-tree pane while the activity-rail Git view changes
+    // branch, used to ensure it never briefly presents a prior checkout's diff.
+    QString testSourceControlDiffText() const;
     // "commit=… commitPush=… stagePush=… sync=…", each hidden/disabled/enabled,
     // so a test can prove a waiting commit keeps its buttons on screen even while
     // outgoing commits are pending (adhoc #66).
@@ -953,6 +956,8 @@ public:
     // as "files|dirty|worktree|behind|ahead", so a test can prove the chip's
     // file and visible branch-health markers are fed from the session's diff stat.
     QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
+    QString testAgentStatusCellToolTip(int sessionId,
+                                       const AgentDiffStat &stat) const;
     void testSetCachedAgentDiffFiles(int sessionId, int files)
     {
         AgentDiffStat stat = m_agentDiffStats.value(sessionId);
@@ -3785,6 +3790,10 @@ private:
     // return README.md. Results feed the Reachability column after Artifacts.
     void fetchMirrorReachability(const QString &owner, const QString &repo,
                                  const QString &source, const QString &node);
+    // Fetch content-free relay inbox counts so Mirror nodes shows submissions
+    // that have not reached any repository copy yet.
+    void fetchMirrorPendingCounts(const QString &owner, const QString &repo,
+                                  const QString &source);
     // Fetch the worker's per-artifact release download counts (logged each time
     // /releases/blob/sha256/<hash> streams a binary out), so the Releases tab can
     // show how many times each artifact has been downloaded.
@@ -3902,6 +3911,10 @@ private:
     QWidget *buildSourceControlPanel();
     void refreshSourceControl();             // re-scan `git status` into the tree
     void refreshSourceControl(bool force);   // force refresh path bypassing cache short-circuit
+    // Clear the previous checkout's source-control content before a Git/branch
+    // navigation begins its asynchronous scan. This prevents old diffs from
+    // being attributed to the newly selected branch while it loads.
+    void showSourceControlLoading(const QString &branch);
     // While a branch/PR comparison is open, populate the same CHANGES tree with
     // that range's files while leaving its composer and actions in place.
     void showRangeFilesInSourceControl(const QStringList &paths,
@@ -4090,7 +4103,10 @@ private:
     // Clicking a contributor's name or commit count on the Insights tab jumps to
     // the Commits tab with the list filtered to that author (drives m_commitSearch).
     void openCommitsForContributor(const QString &author);
-    void setRepoBranch(const QString &branch);
+    // `loadContent` is false for the Git branch handoff: it updates the
+    // selected ref and visible labels immediately, then lets the caller paint
+    // its loading state before the expensive overview/history rebuild begins.
+    void setRepoBranch(const QString &branch, bool loadContent = true);
     QString repoHeadBranch() const;          // the checked-out branch (HEAD)
     void updateCommitsBranchButtonLabel();   // branch + current worktree identity
     void refreshCommitsBranchButton();       // commits-page branch indicator/menu
@@ -8173,6 +8189,8 @@ private:
     // "owner/repo|node" -> bounded result from the exact-node README probe.
     QHash<QString, QJsonObject> m_mirrorReachabilityCache;
     QSet<QString> m_mirrorReachabilityInFlight;
+    QHash<QString, QJsonObject> m_mirrorPendingCache;
+    QSet<QString> m_mirrorPendingInFlight;
     // Per-artifact release download counts for the repo currently shown in the
     // Releases panel (sha256 -> times downloaded), from the worker's
     // /releases/downloads endpoint.

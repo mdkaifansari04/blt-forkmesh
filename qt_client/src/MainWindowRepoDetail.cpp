@@ -8548,13 +8548,15 @@ bool MainWindow::applyRepoAboutMetadataAt(int index, const QString &about,
     return true;
 }
 
-void MainWindow::setRepoBranch(const QString &branch)
+void MainWindow::setRepoBranch(const QString &branch, bool loadContent)
 {
     m_repoBranch = branch;
     if (m_branchButton)
         m_branchButton->setText(branch);
     updateCommitsBranchButtonLabel();
     updateFooterCommitInfo(); // the strip's commit line follows the browsed branch
+    if (!loadContent)
+        return;
     loadRepoOverview(QString());
     loadCommits(); // also refreshes the Insights counts when that tab is on screen
 }
@@ -9695,9 +9697,19 @@ QWidget *MainWindow::buildRepoDetailSection()
         // Git always starts from the default branch's source-control view.
         // Branch/worktree/PR comparisons remain available from their links,
         // but they never become a second persistent Git destination.
-        closeBranchCompareView();
+        m_branchCompareBase.clear();
         showOverviewCommits();
+        setCommitWorkspacePage(kCommitWorkspaceChangesPage);
+        const QString base = repoDefaultBranchFast();
+        // Do this before the deferred branch/history work. Otherwise the prior
+        // branch or commit stays visible until those Git reads complete.
+        showSourceControlLoading(base);
         QTimer::singleShot(0, this, [this] {
+            const QString base = repoDefaultBranchFast();
+            if (!base.isEmpty() && m_repoBranch != base) {
+                setRepoBranch(base);
+                return; // setRepoBranch already refreshes source control/history
+            }
             if (commitsListIsCurrent())
                 refreshSourceControl();
             else

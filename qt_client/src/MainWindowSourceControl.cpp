@@ -955,6 +955,46 @@ void MainWindow::refreshSourceControl()
     refreshSourceControl(/*force=*/false);
 }
 
+// A branch handoff can take a moment: the target's commit graph is rebuilt and
+// the working-tree status is read asynchronously.  Keeping the last checkout's
+// tree and diff visible during that gap makes it look as though those changes
+// belong to the branch the user just selected.  Start from an explicit, named
+// loading state instead.  The generation bump also makes any late status read
+// for the branch we left harmless.
+void MainWindow::showSourceControlLoading(const QString &branch)
+{
+    ++m_scmStatusGeneration;
+    m_scmStatusCache.clear();
+    m_scmPatchValid = false;
+    m_scmDiffRenderKey.clear();
+    m_scmDiffSourceKey.clear();
+    m_scmSectionKeys.clear();
+    m_scmSectionAnchors.clear();
+    m_scmSectionPaths.clear();
+    m_scmStickyLabelHtml.clear();
+    m_scmFileTops.clear();
+    m_scmStickySection.clear();
+    if (m_scmStickyHeader)
+        m_scmStickyHeader->hide();
+    if (m_scmTree) {
+        QSignalBlocker block(m_scmTree);
+        m_scmTree->clear();
+        m_scmTree->setEnabled(false);
+    }
+    if (m_scmCountLabel)
+        m_scmCountLabel->setText(QStringLiteral("Loading changes\xE2\x80\xA6"));
+    if (m_scmViewedLabel)
+        m_scmViewedLabel->clear();
+    if (m_scmDiff) {
+        const QString label = branch.isEmpty() ? QStringLiteral("repository")
+                                               : branch;
+        setDiffHtml(
+            m_scmDiff,
+            QStringLiteral("<p style='color:#8b949e'>Loading changes on %1\xE2\x80\xA6</p>")
+                .arg(label.toHtmlEscaped()));
+    }
+}
+
 void MainWindow::refreshSourceControl(bool force)
 {
     if (!m_scmTree)
