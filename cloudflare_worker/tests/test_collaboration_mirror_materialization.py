@@ -272,11 +272,13 @@ def test_qt_mirror_poll_merges_all_three_record_kinds():
 
 def test_mirror_intake_uses_group_membership_plus_fresh_endpoint_integrity():
     source = _function_source("_authorized_mirror_issue_signing_key")
-    assert 'context.get("groupNodes", set())' in source
+    assert '(context or {}).get("groupNodes", set())' in source
     assert "checked_at>=? AND healthy=1" in source
     assert "integrity='ok'" in source
     assert "abuse_blocked=0" in source
     assert "forkmesh_active=1" not in source
+    assert 'await _org_repo_node(env, "forkmesh", "forkmesh")' in source
+    assert "(not flagship_intake and node not in allowed_nodes)" in source
     assert "_claimed_node_signing_pubkeys" in source
 
 

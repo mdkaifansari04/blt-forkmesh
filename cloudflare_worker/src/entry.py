@@ -35579,11 +35579,20 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
             safe_segment(original.group(1)) if original else owner)
         public_repo = (
             safe_segment(original.group(2)) if original else repo)
+        flagship_owner = (
+            await _org_repo_node(env, "forkmesh", "forkmesh")
+            or "forkmesh"
+        )
+        flagship_intake = bool(
+            public_repo == "forkmesh"
+            and public_owner in ("forkmesh", flagship_owner)
+        )
         context = await _https_mirror_public_context(
             env, public_owner, public_repo)
     except Exception:
         context = None
-    if not context:
+        flagship_intake = False
+    if not context and not flagship_intake:
         return "", ""
     # Membership comes from the signed catalog's mirror group, while freshness
     # and state integrity come from the exact endpoint row below. Requiring the
@@ -35595,7 +35604,7 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
         # and an integrity-clean repository endpoint.
     allowed_nodes = {
         str(value or "").strip().lower()
-        for value in context.get("groupNodes", set())
+        for value in (context or {}).get("groupNodes", set())
     }
     now = int(Date.now())
     rows = await d1_all(
@@ -35613,7 +35622,7 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
             row.get("node_name", ""), MAX_NODE_NAME).strip().lower()
         public_key = clean_string(row.get("public_key", ""), 160).strip()
         if (
-            node not in allowed_nodes
+            (not flagship_intake and node not in allowed_nodes)
             or not valid_node_pubkey(public_key)
             or public_key not in await _claimed_node_signing_pubkeys(env, node)
         ):
