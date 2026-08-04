@@ -7422,6 +7422,20 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                                                             : " (already up to date)"));
                         }
                         if (!stillPreview && repo.publishToNetwork) {
+                            // A fetch changes the exact refs digest pinned by
+                            // the direct HTTPS gateway. Refresh that pin before
+                            // advertising the new catalog state; otherwise the
+                            // gateway remains online but correctly quarantines
+                            // the repository it just fetched as unavailable.
+                            QString gatewayError;
+                            if (!rebuildDirectMirrorGatewayConfiguration(
+                                    &gatewayError, true)) {
+                                logSystem(
+                                    QStringLiteral(
+                                        "Direct gateway refresh after mirror "
+                                        "sync failed: %1")
+                                        .arg(gatewayError));
+                            }
                             publishRepository(index, false);
                             // Refresh the compatibility lifecycle hook after the
                             // direct-HTTPS mirror is published.
