@@ -4753,6 +4753,9 @@ int main(int argc, char *argv[])
         mergeSession.issueTitle = QStringLiteral("note a task merging into main");
         mergeSession.baseBranch = QStringLiteral("main");
         mergeSession.status = AgentStatus::Success;
+        // adhoc #1443: the "#" cell leads with the provider that ran the session,
+        // and the hover card names it.
+        mergeSession.provider = QStringLiteral("claude-code");
         check(!mergeSession.merged,
               QStringLiteral("the merge-note fixture starts unmerged"));
         check(window.testAgentStatusCellText(mergeSession.id).isEmpty(),
@@ -4817,6 +4820,45 @@ int main(int argc, char *argv[])
                   agentTip.count(QStringLiteral("<tr>")) ==
                       agentTip.count(QStringLiteral("<img ")),
               QStringLiteral("every line in an agent hover card has an icon"));
+        // adhoc #1443: the hover card also has to explain the marks the cell
+        // paints — which agent ran it, the branch button's ring colour, the amber
+        // dot on its corner, and the down arrow beside it — since none of them
+        // can be read off the row on their own.
+        check(agentTip.contains(QStringLiteral("Claude Code")) &&
+                  agentTip.contains(QStringLiteral("`claude` CLI")),
+              QStringLiteral("the hover card names the provider that ran the "
+                             "session (adhoc #1443)"));
+        check(agentTip.contains(QStringLiteral("blue ring")) &&
+                  agentTip.contains(QStringLiteral("still on disk")),
+              QStringLiteral("the hover card explains the branch button's ring "
+                             "colour (adhoc #1443)"));
+        check(agentTip.contains(QStringLiteral("amber dot")),
+              QStringLiteral("the hover card explains the dot on the branch "
+                             "button (adhoc #1443)"));
+        check(agentTip.contains(QString::fromUtf8("\xE2\xAC\x87 arrow")) &&
+                  agentTip.contains(QStringLiteral("9 commits behind main")),
+              QStringLiteral("the hover card explains the down arrow beside the "
+                             "branch button (adhoc #1443)"));
+        // QStringLiteral wraps a u"" literal, so a UTF-8 byte escape in one lands
+        // as a code point per byte: the churn line used to read "added Â·
+        // removed" in the card. Every separator has to survive as itself.
+        check(agentTip.contains(QString::fromUtf8("added \xC2\xB7 ")) &&
+                  !agentTip.contains(QString::fromUtf8("\xC3\x82")),
+              QStringLiteral("the hover card's punctuation is not mangled into "
+                             "mojibake (adhoc #1443)"));
+        // A session whose checkout has been cleaned up says so, and says the ring
+        // goes grey with it.
+        AgentDiffStat gone = chip;
+        gone.worktree.clear();
+        gone.dirty = 0;
+        gone.behind = 0;
+        const QString goneTip = window.testAgentStatusCellToolTip(2910, gone);
+        check(goneTip.contains(QStringLiteral("grey ring")) &&
+                  goneTip.contains(QStringLiteral("no dot")) &&
+                  !goneTip.contains(QString::fromUtf8("\xE2\xAC\x87 arrow")),
+              QStringLiteral("a cleaned-up, clean, up-to-date session explains a "
+                             "grey ring and no dot, and mentions no arrow "
+                             "(adhoc #1443)"));
         // A cleaned-up session with no patch yet leaves every badge unknown, so
         // the chip falls back to the plain branch button.
         check(window.testAgentStatusCellBadges(2910, AgentDiffStat()) ==
