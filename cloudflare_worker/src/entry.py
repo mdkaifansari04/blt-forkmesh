@@ -35553,6 +35553,12 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
     The caller signs with the account-bound key registered for its endpoint.
     Repository membership comes from the same owner-pinned public mirror group
     used by direct reads, so merely being an online ForkMesh node is not enough.
+    Intake deliberately requires fresh endpoint health and integrity rather
+    than the clone router's exact full-ref generation: active agent branches can
+    move between otherwise healthy peers, and collaboration rows must land on
+    any available group mirror instead of waiting for every auxiliary ref to be
+    byte-identical. The mirror's signed post-merge attestation pins the state it
+    actually materialized before the row is acknowledged.
     """
     if await _repo_is_private(env, owner, repo):
         return "", ""
@@ -35585,8 +35591,8 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
     # intake race every successful sync: the fresh endpoint challenge passed,
     # but its asynchronous catalog publication lagged by one generation and
     # the relay returned 401. A node outside the group is still rejected, and a
-    # group member cannot drain until its live endpoint independently passes
-    # the canonical refs challenge (forkmesh_active=1).
+        # group member cannot drain without a fresh identity-bound health proof
+        # and an integrity-clean repository endpoint.
     allowed_nodes = {
         str(value or "").strip().lower()
         for value in context.get("groupNodes", set())
@@ -35595,10 +35601,8 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
     rows = await d1_all(
         env,
         """SELECT node_name,public_key FROM mirror_https_endpoints
-            WHERE checked_at>=? AND forkmesh_verified_at>=?
-              AND healthy=1 AND forkmesh_active=1
+            WHERE checked_at>=? AND healthy=1
               AND integrity='ok' AND abuse_blocked=0""",
-        now - HTTPS_MIRROR_STATUS_FRESH_MS,
         now - HTTPS_MIRROR_STATUS_FRESH_MS,
     )
     canonical = (
