@@ -327,55 +327,10 @@ constexpr qsizetype kDiffStreamBatchChars = 12'000;
 // progressively *slower* even when it arrives in event-loop-sized batches. Keep
 // each file body and the complete rich-text body bounded. Headers/anchors remain
 // for every file, and a clear placeholder points readers to the full patch.
-constexpr qsizetype kDiffFileRichTextChars = 12'000;
-constexpr qsizetype kDiffTotalRichTextChars = 180'000;
-
 QString responsiveDiffBlock(const QString &block, bool headerOnly)
 {
-    const QString tableMarker = QStringLiteral("<table class='difftable'");
-    const int table = block.indexOf(tableMarker);
-    if (table < 0 || (!headerOnly && block.size() <= kDiffFileRichTextChars))
-        return block;
-
-    const int tableOpenEnd = block.indexOf(QLatin1Char('>'), table);
-    if (tableOpenEnd < 0)
-        return block.left(kDiffFileRichTextChars);
-
-    // Keep the file header but discard a potentially large inline image preview
-    // before the diff table. The first </div> closes .fileheader; .fileblock is
-    // deliberately left open for the replacement table below.
-    const int headerEnd = block.indexOf(QStringLiteral("</div>"));
-    QString compact =
-        block.left(headerEnd >= 0 && headerEnd < table ? headerEnd + 6
-                                                       : tableOpenEnd + 1);
-    if (!compact.endsWith(QLatin1Char('>')))
-        compact += QLatin1Char('>');
-    if (headerEnd >= 0 && headerEnd < table)
-        compact += block.mid(table, tableOpenEnd - table + 1);
-
-    int keptRows = 0;
-    if (!headerOnly) {
-        int cursor = tableOpenEnd + 1;
-        while (compact.size() < kDiffFileRichTextChars) {
-            const int rowEnd = block.indexOf(QStringLiteral("</tr>"), cursor);
-            if (rowEnd < 0)
-                break;
-            const int after = rowEnd + 5;
-            if (compact.size() + after - cursor > kDiffFileRichTextChars)
-                break;
-            compact += block.mid(cursor, after - cursor);
-            cursor = after;
-            ++keptRows;
-        }
-    }
-    compact += QStringLiteral(
-        "<tr><td class='code hunk' colspan='8'><i>%1 to keep the interface "
-        "responsive. The complete patch remains available from Git or an "
-        "external editor.</i></td></tr></table></div>")
-                   .arg(headerOnly || keptRows == 0
-                            ? QStringLiteral("Large diff content omitted")
-                            : QStringLiteral("Remaining large diff content omitted"));
-    return compact;
+    Q_UNUSED(headerOnly);
+    return block;
 }
 
 // Split rendered diff HTML into its self-contained per-file blocks. Each file's
@@ -390,15 +345,12 @@ QStringList splitDiffFileBlocks(const QString &html)
     if (pos < 0)
         return {html}; // no per-file anchors (e.g. an empty/notice body)
     QStringList blocks;
-    qsizetype richTextChars = 0;
     if (pos > 0)
         blocks.append(html.left(pos)); // preamble before the first file (if any)
     while (pos >= 0) {
         const int next = html.indexOf(marker, pos + marker.size());
         QString block = html.mid(pos, next < 0 ? -1 : next - pos);
-        const bool overTotal = richTextChars >= kDiffTotalRichTextChars;
-        block = responsiveDiffBlock(block, overTotal);
-        richTextChars += block.size();
+        block = responsiveDiffBlock(block, false);
         blocks.append(std::move(block));
         pos = next;
     }
