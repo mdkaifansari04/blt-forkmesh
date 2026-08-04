@@ -12,9 +12,9 @@ struct LogTimelineEntry {
     QString category;
 };
 
-// A dependency-free activity histogram for the persisted application log.
-// Dragging across the plot zooms to that interval; the wheel zooms around the
-// pointer and a double-click returns to the selected timeframe.
+// A compact activity rail for the persisted application log. Dragging across
+// the rail zooms to that interval; the wheel zooms around the pointer and a
+// double-click returns to the selected timeframe.
 class LogTimelineChart : public QWidget {
 public:
     explicit LogTimelineChart(QWidget *parent = nullptr);
