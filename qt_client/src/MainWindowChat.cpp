@@ -4139,16 +4139,42 @@ void MainWindow::refreshRepositoryStats()
     static QHash<QString, TrendCacheEntry> trendCache;
     const QString today = QDate::currentDate().toString(Qt::ISODate);
     TrendCacheEntry &cached = trendCache[dir];
-    QString error;
     if (cached.day != today || cached.days.isEmpty()) {
-        cached.days = RepoStatsStore::captureDaily(dir, &error);
-        cached.day = today;
-    }
-    const QVector<RepoStatsSample> &days = cached.days;
-    if (days.isEmpty()) {
-        if (!error.isEmpty()) logSystem(QStringLiteral("Repository stats: %1").arg(error));
+        // captureDaily() reads *every tracked file* to measure size and line
+        // counts — 2.3 s of blocked GUI thread in the stall log, and it runs off
+        // updateFooterDiagnostics' periodic timer, so it froze the window on a
+        // schedule. Do it on a worker thread and re-enter once the samples land;
+        // it touches only git and disk. One capture per repo at a time: the
+        // periodic refresh must not stack passes that each re-read the tree.
+        static QSet<QString> capturing;
+        if (capturing.contains(dir))
+            return;
+        capturing.insert(dir);
+        runOffThread<QPair<QVector<RepoStatsSample>, QString>>(
+            [dir] {
+                QString error;
+                const QVector<RepoStatsSample> days =
+                    RepoStatsStore::captureDaily(dir, &error);
+                return qMakePair(days, error);
+            },
+            [this, dir, today](QPair<QVector<RepoStatsSample>, QString> result) {
+                capturing.remove(dir);
+                if (result.first.isEmpty()) {
+                    if (!result.second.isEmpty())
+                        logSystem(QStringLiteral("Repository stats: %1")
+                                      .arg(result.second));
+                    return;
+                }
+                TrendCacheEntry &entry = trendCache[dir];
+                entry.days = result.first;
+                entry.day = today;
+                refreshRepositoryStats(); // now a cache hit: paints, runs no git
+            });
         return;
     }
+    const QVector<RepoStatsSample> &days = cached.days;
+    if (days.isEmpty())
+        return;
     QVector<double> sizes, lines, files;
     double maxSize = 1, maxLines = 1, maxFiles = 1;
     for (const RepoStatsSample &day : days) {
