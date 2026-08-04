@@ -7736,27 +7736,7 @@ public:
     // going unmarked; the chip's tooltip always carries the kind and the count.
     static QString octiconForWord(const QString &word)
     {
-        static const QHash<QString, QString> icons{
-            {QStringLiteral("agent"), QStringLiteral("sparkle")},
-            {QStringLiteral("agents"), QStringLiteral("sparkle")},
-            {QStringLiteral("actions"), QStringLiteral("workflow")},
-            {QStringLiteral("avatars"), QStringLiteral("person")},
-            {QStringLiteral("chat"), QStringLiteral("comment")},
-            {QStringLiteral("cleanup"), QStringLiteral("trash")},
-            {QStringLiteral("diff"), QStringLiteral("file-diff")},
-            {QStringLiteral("fork"), QStringLiteral("repo-forked")},
-            {QStringLiteral("git"), QStringLiteral("git-commit")},
-            {QStringLiteral("issues"), QStringLiteral("issue-opened")},
-            {QStringLiteral("mirrors"), QStringLiteral("server")},
-            {QStringLiteral("net"), QStringLiteral("broadcast")},
-            {QStringLiteral("pulls"), QStringLiteral("git-pull-request")},
-            {QStringLiteral("releases"), QStringLiteral("tag")},
-            {QStringLiteral("repo"), QStringLiteral("repo")},
-            {QStringLiteral("scan"), QStringLiteral("search")},
-            {QStringLiteral("sync"), QStringLiteral("sync")},
-            {QStringLiteral("uibuild"), QStringLiteral("code")},
-        };
-        return icons.value(word, QStringLiteral("gear"));
+        return octiconForBackgroundTaskWord(word);
     }
 
 protected:
@@ -9228,6 +9208,67 @@ inline QString logPromptAnchorLine(const QString &href)
         href.mid(kLogPromptAnchorPrefix.size()).toLatin1());
 }
 
+inline QString octiconForBackgroundTaskWord(const QString &word)
+{
+    static const QHash<QString, QString> icons{
+        {QStringLiteral("agent"), QStringLiteral("sparkle")},
+        {QStringLiteral("agents"), QStringLiteral("sparkle")},
+        {QStringLiteral("actions"), QStringLiteral("workflow")},
+        {QStringLiteral("avatars"), QStringLiteral("person")},
+        {QStringLiteral("chat"), QStringLiteral("comment")},
+        {QStringLiteral("cleanup"), QStringLiteral("trash")},
+        {QStringLiteral("diff"), QStringLiteral("file-diff")},
+        {QStringLiteral("fork"), QStringLiteral("repo-forked")},
+        {QStringLiteral("git"), QStringLiteral("git-commit")},
+        {QStringLiteral("issues"), QStringLiteral("issue-opened")},
+        {QStringLiteral("mirrors"), QStringLiteral("server")},
+        {QStringLiteral("net"), QStringLiteral("broadcast")},
+        {QStringLiteral("pulls"), QStringLiteral("git-pull-request")},
+        {QStringLiteral("releases"), QStringLiteral("tag")},
+        {QStringLiteral("repo"), QStringLiteral("repo")},
+        {QStringLiteral("scan"), QStringLiteral("search")},
+        {QStringLiteral("sync"), QStringLiteral("sync")},
+        {QStringLiteral("uibuild"), QStringLiteral("code")},
+    };
+    return icons.value(word, QStringLiteral("gear"));
+}
+
+inline QString backgroundTaskWordFromLogMessage(const QString &storedLine)
+{
+    QString line = storedLine.trimmed();
+    const QString prefix = QStringLiteral("Background ");
+    if (!line.startsWith(prefix))
+        return QString();
+    line = line.mid(prefix.size()).trimmed();
+    if (line.startsWith(backgroundOkGlyph()) || line.startsWith(backgroundNotGlyph()))
+        line = line.mid(1).trimmed();
+    if (line.isEmpty())
+        return QString();
+    const int split = line.indexOf(QLatin1Char(' '));
+    return line.left(split < 0 ? line.size() : split).toLower();
+}
+
+inline QString logBgtaskIconTag(QTextEdit *view, const QString &storedLine)
+{
+    if (!view)
+        return QString();
+    QString message = storedLine;
+    if (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' '))
+        message = storedLine.mid(21);
+    const QString word = backgroundTaskWordFromLogMessage(message);
+    if (word.isEmpty())
+        return QString();
+    const QString icon = octiconForBackgroundTaskWord(word);
+    const QString resource = QStringLiteral("logbgtask://") + word + QLatin1String("-")
+                             + icon;
+    view->document()->addResource(
+        QTextDocument::ImageResource, QUrl(resource),
+        tintedOcticonPixmap(icon, QColor("#8b949e"), 11));
+    return QStringLiteral("<img src='%1' width='11' height='11' "
+                          "style='vertical-align:middle'>&nbsp;")
+        .arg(resource);
+}
+
 // The leading icon markup for one log entry, registering the glyph on `view`'s
 // document so the <img> resolves there. Grey enough to read on both the Log
 // view's themed canvas and the footer strip's forced-white one.
@@ -9238,10 +9279,12 @@ inline QString logPromptIconTag(QTextEdit *view, const QString &storedLine)
     view->document()->addResource(
         QTextDocument::ImageResource, QUrl(kLogPromptIconResource),
         tintedOcticonPixmap(QStringLiteral("plus"), QColor("#8b949e"), 12));
+    const QString appIcon = logBgtaskIconTag(view, storedLine);
     return QStringLiteral(
                "<a href='%1' style='text-decoration:none'><img src='%2' "
                "width='11' height='11' style='vertical-align:middle'></a>&nbsp;")
-        .arg(logPromptAnchorHref(storedLine), kLogPromptIconResource);
+        .arg(logPromptAnchorHref(storedLine), kLogPromptIconResource) +
+        appIcon;
 }
 
 inline QString serverHost(const QString &serverUrl)
