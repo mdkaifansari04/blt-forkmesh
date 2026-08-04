@@ -33894,6 +33894,13 @@ def _forkbot_ai_model_not_found_error(error):
         "model not found",
         "unknown model",
         "does not exist",
+        # What Workers AI actually says for a retired/mistyped id
+        # ("5007: No such model @cf/... or task"); the wordings above never
+        # matched it, so the fallback chain sat unused in production.
+        "no such model",
+        "no such task",
+        "invalid model",
+        "unsupported model",
     ))
 
 
@@ -33993,7 +34000,8 @@ async def ai_ask_handler(env, request):
     prompt = clean_string(data.get("prompt", ""), AI_ASK_MAX_PROMPT).strip()
     if not prompt:
         return json_response({"error": "prompt_required"}, status=400)
-    model = _forkbot_resolve_ai_model(env, data.get("model", ""))
+    requested = clean_string(data.get("model", ""), 120).strip()
+    model = _forkbot_resolve_ai_model(env, requested)
     ts = clean_string(data.get("ts", ""), 20).strip()
     sig = clean_string(data.get("sig", ""), 200).strip()
     if not ts or not sig:
@@ -34004,35 +34012,65 @@ async def ai_ask_handler(env, request):
         return json_response({"error": "signature_required"}, status=401)
     if skew > LOGIN_MAX_SKEW_MS:
         return json_response({"error": "stale_signature"}, status=401)
-    canonical = (
-        "forkmesh-ai-ask-v1\n" + account + "\n" + ts + "\n" + model + "\n" +
-        await sha256_hex(prompt)
-    ).encode()
-    if not await _verify_owner_signature(env, account, sig, canonical):
+
+    prompt_digest = await sha256_hex(prompt)
+
+    def _canonical(model_id):
+        return (
+            "forkmesh-ai-ask-v1\n" + account + "\n" + ts + "\n" + model_id +
+            "\n" + prompt_digest
+        ).encode()
+
+    # The client signs the model id IT picked, so verification must use that
+    # exact string. Signing the *resolved* id turned any pick this relay does
+    # not allowlist (a client offering a newer model than the deployment knows)
+    # into a bogus 401 "unauthorized" instead of a quiet fall back to the
+    # default; the resolved id is still accepted for older clients that signed
+    # whatever the relay handed them.
+    verified = await _verify_owner_signature(
+        env, account, sig, _canonical(requested))
+    if not verified and model != requested:
+        verified = await _verify_owner_signature(
+            env, account, sig, _canonical(model))
+    if not verified:
         return json_response({"error": "unauthorized"}, status=401)
     limited = await _ai_ask_rate_check(env, await blind_index(env, account))
     if limited is not None:
         return limited
+    outcome = {}
     reply = await _forkbot_run_ai(
         env, AI_ASK_SYSTEM_PROMPT, prompt, model=model,
-        max_tokens=AI_ASK_MAX_TOKENS)
+        max_tokens=AI_ASK_MAX_TOKENS, outcome=outcome)
     if not isinstance(reply, str) or not reply.strip():
         # _forkbot_run_ai already logged why (missing binding, provider error,
         # unusable shape); the composer needs a distinguishable failure so it
         # can say "the model did not answer" instead of showing an empty reply.
-        return json_response({"error": "ai_unavailable", "model": model},
-                             status=502)
+        # model_not_found is kept separate: it is the only failure the caller
+        # can act on by picking a different model.
+        error = ("model_not_found"
+                 if outcome.get("failure") == "model_not_found"
+                 else "ai_unavailable")
+        return json_response({"error": error, "model": model}, status=502)
     return json_response({
         "ok": True,
-        "model": model,
+        # The model that actually answered, which is the requested one unless
+        # a fallback had to take over (see _forkbot_ai_fallback_models).
+        "model": outcome.get("model") or model,
         "reply": reply.strip()[:AI_ASK_MAX_REPLY],
     })
 
 
 async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
-                          model="", max_tokens=512):
+                          model="", max_tokens=512, outcome=None):
     """Run the Workers AI chat model and return the raw response text/object
     (or None). Shared by the issue-drafting and intent-classification helpers.
+
+    Pass a dict as `outcome` to learn what happened beyond None/not-None:
+    "model" is the id that actually answered (a fallback when the pick was
+    rejected) and "failure" is one of missing_binding / model_not_found /
+    provider_error / unusable_response. POST /api/ai/ask needs
+    model_not_found separated out because that is the one failure the person
+    at the composer can fix by picking another model.
 
     When `schema` is given, the first attempt requests Workers AI JSON mode
     (response_format json_schema) so a supporting model MUST return valid
@@ -34045,8 +34083,11 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
     swallowed all exceptions, which left ForkBot silently degraded (raw-echo
     issue titles, natural requests answered with the help hint) with nothing
     in the logs to say why."""
+    if outcome is None:
+        outcome = {}
     ai = getattr(env, "AI", None)
     if ai is None or js_nullish(ai) or not hasattr(ai, "run"):
+        outcome["failure"] = "missing_binding"
         await log_error(
             env, 500, "AI", "forkbot/ai",
             "ForkBot AI unavailable: env.AI binding is missing")
@@ -34071,6 +34112,10 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
     result = None
     ran = False
     last_error = None
+    # Every candidate rejected as "no such model" means the deployment's model
+    # ids are stale, not that inference is broken — worth saying so distinctly
+    # both in the log and to the caller.
+    all_missing = True
     for candidate in candidates:
         for payload in attempts:
             try:
@@ -34082,14 +34127,21 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
                 last_error = error
                 if _forkbot_ai_model_not_found_error(error):
                     break
+                all_missing = False
         if ran:
             break
     if not ran:
+        outcome["failure"] = ("model_not_found" if all_missing
+                              else "provider_error")
         await log_error(
             env, 500, "AI", "forkbot/ai",
-            "ForkBot AI call failed (%s): %s"
-            % (model, _safe_error_text(last_error)[:300]))
+            "ForkBot AI call failed (%s%s): %s"
+            % (model,
+               ", no listed model exists on this account" if all_missing
+               else "",
+               _safe_error_text(last_error)[:300]))
         return None
+    outcome["model"] = model
     try:
         if hasattr(result, "to_py"):
             result = result.to_py()
@@ -34108,6 +34160,7 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None,
         return result
     if isinstance(result, str):
         return result
+    outcome["failure"] = "unusable_response"
     await log_error(
         env, 500, "AI", "forkbot/ai",
         "ForkBot AI returned an unusable %s response (%s)"
