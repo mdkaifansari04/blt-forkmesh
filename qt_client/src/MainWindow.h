@@ -2827,6 +2827,9 @@ private:
     // logout and system-terminal entry points.
     void showAgentAccountMenu(const QString &provider,
                               const QPoint &globalPosition);
+    void probeClaudeAgentAccountIdentity(const QString &configDir,
+                                         QAction *accountAction,
+                                         const QString &baseLabel);
     void selectAgentAccount(const QString &provider, const QString &accountId);
     void addAgentAccount(const QString &provider);
     void launchAgentSystemTerminal(const QString &provider,

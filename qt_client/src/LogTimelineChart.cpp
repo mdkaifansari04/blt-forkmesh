@@ -51,6 +51,25 @@ void LogTimelineChart::appendEntry(const LogTimelineEntry &entry)
     notifyViewChanged();
 }
 
+void LogTimelineChart::removeEntry(qint64 timestampMs,
+                                   const QString &category)
+{
+    if (timestampMs <= 0)
+        return;
+    auto it = std::lower_bound(
+        m_entries.begin(), m_entries.end(), timestampMs,
+        [](const LogTimelineEntry &candidate, qint64 timestamp) {
+            return candidate.timestampMs < timestamp;
+        });
+    for (; it != m_entries.end() && it->timestampMs == timestampMs; ++it) {
+        if (it->category != category)
+            continue;
+        m_entries.erase(it);
+        update();
+        return;
+    }
+}
+
 void LogTimelineChart::setCategoryFilter(const QString &category,
                                          const QColor &accent)
 {

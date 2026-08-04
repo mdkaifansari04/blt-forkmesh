@@ -260,6 +260,30 @@ QString jsonString(const QJsonObject &obj, const QString &container,
     return nested.value(key).toString().trimmed();
 }
 
+QHash<QString, QString> &claudeCliIdentityCache()
+{
+    static QHash<QString, QString> cache;
+    return cache;
+}
+
+QSet<QString> &claudeCliIdentityProbes()
+{
+    static QSet<QString> probes;
+    return probes;
+}
+
+QString claudeCliIdentityFromStatus(const QByteArray &statusJson)
+{
+    const QJsonObject auth = QJsonDocument::fromJson(statusJson).object();
+    const QString name = firstNonEmpty(
+        {jsonString(auth, QStringLiteral("name")),
+         jsonString(auth, QStringLiteral("username"))});
+    const QString email = jsonString(auth, QStringLiteral("email"));
+    if (!name.isEmpty() && !email.isEmpty())
+        return QStringLiteral("%1 (%2)").arg(name, email);
+    return name.isEmpty() ? email : name;
+}
+
 QString agentCliIdentityLabel(const QString &provider,
                               const QString &configDir = QString())
 {
@@ -282,27 +306,14 @@ QString agentCliIdentityLabel(const QString &provider,
     QString token;
 
     // Claude's credentials file intentionally contains OAuth material rather
-    // than the human identity. Ask the CLI for its redacted auth status so an
-    // account menu can name the signed-in account instead of exposing only a
-    // masked token. This is best-effort and only runs when the menu is opened.
+    // than the human identity. showAgentAccountMenu() probes the CLI
+    // asynchronously and fills this process cache; ordinary model-picker
+    // refreshes only read the cache/files and can never wait on a subprocess.
     if (!codex) {
-        QProcess status;
-        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        if (!configDir.trimmed().isEmpty())
-            env.insert(QStringLiteral("CLAUDE_CONFIG_DIR"), configDir);
-        status.setProcessEnvironment(env);
-        const QString claude = QStandardPaths::findExecutable(
-            QStringLiteral("claude"));
-        status.start(claude.isEmpty() ? QStringLiteral("claude") : claude,
-                     {QStringLiteral("auth"), QStringLiteral("status"),
-                      QStringLiteral("--json")});
-        if (status.waitForFinished(1500)) {
-            const QJsonObject auth =
-                QJsonDocument::fromJson(status.readAllStandardOutput()).object();
-            name = firstNonEmpty({jsonString(auth, QStringLiteral("name")),
-                                  jsonString(auth, QStringLiteral("username"))});
-            email = jsonString(auth, QStringLiteral("email"));
-        }
+        const QString cached =
+            claudeCliIdentityCache().value(QDir::cleanPath(configDir));
+        if (!cached.isEmpty())
+            return cached;
     }
 
     if (codex) {
@@ -574,7 +585,8 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
     for (const AgentAccountProfile &profile : profiles) {
         const QString identity = agentCliIdentityLabel(provider, profile.configDir);
         const bool signedIn = providerAccountSignedIn(provider, profile.configDir);
-        QString label = profile.label.trimmed();
+        const QString baseLabel = profile.label.trimmed();
+        QString label = baseLabel;
         if (!identity.isEmpty())
             label += QStringLiteral(" — ") + identity;
         if (!signedIn)
@@ -585,6 +597,9 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
         account->setChecked(profile.id == active.id);
         account->setToolTip(QStringLiteral("Use this %1 account for new agents")
                                 .arg(providerName));
+        if (!codex && signedIn && identity.isEmpty())
+            probeClaudeAgentAccountIdentity(profile.configDir, account,
+                                            baseLabel);
         connect(account, &QAction::triggered, this,
                 [this, provider, id = profile.id] {
                     selectAgentAccount(provider, id);
@@ -628,6 +643,75 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
     });
 
     menu->popup(globalPosition);
+}
+
+void MainWindow::probeClaudeAgentAccountIdentity(const QString &configDir,
+                                                 QAction *accountAction,
+                                                 const QString &baseLabel)
+{
+    if (!accountAction)
+        return;
+    const QString key = QDir::cleanPath(configDir);
+    if (claudeCliIdentityCache().contains(key)) {
+        const QString cached = claudeCliIdentityCache().value(key);
+        if (!cached.isEmpty())
+            accountAction->setText(baseLabel + QStringLiteral(" — ") + cached);
+        return;
+    }
+    if (claudeCliIdentityProbes().contains(key))
+        return;
+    const QString claude =
+        QStandardPaths::findExecutable(QStringLiteral("claude"));
+    if (claude.isEmpty()) {
+        claudeCliIdentityCache().insert(key, QString());
+        return;
+    }
+
+    claudeCliIdentityProbes().insert(key);
+    auto *process = new QProcess(this);
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    if (!configDir.trimmed().isEmpty())
+        environment.insert(QStringLiteral("CLAUDE_CONFIG_DIR"), configDir);
+    process->setProcessEnvironment(environment);
+    const QPointer<QAction> guardedAction(accountAction);
+    auto settled = std::make_shared<bool>(false);
+    auto settle = [key, process, settled] {
+        if (*settled)
+            return false;
+        *settled = true;
+        claudeCliIdentityProbes().remove(key);
+        process->deleteLater();
+        return true;
+    };
+    connect(process, &QProcess::finished, this,
+            [process, key, baseLabel, guardedAction, settle](
+                int exitCode, QProcess::ExitStatus exitStatus) {
+                if (!settle())
+                    return;
+                QString identity;
+                if (exitStatus == QProcess::NormalExit && exitCode == 0)
+                    identity = claudeCliIdentityFromStatus(
+                        process->readAllStandardOutput());
+                claudeCliIdentityCache().insert(key, identity);
+                if (guardedAction && !identity.isEmpty())
+                    guardedAction->setText(
+                        baseLabel + QStringLiteral(" — ") + identity);
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [key, settle](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart || !settle())
+                    return;
+                claudeCliIdentityCache().insert(key, QString());
+            });
+    process->start(claude,
+                   {QStringLiteral("auth"), QStringLiteral("status"),
+                    QStringLiteral("--json")});
+    trackProcessActivity(process, QStringLiteral("agent"),
+                         QStringLiteral("Read Claude Code account identity"));
+    QTimer::singleShot(1500, process, [process] {
+        if (process->state() != QProcess::NotRunning)
+            process->kill();
+    });
 }
 
 void MainWindow::selectAgentAccount(const QString &provider,
@@ -3394,6 +3478,7 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             : chosenEmail.isEmpty()
                   ? chosenAccount
                   : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
+    QHash<QString, QString> providerIdentities;
     for (const Choice &choice : models) {
         const ModelChoiceOutcome outcome =
             quickAddModelChoiceSummary(m_agentSessions, choice.provider,
@@ -3414,8 +3499,14 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             label += QLatin1Char(' ') + statusGlyph;
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
-        const QString identity = agentCliIdentityLabel(
-            choice.provider, activeAgentAccount(choice.provider).configDir);
+        if (!providerIdentities.contains(choice.provider)) {
+            const AgentAccountProfile account =
+                activeAgentAccount(choice.provider);
+            providerIdentities.insert(
+                choice.provider,
+                agentCliIdentityLabel(choice.provider, account.configDir));
+        }
+        const QString identity = providerIdentities.value(choice.provider);
         if (!identity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
         else if (!chosenIdentity.isEmpty())
