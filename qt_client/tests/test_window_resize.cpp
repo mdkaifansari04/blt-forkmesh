@@ -3008,6 +3008,11 @@ int main(int argc, char *argv[])
         // The rail's Git entry is the stable home destination: it always clears
         // a branch/worktree comparison and returns to main.
         window.testClickRailGitButton();
+        check(window.testSourceControlDiffText().contains(
+                  QStringLiteral("Loading changes on main")),
+              QString("the rail clears the previous branch/commit diff before "
+                      "refreshing main (pane = \"%1\")")
+                  .arg(window.testSourceControlDiffText().left(80).simplified()));
         QApplication::processEvents();
         check(window.testBrowsedBranch() == QStringLiteral("main") &&
                   window.testCommitWorkspacePage() == 0 &&

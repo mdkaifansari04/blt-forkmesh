@@ -857,6 +857,9 @@ public:
     // Paths rendered in the universal CHANGES tree, so branch tests can prove
     // the range's files appear without swapping to a second navigator.
     QStringList testSourceControlPaths() const;
+    // Text in the working-tree pane while the activity-rail Git view changes
+    // branch, used to ensure it never briefly presents a prior checkout's diff.
+    QString testSourceControlDiffText() const;
     // "commit=… commitPush=… stagePush=… sync=…", each hidden/disabled/enabled,
     // so a test can prove a waiting commit keeps its buttons on screen even while
     // outgoing commits are pending (adhoc #66).
@@ -3897,6 +3900,10 @@ private:
     QWidget *buildSourceControlPanel();
     void refreshSourceControl();             // re-scan `git status` into the tree
     void refreshSourceControl(bool force);   // force refresh path bypassing cache short-circuit
+    // Clear the previous checkout's source-control content before a Git/branch
+    // navigation begins its asynchronous scan. This prevents old diffs from
+    // being attributed to the newly selected branch while it loads.
+    void showSourceControlLoading(const QString &branch);
     // While a branch/PR comparison is open, populate the same CHANGES tree with
     // that range's files while leaving its composer and actions in place.
     void showRangeFilesInSourceControl(const QStringList &paths,
@@ -4085,7 +4092,10 @@ private:
     // Clicking a contributor's name or commit count on the Insights tab jumps to
     // the Commits tab with the list filtered to that author (drives m_commitSearch).
     void openCommitsForContributor(const QString &author);
-    void setRepoBranch(const QString &branch);
+    // `loadContent` is false for the Git branch handoff: it updates the
+    // selected ref and visible labels immediately, then lets the caller paint
+    // its loading state before the expensive overview/history rebuild begins.
+    void setRepoBranch(const QString &branch, bool loadContent = true);
     QString repoHeadBranch() const;          // the checked-out branch (HEAD)
     void updateCommitsBranchButtonLabel();   // branch + current worktree identity
     void refreshCommitsBranchButton();       // commits-page branch indicator/menu
