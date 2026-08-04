@@ -4512,6 +4512,41 @@ int main(int argc, char *argv[])
                   739, QStringLiteral("agent/adhoc-7391-pr-link")) == 7391,
               QStringLiteral("PR lookup is repository-scoped by number and "
                              "branch"));
+        check(window.testAgentPrButtonText(7391) ==
+                  QStringLiteral("View PR #739"),
+              QStringLiteral("an Agent's Create PR action becomes a numbered "
+                             "link to the created pull request"));
+
+        check(window.testRepoRequiresPeerApproval(),
+              QStringLiteral("repositories require peer approval by default"));
+        window.testSetRepoRequirePeerApproval(false);
+        check(!window.testRepoRequiresPeerApproval(),
+              QStringLiteral("repository settings can make peer approval "
+                             "optional"));
+        bool savedOptionalPolicy = false;
+        {
+            QSettings settings;
+            const int count = settings.beginReadArray(
+                QStringLiteral("repositories/items"));
+            for (int i = 0; i < count; ++i) {
+                settings.setArrayIndex(i);
+                if (settings.value(QStringLiteral("owner")).toString() ==
+                        QLatin1String("me") &&
+                    settings.value(QStringLiteral("name")).toString() ==
+                        QLatin1String("r")) {
+                    savedOptionalPolicy =
+                        !settings.value(QStringLiteral("requirePeerApproval"),
+                                        true)
+                             .toBool();
+                    break;
+                }
+            }
+            settings.endArray();
+        }
+        check(savedOptionalPolicy,
+              QStringLiteral("the optional peer-approval policy persists on "
+                             "the repository record"));
+        window.testSetRepoRequirePeerApproval(true);
 
         check(window.testBindAgentSessionsToPull(
                   740, QStringLiteral("manual/pr-740")) &&

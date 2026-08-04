@@ -255,6 +255,10 @@ struct RepositoryRecord {
     // (and every changed script it can reach) before it executes on this
     // machine.
     bool actionsAutoApprove = true;
+    // Require an independent peer approval before a pull request can merge.
+    // This is a repository policy (rather than a global preference) and stays
+    // on by default for existing and newly added repositories.
+    bool requirePeerApproval = true;
     // A gateway-managed serving repository must keep its own post-receive hook
     // and object database isolated from workflow-created objects. The remote
     // Actions helper therefore maintains a separate local bare mirror and this
@@ -547,6 +551,16 @@ public:
     Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
                                            const QString &localPath);
     Q_INVOKABLE bool testOpenRepository(int index);
+    bool testRepoRequiresPeerApproval() const
+    {
+        return m_repoDetailIndex >= 0 &&
+               m_repoDetailIndex < m_repositories.size() &&
+               m_repositories.at(m_repoDetailIndex).requirePeerApproval;
+    }
+    void testSetRepoRequirePeerApproval(bool on)
+    {
+        setRepoRequirePeerApproval(on);
+    }
     // The branch the open repo treats as its default/merge base, so a test can
     // prove it stays main even when the working tree is parked on a feature branch.
     Q_INVOKABLE QString testRepoDefaultBranch() const;
@@ -749,6 +763,7 @@ public:
                 return session.prNumber;
         return 0;
     }
+    QString testAgentPrButtonText(int sessionId);
     // Take the nav strip's route to the Agents tab, so a test can read that
     // lazily-built list back the way a user reaches it (adhoc #119).
     void testOpenAgentsOverview() { openAgentsOverview(); }
@@ -3721,6 +3736,7 @@ private:
     void setRepoActionsEnabled(bool on);
     // Set "approve runs automatically" for the open repo, same two-toggle sync.
     void setRepoActionsAutoApprove(bool on);
+    void setRepoRequirePeerApproval(bool on);
     // Enable or disable secret-scanning push protection for the open repo.
     void setRepoSecretScanningEnabled(bool on);
     // Switch a single workflow (by path) on or off for the open repo, persist it,
@@ -6952,6 +6968,10 @@ private:
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    // Repo/commit pushes whose workflows were already queued explicitly by PR
+    // creation. The post-receive event consumes the marker instead of starting
+    // the same workflows again.
+    QSet<QString> m_explicitActionPushes;
     QSet<int> m_actionWaitingRuns;   // queued ids already logged as `needs:`-blocked
     // The encrypted mirror materialization a run is executing out of (see
     // pinActionMirror). Held until the run finishes so a concurrent re-seal
@@ -7050,6 +7070,7 @@ private:
     // tabs and driven by setRepoActionsAutoApprove().
     QCheckBox *m_actionsAutoApproveCheck = nullptr;
     QCheckBox *m_settingsAutoApproveCheck = nullptr;
+    QCheckBox *m_settingsRequirePeerApprovalCheck = nullptr;
     QCheckBox *m_secretScanCheck = nullptr;
     // Per-repo visibility toggle: when checked the repo is private (hidden from
     // the public catalog; browse/clone gated on the owner's view token).

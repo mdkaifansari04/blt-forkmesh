@@ -9367,6 +9367,9 @@
   }
 
   async function loadRepoPullPatch(repo, number, metadataCommit = "", values = {}) {
+    if (String(values?.status || "open").toLowerCase() !== "open") {
+      return { patch: "", files: [], unavailable: true };
+    }
     const patchPath = `pulls/${number}/changes.patch`;
     try {
       const commit = immutableGitCommit(metadataCommit)

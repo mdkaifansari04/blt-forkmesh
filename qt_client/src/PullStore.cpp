@@ -449,6 +449,91 @@ bool removeOriginalRefs(const QString &workTree, QString *error)
     return true;
 }
 
+// Remove selected pull-ledger paths from every commit that can still be reached
+// through the shared ledger or a per-PR metadata pointer. Rewriting only
+// forkmesh/pulls is insufficient: refs/pr/<n>/metadata may keep the old commit
+// chain (and its large payload blobs) alive after the branch itself is cleaned.
+bool rewritePullHistoryWithoutPaths(const QString &workTree,
+                                    const QStringList &relPaths,
+                                    QString *error)
+{
+    if (relPaths.isEmpty())
+        return true;
+
+    const QString pullsRef = QStringLiteral("refs/heads/forkmesh/pulls");
+    QStringList refsToRewrite{pullsRef};
+    QByteArray metadataRefs;
+    QString err;
+    if (!runGit(workTree,
+                {"for-each-ref", "--format=%(refname)", "refs/pr"},
+                &metadataRefs, &err, kGitRewriteTimeoutMs)) {
+        if (error)
+            *error = QStringLiteral("git for-each-ref failed: ") + err;
+        return false;
+    }
+    for (const QByteArray &line : metadataRefs.split('\n')) {
+        const QString ref = QString::fromUtf8(line).trimmed();
+        if (ref.endsWith(QLatin1String("/metadata")))
+            refsToRewrite << ref;
+    }
+
+    QStringList historyArgs{"rev-list"};
+    historyArgs << refsToRewrite << QStringLiteral("--") << relPaths;
+    QByteArray history;
+    if (!runGit(workTree, historyArgs, &history, &err, kGitRewriteTimeoutMs)) {
+        if (error)
+            *error = QStringLiteral("git rev-list failed: ") + err;
+        return false;
+    }
+    if (history.trimmed().isEmpty())
+        return true;
+
+    // These paths are generated internally (numeric PR directory plus fixed
+    // filenames), so they contain no whitespace or shell metacharacters.
+    const QString indexFilter =
+        QStringLiteral("git rm -r --cached --ignore-unmatch -- %1")
+            .arg(relPaths.join(QLatin1Char(' ')));
+    QStringList filterArgs{"filter-branch", "--force", "--index-filter",
+                           indexFilter, "--prune-empty", "--"};
+    filterArgs << refsToRewrite;
+    QByteArray out;
+    if (!runGit(workTree, filterArgs, &out, &err, kGitRewriteTimeoutMs)) {
+        const QString stdoutText = QString::fromUtf8(out);
+        if (!err.contains(QStringLiteral("Not a valid object name HEAD")) &&
+            !stdoutText.contains(QStringLiteral("was deleted"))) {
+            if (error)
+                *error = QStringLiteral("git history rewrite failed: ") + err;
+            return false;
+        }
+    }
+
+    if (!runGit(workTree, {"rev-parse", "--verify", "HEAD"}, nullptr, nullptr) &&
+        !runGit(workTree,
+                {"commit", "--allow-empty", "-m", QStringLiteral("Initial commit")},
+                nullptr, &err)) {
+        if (error)
+            *error = QStringLiteral("git commit failed: ") + err;
+        return false;
+    }
+    if (!removeOriginalRefs(workTree, error))
+        return false;
+    if (!runGit(workTree,
+                {"reflog", "expire", "--expire=now",
+                 "--expire-unreachable=now", "--all"},
+                nullptr, &err, kGitRewriteTimeoutMs)) {
+        if (error)
+            *error = QStringLiteral("git reflog expire failed: ") + err;
+        return false;
+    }
+    if (!runGit(workTree, {"gc", "--prune=now"}, nullptr, &err,
+                kGitRewriteTimeoutMs)) {
+        if (error)
+            *error = QStringLiteral("git gc failed: ") + err;
+        return false;
+    }
+    return true;
+}
+
 // A history rewrite requires a clean tree. Refuse if anything tracked *other*
 // than the pull being deleted is staged/modified, so we never replay or discard
 // a collaborator's in-flight work (agents share this working tree).
@@ -1587,7 +1672,10 @@ bool PullStore::setStatus(int number, const QString &status, QString *error)
     pr.status = status;
     if (!writePull(pr, error))
         return false;
-    return commit(QStringLiteral("pull #%1: %2").arg(number).arg(status), error);
+    if (!commit(QStringLiteral("pull #%1: %2").arg(number).arg(status), error))
+        return false;
+    return status == QLatin1String("open") ||
+           purgePullPayloadHistory(number, error);
 }
 
 bool PullStore::isBranchBehindBase(int number, bool *behind, QString *error,
@@ -1867,6 +1955,12 @@ bool PullStore::mergePull(int number, QString *error, bool requirePeerReview)
     // Record the status update on the pulls/ metadata branch (issue #399) -
     // separate from whatever just landed the code change on m_workTree below.
     if (!commit(QStringLiteral("pull #%1: merged").arg(number), error))
+        return false;
+    // Removing the files from the merged tip is not enough: older ledger
+    // commits and refs/pr/*/metadata would otherwise retain the complete diff
+    // and mbox. Keep the merged record, but make its change payload open-only
+    // across the whole metadata history.
+    if (!purgePullPayloadHistory(number, error))
         return false;
     // git merge and git am both commit the code change themselves; only the
     // flat-patch `git apply --index --3way` path (no ref, no commit series)
@@ -2962,62 +3056,24 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
     if (!rewriteHistory)
         return true;
 
-    // Purge pulls/<number> from every commit in the dedicated metadata ledger
-    // so its patch, commit series, metadata and conversation cannot be recovered
-    // through an older PR commit. Never rewrite --all: code branches and tags do
-    // not own the pull ledger and must retain their object identities.
-    const QString pullsRef = QStringLiteral("refs/heads/forkmesh/pulls");
-    QByteArray refs;
-    if (!runGit(metaDir, {"rev-list", pullsRef, "--max-count=1"}, &refs, &err,
-                kGitRewriteTimeoutMs)) {
-        if (error)
-            *error = QStringLiteral("git rev-list failed: ") + err;
-        return false;
-    }
-    if (refs.trimmed().isEmpty())
-        return true;
-
-    const QString indexFilter =
-        QStringLiteral("git rm -r --cached --ignore-unmatch -- %1").arg(relPath);
-    QByteArray out;
-    if (!runGit(metaDir,
-                {"filter-branch", "--force", "--index-filter", indexFilter,
-                 "--prune-empty", "--", pullsRef},
-                &out, &err, kGitRewriteTimeoutMs)) {
-        const QString stdoutText = QString::fromUtf8(out);
-        if (!err.contains(QStringLiteral("Not a valid object name HEAD")) &&
-            !stdoutText.contains(QStringLiteral("was deleted"))) {
-            if (error)
-                *error = QStringLiteral("git history rewrite failed: ") + err;
-            return false;
-        }
-    }
-
-    if (!runGit(metaDir, {"rev-parse", "--verify", "HEAD"}, nullptr, nullptr) &&
-        !runGit(metaDir, {"commit", "--allow-empty", "-m",
-                             QStringLiteral("Initial commit")},
-                nullptr, &err)) {
-        if (error)
-            *error = QStringLiteral("git commit failed: ") + err;
-        return false;
-    }
-    if (!removeOriginalRefs(metaDir, error))
-        return false;
-    if (!runGit(metaDir, {"reflog", "expire", "--expire=now",
-                             "--expire-unreachable=now", "--all"},
-                nullptr, &err, kGitRewriteTimeoutMs)) {
-        if (error)
-            *error = QStringLiteral("git reflog expire failed: ") + err;
-        return false;
-    }
-    if (!runGit(metaDir, {"gc", "--prune=now"}, nullptr, &err,
-                kGitRewriteTimeoutMs)) {
-        if (error)
-            *error = QStringLiteral("git gc failed: ") + err;
-        return false;
-    }
-    return true;
+    // Purge pulls/<number> from the dedicated ledger and every metadata ref so
+    // its patch, commit series, metadata and conversation cannot be recovered
+    // through an older PR commit. Code branches and tags retain their identity.
+    return rewritePullHistoryWithoutPaths(metaDir, {relPath}, error);
 }
+
+bool PullStore::purgePullPayloadHistory(int number, QString *error) const
+{
+    const QString meta = metaWorkTree();
+    const QString metaDir = meta.isEmpty() ? m_workTree : meta;
+    const QString prefix = QStringLiteral("pulls/%1/").arg(number);
+    return rewritePullHistoryWithoutPaths(
+        metaDir,
+        {prefix + QStringLiteral("changes.patch"),
+         prefix + QStringLiteral("commits.mbox")},
+        error);
+}
+
 bool PullStore::commit(const QString &message, QString *error) const
 {
     // Commits pulls/ onto its own dedicated branch (issue #399) rather than
@@ -3359,10 +3415,12 @@ QList<PullRequest> PullStore::loadFromMirror(QString *error, bool strict,
         pr.mergeHead = fm.get("mergeHead");
         pr.description = fm.body;
         // Branch-backed open PRs carry no committed diff — reconstruct it from
-        // the base/head refs the mirror already syncs. Closed and merged PRs
-        // deliberately expose no patch or commit payload.
+        // the base/head refs the mirror already syncs. Strict contribution
+        // verification also derives the immutable signed creation bytes for a
+        // merged PR, but ordinary readers deliberately expose no non-open diff.
         bool derived = false;
-        if (pr.status == QLatin1String("open") && pr.branchBacked) {
+        if (pr.branchBacked &&
+            (pr.status == QLatin1String("open") || strict)) {
             if (strict) {
                 derived = deriveFromImmutableOids(
                     m_mirror, pr.creationBaseOid, pr.creationHeadOid,

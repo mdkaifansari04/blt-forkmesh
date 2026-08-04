@@ -830,31 +830,39 @@ def open_pr_from_branch(repo, branch, title, description, base):
     _, author = load_identity()
     title = title or branch
     sig = sign_pull(title, base, branch, patch_bytes, commits_bytes, ts, author)
+    base_oid = git_out(repo, "rev-parse", "--verify",
+                       f"{base}^{{commit}}").strip()
+    head_oid = git_out(repo, "rev-parse", "--verify",
+                       f"{branch}^{{commit}}").strip()
+    if not base_oid or not head_oid:
+        raise ValueError("could not resolve the PR branch commits")
     number = next_pull_number(repo)
     pdir = pulls_dir(repo) / str(number)
     pdir.mkdir(parents=True, exist_ok=True)
     front = "\n".join([
         "---", "schema: forkmesh-pull-v1", f"number: {number}",
         f"title: {title}", f"base: {base}", f"head: {branch}", "status: open",
+        "derive: branch", f"creationBaseOid: {base_oid}",
+        f"creationHeadOid: {head_oid}",
         f"ts: {ts}", f"author: {author}", f"authorName: {author_name(repo)}",
         f"sig: {sig}", "---", "",
     ])
     (pdir / "pull.md").write_text(front + "\n" + (description or "") + "\n")
-    (pdir / "changes.patch").write_bytes(patch_bytes)
-    (pdir / "commits.mbox").write_bytes(commits_bytes)
     _commit(repo, f"pulls/{number}", f"pull #{number}: open")
     return {"number": number, "existing": False}
 
 
 def get_pr_diff(repo, number):
     pdir = pulls_dir(repo) / str(number)
-    patch = pdir / "changes.patch"
-    if patch.exists():
-        return patch.read_text(errors="replace")
     md = pdir / "pull.md"
     if not md.exists():
         raise ValueError(f"pull #{number} not found")
     fm, _ = read_frontmatter(md)
+    if fm.get("status", "open") != "open":
+        raise ValueError(f"pull #{number} is not open; its diff is no longer retained")
+    patch = pdir / "changes.patch"
+    if patch.exists():
+        return patch.read_text(errors="replace")
     base, head = fm.get("base", BASE_BRANCH), fm.get("head", "")
     if not head:
         raise ValueError(f"pull #{number} has no head branch")
