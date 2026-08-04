@@ -1826,6 +1826,7 @@ class GitRepository:
         self._integrity_lock = threading.Lock()
         self._integrity_checked_at = 0.0
         self._integrity_ok = False
+        self._trusted_routing_refs_sha256 = ""
         self._analysis_lock = threading.Lock()
         self._analysis_commit = ""
         self._analysis_value: dict[str, Any] = {}
@@ -1839,8 +1840,20 @@ class GitRepository:
                 return self._integrity_ok
             try:
                 actual = refs_sha256(self.git_dir)
-                self._integrity_ok = hmac.compare_digest(
-                    actual, self.config.expected_refs_sha256
+                exact = hmac.compare_digest(
+                    actual, self.config.expected_refs_sha256)
+                routing_actual = routing_refs_sha256(self.git_dir)
+                if exact and not self._trusted_routing_refs_sha256:
+                    # The signed, owner-written configuration authenticates the
+                    # complete initial ref set. Capture its stable serving
+                    # generation only after that strict bootstrap succeeds.
+                    self._trusted_routing_refs_sha256 = routing_actual
+                self._integrity_ok = bool(
+                    self._trusted_routing_refs_sha256
+                    and hmac.compare_digest(
+                        routing_actual,
+                        self._trusted_routing_refs_sha256,
+                    )
                 )
             except (GitError, OSError):
                 self._integrity_ok = False
