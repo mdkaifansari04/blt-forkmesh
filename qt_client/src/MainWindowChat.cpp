@@ -17066,12 +17066,14 @@ void MainWindow::waitForVultrMirrorPublication(
                             .toLongLong() > 0 &&
                     mirror.value(QStringLiteral("cloneAvailable")).toBool() &&
                     mirror.value(QStringLiteral("endpointHealthy")).toBool() &&
-                    mirror.value(QStringLiteral("endpointFresh")).toBool() &&
-                    mirror.value(QStringLiteral("endpoint"))
-                            .toString()
-                            .compare(QStringLiteral("https://") +
-                                         m_vultrDnsHostname,
-                                     Qt::CaseInsensitive) == 0) {
+                    mirror.value(QStringLiteral("endpointFresh")).toBool()) {
+                    // The relay reports endpoint health for this exact node.
+                    // Do not require its URL spelling to match the hostname
+                    // saved before installation: Cloudflare can normalize the
+                    // endpoint (for example with a trailing slash), and a
+                    // desktop restart can restore an older hostname. Either
+                    // form previously left an otherwise healthy mirror stuck
+                    // in this stage forever.
                     published = true;
                     break;
                 }
