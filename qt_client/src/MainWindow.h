@@ -144,6 +144,7 @@ class WorldSpeechBridge;
 class OfficeChannelMirror;
 class PrivateMirrorMaterialization;
 class ActionRunner;
+class LogTimelineChart;
 class QButtonGroup;
 class QGridLayout;
 class QFileSystemWatcher;
@@ -465,6 +466,7 @@ public:
         m_logFilter = category;
         rebuildLogFilterButtons();
         rebuildNetworkLogView();
+        refreshLogTimelineChart();
     }
     QString testLogBadgeFor(const QString &storedLine) const
     {
@@ -472,6 +474,10 @@ public:
     }
     QTextBrowser *testNetworkLogView() const { return m_settingsLog; }
     QTextEdit *testFooterLogView() const { return m_footerUpdateLog; }
+    QWidget *testLogTimelineChart() const;
+    int testLogTimelineVisibleCount() const;
+    void testSetLogTimelineHours(int hours);
+    QString testLogTimelineSummary() const;
     bool testFaviconCached(const QString &host) const
     {
         return m_faviconCache.contains(host);
@@ -3110,8 +3116,6 @@ private:
     // Notifications live in their own top-level section: a sortable table
     // (buildNotificationsSection is declared with the other section builders).
     void refreshNotificationsTable();
-    // Repaint the compact ping feed that sits above the network log.
-    void refreshLogEventList();
     // Row-level removal on that page: a local event is simply forgotten, while
     // a mirrored website ping is deleted from the account's inbox too.
     void deleteSelectedNotifications();
@@ -4666,6 +4670,11 @@ private:
     // "GIT 42" — chip text for a category, count included once it has one.
     QString logFilterChipLabel(const QString &name, const QString &category) const;
     void updateLogFilterChipCounts(); // refresh the counts without rebuilding
+    void refreshLogTimelineChart();
+    void appendLogTimelineEntry(const QString &storedLine);
+    void setLogTimelinePresetHours(int hours);
+    void updateLogTimelineSummary();
+    void chooseCustomLogTimelineRange();
     void rebuildNetworkLogView();   // re-render the log honoring m_logFilter
     QString networkLogPath() const; // on-disk path for the persisted log
     void loadNetworkLog();          // restore log history at startup
@@ -5730,11 +5739,13 @@ private:
     QLabel *m_settingsAvatarPreview = nullptr;
     QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
     QTextBrowser *m_settingsLog = nullptr;
-    // Compact feed of the newest pings, shown above the network log so every
-    // new event is visible on that page too (adhoc #77).
-    QListWidget *m_logEventList = nullptr;
-    QPushButton *m_logScrollLockButton = nullptr;
-    bool m_logScrollLocked = false;
+    LogTimelineChart *m_logTimelineChart = nullptr;
+    QLabel *m_logTimelineSummary = nullptr;
+    QPushButton *m_logTimelineResetZoom = nullptr;
+    QButtonGroup *m_logTimelineRangeGroup = nullptr;
+    int m_logTimelinePresetHours = 24; // 0 means the user supplied a custom range
+    qint64 m_logTimelineCustomFromMs = 0;
+    qint64 m_logTimelineCustomToMs = 0;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
     QButtonGroup *m_logFilterGroup = nullptr; // exclusive group for filter chips
     QString m_logFilter;                      // active category badge ("" = All)

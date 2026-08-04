@@ -1742,9 +1742,8 @@ void MainWindow::addNotification(const QString &title, const QString &body,
 }
 
 // Every in-app event lands here: it is filed on the Pings page, counted on the
-// bell, listed in the feed above the network log, and raised in the message
-// area above the footer's mini-log so a new event is seen without opening a
-// page (adhoc #77).
+// bell, and raised in the message area above the footer's mini-log so a new
+// event is seen without opening a page (adhoc #77).
 void MainWindow::recordNotification(AppNotification item)
 {
     item.id = m_nextNotificationId++;
@@ -1760,7 +1759,6 @@ void MainWindow::recordNotification(AppNotification item)
         m_notifications.removeLast();
     updateNotificationButton();
     flashNotification(item);
-    refreshLogEventList();
     // Keep the open Pings page live as new alerts arrive.
     if (m_notificationsTable && m_sectionStack &&
         m_sectionStack->currentIndex() == 3)
@@ -2178,7 +2176,6 @@ QWidget *MainWindow::buildNotificationsSection()
         m_notifications.clear();
         markWebAlertsRead();
         updateNotificationButton();
-        refreshLogEventList();
         refreshNotificationsTable();
     });
 
@@ -2533,7 +2530,6 @@ void MainWindow::deleteSelectedNotifications()
     for (const QString &alertId : std::as_const(webIds))
         deleteWebAlert(alertId);
     updateNotificationButton();
-    refreshLogEventList();
     refreshNotificationsTable();
 }
 

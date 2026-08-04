@@ -324,6 +324,8 @@ set(FORKMESH_APP_SOURCES
     src/NodeDiagnostics.cpp
     src/LocalBackupStore.h
     src/LocalBackupStore.cpp
+    src/LogTimelineChart.h
+    src/LogTimelineChart.cpp
     src/McpConnector.h
     src/McpConnector.cpp
     src/StartupTrace.h
