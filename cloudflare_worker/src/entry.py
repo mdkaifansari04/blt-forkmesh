@@ -33422,6 +33422,34 @@ def _format_email_ts(ts_ms):
         return ""
 
 
+def _notification_display_repo(repo):
+    """Map internal canonical storage names to the public repo identity."""
+    repo = clean_string(repo or "", 180).lower().strip()
+    if repo == "mirror2/forkmesh":
+        return "forkmesh/forkmesh"
+    return repo
+
+
+def _notification_digest_title(title, repo):
+    """Drop one trailing owner/repo phrase from the title when redundant."""
+    title = clean_string(title or "", 160)
+    if not title or repo != "forkmesh/forkmesh":
+        return title
+    title = title.replace("mirror2/forkmesh", repo)
+    for marker in (
+            " for " + repo,
+            " in " + repo,
+            " on " + repo,
+    ):
+        if title.endswith(marker):
+            return title[:-len(marker)].strip()
+    if title.startswith(repo + " "):
+        return title[len(repo) + 1:].strip()
+    if title.startswith(repo + ": "):
+        return title[len(repo) + 2:].strip()
+    return title
+
+
 def _notification_digest_email(node, items):
     n = len(items)
     subject = ("ForkMesh: " + str(n) + " new notification" +
@@ -33433,9 +33461,10 @@ def _notification_digest_email(node, items):
     for it in items:
         title = clean_string(it.get("title", ""), 160) or "Notification"
         body = clean_string(it.get("body", ""), 300)
-        repo = clean_string(it.get("repo", ""), 180)
+        repo = _notification_display_repo(it.get("repo", ""))
         actor = clean_string(it.get("actor", ""), 120)
         meta_in = it.get("meta")
+        title = _notification_digest_title(title, repo)
         try:
             number = int((meta_in or {}).get("number", 0) or 0)
         except (TypeError, ValueError):
