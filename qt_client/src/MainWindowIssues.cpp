@@ -5342,6 +5342,13 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             }
         }
     }
+    // The collapsed prompt leaves only the account avatar at the footer's
+    // lower-right corner. Hovering that launcher should restore the composer
+    // immediately, so the prompt can be reopened without a second click.
+    if (obj == m_userAvatarNavButton && event->type() == QEvent::Enter &&
+        m_promptOverlayCollapsed) {
+        setPromptOverlayCollapsed(false);
+    }
     // Ctrl + mouse wheel over any registered diff viewer zooms its text size,
     // mirroring the +/- buttons (issue #254). Consume so the view doesn't scroll.
     if (event->type() == QEvent::Wheel &&
