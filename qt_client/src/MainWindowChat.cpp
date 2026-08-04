@@ -4135,39 +4135,41 @@ void MainWindow::refreshRepositoryStats()
     struct TrendCacheEntry {
         QString day;
         QVector<RepoStatsSample> days;
+        bool ratchet = false;
+        QString error;
     };
     static QHash<QString, TrendCacheEntry> trendCache;
+    static QSet<QString> capturing; // repos with a capture pass in flight
     const QString today = QDate::currentDate().toString(Qt::ISODate);
     TrendCacheEntry &cached = trendCache[dir];
     if (cached.day != today || cached.days.isEmpty()) {
         // captureDaily() reads *every tracked file* to measure size and line
-        // counts — 2.3 s of blocked GUI thread in the stall log, and it runs off
+        // counts — 2.3 s of blocked GUI thread in the stall log, and it hangs off
         // updateFooterDiagnostics' periodic timer, so it froze the window on a
-        // schedule. Do it on a worker thread and re-enter once the samples land;
-        // it touches only git and disk. One capture per repo at a time: the
-        // periodic refresh must not stack passes that each re-read the tree.
-        static QSet<QString> capturing;
+        // schedule. Run it (and the ratchet flag, one more git subprocess) on a
+        // worker thread and re-enter once the samples land; both touch only git
+        // and disk. One pass per repo at a time, so the periodic refresh can't
+        // stack captures that each re-read the whole tree.
         if (capturing.contains(dir))
             return;
         capturing.insert(dir);
-        runOffThread<QPair<QVector<RepoStatsSample>, QString>>(
-            [dir] {
-                QString error;
-                const QVector<RepoStatsSample> days =
-                    RepoStatsStore::captureDaily(dir, &error);
-                return qMakePair(days, error);
+        runOffThread<TrendCacheEntry>(
+            [dir, today] {
+                TrendCacheEntry fresh;
+                fresh.day = today;
+                fresh.days = RepoStatsStore::captureDaily(dir, &fresh.error);
+                fresh.ratchet = RepoStatsStore::ratchetEnabled(dir);
+                return fresh;
             },
-            [this, dir, today](QPair<QVector<RepoStatsSample>, QString> result) {
+            [this, dir](TrendCacheEntry fresh) {
                 capturing.remove(dir);
-                if (result.first.isEmpty()) {
-                    if (!result.second.isEmpty())
-                        logSystem(QStringLiteral("Repository stats: %1")
-                                      .arg(result.second));
+                if (fresh.days.isEmpty()) {
+                    if (!fresh.error.isEmpty())
+                        logSystem(
+                            QStringLiteral("Repository stats: %1").arg(fresh.error));
                     return;
                 }
-                TrendCacheEntry &entry = trendCache[dir];
-                entry.days = result.first;
-                entry.day = today;
+                trendCache[dir] = fresh;
                 refreshRepositoryStats(); // now a cache hit: paints, runs no git
             });
         return;
@@ -4200,8 +4202,10 @@ void MainWindow::refreshRepositoryStats()
     m_repoLinesChart->setToolTip(QStringLiteral("Tracked lines of code, %1").arg(span));
     m_repoFilesChart->setToolTip(QStringLiteral("Tracked files, %1").arg(span));
     if (m_repoRatchetButton) {
+        // Read alongside the samples on the worker thread: ratchetEnabled() shells
+        // `git config --local --get`, and this runs on the diagnostics timer.
         QSignalBlocker blocker(m_repoRatchetButton);
-        m_repoRatchetButton->setChecked(RepoStatsStore::ratchetEnabled(dir));
+        m_repoRatchetButton->setChecked(cached.ratchet);
     }
 }
 
