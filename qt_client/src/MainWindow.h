@@ -981,6 +981,23 @@ public:
     {
         return m_navCodexUsage ? m_navCodexUsage->toolTip() : QString();
     }
+    QString testClaudeUsageToolTip() const
+    {
+        return m_navTokenUsage ? m_navTokenUsage->toolTip() : QString();
+    }
+    void testShowAgentAccountMenu(const QString &provider)
+    {
+        showAgentAccountMenu(provider, QPoint(20, 20));
+    }
+    void testApplyClaudeUsageResponse(const QJsonObject &response)
+    {
+        applyClaudeUsageResponse(response);
+    }
+    void testSelectAgentAccount(const QString &provider,
+                                const QString &accountId)
+    {
+        selectAgentAccount(provider, accountId);
+    }
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -2787,6 +2804,18 @@ private:
     // asks for the green/red result box on the chart (adhoc #96) — background
     // callers leave it off so the box only ever answers a hover.
     void refreshClaudeCodeUsage(bool fromHover = false);
+    void applyClaudeUsageResponse(const QJsonObject &response);
+    // Click menu for the prompt's Codex/Claude usage meters. It combines
+    // account-scoped limits, active-account selection and provider-owned login,
+    // logout and system-terminal entry points.
+    void showAgentAccountMenu(const QString &provider,
+                              const QPoint &globalPosition);
+    void selectAgentAccount(const QString &provider, const QString &accountId);
+    void addAgentAccount(const QString &provider);
+    void launchAgentSystemTerminal(const QString &provider,
+                                   const QString &mode = QStringLiteral("agent"));
+    QStringList agentAccountUsageLines(const QString &provider,
+                                       const QString &accountId) const;
     // Flash the green (refreshed) / red (refresh failed) box on one of the
     // top-bar usage charts. `chart` is a TokenUsageMiniChart* held as QWidget*.
     void flashUsageChart(QWidget *chart, bool ok);

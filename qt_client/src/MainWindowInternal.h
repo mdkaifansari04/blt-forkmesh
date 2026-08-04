@@ -932,6 +932,7 @@ public:
           m_windows(qBound(1, windows, int(WindowCount)))
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setCursor(Qt::PointingHandCursor);
         // Thin vertical bars that ride in the prompt toolbar (adhoc #47). No
         // inline text — the label/figures live in the hover tooltip only, so the
         // strip stays tiny next to the send buttons. The 3px padding around the
@@ -1025,6 +1026,10 @@ public:
     // by the time the user actually looks at them. Fire this on hover to pull a
     // fresh reading on demand instead.
     std::function<void()> onHover;
+    // A click opens the provider account/usage menu anchored to this meter.
+    // Kept as a callback because this header-only widget intentionally has no
+    // Q_OBJECT dependency.
+    std::function<void(const QPoint &)> onClick;
 
 protected:
     void enterEvent(QEnterEvent *) override
@@ -1069,6 +1074,15 @@ protected:
                               4.0, 4.0);
         }
     }
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && onClick) {
+            onClick(mapToGlobal(event->position().toPoint()));
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
 
 private:
     QColor textColor(int alpha) const
@@ -1112,6 +1126,7 @@ private:
                    + line(QString::fromLatin1(labels[i]), m_pct[i], m_note[i]);
         if (!m_stats.isEmpty())
             tip += QStringLiteral("\n\n") + m_stats;
+        tip += QStringLiteral("\n\nClick to view accounts and usage.");
         setToolTip(tip);
     }
 
@@ -3275,6 +3290,117 @@ const QString kClaudeUsageWeekResetSetting = QStringLiteral("agents/claudeUsageW
 // reports next to the plan-wide one — the third bar on the chart (adhoc #96).
 const QString kClaudeUsageFablePctSetting = QStringLiteral("agents/claudeUsageFablePct");
 const QString kClaudeUsageFableResetSetting = QStringLiteral("agents/claudeUsageFableReset");
+// Provider accounts are isolated by the config root understood by each CLI.
+// The built-in "default" profile points at the provider's normal home; added
+// profiles are created directly inside an app-data config root, so ForkMesh
+// never copies OAuth tokens into settings or between profiles.
+struct AgentAccountProfile {
+    QString id;
+    QString label;
+    QString configDir;
+    bool builtIn = false;
+};
+
+inline QString agentAccountProviderKey(const QString &provider)
+{
+    return provider == QLatin1String("codex") ? QStringLiteral("codex")
+                                               : QStringLiteral("claude");
+}
+
+inline QString agentAccountDefaultConfigDir(const QString &provider)
+{
+    const bool codex =
+        agentAccountProviderKey(provider) == QLatin1String("codex");
+    const QString configured =
+        qEnvironmentVariable(codex ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR")
+            .trimmed();
+    if (!configured.isEmpty())
+        return QDir::cleanPath(configured);
+    return QDir::homePath() +
+           (codex ? QStringLiteral("/.codex") : QStringLiteral("/.claude"));
+}
+
+inline QString agentAccountCredentialPath(const QString &provider,
+                                          const QString &configDir)
+{
+    return QDir(configDir).filePath(
+        agentAccountProviderKey(provider) == QLatin1String("codex")
+            ? QStringLiteral("auth.json")
+            : QStringLiteral(".credentials.json"));
+}
+
+inline QString agentAccountProfilesGroup(const QString &provider)
+{
+    return QStringLiteral("agents/accountProfiles/") +
+           agentAccountProviderKey(provider);
+}
+
+inline QString agentActiveAccountSetting(const QString &provider)
+{
+    return QStringLiteral("agents/activeAccount/") +
+           agentAccountProviderKey(provider);
+}
+
+inline QList<AgentAccountProfile> agentAccountProfiles(const QString &provider)
+{
+    QList<AgentAccountProfile> profiles{
+        {QStringLiteral("default"), QStringLiteral("Default account"),
+         agentAccountDefaultConfigDir(provider), true}};
+    QSettings settings;
+    settings.beginGroup(agentAccountProfilesGroup(provider));
+    const QStringList ids = settings.childGroups();
+    for (const QString &id : ids) {
+        settings.beginGroup(id);
+        const QString dir = settings.value(QStringLiteral("configDir")).toString();
+        if (!dir.trimmed().isEmpty()) {
+            profiles.append({id,
+                             settings.value(QStringLiteral("label"),
+                                            QStringLiteral("Account"))
+                                 .toString(),
+                             dir, false});
+        }
+        settings.endGroup();
+    }
+    settings.endGroup();
+    return profiles;
+}
+
+inline AgentAccountProfile activeAgentAccount(const QString &provider)
+{
+    const QList<AgentAccountProfile> profiles = agentAccountProfiles(provider);
+    const QString selected =
+        QSettings().value(agentActiveAccountSetting(provider),
+                          QStringLiteral("default")).toString();
+    for (const AgentAccountProfile &profile : profiles)
+        if (profile.id == selected)
+            return profile;
+    return profiles.first();
+}
+
+inline QString agentAccountUsageSetting(const QString &provider,
+                                        const QString &accountId,
+                                        const QString &field)
+{
+    return QStringLiteral("agents/accountUsage/%1/%2/%3")
+        .arg(agentAccountProviderKey(provider), accountId, field);
+}
+
+inline QString agentAccountUsageField(const QString &globalSetting)
+{
+    return globalSetting.section(QLatin1Char('/'), -1);
+}
+
+inline QStringList activeAgentAccountEnv(const QString &provider)
+{
+    const AgentAccountProfile profile = activeAgentAccount(provider);
+    if (profile.builtIn)
+        return {};
+    return {QStringLiteral("%1=%2")
+                .arg(agentAccountProviderKey(provider) == QLatin1String("codex")
+                         ? QStringLiteral("CODEX_HOME")
+                         : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                     profile.configDir)};
+}
 constexpr qint64 kAgentLimit5hMs = 5LL * 60 * 60 * 1000;
 constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
 // Issue #346: whether either window has been seen maxed out (>=99%) since it
@@ -4500,10 +4626,14 @@ constexpr int kRepoAgentsTab = 3;
 // ~/.claude/.credentials.json. Empty when the user logged in with an API key
 // (or isn't signed in). Read fresh each call so a token the CLI has rotated is
 // picked up automatically.
-inline QString claudeCodeOAuthToken()
+inline QString claudeCodeOAuthToken(const QString &configDir = QString())
 {
-    QFile credFile(QDir::homePath() +
-                   QStringLiteral("/.claude/.credentials.json"));
+    const QString root = configDir.isEmpty()
+                             ? activeAgentAccount(QStringLiteral("claude-code"))
+                                   .configDir
+                             : configDir;
+    QFile credFile(agentAccountCredentialPath(QStringLiteral("claude-code"),
+                                              root));
     if (!credFile.open(QIODevice::ReadOnly))
         return QString();
     return QJsonDocument::fromJson(credFile.readAll())
