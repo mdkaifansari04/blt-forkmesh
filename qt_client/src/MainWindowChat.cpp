@@ -1394,10 +1394,11 @@ QWidget *MainWindow::buildNetworkLogDock()
         }
         if (!typed.isEmpty())
             recordQuickAddHistory(typed);
+        const QStringList images = m_quickAddImages;
         m_issueQuickAdd->clear();
         clearQuickAddImages();
         const int agentSessionId = m_selectedAgentSessionId;
-        showPromptBubble(prompt, agentSessionId);
+        showPromptBubble(prompt, agentSessionId, QString(), images);
         sendPromptToSelectedAgent(prompt);
     });
 
@@ -6203,6 +6204,35 @@ QWidget *MainWindow::buildBreadcrumb()
     });
     m_topMessage->hide();
 
+    // Prompt confirmations have three deliberately separate pieces of content:
+    // the sent marker, agent information, and the actual prompt. Keeping the
+    // agent line out of the prompt label makes a long prompt readable and leaves
+    // room for submitted image thumbnails below it.
+    m_topMessagePromptHeader = new QLabel;
+    m_topMessagePromptHeader->setObjectName("topMessagePromptHeader");
+    m_topMessagePromptHeader->setTextFormat(Qt::RichText);
+    m_topMessagePromptHeader->setWordWrap(true);
+    m_topMessagePromptHeader->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_topMessagePromptHeader->setMinimumWidth(1);
+    m_topMessagePromptHeader->setFocusPolicy(Qt::NoFocus);
+    m_topMessagePromptHeader->hide();
+
+    m_topMessagePromptStatusLabel = new QLabel;
+    m_topMessagePromptStatusLabel->setObjectName("topMessagePromptStatus");
+    m_topMessagePromptStatusLabel->setTextFormat(Qt::RichText);
+    m_topMessagePromptStatusLabel->setWordWrap(true);
+    m_topMessagePromptStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_topMessagePromptStatusLabel->setMinimumWidth(1);
+    m_topMessagePromptStatusLabel->setFocusPolicy(Qt::NoFocus);
+    m_topMessagePromptStatusLabel->hide();
+
+    m_topMessagePromptImages = new QWidget;
+    m_topMessagePromptImages->setObjectName("topMessagePromptImages");
+    auto *promptImagesRow = new QHBoxLayout(m_topMessagePromptImages);
+    promptImagesRow->setContentsMargins(0, 2, 0, 0);
+    promptImagesRow->setSpacing(5);
+    m_topMessagePromptImages->hide();
+
     // Every bubble can be copied. A notification is often the quickest useful
     // context to paste into the next agent prompt, whether it is a failure or a
     // successful result.
@@ -6299,7 +6329,17 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageScroll->setFocusPolicy(Qt::NoFocus);
     m_topMessageScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_topMessageScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    m_topMessageScroll->setWidget(m_topMessage);
+    m_topMessageBody = new QWidget;
+    m_topMessageBody->setObjectName("topMessageBody");
+    auto *topMessageBodyLayout = new QVBoxLayout(m_topMessageBody);
+    topMessageBodyLayout->setContentsMargins(0, 0, 0, 0);
+    topMessageBodyLayout->setSpacing(4);
+    topMessageBodyLayout->addWidget(m_topMessagePromptHeader);
+    topMessageBodyLayout->addWidget(m_topMessagePromptStatusLabel);
+    topMessageBodyLayout->addWidget(m_topMessage);
+    topMessageBodyLayout->addWidget(m_topMessagePromptImages);
+    m_topMessageBody->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    m_topMessageScroll->setWidget(m_topMessageBody);
     // setWidget turns on the label's own background fill, which would paint a
     // grey slab over the bubble's rounded, themed one.
     m_topMessage->setAutoFillBackground(false);
@@ -6325,6 +6365,10 @@ QWidget *MainWindow::buildBreadcrumb()
     topMessageColumn->addWidget(m_topMessageScroll, 1);
     topMessageColumn->addWidget(m_topMessageActions);
     for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
+                            static_cast<QWidget *>(m_topMessageBody),
+                            static_cast<QWidget *>(m_topMessagePromptHeader),
+                            static_cast<QWidget *>(m_topMessagePromptStatusLabel),
+                            static_cast<QWidget *>(m_topMessagePromptImages),
                             static_cast<QWidget *>(m_topMessageScroll),
                             static_cast<QWidget *>(m_topMessageScroll->viewport()),
                             static_cast<QWidget *>(m_topMessageActions),

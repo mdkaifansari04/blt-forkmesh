@@ -10804,6 +10804,12 @@ void MainWindow::showLoadStatus(const QString &what)
     if (!m_topMessage || what.isEmpty())
         return;
     m_topMessageIsPromptBubble = false;
+    m_topMessagePromptImagePaths.clear();
+    if (m_topMessagePromptHeader)
+        m_topMessagePromptHeader->hide();
+    if (m_topMessagePromptStatusLabel)
+        m_topMessagePromptStatusLabel->hide();
+    renderTopMessagePromptImages();
     m_topMessageHovering = false;
     m_topMessageRaw = what;
     // Blue, persistent progress pill — distinct from the green success / red

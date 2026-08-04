@@ -4493,6 +4493,36 @@ static constexpr int kToastEntryOffset = 18;
 // oldest queued message is dropped once the cap is hit.
 static constexpr int kToastQueueLimit = 20;
 
+QStringList promptAttachedImagePaths(const QString &prompt)
+{
+    QStringList paths;
+    const QString prefix = QStringLiteral("Attached image:");
+    for (const QString &line : prompt.split(QLatin1Char('\n'))) {
+        if (!line.trimmed().startsWith(prefix, Qt::CaseInsensitive))
+            continue;
+        const QString path = line.trimmed().mid(prefix.size()).trimmed();
+        if (!path.isEmpty() && !paths.contains(path))
+            paths << path;
+    }
+    return paths;
+}
+
+QString promptTextWithoutImages(const QString &prompt)
+{
+    QStringList lines;
+    const QString prefix = QStringLiteral("Attached image:");
+    for (const QString &line : prompt.split(QLatin1Char('\n'))) {
+        if (line.trimmed().startsWith(prefix, Qt::CaseInsensitive))
+            continue;
+        lines << line;
+    }
+    while (!lines.isEmpty() && lines.constFirst().trimmed().isEmpty())
+        lines.removeFirst();
+    while (!lines.isEmpty() && lines.constLast().trimmed().isEmpty())
+        lines.removeLast();
+    return lines.join(QLatin1Char('\n')).trimmed();
+}
+
 QString topMessageKindLabel(const QString &kind)
 {
     static const QHash<QString, QString> labels = {
@@ -4708,33 +4738,87 @@ void MainWindow::renderTopMessage()
                                             : QString::fromUtf8("\xE2\x9C\x93"); // ✓
     // When a click target is set, the message text itself becomes a link so e.g.
     // an "agent is waiting for you" bubble jumps straight to that agent.
-    QString body = m_topMessageRaw.toHtmlEscaped();
+    QString visiblePrompt = promptTextWithoutImages(m_topMessageRaw);
+    if (visiblePrompt.isEmpty() && m_topMessageIsPromptBubble &&
+        !m_topMessagePromptImagePaths.isEmpty())
+        visiblePrompt = QStringLiteral("Image attachment");
+    QString body = (m_topMessageIsPromptBubble ? visiblePrompt : m_topMessageRaw)
+                       .toHtmlEscaped();
     body.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
     if (!m_topMessageHref.isEmpty())
         body = QStringLiteral(
                    "<a href='%1' style='color:%2;text-decoration:underline'>%3</a>")
                    .arg(m_topMessageHref.toHtmlEscaped(), fg, body);
     if (m_topMessageIsPromptBubble) {
-        const QString status = m_topMessagePromptStatus.isEmpty()
-                                    ? QString()
-                                    : QStringLiteral(
-                                          "<br><span style='color:%1'>%2</span>")
-                                          .arg(fg, m_topMessagePromptStatus.toHtmlEscaped());
-        m_topMessageBaseHtml = QStringLiteral(
-                                   "<span style='color:%1'><b>↗ Prompt sent</b></span>"
-                                   "%2<br><span style='color:%1'>%3</span>")
-                                   .arg(fg, status, body);
+        if (m_topMessagePromptHeader) {
+            m_topMessagePromptHeader->setText(
+                QStringLiteral("<span style='color:%1'><b>↗ Prompt sent</b></span>")
+                    .arg(fg));
+            m_topMessagePromptHeader->show();
+        }
+        if (m_topMessagePromptStatusLabel) {
+            m_topMessagePromptStatusLabel->setText(
+                m_topMessagePromptStatus.isEmpty()
+                    ? QString()
+                    : QStringLiteral("<span style='color:%1'>%2</span>")
+                          .arg(fg, m_topMessagePromptStatus.toHtmlEscaped()));
+            m_topMessagePromptStatusLabel->setVisible(
+                !m_topMessagePromptStatus.isEmpty());
+        }
+        m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2</span>")
+                                   .arg(fg, body);
     } else {
+        if (m_topMessagePromptHeader)
+            m_topMessagePromptHeader->hide();
+        if (m_topMessagePromptStatusLabel)
+            m_topMessagePromptStatusLabel->hide();
         m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
                                    .arg(fg, glyph, body);
     }
     m_topMessage->setText(m_topMessageBaseHtml);
+    renderTopMessagePromptImages();
     if (m_topMessageTypeBadge) {
         m_topMessageTypeBadge->setText(
             m_topMessageIsPromptBubble ? QStringLiteral("Prompt")
                                        : topMessageKindLabel(m_topMessageKind));
         m_topMessageTypeBadge->show();
     }
+}
+
+void MainWindow::renderTopMessagePromptImages()
+{
+    if (!m_topMessagePromptImages)
+        return;
+    auto *row = qobject_cast<QHBoxLayout *>(m_topMessagePromptImages->layout());
+    if (!row)
+        return;
+    while (QLayoutItem *item = row->takeAt(0)) {
+        if (QWidget *widget = item->widget())
+            widget->deleteLater();
+        delete item;
+    }
+
+    for (const QString &path : std::as_const(m_topMessagePromptImagePaths)) {
+        auto *thumbnail = new QPushButton(m_topMessagePromptImages);
+        thumbnail->setObjectName("topMessagePromptImage");
+        thumbnail->setFixedSize(76, 76);
+        thumbnail->setIconSize(QSize(68, 68));
+        thumbnail->setCursor(Qt::PointingHandCursor);
+        thumbnail->setToolTip(QStringLiteral("View %1")
+                                  .arg(QFileInfo(path).fileName()));
+        const QPixmap pixmap(path);
+        if (!pixmap.isNull()) {
+            thumbnail->setIcon(QIcon(pixmap));
+        } else {
+            thumbnail->setText(QStringLiteral("Image"));
+        }
+        connect(thumbnail, &QPushButton::clicked, this,
+                [this, path] { showQuickAddImageDetail(path); });
+        row->addWidget(thumbnail);
+    }
+    row->addStretch(1);
+    m_topMessagePromptImages->setVisible(
+        m_topMessageIsPromptBubble && !m_topMessagePromptImagePaths.isEmpty());
 }
 
 // Calculate a readable floating-bubble rectangle directly above the prompt.
@@ -4767,9 +4851,19 @@ QRect MainWindow::topMessageBubbleRect()
             m_topMessageActions->isVisibleTo(m_topMessageContainer))
             chrome += m_topMessageActions->sizeHint().height() + column->spacing();
         const int textWidth = qMax(40, bubbleWidth - pad.left() - pad.right());
-        int textHeight = m_topMessage->heightForWidth(textWidth);
+        int textHeight = 0;
+        if (m_topMessageBody) {
+            m_topMessageBody->setFixedWidth(textWidth);
+            if (QLayout *bodyLayout = m_topMessageBody->layout())
+                bodyLayout->activate();
+            m_topMessageBody->adjustSize();
+            textHeight = m_topMessageBody->sizeHint().height();
+        } else {
+            textHeight = m_topMessage->heightForWidth(textWidth);
+        }
         if (textHeight <= 0)
-            textHeight = m_topMessage->sizeHint().height();
+            textHeight = m_topMessageBody ? m_topMessageBody->sizeHint().height()
+                                          : m_topMessage->sizeHint().height();
         textHeight = qBound(18, textHeight, qMax(18, maxBubbleHeight - chrome));
         m_topMessageScroll->setFixedHeight(textHeight);
         column->activate();
@@ -4875,7 +4969,8 @@ void MainWindow::slideTopMessageOut()
 // bubble above the editor. Keeping the entire card above the prompt means it
 // never obscures either a draft or the send controls on any page.
 void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId,
-                                  const QString &status)
+                                  const QString &status,
+                                  const QStringList &images)
 {
     const QString sent = prompt.trimmed();
     if (sent.isEmpty() || !m_topMessage || !m_topMessageContainer)
@@ -4885,6 +4980,9 @@ void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId,
     m_topMessageKind = QStringLiteral("prompt");
     m_topMessageAgentSessionId = agentSessionId;
     m_topMessagePromptStatus = status.trimmed();
+    m_topMessagePromptImagePaths = images;
+    if (m_topMessagePromptImagePaths.isEmpty())
+        m_topMessagePromptImagePaths = promptAttachedImagePaths(sent);
     m_topMessageError = false;
     m_topMessageIsPromptBubble = true;
     m_topMessageRaw = sent;
@@ -4975,6 +5073,12 @@ void MainWindow::flashMessage(const QString &text, bool error,
     m_topMessageError = error;
     m_topMessageIsPromptBubble = false;
     m_topMessagePromptStatus.clear();
+    m_topMessagePromptImagePaths.clear();
+    if (m_topMessagePromptHeader)
+        m_topMessagePromptHeader->hide();
+    if (m_topMessagePromptStatusLabel)
+        m_topMessagePromptStatusLabel->hide();
+    renderTopMessagePromptImages();
     m_topMessageHovering = false;
     m_topMessageRaw = trimmed;
     // The whole message is shown: it wraps to the bubble's full width and the
@@ -5079,6 +5183,12 @@ void MainWindow::dismissTopMessage()
     m_topMessageHovering = false;
     m_topMessageIsPromptBubble = false;
     m_topMessagePromptStatus.clear();
+    m_topMessagePromptImagePaths.clear();
+    if (m_topMessagePromptHeader)
+        m_topMessagePromptHeader->hide();
+    if (m_topMessagePromptStatusLabel)
+        m_topMessagePromptStatusLabel->hide();
+    renderTopMessagePromptImages();
     m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
     m_topMessageKind.clear();
     m_topMessageAgentSessionId = -1;
