@@ -10,27 +10,6 @@
 
 #include <algorithm>
 
-namespace {
-QString compactCount(int value)
-{
-    if (value >= 1000000)
-        return QString::number(value / 1000000.0, 'f', 1) + QLatin1Char('m');
-    if (value >= 1000)
-        return QString::number(value / 1000.0, 'f', 1) + QLatin1Char('k');
-    return QString::number(value);
-}
-
-QString axisTime(qint64 timestampMs, qint64 spanMs)
-{
-    const QDateTime value = QDateTime::fromMSecsSinceEpoch(timestampMs);
-    if (spanMs <= 48LL * 60 * 60 * 1000)
-        return value.toString(QStringLiteral("h:mm AP"));
-    if (spanMs <= 10LL * 24 * 60 * 60 * 1000)
-        return value.toString(QStringLiteral("ddd h AP"));
-    return value.toString(QStringLiteral("MMM d"));
-}
-} // namespace
-
 LogTimelineChart::LogTimelineChart(QWidget *parent) : QWidget(parent)
 {
     setObjectName(QStringLiteral("logTimelineChart"));
@@ -38,16 +17,22 @@ LogTimelineChart::LogTimelineChart(QWidget *parent) : QWidget(parent)
     setFocusPolicy(Qt::StrongFocus);
     setAccessibleName(QStringLiteral("Log activity chart"));
     setAccessibleDescription(
-        QStringLiteral("A histogram of logs over time. Drag across the chart or "
+        QStringLiteral("A compact log activity rail. Drag across the rail or "
                        "use the mouse wheel to zoom; double-click to reset."));
 }
 
 void LogTimelineChart::setEntries(QVector<LogTimelineEntry> entries)
 {
-    std::sort(entries.begin(), entries.end(),
-              [](const LogTimelineEntry &left, const LogTimelineEntry &right) {
-                  return left.timestampMs < right.timestampMs;
-              });
+    // Log history is appended in timestamp order. Avoid sorting the entire
+    // saved history whenever the user opens the Log page; a sort of thousands
+    // of entries made the new timeline noticeably delay the actual log view.
+    // Keep the defensive sort for callers that supply an out-of-order batch.
+    const auto before = [](const LogTimelineEntry &left,
+                           const LogTimelineEntry &right) {
+        return left.timestampMs < right.timestampMs;
+    };
+    if (!std::is_sorted(entries.cbegin(), entries.cend(), before))
+        std::sort(entries.begin(), entries.end(), before);
     m_entries = std::move(entries);
     update();
 }
@@ -100,10 +85,21 @@ void LogTimelineChart::resetZoom()
 
 int LogTimelineChart::visibleEntryCount() const
 {
-    return int(std::count_if(m_entries.cbegin(), m_entries.cend(),
-                             [this](const LogTimelineEntry &entry) {
-                                 return entryIsVisible(entry);
-                             }));
+    const auto first = std::lower_bound(
+        m_entries.cbegin(), m_entries.cend(), m_viewFromMs,
+        [](const LogTimelineEntry &entry, qint64 timestamp) {
+            return entry.timestampMs < timestamp;
+        });
+    const auto last = std::upper_bound(
+        first, m_entries.cend(), m_viewToMs,
+        [](qint64 timestamp, const LogTimelineEntry &entry) {
+            return timestamp < entry.timestampMs;
+        });
+    if (m_categoryFilter.isEmpty())
+        return int(std::distance(first, last));
+    return int(std::count_if(first, last, [this](const LogTimelineEntry &entry) {
+        return entry.category == m_categoryFilter;
+    }));
 }
 
 bool LogTimelineChart::isZoomed() const
@@ -113,17 +109,17 @@ bool LogTimelineChart::isZoomed() const
 
 QSize LogTimelineChart::sizeHint() const
 {
-    return QSize(900, 330);
+    return QSize(900, 68);
 }
 
 QSize LogTimelineChart::minimumSizeHint() const
 {
-    return QSize(320, 220);
+    return QSize(320, 48);
 }
 
 QRectF LogTimelineChart::plotRect() const
 {
-    return QRectF(rect()).adjusted(56.0, 18.0, -18.0, -42.0);
+    return QRectF(rect()).adjusted(8.0, 8.0, -8.0, -8.0);
 }
 
 qint64 LogTimelineChart::timeAtX(qreal x) const
@@ -168,57 +164,34 @@ void LogTimelineChart::paintEvent(QPaintEvent *)
     if (plot.width() <= 1 || plot.height() <= 1)
         return;
 
-    const int bucketCount = qBound(16, int(plot.width() / 11.0), 180);
+    const int bucketCount = qBound(16, int(plot.width() / 7.0), 180);
     QVector<int> buckets(bucketCount, 0);
     const qint64 span = qMax<qint64>(1, m_viewToMs - m_viewFromMs);
-    for (const LogTimelineEntry &entry : std::as_const(m_entries)) {
+    const auto first = std::lower_bound(
+        m_entries.cbegin(), m_entries.cend(), m_viewFromMs,
+        [](const LogTimelineEntry &entry, qint64 timestamp) {
+            return entry.timestampMs < timestamp;
+        });
+    const auto last = std::upper_bound(
+        first, m_entries.cend(), m_viewToMs,
+        [](qint64 timestamp, const LogTimelineEntry &entry) {
+            return timestamp < entry.timestampMs;
+        });
+    int total = 0;
+    for (auto it = first; it != last; ++it) {
+        const LogTimelineEntry &entry = *it;
         if (!entryIsVisible(entry))
             continue;
         const int bucket = qBound(
             0, int((entry.timestampMs - m_viewFromMs) * bucketCount / span),
             bucketCount - 1);
         ++buckets[bucket];
+        ++total;
     }
     const int maximum = qMax(1, *std::max_element(buckets.cbegin(), buckets.cend()));
-
-    QFont axisFont = font();
-    axisFont.setPointSizeF(qMax(8.0, axisFont.pointSizeF() - 1.0));
-    painter.setFont(axisFont);
-    const QFontMetrics metrics(axisFont);
-
-    constexpr int kHorizontalGridLines = 4;
     painter.setPen(QPen(grid, 1));
-    for (int line = 0; line <= kHorizontalGridLines; ++line) {
-        const qreal y = plot.bottom() -
-                        (qreal(line) / kHorizontalGridLines) * plot.height();
-        painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
-        const int count = qRound(qreal(line) / kHorizontalGridLines * maximum);
-        painter.setPen(muted);
-        painter.drawText(QRectF(4, y - metrics.height() / 2.0, 45,
-                                metrics.height()),
-                         Qt::AlignRight | Qt::AlignVCenter, compactCount(count));
-        painter.setPen(QPen(grid, 1));
-    }
-
-    constexpr int kTimeTicks = 4;
-    for (int tick = 0; tick <= kTimeTicks; ++tick) {
-        const qreal ratio = qreal(tick) / kTimeTicks;
-        const qreal x = plot.left() + ratio * plot.width();
-        painter.setPen(QPen(grid, 1));
-        painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
-        const QString label = axisTime(m_viewFromMs + qRound64(ratio * span), span);
-        QRectF labelRect(x - 70, plot.bottom() + 9, 140, metrics.height() + 2);
-        Qt::Alignment alignment = Qt::AlignHCenter | Qt::AlignTop;
-        if (tick == 0) {
-            labelRect.moveLeft(plot.left());
-            alignment = Qt::AlignLeft | Qt::AlignTop;
-        } else if (tick == kTimeTicks) {
-            labelRect.moveRight(plot.right());
-            alignment = Qt::AlignRight | Qt::AlignTop;
-        }
-        painter.setPen(muted);
-        painter.drawText(labelRect, alignment, label);
-    }
+    painter.drawLine(QPointF(plot.left(), plot.bottom()),
+                     QPointF(plot.right(), plot.bottom()));
 
     QPainterPath linePath;
     for (int index = 0; index < bucketCount; ++index) {
@@ -250,8 +223,10 @@ void LogTimelineChart::paintEvent(QPaintEvent *)
     painter.drawPath(linePath);
     painter.restore();
 
-    const int total = visibleEntryCount();
     if (total == 0) {
+        QFont railFont = font();
+        railFont.setPointSizeF(qMax(8.0, railFont.pointSizeF() - 1.0));
+        painter.setFont(railFont);
         painter.setPen(muted);
         painter.drawText(plot, Qt::AlignCenter,
                          m_categoryFilter.isEmpty()
@@ -282,6 +257,7 @@ void LogTimelineChart::paintEvent(QPaintEvent *)
                          .toString(QStringLiteral("MMM d, h:mm AP")))
                 .arg(QDateTime::fromMSecsSinceEpoch(bucketTo)
                          .toString(QStringLiteral("h:mm AP")));
+        const QFontMetrics metrics(font());
         const int tipWidth = qMin(metrics.horizontalAdvance(tooltip) + 18,
                                   qMax(80, int(plot.width() - 8)));
         const QString visibleTooltip = metrics.elidedText(

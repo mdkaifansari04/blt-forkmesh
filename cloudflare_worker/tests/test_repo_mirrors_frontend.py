@@ -32,21 +32,49 @@ def test_mirrors_css_has_responsive_table_hooks():
     assert "@media (max-width: 700px)" in STYLES
 
 
-def test_live_mirror_tab_rows_are_a_single_non_wrapping_line():
+def test_live_mirror_tab_uses_responsive_summary_and_cards():
     rows = DASHBOARD_JS[
         DASHBOARD_JS.index("function renderMirrorTabRow(")
+        : DASHBOARD_JS.index("function renderMirrorNetworkSummary(")
+    ]
+    assert "data-mirror-card" in rows
+    assert "min-w-0 overflow-hidden rounded-lg" in rows
+    assert "mirrorDetailGroups(mirror, refMirror)" in rows
+    assert "min-w-max" not in rows
+    assert "whitespace-nowrap" not in rows
+
+    summary = DASHBOARD_JS[
+        DASHBOARD_JS.index("function renderMirrorNetworkSummary(")
         : DASHBOARD_JS.index("function renderMirrorRow(")
     ]
-    assert "flex min-w-max flex-nowrap items-center" in rows
-    assert "whitespace-nowrap" in rows
-    assert "mirrorDetailChips(mirror, refMirror)" in rows
-    assert "mt-2 flex flex-wrap" not in rows
+    assert "data-mirror-summary" in summary
+    assert "Registered nodes" in summary
+    assert "Online now" in summary
+    assert "revision mismatch" in summary
 
     mirror_list = DASHBOARD_JS[
         DASHBOARD_JS.index("function renderRepoMirrorLists(")
         : DASHBOARD_JS.index("const REPO_MIRROR_MIN_REFRESH_MS")
     ]
-    assert '<div class="overflow-x-auto">' in mirror_list
+    assert "renderMirrorNetworkSummary(ordered, refMirror)" in mirror_list
+    assert 'data-mirror-card-grid class="grid gap-3 p-3 md:grid-cols-2"' in mirror_list
+    assert "overflow-x-auto" not in mirror_list
+
+
+def test_live_mirror_details_have_scannable_sections():
+    details = DASHBOARD_JS[
+        DASHBOARD_JS.index("function mirrorChip(")
+        : DASHBOARD_JS.index("function mirrorCountText(")
+    ]
+    for heading in (
+        "Revision",
+        "Connection",
+        "Repository contents",
+        "Local activity",
+    ):
+        assert f'mirrorDetailGroup("{heading}"' in details
+    assert "sm:grid-cols-2" in details
+    assert "max-w-full" in details
 
 
 def test_long_mirror_capabilities_use_a_mouseover_list():

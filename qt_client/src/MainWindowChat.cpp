@@ -6231,14 +6231,13 @@ QWidget *MainWindow::buildLogSection()
     connect(cloudflareButton, &QPushButton::clicked, this,
             &MainWindow::showCloudflareWorkerLogs);
 
-    // Keep the rich renderer alive off-screen for footer deep-links and the
-    // existing add-to-prompt path. The old scrolling text pane is deliberately
-    // no longer part of this page; the timeline below is the log surface.
+    // The timeline is only a compact overview. Keep the paged rich log visible
+    // below it so opening Logs stays useful immediately instead of spending the
+    // whole page on a large chart.
     m_settingsLog = new QTextBrowser(page);
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
     m_settingsLog->setOpenExternalLinks(true);
-    m_settingsLog->hide();
     // Clicks on the leading "add to prompt" plus of an entry are handled in
     // MainWindow::eventFilter before the browser's own anchor activation sees
     // them (adhoc #114); http(s) links in the message body still open normally.
@@ -6251,6 +6250,7 @@ QWidget *MainWindow::buildLogSection()
             &MainWindow::onNetworkLogScrolled);
 
     m_logTimelineChart = new LogTimelineChart(page);
+    m_logTimelineChart->setFixedHeight(68);
     m_logTimelineSummary = new QLabel;
     m_logTimelineSummary->setObjectName(QStringLiteral("logTimelineSummary"));
     m_logTimelineSummary->setAccessibleName(QStringLiteral("Visible log summary"));
@@ -6288,10 +6288,6 @@ QWidget *MainWindow::buildLogSection()
             &MainWindow::chooseCustomLogTimelineRange);
     dayButton->setChecked(true);
 
-    auto *zoomHint = new QLabel(
-        QStringLiteral("Drag across the chart or scroll to zoom · Double-click to reset"));
-    zoomHint->setObjectName(QStringLiteral("modeHint"));
-    zoomHint->setWordWrap(true);
     rangeRow->addStretch();
     m_logTimelineResetZoom = new QPushButton(QStringLiteral("Reset zoom"));
     m_logTimelineResetZoom->setObjectName(QStringLiteral("ghostButton"));
@@ -6361,11 +6357,10 @@ QWidget *MainWindow::buildLogSection()
     layout->setSpacing(8);
     layout->addLayout(headerRow);
     layout->addLayout(rangeRow);
+    layout->addWidget(m_logTimelineChart);
     layout->addWidget(filterScroll);
-    layout->addWidget(m_logTimelineChart, 1);
-    layout->addWidget(zoomHint);
-    refreshLogTimelineChart();
     setLogTimelinePresetHours(24);
+    layout->addWidget(m_settingsLog, 1);
     return page;
 }
 
@@ -6373,10 +6368,30 @@ void MainWindow::refreshLogTimelineChart()
 {
     if (!m_logTimelineChart)
         return;
+    const qint64 fromMs = m_logTimelineChart->viewFromMs();
+    const qint64 toMs = m_logTimelineChart->viewToMs();
+    const QString from = QDateTime::fromMSecsSinceEpoch(fromMs)
+                             .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    const QString to = QDateTime::fromMSecsSinceEpoch(toMs)
+                           .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    // m_networkLog is append-only and persisted in that same order. Find the
+    // selected time slice before parsing dates or categories: the old chart
+    // rebuilt all 20,000 retained lines even for the default 24-hour rail.
+    const auto first = std::lower_bound(
+        m_networkLog.cbegin(), m_networkLog.cend(), from,
+        [](const QString &line, const QString &timestamp) {
+            return line.left(19) < timestamp;
+        });
+    const auto last = std::upper_bound(
+        first, m_networkLog.cend(), to,
+        [](const QString &timestamp, const QString &line) {
+            return timestamp < line.left(19);
+        });
     QVector<LogTimelineEntry> entries;
-    entries.reserve(m_networkLog.size());
+    entries.reserve(int(std::distance(first, last)));
     QColor selectedAccent(QStringLiteral("#58a6ff"));
-    for (const QString &line : std::as_const(m_networkLog)) {
+    for (auto it = first; it != last; ++it) {
+        const QString &line = *it;
         const QDateTime timestamp =
             QDateTime::fromString(line.left(19), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
         if (!timestamp.isValid())
@@ -6402,10 +6417,6 @@ void MainWindow::appendLogTimelineEntry(const QString &storedLine)
         storedLine.left(19), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
     if (!timestamp.isValid())
         return;
-    LogTimelineEntry entry;
-    entry.timestampMs = timestamp.toMSecsSinceEpoch();
-    entry.category = logBadgeFor(storedLine);
-    m_logTimelineChart->appendEntry(entry);
     // Presets follow the present as fresh events arrive. Do not disturb an area
     // the user has deliberately zoomed into.
     if (m_logTimelinePresetHours > 0 && !m_logTimelineChart->isZoomed()) {
@@ -6413,6 +6424,14 @@ void MainWindow::appendLogTimelineEntry(const QString &storedLine)
         m_logTimelineChart->setRange(
             now - qint64(m_logTimelinePresetHours) * 60 * 60 * 1000, now);
     }
+    const qint64 timestampMs = timestamp.toMSecsSinceEpoch();
+    if (timestampMs < m_logTimelineChart->viewFromMs() ||
+        timestampMs > m_logTimelineChart->viewToMs())
+        return;
+    LogTimelineEntry entry;
+    entry.timestampMs = timestampMs;
+    entry.category = logBadgeFor(storedLine);
+    m_logTimelineChart->appendEntry(entry);
 }
 
 void MainWindow::setLogTimelinePresetHours(int hours)
@@ -6424,6 +6443,7 @@ void MainWindow::setLogTimelinePresetHours(int hours)
         m_logTimelineRangeGroup->button(hours)->setChecked(true);
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     m_logTimelineChart->setRange(now - qint64(hours) * 60 * 60 * 1000, now);
+    refreshLogTimelineChart();
 }
 
 void MainWindow::chooseCustomLogTimelineRange()
@@ -6482,6 +6502,7 @@ void MainWindow::chooseCustomLogTimelineRange()
     if (m_logTimelineRangeGroup && m_logTimelineRangeGroup->button(0))
         m_logTimelineRangeGroup->button(0)->setChecked(true);
     m_logTimelineChart->setRange(from, to);
+    refreshLogTimelineChart();
 }
 
 void MainWindow::updateLogTimelineSummary()

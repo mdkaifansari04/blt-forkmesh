@@ -425,9 +425,10 @@ void runLogTimelineChecks(MainWindow &window)
     QWidget *chart = window.testLogTimelineChart();
     check(chart && chart->isVisible(),
           QStringLiteral("the Log page shows its activity chart"));
-    check(window.testNetworkLogView() &&
-              !window.testNetworkLogView()->isVisible(),
-          QStringLiteral("the old scrolling network-log pane is removed"));
+    check(chart && chart->maximumHeight() <= 72,
+          QStringLiteral("the activity chart stays a thin top rail"));
+    check(window.testNetworkLogView() && window.testNetworkLogView()->isVisible(),
+          QStringLiteral("the paged network log remains visible below the rail"));
     check(window.findChild<QListWidget *>(QStringLiteral("logEventList")) ==
               nullptr,
           QStringLiteral("the duplicate Recent Pings feed is removed"));
