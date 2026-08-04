@@ -1377,7 +1377,7 @@ def test_worker_exposes_repo_mirrors_route_and_uses_payload_builder():
 def test_worker_exposes_exact_node_readme_reachability_probe():
     assert "REPO_MIRROR_REACHABILITY_RE = re.compile" in URLS_TEXT
     assert "repo_mirror_reachability_handler" in ENTRY_TEXT
-    assert 'node not in context.get("nodes", set())' in ENTRY_TEXT
+    assert 'admitted = node in context.get("nodes", set())' in ENTRY_TEXT
     assert 'WHERE node_name=?' in ENTRY_TEXT
     assert '"blob", {"path": "README.md"}' in ENTRY_TEXT
     assert '"readmeLoaded": bool(reachable)' in ENTRY_TEXT
@@ -1389,6 +1389,38 @@ def test_worker_exposes_exact_node_readme_reachability_probe():
     probe = ENTRY_TEXT[probe_start:probe_end]
     assert "for endpoint in" not in probe
     assert "_https_mirror_route_advance" not in probe
+
+
+def test_reachability_probe_asks_every_group_mirror_before_judging_it():
+    # adhoc #1422: the probe used to reject a node unless the router already
+    # considered it servable — inside the state-pin window AND holding a fresh
+    # health lease AND passing a repository proof — so a single mirror reported
+    # "README loaded" while every other one reported "Unavailable" without a
+    # request ever having been made to it. Any mirror in the group gets a real
+    # README.md request; the serving gates only classify a failure afterwards.
+    probe_start = ENTRY_TEXT.index("async def repo_mirror_reachability_handler")
+    probe_end = ENTRY_TEXT.index("\n\ndef _https_mirror_merge_body", probe_start)
+    probe = ENTRY_TEXT[probe_start:probe_end]
+    # A mirror of this repo that is merely behind the pin window is still probed.
+    assert 'node not in context.get("groupNodes", set())' in probe
+    assert '"groupNodes": group_nodes,' in ENTRY_TEXT
+    # No pre-emptive bail on the cached lease/proof state.
+    assert "endpoint_unavailable" not in probe
+    assert "return result(False, \"repository_proof_failed\")" not in probe
+    assert "https_routing.endpoint_eligible" not in probe
+    # Only a node with nowhere to send the request short-circuits.
+    assert 'return result(False, "endpoint_not_registered")' in probe
+    assert '"endpointRegistered": endpoint_registered,' in probe
+    # Failures are classified after the fact, most upstream cause first.
+    classifier_start = ENTRY_TEXT.index(
+        "async def _mirror_reachability_failure_reason")
+    classifier = ENTRY_TEXT[classifier_start:ENTRY_TEXT.index(
+        "\n\nasync def repo_mirror_reachability_handler", classifier_start)]
+    for reason in ("state_pin_not_admitted", "repository_proof_failed",
+                   "endpoint_stale"):
+        assert reason in classifier
+    assert classifier.index("state_pin_not_admitted") < classifier.index(
+        "repository_proof_failed") < classifier.index("endpoint_stale")
 
 
 def test_hydrate_live_host_probes_capped_concurrent_and_memoized():
