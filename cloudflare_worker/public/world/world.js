@@ -4669,7 +4669,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                       data-route-owner="forkmesh"
                       data-route-name="forkmesh"
                       selected
-                    >forkmesh/forkmesh · Organization</option>
+                    >forkmesh/forkmesh</option>
                   </select>
                   <input id="fullChatAction" type="hidden" value="chat" />
                   <div data-dashboard-task-routing hidden>
