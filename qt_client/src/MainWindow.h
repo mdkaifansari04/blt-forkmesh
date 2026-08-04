@@ -951,6 +951,8 @@ public:
     // as "files|dirty|worktree|behind|ahead", so a test can prove the chip's
     // file and visible branch-health markers are fed from the session's diff stat.
     QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
+    QString testAgentStatusCellToolTip(int sessionId,
+                                       const AgentDiffStat &stat) const;
     void testSetCachedAgentDiffFiles(int sessionId, int files)
     {
         AgentDiffStat stat = m_agentDiffStats.value(sessionId);
