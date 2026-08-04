@@ -2946,8 +2946,10 @@ QWidget *MainWindow::buildBranchRangePane()
 
     // Merge the selected branch straight into the default branch (an empty
     // worktree path tells mergeWorktreeIntoMain not to prune any worktree).
+    // Ghost, not green: "Merge & clean up" beside it is the finishing move worth
+    // drawing the eye, and two green buttons in a row read as one wide target.
     m_branchMergeButton = new StackedIconButton("Merge to main");
-    m_branchMergeButton->setObjectName("primaryButton");
+    m_branchMergeButton->setObjectName("ghostButton");
     m_branchMergeButton->setProperty("buttonSize", "sm");
     m_branchMergeButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_branchMergeButton, "check-circle", 14);

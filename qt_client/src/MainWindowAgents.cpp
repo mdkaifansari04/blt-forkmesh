@@ -2302,12 +2302,14 @@ QWidget *MainWindow::buildAgentsTab()
     // branch in the Git view (adhoc #131 — switchToAgentBranch points the view at
     // the session's own repository first) or that worktree's row in the Worktrees
     // tab. They are plain full-size buttons (adhoc #61), with the names they open
-    // in the status popup and the tooltip. Both are green (adhoc #84): opening a
-    // branch or checkout is the safe, ordinary thing to do from a finished run,
-    // so they read as go actions beside the red Stop/Delete pair.
-    m_agentBranchButton = railActionButton(
+    // in the status popup and the tooltip. Branch is tinted green: reviewing the
+    // work is the thing you reach for from a finished run, so it reads as the go
+    // action in the row.
+    auto *branchButton = railActionButton(
         QStringLiteral("git-branch"), QStringLiteral("Branch"),
         "Open this session's branch in the Git view");
+    branchButton->setAccentTint(true);
+    m_agentBranchButton = branchButton;
     m_agentBranchButton->hide(); // shown per-session in refreshAgentDetailMeta
     connect(m_agentBranchButton, &QPushButton::clicked, this,
             [this] { switchToAgentBranch(m_selectedAgentSessionId); });
