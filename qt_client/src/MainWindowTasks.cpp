@@ -44,7 +44,7 @@ QString taskErrorText(const QJsonObject &payload, const QString &fallback)
 
 // The canonical prefix this desktop signs with its account key for one task
 // request when it holds no account session token. Empty when the relay accepts
-// no key-signed form of the request: editing, deleting, timers, and QA verdicts
+// no key-signed form of the request: editing, timers, and QA verdicts
 // deliberately still require a real session. `resource` receives the task id
 // for a proof that names one. Must stay in lockstep with
 // _org_task_signed_session in the worker's entry.py.
@@ -53,10 +53,24 @@ QString organizationTaskProof(const QByteArray &method, const QString &path,
 {
     static const QRegularExpression completeRe(
         QStringLiteral("^/api/tasks/([a-f0-9]{32})/complete/?$"));
+    static const QRegularExpression itemRe(
+        QStringLiteral("^/api/tasks/([a-f0-9]{32})/?$"));
     const bool collection = path == QLatin1String("/api/tasks") ||
                             path == QLatin1String("/api/tasks/");
     if (method == QByteArrayLiteral("GET"))
         return collection ? kOrgTaskListProof : QString();
+    if (method == QByteArrayLiteral("DELETE")) {
+        // Delete is a manage-permission action, and the relay applies that check
+        // to a signed caller exactly as to a session one — so the account key
+        // this install already signs the board read with is enough (adhoc
+        // #1426). Before, Delete asked an operator who was demonstrably signed
+        // in to sign in again.
+        const QRegularExpressionMatch item = itemRe.match(path);
+        if (!item.hasMatch())
+            return QString();
+        *resource = item.captured(1);
+        return kOrgTaskDeleteProof;
+    }
     if (method != QByteArrayLiteral("POST"))
         return QString();
     if (collection)
