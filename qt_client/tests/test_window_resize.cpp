@@ -15,7 +15,9 @@
 #include <QFile>
 #include <QCheckBox>
 #include <QDebug>
+#include <QDialogButtonBox>
 #include <QDir>
+#include <QDateTimeEdit>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QJsonDocument>
@@ -142,22 +144,26 @@ void checkFooterOverlayGeometry(MainWindow &window)
     auto *prompt = window.findChild<QWidget *>(QStringLiteral("promptOverlayHost"));
     auto *lights = dynamic_cast<forkmesh::ui::LogActivityLights *>(
         window.findChild<QWidget *>(QStringLiteral("logActivityLights")));
-    check(dock && log && prompt && lights && !log->isVisible() &&
+    auto *header = dynamic_cast<forkmesh::ui::LogActivityLights *>(
+        window.findChild<QWidget *>(QStringLiteral("logActivityHeader")));
+    check(dock && log && prompt && lights && header && !log->isVisible() &&
               lights->isVisible() && lights->lightCount() == 30 &&
-              prompt->geometry().center().x() < dock->rect().center().x() &&
+              prompt->geometry().center().x() > dock->rect().center().x() &&
               prompt->geometry().bottom() == dock->rect().bottom() &&
-              lights->geometry().right() == dock->rect().right(),
-          QStringLiteral("the lower-left prompt is bottom-flush while all 30 "
-                         "collapsed log-category lights stay lower-right"));
+              lights->geometry().left() == dock->rect().left() &&
+              lights->geometry().bottom() == dock->rect().bottom(),
+          QStringLiteral("all 30 collapsed log-category lights stay lower-left "
+                         "while the lower-right prompt is bottom-flush"));
 
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
-    check(log && lights && log->isVisible() && lights->isVisible() &&
-              log->geometry().center().x() > dock->rect().center().x() &&
+    check(log && lights && header && log->isVisible() && !lights->isVisible() &&
+              header->isVisible() && header->lightCount() == 30 &&
+              log->geometry().center().x() < dock->rect().center().x() &&
               log->geometry().bottom() == dock->rect().bottom() &&
-              lights->geometry().right() == log->geometry().right(),
-          QStringLiteral("the compact log opens at the lower-right without "
-                         "hiding its overlaid category lights"));
+              header->geometry().top() >= log->rect().top(),
+          QStringLiteral("the compact log opens at the lower-left with its "
+                         "expanded 30-category header"));
 
     window.testShowLogSection();
     QApplication::processEvents();
@@ -386,6 +392,91 @@ void stopChildProcesses(QObject &root)
     }
 }
 
+void runLogTimelineChecks(MainWindow &window)
+{
+    window.testResetNetworkLog();
+    window.testLogSystem(QStringLiteral("Timeline session started"));
+    window.testLogSystem(QStringLiteral("Pushed 2 commits to origin/main"));
+    window.testLogSystem(QStringLiteral("Network request completed"));
+    window.testShowLogSection();
+    QApplication::processEvents();
+
+    QWidget *chart = window.testLogTimelineChart();
+    check(chart && chart->isVisible(),
+          QStringLiteral("the Log page shows its activity chart"));
+    check(window.testNetworkLogView() &&
+              !window.testNetworkLogView()->isVisible(),
+          QStringLiteral("the old scrolling network-log pane is removed"));
+    check(window.findChild<QListWidget *>(QStringLiteral("logEventList")) ==
+              nullptr,
+          QStringLiteral("the duplicate Recent Pings feed is removed"));
+    check(window.testLogTimelineVisibleCount() >= 3,
+          QStringLiteral("the 24-hour timeline includes all freshly logged events"));
+
+    QStringList ranges;
+    QPushButton *customRangeButton = nullptr;
+    for (QPushButton *button :
+         window.findChildren<QPushButton *>(QStringLiteral("logRangeButton"))) {
+        ranges << button->text();
+        if (button->text() == QLatin1String("Custom..."))
+            customRangeButton = button;
+    }
+    check(ranges.contains(QStringLiteral("24h")) &&
+              ranges.contains(QStringLiteral("7 days")) &&
+              ranges.contains(QStringLiteral("30 days")) &&
+              ranges.contains(QStringLiteral("Custom...")),
+          QStringLiteral("the timeline offers preset and custom timeframes"));
+
+    bool customRangeApplied = false;
+    if (customRangeButton) {
+        QTimer::singleShot(0, &window, [&customRangeApplied] {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            auto *from = dialog ? dialog->findChild<QDateTimeEdit *>(
+                                      QStringLiteral("logCustomFrom"))
+                                : nullptr;
+            auto *to = dialog ? dialog->findChild<QDateTimeEdit *>(
+                                    QStringLiteral("logCustomTo"))
+                              : nullptr;
+            auto *buttons = dialog ? dialog->findChild<QDialogButtonBox *>() : nullptr;
+            if (!from || !to || !buttons ||
+                !buttons->button(QDialogButtonBox::Ok)) {
+                if (dialog)
+                    dialog->reject();
+                return;
+            }
+            const QDateTime now = QDateTime::currentDateTime();
+            from->setDateTime(now.addSecs(-60 * 60));
+            to->setDateTime(now.addSecs(60));
+            customRangeApplied = true;
+            buttons->button(QDialogButtonBox::Ok)->click();
+        });
+        customRangeButton->click();
+    }
+    check(customRangeApplied && customRangeButton &&
+              customRangeButton->isChecked() &&
+              window.testLogTimelineVisibleCount() >= 3,
+          QStringLiteral("a custom start and end time applies to the chart"));
+
+    if (chart) {
+        const QPointF start(chart->width() * 0.35, chart->height() * 0.5);
+        const QPointF end(chart->width() * 0.70, chart->height() * 0.5);
+        QMouseEvent press(QEvent::MouseButtonPress, start,
+                          chart->mapToGlobal(start.toPoint()),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent release(QEvent::MouseButtonRelease, end,
+                            chart->mapToGlobal(end.toPoint()),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(chart, &press);
+        QApplication::sendEvent(chart, &release);
+        check(window.testLogTimelineSummary().contains(QStringLiteral("Zoomed")),
+              QStringLiteral("dragging across the timeline zooms into that area"));
+    }
+    window.testSetLogTimelineHours(7 * 24);
+    check(!window.testLogTimelineSummary().contains(QStringLiteral("Zoomed")),
+          QStringLiteral("choosing a timeframe resets the chart zoom"));
+    window.testResetNetworkLog();
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -446,6 +537,8 @@ int main(int argc, char *argv[])
         app.arguments().contains(QStringLiteral("--hosts-layout-only"));
     const bool issuesRedesignOnly =
         app.arguments().contains(QStringLiteral("--issues-redesign-only"));
+    const bool logTimelineOnly =
+        app.arguments().contains(QStringLiteral("--log-timeline-only"));
     const bool footerOverlayOnly =
         app.arguments().contains(QStringLiteral("--footer-overlay-only"));
 
@@ -567,7 +660,7 @@ int main(int argc, char *argv[])
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
-    if (!issuesRedesignOnly && !footerOverlayOnly)
+    if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly)
         check(detailedStartupSteps >= 20 &&
               startupLog.contains(QStringLiteral(
                   "BEGIN MainWindow: load repository catalog from settings")) &&
@@ -583,6 +676,14 @@ int main(int argc, char *argv[])
           QString("startup log names and times every material constructor phase "
                   "(detailed steps=%1)")
                   .arg(detailedStartupSteps));
+
+    if (logTimelineOnly) {
+        window.show();
+        QApplication::processEvents();
+        runLogTimelineChecks(window);
+        stopChildProcesses(window);
+        return failures == 0 ? 0 : 1;
+    }
 
     if (footerOverlayOnly) {
         window.resize(1200, 720);
@@ -1325,6 +1426,12 @@ int main(int argc, char *argv[])
                          "disabled non-custodial placeholder"));
     window.show();
     QApplication::processEvents();
+
+    // The Log destination is a timeline rather than a second scrolling text
+    // feed or a duplicate of the Pings page. Its timeframe presets and direct
+    // area selection keep dense activity explorable without losing the category
+    // filters.
+    runLogTimelineChecks(window);
 
     // adhoc #1389: notification actions are caption-height controls, not the
     // full-height buttons shown in the reference screenshot. The queued cards
@@ -4864,7 +4971,9 @@ int main(int argc, char *argv[])
                              "(adhoc #222)"));
     }
 
-    // adhoc #15: the network log renders only its newest segment up front, and
+    // adhoc #15: the hidden rich renderer still pages its newest segment for
+    // footer deep-links and add-to-prompt actions without returning the old
+    // scrolling pane to the Log page.
     // scrolling to the top loads the next older segment instead of capping
     // history at whatever first rendered.
     {
