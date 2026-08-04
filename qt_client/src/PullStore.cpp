@@ -1396,10 +1396,11 @@ bool PullStore::writePull(const PullRequest &pr, QString *error) const
     if (!writeTextFile(pullDir(pr.number) + "/pull.md",
                        lines.join('\n') + "\n" + pr.description + "\n", error))
         return false;
-    if (pr.branchBacked) {
-        // Keep the diff out of the repo: it is reconstructed from base..head on
-        // read. Drop any stale blobs (e.g. a PR converted to branch-backed) so a
-        // reader never picks up an outdated committed copy.
+    if (pr.status != QLatin1String("open") || pr.branchBacked) {
+        // Change payloads belong only to open, stored-patch PRs. Branch-backed
+        // PRs reconstruct them from base..head while they are open, and closed
+        // or merged PRs retain only their metadata/conversation. Drop stale
+        // blobs on every lifecycle write so an old diff cannot remain visible.
         QFile::remove(pullDir(pr.number) + "/changes.patch");
         QFile::remove(pullDir(pr.number) + "/commits.mbox");
         return true;
@@ -1434,9 +1435,10 @@ bool PullStore::readPull(int number, PullRequest &out) const
     out.mergeBase = fm.get("mergeBase");
     out.mergeHead = fm.get("mergeHead");
     out.description = fm.body;
-    // A branch-backed PR carries no committed diff: reconstruct it from the refs.
-    // A merged one resolves against the snapshot taken at merge (the live range
-    // would be empty once the base absorbed the commits).
+    out.patch.clear();
+    out.commits.clear();
+    // A branch-backed open PR carries no committed diff: reconstruct it from the
+    // refs. Closed and merged PRs deliberately expose no patch or commit payload.
     const bool merged = !out.mergeBase.isEmpty() && !out.mergeHead.isEmpty();
     const QString rbase = merged ? out.mergeBase : out.base;
     const QString rhead = merged ? out.mergeHead : out.head;
@@ -1449,10 +1451,10 @@ bool PullStore::readPull(int number, PullRequest &out) const
     // Fall through to the on-disk blobs only when nothing resolves anywhere
     // (degraded, but never crashes).
     const bool derived =
-        out.branchBacked &&
+        out.status == QLatin1String("open") && out.branchBacked &&
         (deriveFromRefs(m_workTree, rbase, rhead, &out.patch, &out.commits) ||
          deriveFromRefs(m_mirror, rbase, rhead, &out.patch, &out.commits));
-    if (!derived) {
+    if (out.status == QLatin1String("open") && !derived) {
         QFile patch(pullDir(number) + "/changes.patch");
         if (patch.open(QIODevice::ReadOnly))
             out.patch = QString::fromUtf8(patch.readAll());
@@ -1571,6 +1573,11 @@ bool PullStore::setStatus(int number, const QString &status, QString *error)
 {
     if (!canWrite())
         return false;
+    // Closing is a privacy-preserving deletion, not an archival state. Purge
+    // the record and its payload from the dedicated pull ledger's history so a
+    // closed PR cannot be recovered through an older metadata commit.
+    if (status == QLatin1String("closed"))
+        return deletePull(number, /*rewriteHistory=*/true, error);
     PullRequest pr;
     if (!readPull(number, pr)) {
         if (error)
@@ -2955,18 +2962,13 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
     if (!rewriteHistory)
         return true;
 
-    // Purge pulls/<number> from every commit so the diff text it carried
-    // (changes.patch / commits.mbox) can no longer be found by searching
-    // history. Without this the soft delete above only hides the files at the
-    // tip; older commits still contain them. --all rewrites every ref in the
-    // repo (shared by every linked worktree, including the pulls/ metadata
-    // worktree's checked-out forkmesh/pulls branch) regardless of which
-    // worktree directory this runs from - but a branch that's checked out
-    // elsewhere while filter-branch rewrites it is an unverified edge case
-    // here; a metadata-worktree removal/relink before a rewriteHistory=true
-    // call would be the safer sequencing if this proves flaky in practice.
+    // Purge pulls/<number> from every commit in the dedicated metadata ledger
+    // so its patch, commit series, metadata and conversation cannot be recovered
+    // through an older PR commit. Never rewrite --all: code branches and tags do
+    // not own the pull ledger and must retain their object identities.
+    const QString pullsRef = QStringLiteral("refs/heads/forkmesh/pulls");
     QByteArray refs;
-    if (!runGit(m_workTree, {"rev-list", "--all", "--max-count=1"}, &refs, &err,
+    if (!runGit(metaDir, {"rev-list", pullsRef, "--max-count=1"}, &refs, &err,
                 kGitRewriteTimeoutMs)) {
         if (error)
             *error = QStringLiteral("git rev-list failed: ") + err;
@@ -2978,9 +2980,9 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
     const QString indexFilter =
         QStringLiteral("git rm -r --cached --ignore-unmatch -- %1").arg(relPath);
     QByteArray out;
-    if (!runGit(m_workTree,
+    if (!runGit(metaDir,
                 {"filter-branch", "--force", "--index-filter", indexFilter,
-                 "--prune-empty", "--tag-name-filter", "cat", "--", "--all"},
+                 "--prune-empty", "--", pullsRef},
                 &out, &err, kGitRewriteTimeoutMs)) {
         const QString stdoutText = QString::fromUtf8(out);
         if (!err.contains(QStringLiteral("Not a valid object name HEAD")) &&
@@ -2991,24 +2993,24 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
         }
     }
 
-    if (!runGit(m_workTree, {"rev-parse", "--verify", "HEAD"}, nullptr, nullptr) &&
-        !runGit(m_workTree, {"commit", "--allow-empty", "-m",
+    if (!runGit(metaDir, {"rev-parse", "--verify", "HEAD"}, nullptr, nullptr) &&
+        !runGit(metaDir, {"commit", "--allow-empty", "-m",
                              QStringLiteral("Initial commit")},
                 nullptr, &err)) {
         if (error)
             *error = QStringLiteral("git commit failed: ") + err;
         return false;
     }
-    if (!removeOriginalRefs(m_workTree, error))
+    if (!removeOriginalRefs(metaDir, error))
         return false;
-    if (!runGit(m_workTree, {"reflog", "expire", "--expire=now",
+    if (!runGit(metaDir, {"reflog", "expire", "--expire=now",
                              "--expire-unreachable=now", "--all"},
                 nullptr, &err, kGitRewriteTimeoutMs)) {
         if (error)
             *error = QStringLiteral("git reflog expire failed: ") + err;
         return false;
     }
-    if (!runGit(m_workTree, {"gc", "--prune=now"}, nullptr, &err,
+    if (!runGit(metaDir, {"gc", "--prune=now"}, nullptr, &err,
                 kGitRewriteTimeoutMs)) {
         if (error)
             *error = QStringLiteral("git gc failed: ") + err;
@@ -3356,11 +3358,11 @@ QList<PullRequest> PullStore::loadFromMirror(QString *error, bool strict,
         pr.mergeBase = fm.get("mergeBase");
         pr.mergeHead = fm.get("mergeHead");
         pr.description = fm.body;
-        // Branch-backed PRs carry no committed diff — reconstruct it from the
-        // base/head refs the mirror already syncs (the merge snapshot for a
-        // merged one). Fall back to committed blobs for legacy/portable PRs.
+        // Branch-backed open PRs carry no committed diff — reconstruct it from
+        // the base/head refs the mirror already syncs. Closed and merged PRs
+        // deliberately expose no patch or commit payload.
         bool derived = false;
-        if (pr.branchBacked) {
+        if (pr.status == QLatin1String("open") && pr.branchBacked) {
             if (strict) {
                 derived = deriveFromImmutableOids(
                     m_mirror, pr.creationBaseOid, pr.creationHeadOid,
@@ -3380,7 +3382,7 @@ QList<PullRequest> PullStore::loadFromMirror(QString *error, bool strict,
         }
         bool patchOk = false;
         bool mboxOk = false;
-        if (!derived) {
+        if (pr.status == QLatin1String("open") && !derived) {
             pr.patch = QString::fromUtf8(
                 readBlob("pulls/" + base + "/changes.patch", &patchOk));
             const QByteArray mbox =

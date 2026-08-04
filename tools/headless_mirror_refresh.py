@@ -3634,6 +3634,18 @@ def _merge_metadata_commit(
             object_directory=object_directory,
             maximum_output=256,
         )
+        # A merged pull retains metadata and review history, but its patch and
+        # commit-series payload are open-PR data. Remove both from the exact
+        # metadata tree atomically with the status transition.
+        for payload in ("changes.patch", "commits.mbox"):
+            _merge_git(
+                config,
+                ["update-index", "--force-remove",
+                 "pulls/%d/%s" % (request["pullNumber"], payload)],
+                index_file=index,
+                object_directory=object_directory,
+                maximum_output=256,
+            )
         _code, tree_raw = _merge_git(
             config, ["write-tree"], index_file=index,
             object_directory=object_directory, maximum_output=256)
