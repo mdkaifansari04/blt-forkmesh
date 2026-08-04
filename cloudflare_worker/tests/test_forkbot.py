@@ -856,6 +856,40 @@ def test_ai_ask_sends_the_prompt_to_the_picked_model():
     assert calls["aiAskRate"] == ["bi:jett"]
 
 
+def test_ai_ask_rejects_unpublished_model():
+    class _AI:
+        async def run(self, _model, _payload):
+            raise AssertionError("AI should not be called for unknown model")
+
+    env, calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "why is build flaky?",
+                         "@cf/ghost/llama-999"))))
+    assert response["status"] == 404
+    assert response["data"] == {
+        "error": "not_found",
+        "model": "@cf/ghost/llama-999",
+    }
+    # Unknown model picks should not bill or enter the AI usage window.
+    assert calls["aiAskRate"] == []
+
+
+def test_ai_ask_maps_cloudflare_model_not_found_to_not_found():
+    class _AI:
+        async def run(self, _model, _payload):
+            raise RuntimeError("Cloudflare model @cf/meta/llama-4-scout-17b-16e-instruct "
+                               "was not found")
+
+    env, calls, ns = _env_and_calls(ai=_AI())
+    response = asyncio.run(ns["ai_ask_handler"](env, _ask_request(
+        _signed_ask_body(ns, "why is build flaky?",
+                         "@cf/meta/llama-4-scout-17b-16e-instruct"))))
+    assert response["status"] == 404
+    assert response["data"] == {
+        "error": "not_found",
+        "model": "@cf/meta/llama-4-scout-17b-16e-instruct",
+    }
+    assert calls["aiAskRate"] == []
 def test_ai_ask_retries_with_fallback_model_on_model_not_found():
     class _AI:
         def __init__(self):
