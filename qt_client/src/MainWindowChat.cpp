@@ -191,16 +191,41 @@ QString quickAddUsageLimitRemainingText(const QString &provider)
                           : countdown;
 }
 
-QString quickAddModelChoiceSuccess(const AgentSession &session)
+// How the last run on one model row ended: the state drives the row's coloured
+// ✓ / ✗ (kAgentChoiceStatusRole) and `detail` is the line the tooltip adds, so
+// the mark is explained rather than left as a bare glyph.
+struct ModelChoiceOutcome {
+    QString state;  // empty when nothing has finished on this model yet
+    QString detail;
+};
+
+// "just now" is only the truth for a run that carries a finish stamp: a session
+// stored before that field existed must not claim to have ended this minute.
+QString quickAddModelChoiceWhen(const AgentSession &session)
 {
-    Q_UNUSED(session);
-    return QStringLiteral("✓");
+    return session.finishedAtMs > 0
+               ? QStringLiteral(" %1").arg(
+                     formatIssueRelativeTime(session.finishedAtMs))
+               : QString();
 }
 
-QString quickAddModelChoiceFailure(const QString &message)
+ModelChoiceOutcome quickAddModelChoiceSuccess(const AgentSession &session)
 {
-    Q_UNUSED(message);
-    return QStringLiteral("✗");
+    return {kAgentChoiceStatusOk,
+            QStringLiteral("Last run on this model succeeded%1")
+                .arg(quickAddModelChoiceWhen(session))};
+}
+
+ModelChoiceOutcome quickAddModelChoiceFailure(const AgentSession &session)
+{
+    QString detail = (session.status == AgentStatus::Stopped
+                          ? QStringLiteral("Last run on this model was stopped%1")
+                          : QStringLiteral("Last run on this model failed%1"))
+                         .arg(quickAddModelChoiceWhen(session));
+    const QString message = session.lastError.simplified();
+    if (!message.isEmpty())
+        detail += QStringLiteral(": %1").arg(message);
+    return {kAgentChoiceStatusFailed, detail};
 }
 
 QString maskCredentialValue(const QString &value)
@@ -340,13 +365,24 @@ bool providerAccountSignedIn(const QString &provider, const QString &configDir)
            !oauth.value(QStringLiteral("refreshToken")).toString().isEmpty();
 }
 
-QString quickAddModelChoiceSummary(const QList<AgentSession> &sessions,
-                                  const QString &provider,
-                                  const QString &choiceModel)
+// What the model picker says about one row: the outcome of the run that finished
+// most recently on that model, so a model that has just worked reads as working.
+//
+// Two things used to leave a stale mark on a model that had since succeeded
+// (adhoc #1445). The list is ordered by when sessions were *created*, not by when
+// they ended — a run started yesterday and resumed to success this morning sits
+// below one created later that failed — so the first match was not the newest
+// outcome. And a family match ("opus") was accepted as readily as an exact one,
+// letting one failed Opus 4.1 run stamp ✗ on every Opus row even where that exact
+// model had an outcome of its own. Both are now resolved by newest-finished, with
+// the exact model outranking its family.
+ModelChoiceOutcome quickAddModelChoiceSummary(const QList<AgentSession> &sessions,
+                                             const QString &provider,
+                                             const QString &choiceModel)
 {
     const QString targetModel = choiceModel.trimmed().toLower();
     if (targetModel.isEmpty())
-        return QString();
+        return {};
 
     const QString targetFamily = modelFamilyId(targetModel);
     const auto statusIsTerminal =
@@ -354,28 +390,40 @@ QString quickAddModelChoiceSummary(const QList<AgentSession> &sessions,
             return status == AgentStatus::Success || status == AgentStatus::Failed ||
                 status == AgentStatus::Stopped;
         };
+    // When this run reached its outcome. Sessions written before the finish
+    // stamp existed fall back to the run's own timeline rather than dropping out
+    // of the comparison entirely.
+    const auto endedAtMs = [](const AgentSession &session) {
+        if (session.finishedAtMs > 0)
+            return session.finishedAtMs;
+        return session.startedAtMs > 0 ? session.startedAtMs
+                                       : session.createdAtMs;
+    };
 
+    const AgentSession *exact = nullptr;
+    const AgentSession *family = nullptr;
     for (const AgentSession &session : sessions) {
-        if (session.provider != provider)
-            continue;
-        const QString status = session.status;
-        if (!statusIsTerminal(status))
+        if (session.provider != provider || !statusIsTerminal(session.status))
             continue;
         const QString model = session.model.trimmed().toLower();
         if (model.isEmpty())
             continue;
-        if (model == targetModel)
-            return status == AgentStatus::Success
-                       ? quickAddModelChoiceSuccess(session)
-                       : quickAddModelChoiceFailure(session.lastError);
-
-        if (!targetFamily.isEmpty() && modelFamilyId(model) == targetFamily)
-            return status == AgentStatus::Success
-                       ? quickAddModelChoiceSuccess(session)
-                       : quickAddModelChoiceFailure(session.lastError);
+        const bool sameModel = model == targetModel;
+        const bool sameFamily = !targetFamily.isEmpty() &&
+                                modelFamilyId(model) == targetFamily;
+        if (!sameModel && !sameFamily)
+            continue;
+        const AgentSession *&newest = sameModel ? exact : family;
+        if (!newest || endedAtMs(session) > endedAtMs(*newest))
+            newest = &session;
     }
 
-    return QString();
+    const AgentSession *latest = exact ? exact : family;
+    if (!latest)
+        return {};
+    return latest->status == AgentStatus::Success
+               ? quickAddModelChoiceSuccess(*latest)
+               : quickAddModelChoiceFailure(*latest);
 }
 
 } // namespace
@@ -1417,6 +1465,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddAgentModelSelector->setIconSize(QSize(22, 22));
     m_quickAddAgentModelSelector->view()->setIconSize(QSize(26, 26));
     m_quickAddAgentModelSelector->setMaxVisibleItems(30);
+    // Each row ends in the ✓ / ✗ of the last run on that model: the delegate
+    // paints that glyph green or red so the menu answers "which of these is
+    // working right now?" at a glance (adhoc #1445).
+    m_quickAddAgentModelSelector->setItemDelegate(
+        new AgentChoiceDescriptionDelegate(m_quickAddAgentModelSelector));
     m_quickAddAgentModelSelector->setToolTip(
         "Choose the agent and model that will handle this prompt.");
     auto refreshQuickAddModelPicker = [this]() {
@@ -3246,13 +3299,19 @@ void MainWindow::refreshQuickAddAgentModelSelector()
 
     auto addChoice = [this](const QIcon &icon, const QString &label,
                             const QString &provider, const QString &model,
-                            const QString &tooltip) {
+                            const QString &tooltip,
+                            const QString &status = QString()) {
         const int row = m_quickAddAgentModelSelector->count();
         m_quickAddAgentModelSelector->addItem(icon, label, provider);
         m_quickAddAgentModelSelector->setItemData(row, model, Qt::UserRole + 1);
         if (!tooltip.isEmpty())
             m_quickAddAgentModelSelector->setItemData(row, tooltip,
                                                       Qt::ToolTipRole);
+        // The label already ends in this state's glyph; the role is what tells
+        // the delegate to paint that glyph green or red.
+        if (!status.isEmpty())
+            m_quickAddAgentModelSelector->setItemData(row, status,
+                                                      kAgentChoiceStatusRole);
     };
     addChoice(agentControlIcon(10), QStringLiteral("Manual · create issue"),
               QStringLiteral("manual"), QString(),
@@ -3267,27 +3326,23 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                   ? chosenAccount
                   : QStringLiteral("%1 (%2)").arg(chosenAccount, chosenEmail);
     for (const Choice &choice : models) {
-        const QString statusSummary =
+        const ModelChoiceOutcome outcome =
             quickAddModelChoiceSummary(m_agentSessions, choice.provider,
                                       choice.model);
+        const QString statusGlyph = agentChoiceStatusGlyph(outcome.state);
         const QString usageCountdown =
             quickAddUsageLimitCountdownText(choice.provider);
         const QString usageRemaining =
             quickAddUsageLimitRemainingText(choice.provider);
-        const QString statusAndCountdown =
-            statusSummary.isEmpty()
-                ? QString()
-                : usageRemaining.isEmpty()
-                      ? statusSummary
-                      : QStringLiteral("%1 (%2)")
-                            .arg(statusSummary, usageRemaining);
-        const QString labelWithSummary =
-            statusAndCountdown.isEmpty()
-                ? (usageRemaining.isEmpty()
-                       ? choice.label
-                       : QStringLiteral("%1 (%2)").arg(choice.label, usageRemaining))
-                : QStringLiteral("%1 %2").arg(choice.label,
-                                              statusAndCountdown);
+        // "Opus 5 (2h 5m) ✓" — the outcome glyph is always the last thing on the
+        // row, which is what lets the delegate repaint that one character in the
+        // colour of the outcome while the label stays in the theme's own.
+        QString label =
+            usageRemaining.isEmpty()
+                ? choice.label
+                : QStringLiteral("%1 (%2)").arg(choice.label, usageRemaining);
+        if (!statusGlyph.isEmpty())
+            label += QLatin1Char(' ') + statusGlyph;
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
         const QString identity = agentCliIdentityLabel(
@@ -3296,19 +3351,15 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
         else if (!chosenIdentity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(chosenIdentity, toolTip);
-        if (!statusSummary.isEmpty()) {
-            const QString statusLine =
-                usageRemaining.isEmpty() ? statusSummary
-                                        : QStringLiteral("%1 (%2)").arg(
-                                              statusSummary, usageRemaining);
-            toolTip += QStringLiteral("\n%1").arg(statusLine);
-        }
-        if (!usageCountdown.isEmpty() &&
-            statusSummary.isEmpty())
+        // The glyph on its own says only "good" or "bad": the tooltip is where
+        // the row says which run it is reporting and why it failed.
+        if (!outcome.detail.isEmpty())
+            toolTip += QStringLiteral("\n%1").arg(outcome.detail);
+        if (!usageCountdown.isEmpty())
             toolTip +=
                 QStringLiteral("\nLimit status: %1").arg(usageCountdown);
-        addChoice(choice.icon, labelWithSummary, choice.provider, choice.model,
-                  toolTip);
+        addChoice(choice.icon, label, choice.provider, choice.model, toolTip,
+                  outcome.state);
     }
 
     // These API agents do not expose a per-run model chooser in this composer,
@@ -3369,6 +3420,39 @@ void MainWindow::refreshQuickAddAgentModelSelector()
             : QStringLiteral("%1. Click to choose a different agent or model.")
                   .arg(currentTip));
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+void MainWindow::testRefreshQuickAddAgentModelSelector()
+{
+    refreshQuickAddAgentModelSelector();
+}
+
+QString MainWindow::testQuickAddAgentModelStatus(const QString &model) const
+{
+    if (!m_quickAddAgentModelSelector)
+        return QString();
+    for (int row = 0; row < m_quickAddAgentModelSelector->count(); ++row) {
+        if (m_quickAddAgentModelSelector->itemData(row, Qt::UserRole + 1)
+                .toString() == model)
+            return m_quickAddAgentModelSelector
+                ->itemData(row, kAgentChoiceStatusRole)
+                .toString();
+    }
+    return QString();
+}
+
+QString MainWindow::testQuickAddAgentModelLabel(const QString &model) const
+{
+    if (!m_quickAddAgentModelSelector)
+        return QString();
+    for (int row = 0; row < m_quickAddAgentModelSelector->count(); ++row) {
+        if (m_quickAddAgentModelSelector->itemData(row, Qt::UserRole + 1)
+                .toString() == model)
+            return m_quickAddAgentModelSelector->itemText(row);
+    }
+    return QString();
+}
+#endif // FORKMESH_WINDOW_TESTS
 
 // Ask the installed `claude` CLI which --effort values it accepts (adhoc #38)
 // instead of hard-coding a ladder that drifts with the CLI. `claude --help`
