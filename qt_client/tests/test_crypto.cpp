@@ -7781,10 +7781,12 @@ int main(int argc, char *argv[])
         // find a grandchild by command name and ignore everything outside the
         // tree it was asked about.
         using SystemStats::descendantsNamed;
-        check(descendantsNamed(0, QStringLiteral("sleep")).count == 0 &&
+        using SystemStats::descendantProcesses;
+        check(descendantProcesses(0).isEmpty() &&
+                  descendantsNamed(0, QStringLiteral("sleep")).count == 0 &&
                   descendantsNamed(QCoreApplication::applicationPid(), QString())
                           .count == 0,
-              "an invalid root PID or empty name counts nothing");
+              "an invalid root PID or empty name reports nothing");
 
         QProcess child;
         // `sh` execs the sleep, so the match is a grandchild of this process —
@@ -7803,6 +7805,19 @@ int main(int argc, char *argv[])
             }
             check(load.count >= 1 && load.residentBytes > 0,
                   "a descendant process is counted with its resident memory");
+            bool foundSleep = false;
+            for (const SystemStats::DescendantProcess &process :
+                 descendantProcesses(QCoreApplication::applicationPid())) {
+                // /bin/sh may exec sleep or fork it before waiting, so the
+                // observed child's PID is not guaranteed to be QProcess's PID.
+                if (process.pid > 0 && process.parentPid > 0 &&
+                    process.command == QLatin1String("sleep")) {
+                    foundSleep = true;
+                    break;
+                }
+            }
+            check(foundSleep,
+                  "a descendant process snapshot identifies the child PID and command");
             check(descendantsNamed(child.processId(),
                                    QStringLiteral("forkmesh-tests"))
                           .count == 0,

@@ -7179,6 +7179,30 @@ static SystemStats::DescendantLoad agentCompilerLoad(qint64 rootPid)
     return cached;
 }
 
+// A concise, safe-to-display snapshot of the processes still owned by an
+// agent. SystemStats intentionally supplies only kernel command names rather
+// than full argument strings: a command line can contain prompt text, paths or
+// credentials, while the command and PID are enough to identify a straggler.
+static QString agentSubprocessText(
+    const QList<SystemStats::DescendantProcess> &processes)
+{
+    QStringList labels;
+    constexpr int kShownProcesses = 4;
+    for (int i = 0; i < processes.size() && i < kShownProcesses; ++i) {
+        const SystemStats::DescendantProcess &process = processes.at(i);
+        labels << QStringLiteral("%1 (PID %2)")
+                      .arg(process.command.isEmpty()
+                               ? QStringLiteral("process")
+                               : process.command.toHtmlEscaped())
+                      .arg(process.pid);
+    }
+    if (processes.size() > kShownProcesses)
+        labels << QStringLiteral("+%1 more").arg(processes.size() - kShownProcesses);
+    return QStringLiteral("%1 running &middot; %2")
+        .arg(processes.size())
+        .arg(labels.join(QStringLiteral(", ")));
+}
+
 // Rebuild only the detail header's key/value meta lines for a session — the
 // identity block, the issue/PR chips, Speed/Diff/Updated (adhoc #35) and the run
 // Stats (turns/time/cost/tokens) — plus the toolbar's Branch/Worktree buttons,
@@ -7383,14 +7407,28 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     // cc1plus compilers running under this session's own process tree, so the
     // host's "high memory" list can be attributed to this agent (adhoc #57).
     // Only shown while the tree actually holds some.
-    const SystemStats::DescendantLoad compilers =
-        agentCompilerLoad(agentSessionProcessId(sessionId));
+    const qint64 agentPid = agentSessionProcessId(sessionId);
+    const SystemStats::DescendantLoad compilers = agentCompilerLoad(agentPid);
     if (compilers.count > 0) {
         headers << QStringLiteral("cc1plus");
         lines << QStringLiteral("%1 &middot; %2")
                      .arg(compilers.count)
                      .arg(SystemStats::formatBytes(compilers.residentBytes)
                               .toHtmlEscaped());
+    }
+    // A result event arrives before a long-lived CLI transport has necessarily
+    // reaped its build/test children. Show the exact remaining process snapshot
+    // where the user already checks session status, rather than claiming Done
+    // while the agent is still doing work in the background.
+    if (agentPid > 0) {
+        headers << QStringLiteral("Process");
+        lines << QStringLiteral("Agent CLI (PID %1)").arg(agentPid);
+    }
+    const QList<SystemStats::DescendantProcess> subprocesses =
+        SystemStats::descendantProcesses(agentPid);
+    if (!subprocesses.isEmpty()) {
+        headers << QStringLiteral("Subprocesses");
+        lines << agentSubprocessText(subprocesses);
     }
     QString meta = agentDetailTableHtml(headers, lines);
     if (!mergedMeta.isEmpty())
@@ -11177,6 +11215,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
     // in the agents list, not just the open transcript (issue #296).
     if (type == QLatin1String("result")) {
         if (AgentSession *as = findAgentSession(sessionId)) {
+            bool awaitSubprocesses = false;
             const int turns = ev.value(QStringLiteral("num_turns")).toInt();
             const qint64 dur = static_cast<qint64>(
                 ev.value(QStringLiteral("duration_ms")).toDouble());
@@ -11194,6 +11233,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
             // handler only promotes Running/Waiting to Success, so this sticks.
             const bool userStopped = as->status == AgentStatus::Stopped;
             if (!userStopped && ClaudeTranscriptView::resultIsError(ev)) {
+                m_agentCompletionChecks.remove(sessionId);
                 as->status = AgentStatus::Failed;
                 as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 // Same wording the transcript's "✗ Failed" row shows, so the
@@ -11201,21 +11241,25 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
                 // a bare status or a raw "error_max_turns" token.
                 as->lastError = ClaudeTranscriptView::failureReason(ev);
             } else if (as->status == AgentStatus::Running) {
-                // A clean `result` means the turn finished successfully — the agent
-                // said its piece (e.g. "Done") and isn't blocked on the user. Mark
-                // it "Done" (Success) rather than "Waiting" (adhoc #163). The
-                // process stays alive for follow-ups; a new user turn flips it back
-                // to Running. Guarded on Running so a prior AskUserQuestion/permission
-                // "Waiting" set earlier in this turn isn't clobbered.
-                as->status = AgentStatus::Success;
-                as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
-                as->lastError.clear();
+                // A clean `result` says the CLI has finished its response, but
+                // not necessarily that the build/test children it launched have
+                // exited. Keep this turn visibly Working until the process tree
+                // drains; completeAgentSessionWhenSubprocessesExit() then makes
+                // the Success transition atomically. A new turn clears this
+                // pending check in markAgentSessionRunning().
+                m_agentCompletionChecks.insert(sessionId);
+                awaitSubprocesses = true;
+            } else if (userStopped) {
+                m_agentCompletionChecks.remove(sessionId);
             }
             if (m_agentStore && !isExternalSession(sessionId))
                 m_agentStore->saveSession(*as);
             updateAgentCostCell(sessionId);
             updateAgentRunSummaryCells(sessionId); // fill the Turns/Time columns
-            updateAgentStatusCell(sessionId);
+            if (awaitSubprocesses)
+                completeAgentSessionWhenSubprocessesExit(sessionId);
+            else
+                updateAgentStatusCell(sessionId);
         }
         // app-server remains alive between turns, unlike the one-shot runner.
         // A clean Codex turn used to capture/open the PR right here; PRs are
@@ -11327,6 +11371,9 @@ QString MainWindow::lastCodexThreadId(int sessionId) const
 // another turn means it isn't just a merged, done session — clear the flag.
 void MainWindow::markAgentSessionRunning(int sessionId)
 {
+    // A fresh turn supersedes any delayed completion poll from the previous
+    // result; that old poll must never turn this new turn into Done.
+    m_agentCompletionChecks.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status == AgentStatus::Running)
         return;
@@ -11343,10 +11390,44 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     updateAgentStatusCell(sessionId);
 }
 
+void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
+{
+    if (!m_agentCompletionChecks.contains(sessionId))
+        return;
+    AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->status != AgentStatus::Running) {
+        m_agentCompletionChecks.remove(sessionId);
+        return;
+    }
+
+    const QList<SystemStats::DescendantProcess> subprocesses =
+        SystemStats::descendantProcesses(agentSessionProcessId(sessionId));
+    if (!subprocesses.isEmpty()) {
+        // Keep the session visibly Working and let the detail popup expose the
+        // snapshot above. A short, single-shot poll avoids a permanent timer
+        // for idle sessions and lets a just-exited child disappear promptly.
+        if (sessionId == m_selectedAgentSessionId)
+            refreshAgentDetailMeta(sessionId);
+        QTimer::singleShot(250, this, [this, sessionId] {
+            completeAgentSessionWhenSubprocessesExit(sessionId);
+        });
+        return;
+    }
+
+    m_agentCompletionChecks.remove(sessionId);
+    session->status = AgentStatus::Success;
+    session->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+    session->lastError.clear();
+    if (m_agentStore && !isExternalSession(sessionId))
+        m_agentStore->saveSession(*session);
+    updateAgentStatusCell(sessionId);
+}
+
 // The agent's turn ended (or it needs permission) and it's now waiting on the
 // user: flag the session "Waiting" in the list and raise a top-bar notification.
 void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
 {
+    m_agentCompletionChecks.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status != AgentStatus::Running)
         return; // only meaningful for a session that was actively running
