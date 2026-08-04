@@ -14496,7 +14496,10 @@
       const mirrors = Array.isArray(data.mirrors) ? data.mirrors : [];
       repoMirrorLoadedKey = key;
       repoMirrorLoadedAt = Date.now();
-      const mirrorCount = normalizedCount(data.summary?.mirrors) ?? mirrors.length;
+      // The list is the authoritative membership response.  Its summary can
+      // lag a node update, which previously left the Mirrors action badge at
+      // the stale summary count even while all returned nodes were rendered.
+      const mirrorCount = mirrors.length;
       const onlineMirrors = mirrors.filter(
         (mirror) =>
           mirror?.status === "online" &&
@@ -14514,7 +14517,7 @@
         }
       }
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
-      setRepoTabCount("mirrors", mirrors.length);
+      setRepoTabCount("mirrors", mirrorCount);
       state.repoMirrors = mirrors;
       // Older gateways reported commit dates at day precision. When the
       // signed mirror record names the same commit, its exact commitAt is the

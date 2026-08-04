@@ -87,3 +87,17 @@ def test_long_mirror_capabilities_use_a_mouseover_list():
     assert 'tabindex="0"' in chips
     assert 'aria-label="${escapeHtml(`${label}: ${list.join(", ")}`)}"' in chips
     assert 'mirrorListChip("Capabilities", operations)' in chips
+
+
+def test_mirrors_action_badge_uses_the_live_membership_list():
+    loader = DASHBOARD_JS[
+        DASHBOARD_JS.index("async function loadRepoMirrors(")
+        : DASHBOARD_JS.index("function repoMirrorsTabVisible(")
+    ]
+
+    # The endpoint's summary can lag the returned node records. The rail badge
+    # must agree with the list rendered in the Mirrors panel.
+    assert "const mirrorCount = mirrors.length;" in loader
+    assert "data.summary?.mirrors" not in loader
+    assert "updateRepoLiveCounts(repo, { mirrors: mirrorCount });" in loader
+    assert 'setRepoTabCount("mirrors", mirrorCount);' in loader
