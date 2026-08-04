@@ -1137,7 +1137,7 @@ QWidget *MainWindow::buildChatPage()
     // ActivityRailButton — a 16px octicon SVG over a 10px caption at
     // railItemWidth() x kRailItemHeight — so icons, words, hover and the
     // checked accent line all read identically down the rail. Agents is badged
-    // with the running-session count; only its fleet matrix stayed on the
+    // with the total-session count; only its fleet matrix stayed on the
     // window-chrome line (see buildBreadcrumb). buildRepoDetail() inserts the
     // contextual Code entry above it and Git below it; Log and Tasks live in
     // the bottom utility group, Tasks directly above Pings (adhoc #97).
@@ -7150,7 +7150,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // the footer "Agents:" label does. Checkable to show when the Agents tab is
     // active (adhoc #201). It used to be a "magical" gradient pill on the
     // window-chrome line; adhoc #70 made it a regular entry heading the app
-    // navigation rail, badged with the number of *running* sessions, so it
+    // navigation rail, badged with the number of total sessions, so it
     // reads like every other destination. Its fleet matrix stays on the chrome
     // line, where the horizontal room for it is.
     m_agentsNavButton = new ActivityRailButton(QStringLiteral("star"),

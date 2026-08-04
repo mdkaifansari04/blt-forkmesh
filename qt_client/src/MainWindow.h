@@ -2899,7 +2899,7 @@ private:
     // Jumps to the most relevant session's Agents tab, falling back to the
     // open repo's Agents tab if no session exists yet.
     void openAgentsOverview();
-    // Refreshes the running-session count badge on the rail's Agents entry.
+    // Refreshes the total-session count badge on the rail's Agents entry.
     void updateAgentsNavBadge();
     // Repaints the matrix of per-agent squares on the chrome line: one square
     // per session, tinted like its status icon, with the live output meter of
@@ -5234,7 +5234,7 @@ private:
     bool m_organizationTasksCanManage = false;
     bool m_organizationTasksLoading = false;
     // "Agents" heads the app navigation rail (adhoc #70), badged with the number
-    // of running sessions. Its live fleet matrix stays on the window-chrome
+    // of total sessions. Its live fleet matrix stays on the window-chrome
     // line, followed there by the recent action-run strip.
     QPushButton *m_agentsNavButton = nullptr;
     AgentDotMatrix *m_agentDotMatrix = nullptr;
