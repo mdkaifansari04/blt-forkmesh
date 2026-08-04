@@ -8548,13 +8548,15 @@ bool MainWindow::applyRepoAboutMetadataAt(int index, const QString &about,
     return true;
 }
 
-void MainWindow::setRepoBranch(const QString &branch)
+void MainWindow::setRepoBranch(const QString &branch, bool loadContent)
 {
     m_repoBranch = branch;
     if (m_branchButton)
         m_branchButton->setText(branch);
     updateCommitsBranchButtonLabel();
     updateFooterCommitInfo(); // the strip's commit line follows the browsed branch
+    if (!loadContent)
+        return;
     loadRepoOverview(QString());
     loadCommits(); // also refreshes the Insights counts when that tab is on screen
 }
@@ -9695,9 +9697,19 @@ QWidget *MainWindow::buildRepoDetailSection()
         // Git always starts from the default branch's source-control view.
         // Branch/worktree/PR comparisons remain available from their links,
         // but they never become a second persistent Git destination.
-        closeBranchCompareView();
+        m_branchCompareBase.clear();
         showOverviewCommits();
+        setCommitWorkspacePage(kCommitWorkspaceChangesPage);
+        const QString base = repoDefaultBranchFast();
+        // Do this before the deferred branch/history work. Otherwise the prior
+        // branch or commit stays visible until those Git reads complete.
+        showSourceControlLoading(base);
         QTimer::singleShot(0, this, [this] {
+            const QString base = repoDefaultBranchFast();
+            if (!base.isEmpty() && m_repoBranch != base) {
+                setRepoBranch(base);
+                return; // setRepoBranch already refreshes source control/history
+            }
             if (commitsListIsCurrent())
                 refreshSourceControl();
             else
@@ -9787,8 +9799,8 @@ void MainWindow::updateRepoActivityRail()
     const bool onIssues = onHome && m_repoDetailStack &&
                           m_repoDetailStack->currentIndex() == 2;
     // Git is where notification bubbles are most useful, but its graph needs
-    // the full height of the workspace. Its prompt is moved over the lower
-    // right detail pane instead of reserving a full-width footer.
+    // the full height of the workspace. Its prompt is overlaid in the lower-left
+    // instead of reserving a full-width footer.
     // Git is its own activity-rail destination, so hide every Code/repository
     // header above the source-control workspace rather than leaving rows of
     // unrelated navigation on screen. The Agents tab gets the same treatment: its
@@ -10841,6 +10853,9 @@ void MainWindow::showLoadStatus(const QString &what)
         m_topMessageTimer->stop(); // don't let it slide away mid-load
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
+    m_topMessageActionRunId = -1;
+    if (m_topMessageActionOutput)
+        m_topMessageActionOutput->hide();
     if (m_topMessageSendToPrompt)
         m_topMessageSendToPrompt->hide();
     if (m_topMessageClose)

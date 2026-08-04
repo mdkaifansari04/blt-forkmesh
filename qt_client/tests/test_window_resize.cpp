@@ -131,6 +131,45 @@ bool iconContainsChromaKey(const QIcon &icon)
     return false;
 }
 
+void checkFooterOverlayGeometry(MainWindow &window)
+{
+    window.testShowHomeSection();
+    window.testSetLogOverlayExpanded(false);
+    QApplication::processEvents();
+
+    auto *dock = window.findChild<QWidget *>(QStringLiteral("logDock"));
+    auto *log = window.findChild<QWidget *>(QStringLiteral("footerLeftRegion"));
+    auto *prompt = window.findChild<QWidget *>(QStringLiteral("promptOverlayHost"));
+    auto *lights = dynamic_cast<forkmesh::ui::LogActivityLights *>(
+        window.findChild<QWidget *>(QStringLiteral("logActivityLights")));
+    check(dock && log && prompt && lights && !log->isVisible() &&
+              lights->isVisible() && lights->lightCount() == 30 &&
+              prompt->geometry().center().x() < dock->rect().center().x() &&
+              prompt->geometry().bottom() == dock->rect().bottom() &&
+              lights->geometry().right() == dock->rect().right(),
+          QStringLiteral("the lower-left prompt is bottom-flush while all 30 "
+                         "collapsed log-category lights stay lower-right"));
+
+    window.testSetLogOverlayExpanded(true);
+    QApplication::processEvents();
+    check(log && lights && log->isVisible() && lights->isVisible() &&
+              log->geometry().center().x() > dock->rect().center().x() &&
+              log->geometry().bottom() == dock->rect().bottom() &&
+              lights->geometry().right() == log->geometry().right(),
+          QStringLiteral("the compact log opens at the lower-right without "
+                         "hiding its overlaid category lights"));
+
+    window.testShowLogSection();
+    QApplication::processEvents();
+    check(!log->isVisible() && lights->isVisible() &&
+              lights->geometry().left() == dock->rect().left() &&
+              lights->geometry().bottom() == dock->rect().bottom(),
+          QStringLiteral("the full Log view returns the category lights to the "
+                         "lower-left"));
+    window.testShowHomeSection();
+    QApplication::processEvents();
+}
+
 QString widgetPath(QWidget *widget)
 {
     QStringList parts;
@@ -392,12 +431,23 @@ int main(int argc, char *argv[])
     const QString testApplicationName =
         QStringLiteral("WindowResize-") + QFileInfo(dataDir.path()).fileName();
     app.setApplicationName(testApplicationName);
+    const QString darkTheme = QString::fromLatin1(Theme::styleSheetForDark(true));
+    const QString lightTheme = QString::fromLatin1(Theme::styleSheetForDark(false));
+    check(darkTheme.contains(QStringLiteral(
+              "QToolTip {\n    background-color: #161b22; color: #e6edf3;")) &&
+              lightTheme.contains(QStringLiteral(
+              "QToolTip {\n    background-color: #ffffff; color: #1f2328;")) &&
+              lightTheme.contains(QStringLiteral(
+              "border: 1px solid #d0d7de; padding: 4px;")),
+          QStringLiteral("tooltips use the active app theme's canvas, text, and border"));
     const bool fleetBinaryInstallOnly =
         app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
     const bool hostsLayoutOnly =
         app.arguments().contains(QStringLiteral("--hosts-layout-only"));
     const bool issuesRedesignOnly =
         app.arguments().contains(QStringLiteral("--issues-redesign-only"));
+    const bool footerOverlayOnly =
+        app.arguments().contains(QStringLiteral("--footer-overlay-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -517,7 +567,7 @@ int main(int argc, char *argv[])
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
-    if (!issuesRedesignOnly)
+    if (!issuesRedesignOnly && !footerOverlayOnly)
         check(detailedStartupSteps >= 20 &&
               startupLog.contains(QStringLiteral(
                   "BEGIN MainWindow: load repository catalog from settings")) &&
@@ -533,6 +583,14 @@ int main(int argc, char *argv[])
           QString("startup log names and times every material constructor phase "
                   "(detailed steps=%1)")
                   .arg(detailedStartupSteps));
+
+    if (footerOverlayOnly) {
+        window.resize(1200, 720);
+        window.show();
+        QApplication::processEvents();
+        checkFooterOverlayGeometry(window);
+        return failures == 0 ? 0 : 1;
+    }
 
     if (issuesRedesignOnly) {
         window.show();
@@ -2710,9 +2768,9 @@ int main(int argc, char *argv[])
         check(window.testGitWorkspaceIsExclusive(),
               QStringLiteral("a branch diff gives the Git rail exclusive ownership: "
                              "no Code chrome and no visible diff outside Git"));
-        check(window.testGitPromptFloatsBottomRight(),
+        check(window.testGitPromptFloatsBottomLeft(),
               QStringLiteral("Git keeps the global prompt overlay at the "
-                             "lower-right without reserving footer height"));
+                             "lower-left without reserving footer height"));
         // Returning through the Code route keeps the same global prompt overlay;
         // it is never reparented into a page-specific footer.
         window.testClickRepoDetailTab(0);
@@ -3008,6 +3066,11 @@ int main(int argc, char *argv[])
         // The rail's Git entry is the stable home destination: it always clears
         // a branch/worktree comparison and returns to main.
         window.testClickRailGitButton();
+        check(window.testSourceControlDiffText().contains(
+                  QStringLiteral("Loading changes on main")),
+              QString("the rail clears the previous branch/commit diff before "
+                      "refreshing main (pane = \"%1\")")
+                  .arg(window.testSourceControlDiffText().left(80).simplified()));
         QApplication::processEvents();
         check(window.testBrowsedBranch() == QStringLiteral("main") &&
                   window.testCommitWorkspacePage() == 0 &&
@@ -3805,10 +3868,6 @@ int main(int argc, char *argv[])
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.
         auto *composerDock = seeded.findChild<QWidget *>(QStringLiteral("logDock"));
-        auto *footerLeft = seeded.findChild<QWidget *>(
-            QStringLiteral("footerLeftRegion"));
-        auto *footerPrompt = seeded.findChild<QWidget *>(
-            QStringLiteral("promptWrapper"));
         QStringList composerChecks;
         if (composerDock) {
             for (auto *box : composerDock->findChildren<QCheckBox *>())
@@ -3818,10 +3877,7 @@ int main(int argc, char *argv[])
                   !composerChecks.contains(QStringLiteral("Task")),
               QString("the composer has no YOLO/Task toggles (%1)")
                   .arg(composerChecks.join(QStringLiteral(", "))));
-        check(footerLeft && footerPrompt &&
-                  qAbs(footerLeft->width() - footerPrompt->width()) <= 1,
-              QStringLiteral("removing the background panel restores an even "
-                             "log and prompt split"));
+        checkFooterOverlayGeometry(seeded);
         check(seeded.findChild<QLabel *>(QStringLiteral("quickAddEnterBadge")) ==
                   nullptr,
               QStringLiteral("no corner Enter badge on the send buttons"));
@@ -4374,6 +4430,15 @@ int main(int argc, char *argv[])
                       "health badges "
                       "(adhoc #403, got %1)")
                   .arg(window.testAgentStatusCellBadges(2910, chip)));
+        const QString agentTip = window.testAgentStatusCellToolTip(2910, chip);
+        check(agentTip.startsWith(QStringLiteral("<table")) &&
+                  agentTip.contains(QStringLiteral("Agent #2910")) &&
+                  agentTip.contains(QStringLiteral("7 files changed")) &&
+                  agentTip.contains(QStringLiteral("2 uncommitted changes")) &&
+                  agentTip.contains(QStringLiteral("4 ahead")) &&
+                  agentTip.count(QStringLiteral("<tr>")) ==
+                      agentTip.count(QStringLiteral("<img ")),
+              QStringLiteral("every line in an agent hover card has an icon"));
         // A cleaned-up session with no patch yet leaves every badge unknown, so
         // the chip falls back to the plain branch button.
         check(window.testAgentStatusCellBadges(2910, AgentDiffStat()) ==

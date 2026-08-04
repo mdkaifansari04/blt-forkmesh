@@ -664,9 +664,17 @@ QWidget *MainWindow::buildChatPage()
     // (quickAddShouldFollowUpAgent), which includes being on the Home section
     // at all — refresh the "new"/"add" styling when the section changes too.
     connect(m_sectionStack, &QStackedWidget::currentChanged, this,
-            [this](int) {
+            [this](int index) {
                 updateQuickAddEnterTarget();
                 updateRepoActivityRail();
+                // The full Log page is already the large view: retire the
+                // six-line tail there and return its always-visible category
+                // lights to the lower-left. Other pages keep the compact log
+                // controls in the lower-right.
+                if (index == 4)
+                    setLogOverlayExpanded(false);
+                else
+                    positionGlobalFooterOverlays();
             });
     // Home now hosts the nodes column, repositories column and the repo detail
     // panel (with Chat as a tab) all at once, so there is no separate repo-detail
@@ -1719,9 +1727,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     // the composer instead, so a long error never steals a line from this log.
     logPanelLayout->addWidget(m_footerUpdateLog, 1);
 
-    // The region wrapper stays even with a single panel in it: hiding the whole
-    // left half is how the Changes view hands the footer over to the prompt
-    // (setGitPromptOverlay), and that reads m_footerLeftRegion.
+    // The region wrapper stays even with a single panel in it. It is the compact
+    // log surface parked at the lower-right; hiding it leaves the category-light
+    // matrix in the same corner without disturbing the lower-left composer.
     auto *leftRegion = new QWidget;
     m_footerLeftRegion = leftRegion;
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
@@ -1730,31 +1738,39 @@ QWidget *MainWindow::buildNetworkLogDock()
     leftRegionLayout->setSpacing(8);
     leftRegionLayout->addWidget(logPanel, 1);
 
-    // State one: four category lights blink for each arriving log occurrence.
+    // State one: all thirty log-category lights blink for their own occurrences.
     // A click reveals the recent-line overlay; clicking a line there opens the
     // existing full Log page (state three).
-    m_logActivityLights = new LogActivityLights;
-    m_logActivityLights->onClicked = [this] { setLogOverlayExpanded(true); };
+    // Keep the lights outside the box layout so they remain visible in both
+    // states. positionGlobalFooterOverlays() parks them at the lower-right when
+    // collapsed, overlays them on the compact log's lower-right when expanded,
+    // and returns them to the lower-left on the full Log page.
+    m_logActivityLights = new LogActivityLights(dock);
+    m_logActivityLights->onClicked = [this] {
+        if (!m_sectionStack || m_sectionStack->currentIndex() != 4)
+            setLogOverlayExpanded(!m_logOverlayExpanded);
+    };
 
-    // Horizontal split: bordered log, then prompt — an even half each, which is
-    // the width the prompt had before the Background panel took a fixed column
-    // out of the middle (adhoc #1389). The hairline rule that used to sit between
-    // the two halves is gone (adhoc #84): every panel in the row already carries
-    // its own border, so the extra line was one divider too many.
+    // The prompt owns the lower-left and the compact log owns the lower-right,
+    // matching the reading direction in the screenshot. The stretch between
+    // them is transparent and masked out below so neither overlay blocks the
+    // workspace behind it.
     auto *dockRow = new QHBoxLayout(dock);
-    dockRow->setContentsMargins(8, 8, 8, 8);
+    dockRow->setContentsMargins(8, 8, 8, 0);
     dockRow->setSpacing(8);
-    dockRow->addWidget(m_logActivityLights, 0, Qt::AlignLeft | Qt::AlignBottom);
-    dockRow->addWidget(leftRegion, 1);
+    dockRow->addWidget(promptOverlayHost, 1, Qt::AlignLeft | Qt::AlignBottom);
     dockRow->addStretch(1);
-    dockRow->addWidget(promptOverlayHost, 1, Qt::AlignRight | Qt::AlignBottom);
+    dockRow->addWidget(leftRegion, 1, Qt::AlignRight | Qt::AlignBottom);
 
     // Pin the footer to just the compact prompt's height (adhoc #107): the dock
     // margins plus the six-line prompt and its controls. With the card padding
     // and the "Agents:" strip gone (adhoc #60) the prompt frame is the tallest
     // thing in the row, so the log panel beside it is exactly as tall as the
     // prompt and nothing reflows.
-    dock->setFixedHeight(promptWrapper->sizeHint().height() + 16);
+    // Only the top inset contributes to the dock height. Its bottom and the
+    // prompt's bottom are flush with the workspace, eliminating the blank band
+    // that used to sit below the composer.
+    dock->setFixedHeight(promptWrapper->sizeHint().height() + 8);
     dock->setAttribute(Qt::WA_StyledBackground, false);
     setLogOverlayExpanded(false);
 
@@ -1766,10 +1782,11 @@ QWidget *MainWindow::buildNetworkLogDock()
 
 void MainWindow::setLogOverlayExpanded(bool expanded)
 {
+    m_logOverlayExpanded = expanded;
     if (m_footerLeftRegion)
         m_footerLeftRegion->setVisible(expanded);
     if (m_logActivityLights)
-        m_logActivityLights->setVisible(!expanded);
+        m_logActivityLights->setExpanded(expanded);
     positionGlobalFooterOverlays();
 }
 
@@ -1796,11 +1813,11 @@ void MainWindow::positionGlobalFooterOverlays()
 {
     if (!m_globalOverlayHost || !m_footerDock)
         return;
-    constexpr int kMargin = 8;
+    constexpr int kHorizontalMargin = 8;
     const int height = m_footerDock->sizeHint().height();
     m_footerDock->setGeometry(
-        kMargin, qMax(kMargin, m_globalOverlayHost->height() - height - kMargin),
-        qMax(0, m_globalOverlayHost->width() - 2 * kMargin), height);
+        kHorizontalMargin, qMax(0, m_globalOverlayHost->height() - height),
+        qMax(0, m_globalOverlayHost->width() - 2 * kHorizontalMargin), height);
     m_footerDock->show();
     m_footerDock->raise();
     if (m_promptOverlayHost && m_userAvatarNavButton) {
@@ -1814,6 +1831,28 @@ void MainWindow::positionGlobalFooterOverlays()
     // middle so the overlay never steals clicks from the page underneath.
     if (QLayout *layout = m_footerDock->layout())
         layout->activate();
+    if (m_logActivityLights) {
+        const bool fullLog =
+            m_sectionStack && m_sectionStack->currentIndex() == 4;
+        int x = 0;
+        if (!fullLog) {
+            if (m_logOverlayExpanded && m_footerLeftRegion &&
+                m_footerLeftRegion->isVisible()) {
+                // Overlay the matrix inside the log's lower-right corner. The
+                // log remains truly right-aligned instead of being displaced
+                // left by a separate indicator column.
+                x = m_footerLeftRegion->geometry().right() -
+                    m_logActivityLights->width() + 1;
+            } else {
+                x = m_footerDock->width() - m_logActivityLights->width();
+            }
+        }
+        m_logActivityLights->move(
+            qMax(0, x),
+            qMax(0, m_footerDock->height() - m_logActivityLights->height()));
+        m_logActivityLights->show();
+        m_logActivityLights->raise();
+    }
     QRegion interactive;
     if (m_logActivityLights && m_logActivityLights->isVisible())
         interactive += m_logActivityLights->geometry();
@@ -6248,6 +6287,22 @@ QWidget *MainWindow::buildBreadcrumb()
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
     });
 
+    m_topMessageActionOutput = new QPushButton(QStringLiteral("View output"));
+    m_topMessageActionOutput->setObjectName("topMessageAction");
+    m_topMessageActionOutput->setCursor(Qt::PointingHandCursor);
+    m_topMessageActionOutput->setToolTip(
+        QStringLiteral("Open the failed action's output"));
+    m_topMessageActionOutput->setFocusPolicy(Qt::NoFocus);
+    setOcticon(m_topMessageActionOutput, "terminal", 11);
+    m_topMessageActionOutput->hide();
+    connect(m_topMessageActionOutput, &QPushButton::clicked, this, [this] {
+        if (m_topMessageActionRunId <= 0)
+            return;
+        const int runId = m_topMessageActionRunId;
+        openActionRunFromNotification(runId);
+        dismissTopMessage();
+    });
+
     m_topMessageSendToPrompt = new QPushButton(QStringLiteral("Send to prompt"));
     m_topMessageSendToPrompt->setObjectName("topMessageAction");
     m_topMessageSendToPrompt->setCursor(Qt::PointingHandCursor);
@@ -6355,6 +6410,7 @@ QWidget *MainWindow::buildBreadcrumb()
     topMessageActionRow->addWidget(m_topMessageTypeBadge);
     topMessageActionRow->addWidget(m_topMessageMeta);
     topMessageActionRow->addStretch(1);
+    topMessageActionRow->addWidget(m_topMessageActionOutput);
     topMessageActionRow->addWidget(m_topMessageCopy);
     topMessageActionRow->addWidget(m_topMessageSendToPrompt);
     topMessageActionRow->addWidget(m_topMessageClose);
@@ -6374,6 +6430,7 @@ QWidget *MainWindow::buildBreadcrumb()
                             static_cast<QWidget *>(m_topMessageActions),
                             static_cast<QWidget *>(m_topMessageTypeBadge),
                             static_cast<QWidget *>(m_topMessageMeta),
+                            static_cast<QWidget *>(m_topMessageActionOutput),
                             static_cast<QWidget *>(m_topMessageCopy),
                             static_cast<QWidget *>(m_topMessageSendToPrompt),
                             static_cast<QWidget *>(m_topMessageClose)})

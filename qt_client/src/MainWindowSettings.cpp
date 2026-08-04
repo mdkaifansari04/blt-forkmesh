@@ -4564,7 +4564,8 @@ void setTopMessageAction(QPushButton *button, int agentSessionId)
 // so every pending message remains visible and can be read before its turn.
 void MainWindow::queueTopMessage(const QString &text, bool error,
                                  const QString &clickHref,
-                                 const QString &kind, int durationSeconds)
+                                 const QString &kind, int durationSeconds,
+                                 int actionRunId)
 {
     const QString trimmed = text.simplified();
     if (trimmed.isEmpty())
@@ -4575,7 +4576,7 @@ void MainWindow::queueTopMessage(const QString &text, bool error,
                                            : kToastSuccessSeconds);
     m_topMessageQueue.append(
         {m_nextTopMessageQueueId++, trimmed, error, clickHref, entryDuration,
-         kind});
+         kind, actionRunId});
     while (m_topMessageQueue.size() > kToastQueueLimit)
         m_topMessageQueue.removeFirst();
     renderTopMessageQueue();
@@ -4979,6 +4980,7 @@ void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId,
     m_topMessageHref.clear();
     m_topMessageKind = QStringLiteral("prompt");
     m_topMessageAgentSessionId = agentSessionId;
+    m_topMessageActionRunId = -1;
     m_topMessagePromptStatus = status.trimmed();
     m_topMessagePromptImagePaths = images;
     if (m_topMessagePromptImagePaths.isEmpty())
@@ -4998,6 +5000,8 @@ void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId,
         setTopMessageAction(m_topMessageSendToPrompt, m_topMessageAgentSessionId);
         m_topMessageSendToPrompt->show();
     }
+    if (m_topMessageActionOutput)
+        m_topMessageActionOutput->hide();
     if (m_topMessageClose)
         m_topMessageClose->show();
     m_topMessageSecondsLeft = kPromptBubbleSeconds; // the row is sized with its countdown in place
@@ -5043,7 +5047,7 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 
 void MainWindow::flashMessage(const QString &text, bool error,
                               const QString &clickHref, int durationSeconds,
-                              const QString &kind)
+                              const QString &kind, int actionRunId)
 {
     // A real result supersedes any in-flight progress pill (showLoadStatus).
     m_loadStatusShowing = false;
@@ -5061,7 +5065,8 @@ void MainWindow::flashMessage(const QString &text, bool error,
     // the queue and moves the active toast up, rather than replacing a message
     // that may still be being read.
     if (topMessageBusy()) {
-        queueTopMessage(trimmed, error, clickHref, kind, durationSeconds);
+        queueTopMessage(trimmed, error, clickHref, kind, durationSeconds,
+                        actionRunId);
         return;
     }
     // Carry an optional click target so the whole toast can act as a link (e.g. an
@@ -5070,6 +5075,7 @@ void MainWindow::flashMessage(const QString &text, bool error,
     m_topMessageHref = clickHref;
     m_topMessageKind = kind;
     m_topMessageAgentSessionId = -1;
+    m_topMessageActionRunId = actionRunId;
     m_topMessageError = error;
     m_topMessageIsPromptBubble = false;
     m_topMessagePromptStatus.clear();
@@ -5110,6 +5116,11 @@ void MainWindow::flashMessage(const QString &text, bool error,
                                            : kToastSuccessSeconds);
     if (m_topMessageCopy)
         m_topMessageCopy->show();
+    if (m_topMessageActionOutput) {
+        const bool canOpenOutput = error && actionRunId > 0 &&
+                                   findRun(actionRunId) != nullptr;
+        m_topMessageActionOutput->setVisible(canOpenOutput);
+    }
     if (m_topMessageSendToPrompt) {
         setTopMessageAction(m_topMessageSendToPrompt, -1);
         m_topMessageSendToPrompt->show();
@@ -5214,6 +5225,9 @@ void MainWindow::dismissTopMessage()
         m_topMessageCopy->hide();
     if (m_topMessageSendToPrompt)
         m_topMessageSendToPrompt->hide();
+    m_topMessageActionRunId = -1;
+    if (m_topMessageActionOutput)
+        m_topMessageActionOutput->hide();
     if (m_topMessageTypeBadge)
         m_topMessageTypeBadge->hide();
     if (m_topMessageClose)
@@ -5239,7 +5253,7 @@ void MainWindow::advanceTopMessageQueue()
     if (m_topMessageTimer)
         m_topMessageTimer->stop();
     flashMessage(next.text, next.error, next.clickHref, next.durationSeconds,
-                 next.kind);
+                 next.kind, next.actionRunId);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)

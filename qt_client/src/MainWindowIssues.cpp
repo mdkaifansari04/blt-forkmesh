@@ -5314,6 +5314,7 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         obj == m_topMessageContainer || obj == m_topMessage ||
         obj == m_topMessageScroll || obj == m_topMessageActions ||
         obj == m_topMessageMeta || obj == m_topMessageTypeBadge ||
+        obj == m_topMessageActionOutput ||
         obj == m_topMessageCopy ||
         obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
         (m_topMessageScroll && obj == m_topMessageScroll->viewport());
@@ -5363,8 +5364,8 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (event->type() == QEvent::Resize && m_scmDiff &&
         obj == m_scmDiff->viewport())
         layoutScmStickyHeader();
-    // The Git prompt is a lower-right overlay while that workspace is open, so
-    // follow the detail pane rather than reserving height beneath the graph.
+    // The Git prompt is a lower-left overlay while that workspace is open, so
+    // follow the workspace rather than reserving height beneath the graph.
     if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
         obj == m_commitsStack)
         positionGitPromptOverlay();
