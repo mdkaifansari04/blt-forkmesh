@@ -270,6 +270,14 @@ def test_qt_mirror_poll_merges_all_three_record_kinds():
         assert 'QStringLiteral("ids")' in source
 
 
+def test_mirror_intake_uses_group_membership_plus_live_endpoint_integrity():
+    source = _function_source("_authorized_mirror_issue_signing_key")
+    assert 'context.get("groupNodes", set())' in source
+    assert "forkmesh_active=1" in source
+    assert "integrity='ok'" in source
+    assert "_claimed_node_signing_pubkeys" in source
+
+
 def test_qt_mirror_acks_attest_served_state_and_keep_owner_only_rows():
     issues = (QT_ROOT / "MainWindowIssues.cpp").read_text(encoding="utf-8")
     pulls = (QT_ROOT / "MainWindowPulls.cpp").read_text(encoding="utf-8")

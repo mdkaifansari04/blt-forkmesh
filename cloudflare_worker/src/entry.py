@@ -35579,9 +35579,17 @@ async def _authorized_mirror_issue_signing_key(env, request, owner, repo):
         context = None
     if not context:
         return "", ""
+    # Membership comes from the signed catalog's mirror group, while freshness
+    # and state integrity come from the exact endpoint row below. Requiring the
+    # catalog record itself to carry the same current pin as the endpoint made
+    # intake race every successful sync: the fresh endpoint challenge passed,
+    # but its asynchronous catalog publication lagged by one generation and
+    # the relay returned 401. A node outside the group is still rejected, and a
+    # group member cannot drain until its live endpoint independently passes
+    # the canonical refs challenge (forkmesh_active=1).
     allowed_nodes = {
         str(value or "").strip().lower()
-        for value in context.get("nodes", set())
+        for value in context.get("groupNodes", set())
     }
     now = int(Date.now())
     rows = await d1_all(
