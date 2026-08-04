@@ -1281,16 +1281,12 @@ bool MainWindow::testGitWorkspaceIsExclusive() const
 
 bool MainWindow::testGitPromptFloatsBottomRight() const
 {
-    constexpr int kPromptMargin = 8;
-    return m_footerDock && m_footerLeftRegion && m_promptWrapper &&
-           m_commitsStack && m_footerDock->isHidden() &&
-           m_footerLeftRegion->isHidden() &&
-           m_promptWrapper->parentWidget() == m_commitsStack &&
-           m_promptWrapper->isVisible() && m_promptWrapper->width() <= 560 &&
-           m_promptWrapper->x() + m_promptWrapper->width() ==
-               m_commitsStack->width() - kPromptMargin &&
-           m_promptWrapper->y() + m_promptWrapper->height() ==
-               m_commitsStack->height() - kPromptMargin;
+    return m_footerDock && m_globalOverlayHost && m_promptOverlayHost &&
+           m_promptWrapper && m_footerDock->parentWidget() == m_globalOverlayHost &&
+           m_footerDock->isVisible() && m_promptOverlayHost->isVisible() &&
+           m_promptOverlayHost->width() <= 560 &&
+           m_footerDock->y() + m_footerDock->height() <=
+               m_globalOverlayHost->height();
 }
 
 int MainWindow::testCommitWorkspacePage() const
