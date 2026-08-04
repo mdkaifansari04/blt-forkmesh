@@ -50,7 +50,8 @@ public:
     enum RowGlyph { GlyphDot, GlyphChevron, GlyphStar, GlyphNone };
 
 signals:
-    // kind is "5h" or "weekly"; from rate_limit_event.
+    // kind is "5h", "weekly" or the model-specific "fable" window; from
+    // rate_limit_event.
     void usageChanged(const QString &kind, const QString &text, int percent);
     // Running totals as the session spends them (assistant usage + result).
     void statsChanged(qint64 tokens, double costUsd);

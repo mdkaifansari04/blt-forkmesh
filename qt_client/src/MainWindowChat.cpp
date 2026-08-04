@@ -231,12 +231,13 @@ QString jsonString(const QJsonObject &obj, const QString &container,
     return nested.value(key).toString().trimmed();
 }
 
-QString agentCliIdentityLabel(const QString &provider)
+QString agentCliIdentityLabel(const QString &provider,
+                              const QString &configDir = QString())
 {
     const bool codex = agentIsCodexProvider(provider);
-    const QString filePath =
-        codex ? QDir::homePath() + QStringLiteral("/.codex/auth.json")
-              : QDir::homePath() + QStringLiteral("/.claude/.credentials.json");
+    const QString filePath = agentAccountCredentialPath(
+        provider, configDir.isEmpty() ? agentAccountDefaultConfigDir(provider)
+                                      : configDir);
     const auto readFile = [](const QString &path) {
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly))
@@ -317,6 +318,24 @@ QString agentCliIdentityLabel(const QString &provider)
     return QString();
 }
 
+bool providerAccountSignedIn(const QString &provider, const QString &configDir)
+{
+    QFile file(agentAccountCredentialPath(provider, configDir));
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QJsonObject credentials =
+        QJsonDocument::fromJson(file.readAll()).object();
+    if (agentIsCodexProvider(provider)) {
+        return !credentials.value(QStringLiteral("tokens")).toObject().isEmpty() ||
+               !credentials.value(QStringLiteral("access_token")).toString().isEmpty() ||
+               !credentials.value(QStringLiteral("OPENAI_API_KEY")).toString().isEmpty();
+    }
+    const QJsonObject oauth =
+        credentials.value(QStringLiteral("claudeAiOauth")).toObject();
+    return !oauth.value(QStringLiteral("accessToken")).toString().isEmpty() ||
+           !oauth.value(QStringLiteral("refreshToken")).toString().isEmpty();
+}
+
 QString quickAddModelChoiceSummary(const QList<AgentSession> &sessions,
                                   const QString &provider,
                                   const QString &choiceModel)
@@ -356,6 +375,364 @@ QString quickAddModelChoiceSummary(const QList<AgentSession> &sessions,
 }
 
 } // namespace
+
+QStringList MainWindow::agentAccountUsageLines(const QString &provider,
+                                               const QString &accountId) const
+{
+    const bool codex = agentIsCodexProvider(provider);
+    const bool builtIn = accountId == QLatin1String("default");
+    QSettings settings;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    auto value = [&](const QString &globalKey) -> QVariant {
+        const QString scoped = agentAccountUsageSetting(
+            provider, accountId, agentAccountUsageField(globalKey));
+        if (settings.contains(scoped))
+            return settings.value(scoped);
+        return builtIn ? settings.value(globalKey) : QVariant();
+    };
+    auto line = [&](const QString &label, const QString &pctKey,
+                    const QString &resetKey, const QString &anchorKey = QString(),
+                    qint64 durationMs = 0) {
+        const QVariant pctValue = value(pctKey);
+        QString amount = QString::fromUtf8("\xE2\x80\x94");
+        qint64 estimatedReset = 0;
+        if (pctValue.isValid()) {
+            const int used = qBound(0, pctValue.toInt(), 100);
+            amount = codex ? QStringLiteral("%1% remaining").arg(100 - used)
+                           : QStringLiteral("%1% used").arg(used);
+        } else if (codex && !anchorKey.isEmpty()) {
+            const qint64 anchor = value(anchorKey).toLongLong();
+            const qint64 remaining = durationMs - (now - anchor);
+            if (anchor > 0 && remaining > 0) {
+                amount = QStringLiteral("%1% remaining")
+                             .arg(qBound(0, qRound(remaining * 100.0 /
+                                                   double(durationMs)),
+                                         100));
+                estimatedReset = anchor + durationMs;
+            }
+        }
+        QString result = QStringLiteral("%1: %2").arg(label, amount);
+        const qint64 providerReset = value(resetKey).toLongLong();
+        const qint64 resetAt = providerReset > 0 ? providerReset : estimatedReset;
+        if (resetAt > now)
+            result += QString::fromUtf8(" \xC2\xB7 resets in %1")
+                          .arg(humanizeRemaining(resetAt - now));
+        return result;
+    };
+
+    QStringList result;
+    result << line(QStringLiteral("5-hour"),
+                   codex ? kCodexUsage5hPctSetting : kClaudeUsage5hPctSetting,
+                   codex ? kCodexUsage5hResetSetting : kClaudeUsage5hResetSetting,
+                   codex ? kCodexLimit5hStartSetting : QString(),
+                   codex ? kAgentLimit5hMs : 0)
+           << line(QStringLiteral("Weekly"),
+                   codex ? kCodexUsageWeekPctSetting : kClaudeUsageWeekPctSetting,
+                   codex ? kCodexUsageWeekResetSetting : kClaudeUsageWeekResetSetting,
+                   codex ? kCodexLimitWeekStartSetting : QString(),
+                   codex ? kAgentLimitWeekMs : 0);
+    if (!codex)
+        result << line(QStringLiteral("Fable weekly"),
+                       kClaudeUsageFablePctSetting,
+                       kClaudeUsageFableResetSetting);
+    return result;
+}
+
+void MainWindow::showAgentAccountMenu(const QString &provider,
+                                      const QPoint &globalPosition)
+{
+    const bool codex = agentIsCodexProvider(provider);
+    const QString providerName =
+        codex ? QStringLiteral("Codex") : QStringLiteral("Claude Code");
+    if (codex)
+        refreshCodexUsageRemaining();
+    else
+        refreshClaudeCodeUsage();
+
+    auto *menu = new QMenu(this);
+    menu->setObjectName(codex ? QStringLiteral("codexAccountUsageMenu")
+                              : QStringLiteral("claudeAccountUsageMenu"));
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    QAction *heading = menu->addAction(
+        QStringLiteral("%1 accounts and usage").arg(providerName));
+    heading->setEnabled(false);
+    QFont headingFont = heading->font();
+    headingFont.setBold(true);
+    heading->setFont(headingFont);
+    menu->addSeparator();
+
+    const AgentAccountProfile active = activeAgentAccount(provider);
+    const QList<AgentAccountProfile> profiles = agentAccountProfiles(provider);
+    for (const AgentAccountProfile &profile : profiles) {
+        const QString identity = agentCliIdentityLabel(provider, profile.configDir);
+        const bool signedIn = providerAccountSignedIn(provider, profile.configDir);
+        QString label = identity.isEmpty() ? profile.label : identity;
+        if (!signedIn)
+            label += QString::fromUtf8(" \xC2\xB7 not signed in");
+        QAction *account = menu->addAction(label);
+        account->setObjectName(QStringLiteral("agentAccount_%1").arg(profile.id));
+        account->setCheckable(true);
+        account->setChecked(profile.id == active.id);
+        account->setToolTip(QStringLiteral("Use this %1 account for new agents")
+                                .arg(providerName));
+        connect(account, &QAction::triggered, this,
+                [this, provider, id = profile.id] {
+                    selectAgentAccount(provider, id);
+                });
+        for (const QString &usage : agentAccountUsageLines(provider, profile.id)) {
+            QAction *usageLine = menu->addAction(QStringLiteral("    ") + usage);
+            usageLine->setEnabled(false);
+        }
+        menu->addSeparator();
+    }
+
+    QAction *add = menu->addAction(
+        QString::fromUtf8("Add account\xE2\x80\xA6"));
+    add->setObjectName(QStringLiteral("agentAccountAddAction"));
+    connect(add, &QAction::triggered, this,
+            [this, provider] { addAgentAccount(provider); });
+    QAction *logout = menu->addAction(
+        QString::fromUtf8("Log out active account\xE2\x80\xA6"));
+    logout->setObjectName(QStringLiteral("agentAccountLogoutAction"));
+    logout->setEnabled(providerAccountSignedIn(provider, active.configDir));
+    connect(logout, &QAction::triggered, this, [this, provider] {
+        launchAgentSystemTerminal(provider, QStringLiteral("logout"));
+    });
+    menu->addSeparator();
+    QAction *terminal = menu->addAction(
+        QStringLiteral("Launch %1 in system terminal").arg(providerName));
+    terminal->setObjectName(QStringLiteral("agentAccountTerminalAction"));
+    connect(terminal, &QAction::triggered, this, [this, provider] {
+        launchAgentSystemTerminal(provider);
+    });
+
+    menu->popup(globalPosition);
+}
+
+void MainWindow::selectAgentAccount(const QString &provider,
+                                    const QString &accountId)
+{
+    const QList<AgentAccountProfile> profiles = agentAccountProfiles(provider);
+    if (std::none_of(profiles.cbegin(), profiles.cend(),
+                     [&accountId](const AgentAccountProfile &profile) {
+                         return profile.id == accountId;
+                     }))
+        return;
+
+    const bool codex = agentIsCodexProvider(provider);
+    const QStringList globals = codex
+        ? QStringList{kCodexUsage5hPctSetting, kCodexUsageWeekPctSetting,
+                      kCodexUsage5hResetSetting, kCodexUsageWeekResetSetting,
+                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting}
+        : QStringList{kClaudeUsage5hPctSetting, kClaudeUsageWeekPctSetting,
+                      kClaudeUsageFablePctSetting, kClaudeUsage5hResetSetting,
+                      kClaudeUsageWeekResetSetting, kClaudeUsageFableResetSetting,
+                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting};
+    QSettings settings;
+    const QString oldId = activeAgentAccount(provider).id;
+    // Preserve the current account's last provider reading before replacing the
+    // compatibility keys used by the compact chart and limit reminders.
+    for (const QString &global : globals) {
+        if (settings.contains(global))
+            settings.setValue(
+                agentAccountUsageSetting(provider, oldId,
+                                         agentAccountUsageField(global)),
+                settings.value(global));
+    }
+    settings.setValue(agentActiveAccountSetting(provider), accountId);
+    for (const QString &global : globals) {
+        const QString scoped = agentAccountUsageSetting(
+            provider, accountId, agentAccountUsageField(global));
+        if (settings.contains(scoped))
+            settings.setValue(global, settings.value(scoped));
+        else
+            settings.remove(global);
+    }
+
+    if (codex) {
+        refreshCodexUsageRemaining();
+    } else {
+        m_claudeUsageLast5hPct = -1;
+        m_claudeUsageLastWeekPct = -1;
+        auto *chart = static_cast<TokenUsageMiniChart *>(m_navTokenUsage);
+        if (chart) {
+            chart->setUsage(TokenUsageMiniChart::FiveHour,
+                            settings.contains(kClaudeUsage5hPctSetting)
+                                ? settings.value(kClaudeUsage5hPctSetting).toInt()
+                                : -1);
+            chart->setUsage(TokenUsageMiniChart::Weekly,
+                            settings.contains(kClaudeUsageWeekPctSetting)
+                                ? settings.value(kClaudeUsageWeekPctSetting).toInt()
+                                : -1);
+            chart->setUsage(TokenUsageMiniChart::Fable,
+                            settings.contains(kClaudeUsageFablePctSetting)
+                                ? settings.value(kClaudeUsageFablePctSetting).toInt()
+                                : -1);
+            auto resetNote = [&](TokenUsageMiniChart::Window window,
+                                 const QString &key) {
+                const qint64 resetAt = settings.value(key).toLongLong();
+                chart->setReset(
+                    window,
+                    resetAt > QDateTime::currentMSecsSinceEpoch()
+                        ? humanizeRemaining(
+                              resetAt - QDateTime::currentMSecsSinceEpoch())
+                        : QString());
+            };
+            resetNote(TokenUsageMiniChart::FiveHour,
+                      kClaudeUsage5hResetSetting);
+            resetNote(TokenUsageMiniChart::Weekly,
+                      kClaudeUsageWeekResetSetting);
+            resetNote(TokenUsageMiniChart::Fable,
+                      kClaudeUsageFableResetSetting);
+        }
+        refreshClaudeCodeUsage();
+        refreshClaudeModelCombo();
+    }
+    refreshQuickAddAgentModelSelector();
+    flashMessage(QStringLiteral("%1 account selected for new agents.")
+                     .arg(codex ? QStringLiteral("Codex")
+                                : QStringLiteral("Claude Code")));
+}
+
+void MainWindow::addAgentAccount(const QString &provider)
+{
+    const QString providerName = agentIsCodexProvider(provider)
+                                     ? QStringLiteral("Codex")
+                                     : QStringLiteral("Claude Code");
+    bool ok = false;
+    const QString label = QInputDialog::getText(
+        this, QStringLiteral("Add %1 account").arg(providerName),
+        QStringLiteral("Account label:"), QLineEdit::Normal,
+        QStringLiteral("%1 account").arg(providerName), &ok).trimmed();
+    if (!ok || label.isEmpty())
+        return;
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString configDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+        QStringLiteral("/agent-accounts/%1/%2")
+            .arg(agentAccountProviderKey(provider), id);
+    if (!QDir().mkpath(configDir)) {
+        flashMessage(QStringLiteral("Could not create the %1 account profile.")
+                         .arg(providerName),
+                     true);
+        return;
+    }
+    QSettings settings;
+    settings.beginGroup(agentAccountProfilesGroup(provider));
+    settings.beginGroup(id);
+    settings.setValue(QStringLiteral("label"), label);
+    settings.setValue(QStringLiteral("configDir"), configDir);
+    settings.endGroup();
+    settings.endGroup();
+    selectAgentAccount(provider, id);
+    launchAgentSystemTerminal(provider, QStringLiteral("login"));
+}
+
+void MainWindow::launchAgentSystemTerminal(const QString &provider,
+                                           const QString &mode)
+{
+    if (m_headless) {
+        logSystem(QStringLiteral("A system terminal is unavailable on a headless node."));
+        return;
+    }
+    const bool codex = agentIsCodexProvider(provider);
+    const QString program = codex ? QStringLiteral("codex")
+                                  : QStringLiteral("claude");
+    if (QStandardPaths::findExecutable(program).isEmpty()) {
+        flashMessage(QStringLiteral("%1 is not installed on this device.")
+                         .arg(codex ? QStringLiteral("Codex")
+                                    : QStringLiteral("Claude Code")),
+                     true);
+        return;
+    }
+    QStringList commandArgs;
+    if (mode == QLatin1String("logout")) {
+        if (codex)
+            commandArgs << QStringLiteral("logout");
+        else
+            commandArgs << QStringLiteral("auth") << QStringLiteral("logout");
+    } else if (mode == QLatin1String("login")) {
+        if (codex)
+            commandArgs << QStringLiteral("login");
+        else
+            commandArgs << QStringLiteral("auth") << QStringLiteral("login");
+    }
+
+    const QString cwd = repoGitDir().isEmpty() ? QDir::homePath() : repoGitDir();
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.remove(QStringLiteral("ANTHROPIC_API_KEY"));
+    environment.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
+    environment.remove(QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN"));
+    environment.remove(QStringLiteral("OPENAI_API_KEY"));
+    environment.remove(QStringLiteral("CODEX_API_KEY"));
+    const AgentAccountProfile account = activeAgentAccount(provider);
+    if (!account.builtIn)
+        environment.insert(codex ? QStringLiteral("CODEX_HOME")
+                                 : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                           account.configDir);
+
+    QString terminalProgram;
+    QStringList terminalArgs;
+#if defined(Q_OS_WIN)
+    terminalProgram = QStandardPaths::findExecutable(QStringLiteral("wt.exe"));
+    if (!terminalProgram.isEmpty()) {
+        terminalArgs << QStringLiteral("-d") << cwd << program << commandArgs;
+    } else {
+        terminalProgram = QStringLiteral("cmd.exe");
+        terminalArgs << QStringLiteral("/c") << QStringLiteral("start")
+                     << QString() << program << commandArgs;
+    }
+#elif defined(Q_OS_MACOS)
+    auto shellQuote = [](QString value) {
+        value.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+        return QLatin1Char('\'') + value + QLatin1Char('\'');
+    };
+    QString command = QStringLiteral("cd %1 && ").arg(shellQuote(cwd));
+    if (!account.builtIn) {
+        command += QStringLiteral("env %1=%2 ")
+                       .arg(codex ? QStringLiteral("CODEX_HOME")
+                                  : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                            shellQuote(account.configDir));
+    }
+    command += shellQuote(program);
+    for (const QString &argument : commandArgs)
+        command += QLatin1Char(' ') + shellQuote(argument);
+    QString appleCommand = command;
+    appleCommand.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+    appleCommand.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+    terminalProgram = QStringLiteral("/usr/bin/osascript");
+    terminalArgs << QStringLiteral("-e")
+                 << QStringLiteral("tell application \"Terminal\" to do script \"%1\"")
+                        .arg(appleCommand);
+#else
+    struct Candidate { const char *program; const char *separator; };
+    const Candidate candidates[] = {
+        {"x-terminal-emulator", "-e"}, {"gnome-terminal", "--"},
+        {"konsole", "-e"}, {"xfce4-terminal", "-x"}, {"xterm", "-e"}};
+    for (const Candidate &candidate : candidates) {
+        terminalProgram =
+            QStandardPaths::findExecutable(QString::fromLatin1(candidate.program));
+        if (!terminalProgram.isEmpty()) {
+            terminalArgs << QString::fromLatin1(candidate.separator)
+                         << program << commandArgs;
+            break;
+        }
+    }
+#endif
+    if (terminalProgram.isEmpty()) {
+        flashMessage(QStringLiteral("No supported system terminal was found."), true);
+        return;
+    }
+    QProcess launcher;
+    launcher.setProgram(terminalProgram);
+    launcher.setArguments(terminalArgs);
+    launcher.setWorkingDirectory(cwd);
+    launcher.setProcessEnvironment(environment);
+    if (!launcher.startDetached()) {
+        flashMessage(QStringLiteral("Could not launch the system terminal."), true);
+        return;
+    }
+}
 
 // -------------------------------------------------------------- server rail
 
@@ -2763,7 +3140,8 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                                               statusAndCountdown);
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
-        const QString identity = agentCliIdentityLabel(choice.provider);
+        const QString identity = agentCliIdentityLabel(
+            choice.provider, activeAgentAccount(choice.provider).configDir);
         if (!identity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
         else if (!chosenIdentity.isEmpty())
@@ -6015,6 +6393,10 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *tokenUsage = new TokenUsageMiniChart(
         QStringLiteral("Claude Code usage"), /*remainingMode=*/false,
         /*windows=*/3);
+    tokenUsage->setObjectName(QStringLiteral("claudeAccountUsageButton"));
+    tokenUsage->setAccessibleName(QStringLiteral("Claude Code accounts and usage"));
+    tokenUsage->setToolTip(
+        QStringLiteral("Claude Code accounts and usage\nClick to manage accounts."));
     m_navTokenUsage = tokenUsage;
     // This hover is also the only place that re-fetches the live claude-code
     // model list (GET /v1/models, adhoc #41) — everywhere else that touches a
@@ -6023,6 +6405,9 @@ QWidget *MainWindow::buildBreadcrumb()
     tokenUsage->onHover = [this] {
         refreshClaudeCodeUsage(/*fromHover=*/true);
         refreshClaudeModelCombo();
+    };
+    tokenUsage->onClick = [this](const QPoint &position) {
+        showAgentAccountMenu(QStringLiteral("claude-code"), position);
     };
     {
         QSettings settings;
@@ -6057,12 +6442,17 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *codexUsage = new TokenUsageMiniChart(
         QStringLiteral("Codex usage remaining"), /*remainingMode=*/true,
         /*windows=*/2);
+    codexUsage->setObjectName(QStringLiteral("codexAccountUsageButton"));
+    codexUsage->setAccessibleName(QStringLiteral("Codex accounts and usage"));
     m_navCodexUsage = codexUsage;
     // The Codex figures are computed locally, so the hover always "succeeds";
     // the green box still confirms the reading is fresh (adhoc #96).
     codexUsage->onHover = [this] {
         refreshCodexUsageRemaining();
         flashUsageChart(m_navCodexUsage, true);
+    };
+    codexUsage->onClick = [this](const QPoint &position) {
+        showAgentAccountMenu(QStringLiteral("codex"), position);
     };
     refreshCodexUsageRemaining();
     // Re-arm any persisted exhausted-window reminders after the shell exists.
@@ -11723,9 +12113,13 @@ forkmesh::control::AgentCliCredentials MainWindow::localAgentCliCredentials()
         return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
     };
     credentials.claudeCredentials = readFile(
-        QDir::homePath() + QStringLiteral("/.claude/.credentials.json"));
+        agentAccountCredentialPath(
+            QStringLiteral("claude-code"),
+            activeAgentAccount(QStringLiteral("claude-code")).configDir));
     credentials.codexAuth =
-        readFile(QDir::homePath() + QStringLiteral("/.codex/auth.json"));
+        readFile(agentAccountCredentialPath(
+            QStringLiteral("codex"),
+            activeAgentAccount(QStringLiteral("codex")).configDir));
     // Only fall back to an API key for the provider whose CLI login we could
     // not copy: Claude Code warns that auth "may not work as expected" when an
     // ANTHROPIC_API_KEY sits next to a logged-in session, and Codex would

@@ -622,6 +622,100 @@ int main(int argc, char *argv[])
               QStringLiteral("Codex gauges clear unavailable windows"));
     }
 
+    // The prompt meters are click targets, ordered Codex then Claude Code, and
+    // their menus combine per-account usage with account and terminal actions.
+    {
+        QWidget *codexMeter = window.findChild<QWidget *>(
+            QStringLiteral("codexAccountUsageButton"));
+        QWidget *claudeMeter = window.findChild<QWidget *>(
+            QStringLiteral("claudeAccountUsageButton"));
+        check(codexMeter && claudeMeter &&
+                  codexMeter->parentWidget() == claudeMeter->parentWidget() &&
+                  codexMeter->x() < claudeMeter->x() &&
+                  codexMeter->cursor().shape() == Qt::PointingHandCursor &&
+                  claudeMeter->cursor().shape() == Qt::PointingHandCursor,
+              QStringLiteral("prompt usage buttons are clickable with Codex left "
+                             "and Claude Code right"));
+
+        const qint64 resetSeconds =
+            QDateTime::currentMSecsSinceEpoch() / 1000 + 7 * 24 * 60 * 60;
+        window.testApplyClaudeUsageResponse(QJsonObject{
+            {QStringLiteral("five_hour"),
+             QJsonObject{{QStringLiteral("utilization"), 0.12}}},
+            {QStringLiteral("seven_day"),
+             QJsonObject{{QStringLiteral("utilization"), 42.0}}},
+            {QStringLiteral("seven_day_fable_5"),
+             QJsonObject{{QStringLiteral("utilization"), QStringLiteral("0.37")},
+                         {QStringLiteral("resetsAt"), resetSeconds}}}});
+        const QString claudeTip = window.testClaudeUsageToolTip();
+        check(claudeTip.contains(QStringLiteral("5-hour: 12%")) &&
+                  claudeTip.contains(QStringLiteral("Weekly: 42%")) &&
+                  claudeTip.contains(QStringLiteral("Fable: 37%")) &&
+                  claudeTip.contains(QStringLiteral("resets in")),
+              QStringLiteral("Claude meter parses versioned Fable limits and "
+                             "fraction/string usage values"));
+
+        window.testShowAgentAccountMenu(QStringLiteral("claude-code"));
+        QApplication::processEvents();
+        QMenu *accountMenu = window.findChild<QMenu *>(
+            QStringLiteral("claudeAccountUsageMenu"));
+        QStringList menuText;
+        if (accountMenu)
+            for (QAction *action : accountMenu->actions())
+                if (!action->isSeparator())
+                    menuText << action->text().trimmed();
+        check(accountMenu &&
+                  menuText.contains(QStringLiteral("Claude Code accounts and usage")) &&
+                  std::any_of(menuText.cbegin(), menuText.cend(),
+                              [](const QString &text) {
+                                  return text.startsWith(
+                                      QStringLiteral("Fable weekly: 37% used"));
+                              }) &&
+                  menuText.contains(QString::fromUtf8("Add account\xE2\x80\xA6")) &&
+                  menuText.contains(QString::fromUtf8(
+                      "Log out active account\xE2\x80\xA6")) &&
+                  menuText.contains(QStringLiteral(
+                      "Launch Claude Code in system terminal")),
+              QStringLiteral("click menu shows account usage, add/logout and "
+                             "system-terminal actions"));
+        if (accountMenu)
+            accountMenu->close();
+
+        const QString profileId = QStringLiteral("test-secondary");
+        const QString profileDir =
+            QDir(appDataPath).filePath(QStringLiteral("agent-accounts/claude/") +
+                                       profileId);
+        QDir().mkpath(profileDir);
+        {
+            QSettings settings;
+            settings.beginGroup(forkmesh::ui::agentAccountProfilesGroup(
+                QStringLiteral("claude-code")));
+            settings.beginGroup(profileId);
+            settings.setValue(QStringLiteral("label"),
+                              QStringLiteral("Secondary"));
+            settings.setValue(QStringLiteral("configDir"), profileDir);
+            settings.endGroup();
+            settings.endGroup();
+            settings.setValue(
+                forkmesh::ui::agentAccountUsageSetting(
+                    QStringLiteral("claude-code"), profileId,
+                    QStringLiteral("claudeUsageFablePct")),
+                58);
+        }
+        window.testSelectAgentAccount(QStringLiteral("claude-code"), profileId);
+        check(forkmesh::ui::activeAgentAccount(
+                  QStringLiteral("claude-code")).id == profileId &&
+                  forkmesh::ui::activeAgentAccountEnv(
+                      QStringLiteral("claude-code")) ==
+                      QStringList{QStringLiteral("CLAUDE_CONFIG_DIR=") + profileDir} &&
+                  window.testClaudeUsageToolTip().contains(
+                      QStringLiteral("Fable: 58%")),
+              QStringLiteral("selecting an account activates its provider config "
+                             "root and cached limits"));
+        window.testSelectAgentAccount(QStringLiteral("claude-code"),
+                                      QStringLiteral("default"));
+    }
+
     // adhoc #115: the first-run screen that asked for a username and a relay
     // host is retired — it only ever loaded straight into the app — so a freshly
     // constructed window is already on the app shell, before any session starts.
