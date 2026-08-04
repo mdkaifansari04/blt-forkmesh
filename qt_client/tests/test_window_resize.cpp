@@ -140,6 +140,8 @@ void checkFooterOverlayGeometry(MainWindow &window)
     auto *dock = window.findChild<QWidget *>(QStringLiteral("logDock"));
     auto *log = window.findChild<QWidget *>(QStringLiteral("footerLeftRegion"));
     auto *prompt = window.findChild<QWidget *>(QStringLiteral("promptOverlayHost"));
+    auto *promptWrapper = window.findChild<QWidget *>(QStringLiteral("promptWrapper"));
+    auto *avatar = window.findChild<QPushButton *>(QStringLiteral("serverFooterButton"));
     auto *lights = dynamic_cast<forkmesh::ui::LogActivityLights *>(
         window.findChild<QWidget *>(QStringLiteral("logActivityLights")));
     check(dock && log && prompt && lights && !log->isVisible() &&
@@ -149,6 +151,25 @@ void checkFooterOverlayGeometry(MainWindow &window)
               lights->geometry().right() == dock->rect().right(),
           QStringLiteral("the lower-left prompt is bottom-flush while all 30 "
                          "collapsed log-category lights stay lower-right"));
+
+    // The prompt avatar is the lower-right launcher: clicking it collapses the
+    // composer to the circular avatar, and hovering that avatar opens it again.
+    check(promptWrapper && avatar && promptWrapper->isVisible() &&
+              avatar->parentWidget() == prompt && prompt->width() > avatar->width(),
+          QStringLiteral("prompt starts expanded with its avatar in the overlay"));
+    if (avatar && promptWrapper && prompt && dock) {
+        avatar->click();
+        QApplication::processEvents();
+        check(!promptWrapper->isVisible() && prompt->size() == QSize(34, 34) &&
+                  prompt->geometry().right() >= dock->width() - 12,
+              QStringLiteral("clicking the prompt avatar minimizes to the bottom-right circle"));
+
+        QEvent enter(QEvent::Enter);
+        QApplication::sendEvent(avatar, &enter);
+        QApplication::processEvents();
+        check(promptWrapper->isVisible() && prompt->width() > avatar->width(),
+              QStringLiteral("hovering the minimized avatar restores the prompt"));
+    }
 
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();

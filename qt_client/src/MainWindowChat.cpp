@@ -6947,14 +6947,15 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageContainer->hide();
 
     // User avatar, created before the global prompt and reparented into its
-    // lower-left corner by buildNetworkLogDock(). Clicking it collapses the
-    // prompt to the avatar alone; clicking again restores the composer.
+    // overlay by buildNetworkLogDock(). Clicking it collapses the prompt to
+    // the avatar alone; hovering the collapsed avatar restores the composer.
     m_userAvatarNavButton = new QPushButton;
     m_userAvatarNavButton->setObjectName("serverFooterButton");
     m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
     m_userAvatarNavButton->setFixedSize(26, 26);
     m_userAvatarNavButton->setIconSize(QSize(24, 24));
     m_userAvatarNavButton->setToolTip("Collapse the prompt overlay");
+    m_userAvatarNavButton->installEventFilter(this);
     connect(m_userAvatarNavButton, &QPushButton::clicked, this, [this] {
         setPromptOverlayCollapsed(!m_promptOverlayCollapsed);
     });
