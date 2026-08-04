@@ -2132,6 +2132,29 @@ QString webPingKindLabel(const QString &kind)
     };
     return labels.value(kind, QStringLiteral("Web"));
 }
+
+// Does this operational ping report a system coming back rather than breaking?
+// The relay stamps the transition it reports on meta.state ("up" once the
+// /status probe is green again) — the same field the World's ping stream reads
+// to tell "recovered" from "needs attention". A recovery is good news, so it
+// must not be drawn, toasted or bordered as an outage (adhoc #1445). The title
+// wording is the fallback for a ping stored before meta.state existed.
+bool webPingIsRecovery(const QJsonObject &alert)
+{
+    const QString state = alert.value(QStringLiteral("meta"))
+                              .toObject()
+                              .value(QStringLiteral("state"))
+                              .toString()
+                              .trimmed()
+                              .toLower();
+    if (state == QLatin1String("up"))
+        return true;
+    if (state == QLatin1String("down"))
+        return false;
+    const QString title = alert.value(QStringLiteral("title")).toString();
+    return title.contains(QLatin1String("recovered"), Qt::CaseInsensitive) ||
+           title.contains(QLatin1String("back online"), Qt::CaseInsensitive);
+}
 } // namespace
 
 QWidget *MainWindow::buildNotificationsSection()
@@ -2331,6 +2354,10 @@ void MainWindow::refreshNotificationsTable()
         QString link;
         int runId = -1;
         bool warning = false;
+        // The counterpart of `warning`: an event that reports something coming
+        // back (a recovered system) reads in green, so a scan of the page tells
+        // "it broke" from "it is fixed" without reading the copy.
+        bool good = false;
         NotificationLink destination;
         QString href;
         qint64 localId = 0;
@@ -2368,6 +2395,7 @@ void MainWindow::refreshNotificationsTable()
             whenItem,
             new QTableWidgetItem(data.link)};
         const QColor red("#f85149");
+        const QColor green("#3fb950");
         for (int column = 0; column < cells.size(); ++column) {
             QTableWidgetItem *cell = cells.at(column);
             // Long titles/details are elided by the column width, so keep the
@@ -2376,6 +2404,8 @@ void MainWindow::refreshNotificationsTable()
                 cell->setToolTip(cell->text());
             if (data.warning)
                 cell->setForeground(red);
+            else if (data.good)
+                cell->setForeground(green);
             m_notificationsTable->setItem(row, column, cell);
         }
     };
@@ -2434,8 +2464,14 @@ void MainWindow::refreshNotificationsTable()
             href.startsWith(QLatin1Char('/'))
                 ? catalogApiUrl().resolved(QUrl(href)).toString()
                 : QString();
+        // A recovery closes an outage: it is the one operational ping that is
+        // not a warning, and the Type column says so instead of filing it under
+        // the same "System alert" heading as the failure it resolves.
+        const bool recovery = kind == QLatin1String("operational_alert") &&
+                              webPingIsRecovery(alert);
         NotificationRow data;
-        data.type = webPingKindLabel(kind);
+        data.type = recovery ? QStringLiteral("System recovered")
+                             : webPingKindLabel(kind);
         data.kind = kind;
         // Unread pings are dotted the way the site's bell marks them; the
         // Status column spells the same thing out for sorting.
@@ -2450,8 +2486,10 @@ void MainWindow::refreshNotificationsTable()
         data.link = href;
         // Worker failures and /status operational outages are both immediate
         // admin warnings, not passive website activity.
-        data.warning = kind == QLatin1String("error_group") ||
-                       kind == QLatin1String("operational_alert");
+        data.warning = !recovery &&
+                       (kind == QLatin1String("error_group") ||
+                        kind == QLatin1String("operational_alert"));
+        data.good = recovery;
         data.destination = webAlertLink(alert);
         data.href = webUrl;
         data.webId = alert.value(QStringLiteral("id")).toString().trimmed();
@@ -2661,12 +2699,11 @@ void MainWindow::refreshWebAlerts(bool force)
         // subsequent polling is then free to surface genuinely new pings.
         const bool loadingStartupBaseline = !m_webAlertsBaselineLoaded;
         m_webAlertsBaselineLoaded = true;
-        // An unread error-group or operational ping is an outage that just
-        // happened somewhere on the mesh: after the startup baseline, raise it
-        // in the ping area
-        // (and flash the red border) the moment this poll sees it, instead of
-        // leaving it to be discovered on the Pings page. Each alert id flashes
-        // once per app run (adhoc #77).
+        // An unread error-group or operational ping is something that just
+        // changed somewhere on the mesh: after the startup baseline, raise it
+        // in the ping area (and, for a failure, flash the red border) the moment
+        // this poll sees it, instead of leaving it to be discovered on the Pings
+        // page. Each alert id flashes once per app run (adhoc #77).
         for (const QJsonValue &value : std::as_const(m_webAlerts)) {
             const QJsonObject alert = value.toObject();
             const QString kind =
@@ -2684,14 +2721,22 @@ void MainWindow::refreshWebAlerts(bool force)
                 continue;
             const QString title =
                 alert.value(QStringLiteral("title")).toString().trimmed();
+            // The recovery that closes an outage arrives on the same channel as
+            // the outage itself. It is still worth raising — but as good news:
+            // no red toast and no red border flash for a system that is green
+            // again (adhoc #1445).
+            const bool recovery = kind == QLatin1String("operational_alert") &&
+                                  webPingIsRecovery(alert);
             AppNotification ping;
             ping.title = title.isEmpty()
                              ? (kind == QLatin1String("operational_alert")
-                                    ? QStringLiteral("ForkMesh system alert")
+                                    ? (recovery
+                                           ? QStringLiteral("ForkMesh system recovered")
+                                           : QStringLiteral("ForkMesh system alert"))
                                     : QStringLiteral("New error group on the relay"))
                              : title;
             ping.body = alert.value(QStringLiteral("body")).toString().trimmed();
-            ping.warning = true;
+            ping.warning = !recovery;
             ping.kind = kind;
             flashNotification(ping);
         }
