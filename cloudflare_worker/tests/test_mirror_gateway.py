@@ -102,6 +102,23 @@ def make_bare_repository(tmp_path):
     return bare, commit
 
 
+def test_routing_generation_ignores_auxiliary_heads_but_tracks_default_and_tags(
+    tmp_path,
+):
+    bare, main_commit = make_bare_repository(tmp_path)
+    routing_before = gateway.routing_refs_sha256(bare)
+    full_before = gateway.refs_sha256(bare)
+
+    run([
+        "git", "update-ref", "refs/heads/agent/in-flight", main_commit,
+    ], bare)
+    assert gateway.refs_sha256(bare) != full_before
+    assert gateway.routing_refs_sha256(bare) == routing_before
+
+    run(["git", "tag", "v1-routing-test", main_commit], bare)
+    assert gateway.routing_refs_sha256(bare) != routing_before
+
+
 def test_runtime_cleanup_removes_only_gateway_materializations(tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir(mode=0o700)
@@ -695,7 +712,8 @@ def test_signed_repository_health_proof_binds_forkmesh_identity_and_refs(
     repository = app.repositories[("alice", "project")]
     assert proof["available"] is True
     assert proof["integrity"] == "ok"
-    assert proof["refsSha256"] == gateway.refs_sha256(repository.git_dir)
+    assert proof["refsSha256"] == gateway.routing_refs_sha256(
+        repository.git_dir)
     assert {"git-info-refs", "git-upload-pack", "tree", "raw"} <= set(
         proof["operations"]
     )
