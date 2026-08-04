@@ -814,6 +814,11 @@ QStringList MainWindow::testSourceControlPaths() const
     return paths;
 }
 
+QString MainWindow::testSourceControlDiffText() const
+{
+    return m_scmDiff ? m_scmDiff->toPlainText() : QString();
+}
+
 QString MainWindow::testScmCommitControlsState() const
 {
     QStringList parts;
