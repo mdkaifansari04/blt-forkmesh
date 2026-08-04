@@ -276,6 +276,67 @@ double SystemStats::cpuPercent()
     return g_lastPercent;
 }
 
+QList<SystemStats::DescendantProcess>
+SystemStats::descendantProcesses(qint64 rootPid)
+{
+    QList<DescendantProcess> result;
+    if (rootPid <= 0)
+        return result;
+#if defined(Q_OS_LINUX)
+    // Take one /proc snapshot, then walk its parent links. Processes can exit
+    // while this happens, so every unreadable or malformed entry is simply
+    // omitted rather than making the completion check fail open or crash.
+    struct Entry {
+        qint64 parentPid = 0;
+        QString command;
+    };
+    QHash<qint64, Entry> entries;
+    QHash<qint64, QList<qint64>> children;
+    const QStringList pids =
+        QDir(QStringLiteral("/proc"))
+            .entryList(QStringList() << QStringLiteral("[0-9]*"), QDir::Dirs);
+    for (const QString &name : pids) {
+        bool pidOk = false;
+        const qint64 pid = name.toLongLong(&pidOk);
+        if (!pidOk || pid <= 0)
+            continue;
+        QFile stat(QStringLiteral("/proc/%1/stat").arg(name));
+        if (!stat.open(QIODevice::ReadOnly))
+            continue;
+        const QByteArray data = stat.readAll();
+        const int lp = data.indexOf('(');
+        const int rp = data.lastIndexOf(')');
+        if (lp < 0 || rp <= lp)
+            continue;
+        const QList<QByteArray> fields = data.mid(rp + 2).split(' ');
+        if (fields.size() < 2)
+            continue;
+        bool parentOk = false;
+        const qint64 parentPid = fields.at(1).toLongLong(&parentOk);
+        if (!parentOk)
+            continue;
+        entries.insert(pid, {parentPid, QString::fromLocal8Bit(
+                                           data.mid(lp + 1, rp - lp - 1))});
+        children[parentPid].append(pid);
+    }
+    QList<qint64> queue{rootPid};
+    QSet<qint64> seen{rootPid}; // a racing PID reuse must not make a cycle
+    while (!queue.isEmpty()) {
+        const qint64 pid = queue.takeLast();
+        const auto entry = entries.constFind(pid);
+        if (entry != entries.constEnd() && pid != rootPid)
+            result.append({pid, entry->parentPid, entry->command});
+        for (qint64 child : children.value(pid)) {
+            if (!seen.contains(child)) {
+                seen.insert(child);
+                queue.append(child);
+            }
+        }
+    }
+#endif
+    return result;
+}
+
 SystemStats::DescendantLoad SystemStats::descendantsNamed(qint64 rootPid,
                                                           const QString &comm)
 {
