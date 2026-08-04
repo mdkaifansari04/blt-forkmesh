@@ -2502,10 +2502,19 @@ void MainWindow::sendPromptToCloudflareAi(const QString &prompt,
                                         "the account");
             else if (status == 429)
                 detail = QStringLiteral("the hourly prompt limit is reached");
+            else if (error == QLatin1String("model_not_found"))
+                detail = QStringLiteral("the relay's Workers AI account has no "
+                                        "such model");
             else if (error == QLatin1String("ai_unavailable"))
                 detail = QStringLiteral("the model did not answer");
             else if (status == 404 || error == QLatin1String("not_found"))
-                detail = QStringLiteral("the AI model was not found");
+                // A 404 is the RELAY missing /api/ai/ask, not a missing model:
+                // an unknown model pick is resolved server-side and a rejected
+                // one comes back as model_not_found above. Saying "model not
+                // found" here sent people re-picking models against a relay
+                // that simply predates the endpoint.
+                detail = QStringLiteral("this relay does not answer AI prompts "
+                                        "yet (it needs a newer deployment)");
             setIssueInlineNotice(
                 QStringLiteral("Cloudflare AI could not answer the prompt (%1).")
                     .arg(detail), true);
