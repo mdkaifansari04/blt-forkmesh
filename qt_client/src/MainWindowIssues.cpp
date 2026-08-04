@@ -5358,6 +5358,9 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
         obj == m_commitsStack)
         positionGitPromptOverlay();
+    if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
+        obj == m_globalOverlayHost)
+        positionGlobalFooterOverlays();
     // Keep the floating "Log" button pinned to the live-log strip's bottom-right
     // corner as the strip resizes (adhoc #137). Don't consume — the strip still
     // needs the resize.

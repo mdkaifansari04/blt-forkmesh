@@ -1175,7 +1175,8 @@ public:
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
-        s.rwidth() += chipWidth(opt) + 2 * kButtonMargin + kBarWidth + kButtonMargin;
+        s.rwidth() += chipWidth(opt) + countWidth(opt) + kGlyphSize +
+                      4 * kButtonMargin + 2 * kChipGap + kBarWidth;
         s.rheight() = qMax(s.height(), kBarHeight + 6);
         return s;
     }
@@ -1233,27 +1234,26 @@ public:
         // upscale the 12px pixmap to fill the chip.
         const QColor ink(dark ? (hot ? "#c9d1d9" : "#8b949e")
                               : (hot ? "#1f2328" : "#656d76"));
-        QRect glyph(r.left() + kChipPadding, r.center().y() - kGlyphSize / 2,
+        QRect glyph(r.center().x() - kGlyphSize / 2,
+                    r.center().y() - kGlyphSize / 2,
                     kGlyphSize, kGlyphSize);
         themedOcticon("git-branch", ink, kGlyphSize).paint(painter, glyph);
-        // Files the session's patch touched, in small type beside the glyph. The
-        // count field runs from the glyph to the alert's slot, which is reserved
-        // whether or not this row conflicts (adhoc #94), and the digits are
-        // right-aligned in it — so a "3" and a "15" end on the same edge instead
-        // of drifting apart down the list.
+        painter->restore();
+
+        // Only the branch glyph is boxed. Counts and branch-health glyphs sit
+        // beside it directly on the row, matching the compact screenshot and
+        // avoiding the old orange rectangle around unrelated metadata.
         const QString files = filesText(index);
         if (!files.isEmpty()) {
-            const int textLeft = glyph.right() + 1 + kChipGap;
-            const int textRight = conflictRect(option, index).left() - kChipGap;
+            const QRect count = countRect(option, index);
+            painter->save();
             painter->setPen(ink);
             painter->setFont(chipFont(option));
-            painter->drawText(QRect(textLeft, r.top(), textRight - textLeft + 1,
-                                    r.height()),
-                              Qt::AlignVCenter | Qt::AlignRight, files);
+            painter->drawText(count, Qt::AlignCenter, files);
+            painter->restore();
         }
-        // Conflict alert, inside the chip rather than a button of its own in a
-        // column of its own (adhoc #92): the orange glyph at the chip's trailing
-        // edge, which is its own click target.
+        // Conflict/behind health sits immediately after the count. It remains
+        // its own click target without widening the branch-icon box.
         if (conflicted)
             themedOcticon("alert", accent, kGlyphSize)
                 .paint(painter, conflictRect(option, index));
@@ -1267,7 +1267,6 @@ public:
             painter->setBrush(QColor(dark ? "#d29922" : "#bf8700"));
             painter->drawEllipse(QPointF(r.right() - 0.5, r.top() + 1.5), 3.0, 3.0);
         }
-        painter->restore();
     }
 
     // Clicks land here before the view starts an edit, so a press+release inside
@@ -1355,11 +1354,9 @@ private:
     // count the cell can print ("99+") and the alert glyph's slot are budgeted on
     // every row, so the chips read as a single column of identical buttons
     // instead of an edge that steps in and out with each row's contents.
-    static int chipWidth(const QStyleOptionViewItem &opt)
+    static int chipWidth(const QStyleOptionViewItem &)
     {
-        return 2 * kChipPadding + kGlyphSize + kChipGap +
-               QFontMetrics(chipFont(opt)).horizontalAdvance(QStringLiteral("99+")) +
-               kChipGap + kGlyphSize;
+        return kButtonSize;
     }
 
     static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &)
@@ -1369,18 +1366,31 @@ private:
         // The bars sit outermost (right up against the title) and their slot is
         // held open on every row, churn or not, so the chip's trailing edge lands
         // in the same place all the way down the list.
-        const int right = cell.right() - kBarWidth - kButtonMargin;
+        const int metadata = countWidth(opt) + kChipGap + kGlyphSize + kChipGap;
+        const int right = cell.right() - kBarWidth - kButtonMargin - metadata;
         const int w = qMin(chipWidth(opt), qMax(0, cell.width() - 2 * kButtonMargin));
         return QRect(right - kButtonMargin - w + 1, cell.center().y() - h / 2 + 1, w,
                      h);
     }
 
-    // The conflict glyph's own click target: the trailing slot inside the chip.
-    static QRect conflictRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    static int countWidth(const QStyleOptionViewItem &opt)
+    {
+        return QFontMetrics(chipFont(opt)).horizontalAdvance(QStringLiteral("99+"));
+    }
+
+    static QRect countRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
     {
         const QRect chip = buttonRect(opt, idx);
-        return QRect(chip.right() - kChipPadding - kGlyphSize + 1,
-                     chip.center().y() - kGlyphSize / 2, kGlyphSize, kGlyphSize);
+        return QRect(chip.right() + kChipGap + 1, chip.top(), countWidth(opt),
+                     chip.height());
+    }
+
+    // The conflict glyph's own click target beside the unboxed count.
+    static QRect conflictRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    {
+        const QRect count = countRect(opt, idx);
+        return QRect(count.right() + kChipGap + 1,
+                     count.center().y() - kGlyphSize / 2, kGlyphSize, kGlyphSize);
     }
 
     // Height of one bar for `lines`, floored at a visible stub so "1 line

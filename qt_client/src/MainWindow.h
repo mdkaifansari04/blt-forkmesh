@@ -23,6 +23,8 @@
 #include "MirrorCrypto.h"
 #include "GuiPump.h"
 
+namespace forkmesh::ui { class LogActivityLights; }
+
 // Per-session live-output state behind the top bar's blinking fleet lights.
 // lastActivityMs is bumped on every raw-output chunk so the light keeps blinking
 // while the agent is actively producing output. intensity is a smoothed
@@ -813,8 +815,7 @@ public:
     // selected, every Code-only chrome band is hidden, and no registered diff
     // viewer outside the Git stack is visible.
     bool testGitWorkspaceIsExclusive() const;
-    // Git hides the global footer and floats its prompt only at the lower right
-    // of the detail pane, leaving the graph's left side at full height.
+    // Git shares the global lower-corner overlays used by every other page.
     bool testGitPromptFloatsBottomRight() const;
     // Follow a branch link and read back the branch the table landed on right
     // away — no event pumping — so a test can prove the click doesn't wait on the
@@ -3219,6 +3220,9 @@ private:
     void updateRepoActivityRail();
     void setGitPromptOverlay(bool enabled);
     void positionGitPromptOverlay();
+    void positionGlobalFooterOverlays();
+    void setPromptOverlayCollapsed(bool collapsed);
+    void setLogOverlayExpanded(bool expanded);
     void loadRepoFileTree();
     void loadCoveExplorer();
     void refreshCoveExplorerTree();
@@ -5277,7 +5281,10 @@ private:
     // every workspace, including Git, so users can prompt an agent from a diff.
     QWidget *m_footerDock = nullptr;
     QWidget *m_footerLeftRegion = nullptr;
-    bool m_gitPromptOverlayVisible = false;
+    QWidget *m_globalOverlayHost = nullptr;
+    QWidget *m_promptOverlayHost = nullptr;
+    forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
+    bool m_promptOverlayCollapsed = false;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
     // live log and the prompt). One chip per open *kind* of work, not per ticket:
