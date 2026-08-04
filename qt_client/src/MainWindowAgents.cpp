@@ -584,9 +584,9 @@ QHash<QString, QString> backgroundBranchTips(const QString &gitDir)
 QStringList localProviderCredentialValues()
 {
     QStringList values;
-    QFile credentials(
-        QDir::homePath() +
-        QStringLiteral("/.claude/.credentials.json"));
+    QFile credentials(agentAccountCredentialPath(
+        QStringLiteral("claude-code"),
+        activeAgentAccount(QStringLiteral("claude-code")).configDir));
     if (credentials.open(QIODevice::ReadOnly)) {
         const QJsonObject oauth =
             QJsonDocument::fromJson(credentials.readAll())
@@ -595,6 +595,18 @@ QStringList localProviderCredentialValues()
                 .toObject();
         values << oauth.value(QStringLiteral("accessToken")).toString()
                << oauth.value(QStringLiteral("refreshToken")).toString();
+    }
+    QFile codexAuth(agentAccountCredentialPath(
+        QStringLiteral("codex"),
+        activeAgentAccount(QStringLiteral("codex")).configDir));
+    if (codexAuth.open(QIODevice::ReadOnly)) {
+        const QJsonObject auth =
+            QJsonDocument::fromJson(codexAuth.readAll()).object();
+        const QJsonObject tokens = auth.value(QStringLiteral("tokens")).toObject();
+        values << tokens.value(QStringLiteral("access_token")).toString()
+               << tokens.value(QStringLiteral("refresh_token")).toString()
+               << tokens.value(QStringLiteral("openAiApiKey")).toString()
+               << auth.value(QStringLiteral("access_token")).toString();
     }
     const QSettings settings;
     values << settings.value(kClaudeApiKeySetting).toString()
@@ -617,14 +629,15 @@ QStringList localProviderCredentialValues()
 QJsonObject localCliAvailability(const QString &provider)
 {
     const bool codex = agentIsCodexProvider(provider);
+    const AgentAccountProfile account = activeAgentAccount(provider);
     const QString program =
         codex ? QStringLiteral("codex") : QStringLiteral("claude");
     const bool binaryFound =
         !QStandardPaths::findExecutable(program).isEmpty();
     bool loggedIn = false;
     if (codex) {
-        QFile auth(
-            QDir::homePath() + QStringLiteral("/.codex/auth.json"));
+        QFile auth(agentAccountCredentialPath(
+            provider, activeAgentAccount(provider).configDir));
         if (auth.open(QIODevice::ReadOnly)) {
             const QJsonObject record =
                 QJsonDocument::fromJson(auth.readAll()).object();
@@ -634,11 +647,11 @@ QJsonObject localCliAvailability(const QString &provider)
                 !record.value(QStringLiteral("OPENAI_API_KEY")).toString().isEmpty();
         }
         loggedIn = loggedIn ||
-            !qEnvironmentVariable("OPENAI_API_KEY").trimmed().isEmpty();
+            (account.builtIn &&
+             !qEnvironmentVariable("OPENAI_API_KEY").trimmed().isEmpty());
     } else {
-        QFile credentials(
-            QDir::homePath() +
-            QStringLiteral("/.claude/.credentials.json"));
+        QFile credentials(agentAccountCredentialPath(
+            provider, activeAgentAccount(provider).configDir));
         if (credentials.open(QIODevice::ReadOnly)) {
             const QJsonObject oauth =
                 QJsonDocument::fromJson(credentials.readAll())
@@ -650,23 +663,25 @@ QJsonObject localCliAvailability(const QString &provider)
                 !oauth.value(QStringLiteral("refreshToken")).toString().isEmpty();
         }
         loggedIn = loggedIn ||
-            !qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed().isEmpty() ||
-            !qEnvironmentVariable("ANTHROPIC_AUTH_TOKEN").trimmed().isEmpty() ||
-            !qEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN").trimmed().isEmpty();
+            (account.builtIn &&
+             (!qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed().isEmpty() ||
+              !qEnvironmentVariable("ANTHROPIC_AUTH_TOKEN").trimmed().isEmpty() ||
+              !qEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN").trimmed().isEmpty()));
     }
     QString credentialSource;
     if (codex) {
         credentialSource =
-            !qEnvironmentVariable("OPENAI_API_KEY").trimmed().isEmpty()
+            account.builtIn &&
+                    !qEnvironmentVariable("OPENAI_API_KEY").trimmed().isEmpty()
                 ? QStringLiteral("OPENAI_API_KEY")
                 : loggedIn ? QStringLiteral("device login") : QString();
-    } else if (
+    } else if (account.builtIn &&
         !qEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN").trimmed().isEmpty()) {
         credentialSource = QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN");
-    } else if (
+    } else if (account.builtIn &&
         !qEnvironmentVariable("ANTHROPIC_AUTH_TOKEN").trimmed().isEmpty()) {
         credentialSource = QStringLiteral("ANTHROPIC_AUTH_TOKEN");
-    } else if (
+    } else if (account.builtIn &&
         !qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed().isEmpty()) {
         credentialSource = QStringLiteral("ANTHROPIC_API_KEY");
     } else if (loggedIn) {
@@ -3546,6 +3561,12 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
     proc->setWorkingDirectory(
         writable.localPath.isEmpty() ? repo.localPath : writable.localPath);
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    for (const QString &entry :
+         activeAgentAccountEnv(QStringLiteral("claude-code"))) {
+        const int equals = entry.indexOf(QLatin1Char('='));
+        if (equals > 0)
+            environment.insert(entry.left(equals), entry.mid(equals + 1));
+    }
     environment.remove(QStringLiteral("ANTHROPIC_API_KEY"));
     proc->setProcessEnvironment(environment);
     proc->setProcessChannelMode(QProcess::SeparateChannels);
@@ -4730,12 +4751,17 @@ void MainWindow::markAgentLimitWindow(const QString &provider)
         claude ? kClaudeLimitWeekStartSetting : kCodexLimitWeekStartSetting;
     QSettings settings;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const QString accountId = activeAgentAccount(provider).id;
     // A rolling window only restarts once the previous one has fully elapsed;
     // activity inside an open window keeps the same reset time.
     auto refreshAnchor = [&](const QString &key, qint64 windowMs) {
         const qint64 start = settings.value(key).toLongLong();
         if (start <= 0 || now - start >= windowMs)
             settings.setValue(key, now);
+        settings.setValue(
+            agentAccountUsageSetting(provider, accountId,
+                                     agentAccountUsageField(key)),
+            settings.value(key));
     };
     refreshAnchor(k5h, kAgentLimit5hMs);
     refreshAnchor(kWeek, kAgentLimitWeekMs);
@@ -4781,6 +4807,7 @@ void MainWindow::refreshCodexUsageRemaining()
     auto *chart = static_cast<TokenUsageMiniChart *>(m_navCodexUsage);
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QSettings settings;
+    const QString accountId = activeAgentAccount(QStringLiteral("codex")).id;
     auto update = [&](bool weekly, const QString &key, qint64 windowMs,
                       const QString &pctKey, const QString &resetKey) {
         const qint64 providerReset = settings.value(resetKey).toLongLong();
@@ -4796,6 +4823,12 @@ void MainWindow::refreshCodexUsageRemaining()
             // and let the "ready"/estimate path below take over.
             settings.remove(pctKey);
             settings.remove(resetKey);
+            settings.remove(agentAccountUsageSetting(
+                QStringLiteral("codex"), accountId,
+                agentAccountUsageField(pctKey)));
+            settings.remove(agentAccountUsageSetting(
+                QStringLiteral("codex"), accountId,
+                agentAccountUsageField(resetKey)));
         } else if (settings.contains(pctKey)) {
             // Live account utilization from the app-server. Show it whenever we
             // have it — including for a window that carried usedPercent but no
@@ -4843,6 +4876,11 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
         return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QSettings settings;
+    const QString accountId = activeAgentAccount(QStringLiteral("codex")).id;
+    auto scoped = [&](const QString &globalKey) {
+        return agentAccountUsageSetting(QStringLiteral("codex"), accountId,
+                                        agentAccountUsageField(globalKey));
+    };
     auto apply = [&](bool weekly, const QJsonValue &windowValue,
                      const QString &pctKey, const QString &resetKey,
                      const QString &anchorKey) {
@@ -4854,6 +4892,9 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
             settings.remove(pctKey);
             settings.remove(resetKey);
             settings.remove(anchorKey);
+            settings.remove(scoped(pctKey));
+            settings.remove(scoped(resetKey));
+            settings.remove(scoped(anchorKey));
             settings.setValue(
                 usageExhaustedSetting(QStringLiteral("codex"),
                                       weekly ? QStringLiteral("weekly")
@@ -4873,14 +4914,19 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
         if (resetMs > 0 && resetMs < 10'000'000'000LL)
             resetMs *= 1000; // app-server uses Unix seconds today
         settings.setValue(pctKey, used);
-        if (resetMs > 0)
+        settings.setValue(scoped(pctKey), used);
+        if (resetMs > 0) {
             settings.setValue(resetKey, resetMs);
+            settings.setValue(scoped(resetKey), resetMs);
+        }
         const qint64 durationMs = static_cast<qint64>(
                                       window.value(QStringLiteral("windowDurationMins"))
                                           .toDouble()) *
                                   60 * 1000;
-        if (resetMs > 0 && durationMs > 0)
+        if (resetMs > 0 && durationMs > 0) {
             settings.setValue(anchorKey, resetMs - durationMs);
+            settings.setValue(scoped(anchorKey), resetMs - durationMs);
+        }
         const QString windowKey = weekly ? QStringLiteral("weekly")
                                          : QStringLiteral("5h");
         const QString exhaustedKey =
@@ -4966,9 +5012,15 @@ void MainWindow::applyClaudeUsage(bool weekly, int percent)
     if (m_navTokenUsage)
         static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setUsage(weekly, pct);
     QSettings settings;
-    settings.setValue(weekly ? kClaudeUsageWeekPctSetting
-                             : kClaudeUsage5hPctSetting,
-                      pct);
+    const QString pctKey = weekly ? kClaudeUsageWeekPctSetting
+                                  : kClaudeUsage5hPctSetting;
+    settings.setValue(pctKey, pct);
+    settings.setValue(
+        agentAccountUsageSetting(
+            QStringLiteral("claude-code"),
+            activeAgentAccount(QStringLiteral("claude-code")).id,
+            agentAccountUsageField(pctKey)),
+        pct);
     // Issue #346: track "ran out" (>=99%) so a later drop can be recognised as
     // a refill rather than just another low-usage poll, and fire the opt-in
     // email once when that happens.
@@ -5016,6 +5068,12 @@ void MainWindow::applyClaudeFableUsage(int percent)
             ->setUsage(TokenUsageMiniChart::Fable, pct);
     QSettings settings;
     settings.setValue(kClaudeUsageFablePctSetting, pct);
+    settings.setValue(
+        agentAccountUsageSetting(
+            QStringLiteral("claude-code"),
+            activeAgentAccount(QStringLiteral("claude-code")).id,
+            agentAccountUsageField(kClaudeUsageFablePctSetting)),
+        pct);
     if (pct >= 99) {
         settings.setValue(kClaudeUsageFableExhaustedSetting, true);
         scheduleUsageLimitReminder(QStringLiteral("claude"),
@@ -5040,6 +5098,12 @@ void MainWindow::applyClaudeFableReset(qint64 resetMs)
 {
     QSettings settings;
     settings.setValue(kClaudeUsageFableResetSetting, resetMs);
+    settings.setValue(
+        agentAccountUsageSetting(
+            QStringLiteral("claude-code"),
+            activeAgentAccount(QStringLiteral("claude-code")).id,
+            agentAccountUsageField(kClaudeUsageFableResetSetting)),
+        resetMs);
     if (settings.value(kClaudeUsageFableExhaustedSetting, false).toBool()) {
         scheduleUsageLimitReminder(QStringLiteral("claude"),
                                    QStringLiteral("fable"),
@@ -5068,6 +5132,12 @@ void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
     const QString exhaustedKey = weekly ? kClaudeUsageWeekExhaustedSetting
                                         : kClaudeUsage5hExhaustedSetting;
     settings.setValue(resetKey, resetMs);
+    settings.setValue(
+        agentAccountUsageSetting(
+            QStringLiteral("claude-code"),
+            activeAgentAccount(QStringLiteral("claude-code")).id,
+            agentAccountUsageField(resetKey)),
+        resetMs);
     if (settings.value(exhaustedKey, false).toBool()) {
         scheduleUsageLimitReminder(
             QStringLiteral("claude"),
@@ -5083,6 +5153,93 @@ void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
     static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
         ->setReset(weekly, remaining > 0 ? humanizeRemaining(remaining)
                                          : QString());
+}
+
+void MainWindow::applyClaudeUsageResponse(const QJsonObject &root)
+{
+    auto percentage = [](const QJsonObject &window, bool *ok) {
+        QJsonValue value = window.value(QStringLiteral("utilization"));
+        if (value.isUndefined())
+            value = window.value(QStringLiteral("utilisation"));
+        if (value.isUndefined())
+            value = window.value(QStringLiteral("used_percent"));
+        bool numeric = value.isDouble();
+        double amount = value.toDouble();
+        if (!numeric && value.isString())
+            amount = value.toString().toDouble(&numeric);
+        *ok = numeric;
+        return qBound(0, qRound(amount >= 0.0 && amount <= 1.0
+                                    ? amount * 100.0
+                                    : amount),
+                      100);
+    };
+    auto resetMs = [](const QJsonObject &window) -> qint64 {
+        QJsonValue value = window.value(QStringLiteral("resets_at"));
+        if (value.isUndefined() || value.isNull())
+            value = window.value(QStringLiteral("resetsAt"));
+        if (value.isString()) {
+            const QDateTime when =
+                QDateTime::fromString(value.toString(), Qt::ISODate);
+            return when.isValid() ? when.toMSecsSinceEpoch() : 0;
+        }
+        if (!value.isDouble())
+            return 0;
+        qint64 stamp = static_cast<qint64>(value.toDouble());
+        if (stamp > 0 && stamp < 10'000'000'000LL)
+            stamp *= 1000;
+        return stamp;
+    };
+    auto apply = [&](const QString &key, TokenUsageMiniChart::Window window) {
+        const QJsonObject details = root.value(key).toObject();
+        bool valid = false;
+        const int pct = percentage(details, &valid);
+        if (!valid)
+            return false;
+        if (window == TokenUsageMiniChart::Fable) {
+            applyClaudeFableUsage(pct);
+            if (const qint64 reset = resetMs(details))
+                applyClaudeFableReset(reset);
+        } else {
+            const bool weekly = window == TokenUsageMiniChart::Weekly;
+            applyClaudeUsage(weekly, pct);
+            if (const qint64 reset = resetMs(details))
+                applyClaudeReset(weekly, reset);
+        }
+        return true;
+    };
+
+    apply(QStringLiteral("five_hour"), TokenUsageMiniChart::FiveHour);
+    apply(QStringLiteral("seven_day"), TokenUsageMiniChart::Weekly);
+
+    // Anthropic has renamed the model-specific window as the premium model
+    // changed. Prefer an explicit Fable key (including its versioned spelling),
+    // then a window whose metadata names Fable, and only then the historical
+    // premium/Opus aliases. Missing/null windows do not overwrite a real cached
+    // Fable figure with a misleading 0%.
+    const QStringList explicitFableKeys = {
+        QStringLiteral("seven_day_fable"),
+        QStringLiteral("seven_day_fable_5"),
+        QStringLiteral("seven_day_fable5")};
+    for (const QString &key : explicitFableKeys)
+        if (apply(key, TokenUsageMiniChart::Fable))
+            return;
+    for (auto it = root.constBegin(); it != root.constEnd(); ++it) {
+        const QJsonObject details = it.value().toObject();
+        const QString metadata =
+            (it.key() + QLatin1Char(' ') +
+             details.value(QStringLiteral("model")).toString() + QLatin1Char(' ') +
+             details.value(QStringLiteral("model_name")).toString() + QLatin1Char(' ') +
+             details.value(QStringLiteral("label")).toString()).toLower();
+        if (metadata.contains(QStringLiteral("fable")) &&
+            apply(it.key(), TokenUsageMiniChart::Fable))
+            return;
+    }
+    const QStringList legacyPremiumKeys = {
+        QStringLiteral("seven_day_premium"),
+        QStringLiteral("seven_day_opus")};
+    for (const QString &key : legacyPremiumKeys)
+        if (apply(key, TokenUsageMiniChart::Fable))
+            return;
 }
 
 void MainWindow::refreshClaudeCodeUsage(bool fromHover)
@@ -5111,7 +5268,10 @@ void MainWindow::refreshClaudeCodeUsage(bool fromHover)
     // HTTP 429) so a burst of prompt-send / hover refreshes doesn't hammer it.
     // Being inside the backoff means the last attempt failed, so the hover box
     // stays red rather than claiming a refresh that never left the app.
-    if (!m_pollBackoff.ready(QStringLiteral("claude-usage"),
+    const QString accountId =
+        activeAgentAccount(QStringLiteral("claude-code")).id;
+    const QString pollKey = QStringLiteral("claude-usage-%1").arg(accountId);
+    if (!m_pollBackoff.ready(pollKey,
                              QDateTime::currentMSecsSinceEpoch())) {
         giveUp();
         return;
@@ -5124,82 +5284,28 @@ void MainWindow::refreshClaudeCodeUsage(bool fromHover)
     req.setRawHeader("Accept", "application/json");
 
     QNetworkReply *reply = m_networkAccess->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, fromHover] {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, fromHover, pollKey, accountId] {
         const QByteArray body = reply->readAll();
         reply->deleteLater();
         // On any error (expired token, offline) keep the last-known figures
         // rather than blanking the gauge; the next poll retries — with a
         // growing backoff so a sustained failure stops hammering the endpoint.
         if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(QStringLiteral("claude-usage"),
+            m_pollBackoff.noteFailure(pollKey,
                                       QDateTime::currentMSecsSinceEpoch());
             if (fromHover)
                 flashUsageChart(m_navTokenUsage, false);
             return;
         }
-        m_pollBackoff.noteSuccess(QStringLiteral("claude-usage"));
+        m_pollBackoff.noteSuccess(pollKey);
+        // A fast account switch can happen while this request is in flight.
+        // Never paint or cache account A's limits under newly-active account B.
+        if (activeAgentAccount(QStringLiteral("claude-code")).id != accountId)
+            return;
         if (fromHover)
             flashUsageChart(m_navTokenUsage, true);
-        const QJsonObject root = QJsonDocument::fromJson(body).object();
-        // This endpoint has shipped utilization in two shapes — a 0..1 fraction
-        // (0.42) and an already-scaled 0..100 percentage (42.0). Multiplying a
-        // percentage by 100 pinned every gauge at its clamp, so the figures read
-        // as maxed even when barely used (adhoc #47). Treat anything <= 1 as a
-        // fraction and pass a percentage straight through so both are correct.
-        auto pctOf = [&root](const QString &key) {
-            const double u = root.value(key)
-                                 .toObject()
-                                 .value(QStringLiteral("utilization"))
-                                 .toDouble();
-            return qRound(u <= 1.0 ? u * 100.0 : u);
-        };
-        // resets_at is the wall-clock instant the window clears. Accept either an
-        // ISO 8601 string or a numeric Unix timestamp (seconds), and tolerate the
-        // camelCase spelling, so a format tweak on the endpoint won't silently
-        // drop the countdown. Returns 0 when absent/unparseable (issue #50).
-        auto resetMsOf = [&root](const QString &key) -> qint64 {
-            const QJsonObject win = root.value(key).toObject();
-            QJsonValue v = win.value(QStringLiteral("resets_at"));
-            if (v.isUndefined() || v.isNull())
-                v = win.value(QStringLiteral("resetsAt"));
-            if (v.isString()) {
-                const QDateTime when =
-                    QDateTime::fromString(v.toString(), Qt::ISODate);
-                return when.isValid() ? when.toMSecsSinceEpoch() : 0;
-            }
-            if (v.isDouble()) {
-                const double secs = v.toDouble();
-                return secs > 0 ? static_cast<qint64>(secs * 1000.0) : 0;
-            }
-            return 0;
-        };
-        // five_hour = rolling session window; seven_day = the plan-wide weekly
-        // window (matches the "weekly" rate-limit event and the CLI's /usage).
-        if (root.contains(QStringLiteral("five_hour"))) {
-            applyClaudeUsage(false, pctOf(QStringLiteral("five_hour")));
-            if (const qint64 r = resetMsOf(QStringLiteral("five_hour")))
-                applyClaudeReset(false, r);
-        }
-        if (root.contains(QStringLiteral("seven_day"))) {
-            applyClaudeUsage(true, pctOf(QStringLiteral("seven_day")));
-            if (const qint64 r = resetMsOf(QStringLiteral("seven_day")))
-                applyClaudeReset(true, r);
-        }
-        // The premium per-model weekly window — the account's Fable allowance,
-        // separate from the plan-wide one (adhoc #96). The endpoint has spelled
-        // this key differently as the top model changed, so take the first
-        // spelling that's actually present rather than pinning one.
-        const QStringList fableKeys = {QStringLiteral("seven_day_fable"),
-                                       QStringLiteral("seven_day_opus"),
-                                       QStringLiteral("seven_day_premium")};
-        for (const QString &key : fableKeys) {
-            if (!root.contains(key))
-                continue;
-            applyClaudeFableUsage(pctOf(key));
-            if (const qint64 r = resetMsOf(key))
-                applyClaudeFableReset(r);
-            break;
-        }
+        applyClaudeUsageResponse(QJsonDocument::fromJson(body).object());
     });
 }
 
@@ -9270,6 +9376,7 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
         << QStringLiteral("ANTHROPIC_AUTH_TOKEN")
         << QStringLiteral("ANTHROPIC_ADMIN_KEY")
         << QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN");
+    env << activeAgentAccountEnv(QStringLiteral("claude-code"));
 
     // Make ForkMesh act as the IDE this CLI connects to (issue #191): start the
     // localhost bridge for this checkout and inject the discovery env vars so
@@ -9421,6 +9528,13 @@ void MainWindow::runClaudeAutoTriageRung(int sessionId, int rung, bool errorsOnl
     auto *proc = new QProcess(live);
     proc->setWorkingDirectory(workdir);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QStringList accountEnv =
+        activeAgentAccountEnv(QStringLiteral("claude-code"));
+    for (const QString &entry : accountEnv) {
+        const int equals = entry.indexOf(QLatin1Char('='));
+        if (equals > 0)
+            env.insert(entry.left(equals), entry.mid(equals + 1));
+    }
     env.remove(QStringLiteral("ANTHROPIC_API_KEY")); // same auth as the agent run
     proc->setProcessEnvironment(env);
     // Don't let a hung triage stall the agent launch forever.
@@ -9976,6 +10090,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                  QStringLiteral("CODEX_API_KEY"),
                                  QStringLiteral("OPENAI_ACCESS_TOKEN"),
                                  QStringLiteral("OPENAI_ADMIN_KEY")};
+            codexEnv << activeAgentAccountEnv(QStringLiteral("codex"));
             // Jail (adhoc #236): private scratch env + memory cap for this run.
             int jailMb = 0;
             if (QSettings().value(kAgentJailSetting, false).toBool()) {
@@ -9995,6 +10110,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             << QStringLiteral("ANTHROPIC_AUTH_TOKEN")
             << QStringLiteral("ANTHROPIC_ADMIN_KEY")
             << QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN");
+        env << activeAgentAccountEnv(QStringLiteral("claude-code"));
         if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
             if (bridge->start(workdir))
                 env << bridge->env();

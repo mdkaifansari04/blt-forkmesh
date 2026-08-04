@@ -231,12 +231,13 @@ QString jsonString(const QJsonObject &obj, const QString &container,
     return nested.value(key).toString().trimmed();
 }
 
-QString agentCliIdentityLabel(const QString &provider)
+QString agentCliIdentityLabel(const QString &provider,
+                              const QString &configDir = QString())
 {
     const bool codex = agentIsCodexProvider(provider);
-    const QString filePath =
-        codex ? QDir::homePath() + QStringLiteral("/.codex/auth.json")
-              : QDir::homePath() + QStringLiteral("/.claude/.credentials.json");
+    const QString filePath = agentAccountCredentialPath(
+        provider, configDir.isEmpty() ? agentAccountDefaultConfigDir(provider)
+                                      : configDir);
     const auto readFile = [](const QString &path) {
         QFile file(path);
         if (!file.open(QIODevice::ReadOnly))
@@ -317,6 +318,24 @@ QString agentCliIdentityLabel(const QString &provider)
     return QString();
 }
 
+bool providerAccountSignedIn(const QString &provider, const QString &configDir)
+{
+    QFile file(agentAccountCredentialPath(provider, configDir));
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QJsonObject credentials =
+        QJsonDocument::fromJson(file.readAll()).object();
+    if (agentIsCodexProvider(provider)) {
+        return !credentials.value(QStringLiteral("tokens")).toObject().isEmpty() ||
+               !credentials.value(QStringLiteral("access_token")).toString().isEmpty() ||
+               !credentials.value(QStringLiteral("OPENAI_API_KEY")).toString().isEmpty();
+    }
+    const QJsonObject oauth =
+        credentials.value(QStringLiteral("claudeAiOauth")).toObject();
+    return !oauth.value(QStringLiteral("accessToken")).toString().isEmpty() ||
+           !oauth.value(QStringLiteral("refreshToken")).toString().isEmpty();
+}
+
 QString quickAddModelChoiceSummary(const QList<AgentSession> &sessions,
                                   const QString &provider,
                                   const QString &choiceModel)
@@ -356,6 +375,364 @@ QString quickAddModelChoiceSummary(const QList<AgentSession> &sessions,
 }
 
 } // namespace
+
+QStringList MainWindow::agentAccountUsageLines(const QString &provider,
+                                               const QString &accountId) const
+{
+    const bool codex = agentIsCodexProvider(provider);
+    const bool builtIn = accountId == QLatin1String("default");
+    QSettings settings;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    auto value = [&](const QString &globalKey) -> QVariant {
+        const QString scoped = agentAccountUsageSetting(
+            provider, accountId, agentAccountUsageField(globalKey));
+        if (settings.contains(scoped))
+            return settings.value(scoped);
+        return builtIn ? settings.value(globalKey) : QVariant();
+    };
+    auto line = [&](const QString &label, const QString &pctKey,
+                    const QString &resetKey, const QString &anchorKey = QString(),
+                    qint64 durationMs = 0) {
+        const QVariant pctValue = value(pctKey);
+        QString amount = QString::fromUtf8("\xE2\x80\x94");
+        qint64 estimatedReset = 0;
+        if (pctValue.isValid()) {
+            const int used = qBound(0, pctValue.toInt(), 100);
+            amount = codex ? QStringLiteral("%1% remaining").arg(100 - used)
+                           : QStringLiteral("%1% used").arg(used);
+        } else if (codex && !anchorKey.isEmpty()) {
+            const qint64 anchor = value(anchorKey).toLongLong();
+            const qint64 remaining = durationMs - (now - anchor);
+            if (anchor > 0 && remaining > 0) {
+                amount = QStringLiteral("%1% remaining")
+                             .arg(qBound(0, qRound(remaining * 100.0 /
+                                                   double(durationMs)),
+                                         100));
+                estimatedReset = anchor + durationMs;
+            }
+        }
+        QString result = QStringLiteral("%1: %2").arg(label, amount);
+        const qint64 providerReset = value(resetKey).toLongLong();
+        const qint64 resetAt = providerReset > 0 ? providerReset : estimatedReset;
+        if (resetAt > now)
+            result += QString::fromUtf8(" \xC2\xB7 resets in %1")
+                          .arg(humanizeRemaining(resetAt - now));
+        return result;
+    };
+
+    QStringList result;
+    result << line(QStringLiteral("5-hour"),
+                   codex ? kCodexUsage5hPctSetting : kClaudeUsage5hPctSetting,
+                   codex ? kCodexUsage5hResetSetting : kClaudeUsage5hResetSetting,
+                   codex ? kCodexLimit5hStartSetting : QString(),
+                   codex ? kAgentLimit5hMs : 0)
+           << line(QStringLiteral("Weekly"),
+                   codex ? kCodexUsageWeekPctSetting : kClaudeUsageWeekPctSetting,
+                   codex ? kCodexUsageWeekResetSetting : kClaudeUsageWeekResetSetting,
+                   codex ? kCodexLimitWeekStartSetting : QString(),
+                   codex ? kAgentLimitWeekMs : 0);
+    if (!codex)
+        result << line(QStringLiteral("Fable weekly"),
+                       kClaudeUsageFablePctSetting,
+                       kClaudeUsageFableResetSetting);
+    return result;
+}
+
+void MainWindow::showAgentAccountMenu(const QString &provider,
+                                      const QPoint &globalPosition)
+{
+    const bool codex = agentIsCodexProvider(provider);
+    const QString providerName =
+        codex ? QStringLiteral("Codex") : QStringLiteral("Claude Code");
+    if (codex)
+        refreshCodexUsageRemaining();
+    else
+        refreshClaudeCodeUsage();
+
+    auto *menu = new QMenu(this);
+    menu->setObjectName(codex ? QStringLiteral("codexAccountUsageMenu")
+                              : QStringLiteral("claudeAccountUsageMenu"));
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    QAction *heading = menu->addAction(
+        QStringLiteral("%1 accounts and usage").arg(providerName));
+    heading->setEnabled(false);
+    QFont headingFont = heading->font();
+    headingFont.setBold(true);
+    heading->setFont(headingFont);
+    menu->addSeparator();
+
+    const AgentAccountProfile active = activeAgentAccount(provider);
+    const QList<AgentAccountProfile> profiles = agentAccountProfiles(provider);
+    for (const AgentAccountProfile &profile : profiles) {
+        const QString identity = agentCliIdentityLabel(provider, profile.configDir);
+        const bool signedIn = providerAccountSignedIn(provider, profile.configDir);
+        QString label = identity.isEmpty() ? profile.label : identity;
+        if (!signedIn)
+            label += QString::fromUtf8(" \xC2\xB7 not signed in");
+        QAction *account = menu->addAction(label);
+        account->setObjectName(QStringLiteral("agentAccount_%1").arg(profile.id));
+        account->setCheckable(true);
+        account->setChecked(profile.id == active.id);
+        account->setToolTip(QStringLiteral("Use this %1 account for new agents")
+                                .arg(providerName));
+        connect(account, &QAction::triggered, this,
+                [this, provider, id = profile.id] {
+                    selectAgentAccount(provider, id);
+                });
+        for (const QString &usage : agentAccountUsageLines(provider, profile.id)) {
+            QAction *usageLine = menu->addAction(QStringLiteral("    ") + usage);
+            usageLine->setEnabled(false);
+        }
+        menu->addSeparator();
+    }
+
+    QAction *add = menu->addAction(
+        QString::fromUtf8("Add account\xE2\x80\xA6"));
+    add->setObjectName(QStringLiteral("agentAccountAddAction"));
+    connect(add, &QAction::triggered, this,
+            [this, provider] { addAgentAccount(provider); });
+    QAction *logout = menu->addAction(
+        QString::fromUtf8("Log out active account\xE2\x80\xA6"));
+    logout->setObjectName(QStringLiteral("agentAccountLogoutAction"));
+    logout->setEnabled(providerAccountSignedIn(provider, active.configDir));
+    connect(logout, &QAction::triggered, this, [this, provider] {
+        launchAgentSystemTerminal(provider, QStringLiteral("logout"));
+    });
+    menu->addSeparator();
+    QAction *terminal = menu->addAction(
+        QStringLiteral("Launch %1 in system terminal").arg(providerName));
+    terminal->setObjectName(QStringLiteral("agentAccountTerminalAction"));
+    connect(terminal, &QAction::triggered, this, [this, provider] {
+        launchAgentSystemTerminal(provider);
+    });
+
+    menu->popup(globalPosition);
+}
+
+void MainWindow::selectAgentAccount(const QString &provider,
+                                    const QString &accountId)
+{
+    const QList<AgentAccountProfile> profiles = agentAccountProfiles(provider);
+    if (std::none_of(profiles.cbegin(), profiles.cend(),
+                     [&accountId](const AgentAccountProfile &profile) {
+                         return profile.id == accountId;
+                     }))
+        return;
+
+    const bool codex = agentIsCodexProvider(provider);
+    const QStringList globals = codex
+        ? QStringList{kCodexUsage5hPctSetting, kCodexUsageWeekPctSetting,
+                      kCodexUsage5hResetSetting, kCodexUsageWeekResetSetting,
+                      kCodexLimit5hStartSetting, kCodexLimitWeekStartSetting}
+        : QStringList{kClaudeUsage5hPctSetting, kClaudeUsageWeekPctSetting,
+                      kClaudeUsageFablePctSetting, kClaudeUsage5hResetSetting,
+                      kClaudeUsageWeekResetSetting, kClaudeUsageFableResetSetting,
+                      kClaudeLimit5hStartSetting, kClaudeLimitWeekStartSetting};
+    QSettings settings;
+    const QString oldId = activeAgentAccount(provider).id;
+    // Preserve the current account's last provider reading before replacing the
+    // compatibility keys used by the compact chart and limit reminders.
+    for (const QString &global : globals) {
+        if (settings.contains(global))
+            settings.setValue(
+                agentAccountUsageSetting(provider, oldId,
+                                         agentAccountUsageField(global)),
+                settings.value(global));
+    }
+    settings.setValue(agentActiveAccountSetting(provider), accountId);
+    for (const QString &global : globals) {
+        const QString scoped = agentAccountUsageSetting(
+            provider, accountId, agentAccountUsageField(global));
+        if (settings.contains(scoped))
+            settings.setValue(global, settings.value(scoped));
+        else
+            settings.remove(global);
+    }
+
+    if (codex) {
+        refreshCodexUsageRemaining();
+    } else {
+        m_claudeUsageLast5hPct = -1;
+        m_claudeUsageLastWeekPct = -1;
+        auto *chart = static_cast<TokenUsageMiniChart *>(m_navTokenUsage);
+        if (chart) {
+            chart->setUsage(TokenUsageMiniChart::FiveHour,
+                            settings.contains(kClaudeUsage5hPctSetting)
+                                ? settings.value(kClaudeUsage5hPctSetting).toInt()
+                                : -1);
+            chart->setUsage(TokenUsageMiniChart::Weekly,
+                            settings.contains(kClaudeUsageWeekPctSetting)
+                                ? settings.value(kClaudeUsageWeekPctSetting).toInt()
+                                : -1);
+            chart->setUsage(TokenUsageMiniChart::Fable,
+                            settings.contains(kClaudeUsageFablePctSetting)
+                                ? settings.value(kClaudeUsageFablePctSetting).toInt()
+                                : -1);
+            auto resetNote = [&](TokenUsageMiniChart::Window window,
+                                 const QString &key) {
+                const qint64 resetAt = settings.value(key).toLongLong();
+                chart->setReset(
+                    window,
+                    resetAt > QDateTime::currentMSecsSinceEpoch()
+                        ? humanizeRemaining(
+                              resetAt - QDateTime::currentMSecsSinceEpoch())
+                        : QString());
+            };
+            resetNote(TokenUsageMiniChart::FiveHour,
+                      kClaudeUsage5hResetSetting);
+            resetNote(TokenUsageMiniChart::Weekly,
+                      kClaudeUsageWeekResetSetting);
+            resetNote(TokenUsageMiniChart::Fable,
+                      kClaudeUsageFableResetSetting);
+        }
+        refreshClaudeCodeUsage();
+        refreshClaudeModelCombo();
+    }
+    refreshQuickAddAgentModelSelector();
+    flashMessage(QStringLiteral("%1 account selected for new agents.")
+                     .arg(codex ? QStringLiteral("Codex")
+                                : QStringLiteral("Claude Code")));
+}
+
+void MainWindow::addAgentAccount(const QString &provider)
+{
+    const QString providerName = agentIsCodexProvider(provider)
+                                     ? QStringLiteral("Codex")
+                                     : QStringLiteral("Claude Code");
+    bool ok = false;
+    const QString label = QInputDialog::getText(
+        this, QStringLiteral("Add %1 account").arg(providerName),
+        QStringLiteral("Account label:"), QLineEdit::Normal,
+        QStringLiteral("%1 account").arg(providerName), &ok).trimmed();
+    if (!ok || label.isEmpty())
+        return;
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const QString configDir =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+        QStringLiteral("/agent-accounts/%1/%2")
+            .arg(agentAccountProviderKey(provider), id);
+    if (!QDir().mkpath(configDir)) {
+        flashMessage(QStringLiteral("Could not create the %1 account profile.")
+                         .arg(providerName),
+                     true);
+        return;
+    }
+    QSettings settings;
+    settings.beginGroup(agentAccountProfilesGroup(provider));
+    settings.beginGroup(id);
+    settings.setValue(QStringLiteral("label"), label);
+    settings.setValue(QStringLiteral("configDir"), configDir);
+    settings.endGroup();
+    settings.endGroup();
+    selectAgentAccount(provider, id);
+    launchAgentSystemTerminal(provider, QStringLiteral("login"));
+}
+
+void MainWindow::launchAgentSystemTerminal(const QString &provider,
+                                           const QString &mode)
+{
+    if (m_headless) {
+        logSystem(QStringLiteral("A system terminal is unavailable on a headless node."));
+        return;
+    }
+    const bool codex = agentIsCodexProvider(provider);
+    const QString program = codex ? QStringLiteral("codex")
+                                  : QStringLiteral("claude");
+    if (QStandardPaths::findExecutable(program).isEmpty()) {
+        flashMessage(QStringLiteral("%1 is not installed on this device.")
+                         .arg(codex ? QStringLiteral("Codex")
+                                    : QStringLiteral("Claude Code")),
+                     true);
+        return;
+    }
+    QStringList commandArgs;
+    if (mode == QLatin1String("logout")) {
+        if (codex)
+            commandArgs << QStringLiteral("logout");
+        else
+            commandArgs << QStringLiteral("auth") << QStringLiteral("logout");
+    } else if (mode == QLatin1String("login")) {
+        if (codex)
+            commandArgs << QStringLiteral("login");
+        else
+            commandArgs << QStringLiteral("auth") << QStringLiteral("login");
+    }
+
+    const QString cwd = repoGitDir().isEmpty() ? QDir::homePath() : repoGitDir();
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    environment.remove(QStringLiteral("ANTHROPIC_API_KEY"));
+    environment.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
+    environment.remove(QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN"));
+    environment.remove(QStringLiteral("OPENAI_API_KEY"));
+    environment.remove(QStringLiteral("CODEX_API_KEY"));
+    const AgentAccountProfile account = activeAgentAccount(provider);
+    if (!account.builtIn)
+        environment.insert(codex ? QStringLiteral("CODEX_HOME")
+                                 : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                           account.configDir);
+
+    QString terminalProgram;
+    QStringList terminalArgs;
+#if defined(Q_OS_WIN)
+    terminalProgram = QStandardPaths::findExecutable(QStringLiteral("wt.exe"));
+    if (!terminalProgram.isEmpty()) {
+        terminalArgs << QStringLiteral("-d") << cwd << program << commandArgs;
+    } else {
+        terminalProgram = QStringLiteral("cmd.exe");
+        terminalArgs << QStringLiteral("/c") << QStringLiteral("start")
+                     << QString() << program << commandArgs;
+    }
+#elif defined(Q_OS_MACOS)
+    auto shellQuote = [](QString value) {
+        value.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+        return QLatin1Char('\'') + value + QLatin1Char('\'');
+    };
+    QString command = QStringLiteral("cd %1 && ").arg(shellQuote(cwd));
+    if (!account.builtIn) {
+        command += QStringLiteral("env %1=%2 ")
+                       .arg(codex ? QStringLiteral("CODEX_HOME")
+                                  : QStringLiteral("CLAUDE_CONFIG_DIR"),
+                            shellQuote(account.configDir));
+    }
+    command += shellQuote(program);
+    for (const QString &argument : commandArgs)
+        command += QLatin1Char(' ') + shellQuote(argument);
+    QString appleCommand = command;
+    appleCommand.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+    appleCommand.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+    terminalProgram = QStringLiteral("/usr/bin/osascript");
+    terminalArgs << QStringLiteral("-e")
+                 << QStringLiteral("tell application \"Terminal\" to do script \"%1\"")
+                        .arg(appleCommand);
+#else
+    struct Candidate { const char *program; const char *separator; };
+    const Candidate candidates[] = {
+        {"x-terminal-emulator", "-e"}, {"gnome-terminal", "--"},
+        {"konsole", "-e"}, {"xfce4-terminal", "-x"}, {"xterm", "-e"}};
+    for (const Candidate &candidate : candidates) {
+        terminalProgram =
+            QStandardPaths::findExecutable(QString::fromLatin1(candidate.program));
+        if (!terminalProgram.isEmpty()) {
+            terminalArgs << QString::fromLatin1(candidate.separator)
+                         << program << commandArgs;
+            break;
+        }
+    }
+#endif
+    if (terminalProgram.isEmpty()) {
+        flashMessage(QStringLiteral("No supported system terminal was found."), true);
+        return;
+    }
+    QProcess launcher;
+    launcher.setProgram(terminalProgram);
+    launcher.setArguments(terminalArgs);
+    launcher.setWorkingDirectory(cwd);
+    launcher.setProcessEnvironment(environment);
+    if (!launcher.startDetached()) {
+        flashMessage(QStringLiteral("Could not launch the system terminal."), true);
+        return;
+    }
+}
 
 // -------------------------------------------------------------- server rail
 
@@ -1723,44 +2100,58 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *logPanelLayout = new QVBoxLayout(logPanel);
     logPanelLayout->setContentsMargins(1, 1, 1, 1);
     logPanelLayout->setSpacing(2);
+    // State two starts with a real header: the same thirty category icons in a
+    // single row, with their session counts visible beneath them. The public
+    // website's newest completed /status minute is separated on the right.
+    m_logActivityHeader = new LogActivityLights(LogActivityLights::Header,
+                                                logPanel);
+    logPanelLayout->addWidget(m_logActivityHeader, 0);
     // Notifications deliberately do not live in this layout. They float over
     // the composer instead, so a long error never steals a line from this log.
     logPanelLayout->addWidget(m_footerUpdateLog, 1);
 
-    // The region wrapper stays even with a single panel in it. It is the compact
-    // log surface parked at the lower-right; hiding it leaves the category-light
-    // matrix in the same corner without disturbing the lower-left composer.
+    // The region wrapper is the compact log surface parked at the lower-left;
+    // hiding it leaves the category icons in that same corner without disturbing
+    // the lower-right composer.
     auto *leftRegion = new QWidget;
     m_footerLeftRegion = leftRegion;
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
+    leftRegion->setMaximumWidth(720);
+    leftRegion->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto *leftRegionLayout = new QHBoxLayout(leftRegion);
     leftRegionLayout->setContentsMargins(0, 0, 0, 0);
     leftRegionLayout->setSpacing(8);
     leftRegionLayout->addWidget(logPanel, 1);
 
-    // State one: all thirty log-category lights blink for their own occurrences.
+    // State one: all thirty log-category icons start grey, become solid on their
+    // first occurrence, and blink on later occurrences. Hover exposes the count.
     // A click reveals the recent-line overlay; clicking a line there opens the
     // existing full Log page (state three).
-    // Keep the lights outside the box layout so they remain visible in both
-    // states. positionGlobalFooterOverlays() parks them at the lower-right when
-    // collapsed, overlays them on the compact log's lower-right when expanded,
-    // and returns them to the lower-left on the full Log page.
-    m_logActivityLights = new LogActivityLights(dock);
+    // Keep the compact icons outside the box layout so a collapsed log occupies
+    // no layout width. The expanded header above takes over inside the panel.
+    m_logActivityLights = new LogActivityLights(LogActivityLights::Compact, dock);
     m_logActivityLights->onClicked = [this] {
         if (!m_sectionStack || m_sectionStack->currentIndex() != 4)
             setLogOverlayExpanded(!m_logOverlayExpanded);
     };
+    const QString stallTip = QStringLiteral(
+        "Click to draft a fix-it prompt for recorded UI stalls; right-click "
+        "for the captured backtraces.");
+    for (LogActivityLights *lights : {m_logActivityLights, m_logActivityHeader}) {
+        lights->setStallToolTip(stallTip);
+        lights->onStallClicked = [this] { sendStallReportToComposer(); };
+        lights->onStallContextMenu = [this] { showDiagnosticsDialog(); };
+    }
 
-    // The prompt owns the lower-left and the compact log owns the lower-right,
-    // matching the reading direction in the screenshot. The stretch between
-    // them is transparent and masked out below so neither overlay blocks the
-    // workspace behind it.
+    // The compact log owns the lower-left and the prompt owns the lower-right.
+    // The stretch between them is transparent and masked out below so neither
+    // overlay blocks the workspace behind it.
     auto *dockRow = new QHBoxLayout(dock);
     dockRow->setContentsMargins(8, 8, 8, 0);
     dockRow->setSpacing(8);
-    dockRow->addWidget(promptOverlayHost, 1, Qt::AlignLeft | Qt::AlignBottom);
+    dockRow->addWidget(leftRegion, 1, Qt::AlignLeft | Qt::AlignBottom);
     dockRow->addStretch(1);
-    dockRow->addWidget(leftRegion, 1, Qt::AlignRight | Qt::AlignBottom);
+    dockRow->addWidget(promptOverlayHost, 1, Qt::AlignRight | Qt::AlignBottom);
 
     // Pin the footer to just the compact prompt's height (adhoc #107): the dock
     // margins plus the six-line prompt and its controls. With the card padding
@@ -1773,6 +2164,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     dock->setFixedHeight(promptWrapper->sizeHint().height() + 8);
     dock->setAttribute(Qt::WA_StyledBackground, false);
     setLogOverlayExpanded(false);
+
+    // The status endpoint is edge-cached on the same one-minute cadence as its
+    // samples. Fetch once after the overlay exists; MainWindow's existing minute
+    // timer keeps it fresh after that.
+    QTimer::singleShot(1500, this, &MainWindow::refreshFooterWebsiteStatus);
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
@@ -1834,24 +2230,13 @@ void MainWindow::positionGlobalFooterOverlays()
     if (m_logActivityLights) {
         const bool fullLog =
             m_sectionStack && m_sectionStack->currentIndex() == 4;
-        int x = 0;
-        if (!fullLog) {
-            if (m_logOverlayExpanded && m_footerLeftRegion &&
-                m_footerLeftRegion->isVisible()) {
-                // Overlay the matrix inside the log's lower-right corner. The
-                // log remains truly right-aligned instead of being displaced
-                // left by a separate indicator column.
-                x = m_footerLeftRegion->geometry().right() -
-                    m_logActivityLights->width() + 1;
-            } else {
-                x = m_footerDock->width() - m_logActivityLights->width();
-            }
-        }
+        const bool showCompact = fullLog || !m_logOverlayExpanded;
         m_logActivityLights->move(
-            qMax(0, x),
+            0,
             qMax(0, m_footerDock->height() - m_logActivityLights->height()));
-        m_logActivityLights->show();
-        m_logActivityLights->raise();
+        m_logActivityLights->setVisible(showCompact);
+        if (showCompact)
+            m_logActivityLights->raise();
     }
     QRegion interactive;
     if (m_logActivityLights && m_logActivityLights->isVisible())
@@ -1861,6 +2246,104 @@ void MainWindow::positionGlobalFooterOverlays()
     if (m_promptOverlayHost && m_promptOverlayHost->isVisible())
         interactive += m_promptOverlayHost->geometry();
     m_footerDock->setMask(interactive);
+}
+
+// Apply the compact public /status projection to both footer icon surfaces.
+// The last array cell is commonly the still-in-progress current minute, marked
+// "future", so each system deliberately selects its newest completed sample.
+bool MainWindow::applyFooterWebsiteStatusPayload(const QJsonObject &payload)
+{
+    if (!payload.value(QStringLiteral("ok")).toBool())
+        return false;
+    const QJsonArray systems = payload.value(QStringLiteral("systems")).toArray();
+    if (systems.isEmpty())
+        return false;
+
+    const qint64 payloadNow = static_cast<qint64>(
+        payload.value(QStringLiteral("now")).toDouble(
+            QDateTime::currentMSecsSinceEpoch()));
+    QList<LogActivityLights::WebsiteStatus> statuses;
+    statuses.reserve(systems.size());
+    for (const QJsonValue &value : systems) {
+        const QJsonObject system = value.toObject();
+        LogActivityLights::WebsiteStatus result;
+        result.id = system.value(QStringLiteral("id")).toString().trimmed();
+        result.label = system.value(QStringLiteral("label")).toString().trimmed();
+        if (result.id.isEmpty())
+            continue;
+        if (result.label.isEmpty())
+            result.label = result.id;
+
+        const QJsonArray minutes = system.value(QStringLiteral("minutes")).toArray();
+        for (int i = minutes.size() - 1; i >= 0; --i) {
+            const QJsonObject minute = minutes.at(i).toObject();
+            const QString state =
+                minute.value(QStringLiteral("status")).toString().trimmed().toLower();
+            const qint64 minuteTs = static_cast<qint64>(
+                minute.value(QStringLiteral("minuteTs")).toDouble());
+            if (state.isEmpty() || state == QLatin1String("future") ||
+                (minuteTs > 0 && minuteTs > payloadNow))
+                continue;
+            result.status = state;
+            result.reason = minute.value(QStringLiteral("reason")).toString().trimmed();
+            result.minuteTs = minuteTs;
+            break;
+        }
+        if (result.status.isEmpty()) {
+            result.status = QStringLiteral("unknown");
+            result.reason = QStringLiteral("No completed status sample is available.");
+        } else if (result.status != QLatin1String("operational") &&
+                   result.status != QLatin1String("degraded") &&
+                   result.status != QLatin1String("down")) {
+            result.status = QStringLiteral("unknown");
+        }
+        statuses.append(result);
+    }
+    if (statuses.isEmpty())
+        return false;
+    if (m_logActivityLights)
+        m_logActivityLights->setWebsiteStatuses(statuses);
+    if (m_logActivityHeader)
+        m_logActivityHeader->setWebsiteStatuses(statuses);
+    positionGlobalFooterOverlays();
+    return true;
+}
+
+void MainWindow::refreshFooterWebsiteStatus()
+{
+    if (!m_networkAccess || !m_logActivityLights ||
+        m_footerWebsiteStatusInFlight)
+        return;
+
+    QUrl url = catalogApiUrl();
+    if (!url.isValid() || url.host().isEmpty())
+        return;
+    url.setPath(QStringLiteral("/api/status"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("view"), QStringLiteral("world"));
+    url.setQuery(query);
+    url.setFragment(QString());
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader("accept", "application/json");
+    request.setTransferTimeout(8000);
+    m_footerWebsiteStatusInFlight = true;
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        m_footerWebsiteStatusInFlight = false;
+        const QByteArray body = reply->readAll();
+        const bool transportOk = reply->error() == QNetworkReply::NoError;
+        reply->deleteLater();
+        if (!transportOk)
+            return; // Retain the last good minute through a transient miss.
+        QJsonParseError error;
+        const QJsonDocument document = QJsonDocument::fromJson(body, &error);
+        if (error.error != QJsonParseError::NoError || !document.isObject())
+            return;
+        applyFooterWebsiteStatusPayload(document.object());
+    });
 }
 
 // One-word tag for the strip: callers may hand over a phrase, the icon maps the
@@ -2803,7 +3286,8 @@ void MainWindow::refreshQuickAddAgentModelSelector()
                                               statusAndCountdown);
         QString toolTip = QStringLiteral("%1 · %2").arg(choice.label,
                                                         choice.agentName);
-        const QString identity = agentCliIdentityLabel(choice.provider);
+        const QString identity = agentCliIdentityLabel(
+            choice.provider, activeAgentAccount(choice.provider).configDir);
         if (!identity.isEmpty())
             toolTip = QStringLiteral("Account: %1\n%2").arg(identity, toolTip);
         else if (!chosenIdentity.isEmpty())
@@ -4076,8 +4560,6 @@ void MainWindow::updateFooterDiagnostics()
         m_fdPressureLastCheckMs = fdNow;
         checkFileDescriptorPressure();
     }
-    if (!m_footerDiagnostics)
-        return;
     const qint64 statsNow = QDateTime::currentMSecsSinceEpoch();
     if (statsNow - m_repoStatsLastRefreshMs >= 60000) {
         m_repoStatsLastRefreshMs = statsNow;
@@ -4192,19 +4674,21 @@ void MainWindow::updateFooterDiagnostics()
                 : QStringLiteral("Drive space in use"));
     }
 
-    // The diagnostics indicator rides beside the CPU/MEM/SWAP/DISK sparklines now
-    // (adhoc #145). Crisp octicons replace the old 🖥/⚠ emoji: a muted monitor
-    // while the UI has stayed smooth, and an amber alert plus the running count
-    // once a stall has been recorded so it reads as a real warning.
-    if (m_stallCount > 0) {
-        m_footerDiagnostics->setIcon(
-            themedOcticon(QStringLiteral("alert"), QColor("#d29922"), 14));
-        m_footerDiagnostics->setIconSize(QSize(14, 14));
-        m_footerDiagnostics->setText(QStringLiteral(" %1").arg(m_stallCount));
-    } else {
-        setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
-        m_footerDiagnostics->setText(QString());
-    }
+    // STALL is now one of the bottom-left log icons. Keep its diagnostic action
+    // discoverable there while the log activity widget itself owns colour,
+    // session count and repeat-event blinking.
+    const QString stallTip =
+        m_stallCount > 0
+            ? QStringLiteral("%1 UI stall%2 recorded this session. Click to draft "
+                             "a fix-it prompt; right-click for captured backtraces.")
+                  .arg(m_stallCount)
+                  .arg(m_stallCount == 1 ? QString() : QStringLiteral("s"))
+            : QStringLiteral("No UI stalls recorded this session. Click for UI-stall "
+                             "diagnostics; right-click for captured backtraces.");
+    if (m_logActivityLights)
+        m_logActivityLights->setStallToolTip(stallTip);
+    if (m_logActivityHeader)
+        m_logActivityHeader->setStallToolTip(stallTip);
 }
 
 // Watch how close this process is to its file-descriptor cap. Running out is a
@@ -4390,15 +4874,6 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
     m_stallLog.append(entry);
     while (m_stallLog.size() > 100)
         m_stallLog.removeFirst();
-    if (m_footerDiagnostics)
-        m_footerDiagnostics->setToolTip(
-            QStringLiteral("Last UI stall: ~%1 ms at %2%3 (%4 logged). Click to draft a "
-                           "fix-it prompt in the composer; right-click for details.")
-                .arg(peakMs)
-                .arg(when)
-                .arg(blockingCall.isEmpty() ? QString()
-                                            : QStringLiteral(" (%1)").arg(blockingCall))
-                .arg(m_stallCount));
     updateFooterDiagnostics();
     maybeAutoFileStallAgent(peakMs, backtrace);
 }
@@ -4493,12 +4968,10 @@ void MainWindow::clearStallLog()
     m_autoFiledStallSignatures.clear();
     if (!m_stallLogPath.isEmpty())
         QFile::remove(m_stallLogPath);
-    if (m_footerDiagnostics)
-        m_footerDiagnostics->setToolTip(
-            QStringLiteral("UI-stall diagnostics: any freezes long enough to trip the "
-                           "Wait/Kill prompt land here. Click to draft a fix-it prompt "
-                           "in the composer; right-click for the recorded stall "
-                           "details."));
+    if (m_logActivityLights)
+        m_logActivityLights->resetCategory(QStringLiteral("STALL"));
+    if (m_logActivityHeader)
+        m_logActivityHeader->resetCategory(QStringLiteral("STALL"));
     updateFooterDiagnostics();
 }
 
@@ -5681,6 +6154,10 @@ QWidget *MainWindow::buildLogSection()
         m_logFilterEmptyNotice = false;
         if (m_settingsLog)
             m_settingsLog->clear();
+        if (m_logActivityLights)
+            m_logActivityLights->reset();
+        if (m_logActivityHeader)
+            m_logActivityHeader->reset();
         saveNetworkLog();          // truncate the on-disk log too
         rebuildLogFilterButtons(); // drop the category chips, re-check "All"
     });
@@ -6055,6 +6532,10 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *tokenUsage = new TokenUsageMiniChart(
         QStringLiteral("Claude Code usage"), /*remainingMode=*/false,
         /*windows=*/3);
+    tokenUsage->setObjectName(QStringLiteral("claudeAccountUsageButton"));
+    tokenUsage->setAccessibleName(QStringLiteral("Claude Code accounts and usage"));
+    tokenUsage->setToolTip(
+        QStringLiteral("Claude Code accounts and usage\nClick to manage accounts."));
     m_navTokenUsage = tokenUsage;
     // This hover is also the only place that re-fetches the live claude-code
     // model list (GET /v1/models, adhoc #41) — everywhere else that touches a
@@ -6063,6 +6544,9 @@ QWidget *MainWindow::buildBreadcrumb()
     tokenUsage->onHover = [this] {
         refreshClaudeCodeUsage(/*fromHover=*/true);
         refreshClaudeModelCombo();
+    };
+    tokenUsage->onClick = [this](const QPoint &position) {
+        showAgentAccountMenu(QStringLiteral("claude-code"), position);
     };
     {
         QSettings settings;
@@ -6097,12 +6581,17 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *codexUsage = new TokenUsageMiniChart(
         QStringLiteral("Codex usage remaining"), /*remainingMode=*/true,
         /*windows=*/2);
+    codexUsage->setObjectName(QStringLiteral("codexAccountUsageButton"));
+    codexUsage->setAccessibleName(QStringLiteral("Codex accounts and usage"));
     m_navCodexUsage = codexUsage;
     // The Codex figures are computed locally, so the hover always "succeeds";
     // the green box still confirms the reading is fresh (adhoc #96).
     codexUsage->onHover = [this] {
         refreshCodexUsageRemaining();
         flashUsageChart(m_navCodexUsage, true);
+    };
+    codexUsage->onClick = [this](const QPoint &position) {
+        showAgentAccountMenu(QStringLiteral("codex"), position);
     };
     refreshCodexUsageRemaining();
     // Re-arm any persisted exhausted-window reminders after the shell exists.
@@ -6710,30 +7199,6 @@ QWidget *MainWindow::buildBreadcrumb()
         resize(1280, 720);
     });
 
-    // UI-stall indicator (adhoc #117/#145): an octicon that sits beside the
-    // CPU/MEM/SWAP/DISK sparklines on the window-chrome line and shows the count of
-    // detected UI stalls. Click drafts a "fix these stalls" prompt in the
-    // composer (adhoc #73); right-click still opens the read-only details.
-    m_footerDiagnostics = new QPushButton;
-    m_footerDiagnostics->setObjectName("footerDiagnostics");
-    m_footerDiagnostics->setFlat(true);
-    m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
-    m_footerDiagnostics->setToolTip(
-        "UI-stall diagnostics: any freezes long enough to trip the Wait/Kill "
-        "prompt land here. Click to draft a fix-it prompt in the composer; "
-        "right-click for the recorded stall details.");
-    m_footerDiagnostics->setStyleSheet(
-        "QPushButton#footerDiagnostics{color:#d29922;border:none;background:transparent;"
-        "font-size:10px;padding:0 3px;spacing:2px;}"
-        "QPushButton#footerDiagnostics:hover{color:#e6edf3;}");
-    m_footerDiagnostics->setFixedHeight(18);
-    setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
-    connect(m_footerDiagnostics, &QPushButton::clicked, this,
-            &MainWindow::sendStallReportToComposer);
-    m_footerDiagnostics->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(m_footerDiagnostics, &QWidget::customContextMenuRequested, this,
-            [this](const QPoint &) { showDiagnosticsDialog(); });
-
     // One compact four-quadrant chart on the chrome line: CPU/memory above
     // swap/disk. It receives one sample per second from updateFooterDiagnostics.
     // CPU, swap and disk open diagnostics; memory opens the culprit list.
@@ -6810,16 +7275,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // Live CPU/MEM/SWAP/DISK sparklines, combined into one chart on the
     // window-chrome line next to the minimize/maximize/close buttons.
     chromeRow->addWidget(resourceChart);
-    // Compact diagnostics stack: the stall indicator stays high on the chrome
-    // line, its bare version number sits directly beneath it, and the opt-in
-    // restart action is immediately to the right.
-    auto *diagnosticsStack = new QWidget;
-    auto *diagnosticsLayout = new QVBoxLayout(diagnosticsStack);
-    diagnosticsLayout->setContentsMargins(0, 1, 0, 1);
-    diagnosticsLayout->setSpacing(0);
-    diagnosticsLayout->addWidget(m_footerDiagnostics, 0, Qt::AlignHCenter);
-    diagnosticsLayout->addWidget(appVersionLabel, 0, Qt::AlignHCenter);
-    chromeRow->addWidget(diagnosticsStack, 0, Qt::AlignVCenter);
+    // UI stalls now use the STALL category icon inside the bottom-left log
+    // control, where its count and blink have the same language as every other
+    // event. The chrome keeps only the version and opt-in restart action.
+    chromeRow->addWidget(appVersionLabel, 0, Qt::AlignVCenter);
     chromeRow->addWidget(m_navRebuildButton, 0, Qt::AlignVCenter);
     chromeRow->addSpacing(8);
 
@@ -11824,9 +12283,13 @@ forkmesh::control::AgentCliCredentials MainWindow::localAgentCliCredentials()
         return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
     };
     credentials.claudeCredentials = readFile(
-        QDir::homePath() + QStringLiteral("/.claude/.credentials.json"));
+        agentAccountCredentialPath(
+            QStringLiteral("claude-code"),
+            activeAgentAccount(QStringLiteral("claude-code")).configDir));
     credentials.codexAuth =
-        readFile(QDir::homePath() + QStringLiteral("/.codex/auth.json"));
+        readFile(agentAccountCredentialPath(
+            QStringLiteral("codex"),
+            activeAgentAccount(QStringLiteral("codex")).configDir));
     // Only fall back to an API key for the provider whose CLI login we could
     // not copy: Claude Code warns that auth "may not work as expected" when an
     // ANTHROPIC_API_KEY sits next to a logged-in session, and Codex would

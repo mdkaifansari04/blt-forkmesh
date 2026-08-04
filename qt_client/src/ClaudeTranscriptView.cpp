@@ -1366,9 +1366,22 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
         // utilization arrives either as a 0..1 fraction or an already-scaled
         // 0..100 percentage depending on the CLI build; scale a fraction but pass
         // a percentage through so the gauge isn't 100x too high (adhoc #47).
-        const double u = info.value(QStringLiteral("utilization")).toDouble();
-        const int pct = qRound(u <= 1.0 ? u * 100.0 : u);
-        const QString rlt = info.value(QStringLiteral("rateLimitType")).toString();
+        QJsonValue utilization = info.value(QStringLiteral("utilization"));
+        if (utilization.isUndefined())
+            utilization = info.value(QStringLiteral("utilisation"));
+        bool valid = utilization.isDouble();
+        double u = utilization.toDouble();
+        if (!valid && utilization.isString())
+            u = utilization.toString().toDouble(&valid);
+        if (!valid)
+            return;
+        const int pct = qBound(0, qRound(u >= 0.0 && u <= 1.0 ? u * 100.0 : u),
+                               100);
+        QString rlt =
+            info.value(QStringLiteral("rateLimitType")).toString().toLower();
+        if (rlt.isEmpty())
+            rlt = info.value(QStringLiteral("rate_limit_type"))
+                      .toString().toLower();
         // The premium per-model weekly window (adhoc #96) is its own bar, so it
         // must be recognised before the plain weekly test below — its type name
         // carries "seven_day" too.

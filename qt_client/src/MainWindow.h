@@ -441,6 +441,10 @@ public:
     {
         setLogOverlayExpanded(expanded);
     }
+    bool testApplyFooterWebsiteStatusPayload(const QJsonObject &payload)
+    {
+        return applyFooterWebsiteStatusPayload(payload);
+    }
     void testShowHostsSection() { showSection(7); }
     void testSetDirectoryUserNodes(const QString &user,
                                    const QStringList &nodes);
@@ -977,6 +981,23 @@ public:
     {
         return m_navCodexUsage ? m_navCodexUsage->toolTip() : QString();
     }
+    QString testClaudeUsageToolTip() const
+    {
+        return m_navTokenUsage ? m_navTokenUsage->toolTip() : QString();
+    }
+    void testShowAgentAccountMenu(const QString &provider)
+    {
+        showAgentAccountMenu(provider, QPoint(20, 20));
+    }
+    void testApplyClaudeUsageResponse(const QJsonObject &response)
+    {
+        applyClaudeUsageResponse(response);
+    }
+    void testSelectAgentAccount(const QString &provider,
+                                const QString &accountId)
+    {
+        selectAgentAccount(provider, accountId);
+    }
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -1296,6 +1317,10 @@ private:
     void showRelayMenu();          // searchable dropdown to switch/add relays
     void updateRelaySwitcher();    // refresh top-bar relay icon / domain / count
     void probeRelayLatency();      // measure round-trip to the active relay (radar)
+    // The compact footer's right-hand status dots: fetch the public status
+    // projection once a minute and retain the newest completed minute per row.
+    void refreshFooterWebsiteStatus();
+    bool applyFooterWebsiteStatusPayload(const QJsonObject &payload);
     // Room-socket keepalive RTT (ChatBackend::latencySampled): feeds the radar
     // for free every ~25s, so probeRelayLatency skips its HTTP GET while a
     // fresh sample exists and only probes when the socket is down.
@@ -2779,6 +2804,18 @@ private:
     // asks for the green/red result box on the chart (adhoc #96) — background
     // callers leave it off so the box only ever answers a hover.
     void refreshClaudeCodeUsage(bool fromHover = false);
+    void applyClaudeUsageResponse(const QJsonObject &response);
+    // Click menu for the prompt's Codex/Claude usage meters. It combines
+    // account-scoped limits, active-account selection and provider-owned login,
+    // logout and system-terminal entry points.
+    void showAgentAccountMenu(const QString &provider,
+                              const QPoint &globalPosition);
+    void selectAgentAccount(const QString &provider, const QString &accountId);
+    void addAgentAccount(const QString &provider);
+    void launchAgentSystemTerminal(const QString &provider,
+                                   const QString &mode = QStringLiteral("agent"));
+    QStringList agentAccountUsageLines(const QString &provider,
+                                       const QString &accountId) const;
     // Flash the green (refreshed) / red (refresh failed) box on one of the
     // top-bar usage charts. `chart` is a TokenUsageMiniChart* held as QWidget*.
     void flashUsageChart(QWidget *chart, bool ok);
@@ -5314,8 +5351,10 @@ private:
     QWidget *m_globalOverlayHost = nullptr;
     QWidget *m_promptOverlayHost = nullptr;
     forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
+    forkmesh::ui::LogActivityLights *m_logActivityHeader = nullptr;
     bool m_logOverlayExpanded = false;
     bool m_promptOverlayCollapsed = false;
+    bool m_footerWebsiteStatusInFlight = false;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
     // live log and the prompt). One chip per open *kind* of work, not per ticket:
@@ -6029,8 +6068,6 @@ private:
     // Right of the status bar: where the running executable lives on disk, so
     // it is obvious which build/checkout the open window came from.
     QLabel *m_statusAppPath = nullptr;
-    // Footer diagnostics: live CPU/memory readout + UI-stall watchdog state.
-    QPushButton *m_footerDiagnostics = nullptr;
     // Live one-per-second moving sparklines for CPU, host memory, swap and disk
     // usage (adhoc #17), combined into four quadrants on the chrome line. Held
     // as QWidget* and poked via static_cast since the compact chart widget lives
