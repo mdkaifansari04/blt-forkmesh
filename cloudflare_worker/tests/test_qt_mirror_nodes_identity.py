@@ -32,7 +32,7 @@ def test_mirror_nodes_table_has_separate_owner_column():
     )
 
     assert "MirrorNodeColOwner" in source
-    assert '{"Node", "Owner", "Latest commit"' in build
+    assert '{"Node", "Sync", "Owner", "Latest commit"' in build
     assert "new QTableWidget(0, MirrorNodeColumnCount)" in build
     assert "m_mirrorNodesTable->setItem(row, MirrorNodeColOwner" in load
     assert 'm.value(QStringLiteral("ownerUser"))' in load
@@ -153,3 +153,29 @@ def test_mirror_nodes_can_request_live_peer_refresh():
     assert "&MainWindow::onMirrorRefreshRequested" in settings
     assert "void requestMirrorNodesRefresh();" in window_h
     assert "void onMirrorRefreshRequested" in window_h
+
+
+def test_mirror_nodes_header_labels_cover_every_column():
+    # adhoc #1422: the Sync now button column (adhoc #103) was added to the
+    # enum without a header label, so setHorizontalHeaderLabels shifted every
+    # remaining label one column left ("Owner" over the buttons) and Qt filled
+    # the last header with its numeric "26" placeholder. One label per column.
+    source = RELEASES.read_text(encoding="utf-8")
+    enum = _body(source, "enum MirrorNodeColumn {", "};")
+    columns = [
+        line.strip().rstrip(",").split(" ")[0]
+        for line in enum.splitlines()[1:]
+        if line.strip().startswith("MirrorNodeCol")
+        and not line.strip().startswith("MirrorNodeColumnCount")
+    ]
+    assert columns[0].startswith("MirrorNodeColNode")
+    labels = _body(
+        source,
+        "m_mirrorNodesTable->setHorizontalHeaderLabels(",
+        "m_mirrorNodesTable->verticalHeader()",
+    )
+    assert labels.count('"') // 2 == len(columns), (
+        f"{len(columns)} columns but {labels.count(chr(34)) // 2} header labels"
+    )
+    assert '"Node", "Sync", "Owner"' in labels
+    assert labels.rstrip().rstrip(";").rstrip().endswith('"Reachability"})')
