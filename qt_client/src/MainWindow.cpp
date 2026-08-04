@@ -643,6 +643,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // and open (adhoc #44). Roster-derived, so this costs no git/network.
     connect(m_relayLatencyTimer, &QTimer::timeout, this,
             &MainWindow::refreshNodeDotMatrix);
+    // The footer status dots use the same minute cadence as the public status
+    // sampler and its edge cache. This is a single compact `view=world` read,
+    // independent of whether the websocket supplied a fresh latency sample.
+    connect(m_relayLatencyTimer, &QTimer::timeout, this,
+            &MainWindow::refreshFooterWebsiteStatus);
     m_relayLatencyTimer->start(60 * 1000);
     logStartup(QStringLiteral("  timer armed: relay latency and uptime every 60000ms"));
     QTimer::singleShot(2500, this, [this] {

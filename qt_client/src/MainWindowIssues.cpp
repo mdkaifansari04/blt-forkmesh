@@ -4344,11 +4344,12 @@ void MainWindow::quickAddIssue()
     if (!m_issueQuickAdd)
         return;
     const QString title = m_issueQuickAdd->toPlainText().trimmed();
-    if (title.isEmpty())
+    if (title.isEmpty() && m_quickAddImages.isEmpty())
         return;
     // Remember this prompt so Up can recall it later (adhoc #200). Recording here,
     // before the field is cleared, covers every send path below.
-    recordQuickAddHistory(title);
+    if (!title.isEmpty())
+        recordQuickAddHistory(title);
 
     // "No issue" mode (issue #299): don't create an issue at all — hand the typed
     // text straight to a coding agent as its prompt, like the Agents-tab composer.
@@ -4363,6 +4364,8 @@ void MainWindow::quickAddIssue()
     // answers the prompt on the relay and the reply is shown (adhoc #1407). It
     // has no checkout, so it must be handled before the agent hand-off below.
     if (agentIsCloudflareAiProvider(quickAddProvider)) {
+        if (title.isEmpty())
+            return;
         const QString model = selectedModelComboValue(m_quickAddClaudeModel);
         // Workers AI text models take no images here, so say what was dropped
         // instead of silently discarding the attachments.
@@ -4382,6 +4385,7 @@ void MainWindow::quickAddIssue()
                                   ? selectedModelComboValue(m_quickAddClaudeModel)
                                   : QString();
         const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
+        const QStringList images = m_quickAddImages;
         // Hand any attached images to the agent the same way the new-agent
         // composer does: an "Attached image: <path>" line per file (issue #79).
         QString prompt = title;
@@ -4415,12 +4419,16 @@ void MainWindow::quickAddIssue()
             // Keep the durable log entry, but fold the confirmation into the
             // prompt bubble so one send does not produce two stacked cards.
             logSystem(startedMessage);
-            showPromptBubble(title, agentSessionId, startedMessage);
+            showPromptBubble(prompt, agentSessionId, startedMessage, images);
         }
         return;
     }
 
     IssueStore store = issueStoreForCurrentRepo();
+    if (title.isEmpty()) {
+        flashMessage(QStringLiteral("Add prompt text before creating an issue."), true);
+        return;
+    }
     if (!store.canWrite()) {
         // Mirror node: send the new issue to the source of truth's inbox. The
         // agent hand-off below needs a local issue, so it stays owner-only.
@@ -4429,12 +4437,13 @@ void MainWindow::quickAddIssue()
             return;
         }
         QPointer<QPlainTextEdit> quickAddGuard(m_issueQuickAdd);
+        const QStringList images = m_quickAddImages;
         quickAddGuard->setEnabled(false);
         // Any queued images ride along as the new issue's attachments, same as
         // the canWrite path below (issue #79).
         const bool started = submitNewIssueToInbox(
             title, QString(), {}, QString(), 0, {}, m_quickAddImages, {},
-            [this, quickAddGuard, title](bool ok, const QString &) {
+            [this, quickAddGuard, title, images](bool ok, const QString &) {
                 // submitNewIssueToInbox already flashes the failure toast; on
                 // success, clear the box now that the maintainer actually has
                 // it — clearing it up front (the old behavior) lost the draft
@@ -4445,7 +4454,7 @@ void MainWindow::quickAddIssue()
                 if (ok) {
                     quickAddGuard->clear();
                     clearQuickAddImages();
-                    showPromptBubble(title);
+                    showPromptBubble(title, -1, QString(), images);
                     setIssueInlineNotice("Your signed issue was sent to the "
                                          "maintainer's inbox. It appears once "
                                          "they sync it.");
@@ -4467,9 +4476,10 @@ void MainWindow::quickAddIssue()
                              true);
         return;
     }
+    const QStringList images = m_quickAddImages;
     m_issueQuickAdd->clear();
     clearQuickAddImages();
-    showPromptBubble(title);
+    showPromptBubble(title, -1, QString(), images);
     m_currentIssueNumber = number;
     appendCreatedIssue(store, created);
     propagateRepoUpdate(issuesRepoIndex());
@@ -5304,6 +5314,7 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         obj == m_topMessageContainer || obj == m_topMessage ||
         obj == m_topMessageScroll || obj == m_topMessageActions ||
         obj == m_topMessageMeta || obj == m_topMessageTypeBadge ||
+        obj == m_topMessageActionOutput ||
         obj == m_topMessageCopy ||
         obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
         (m_topMessageScroll && obj == m_topMessageScroll->viewport());
@@ -5353,8 +5364,8 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (event->type() == QEvent::Resize && m_scmDiff &&
         obj == m_scmDiff->viewport())
         layoutScmStickyHeader();
-    // The Git prompt is a lower-right overlay while that workspace is open, so
-    // follow the detail pane rather than reserving height beneath the graph.
+    // The Git prompt is a lower-left overlay while that workspace is open, so
+    // follow the workspace rather than reserving height beneath the graph.
     if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
         obj == m_commitsStack)
         positionGitPromptOverlay();
