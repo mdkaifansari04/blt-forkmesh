@@ -3787,6 +3787,29 @@ inline void selectQuickAddAgentProvider(QComboBox *combo)
 // the closed control has no room to say so (adhoc #1204).
 constexpr int kAgentChoiceDescriptionRole = Qt::UserRole + 7;
 
+// How the last run on this choice ended, for the ✓ / ✗ the model picker's rows
+// wear (adhoc #1445). The row carries the state rather than a colour: the label
+// text keeps the theme's own colour and AgentChoiceDescriptionDelegate paints
+// just the trailing glyph green or red, so a working model reads as good news at
+// a glance instead of as one more grey mark.
+constexpr int kAgentChoiceStatusRole = Qt::UserRole + 8;
+inline const QString kAgentChoiceStatusOk = QStringLiteral("ok");
+inline const QString kAgentChoiceStatusFailed = QStringLiteral("failed");
+
+inline QString agentChoiceStatusGlyph(const QString &state)
+{
+    if (state == kAgentChoiceStatusOk)
+        return QString::fromUtf8("\xE2\x9C\x93"); // ✓
+    if (state == kAgentChoiceStatusFailed)
+        return QString::fromUtf8("\xE2\x9C\x97"); // ✗
+    return QString();
+}
+
+inline QColor agentChoiceStatusColour(const QString &state)
+{
+    return state == kAgentChoiceStatusOk ? QColor("#3fb950") : QColor("#f85149");
+}
+
 // A QComboBox whose popup always opens tall enough to show every item, with no
 // up/down scroll-arrow buttons (issue #348). Once a Qt Style Sheet is applied
 // app-wide (Theme::kStyleSheet, set in MainWindow's ctor), Qt's CSS engine
@@ -3974,6 +3997,11 @@ private:
 // and leaves every other row to the default delegate. The description is drawn
 // in the row's own text colour at reduced alpha so it reads as secondary in both
 // themes and stays legible on the selected (filled) row.
+//
+// A row carrying kAgentChoiceStatusRole ends in the ✓ / ✗ of its last run: the
+// label is painted normally without it and the glyph is then re-drawn in green or
+// red at the same spot, which is the only way to colour part of an item's text
+// (adhoc #1445).
 class AgentChoiceDescriptionDelegate : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
@@ -3994,7 +4022,7 @@ protected:
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
     {
-        QStyledItemDelegate::paint(painter, option, index);
+        paintWithStatusGlyph(painter, option, index);
         const QString description =
             index.data(kAgentChoiceDescriptionRole).toString();
         if (description.isEmpty())
@@ -4020,6 +4048,39 @@ protected:
     }
 
 private:
+    // The row exactly as the default delegate would draw it, except that a
+    // trailing outcome glyph is painted in its own colour: the label keeps the
+    // theme's text colour (and the selected row's highlight colour), so only the
+    // ✓ / ✗ carries the "did this work?" signal.
+    void paintWithStatusGlyph(QPainter *painter,
+                              const QStyleOptionViewItem &option,
+                              const QModelIndex &index) const
+    {
+        const QString state = index.data(kAgentChoiceStatusRole).toString();
+        const QString glyph = agentChoiceStatusGlyph(state);
+        QStyleOptionViewItem styled(option);
+        initStyleOption(&styled, index);
+        if (glyph.isEmpty() || !styled.text.endsWith(glyph)) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+        const QWidget *widget = styled.widget;
+        QStyle *style = widget ? widget->style() : QApplication::style();
+        QStyleOptionViewItem plain(styled);
+        plain.text.chop(glyph.size()); // the separating space stays put
+        style->drawControl(QStyle::CE_ItemViewItem, &plain, painter, widget);
+        QRect glyphRect =
+            style->subElementRect(QStyle::SE_ItemViewItemText, &styled, widget);
+        glyphRect.setLeft(glyphRect.left() +
+                          styled.fontMetrics.horizontalAdvance(plain.text));
+        if (glyphRect.width() <= 0)
+            return;
+        painter->save();
+        painter->setPen(agentChoiceStatusColour(state));
+        painter->drawText(glyphRect, Qt::AlignLeft | Qt::AlignVCenter, glyph);
+        painter->restore();
+    }
+
     static constexpr int kGap = 12;
 };
 
