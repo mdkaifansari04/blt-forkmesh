@@ -392,6 +392,15 @@ int main(int argc, char *argv[])
     const QString testApplicationName =
         QStringLiteral("WindowResize-") + QFileInfo(dataDir.path()).fileName();
     app.setApplicationName(testApplicationName);
+    const QString darkTheme = QString::fromLatin1(Theme::styleSheetForDark(true));
+    const QString lightTheme = QString::fromLatin1(Theme::styleSheetForDark(false));
+    check(darkTheme.contains(QStringLiteral(
+              "QToolTip {\n    background-color: #161b22; color: #e6edf3;")) &&
+              lightTheme.contains(QStringLiteral(
+              "QToolTip {\n    background-color: #ffffff; color: #1f2328;")) &&
+              lightTheme.contains(QStringLiteral(
+              "border: 1px solid #d0d7de; padding: 4px;")),
+          QStringLiteral("tooltips use the active app theme's canvas, text, and border"));
     const bool fleetBinaryInstallOnly =
         app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
     const bool hostsLayoutOnly =
@@ -2711,21 +2720,24 @@ int main(int argc, char *argv[])
               QStringLiteral("a branch diff gives the Git rail exclusive ownership: "
                              "no Code chrome and no visible diff outside Git"));
         check(window.testGitPromptFloatsBottomRight(),
-              QStringLiteral("Git floats only its prompt at the lower-right, "
-                             "leaving the graph's left side at full height"));
-        // Returning through the Code route must reattach and reveal the footer
-        // composer. Reparenting a hidden QWidget does not make it visible again.
+              QStringLiteral("Git keeps the global prompt overlay at the "
+                             "lower-right without reserving footer height"));
+        // Returning through the Code route keeps the same global prompt overlay;
+        // it is never reparented into a page-specific footer.
         window.testClickRepoDetailTab(0);
         QApplication::processEvents();
         QFrame *promptWrapper = window.findChild<QFrame *>(
             QStringLiteral("promptWrapper"));
         QWidget *footerDock = window.findChild<QWidget *>(
             QStringLiteral("logDock"));
-        check(promptWrapper && footerDock &&
-                  promptWrapper->parentWidget() == footerDock &&
+        QWidget *promptOverlayHost = window.findChild<QWidget *>(
+            QStringLiteral("promptOverlayHost"));
+        check(promptWrapper && footerDock && promptOverlayHost &&
+                  promptWrapper->parentWidget() == promptOverlayHost &&
+                  footerDock->isVisibleTo(&window) &&
                   promptWrapper->isVisibleTo(&window),
-              QStringLiteral("returning from Git to Code restores the visible "
-                             "footer prompt"));
+              QStringLiteral("Code and Git share the same visible global prompt "
+                             "overlay"));
 
         // adhoc #420: following a branch link must land on the branch straight
         // away. The panel's git reads run on a worker thread now, so the
@@ -3005,6 +3017,11 @@ int main(int argc, char *argv[])
         // The rail's Git entry is the stable home destination: it always clears
         // a branch/worktree comparison and returns to main.
         window.testClickRailGitButton();
+        check(window.testSourceControlDiffText().contains(
+                  QStringLiteral("Loading changes on main")),
+              QString("the rail clears the previous branch/commit diff before "
+                      "refreshing main (pane = \"%1\")")
+                  .arg(window.testSourceControlDiffText().left(80).simplified()));
         QApplication::processEvents();
         check(window.testBrowsedBranch() == QStringLiteral("main") &&
                   window.testCommitWorkspacePage() == 0 &&
@@ -4371,6 +4388,15 @@ int main(int argc, char *argv[])
                       "health badges "
                       "(adhoc #403, got %1)")
                   .arg(window.testAgentStatusCellBadges(2910, chip)));
+        const QString agentTip = window.testAgentStatusCellToolTip(2910, chip);
+        check(agentTip.startsWith(QStringLiteral("<table")) &&
+                  agentTip.contains(QStringLiteral("Agent #2910")) &&
+                  agentTip.contains(QStringLiteral("7 files changed")) &&
+                  agentTip.contains(QStringLiteral("2 uncommitted changes")) &&
+                  agentTip.contains(QStringLiteral("4 ahead")) &&
+                  agentTip.count(QStringLiteral("<tr>")) ==
+                      agentTip.count(QStringLiteral("<img ")),
+              QStringLiteral("every line in an agent hover card has an icon"));
         // A cleaned-up session with no patch yet leaves every badge unknown, so
         // the chip falls back to the plain branch button.
         check(window.testAgentStatusCellBadges(2910, AgentDiffStat()) ==
@@ -4512,6 +4538,41 @@ int main(int argc, char *argv[])
                   739, QStringLiteral("agent/adhoc-7391-pr-link")) == 7391,
               QStringLiteral("PR lookup is repository-scoped by number and "
                              "branch"));
+        check(window.testAgentPrButtonText(7391) ==
+                  QStringLiteral("View PR #739"),
+              QStringLiteral("an Agent's Create PR action becomes a numbered "
+                             "link to the created pull request"));
+
+        check(window.testRepoRequiresPeerApproval(),
+              QStringLiteral("repositories require peer approval by default"));
+        window.testSetRepoRequirePeerApproval(false);
+        check(!window.testRepoRequiresPeerApproval(),
+              QStringLiteral("repository settings can make peer approval "
+                             "optional"));
+        bool savedOptionalPolicy = false;
+        {
+            QSettings settings;
+            const int count = settings.beginReadArray(
+                QStringLiteral("repositories/items"));
+            for (int i = 0; i < count; ++i) {
+                settings.setArrayIndex(i);
+                if (settings.value(QStringLiteral("owner")).toString() ==
+                        QLatin1String("me") &&
+                    settings.value(QStringLiteral("name")).toString() ==
+                        QLatin1String("r")) {
+                    savedOptionalPolicy =
+                        !settings.value(QStringLiteral("requirePeerApproval"),
+                                        true)
+                             .toBool();
+                    break;
+                }
+            }
+            settings.endArray();
+        }
+        check(savedOptionalPolicy,
+              QStringLiteral("the optional peer-approval policy persists on "
+                             "the repository record"));
+        window.testSetRepoRequirePeerApproval(true);
 
         check(window.testBindAgentSessionsToPull(
                   740, QStringLiteral("manual/pr-740")) &&

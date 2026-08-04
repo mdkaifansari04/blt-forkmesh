@@ -4114,10 +4114,13 @@ void MainWindow::updatePullActionState()
         }
     }
     const bool mergeable = writable && have && open;
-    // An unresolved "request changes" review holds the merge: a human reviewer's
-    // objection gates the button until it's approved (or the review cleared) —
-    // just as a failed check would, but for review state (issue #359).
-    const bool reviewBlocks = !independentReviewReady;
+    const bool requirePeerApproval =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()
+            ? m_repositories.at(m_repoDetailIndex).requirePeerApproval
+            : true;
+    // When the repository requires peer review, an unresolved "request changes"
+    // review holds the merge until it is approved or cleared (issue #359).
+    const bool reviewBlocks = requirePeerApproval && !independentReviewReady;
     bool behind = false;
     if (mergeable)
         store.isBranchBehindBase(m_currentPullNumber, &behind);
@@ -4151,17 +4154,23 @@ void MainWindow::updatePullActionState()
                 "<span style='color:#8b949e'>Checking for conflicts\xE2\x80\xA6"
                 "</span>"));
             m_pullMergeStatus->show();
-        } else if (independentChangesRequested) {
+        } else if (requirePeerApproval && independentChangesRequested) {
             m_pullMergeStatus->setText(QString::fromUtf8(
                 "<span style='color:#f85149'>\xE2\x9A\xA0 Changes requested "
                 "\xE2\x80\x94 a reviewer is blocking this merge. Resolve their "
                 "review (approve, or clear the request) to merge.</span>"));
             m_pullMergeStatus->show();
-        } else if (!independentReviewReady) {
+        } else if (requirePeerApproval && !independentReviewReady) {
             m_pullMergeStatus->setText(QString::fromUtf8(
                 "<span style='color:#d29922'>Peer approval required "
                 "\xE2\x80\x94 at least one reviewer other than the pull-request "
                 "author must approve before merge.</span>"));
+            m_pullMergeStatus->show();
+        } else if (mergeClean && !requirePeerApproval) {
+            m_pullMergeStatus->setText(QString::fromUtf8(
+                "<span style='color:#3fb950'>\xE2\x9C\x93 No conflicts \xE2\x80\x94 "
+                "peer approval is optional for this repository; ready to "
+                "merge.</span>"));
             m_pullMergeStatus->show();
         } else if (mergeClean) {
             m_pullMergeStatus->setText(QString::fromUtf8(
@@ -4751,7 +4760,11 @@ void MainWindow::mergeCurrentPull()
     }
     if (!found)
         return;
-    if (!current.independentReviewGateSatisfied()) {
+    const bool requirePeerApproval =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()
+            ? m_repositories.at(m_repoDetailIndex).requirePeerApproval
+            : true;
+    if (requirePeerApproval && !current.independentReviewGateSatisfied()) {
         QMessageBox::warning(
             this, "Merge pull request",
             current.hasIndependentChangesRequested()
@@ -4772,7 +4785,7 @@ void MainWindow::mergeCurrentPull()
         return;
     PullStore store = pullStoreForCurrentRepo();
     QString error;
-    if (!store.mergePull(m_currentPullNumber, &error)) {
+    if (!store.mergePull(m_currentPullNumber, &error, requirePeerApproval)) {
         QMessageBox::warning(this, "Merge pull request", error);
         return;
     }
@@ -7654,7 +7667,11 @@ void MainWindow::mergeAndDeleteCurrentPull()
     }
     if (!found)
         return;
-    if (!current.independentReviewGateSatisfied()) {
+    const bool requirePeerApproval =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()
+            ? m_repositories.at(m_repoDetailIndex).requirePeerApproval
+            : true;
+    if (requirePeerApproval && !current.independentReviewGateSatisfied()) {
         QMessageBox::warning(
             this, "Merge pull request",
             current.hasIndependentChangesRequested()
@@ -7692,7 +7709,7 @@ void MainWindow::mergeAndDeleteCurrentPull()
     // before touching the PR record or its branch.
     PullStore store = pullStoreForCurrentRepo();
     QString error;
-    if (!store.mergePull(m_currentPullNumber, &error)) {
+    if (!store.mergePull(m_currentPullNumber, &error, requirePeerApproval)) {
         QMessageBox::warning(this, "Merge pull request", error);
         return;
     }

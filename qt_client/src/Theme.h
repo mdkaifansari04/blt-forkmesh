@@ -904,7 +904,7 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
     color: #8b949e; font-family: monospace; font-size: 12px;
 }
-#logDock { background-color: #010409; border-top: 1px solid #30363d; }
+#logDock { background: transparent; border: none; }
 #logDock QLabel { background: transparent; }
 #composerBar { background-color: #0d1117; border-top: 1px solid #30363d; }
 #composerInputRow {
@@ -1051,7 +1051,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
     color: #8b949e; font-family: monospace; font-size: 12px;
 }
-#logDock { background-color: #010409; border-top: 1px solid #30363d; }
+#logDock { background: transparent; border: none; }
 #issueQuickAdd {
     background-color: #0d1117;
     border: 1px dashed #30363d;
@@ -1495,8 +1495,8 @@ QWidget {
     font-size: 14px;
 }
 QToolTip {
-    background-color: #24292f; color: #ffffff;
-    border: 1px solid #24292f; padding: 4px;
+    background-color: #ffffff; color: #1f2328;
+    border: 1px solid #d0d7de; padding: 4px;
 }
 
 /* --- Setup page --- */
@@ -2281,7 +2281,7 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
-#logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
+#logDock { background: transparent; border: none; }
 #logDock QLabel { background: transparent; }
 
 /* --- Bottom status bar: one text line tall, so everything in it is compact. */
@@ -2440,7 +2440,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
-#logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
+#logDock { background: transparent; border: none; }
 #issueQuickAdd {
     background-color: #ffffff;
     border: 1px dashed #d0d7de;

@@ -23,6 +23,8 @@
 #include "MirrorCrypto.h"
 #include "GuiPump.h"
 
+namespace forkmesh::ui { class LogActivityLights; }
+
 // Per-session live-output state behind the top bar's blinking fleet lights.
 // lastActivityMs is bumped on every raw-output chunk so the light keeps blinking
 // while the agent is actively producing output. intensity is a smoothed
@@ -255,6 +257,10 @@ struct RepositoryRecord {
     // (and every changed script it can reach) before it executes on this
     // machine.
     bool actionsAutoApprove = true;
+    // Require an independent peer approval before a pull request can merge.
+    // This is a repository policy (rather than a global preference) and stays
+    // on by default for existing and newly added repositories.
+    bool requirePeerApproval = true;
     // A gateway-managed serving repository must keep its own post-receive hook
     // and object database isolated from workflow-created objects. The remote
     // Actions helper therefore maintains a separate local bare mirror and this
@@ -547,6 +553,16 @@ public:
     Q_INVOKABLE int testAddLocalRepository(const QString &owner, const QString &name,
                                            const QString &localPath);
     Q_INVOKABLE bool testOpenRepository(int index);
+    bool testRepoRequiresPeerApproval() const
+    {
+        return m_repoDetailIndex >= 0 &&
+               m_repoDetailIndex < m_repositories.size() &&
+               m_repositories.at(m_repoDetailIndex).requirePeerApproval;
+    }
+    void testSetRepoRequirePeerApproval(bool on)
+    {
+        setRepoRequirePeerApproval(on);
+    }
     // The branch the open repo treats as its default/merge base, so a test can
     // prove it stays main even when the working tree is parked on a feature branch.
     Q_INVOKABLE QString testRepoDefaultBranch() const;
@@ -749,6 +765,7 @@ public:
                 return session.prNumber;
         return 0;
     }
+    QString testAgentPrButtonText(int sessionId);
     // Take the nav strip's route to the Agents tab, so a test can read that
     // lazily-built list back the way a user reaches it (adhoc #119).
     void testOpenAgentsOverview() { openAgentsOverview(); }
@@ -798,8 +815,7 @@ public:
     // selected, every Code-only chrome band is hidden, and no registered diff
     // viewer outside the Git stack is visible.
     bool testGitWorkspaceIsExclusive() const;
-    // Git hides the global footer and floats its prompt only at the lower right
-    // of the detail pane, leaving the graph's left side at full height.
+    // Git shares the global lower-corner overlays used by every other page.
     bool testGitPromptFloatsBottomRight() const;
     // Follow a branch link and read back the branch the table landed on right
     // away — no event pumping — so a test can prove the click doesn't wait on the
@@ -841,6 +857,9 @@ public:
     // Paths rendered in the universal CHANGES tree, so branch tests can prove
     // the range's files appear without swapping to a second navigator.
     QStringList testSourceControlPaths() const;
+    // Text in the working-tree pane while the activity-rail Git view changes
+    // branch, used to ensure it never briefly presents a prior checkout's diff.
+    QString testSourceControlDiffText() const;
     // "commit=… commitPush=… stagePush=… sync=…", each hidden/disabled/enabled,
     // so a test can prove a waiting commit keeps its buttons on screen even while
     // outgoing commits are pending (adhoc #66).
@@ -932,6 +951,8 @@ public:
     // as "files|dirty|worktree|behind|ahead", so a test can prove the chip's
     // file and visible branch-health markers are fed from the session's diff stat.
     QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
+    QString testAgentStatusCellToolTip(int sessionId,
+                                       const AgentDiffStat &stat) const;
     void testSetCachedAgentDiffFiles(int sessionId, int files)
     {
         AgentDiffStat stat = m_agentDiffStats.value(sessionId);
@@ -3202,6 +3223,9 @@ private:
     void updateRepoActivityRail();
     void setGitPromptOverlay(bool enabled);
     void positionGitPromptOverlay();
+    void positionGlobalFooterOverlays();
+    void setPromptOverlayCollapsed(bool collapsed);
+    void setLogOverlayExpanded(bool expanded);
     void loadRepoFileTree();
     void loadCoveExplorer();
     void refreshCoveExplorerTree();
@@ -3721,6 +3745,7 @@ private:
     void setRepoActionsEnabled(bool on);
     // Set "approve runs automatically" for the open repo, same two-toggle sync.
     void setRepoActionsAutoApprove(bool on);
+    void setRepoRequirePeerApproval(bool on);
     // Enable or disable secret-scanning push protection for the open repo.
     void setRepoSecretScanningEnabled(bool on);
     // Switch a single workflow (by path) on or off for the open repo, persist it,
@@ -3760,6 +3785,10 @@ private:
     // return README.md. Results feed the Reachability column after Artifacts.
     void fetchMirrorReachability(const QString &owner, const QString &repo,
                                  const QString &source, const QString &node);
+    // Fetch content-free relay inbox counts so Mirror nodes shows submissions
+    // that have not reached any repository copy yet.
+    void fetchMirrorPendingCounts(const QString &owner, const QString &repo,
+                                  const QString &source);
     // Fetch the worker's per-artifact release download counts (logged each time
     // /releases/blob/sha256/<hash> streams a binary out), so the Releases tab can
     // show how many times each artifact has been downloaded.
@@ -3877,6 +3906,10 @@ private:
     QWidget *buildSourceControlPanel();
     void refreshSourceControl();             // re-scan `git status` into the tree
     void refreshSourceControl(bool force);   // force refresh path bypassing cache short-circuit
+    // Clear the previous checkout's source-control content before a Git/branch
+    // navigation begins its asynchronous scan. This prevents old diffs from
+    // being attributed to the newly selected branch while it loads.
+    void showSourceControlLoading(const QString &branch);
     // While a branch/PR comparison is open, populate the same CHANGES tree with
     // that range's files while leaving its composer and actions in place.
     void showRangeFilesInSourceControl(const QStringList &paths,
@@ -4065,7 +4098,10 @@ private:
     // Clicking a contributor's name or commit count on the Insights tab jumps to
     // the Commits tab with the list filtered to that author (drives m_commitSearch).
     void openCommitsForContributor(const QString &author);
-    void setRepoBranch(const QString &branch);
+    // `loadContent` is false for the Git branch handoff: it updates the
+    // selected ref and visible labels immediately, then lets the caller paint
+    // its loading state before the expensive overview/history rebuild begins.
+    void setRepoBranch(const QString &branch, bool loadContent = true);
     QString repoHeadBranch() const;          // the checked-out branch (HEAD)
     void updateCommitsBranchButtonLabel();   // branch + current worktree identity
     void refreshCommitsBranchButton();       // commits-page branch indicator/menu
@@ -5259,7 +5295,10 @@ private:
     // every workspace, including Git, so users can prompt an agent from a diff.
     QWidget *m_footerDock = nullptr;
     QWidget *m_footerLeftRegion = nullptr;
-    bool m_gitPromptOverlayVisible = false;
+    QWidget *m_globalOverlayHost = nullptr;
+    QWidget *m_promptOverlayHost = nullptr;
+    forkmesh::ui::LogActivityLights *m_logActivityLights = nullptr;
+    bool m_promptOverlayCollapsed = false;
     // Background activity, shown as small rotating icons in the bottom status
     // strip (adhoc #1389 — it used to be a "Background" panel wedged between the
     // live log and the prompt). One chip per open *kind* of work, not per ticket:
@@ -6952,6 +6991,10 @@ private:
     QFileSystemWatcher *m_actionSpoolWatcher = nullptr;
     QList<ActionRun> m_actionRuns;   // loaded history, newest first
     QList<int> m_actionQueue;        // run ids queued for execution
+    // Repo/commit pushes whose workflows were already queued explicitly by PR
+    // creation. The post-receive event consumes the marker instead of starting
+    // the same workflows again.
+    QSet<QString> m_explicitActionPushes;
     QSet<int> m_actionWaitingRuns;   // queued ids already logged as `needs:`-blocked
     // The encrypted mirror materialization a run is executing out of (see
     // pinActionMirror). Held until the run finishes so a concurrent re-seal
@@ -7050,6 +7093,7 @@ private:
     // tabs and driven by setRepoActionsAutoApprove().
     QCheckBox *m_actionsAutoApproveCheck = nullptr;
     QCheckBox *m_settingsAutoApproveCheck = nullptr;
+    QCheckBox *m_settingsRequirePeerApprovalCheck = nullptr;
     QCheckBox *m_secretScanCheck = nullptr;
     // Per-repo visibility toggle: when checked the repo is private (hidden from
     // the public catalog; browse/clone gated on the owner's view token).
@@ -8139,6 +8183,8 @@ private:
     // "owner/repo|node" -> bounded result from the exact-node README probe.
     QHash<QString, QJsonObject> m_mirrorReachabilityCache;
     QSet<QString> m_mirrorReachabilityInFlight;
+    QHash<QString, QJsonObject> m_mirrorPendingCache;
+    QSet<QString> m_mirrorPendingInFlight;
     // Per-artifact release download counts for the repo currently shown in the
     // Releases panel (sha256 -> times downloaded), from the worker's
     // /releases/downloads endpoint.

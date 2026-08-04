@@ -716,20 +716,18 @@ QWidget *MainWindow::buildChatPage()
     content->setMinimumHeight(0);
     content->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Ignored);
 
-    // The main content and the always-on prompt/log footer sit one above the
-    // other with the footer pinned to a fixed height (adhoc #86). A footer that
-    // sized to its own contents let anything inside it — the "Agents:" strip,
-    // an attachment thumbnail, a growing prompt — drag the whole toolbar up and
-    // down; a splitter fixed that but flashed a loud blue handle on hover.
+    // Content owns the full height.  Prompt and log are siblings painted over
+    // its lower corners, so every page (including Git/diffs) gets the same
+    // overlays without a footer background or reserved blank band.
     auto *bodyLayout = new QVBoxLayout;
     bodyLayout->setContentsMargins(0, 0, 0, 0);
     bodyLayout->setSpacing(0);
     bodyLayout->addWidget(content, 1); // content absorbs window growth
     auto *logDock = buildNetworkLogDock();
-    // buildNetworkLogDock() pins its own fixed height to fit the compact prompt
-    // card (adhoc #107); the footer still keeps a constant height so the toolbar
-    // never reflows, it is just no longer the old oversized 240px.
-    bodyLayout->addWidget(logDock, 0);
+    m_globalOverlayHost = content;
+    logDock->setParent(content);
+    content->installEventFilter(this);
+    QTimer::singleShot(0, this, &MainWindow::positionGlobalFooterOverlays);
     layout->addLayout(bodyLayout, 1);
 
     // One persistent VS Code-style rail owns app navigation. It begins below
@@ -764,35 +762,18 @@ QWidget *MainWindow::buildChatPage()
     m_repoViewButton->hide();
     m_appNavigationRailLayout->addStretch();
 
-    // Settings and the screen/dev tools form the bottom utility group — the
-    // same full rail items as the primary destinations above the stretch, in
-    // the established order: Settings, Log, Capture, Resize, then Tasks
+    // Settings and the screen/dev tools form the bottom utility group. The Log
+    // destination is reached through the third state of the bottom-left log
+    // overlay, so it no longer consumes a second navigation entry.
     // directly above Pings (adhoc #97).
     for (QPushButton *button :
-         {m_settingsNavButton, m_logNavButton, m_navScreenshotButton,
+         {m_settingsNavButton, m_navScreenshotButton,
           m_navResizeButton, m_notesNavButton, m_tasksNavButton,
           m_notificationButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
 
-    // The account avatar is intentionally the bottom-most rail destination. It
-    // keeps the round user picture (not an octicon), sized and captioned like
-    // every other item. The public SOL balance is a third, tinier line beneath
-    // the caption (adhoc #96) — it used to sit on the top-chrome line, far from
-    // the account it describes, so the item is one balance-line taller than the
-    // standard kRailItemHeight.
-    auto *accountLabel = new QLabel(QStringLiteral("Account"));
-    accountLabel->setObjectName(QStringLiteral("railItemLabel"));
-    accountLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
-    auto *accountHost = new QWidget;
-    accountHost->setFixedSize(railItemWidth(),
-                              kRailItemHeight + navBalanceLineHeight());
-    auto *accountLayout = new QVBoxLayout(accountHost);
-    accountLayout->setContentsMargins(0, 2, 0, 0);
-    accountLayout->setSpacing(2);
-    accountLayout->addWidget(m_userAvatarNavButton, 0, Qt::AlignHCenter);
-    accountLayout->addWidget(accountLabel, 0, Qt::AlignHCenter);
-    accountLayout->addWidget(m_navSolanaBalance, 0, Qt::AlignHCenter);
-    m_appNavigationRailLayout->addWidget(accountHost, 0, Qt::AlignLeft);
+    // The avatar now lives inside the prompt overlay and collapses it. Account
+    // settings remain available through the Settings destination.
     updateNotificationButton();
 
     // A short window can scroll the rail without forcing the whole app taller.
@@ -1488,7 +1469,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     // 28px icons, so without it Qt centres the shorter controls in that extra
     // height and they float above the send icons instead of sitting level.
     auto *bottomBar = new QHBoxLayout;
-    bottomBar->setContentsMargins(8, 4, 6, 0);
+    // Leave the lower-left corner open for the account avatar. It is overlaid
+    // by promptOverlayHost so it can remain behind as the collapsed prompt.
+    bottomBar->setContentsMargins(42, 4, 6, 0);
     bottomBar->setSpacing(5);
     bottomBar->addWidget(m_quickAddImageButton, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddMicButton, 0, Qt::AlignBottom);
@@ -1573,6 +1556,26 @@ QWidget *MainWindow::buildNetworkLogDock()
     // panels and fills the dock top to bottom and edge to edge.
     promptWrapper->setMinimumWidth(0);
     promptWrapper->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    // Host the composer and its collapse avatar as one floating unit. The host
+    // owns the geometry while the avatar is an overlaid child, so collapsing
+    // can hide all prompt chrome and leave only the round icon behind.
+    auto *promptOverlayHost = new QWidget;
+    m_promptOverlayHost = promptOverlayHost;
+    promptOverlayHost->setObjectName(QStringLiteral("promptOverlayHost"));
+    auto *promptOverlayLayout = new QVBoxLayout(promptOverlayHost);
+    promptOverlayLayout->setContentsMargins(0, 0, 0, 0);
+    promptOverlayLayout->addWidget(promptWrapper);
+    promptOverlayHost->setMaximumWidth(560);
+    promptOverlayHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_userAvatarNavButton->setParent(promptOverlayHost);
+    // The balance formerly captioned the rail avatar. Keep its lifecycle tied
+    // to the new avatar host; account details themselves remain in Settings.
+    m_navSolanaBalance->setParent(promptOverlayHost);
+    m_navSolanaBalance->hide();
+    m_userAvatarNavButton->setToolTip(
+        QStringLiteral("Collapse the prompt overlay (Settings remains in the rail)"));
+    m_userAvatarNavButton->raise();
 
     // A scrollable strip below the quick-add bar: the always-on live log. It
     // fills as much height as the dock row allows (matching the prompt card
@@ -1726,6 +1729,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     leftRegionLayout->setSpacing(8);
     leftRegionLayout->addWidget(logPanel, 1);
 
+    // State one: four category lights blink for each arriving log occurrence.
+    // A click reveals the recent-line overlay; clicking a line there opens the
+    // existing full Log page (state three).
+    m_logActivityLights = new LogActivityLights;
+    m_logActivityLights->onClicked = [this] { setLogOverlayExpanded(true); };
+
     // Horizontal split: bordered log, then prompt — an even half each, which is
     // the width the prompt had before the Background panel took a fixed column
     // out of the middle (adhoc #1389). The hairline rule that used to sit between
@@ -1734,8 +1743,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     auto *dockRow = new QHBoxLayout(dock);
     dockRow->setContentsMargins(8, 8, 8, 8);
     dockRow->setSpacing(8);
+    dockRow->addWidget(m_logActivityLights, 0, Qt::AlignLeft | Qt::AlignBottom);
     dockRow->addWidget(leftRegion, 1);
-    dockRow->addWidget(promptWrapper, 1);
+    dockRow->addStretch(1);
+    dockRow->addWidget(promptOverlayHost, 1, Qt::AlignRight | Qt::AlignBottom);
 
     // Pin the footer to just the compact prompt's height (adhoc #107): the dock
     // margins plus the six-line prompt and its controls. With the card padding
@@ -1743,11 +1754,73 @@ QWidget *MainWindow::buildNetworkLogDock()
     // thing in the row, so the log panel beside it is exactly as tall as the
     // prompt and nothing reflows.
     dock->setFixedHeight(promptWrapper->sizeHint().height() + 16);
+    dock->setAttribute(Qt::WA_StyledBackground, false);
+    setLogOverlayExpanded(false);
 
     // Enter sends (Shift+Enter inserts a newline) — handled in the event filter
     // since QPlainTextEdit has no returnPressed signal.
     updateVoiceInputButton();
     return dock;
+}
+
+void MainWindow::setLogOverlayExpanded(bool expanded)
+{
+    if (m_footerLeftRegion)
+        m_footerLeftRegion->setVisible(expanded);
+    if (m_logActivityLights)
+        m_logActivityLights->setVisible(!expanded);
+    positionGlobalFooterOverlays();
+}
+
+void MainWindow::setPromptOverlayCollapsed(bool collapsed)
+{
+    m_promptOverlayCollapsed = collapsed;
+    if (!m_promptOverlayHost || !m_promptWrapper)
+        return;
+    m_promptWrapper->setVisible(!collapsed);
+    if (collapsed) {
+        m_promptOverlayHost->setFixedSize(34, 34);
+        m_userAvatarNavButton->setToolTip(QStringLiteral("Show the prompt overlay"));
+    } else {
+        m_promptOverlayHost->setMinimumSize(0, 0);
+        m_promptOverlayHost->setMaximumSize(560, QWIDGETSIZE_MAX);
+        m_promptOverlayHost->setFixedHeight(m_promptWrapper->sizeHint().height());
+        m_promptOverlayHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        m_userAvatarNavButton->setToolTip(QStringLiteral("Collapse the prompt overlay"));
+    }
+    positionGlobalFooterOverlays();
+}
+
+void MainWindow::positionGlobalFooterOverlays()
+{
+    if (!m_globalOverlayHost || !m_footerDock)
+        return;
+    constexpr int kMargin = 8;
+    const int height = m_footerDock->sizeHint().height();
+    m_footerDock->setGeometry(
+        kMargin, qMax(kMargin, m_globalOverlayHost->height() - height - kMargin),
+        qMax(0, m_globalOverlayHost->width() - 2 * kMargin), height);
+    m_footerDock->show();
+    m_footerDock->raise();
+    if (m_promptOverlayHost && m_userAvatarNavButton) {
+        const int x = m_promptOverlayCollapsed ? 4 : 8;
+        const int y = qMax(0, m_promptOverlayHost->height() -
+                                  m_userAvatarNavButton->height() - 4);
+        m_userAvatarNavButton->move(x, y);
+        m_userAvatarNavButton->raise();
+    }
+    // The dock spans the width only to anchor both corners. Mask out its empty
+    // middle so the overlay never steals clicks from the page underneath.
+    if (QLayout *layout = m_footerDock->layout())
+        layout->activate();
+    QRegion interactive;
+    if (m_logActivityLights && m_logActivityLights->isVisible())
+        interactive += m_logActivityLights->geometry();
+    if (m_footerLeftRegion && m_footerLeftRegion->isVisible())
+        interactive += m_footerLeftRegion->geometry();
+    if (m_promptOverlayHost && m_promptOverlayHost->isVisible())
+        interactive += m_promptOverlayHost->geometry();
+    m_footerDock->setMask(interactive);
 }
 
 // One-word tag for the strip: callers may hand over a phrase, the icon maps the
@@ -6283,21 +6356,17 @@ QWidget *MainWindow::buildBreadcrumb()
     });
     m_topMessageContainer->hide();
 
-    // User avatar, the rail's bottom-most Account item. Clicking it opens
-    // Settings for the current user. Sized to sit flush with the rail's 20px
-    // octicons (adhoc #117) rather than dwarfing them.
+    // User avatar, created before the global prompt and reparented into its
+    // lower-left corner by buildNetworkLogDock(). Clicking it collapses the
+    // prompt to the avatar alone; clicking again restores the composer.
     m_userAvatarNavButton = new QPushButton;
     m_userAvatarNavButton->setObjectName("serverFooterButton");
     m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
     m_userAvatarNavButton->setFixedSize(26, 26);
     m_userAvatarNavButton->setIconSize(QSize(24, 24));
-    m_userAvatarNavButton->setToolTip("Settings");
+    m_userAvatarNavButton->setToolTip("Collapse the prompt overlay");
     connect(m_userAvatarNavButton, &QPushButton::clicked, this, [this] {
-        showSection(1);
-        // Land on Settings > Profile, so clicking the avatar still shows your
-        // own profile the way it did before it became a tab (adhoc #274).
-        if (m_settingsTabs && m_profileSettingsTabIndex >= 0)
-            m_settingsTabs->setCurrentIndex(m_profileSettingsTabIndex);
+        setPromptOverlayCollapsed(!m_promptOverlayCollapsed);
     });
     updateUserSwitcher();
     updateAvatarButton();

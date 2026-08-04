@@ -852,6 +852,18 @@ QString agentStatusLabel(const AgentSession &s)
     return s.merged ? QStringLiteral("merged") : agentStatusText(s.status);
 }
 
+// One row in the Agents list's rich hover card. QToolTip understands the same
+// small rich-text subset as QLabel, so the app's tinted octicons can give every
+// fact a stable visual anchor instead of leaving a dense wall of text. Keep the
+// text escaped here: branch names and worktree paths can contain HTML syntax.
+QString agentHoverRow(const QString &icon, const QColor &tint, const QString &text)
+{
+    return QStringLiteral(
+               "<tr><td style='padding:1px 7px 1px 0; vertical-align:middle;'>"
+               "%1</td><td style='padding:1px 0; white-space:nowrap;'>%2</td></tr>")
+        .arg(octiconMarkup(icon, 13, tint), text.toHtmlEscaped());
+}
+
 // Fill the agent table's leading "#" cell for a session: the session id, the run
 // state as a coloured glyph, and the branch button's roles (adhoc #29 folded the
 // old Status column's glyph and chip in here, so the icons read down the list's
@@ -930,64 +942,102 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // state, so the tooltip has to name it outright. The session number and the
     // full "updated" timestamp lead it now that the cell itself shows neither
     // (adhoc #84).
-    QStringList tip{QStringLiteral("Agent #%1").arg(s.id)};
+    QString tip = QStringLiteral(
+        "<table cellspacing='0' cellpadding='0' style='border-collapse:collapse;'>");
+    auto addTip = [&tip](const QString &icon, const QColor &tint,
+                         const QString &text) {
+        tip += agentHoverRow(icon, tint, text);
+    };
+    addTip(QStringLiteral("person"), QColor("#8b949e"),
+           QStringLiteral("Agent #%1").arg(s.id));
     if (updatedMs > 0)
-        tip << QStringLiteral("Updated %1")
+        addTip(QStringLiteral("history"), QColor("#8b949e"),
+               QStringLiteral("Updated %1")
                    .arg(QDateTime::fromMSecsSinceEpoch(updatedMs).toString(
-                       QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-    tip << agentStatusLabel(s);
-    if (s.genie)
-        tip << QStringLiteral("Genie \xE2\x80\x94 working the organization's "
-                              "shared task list from the website's remote MCP");
-    if (!s.merged && s.status == AgentStatus::Queued)
-        tip << QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
-                              "agent slots frees up (Settings \xE2\x86\x92 Agents)")
-                   .arg(maxRunningAgents());
+                       QStringLiteral("yyyy-MM-dd HH:mm:ss"))));
+    QString statusIcon = QStringLiteral("circle-slash");
     if (s.merged)
-        tip << QStringLiteral("Worktree/PR merged into %1%2")
+        statusIcon = QStringLiteral("git-merge");
+    else if (s.genieInFlight())
+        statusIcon = QStringLiteral("sparkle");
+    else if (s.status == AgentStatus::Running)
+        statusIcon = QStringLiteral("sync");
+    else if (s.status == AgentStatus::Success)
+        statusIcon = QStringLiteral("check-circle");
+    else if (s.status == AgentStatus::Stopped)
+        statusIcon = QStringLiteral("stop");
+    else if (s.status == AgentStatus::Waiting)
+        statusIcon = QStringLiteral("hand");
+    else if (s.status == AgentStatus::Failed)
+        statusIcon = QStringLiteral("x");
+    else if (s.status == AgentStatus::Queued)
+        statusIcon = QStringLiteral("history");
+    addTip(statusIcon, agentStatusIconColor(s), agentStatusLabel(s));
+    if (s.genie)
+        addTip(QStringLiteral("sparkle"), QColor(Theme::kGenie),
+               QStringLiteral("Genie \xE2\x80\x94 working the organization's "
+                              "shared task list from the website's remote MCP"));
+    if (!s.merged && s.status == AgentStatus::Queued)
+        addTip(QStringLiteral("history"), QColor("#d29922"),
+               QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
+                              "agent slots frees up (Settings \xE2\x86\x92 Agents)")
+                   .arg(maxRunningAgents()));
+    if (s.merged)
+        addTip(QStringLiteral("git-merge"), QColor("#a371f7"),
+               QStringLiteral("Worktree/PR merged into %1%2")
                    .arg(agentMergeBase(s),
                         s.mergedAtMs > 0
                             ? QStringLiteral(" on %1").arg(
                                   QDateTime::fromMSecsSinceEpoch(s.mergedAtMs)
                                       .toString(QStringLiteral("MMM d  hh:mm")))
-                            : QString());
+                            : QString()));
     if (!s.branchName.isEmpty()) {
-        tip << QStringLiteral("Click the branch button to review %1 in the Git view")
-                   .arg(s.branchName);
+        addTip(QStringLiteral("git-branch"), QColor("#3fb950"),
+               QStringLiteral("Click the branch button to review %1 in the Git view")
+                   .arg(s.branchName));
         if (stat.files >= 0)
-            tip << QStringLiteral("%1 file%2 changed")
+            addTip(QStringLiteral("file-diff"), QColor("#58a6ff"),
+                   QStringLiteral("%1 file%2 changed")
                        .arg(stat.files)
-                       .arg(stat.files == 1 ? QString() : QStringLiteral("s"));
+                       .arg(stat.files == 1 ? QString() : QStringLiteral("s")));
         if (stat.worktree.isEmpty())
-            tip << QStringLiteral("No worktree checked out");
+            addTip(QStringLiteral("worktree"), QColor("#8b949e"),
+                   QStringLiteral("No worktree checked out"));
         else
-            tip << QStringLiteral("Worktree: %1").arg(stat.worktree);
+            addTip(QStringLiteral("worktree"), QColor("#58a6ff"),
+                   QStringLiteral("Worktree: %1").arg(stat.worktree));
         if (stat.dirty > 0)
-            tip << QStringLiteral("%1 uncommitted change%2 in the worktree")
+            addTip(QStringLiteral("diff"), QColor("#d29922"),
+                   QStringLiteral("%1 uncommitted change%2 in the worktree")
                        .arg(stat.dirty)
-                       .arg(stat.dirty == 1 ? QString() : QStringLiteral("s"));
+                       .arg(stat.dirty == 1 ? QString() : QStringLiteral("s")));
         else if (stat.dirty == 0)
-            tip << QStringLiteral("Worktree is clean");
+            addTip(QStringLiteral("check-circle"), QColor("#3fb950"),
+                   QStringLiteral("Worktree is clean"));
     }
     // What the churn bar draws, in figures (adhoc #84), and what the chip's
     // orange alert glyph means (adhoc #446) — both moved in from the dropped Diff
     // column's tooltip (adhoc #92).
     if (stat.conflicted)
-        tip << QStringLiteral("Conflicts with %1 — click the orange alert on the "
+        addTip(QStringLiteral("alert"), QColor("#e3742f"),
+               QStringLiteral("Conflicts with %1 — click the orange alert on the "
                               "branch button to have this agent merge base in and "
                               "resolve")
-                   .arg(base.isEmpty() ? QStringLiteral("base") : base);
+                   .arg(base.isEmpty() ? QStringLiteral("base") : base));
     if (stat.added >= 0 && stat.removed >= 0)
-        tip << QStringLiteral("%1 line%2 added \xC2\xB7 %3 removed")
+        addTip(QStringLiteral("diff"), QColor("#8b949e"),
+               QStringLiteral("%1 line%2 added \xC2\xB7 %3 removed")
                    .arg(stat.added)
                    .arg(stat.added == 1 ? QString() : QStringLiteral("s"))
-                   .arg(stat.removed);
+                   .arg(stat.removed));
     if (stat.ahead >= 0 && stat.behind >= 0)
-        tip << QString::fromUtf8("%1 ahead \xC2\xB7 %2 behind %3")
+        addTip(QStringLiteral("git-compare"), QColor("#a371f7"),
+               QString::fromUtf8("%1 ahead \xC2\xB7 %2 behind %3")
                    .arg(stat.ahead)
                    .arg(stat.behind)
-                   .arg(base.isEmpty() ? QStringLiteral("base") : base);
-    cell->setToolTip(tip.join(QLatin1Char('\n')));
+                   .arg(base.isEmpty() ? QStringLiteral("base") : base));
+    tip += QStringLiteral("</table>");
+    cell->setToolTip(tip);
 }
 
 // Effective run duration for the header Time stat + the Speed figure. While a
@@ -1125,7 +1175,8 @@ public:
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
-        s.rwidth() += chipWidth(opt) + 2 * kButtonMargin + kBarWidth + kButtonMargin;
+        s.rwidth() += chipWidth(opt) + countWidth(opt) + kGlyphSize +
+                      4 * kButtonMargin + 2 * kChipGap + kBarWidth;
         s.rheight() = qMax(s.height(), kBarHeight + 6);
         return s;
     }
@@ -1183,27 +1234,26 @@ public:
         // upscale the 12px pixmap to fill the chip.
         const QColor ink(dark ? (hot ? "#c9d1d9" : "#8b949e")
                               : (hot ? "#1f2328" : "#656d76"));
-        QRect glyph(r.left() + kChipPadding, r.center().y() - kGlyphSize / 2,
+        QRect glyph(r.center().x() - kGlyphSize / 2,
+                    r.center().y() - kGlyphSize / 2,
                     kGlyphSize, kGlyphSize);
         themedOcticon("git-branch", ink, kGlyphSize).paint(painter, glyph);
-        // Files the session's patch touched, in small type beside the glyph. The
-        // count field runs from the glyph to the alert's slot, which is reserved
-        // whether or not this row conflicts (adhoc #94), and the digits are
-        // right-aligned in it — so a "3" and a "15" end on the same edge instead
-        // of drifting apart down the list.
+        painter->restore();
+
+        // Only the branch glyph is boxed. Counts and branch-health glyphs sit
+        // beside it directly on the row, matching the compact screenshot and
+        // avoiding the old orange rectangle around unrelated metadata.
         const QString files = filesText(index);
         if (!files.isEmpty()) {
-            const int textLeft = glyph.right() + 1 + kChipGap;
-            const int textRight = conflictRect(option, index).left() - kChipGap;
+            const QRect count = countRect(option, index);
+            painter->save();
             painter->setPen(ink);
             painter->setFont(chipFont(option));
-            painter->drawText(QRect(textLeft, r.top(), textRight - textLeft + 1,
-                                    r.height()),
-                              Qt::AlignVCenter | Qt::AlignRight, files);
+            painter->drawText(count, Qt::AlignCenter, files);
+            painter->restore();
         }
-        // Conflict alert, inside the chip rather than a button of its own in a
-        // column of its own (adhoc #92): the orange glyph at the chip's trailing
-        // edge, which is its own click target.
+        // Conflict/behind health sits immediately after the count. It remains
+        // its own click target without widening the branch-icon box.
         if (conflicted)
             themedOcticon("alert", accent, kGlyphSize)
                 .paint(painter, conflictRect(option, index));
@@ -1217,7 +1267,6 @@ public:
             painter->setBrush(QColor(dark ? "#d29922" : "#bf8700"));
             painter->drawEllipse(QPointF(r.right() - 0.5, r.top() + 1.5), 3.0, 3.0);
         }
-        painter->restore();
     }
 
     // Clicks land here before the view starts an edit, so a press+release inside
@@ -1305,11 +1354,9 @@ private:
     // count the cell can print ("99+") and the alert glyph's slot are budgeted on
     // every row, so the chips read as a single column of identical buttons
     // instead of an edge that steps in and out with each row's contents.
-    static int chipWidth(const QStyleOptionViewItem &opt)
+    static int chipWidth(const QStyleOptionViewItem &)
     {
-        return 2 * kChipPadding + kGlyphSize + kChipGap +
-               QFontMetrics(chipFont(opt)).horizontalAdvance(QStringLiteral("99+")) +
-               kChipGap + kGlyphSize;
+        return kButtonSize;
     }
 
     static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &)
@@ -1319,18 +1366,31 @@ private:
         // The bars sit outermost (right up against the title) and their slot is
         // held open on every row, churn or not, so the chip's trailing edge lands
         // in the same place all the way down the list.
-        const int right = cell.right() - kBarWidth - kButtonMargin;
+        const int metadata = countWidth(opt) + kChipGap + kGlyphSize + kChipGap;
+        const int right = cell.right() - kBarWidth - kButtonMargin - metadata;
         const int w = qMin(chipWidth(opt), qMax(0, cell.width() - 2 * kButtonMargin));
         return QRect(right - kButtonMargin - w + 1, cell.center().y() - h / 2 + 1, w,
                      h);
     }
 
-    // The conflict glyph's own click target: the trailing slot inside the chip.
-    static QRect conflictRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    static int countWidth(const QStyleOptionViewItem &opt)
+    {
+        return QFontMetrics(chipFont(opt)).horizontalAdvance(QStringLiteral("99+"));
+    }
+
+    static QRect countRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
     {
         const QRect chip = buttonRect(opt, idx);
-        return QRect(chip.right() - kChipPadding - kGlyphSize + 1,
-                     chip.center().y() - kGlyphSize / 2, kGlyphSize, kGlyphSize);
+        return QRect(chip.right() + kChipGap + 1, chip.top(), countWidth(opt),
+                     chip.height());
+    }
+
+    // The conflict glyph's own click target beside the unboxed count.
+    static QRect conflictRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    {
+        const QRect count = countRect(opt, idx);
+        return QRect(count.right() + kChipGap + 1,
+                     count.center().y() - kGlyphSize / 2, kGlyphSize, kGlyphSize);
     }
 
     // Height of one bar for `lines`, floored at a visible stub so "1 line
@@ -2109,14 +2169,20 @@ QWidget *MainWindow::buildAgentsTab()
     // "View PR" — appears once the session produced a pull request.
     m_agentViewPrButton = railActionButton(
         QStringLiteral("git-pull-request"), QStringLiteral("View PR"),
-        "Review this session's pull request in the Git view");
+        "Open this session's pull request");
+    m_agentViewPrButton->setObjectName(QStringLiteral("agentViewPrButton"));
     m_agentViewPrButton->hide();
     connect(m_agentViewPrButton, &QPushButton::clicked, this, [this] {
-        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
-        if (s && s->prNumber > 0)
-            // Land on the PR's commits/files/diff in the Git view (adhoc #107);
-            // the pane's "PR #N" button goes on to the full PR page.
-            openPullDiffInGitView(s->prNumber);
+        const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (!s || s->prNumber <= 0)
+            return;
+        // Agents are global while pull requests belong to the repository detail
+        // currently bound behind the page. Bind first so an agent from another
+        // repo cannot open the same-numbered PR in the wrong repository.
+        const int number = s->prNumber;
+        const int repoIndex = repoIndexFor(s->owner, s->name);
+        if (repoIndex >= 0 && bindRepoDetailToRepo(repoIndex))
+            switchToPullTab(number);
     });
 
     // "Create PR" — a run finishing no longer opens a pull request by itself
@@ -6457,6 +6523,19 @@ QString MainWindow::testAgentStatusCellBadges(int sessionId,
     return QString();
 }
 
+QString MainWindow::testAgentStatusCellToolTip(int sessionId,
+                                               const AgentDiffStat &stat) const
+{
+    for (const AgentSession &s : m_agentSessions) {
+        if (s.id != sessionId)
+            continue;
+        QTableWidgetItem item;
+        applyAgentStatusCell(&item, s, stat, agentMergeBase(s), s.id);
+        return item.toolTip();
+    }
+    return QString();
+}
+
 bool MainWindow::testAgentSessionMerged(int sessionId) const
 {
     for (const AgentSession &s : m_agentSessions)
@@ -7322,16 +7401,17 @@ void MainWindow::showAgentSession(int sessionId)
     refreshAgentStatusPill(sessionId);
 
     // View PR button appears once a pull request exists for this session; the
-    // Create PR button is its counterpart until then. (The rail-style tile's
-    // caption is fixed, so the PR number rides the tooltip rather than the
-    // label.)
+    // Create PR button is its counterpart until then. Include the number in the
+    // visible action so creation has an immediate, unambiguous link target.
     if (m_agentViewPrButton) {
         m_agentViewPrButton->setVisible(session->prNumber > 0);
-        if (session->prNumber > 0)
+        if (session->prNumber > 0) {
+            m_agentViewPrButton->setText(
+                QStringLiteral("View PR #%1").arg(session->prNumber));
             m_agentViewPrButton->setToolTip(
-                QStringLiteral("Review PR #%1's commits, files and diff in the "
-                               "Git view")
+                QStringLiteral("Open pull request #%1")
                     .arg(session->prNumber));
+        }
     }
     if (m_agentCreatePrButton)
         m_agentCreatePrButton->setVisible(session->prNumber <= 0 &&
@@ -12095,6 +12175,16 @@ void MainWindow::updateAgentFilesTabState(int sessionId)
         m_agentWtDeleteButton->setEnabled(feature && onDisk);
 }
 
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testAgentPrButtonText(int sessionId)
+{
+    showAgentSession(sessionId);
+    return m_agentViewPrButton && m_agentViewPrButton->isVisible()
+               ? m_agentViewPrButton->text()
+               : QString();
+}
+#endif
+
 // Open a ForkMesh pull request from the session's changes (diff since baseRef),
 // mirroring onAgentFinished's PR path but for the live-tree transcript session.
 void MainWindow::maybeCreatePullForStreamSession(int sessionId)
@@ -12186,6 +12276,75 @@ void MainWindow::landAgentPullForSession(AgentSession session, const QString &pa
             m_agentStore->appendLog(
                 session, QStringLiteral("==> Created pull request #%1.\n").arg(pr));
             linkAgentPullToIssue(session, pr); // record it in the issue's Development section
+            // Agent-created pull requests should enter the same repository CI
+            // path as an explicit "Run checks against this PR" click. Resolve
+            // the materialized PR ref so workflows test exactly the code under
+            // review, never a later movement of the session branch.
+            QByteArray tip;
+            const QString gitDir = repo.localPath.trimmed();
+            const QString prRef =
+                QStringLiteral("refs/pr/%1/head").arg(pr);
+            const QString runnerRef =
+                QStringLiteral("refs/heads/pr/%1").arg(pr);
+            QByteArray runnerTip;
+            if (!gitDir.isEmpty() &&
+                runGitCapture(gitDir,
+                              {QStringLiteral("rev-parse"), prRef}, &tip,
+                              nullptr) &&
+                !tip.trimmed().isEmpty() &&
+                runGitCapture(gitDir,
+                              {QStringLiteral("rev-parse"), runnerRef},
+                              &runnerTip, nullptr) &&
+                runnerTip.trimmed() == tip.trimmed()) {
+                // Action runners clone the served bare mirror, not the agent's
+                // private worktree. Publish the ordinary pr/<n> branch that
+                // materializePullRef created so even an uncommitted agent patch
+                // (synthesized into a PR commit) is fetchable by the runner.
+                QString pushError;
+                const QString commit = QString::fromUtf8(tip).trimmed();
+                const QString explicitKey =
+                    repo.owner + QLatin1Char('\x1f') + repo.name +
+                    QLatin1Char('\x1f') + commit.toLower();
+                // The push hook reports this ref too. Mark it before starting
+                // git (whose wait pumps the GUI loop) so the hook cannot race
+                // ahead and queue a duplicate run.
+                m_explicitActionPushes.insert(explicitKey);
+                const bool runnerCanFetch =
+                    !repo.mirrorPath.trimmed().isEmpty() &&
+                    runGitCapture(
+                        gitDir,
+                        {QStringLiteral("push"), repo.mirrorPath,
+                         runnerRef + QLatin1Char(':') + runnerRef},
+                        nullptr, &pushError);
+                if (runnerCanFetch) {
+                    queueWorkflowsForCommit(
+                        ri, repo.owner, repo.name, commit, runnerRef);
+                    QTimer::singleShot(60000, this, [this, explicitKey] {
+                        m_explicitActionPushes.remove(explicitKey);
+                    });
+                    m_agentStore->appendLog(
+                        session,
+                        QStringLiteral("==> Queued repository checks for pull request #%1.\n")
+                            .arg(pr));
+                } else {
+                    m_explicitActionPushes.remove(explicitKey);
+                    const QString detail =
+                        pushError.trimmed().isEmpty()
+                            ? QStringLiteral("the served mirror is unavailable")
+                            : pushError.trimmed().right(240);
+                    m_agentStore->appendLog(
+                        session,
+                        QStringLiteral("!! Could not publish pull request #%1's "
+                                       "test ref to the action runner: %2\n")
+                            .arg(pr)
+                            .arg(detail));
+                }
+            } else {
+                m_agentStore->appendLog(
+                    session,
+                    QStringLiteral("!! Could not resolve pull request #%1 to run checks.\n")
+                        .arg(pr));
+            }
             if (ri == m_repoDetailIndex)
                 reloadPulls();
         } else {

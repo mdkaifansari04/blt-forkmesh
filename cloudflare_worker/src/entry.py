@@ -124,6 +124,7 @@ class _LazyExport:
 # within a fixed memory budget.
 organization_discord = _LazyModule("organization_discord")
 notes = _LazyModule("notes")
+polar_integration = _LazyModule("polar_integration")
 
 # Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
 # lives in its own module. Wallet signing is intentionally not imported into the
@@ -576,6 +577,7 @@ from urls import (  # noqa: E402
     ORG_DISCORD_RE,
     DISCORD_OAUTH_CALLBACK_RE,
     MAILTRAP_WEBHOOK_RE,
+    POLAR_INTEGRATION_RE,
     BOT_SESSION_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
@@ -2453,10 +2455,10 @@ STATUS_SYSTEMS = [
 # its own signal, and the page must never imply a probe that doesn't exist.
 STATUS_SYSTEM_CHECKS = {
     "website": (
-        "Scans the last minute of the worker error log for unhandled "
-        "exceptions or 5xx responses on page routes (anything outside "
-        "/api/*). Passes when no page-serving errors were logged. This is a "
-        "server-side error-log signal, not an external HTTP probe."),
+        "Loads the production homepage once a minute and verifies that the "
+        "real index document returns HTTP 200 with the ForkMesh homepage "
+        "marker. Worker page-route errors are also included, so either a "
+        "failed request or a server-side rendering failure turns this row red."),
     "api": (
         "Scans the last minute of the worker error log for unhandled "
         "exceptions or 5xx responses on /api/* routes. 502/503/504 on "
@@ -3073,7 +3075,35 @@ REPO_ALERT_SETTING_DEFAULTS = {
     # directions: a recovery notice only makes sense to whoever got the outage.
     "statusEmails": False,
     "statusPings": True,
+    # Per-monitor overrides back the admin-only alert-settings page. The old
+    # global switches remain for stored-row compatibility and as defaults for
+    # a newly discovered mirror row. Homepage continual paging is deliberately
+    # selected out of the box: a persistent public outage must not disappear
+    # behind one notification that was missed or trimmed from the inbox.
+    "statusMonitors": {},
 }
+
+STATUS_ALERT_CONTINUAL_INTERVAL_MS = 5 * 60 * 1000
+STATUS_ALERT_ADMIN_SYSTEMS = list(STATUS_SYSTEMS) + [
+    ("mirror:*", "All mirror nodes"),
+]
+
+
+def _status_monitor_alert_setting(settings, system_id, channel):
+    settings = settings if isinstance(settings, dict) else {}
+    monitors = settings.get("statusMonitors")
+    monitors = monitors if isinstance(monitors, dict) else {}
+    monitor = monitors.get(system_id)
+    if not isinstance(monitor, dict) and system_id.startswith(STATUS_MIRROR_PREFIX):
+        monitor = monitors.get("mirror:*")
+    monitor = monitor if isinstance(monitor, dict) else {}
+    if channel in monitor:
+        return bool(monitor[channel])
+    if channel == "emails":
+        return bool(settings.get("statusEmails", False))
+    if channel == "pings":
+        return bool(settings.get("statusPings", True))
+    return system_id == "website" if channel == "continual" else False
 
 
 async def _repo_alert_settings_bi(env, owner, repo):
@@ -3107,11 +3137,14 @@ async def _repo_alert_settings_get(env, owner, repo):
         if isinstance(stored, dict):
             for key in REPO_ALERT_SETTING_DEFAULTS:
                 if key in stored:
-                    settings[key] = bool(stored[key])
+                    if key == "statusMonitors" and isinstance(stored[key], dict):
+                        settings[key] = stored[key]
+                    elif key != "statusMonitors":
+                        settings[key] = bool(stored[key])
     return settings
 
 
-async def _status_alert_emails_enabled(env):
+async def _status_alert_emails_enabled(env, system_id=None):
     """Has a platform is_admin opted into outage mail?
 
     The /status systems and the cron watchdog are properties of the whole
@@ -3119,13 +3152,17 @@ async def _status_alert_emails_enabled(env):
     """
     owner, _, repo = FLAGSHIP_MONITOR_ID.partition("/")
     settings = await _repo_alert_settings_get(env, owner, repo)
+    if system_id:
+        return _status_monitor_alert_setting(settings, system_id, "emails")
     return bool(settings["statusEmails"])
 
 
-async def _status_alert_pings_enabled(env):
+async def _status_alert_pings_enabled(env, system_id=None):
     """Should outage and recovery transitions enter administrators' Pings?"""
     owner, _, repo = FLAGSHIP_MONITOR_ID.partition("/")
     settings = await _repo_alert_settings_get(env, owner, repo)
+    if system_id:
+        return _status_monitor_alert_setting(settings, system_id, "pings")
     return bool(settings["statusPings"])
 
 
@@ -3155,8 +3192,10 @@ def _status_recovery_ping_body(alert, now):
 
 async def _enqueue_operational_alert_pings(env, alerts, now):
     """Best-effort, deduplicated operational alerts for every platform admin."""
-    if not alerts or not await _status_alert_pings_enabled(env):
+    if not alerts:
         return False
+    owner, _, repo = FLAGSHIP_MONITOR_ID.partition("/")
+    alert_settings = await _repo_alert_settings_get(env, owner, repo)
     rows = await d1_all(
         env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
     delivered = False
@@ -3172,11 +3211,17 @@ async def _enqueue_operational_alert_pings(env, alerts, now):
         for alert in alerts:
             recovered = bool(alert.get("is_up"))
             system_id = clean_string(alert.get("system", ""), 120)
+            if not _status_monitor_alert_setting(
+                    alert_settings, system_id, "pings"):
+                continue
             label = clean_string(alert.get("label", ""), 160)
             # One ping per transition, not per sample: the stamp must identify
             # the transition itself. outage_started_at is 0 once a system is
             # green, so a recovery keys off the change stamp instead.
             stamp = int(
+                (int(now) // STATUS_ALERT_CONTINUAL_INTERVAL_MS)
+                * STATUS_ALERT_CONTINUAL_INTERVAL_MS
+                if alert.get("continual") and not recovered else
                 alert.get("changed_at")
                 or alert.get("outage_started_at")
                 or now)
@@ -3215,6 +3260,7 @@ async def _enqueue_operational_alert_pings(env, alerts, now):
                 meta={"system": system_id,
                       "state": "up" if recovered else "down"},
             )
+            alert["_ping_delivered"] = True
             delivered = True
     return delivered
 
@@ -3222,6 +3268,11 @@ async def _enqueue_operational_alert_pings(env, alerts, now):
 async def _record_operational_alert_pings_sent(env, alerts):
     """Mark delivered ping transitions so the next sample stays quiet."""
     for alert in alerts:
+        # _enqueue_operational_alert_pings may receive a mixed batch whose
+        # per-monitor page settings disable some rows. Do not mark a skipped
+        # row as delivered merely because another row in the batch was sent.
+        if not alert.get("_ping_delivered"):
+            continue
         system_id = clean_string(alert.get("system", ""), 120)
         if not system_id:
             continue
@@ -3421,7 +3472,7 @@ def _status_alert_manage_url(env, system_id=""):
         return "https://forkmesh.com/dashboard"
     return (
         "https://forkmesh.com/" + quote(admin_path, safe="/") +
-        "#operational-alerts"
+        "?view=alerts#operational-alerts"
     )
 
 
@@ -3580,6 +3631,9 @@ async def _record_status_monitor_transitions(
         "WHERE monitor_id LIKE 'status:%'",
     )
     prior = {str(row.get("monitor_id") or ""): row for row in (rows or [])}
+    alert_owner, _, alert_repo = FLAGSHIP_MONITOR_ID.partition("/")
+    alert_settings = await _repo_alert_settings_get(
+        env, alert_owner, alert_repo)
     pending = []
     ping_pending = []
     values = []
@@ -3612,6 +3666,15 @@ async def _record_status_monitor_transitions(
             prior_pinged)
         should_notify = notified != state
         should_ping = pinged != state
+        continual_ping = (
+            not is_up
+            and _status_monitor_alert_setting(
+                alert_settings, system_id, "continual")
+            and int(now) // STATUS_ALERT_CONTINUAL_INTERVAL_MS !=
+                (int(now) - STATUS_SAMPLE_WINDOW_MS) //
+                STATUS_ALERT_CONTINUAL_INTERVAL_MS
+        )
+        should_ping = should_ping or continual_ping
         if system_id == "flagship_repository":
             if (
                 not is_up
@@ -3660,6 +3723,7 @@ async def _record_status_monitor_transitions(
                     prior_outage
                     if is_up and prior_pinged != "down" and prior_outage
                     else 0),
+                "continual": bool(continual_ping),
             }
             if should_notify:
                 pending.append(alert)
@@ -3709,7 +3773,12 @@ async def _record_status_monitor_transitions(
     # notified_state is deliberately left untouched while alert mail is off:
     # whatever is red when an admin turns it on gets one email then, instead
     # of the switch silently swallowing the transition that is still current.
-    if not await _status_alert_emails_enabled(env):
+    pending = [
+        alert for alert in pending
+        if _status_monitor_alert_setting(
+            alert_settings, alert.get("system", ""), "emails")
+    ]
+    if not pending:
         return
     recipients = await _repository_monitor_admin_emails(env)
     if not recipients:
@@ -4064,6 +4133,36 @@ async def _email_delivery_status(env, now):
     return True, ""
 
 
+async def _homepage_status_probe(env):
+    """Load the exact static document streamed by ``_serve_homepage``.
+
+    A scheduled Worker cannot reliably hairpin through its own public hostname,
+    so the bound asset service is the authoritative no-cache origin probe. This
+    is materially stronger than the old error-log inference: missing/broken
+    homepage assets now fail even when no visitor happened to request ``/``.
+    """
+    response = await env.ASSETS.fetch(JsRequest.new(
+        "https://forkmesh.internal/index.html",
+        to_js({"headers": {"cache-control": "no-cache"}}),
+    ))
+    status = int(getattr(response, "status", 0) or 0)
+    if status != 200:
+        return False, "Homepage returned HTTP %d" % status
+    try:
+        announced = int(response.headers.get("content-length") or 0)
+    except Exception:
+        announced = 0
+    if announced > 1024 * 1024:
+        return False, "Homepage document exceeded the 1 MiB safety limit"
+    body = str(await response.text())
+    if len(body.encode("utf-8")) > 1024 * 1024:
+        return False, "Homepage document exceeded the 1 MiB safety limit"
+    lowered = body.lower()
+    if "<!doctype html" not in lowered or "forkmesh" not in lowered:
+        return False, "Homepage returned an invalid index document"
+    return True, ""
+
+
 async def record_status_sample(env):
     # Called once a minute by the platform Cron Trigger (scheduled()) and by
     # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
@@ -4081,6 +4180,15 @@ async def record_status_sample(env):
     minute_ts = (now // 60000) * 60000
     ok = {}
     reason = {}
+
+    try:
+        website_ok, website_reason = await _homepage_status_probe(env)
+        ok["website"] = website_ok
+        if not website_ok:
+            reason["website"] = website_reason
+    except Exception as exc:
+        ok["website"] = False
+        reason["website"] = "Homepage probe failed: " + str(exc)[:160]
 
     try:
         await d1_first(env, "SELECT 1 AS ok")
@@ -4239,7 +4347,7 @@ async def record_status_sample(env):
                 if first_hit[bucket] is None:
                     first_hit[bucket] = (
                         503, "/durable-object-rooms", summary)
-        ok["website"] = not failed["website"]
+        ok["website"] = bool(ok.get("website", False)) and not failed["website"]
         ok["api"] = not failed["api"]
         ok["errors"] = not failed["errors"]
         ok["realtime"] = not failed["realtime"]
@@ -4252,11 +4360,12 @@ async def record_status_sample(env):
                     text += ": " + message[:120]
                 if hit_count[bucket] > 1:
                     text += " (+%d more)" % (hit_count[bucket] - 1)
-                reason[bucket] = text
+                if bucket != "website" or ok["website"] or not reason.get("website"):
+                    reason[bucket] = text
     except Exception:
         # A query hiccup here is not itself evidence of an outage — don't
         # fabricate a false incident from it.
-        ok["website"] = ok["api"] = ok["errors"] = True
+        ok["api"] = ok["errors"] = True
         ok["realtime"] = ok["durable_objects"] = True
 
     # Every registered mirror* node gets its own /status row, including nodes
@@ -4531,10 +4640,12 @@ async def status_history(env, view="full"):
             this_day = start + i * STATUS_DAY_MS
             day_checks = day_failures = day_expected = 0
             hours = []
+            elapsed_hours = 0
             for h in range(24):
                 hour_ts = this_day + h * STATUS_HOUR_MS
                 if hour_ts > now:
                     break
+                elapsed_hours += 1
                 hour = _status_effective_hour(
                     hour_ts, now, by_system_hour.get(system_id, {}).get(hour_ts),
                 )
@@ -4545,7 +4656,13 @@ async def status_history(env, view="full"):
                     expected_24h += hour["expectedChecks"]
                     checks_24h += hour["checks"]
                     failures_24h += hour["failures"]
-                hours.append(hour)
+                # Thirty days of hourly dictionaries made a cold /api/status
+                # response several megabytes and could exceed the Worker CPU
+                # limit (Cloudflare 1101). Daily aggregates retain the entire
+                # history; only the latest 24 hourly buckets are needed by the
+                # public detail bar and are serialized.
+                if hour_ts >= uptime_24h_start:
+                    hours.append(hour)
             total_expected += day_expected
             total_checks += day_checks
             total_failures += day_failures
@@ -4563,7 +4680,8 @@ async def status_history(env, view="full"):
                 "expectedChecks": day_expected,
                 "missingChecks": max(0, day_expected - day_checks),
                 "uptimePct": uptime, "coveragePct": coverage,
-                "hours": hours, "hoursElapsed": len(hours),
+                "hours": hours, "hoursElapsed": elapsed_hours,
+                "hoursCompacted": elapsed_hours > len(hours),
             })
         # Current state comes from the newest RAW MINUTE probe. An hourly
         # aggregate answers "did anything fail during this hour?", not "is it
@@ -16612,6 +16730,20 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
     await d1_run(
         env, "UPDATE account_sessions SET account_bi=? WHERE account_bi=?",
         new_name_bi, name_bi)
+    # Polar's external customer id is random and stable, so a username rename
+    # moves only the local encrypted mapping and derived membership rows. The
+    # provider keeps sending the same opaque external id after the rename.
+    await d1_run(
+        env, "UPDATE polar_customers SET account_bi=?,updated_at=? "
+        "WHERE account_bi=?",
+        new_name_bi, int(Date.now()), name_bi)
+    await d1_run(
+        env, "UPDATE polar_memberships SET account_bi=?,updated_at=? "
+        "WHERE account_bi=?",
+        new_name_bi, int(Date.now()), name_bi)
+    await d1_run(
+        env, "UPDATE role_grants SET account_bi=? WHERE account_bi=?",
+        new_name_bi, name_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
     await purge_catalog_related_caches()
@@ -16783,6 +16915,8 @@ async def _delete_account_namespace(env, name_bi, rec):
             "repo_stars",
             "feedback_email_sends",
             "role_grants",
+            "polar_customers",
+            "polar_memberships",
             "owner_encryption_keys",
             "world_inactive_presence",
             "world_media_roles",
@@ -24697,6 +24831,172 @@ async def organization_discord_handler(env, request, org, action=""):
 async def organization_discord_oauth_callback_handler(env, request):
     return await organization_discord.handle_oauth_callback(
         _OrganizationDiscordRuntime(env, request))
+
+
+class _PolarIntegrationRuntime:
+    """Narrow adapter for Polar checkout and webhook policy."""
+
+    def __init__(self, env, request):
+        self.env = env
+        self.request = request
+
+    def method(self):
+        return method_name(self.request)
+
+    def now(self):
+        return int(Date.now())
+
+    def new_id(self):
+        return _ap_uuid()
+
+    def headers(self):
+        return self.request.headers
+
+    def public_origin(self):
+        return _public_base_url(self.env, self.request)
+
+    def client_ip(self):
+        # Polar uses this only to calculate the customer's country/tax. Trust
+        # Cloudflare's edge-set address, never a client-supplied forwarded-for
+        # fallback.
+        return _account_session_client_ip(self.request)
+
+    def config(self):
+        return {
+            "apiBase": str(
+                getattr(self.env, "POLAR_API_BASE_URL", "") or ""),
+            "accessToken": str(
+                getattr(self.env, "POLAR_ACCESS_TOKEN", "") or ""),
+            "webhookSecret": str(
+                getattr(self.env, "POLAR_WEBHOOK_SECRET", "") or ""),
+            "organizationId": str(
+                getattr(self.env, "POLAR_ORGANIZATION_ID", "") or ""),
+            "supporterProductId": str(
+                getattr(self.env, "POLAR_SUPPORTER_PRODUCT_ID", "") or ""),
+            "proProductId": str(
+                getattr(self.env, "POLAR_PRO_PRODUCT_ID", "") or ""),
+        }
+
+    def response(self, data, status=200, cache_control=None,
+                 extra_headers=None):
+        return json_response(
+            data,
+            status=status,
+            cache_control=cache_control,
+            extra_headers=extra_headers,
+        )
+
+    async def ensure_schema(self):
+        await ensure_schema(self.env)
+
+    async def raw_body(self, limit):
+        try:
+            announced = self.request.headers.get("content-length") or ""
+            if announced and int(announced) > int(limit):
+                return None, "payload_too_large"
+        except (TypeError, ValueError, OverflowError):
+            return None, "invalid_content_length"
+        try:
+            raw = str(await self.request.text())
+        except Exception:
+            return None, "invalid_payload"
+        if len(raw.encode("utf-8")) > int(limit):
+            return None, "payload_too_large"
+        return raw, ""
+
+    async def json_body(self, limit):
+        raw, error = await self.raw_body(limit)
+        if error:
+            return None, error
+        if not str(raw or "").strip():
+            return {}, ""
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None, "invalid_json"
+        return (data, "") if isinstance(data, dict) else (None, "invalid_json")
+
+    async def session(self, data=None):
+        return await _account_session_record(
+            self.env, self.request,
+            data if isinstance(data, dict) else {},
+        )
+
+    async def blind(self, value):
+        return await blind_index(self.env, str(value or ""))
+
+    async def seal(self, value):
+        return await encrypt_row(self.env, value)
+
+    async def open(self, value):
+        return await decrypt_row(self.env, value)
+
+    async def d1_first(self, sql, *args):
+        return await d1_first(self.env, sql, *args)
+
+    async def d1_run(self, sql, *args):
+        return await d1_run(self.env, sql, *args)
+
+    async def batch(self, statements):
+        return await _contribution_run_batch(self.env, statements)
+
+    async def provider(self, url, payload, access_token):
+        """POST bounded JSON to one normalized Polar API origin."""
+
+        url = str(url or "")
+        parsed = urlparse(url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc not in {"api.polar.sh", "sandbox-api.polar.sh"}
+            or not parsed.path.startswith("/v1/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            return {"status": 0, "data": None}
+        token = str(access_token or "").strip()
+        if not token or len(token) > 4096 or not isinstance(payload, dict):
+            return {"status": 0, "data": None}
+        try:
+            response = await js_fetch_with_timeout(
+                url,
+                {
+                    "method": "POST",
+                    "headers": {
+                        "authorization": "Bearer " + token,
+                        "accept": "application/json",
+                        "content-type": "application/json",
+                    },
+                    "body": json.dumps(
+                        payload, sort_keys=True, separators=(",", ":")),
+                    "redirect": "manual",
+                },
+                12,
+            )
+            status = int(getattr(response, "status", 0) or 0)
+            try:
+                announced = int(
+                    response.headers.get("content-length") or 0)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                announced = 0
+            if announced > polar_integration.BODY_MAX_BYTES:
+                return {"status": 502, "data": None}
+            raw = str(await response.text())
+            if len(raw.encode("utf-8")) > polar_integration.BODY_MAX_BYTES:
+                return {"status": 502, "data": None}
+            try:
+                data = json.loads(raw) if raw else None
+            except Exception:
+                data = None
+            return {"status": status, "data": data}
+        except Exception:
+            # Provider errors may include authorization headers. Never return
+            # or log exception text from this credential-bearing call.
+            return {"status": 0, "data": None}
+
+
+async def polar_integration_handler(env, request, action):
+    return await polar_integration.handle(
+        _PolarIntegrationRuntime(env, request), action)
 
 
 async def world_organizations_handler(env, request):
@@ -33947,9 +34247,6 @@ def _forkbot_is_allowed_ai_model(env, wanted=""):
 
 def _forkbot_ai_model_not_found_error(error):
     text = _safe_error_text(error).lower()
-    return "model" in text and "not found" in text
-def _forkbot_ai_model_not_found_error(error):
-    text = _safe_error_text(error).lower()
     if not text:
         return False
     return any(marker in text for marker in (
@@ -34092,27 +34389,19 @@ async def ai_ask_handler(env, request):
     # default; the resolved id is still accepted for older clients that signed
     # whatever the relay handed them.
     verified = await _verify_owner_signature(
-        env, account, sig, _canonical(requested))
-    if not verified and model != requested:
+        env, account, sig, _canonical(requested_model))
+    if not verified and model != requested_model:
         verified = await _verify_owner_signature(
             env, account, sig, _canonical(model))
     if not verified:
         return json_response({"error": "unauthorized"}, status=401)
-    if requested_model and not _forkbot_is_allowed_ai_model(env, requested_model):
-        return json_response({"error": "not_found", "model": requested_model},
-                             status=404)
     limited = await _ai_ask_rate_check(env, await blind_index(env, account))
     if limited is not None:
         return limited
     outcome = {}
     reply = await _forkbot_run_ai(
         env, AI_ASK_SYSTEM_PROMPT, prompt, model=model,
-        max_tokens=AI_ASK_MAX_TOKENS,
-        allow_model_not_found_error=True)
-    if isinstance(reply, dict) and reply.get("__forkbot_ai_error__") == "not_found":
-        return json_response(
-            {"error": "not_found", "model": reply.get("model", model)},
-            status=404)
+        max_tokens=AI_ASK_MAX_TOKENS, outcome=outcome)
     if not isinstance(reply, str) or not reply.strip():
         # _forkbot_run_ai already logged why (missing binding, provider error,
         # unusable shape); the composer needs a distinguishable failure so it
@@ -34134,7 +34423,7 @@ async def ai_ask_handler(env, request):
 
 async def _forkbot_run_ai(
     env, system_prompt, user_prompt, schema=None, model="", max_tokens=512,
-    allow_model_not_found_error=False,
+    outcome=None,
 ):
     """Run the Workers AI chat model and return the raw response text/object
     (or None). Shared by the issue-drafting and intent-classification helpers.
@@ -34204,11 +34493,6 @@ async def _forkbot_run_ai(
                 all_missing = False
         if ran:
             break
-        except Exception as error:
-            if allow_model_not_found_error and _forkbot_ai_model_not_found_error(error):
-                return {"__forkbot_ai_error__": "not_found", "model": model}
-            last_error = error
-            continue
     if not ran:
         outcome["failure"] = ("model_not_found" if all_missing
                               else "provider_error")
@@ -36206,7 +36490,7 @@ async def discussions_handler(env, request, owner, repo):
 async def repo_pending_counts_handler(env, request, owner, repo):
     # GET /api/repo/{owner}/{repo}/pending — content-free tallies of inbox
     # items still waiting for the owner node's next sync, so the website can
-    # badge the Issues/Pulls/Discussions/Commits tabs with "N pending".
+    # badge the Issues/Pulls/Discussions tabs with "N pending".
     # Public: the counts reveal only submission volume (submissions come from
     # the public anyway); the items themselves stay encrypted and owner-gated
     # behind the per-topic GET routes. One UNION round trip, edge-cacheable
@@ -42675,27 +42959,72 @@ def _render_admin_stats(stats):
 
 
 def _render_admin_operational_alerts(
-        settings, csrf_field="", admin_query=""):
+        settings, csrf_field="", admin_query="", standalone=False):
     settings = settings if isinstance(settings, dict) else {}
-    email_checked = " checked" if settings.get("statusEmails") else ""
-    ping_checked = " checked" if settings.get("statusPings", True) else ""
+    rows = []
+    for system_id, label in STATUS_ALERT_ADMIN_SYSTEMS:
+        field_id = system_id.replace(":", "__").replace("*", "all")
+        ping_checked = (
+            " checked" if _status_monitor_alert_setting(
+                settings, system_id, "pings") else "")
+        email_checked = (
+            " checked" if _status_monitor_alert_setting(
+                settings, system_id, "emails") else "")
+        continual_checked = (
+            " checked" if _status_monitor_alert_setting(
+                settings, system_id, "continual") else "")
+        rows.append(
+            '<tr><th scope="row">%s</th>'
+            '<td><label><input type="checkbox" name="ping_%s" value="1"%s> '
+            'Ping</label></td>'
+            '<td><label><input type="checkbox" name="email_%s" value="1"%s> '
+            'Email</label></td>'
+            '<td><label><input type="checkbox" name="continual_%s" value="1"%s> '
+            'Continual ping</label></td></tr>' % (
+                _html_escape(label), field_id, ping_checked,
+                field_id, email_checked, field_id, continual_checked))
+    page_link = (
+        '<a class="button" href="%s">Open alert settings page</a>' %
+        _admin_href(admin_query, view="alerts")
+        if not standalone else
+        '<a href="%s">Back to admin data</a>' % _admin_href(admin_query))
     return (
         '<section id="operational-alerts" class="admin-setting" '
         'tabindex="-1"><div><h2>Operational alerts</h2>'
-        '<p>Ping platform administrators when a ForkMesh system check fails, '
-        'and again when it recovers. Optional attention emails include a '
-        'redacted two-minute Cloudflare log excerpt when credentials are '
-        'configured.</p></div>'
+        '<p>Admin-only delivery controls for every /status monitor. Continual '
+        'ping repeats a still-down alert every five minutes; the homepage is '
+        'selected by default. Optional attention emails include a redacted '
+        'two-minute Cloudflare log excerpt when credentials are configured.</p>'
+        + page_link + '</div>'
         '<form method="post" action="%s">' %
-        _admin_href(admin_query, action="set_operational_alerts") +
+        _admin_href(admin_query, action="set_operational_alerts",
+                    view=("alerts" if standalone else "")) +
         csrf_field +
-        '<label><input type="checkbox" name="pings_enabled" value="1"%s> '
-        'Send outage and recovery alerts to Pings</label>'
-        '<label><input type="checkbox" name="email_enabled" value="1"%s> '
-        'Send outage and recovery email</label>'
-        '<button type="submit">Save alert setting</button></form></section>'
-        % (ping_checked, email_checked)
+        '<div class="table-wrap"><table><thead><tr><th>Monitor</th>'
+        '<th>Qt / Pings</th><th>Email</th><th>Persistent outage</th>'
+        '</tr></thead><tbody>' + "".join(rows) + '</tbody></table></div>'
+        '<button type="submit">Save alert settings</button></form></section>'
     )
+
+
+def render_admin_alerts_html(settings, csrf_field="", admin_query="", banner=""):
+    banner_html = (
+        '<div class="banner">%s</div>' % _html_escape(banner) if banner else "")
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<meta name="color-scheme" content="light dark">'
+        '<title>forkmesh · alert settings</title>'
+        '<link rel="stylesheet" href="/styles.css">'
+        '<link rel="stylesheet" href="/site-header.css">'
+        '<script src="/site-header.js" defer></script>'
+        '<style>' + ADMIN_STYLE + '</style></head><body>'
+        '<div data-forkmesh-header="simple"></div><div class="ab-root">'
+        '<header><h1>Monitoring alert settings</h1>'
+        '<div class="meta">Granular, administrator-only outage delivery.</div>'
+        '</header>' + banner_html + _render_admin_operational_alerts(
+            settings, csrf_field, admin_query, standalone=True) +
+        '</div></body></html>')
 
 
 def _render_admin_repo_terms_flags(csrf_field="", admin_query=""):
@@ -46462,15 +46791,28 @@ class Default(WorkerEntrypoint):
                     banner = "Ownership request failed: " + repr(error)
             elif action == "set_operational_alerts":
                 try:
-                    email_enabled = (
-                        form.get("email_enabled", [""])[0] == "1")
-                    pings_enabled = (
-                        form.get("pings_enabled", [""])[0] == "1")
                     current_alerts = await _repo_alert_settings_get(
                         self.env, *FLAGSHIP_MONITOR_ID.split("/", 1))
                     updated_alerts = dict(current_alerts)
-                    updated_alerts["statusEmails"] = email_enabled
-                    updated_alerts["statusPings"] = pings_enabled
+                    monitor_settings = {}
+                    for system_id, _label in STATUS_ALERT_ADMIN_SYSTEMS:
+                        field_id = system_id.replace(
+                            ":", "__").replace("*", "all")
+                        monitor_settings[system_id] = {
+                            "pings": form.get(
+                                "ping_" + field_id, [""])[0] == "1",
+                            "emails": form.get(
+                                "email_" + field_id, [""])[0] == "1",
+                            "continual": form.get(
+                                "continual_" + field_id, [""])[0] == "1",
+                        }
+                    updated_alerts["statusMonitors"] = monitor_settings
+                    # Keep the legacy aggregate values meaningful for older
+                    # Worker versions during a rolling deploy.
+                    updated_alerts["statusEmails"] = any(
+                        item["emails"] for item in monitor_settings.values())
+                    updated_alerts["statusPings"] = any(
+                        item["pings"] for item in monitor_settings.values())
                     await d1_run(
                         self.env,
                         "INSERT INTO repo_alert_settings "
@@ -46484,8 +46826,10 @@ class Default(WorkerEntrypoint):
                     banner = (
                         "Operational alert delivery settings saved.")
                     audit_details = {
-                        "emailEnabled": email_enabled,
-                        "pingsEnabled": pings_enabled,
+                        "monitorCount": len(monitor_settings),
+                        "continual": sorted(
+                            key for key, value in monitor_settings.items()
+                            if value["continual"]),
                     }
                 except Exception as error:
                     banner = (
@@ -46797,6 +47141,15 @@ class Default(WorkerEntrypoint):
         stats = await admin_stats(self.env)
         operational_alert_settings = await _repo_alert_settings_get(
             self.env, *FLAGSHIP_MONITOR_ID.split("/", 1))
+        if params.get("view", [""])[0] == "alerts":
+            return Response(
+                render_admin_alerts_html(
+                    operational_alert_settings, csrf_field, admin_query,
+                    banner),
+                status=200,
+                headers={"content-type": "text/html; charset=utf-8",
+                         "cache-control": "no-store"},
+            )
         # Default the table browser to most-records-first; ?sort=name opts back
         # into the A–Z ordering.
         sort_records = params.get("sort", [""])[0] != "name"
@@ -47417,6 +47770,11 @@ class Default(WorkerEntrypoint):
         # One prompt answered by a picked Workers AI model (desktop composer).
         if url.path in ("/api/ai/ask", "/api/ai/ask/"):
             return await ai_ask_handler(self.env, request)
+
+        polar_match = POLAR_INTEGRATION_RE.match(url.path)
+        if polar_match:
+            return await polar_integration_handler(
+                self.env, request, polar_match.group(1))
 
         # All /api/accounts/* paths (reserve, profile, follow, login, lookup)
         # are dispatched by accounts_handler.
@@ -48414,6 +48772,8 @@ class Default(WorkerEntrypoint):
         # highest-traffic document in the Python isolate.
         try:
             resp = await self.env.ASSETS.fetch(base + "index.html")
+            if int(getattr(resp, "status", 0) or 0) != 200:
+                raise RuntimeError("homepage asset unavailable")
             return JsResponse.new(resp.body, to_js({
                 "status": 200,
                 "headers": {
@@ -48423,11 +48783,11 @@ class Default(WorkerEntrypoint):
             }))
         except Exception:
             return Response(
-                "<!doctype html><title>ForkMesh</title>",
-                status=200,
+                "<!doctype html><title>ForkMesh unavailable</title>",
+                status=503,
                 headers={
                     "content-type": "text/html; charset=utf-8",
-                    "cache-control": "no-cache",
+                    "cache-control": "no-store, max-age=0, must-revalidate",
                 },
             )
 

@@ -1627,22 +1627,29 @@ def test_dashboard_pull_detail_reads_committed_patch_for_files_changed():
     for marker in (
         'const PULL_METADATA_BRANCH = "forkmesh/pulls";',
         "async function resolveRepoPullMetadataCommit(repo)",
-        'async function loadRepoPullPatch(repo, number, metadataCommit = "")',
+        'async function loadRepoPullPatch(repo, number, metadataCommit = "", values = {})',
         "function parsePatchStats(patch)",
-        "function renderRepoPullFiles(files)",
-        "function renderRepoPullPatch(patch)",
-        "data-repo-pull-files",
+        "function renderRepoPullFiles(files, viewed = new Set())",
+        "function renderRepoPullPatch(patch, viewed = new Set())",
+        "data-repo-pull-file-list",
         "data-repo-pull-patch",
         "pulls/${number}/changes.patch",
         "ref: commit,",
-        "? await loadRepoPullPatch(repo, number, pullMetadataCommit)",
-        "renderRepoPullFiles(pullPatch.files)",
-        "renderRepoPullPatch(pullPatch.patch)",
+        "? await loadRepoPullPatch(repo, number, pullMetadataCommit, parsed.values || {})",
+        "renderRepoPullFiles(pullPatch.files, pullViewed)",
+        "renderRepoPullPatch(pullPatch.patch, pullViewed)",
     ):
         assert marker in dashboard_js
 
     assert "pulls/${number}/changes.patch" in dashboard_js
+    assert 'String(values?.status || "open").toLowerCase() !== "open"' in dashboard_js
     assert "fetchJson(`${repoApiBase(repo)}/pulls" not in dashboard_js
+
+
+def test_dashboard_never_loads_a_diff_for_non_open_pulls():
+    guard = 'String(values?.status || "open").toLowerCase() !== "open"'
+    assert guard in _read(PUBLIC / "dashboard.js")
+    assert guard in _read(PUBLIC / "dashboard/js/06-repo-content.js")
 
 
 def test_dashboard_pull_metadata_reads_pin_the_dedicated_branch_commit():

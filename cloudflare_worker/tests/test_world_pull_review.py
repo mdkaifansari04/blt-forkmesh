@@ -123,6 +123,11 @@ Binary files /dev/null and b/assets/logo.png differ`;
     assert diff["files"][1]["status"] == "added"
 
 
+def test_closed_and_merged_pulls_do_not_load_a_patch():
+    assert 'String(metadata.status || "").toLowerCase() !== "open"' in APP
+    assert 'patchSource: "not-open"' in APP
+
+
 def test_unsafe_files_are_omitted_and_render_budget_is_enforced():
     script = f"""
       import {{ parseUnifiedDiff }} from {json.dumps(MODULE.as_uri())};

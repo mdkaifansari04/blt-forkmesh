@@ -721,6 +721,7 @@
     <script src="/site-footer.js?v=acdada792fa2" defer></script>
     <link rel="stylesheet" href="/site-header.css" />
     <script src="/site-header.js?v=4fff78946d89" defer></script>
+    <script src="/polar-memberships.js?v=418365a334d7" defer></script>
   </head>
   <body class="min-h-full bg-background text-foreground">
     <div data-forkmesh-header="simple"></div>
@@ -838,6 +839,17 @@
               </div>
             </div>
           </article>
+        </section>
+
+        <section id="memberships" class="mx-auto mt-8 max-w-[42rem] rounded-xl border border-white/15 bg-white/[0.035] p-6 text-center" aria-labelledby="memberships-title">
+          <p class="text-[0.62rem] font-bold uppercase tracking-[0.16em] text-white/55">Optional membership</p>
+          <h2 id="memberships-title" class="mt-2 font-favorit text-[1.25rem] font-bold text-white">Support the ForkMesh network</h2>
+          <p class="mx-auto mt-2 max-w-[31rem] text-[0.8rem] leading-[1.5] text-white/72">Core and Pro stay free during launch. Memberships fund the public infrastructure and are billed securely through Polar.</p>
+          <div class="mt-5 grid gap-3 sm:grid-cols-2">
+            <button data-polar-checkout="supporter" type="button" class="plan-button flex h-10 items-center justify-center rounded-[0.45rem] text-[0.74rem] font-bold text-white disabled:cursor-wait disabled:opacity-60">Become a Supporter</button>
+            <button data-polar-checkout="pro" type="button" class="plan-button flex h-10 items-center justify-center rounded-[0.45rem] text-[0.74rem] font-bold text-white disabled:cursor-wait disabled:opacity-60">Choose Pro membership</button>
+          </div>
+          <p data-polar-checkout-status role="status" aria-live="polite" class="min-h-5 pt-3 text-center text-[0.74rem] text-white/72"></p>
         </section>
 
         <section class="mx-auto mt-8 flex max-w-[34rem] flex-col items-center gap-3 text-center">

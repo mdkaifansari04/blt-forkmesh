@@ -516,7 +516,7 @@ def main():
     _, err = call("update_project", {"number": 2, "issues": [999]})
     check("update_project unknown issue link", err)
 
-    # ---- pulls (unchanged legacy path) --------------------------------------
+    # ---- branch-backed pulls -------------------------------------------------
     git("checkout", "-q", "-b", "feature")
     (repo / "feature.txt").write_text("new\n")
     git("add", "feature.txt")
@@ -526,10 +526,24 @@ def main():
                                              "title": "Add feature"})
     check("open_pr_from_branch", not err and "#1" in text)
     check("pull.md written", (repo / "pulls/1/pull.md").exists())
+    pull_md = (repo / "pulls/1/pull.md").read_text()
+    check("agent PR stores immutable branch pointers",
+          "derive: branch" in pull_md and
+          "creationBaseOid:" in pull_md and "creationHeadOid:" in pull_md)
+    check("agent PR does not duplicate patch payloads",
+          not (repo / "pulls/1/changes.patch").exists() and
+          not (repo / "pulls/1/commits.mbox").exists())
     text, err = call("open_pr_from_branch", {"branch": "feature"})
     check("open_pr idempotent", not err and "already open" in text)
     text, err = call("get_pr_diff", {"number": 1})
     check("get_pr_diff", not err and "feature.txt" in text)
+    pull_path = repo / "pulls/1/pull.md"
+    open_metadata = pull_path.read_text()
+    pull_path.write_text(open_metadata.replace("status: open", "status: merged"))
+    text, err = call("get_pr_diff", {"number": 1})
+    check("get_pr_diff refuses non-open pulls",
+          err and "diff is no longer retained" in text)
+    pull_path.write_text(open_metadata)
 
     # ---- connector token (adhoc #16) ----------------------------------------
     # No connector file: the historical local-subprocess setup stays fully open.

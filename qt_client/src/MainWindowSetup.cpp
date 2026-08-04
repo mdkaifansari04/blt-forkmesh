@@ -814,6 +814,11 @@ QStringList MainWindow::testSourceControlPaths() const
     return paths;
 }
 
+QString MainWindow::testSourceControlDiffText() const
+{
+    return m_scmDiff ? m_scmDiff->toPlainText() : QString();
+}
+
 QString MainWindow::testScmCommitControlsState() const
 {
     QStringList parts;
@@ -3986,6 +3991,8 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
 
 void MainWindow::setFooterUpdateLine(const QString &line)
 {
+    if (m_logActivityLights)
+        m_logActivityLights->pulse(line);
     if (!m_footerUpdateLog)
         return;
     const QString clean = line.trimmed();
