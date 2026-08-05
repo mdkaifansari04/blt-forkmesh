@@ -1546,8 +1546,11 @@
       }
       if (repoTerms) repoTerms.innerHTML = repositoryTermsBadge(repo, true);
       if (repoAvailability) {
-        repoAvailability.textContent = viaMirror
-          ? "served by mirror"
+        const servedBy = String(state.repoServedBy?.name || "").trim();
+        repoAvailability.textContent = servedBy
+          ? `served by ${servedBy}`
+          : viaMirror
+            ? "served by mirror"
           : live
             ? "mirror online"
             : "mirror offline";

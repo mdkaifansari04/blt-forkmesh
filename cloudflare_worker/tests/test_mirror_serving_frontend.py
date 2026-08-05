@@ -188,29 +188,27 @@ def test_repo_detail_reflects_mirror_serving():
     assert "const viaMirror = repoServedByMirror(repo);" in header
     # The shared top-bar badge keys off the group verdict; the redundant title
     # row was removed from the repository content itself.
-    assert 'repoAvailability.textContent = viaMirror' in header
+    assert 'repoAvailability.textContent = servedBy' in header
+    assert 'const servedBy = String(state.repoServedBy?.name || "").trim();' in header
     assert '? "served by mirror"' in header
     assert '? "mirror online"' in header
     assert ': "mirror offline"' in header
 
 
-def test_served_by_badge_includes_serving_node_counters():
+def test_served_by_status_moves_to_the_repository_header():
     served_by = DASHBOARD_JS[
-        DASHBOARD_JS.index("function servedMirrorStats(name)")
+        DASHBOARD_JS.index("function renderRepoServedBy(node, tookMs)")
         : DASHBOARD_JS.index("function repoExplorerRowClass(")
     ]
-    assert "mirror.clonesServed" in served_by
-    assert "mirror.websiteServed" in served_by
-    assert "${formatCount(clones)} clones" in served_by
-    assert "${formatCount(website)} website requests" in served_by
-    assert "`served by ${name}`, speed, servedMirrorStats(name)" in served_by
+    assert 'renderHeaderContext("explore")' in served_by
+    assert "data-repo-served-by" not in served_by
 
     mirrors = DASHBOARD_JS[
         DASHBOARD_JS.index("async function loadRepoMirrors(repo, options = {})")
         : DASHBOARD_JS.index("function renderRepoRelease(")
     ]
     # The tree/blob request may set servedBy before /mirrors has loaded; after
-    # counters arrive, refresh the badge so it gains clone and website counts.
+    # the mirror data arrives, refresh the shared header status.
     assert "renderRepoServedBy(state.repoServedBy.name, state.repoServedBy.tookMs)" in mirrors
 
 
