@@ -39,6 +39,7 @@ run_worker_first = [
   "!/dashboard/network",
   "!/dashboard/chat",
   "!/dashboard/tasks",
+  "!/dashboard/notes",
   "!/dashboard/settings",
   "!/dashboard/profile",
   "!/dashboard/profile/repositories",
@@ -66,6 +67,7 @@ run_worker_first = [
   "/about.html",
   "/features.html",
   "/homev2.html",
+  "/new-home.html",
   "/pricing.html",
   "/press.html",
   "/careers.html",
@@ -109,9 +111,17 @@ REWARD_HEALTH_FRESH_MS = "600000"
 # ForkBot's chat-to-issue model. llama-3.3-70b (fp8-fast) is markedly better
 # at intent detection and supports Workers AI JSON mode (response_format
 # json_schema), which _forkbot_run_ai requests first so replies are guaranteed
-# parseable; the code default (FORKBOT_AI_DEFAULT_MODEL) stays llama-3.1-8b as
-# a conservative fallback when this var is unset.
+# parseable; the code default (FORKBOT_AI_DEFAULT_MODEL) matches this active
+# model so a self-hosted relay without the override never falls onto a retired
+# Workers AI id. This is the DEFAULT model: a
+# chat client may send its own prompt to any other model listed by
+# GET /api/forkbot/models (FORKBOT_AI_MODEL_CHOICES), and this var's model is
+# always offered there as the default pick.
 FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+# Username moderation uses the same native Workers AI binding with a smaller,
+# JSON-capable classifier model. The local digest lookup runs first; this call
+# catches obfuscated/lookalike variants before a name can be persisted.
+USERNAME_MODERATION_AI_MODEL = "@cf/meta/llama-3.1-8b-instruct-fast"
 # Payout relay mesh (canonical routes /api/relay-mesh/*, legacy alias
 # /api/federation/* — unrelated to the ActivityPub fediverse layer at /ap/*).
 # Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com). The relay
@@ -195,6 +205,10 @@ name = "FORKMESH_NODES"
 class_name = "ForkMeshNodes"
 
 [[durable_objects.bindings]]
+name = "FORKMESH_NOTE_ROOM"
+class_name = "ForkMeshNoteRoom"
+
+[[durable_objects.bindings]]
 name = "FORKMESH_CRON_WATCHDOG"
 class_name = "ForkMeshCronWatchdog"
 
@@ -247,6 +261,10 @@ class_name = "ForkMeshOfficeRoom"
 [[env.dev.durable_objects.bindings]]
 name = "FORKMESH_NODES"
 class_name = "ForkMeshNodes"
+
+[[env.dev.durable_objects.bindings]]
+name = "FORKMESH_NOTE_ROOM"
+class_name = "ForkMeshNoteRoom"
 
 [[env.dev.durable_objects.bindings]]
 name = "FORKMESH_CRON_WATCHDOG"
@@ -342,6 +360,12 @@ tag = "v15"
 # Every bot REST request crosses one fixed-name object. It persists only
 # bounded Discord rate-bucket expiry metadata and never message/channel data.
 new_sqlite_classes = ["ForkMeshDiscordGate"]
+
+[[migrations]]
+tag = "v16"
+# Notes persist in encrypted D1 rows. This object carries only live
+# presence/cursor/update fanout and uses WebSocket hibernation while idle.
+new_sqlite_classes = ["ForkMeshNoteRoom"]
 
 
 [observability]

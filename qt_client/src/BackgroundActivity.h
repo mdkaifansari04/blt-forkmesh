@@ -14,15 +14,16 @@
 
 // Process-wide "something is working" bus (adhoc #421).
 //
-// The strip between the live log and the agent prompt shows one spinner row per
-// *kind* of background work. Most of that work is started by free functions
+// The bottom status strip shows one rotating icon per *kind* of background
+// work. Most of that work is started by free functions
 // (waitForGit), by the network transport, or off the GUI thread — none of which
 // hold a MainWindow pointer — so instead of threading a back pointer through
 // every call site, callers announce a one-word kind here and MainWindow installs
 // a single listener that marshals the notification onto the GUI thread.
 //
 // Tickets are refcounted per kind: begin() hands one out, end() retires it, and
-// the strip keeps a kind visible while at least one of its tickets is open.
+// the status icon's segmented ring carries that count while at least one ticket
+// is open.
 // Nothing is drawn for work that finishes quickly (see MainWindow's sweep), so
 // announcing even the hottest git read here stays free in the common case.
 namespace forkmesh {
@@ -45,12 +46,12 @@ public:
     {
         const quint64 id = state().nextId.fetchAndAddOrdered(1);
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        ActionTelemetry::started(id, kind, detail, execution, now);
         {
             QMutexLocker lock(&state().mutex);
             state().tickets.insert(id, Ticket{kind, detail, execution, now});
+            notifyLocked(id, kind, detail, execution, true);
         }
-        ActionTelemetry::started(id, kind, detail, execution, now);
-        notify(id, kind, detail, execution, true);
         return id;
     }
 
@@ -68,6 +69,8 @@ public:
                 ticket = *it;
                 state().tickets.erase(it);
                 found = true;
+                notifyLocked(id, QString(), QString(), ticket.execution,
+                             false);
             }
         }
         if (found) {
@@ -76,16 +79,29 @@ public:
                                       ticket.execution, ticket.startedAtMs, now,
                                       outcome);
         }
-        if (found)
-            notify(id, QString(), QString(), ticket.execution, false);
     }
 
     // Only the window installs a listener; passing a default-constructed
-    // std::function (as the window's destructor does) detaches again.
+    // std::function (as the window's destructor does) detaches again. Attaching
+    // replays every open ticket so work that began during startup cannot be in
+    // actions.jsonl while missing from the bottom background strip.
+    //
+    // Listener calls are serialized under the state mutex. The UI listener only
+    // posts an event and never re-enters this bus; keeping the replay and live
+    // edges in the same critical section prevents an end edge racing ahead of
+    // its replayed start edge and leaving a permanent chip behind.
     static void setListener(Listener listener)
     {
         QMutexLocker lock(&state().mutex);
         state().listener = std::move(listener);
+        if (!state().listener)
+            return;
+        for (auto it = state().tickets.cbegin();
+             it != state().tickets.cend(); ++it) {
+            const Ticket &ticket = it.value();
+            state().listener(it.key(), ticket.kind, ticket.detail,
+                             ticket.execution, true);
+        }
     }
 
 private:
@@ -110,16 +126,20 @@ private:
         return s;
     }
 
-    static void notify(quint64 id, const QString &kind, const QString &detail,
-                       ActionTelemetry::Execution execution, bool started)
+    // state().mutex must be held. Keeping notification inside the ticket
+    // mutation's critical section gives listener installation a strict ordered
+    // snapshot without duplicate or inverted edges.
+    static void notifyLocked(quint64 id, const QString &kind,
+                             const QString &detail,
+                             ActionTelemetry::Execution execution,
+                             bool started)
     {
-        QMutexLocker lock(&state().mutex);
         if (state().listener)
             state().listener(id, kind, detail, execution, started);
     }
 };
 
-// Work that retires inside this window never gets a row in the strip. This
+// Work that retires inside this window never gets an icon in the strip. This
 // delay is presentation-only; execution metadata, not elapsed time, determines
 // whether the work was actually backgrounded.
 constexpr qint64 kBackgroundShowAfterMs = 200;

@@ -32,6 +32,17 @@
             "sig": "WNXSPAa3lrv8TIlqk5v_LkqOJadxUawrdbEWIsKwyVGRjPIljjFNIgBSPO__7xFs7fFTnmZN--VQ6PXDANx8Bg",
             "ts": 1785562688616,
             "type": "agent"
+        },
+        {
+            "attachments": [
+            ],
+            "author": "forkbot",
+            "authorName": "forkbot",
+            "body": "@jett asked ForkBot to start a coding agent on this issue.",
+            "id": "forkbot-agent-1785367341775",
+            "sig": "",
+            "ts": 1785367341775,
+            "type": "comment"
         }
     ],
     "labels": [

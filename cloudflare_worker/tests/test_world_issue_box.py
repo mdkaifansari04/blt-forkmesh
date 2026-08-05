@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Contracts for the in-world issue and pull-request work panels.
+"""Focused repository issue/pull workbench contracts.
 
-Beside the selected repository portal the scene stands independent left PR and
-right issue panels, each with up to 25 cards and its own bottom pagination.
-Issue records can expand before opening the signed thread; pull records route
-into exact-ref diff review. Both project records the shell already verified.
+The open repository district deliberately has no in-world PR or issue towers. Record
+work stays in the signed web workbench, which keeps the scene legible while
+retaining the same commit-pinned record access.
 """
 
 from pathlib import Path
@@ -21,120 +20,62 @@ DESK = SCENE[
 ]
 
 
-def test_scene_builds_a_bounded_desk_from_verified_records_only():
-    assert "REPOSITORY_ISSUE_CARDS_VISIBLE = 25" in SCENE
-    assert "REPOSITORY_PULL_CARDS_VISIBLE = 25" in SCENE
-    assert "number >= 1 && number <= 10_000_000" in SCENE
-    assert 'layer.name = "repository-record-desk"' in DESK
-    assert "const pullBoard = addRecordBoard(" in DESK
-    assert 'pulls,\n      "pull",\n      -7.75,' in DESK
-    assert 'issues,\n      "issue",\n      7.75,' in DESK
-    assert "const rows = Math.max(1, allItems.length);" in DESK
-    assert "const towerSlot = pageInfo.start + index;" in DESK
-    assert "new THREE.InstancedMesh(" in DESK
-    assert "const cardX = 0;" in DESK
-    assert '"combined"' not in DESK
-    assert "items.length > 13 ? 2 : 1" not in DESK
-    assert "repository-issue-page-expanded:" in DESK
-    # Pure projection: no network, no storage, no invented records.
-    assert "fetch" not in DESK
-    assert "localStorage" not in DESK
-    assert "sessionStorage" not in DESK
-    assert "repositoryRecordPage(kind, allItems.length)" in DESK
-    assert ".slice(pageInfo.start, pageInfo.end)" in DESK
-    assert "repositoryRecordPageTexture(THREE, pageInfo, accent)" in DESK
+def _function_body(source, function):
+    start = source.index(f"  {function}(")
+    depth = 0
+    opened = False
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+            opened = True
+        elif source[index] == "}" and opened:
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f"missing closing brace for {function}")
 
 
-def test_issue_and_pull_cards_show_commit_pinned_metadata():
-    assert "function repositoryIssueCardTexture(" in SCENE
-    assert "function repositoryPullCardTexture(" in SCENE
-    for field in ("issue.title", "issue.author", "issue.labels",
-                  "issue.assignees", "issue.metadataAvailable"):
-        assert field.replace("pull.", "pull?.") in SCENE
-    for field in ("pull.title", "pull.author", "pull.head", "pull.base",
-                  "pull.createdAt", "pull.metadataAvailable"):
-        assert field in SCENE
+def test_scene_clears_any_legacy_record_desk_without_creating_new_towers():
+    # The shared scene refresh still has a safe teardown entry point, but it
+    # exits before selecting records, allocating cards, or mounting a layer.
+    return_at = DESK.index("return;")
+    assert "removeGeneratedLayer(previousMount, previousLayer, interactive)" in DESK
+    assert "world.userData.repositoryRecordDeskLayer = null" in DESK
+    assert "world.userData.repositoryRecordDeskData = null" in DESK
+    assert "const owner" not in DESK[:return_at]
+    assert 'layer.name = "repository-record-desk"' not in DESK[:return_at]
+    assert "new THREE.InstancedMesh(" not in DESK[:return_at]
+
+
+def test_repository_scene_refresh_does_not_submit_records_to_the_3d_scene():
+    refresh = _function_body(APP, "syncRepositoryScene")
+    assert "updateRepositoryRecordDesk" not in refresh
+    assert "repositoryPullRecords(active)" not in refresh
+    assert "expandedIssue: this.expandedRepositoryIssuePage" not in refresh
+
+
+def test_commit_pinned_issue_and_pull_workbenches_remain_available():
     loader = APP[
         APP.index("  async loadRepositoryEntityRecords("):
         APP.index("  flagshipCatalogCommits(")
     ]
     assert "selectedIssues" in loader
     assert "this.loadRepositoryBlobBatches(" in loader
-    assert "base,\n          commit,\n          issuePaths," in loader
     assert "issue metadata batch commit mismatch" in loader
     assert "record.metadataAvailable = true" in loader
 
-
-def test_desk_layer_is_removed_on_rebuild_and_catalog_replacement():
-    # Once inside updateRepositoryRecordDesk, once when the portal catalog
-    # layer that mounts the desk is torn down.
-    assert DESK.count("world.userData.repositoryRecordDeskLayer = null") == 1
-    assert SCENE.count("world.userData.repositoryRecordDeskLayer = null") >= 2
-    assert "removeGeneratedLayer(previousMount, previousLayer, interactive)" in DESK
-    assert "setRepositoryIssuePageExpanded" in SCENE
-    assert SCENE.count("updateRepositoryRecordDesk,") == 1
-    assert SCENE.count("setRepositoryIssuePageExpanded,") == 1
-
-
-def test_pick_handler_reports_pages_without_stealing_landmark_focus():
-    assert "hit.object.userData.repositoryIssuePage" in SCENE
-    assert "hit.object.userData.repositoryPullPage" in SCENE
-    assert "!repositoryIssuePage &&" in SCENE
-    assert "!repositoryPullPage" in SCENE
-
-
-def test_open_issue_cards_have_engineering_agent_and_model_controls():
-    for marker in (
-        "repositoryIssueAgentProviderTexture",
-        "repositoryIssueAgentModelTexture",
-        "repositoryIssueAgentProvider",
-        "repositoryIssueAgentAssignment",
-        '["haiku", "sonnet", "opus", "fable"]',
-        '["sol", "luna", "terra"]',
-        "setRepositoryIssueAgentPicker",
-    ):
-        assert marker in SCENE
-    assert "selectRepositoryIssueAgentProvider" in APP
-    assert "assignRepositoryIssueToAgent" in APP
-    assert "Only Engineering team members can assign issues" in APP
-    assert "Haiku security review runs first" in APP
-
-
-def test_shell_opens_issue_cards_in_the_live_world_workbench():
-    assert "this.openRepositoryIssueWorkbench(meta.repositoryIssuePage)" in APP
-    issue_workbench = APP[
-        APP.index("  openRepositoryIssueWorkbench("):
-        APP.index("  openRepositoryRecordWebWorkbench(")
-    ]
+    issue_workbench = _function_body(APP, "openRepositoryIssueWorkbench")
     assert 'this.openRepositoryRecordWebWorkbench("issue", page)' in issue_workbench
-    workbench = APP[
-        APP.index("  openRepositoryRecordWebWorkbench("):
-        APP.index("  selectRepositorySizeNode(")
-    ]
-    assert "safePullNumber(page.number)" in workbench
+    workbench = _function_body(APP, "openRepositoryRecordWebWorkbench")
     assert '"pulls" : "issues"' in workbench
     assert "data-world-repository-web-workbench" in workbench
     assert "<iframe" in workbench
 
 
-def test_shell_routes_pull_cards_into_the_canonical_web_workbench():
-    assert "this.openRepositoryPullWorkbench(meta.repositoryPullPage)" in APP
-    assert "this.openRepositoryPullWorkbench({" in APP
-    pull_workbench = APP[
-        APP.index("  openRepositoryPullWorkbench("):
-        APP.index("  async fetchRepositoryPullReview(")
-    ]
+def test_pull_records_still_route_to_the_canonical_web_workbench():
+    pull_workbench = _function_body(APP, "openRepositoryPullWorkbench")
     assert 'this.openRepositoryRecordWebWorkbench("pull"' in pull_workbench
-    generic = APP[
-        APP.index("  openRepositoryRecordWebWorkbench("):
-        APP.index("  selectRepositorySizeNode(")
-    ]
+    generic = _function_body(APP, "openRepositoryRecordWebWorkbench")
     assert 'detail.dataset.openLandmark = `repository-${recordKind}`' in generic
     assert '"pulls" : "issues"' in generic
     assert "Repository portals" not in generic
-    # The desk is fed the same commit-matched records as the explorer panel.
-    assert "pulls: this.repositoryPullRecords(active)" in APP
-    assert "expandedIssue: this.expandedRepositoryIssuePage" in APP
-    assert 'this.world.updateRepositoryRecordDesk?.({}, {})' in APP
-    # Expansion state resets whenever a repository map is (re)loaded.
-    assert APP.count("this.expandedRepositoryIssuePage = 0;") >= 3

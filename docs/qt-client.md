@@ -43,11 +43,11 @@ sudo pacman -S --needed base-devel cmake git openssl qt6-base qt6-svg
 brew install cmake git openssl@3 qt
 ```
 
-From the repository root:
+From the repository root (the helper preserves this as ForkMesh's launch
+directory):
 
 ```sh
-cd qt_client
-./run.sh
+./qt_client/run.sh
 ```
 
 `run.sh` configures a Release build, builds incrementally using all available
@@ -57,10 +57,10 @@ cache copied from another path and safely regenerates it.
 Available commands:
 
 ```sh
-./run.sh run       # incremental build and launch; "run" is optional
-./run.sh test      # build and run the main headless/window test suites
-./run.sh clean     # delete qt_client/build
-./run.sh rebuild   # clean, build, and launch
+./qt_client/run.sh run       # incremental build and launch; "run" is optional
+./qt_client/run.sh test      # build and run the sub-minute critical contracts
+./qt_client/run.sh clean     # delete qt_client/build
+./qt_client/run.sh rebuild   # clean, build, and launch
 ```
 
 Manual CMake commands are useful for IDEs and focused tests:
@@ -83,6 +83,39 @@ cmake -S qt_client -B qt_client/build \
 
 Never run ForkMesh as root. The node runs Git commands and repository workflows
 with the current user's permissions.
+
+## KVM-isolated coding workspace
+
+On Linux, ForkMesh can keep its desktop UI on the host while running coding
+agents and their subprocesses behind a separate Linux kernel in a Lima
+QEMU/KVM guest. The launch directory is mounted writable at the same path in
+the guest; it is not copied. ForkMesh also mounts linked-worktree Git metadata
+needed by that directory and a dedicated temporary agent-worktree root. The
+host home directory, desktop sockets, SSH agent, and unrelated environment
+variables are not shared.
+
+This mode requires [Lima 2.0 or newer](https://lima-vm.io/docs/installation/),
+QEMU, and read/write access to `/dev/kvm`. ForkMesh does not fall back to
+software emulation. To use it:
+
+1. Start ForkMesh from the narrowest directory all intended repositories live
+   under. For a source build, run `./qt_client/run.sh` from that directory. A
+   desktop launch normally starts in the home directory, which ForkMesh refuses
+   to expose because it is too broad.
+2. Open **Settings → General → KVM workspace**, turn on **Run coding agents in
+   an isolated KVM virtual machine**, and choose **Prepare / start VM**. The
+   first base-image download can take several minutes.
+3. Choose **Open VM shell** and install/sign in to Claude Code, Codex, or any
+   configured agent inside the guest. Host CLI login files are deliberately not
+   mounted.
+4. Choose **Restart ForkMesh now**. The status changes to **Active** after the
+   relaunch.
+
+Turning the setting off also requires a relaunch so an already-running agent
+cannot cross the host/guest boundary mid-session. Repositories outside the
+recorded launch directory are rejected while KVM mode is active. The
+per-directory VM is retained when the setting is off so its installed tools and
+guest login survive; stop it manually with `limactl stop <instance>` if desired.
 
 ## First run and navigation
 
@@ -204,8 +237,9 @@ When reporting a problem, include:
   `--headless` on a server. Linux screenshot capture under Wayland also needs
   the desktop portal and Qt D-Bus support.
 - **A moved checkout reports a stale CMake cache:** `run.sh` fixes this
-  automatically; otherwise run `./run.sh clean`.
-- **A normal build is unexpectedly slow:** use the incremental `./run.sh`;
+  automatically; otherwise run `./qt_client/run.sh clean`.
+- **A normal build is unexpectedly slow:** use the incremental
+  `./qt_client/run.sh`;
   install `ccache` to let objects survive clean builds and branch changes.
 - **Chat will not send:** select a conversation and confirm the node is
   connected. World office replies also require a signed-in account; reconnect

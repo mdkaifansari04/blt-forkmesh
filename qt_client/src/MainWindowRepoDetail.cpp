@@ -429,6 +429,8 @@ QWidget *MainWindow::buildRepoFilesPanel()
     m_repoSizeChart = repoSizeChart;
     m_repoLinesChart = repoLinesChart;
     m_repoFilesChart = repoFilesChart;
+    for (ResourceSparkline *chart : {repoSizeChart, repoLinesChart, repoFilesChart})
+        chart->setLoading(true);
     m_repoRatchetButton = new RatchetToggleButton;
     m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
     m_repoRatchetButton->setToolTip(
@@ -522,10 +524,10 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewList->setAllColumnsShowFocus(true);
     m_overviewList->header()->hide();
     m_overviewList->header()->setStretchLastSection(false);
-    // Keep each entry's icon, metric tracks, name, and updated time together on
-    // the left. The commit subject then begins immediately after the widest
-    // entry cell instead of the timestamp floating at the far-right edge.
-    m_overviewList->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    // Reserve a stable, roomy metadata column. This keeps every commit subject
+    // on one shared left edge and leaves a clear gutter after long filenames.
+    m_overviewList->header()->setSectionResizeMode(0, QHeaderView::Fixed);
+    m_overviewList->setColumnWidth(0, 360);
     m_overviewList->header()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_overviewList->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_overviewList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -1627,7 +1629,12 @@ void MainWindow::updateRepoIssueCount()
 void MainWindow::updateRepoDiscussionCount()
 {
     if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoDiscussionsTab))
-        b->setBadgeCount(m_currentDiscussions.size());
+        b->setBadgeCount(std::count_if(
+            m_currentDiscussions.begin(), m_currentDiscussions.end(),
+            [](const Discussion &discussion) {
+                return discussion.status != QLatin1String("closed") &&
+                       discussion.status != QLatin1String("archived");
+            }));
 }
 
 void MainWindow::updateRepoPullCount()
@@ -3415,6 +3422,26 @@ void MainWindow::openRepoReadme()
         openRepoFile(readme);
 }
 
+// Small round avatar for the latest-commit strip, inlined as a base64 data URI
+// (the same trick octiconMarkup uses) so it can sit right after the "committed
+// x ago" text inside the rich-text label rather than at the far edge of the
+// card. The pixmap is rasterised at size*dpr and drawn at the logical size, so
+// it stays crisp on HiDPI.
+static QString commitAuthorAvatarMarkup(const QByteArray &avatarPng, int size)
+{
+    const QPixmap pixmap = roundedAvatar(avatarPng, size, 0.5);
+    if (pixmap.isNull())
+        return QString();
+    QByteArray png;
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    pixmap.save(&buffer, "PNG");
+    return QStringLiteral(
+               " <img src='data:image/png;base64,%1' width='%2' height='%2'>")
+        .arg(QString::fromLatin1(png.toBase64()))
+        .arg(size);
+}
+
 void MainWindow::loadRepoOverview(const QString &path)
 {
     if (!m_overviewList)
@@ -3462,11 +3489,14 @@ void MainWindow::loadRepoOverview(const QString &path)
     // step, so Back returns to the directory you came from (adhoc #50).
     scheduleNavRecord();
 
+    // The git reads below can take a moment on a large mirror. Replace the old
+    // rows with an in-place outline immediately so the pending work has the
+    // same geometry as the finished overview.
+    showOverviewLoadingPlaceholders();
+
     // Gather phase: every git read below lands in locals only. The keep-alive
-    // pump services paint events between reads, so any widget cleared or
-    // written here would repaint mid-load — the old "flash of blank page, then
-    // piecewise redraws" jank. The previous overview stays on screen untouched
-    // until the new one is applied in one shot at the end.
+    // pump services paint events between reads; the loading outline above stays
+    // intact until the completed overview is applied in one shot at the end.
 
     // Latest commit strip: "<subject> · <author> committed <relative time>".
     QString commitBarText;
@@ -3486,11 +3516,21 @@ void MainWindow::loadRepoOverview(const QString &path)
             // Latest commit: subject, author and "x ago", plus the action/check
             // status glyph for this (the first/most-recent) commit.
             m_commitBarStatusHash = fullHash;
+            // The author's picture rides just after the relative time. Git only
+            // records a name, so our own commits show the account avatar and
+            // everyone else gets the deterministic procedural face keyed by that
+            // name — the same identicon contributors are drawn with elsewhere.
+            const QString me = topBarUserName();
+            const QByteArray avatarPng =
+                (!me.isEmpty() && author.compare(me, Qt::CaseInsensitive) == 0)
+                    ? effectiveUserAvatar()
+                    : forkMeshAvatarPng(author.toLower());
             m_commitBarBodyHtml =
                 QStringLiteral("<b>%1</b> &nbsp; <span style='color:#8b949e'>%2 "
-                               "committed %3</span>")
+                               "committed %3</span>%4")
                     .arg(subject.toHtmlEscaped(), author.toHtmlEscaped(),
-                         when.toHtmlEscaped());
+                         when.toHtmlEscaped(),
+                         commitAuthorAvatarMarkup(avatarPng, 16));
             commitBarText = commitStatusGlyph(fullHash) + m_commitBarBodyHtml;
         } else {
             m_commitBarStatusHash.clear();
@@ -3712,24 +3752,34 @@ void MainWindow::loadRepoOverview(const QString &path)
         page->setUpdatesEnabled(true);
 }
 
-// Three small tracks beside the entry icon summarize size, source lines and
-// recursive file count. Their tooltips retain the exact values while the row
-// stays compact.
-static QWidget *makeOverviewMetricTrack(double fraction, const QString &toolTip)
+// A single compact, vertical metric glyph beside the entry icon summarizes
+// size, source lines and recursive file count. It consumes one square rather
+// than three horizontal dashes, leaving the file and commit columns readable.
+static QWidget *makeOverviewMetricTracks(double sizeFraction, double locFraction,
+                                         double fileFraction,
+                                         const QStringList &toolTips)
 {
-    auto *metric = new QWidget;
-    metric->setFixedSize(24, 8);
-    metric->setToolTip(toolTip);
-    auto *track = new QFrame(metric);
-    track->setObjectName("overviewMetricTrack");
-    track->setGeometry(0, 2, 24, 4);
-    auto *fill = new QFrame(track);
-    fill->setObjectName("overviewMetricFill");
-    const int width = fraction <= 0.0 ? 0 : qMax(2, qRound(24 * qMin(1.0, fraction)));
-    fill->setGeometry(0, 0, width, 4);
-    for (QWidget *child : {track, fill})
-        child->setAttribute(Qt::WA_TransparentForMouseEvents);
-    return metric;
+    auto *metrics = new QWidget;
+    metrics->setFixedSize(16, 16);
+    metrics->setToolTip(toolTips.join(QLatin1Char('\n')));
+    const QList<double> fractions{sizeFraction, locFraction, fileFraction};
+    auto *layout = new QHBoxLayout(metrics);
+    layout->setContentsMargins(1, 0, 1, 0);
+    layout->setSpacing(2);
+    for (double fraction : fractions) {
+        auto *track = new QFrame(metrics);
+        track->setObjectName("overviewMetricTrack");
+        track->setFixedSize(3, 16);
+        auto *fill = new QFrame(track);
+        fill->setObjectName("overviewMetricFill");
+        const int height = fraction <= 0.0 ? 0
+            : qMax(2, qRound(16 * qMin(1.0, fraction)));
+        fill->setGeometry(0, 16 - height, 3, height);
+        for (QWidget *child : {track, fill})
+            child->setAttribute(Qt::WA_TransparentForMouseEvents);
+        layout->addWidget(track);
+    }
+    return metrics;
 }
 
 static QWidget *makeOverviewNameCell(const QIcon &icon, const QString &name,
@@ -3742,7 +3792,7 @@ static QWidget *makeOverviewNameCell(const QIcon &icon, const QString &name,
     cell->setAttribute(Qt::WA_TransparentForMouseEvents);
     auto *layout = new QHBoxLayout(cell);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(4);
+    layout->setSpacing(5);
     auto *iconLabel = new QLabel;
     iconLabel->setFixedSize(16, 16);
     iconLabel->setPixmap(icon.pixmap(16, 16));
@@ -3751,22 +3801,59 @@ static QWidget *makeOverviewNameCell(const QIcon &icon, const QString &name,
     auto *updatedLabel = new QLabel(updated);
     updatedLabel->setObjectName("overviewUpdatedTime");
     layout->addWidget(iconLabel);
-    layout->addWidget(makeOverviewMetricTrack(
-        sizeFraction, QStringLiteral("Size: %1").arg(formatByteSize(size))));
-    layout->addWidget(makeOverviewMetricTrack(
-        locFraction, loc > 0 ? QStringLiteral("Lines of code: %1").arg(QLocale().toString(loc))
-                             : QStringLiteral("No source lines")));
-    layout->addWidget(makeOverviewMetricTrack(
-        fileFraction,
-        files > 0 ? QStringLiteral("Files: %1").arg(QLocale().toString(files))
-                  : QStringLiteral("No files")));
-    layout->addSpacing(4);
+    layout->addWidget(makeOverviewMetricTracks(
+        sizeFraction, locFraction, fileFraction,
+        {QStringLiteral("Size: %1").arg(formatByteSize(size)),
+         loc > 0 ? QStringLiteral("Lines of code: %1").arg(QLocale().toString(loc))
+                 : QStringLiteral("No source lines"),
+         files > 0 ? QStringLiteral("Files: %1").arg(QLocale().toString(files))
+                   : QStringLiteral("No files")}));
+    layout->addSpacing(5);
     layout->addWidget(nameLabel);
-    layout->addSpacing(4);
+    layout->addStretch(1);
+    layout->addSpacing(12);
     layout->addWidget(updatedLabel);
     for (QWidget *child : {iconLabel, nameLabel, updatedLabel})
         child->setAttribute(Qt::WA_TransparentForMouseEvents);
     return cell;
+}
+
+void MainWindow::showOverviewLoadingPlaceholders()
+{
+    if (!m_overviewList)
+        return;
+    m_overviewList->setUpdatesEnabled(false);
+    m_overviewList->clear();
+    constexpr int kRows = 9;
+    const QList<int> nameWidths{96, 144, 78, 122, 108, 154, 86, 132, 112};
+    for (int row = 0; row < kRows; ++row) {
+        auto *item = new QTreeWidgetItem(m_overviewList);
+        item->setSizeHint(0, QSize(360, 28));
+        auto *left = new QWidget(m_overviewList);
+        auto *layout = new QHBoxLayout(left);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(5);
+        auto placeholder = [left](int width, int height) {
+            auto *bar = new QFrame(left);
+            bar->setObjectName("overviewLoadingPlaceholder");
+            bar->setFixedSize(width, height);
+            return bar;
+        };
+        layout->addWidget(placeholder(16, 16));
+        layout->addWidget(placeholder(16, 16));
+        layout->addSpacing(5);
+        layout->addWidget(placeholder(nameWidths.at(row), 11));
+        layout->addStretch(1);
+        layout->addWidget(placeholder(30, 10));
+        m_overviewList->setItemWidget(item, 0, left);
+        auto *commit = placeholder(150 - (row % 3) * 28, 10);
+        m_overviewList->setItemWidget(item, 1, commit);
+    }
+    const int listHeight = m_overviewList->frameWidth() * 2 + kRows * 28;
+    m_overviewList->setFixedHeight(listHeight);
+    m_overviewList->setUpdatesEnabled(true);
+    m_overviewList->viewport()->update();
+    QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 20);
 }
 
 void MainWindow::populateOverviewTree()
@@ -3837,7 +3924,7 @@ void MainWindow::populateOverviewTree()
         item->setSizeHint(
             0, QSize(QFontMetrics(m_overviewList->font()).horizontalAdvance(e.name) +
                          QFontMetrics(m_overviewList->font()).horizontalAdvance(updated) +
-                         16 + 3 * 24 + 4 * 7,
+                         16 + 16 + 5 * 5 + 12,
                      28));
         item->setData(0, Qt::UserRole, e.path);
         item->setData(0, Qt::UserRole + 1, e.isDir ? 1 : 0);
@@ -4168,8 +4255,8 @@ void MainWindow::loadCommits()
                                          .arg(unpushed.size())});
         summary->setData(kCommitRefKindsRole, QStringList{QStringLiteral("local")});
         summary->setToolTip(
-            QStringLiteral("%1 local commit%2 waiting to sync. Use Sync Changes "
-                           "above to publish them.")
+            QStringLiteral("%1 local commit%2 waiting to sync. Click to show files, "
+                           "then Sync Changes to publish them.")
                 .arg(unpushed.size())
                 .arg(unpushed.size() == 1 ? QString() : QStringLiteral("s")));
         m_commitsTable->setItem(row, kCommitSummaryCol, summary);
@@ -4573,6 +4660,11 @@ struct CommitFileStat {
     int adds = 0;
     int dels = 0;
 };
+struct UnsyncedCommitFiles {
+    QString hash;
+    QString subject;
+    QList<CommitFileStat> files;
+};
 
 static QList<CommitFileStat> commitFileStats(const QString &dir,
                                              const QString &hash)
@@ -4788,13 +4880,122 @@ void MainWindow::updateCommitRowHover(int row)
 
 void MainWindow::updateCommitsUnsyncedFilesPanel()
 {
-    // This status is a linked, dotted top row in the graph now. Keeping a
-    // second banner or expandable list above it makes the graph look detached
-    // and pushes the newest state away from the rest of its history.
-    if (m_commitsUnsyncedBanner)
+    if (!m_commitsUnsyncedBanner || !m_commitsUnsyncedFiles ||
+        !m_commitsUnsyncedSyncButton)
+        return;
+
+    const int pendingCount = m_commitsUnsyncedHashes.size();
+    if (pendingCount <= 0) {
+        m_commitsUnsyncedExpanded = false;
+        if (m_commitsBannerFade)
+            m_commitsBannerFade->stop();
         m_commitsUnsyncedBanner->hide();
-    if (m_commitsUnsyncedFiles)
+        m_commitsUnsyncedSyncButton->hide();
         m_commitsUnsyncedFiles->hide();
+        return;
+    }
+
+    if (m_commitsBannerFade)
+        m_commitsBannerFade->stop();
+    if (m_commitsBannerOpacity)
+        m_commitsBannerOpacity->setOpacity(1.0);
+
+    const bool syncing = m_pushingRepos.contains(m_repoDetailIndex) ||
+                        m_syncingRepos.contains(m_repoDetailIndex);
+    m_commitsUnsyncedSyncButton->setVisible(true);
+    m_commitsUnsyncedSyncButton->setEnabled(!syncing);
+    m_commitsUnsyncedSyncButton->setText(
+        pendingCount > 0 ? QStringLiteral("Sync Changes %1↑").arg(pendingCount)
+                         : QStringLiteral("Sync Changes"));
+    if (syncing)
+        startButtonSpin(m_commitsUnsyncedSyncButton);
+    else
+        stopButtonSpin(m_commitsUnsyncedSyncButton);
+    setOcticon(m_commitsUnsyncedSyncButton, QStringLiteral("sync"), 14);
+    m_commitsUnsyncedSyncButton->setToolTip(
+        QStringLiteral("Publish outgoing commits to the network mirror or push "
+                       "them to the configured upstream branch"));
+
+    const QString filesLabel =
+        m_commitsUnsyncedExpanded ? QStringLiteral("Hide files")
+                                  : QStringLiteral("Show files");
+    m_commitsUnsyncedBanner->setText(
+        QStringLiteral("%1 local commit%2 waiting to sync. <a href=\"commits\">%3</a>")
+            .arg(pendingCount)
+            .arg(pendingCount == 1 ? QString() : QStringLiteral("s"))
+            .arg(filesLabel));
+    m_commitsUnsyncedBanner->show();
+
+    if (!m_commitsUnsyncedExpanded) {
+        m_commitsUnsyncedFiles->hide();
+        return;
+    }
+
+    const QString dir = repoGitDir();
+    if (dir.isEmpty()) {
+        m_commitsUnsyncedFiles->hide();
+        return;
+    }
+
+    QHash<QString, QString> commitSubjects;
+    if (m_commitsTable) {
+        for (int row = 0; row < m_commitsTable->rowCount(); ++row) {
+            QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
+            if (!sum || sum->data(kCommitRowKindRole).toInt() != 0)
+                continue;
+            const QString hash = sum->data(Qt::UserRole).toString();
+            if (!hash.isEmpty())
+                commitSubjects.insert(hash, sum->text());
+        }
+    }
+
+    QList<UnsyncedCommitFiles> entries;
+    for (const QString &hash : m_commitsUnsyncedHashes) {
+        QList<CommitFileStat> files = commitFileStats(dir, hash);
+        if (files.isEmpty())
+            continue;
+        UnsyncedCommitFiles entry;
+        entry.hash = hash;
+        entry.subject = commitSubjects.value(hash);
+        entry.files = std::move(files);
+        entries << entry;
+    }
+
+    m_commitsUnsyncedFiles->clear();
+    if (entries.isEmpty()) {
+        auto *placeholder = new QTreeWidgetItem(m_commitsUnsyncedFiles);
+        placeholder->setText(0, QStringLiteral("No file details available yet."));
+        m_commitsUnsyncedFiles->show();
+        return;
+    }
+
+    for (const UnsyncedCommitFiles &entry : entries) {
+        auto *commitItem = new QTreeWidgetItem(m_commitsUnsyncedFiles);
+        commitItem->setText(
+            0,
+            entry.subject.isEmpty()
+                ? entry.hash.left(8)
+                : QStringLiteral("%1 — %2").arg(entry.hash.left(8),
+                                               entry.subject));
+        commitItem->setIcon(0, themedOcticon("git-commit", QColor("#58a6ff"), 14));
+        commitItem->setData(0, Qt::UserRole, entry.hash);
+        for (const CommitFileStat &file : entry.files) {
+            auto *fileItem = new QTreeWidgetItem(commitItem);
+            fileItem->setIcon(0, iconForFile(file.path.section(QLatin1Char('/'), -1)));
+            fileItem->setText(0, QString::fromUtf8("%1  +%2 \xE2\x88\x92%3")
+                                       .arg(file.path)
+                                       .arg(file.adds)
+                                       .arg(file.dels));
+            fileItem->setData(0, Qt::UserRole, entry.hash);
+            fileItem->setData(0, Qt::UserRole + 1, file.path);
+            fileItem->setToolTip(
+                0,
+                QString::fromUtf8("%1 \xC2\xB7 +%2 \xE2\x88\x92%3").arg(
+                    file.path, QString::number(file.adds), QString::number(file.dels)));
+        }
+        commitItem->setExpanded(true);
+    }
+    m_commitsUnsyncedFiles->show();
 }
 
 void MainWindow::fetchCurrentRepo()
@@ -4964,6 +5165,10 @@ QWidget *MainWindow::createGlobalSearchBox()
     connect(m_globalSearchTimer, &QTimer::timeout, this,
             &MainWindow::rebuildGlobalSearchResults);
     connect(m_globalSearch, &QLineEdit::textChanged, this, [this](const QString &t) {
+        const bool onIssues = m_repoDetailStack &&
+                              m_repoDetailStack->currentIndex() == 2;
+        if (onIssues && m_issueSearch && m_issueSearch->text() != t)
+            m_issueSearch->setText(t);
         // The Agents page filters live, on every keystroke and ahead of the
         // debounce: it is plain in-memory string matching, and the one part that
         // touches disk (the transcript scan) is debounced off the GUI thread on
@@ -5020,6 +5225,21 @@ void MainWindow::rebuildGlobalSearchResults()
         auto *it = new QListWidgetItem(text);
         if (!icon.isEmpty())
             it->setIcon(themedOcticon(icon, iconColor, 15));
+        it->setData(kGsKindRole, kind);
+        it->setData(kGsStr1Role, s1);
+        it->setData(kGsStr2Role, s2);
+        it->setData(kGsNumRole, num);
+        m_globalSearchPopup->addItem(it);
+        ++total;
+        return true;
+    };
+    auto addResultWithIcon = [&](const QIcon &icon, const QString &text, int kind,
+                                const QString &s1, const QString &s2, int num) -> bool {
+        if (total >= kMaxTotal)
+            return false;
+        auto *it = new QListWidgetItem(text);
+        if (!icon.isNull())
+            it->setIcon(icon);
         it->setData(kGsKindRole, kind);
         it->setData(kGsStr1Role, s1);
         it->setData(kGsStr2Role, s2);
@@ -5174,8 +5394,9 @@ void MainWindow::rebuildGlobalSearchResults()
             if (hit.count > 0)
                 label += QString::fromUtf8("   \xC2\xB7  %1 in transcript")
                              .arg(hit.count);
-            if (!addResult("dependabot", agentStatusIconColor(session), label,
-                           GsAgent, QString(), QString(), session.id))
+            if (!addResultWithIcon(agentStatusOcticon(session, 15), label,
+                                  GsAgent, QString(), QString(),
+                                  session.id))
                 break;
         }
 
@@ -5585,12 +5806,8 @@ void MainWindow::applyNavSubPlace(const NavPlace &place)
             selectIssueListTab(place.subTab);
         if (place.itemNumber > 0) {
             showIssue(place.itemNumber);
-        } else if (m_issueDetail && !m_issueDetail->isHidden()) {
-            // The recorded place had no issue open — close the detail pane so
-            // Back out of an issue lands on the bare list.
-            m_issueDetail->hide();
-            if (m_issueDetailToggle)
-                m_issueDetailToggle->setText(QStringLiteral("Show detail"));
+        } else if (m_issueDetail) {
+            m_issueDetail->show();
         }
         break;
     case 3: // Agents
@@ -8347,13 +8564,15 @@ bool MainWindow::applyRepoAboutMetadataAt(int index, const QString &about,
     return true;
 }
 
-void MainWindow::setRepoBranch(const QString &branch)
+void MainWindow::setRepoBranch(const QString &branch, bool loadContent)
 {
     m_repoBranch = branch;
     if (m_branchButton)
         m_branchButton->setText(branch);
     updateCommitsBranchButtonLabel();
     updateFooterCommitInfo(); // the strip's commit line follows the browsed branch
+    if (!loadContent)
+        return;
     loadRepoOverview(QString());
     loadCommits(); // also refreshes the Insights counts when that tab is on screen
 }
@@ -8364,6 +8583,8 @@ QString MainWindow::repoHeadBranch() const
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return QString();
+    if (const QString branch = headBranchFromFile(dir); !branch.isEmpty())
+        return branch;
     QByteArray out;
     if (!runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &out, nullptr))
         return QString();
@@ -9494,9 +9715,19 @@ QWidget *MainWindow::buildRepoDetailSection()
         // Git always starts from the default branch's source-control view.
         // Branch/worktree/PR comparisons remain available from their links,
         // but they never become a second persistent Git destination.
-        closeBranchCompareView();
+        m_branchCompareBase.clear();
         showOverviewCommits();
+        setCommitWorkspacePage(kCommitWorkspaceChangesPage);
+        const QString base = repoDefaultBranchFast();
+        // Do this before the deferred branch/history work. Otherwise the prior
+        // branch or commit stays visible until those Git reads complete.
+        showSourceControlLoading(base);
         QTimer::singleShot(0, this, [this] {
+            const QString base = repoDefaultBranchFast();
+            if (!base.isEmpty() && m_repoBranch != base) {
+                setRepoBranch(base);
+                return; // setRepoBranch already refreshes source control/history
+            }
             if (commitsListIsCurrent())
                 refreshSourceControl();
             else
@@ -9583,9 +9814,11 @@ void MainWindow::updateRepoActivityRail()
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 2;
     const bool onAgents = onHome && m_repoDetailStack &&
                           m_repoDetailStack->currentIndex() == kRepoAgentsTab;
+    const bool onIssues = onHome && m_repoDetailStack &&
+                          m_repoDetailStack->currentIndex() == 2;
     // Git is where notification bubbles are most useful, but its graph needs
-    // the full height of the workspace. Its prompt is moved over the lower
-    // right detail pane instead of reserving a full-width footer.
+    // the full height of the workspace. Its prompt is overlaid in the lower-left
+    // instead of reserving a full-width footer.
     // Git is its own activity-rail destination, so hide every Code/repository
     // header above the source-control workspace rather than leaving rows of
     // unrelated navigation on screen. The Agents tab gets the same treatment: its
@@ -9600,8 +9833,8 @@ void MainWindow::updateRepoActivityRail()
         m_repoFilesModeBar->setVisible(!onChanges);
     if (m_repoOverviewChrome)
         m_repoOverviewChrome->setVisible(!onChanges && !onBranches);
-    if (m_footerLeftRegion)
-        m_footerLeftRegion->setVisible(!onChanges);
+    // Both bottom-corner overlays are global. Git no longer suppresses the log
+    // or owns a one-off prompt reparenting path.
     setGitPromptOverlay(onChanges);
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
@@ -9616,65 +9849,38 @@ void MainWindow::updateRepoActivityRail()
             onChanges ? QString::fromUtf8("Search commits\xE2\x80\xA6")
             : onAgents
                 ? QString::fromUtf8("Search agents & transcripts\xE2\x80\xA6")
+            : onIssues
+                ? QString::fromUtf8("Search issues\xE2\x80\xA6  is:open label:bug author:me")
                 : QString::fromUtf8("Search\xE2\x80\xA6"));
+    if (m_globalSearch && onIssues) {
+        m_globalSearch->setToolTip(
+            "Search issues with GitHub-style operators: is:open, is:closed, "
+            "label:name, milestone:name, author:name, assignee:name, "
+            "priority:number, and no:label/milestone/assignee.");
+        if (m_issueSearch && m_issueSearch->text() != m_globalSearch->text())
+            m_issueSearch->setText(m_globalSearch->text());
+    } else if (m_globalSearch) {
+        m_globalSearch->setToolTip(QString::fromUtf8(
+            "Search everything \xE2\x80\x94 sections, relays, nodes, repositories, and "
+            "the open repo's issues, pull requests, branches, files and commits"));
+    }
     // Arriving on the page applies whatever is typed up there to the graph;
     // leaving it clears the filter so the list is whole again next time.
     syncGitCommitFilter();
     syncAgentPageSearch();
     if (onChanges)
-        QTimer::singleShot(0, this, &MainWindow::positionTopMessageBubble);
+        QTimer::singleShot(0, this, [this] { positionTopMessageBubble(); });
 }
 
 void MainWindow::setGitPromptOverlay(bool enabled)
 {
-    const bool shouldFloat = enabled && m_commitsStack && m_footerDock &&
-                             m_promptWrapper;
-    if (shouldFloat == m_gitPromptOverlayVisible) {
-        if (shouldFloat)
-            positionGitPromptOverlay();
-        else if (m_footerDock)
-            m_footerDock->show();
-        return;
-    }
-
-    if (shouldFloat) {
-        if (QLayout *dockLayout = m_footerDock->layout())
-            dockLayout->removeWidget(m_promptWrapper);
-        m_promptWrapper->setParent(m_commitsStack);
-        m_promptWrapper->setMaximumWidth(560);
-        m_footerDock->hide();
-        m_gitPromptOverlayVisible = true;
-        m_promptWrapper->show();
-        QTimer::singleShot(0, this, &MainWindow::positionGitPromptOverlay);
-        return;
-    }
-
-    m_promptWrapper->hide();
-    m_promptWrapper->setParent(m_footerDock);
-    if (auto *dockLayout = qobject_cast<QHBoxLayout *>(m_footerDock->layout()))
-        dockLayout->addWidget(m_promptWrapper, 1);
-    m_promptWrapper->setMaximumWidth(QWIDGETSIZE_MAX);
-    m_gitPromptOverlayVisible = false;
-    m_footerDock->show();
+    Q_UNUSED(enabled);
+    positionGlobalFooterOverlays();
 }
 
 void MainWindow::positionGitPromptOverlay()
 {
-    if (!m_gitPromptOverlayVisible || !m_promptWrapper || !m_commitsStack)
-        return;
-
-    constexpr int kMargin = 8;
-    constexpr int kMaxWidth = 560;
-    const QSize hostSize = m_commitsStack->size();
-    const int width = qMin(kMaxWidth, qMax(0, hostSize.width() - 2 * kMargin));
-    const int height = m_promptWrapper->sizeHint().height();
-    if (width <= 0 || height <= 0)
-        return;
-
-    m_promptWrapper->resize(width, height);
-    m_promptWrapper->move(hostSize.width() - kMargin - width,
-                          qMax(kMargin, hostSize.height() - kMargin - height));
-    m_promptWrapper->raise();
+    positionGlobalFooterOverlays();
 }
 
 // Mirror the top-bar search into the commit-list filter while the Git page is
@@ -9785,14 +9991,19 @@ QWidget *MainWindow::buildRepoCommitsTab()
                 QTableWidgetItem *item = m_commitsTable->item(row, kCommitSummaryCol);
                 if (!item)
                     return;
-                if (item->data(kCommitRowKindRole).toInt() == 1) {
+                const int kind = item->data(kCommitRowKindRole).toInt();
+                if (kind == 1) {
                     m_pendingCommitFileScroll =
                         item->data(kCommitFilePathRole).toString();
                     showCommit(item->data(Qt::UserRole).toString());
                     return;
                 }
-                if (item->data(kCommitRowKindRole).toInt() == 0)
+                if (kind == 0)
                     toggleCommitFilesRows(row);
+                if (kind == 2) {
+                    m_commitsUnsyncedExpanded = !m_commitsUnsyncedExpanded;
+                    updateCommitsUnsyncedFilesPanel();
+                }
             });
     // Double click (or Enter) on a commit opens its full detail page — diff,
     // conversation, and the Delete / Restore commit actions.
@@ -9847,6 +10058,16 @@ QWidget *MainWindow::buildRepoCommitsTab()
             m_commitsUnsyncedBanner->hide();
     });
     m_commitsUnsyncedBanner->hide();
+    m_commitsUnsyncedSyncButton = new QPushButton(QStringLiteral("Sync Changes"));
+    m_commitsUnsyncedSyncButton->setObjectName("ghostButton");
+    m_commitsUnsyncedSyncButton->setCursor(Qt::PointingHandCursor);
+    m_commitsUnsyncedSyncButton->setToolTip(
+        QStringLiteral("Publish outgoing commits to the network mirror or push "
+                       "them to the configured upstream branch"));
+    setOcticon(m_commitsUnsyncedSyncButton, QStringLiteral("sync"), 14);
+    connect(m_commitsUnsyncedSyncButton, &QPushButton::clicked, this,
+            &MainWindow::pushCurrentRepoUpstream);
+    m_commitsUnsyncedSyncButton->hide();
 
     // Commit search has no box of its own on this page any more: the top bar's
     // search field takes the job over while the Git page is up — it relabels
@@ -9944,7 +10165,13 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // floating over them, so it can never hide the very (newest, top) commits it
     // flags. When hidden it collapses to zero height and the table reclaims it.
     listLayout->addLayout(searchRow);
-    listLayout->addWidget(m_commitsUnsyncedBanner);
+    auto *outgoingRow = new QWidget(listPage);
+    auto *outgoingRowLayout = new QHBoxLayout(outgoingRow);
+    outgoingRowLayout->setContentsMargins(0, 0, 0, 0);
+    outgoingRowLayout->setSpacing(8);
+    outgoingRowLayout->addWidget(m_commitsUnsyncedSyncButton);
+    outgoingRowLayout->addWidget(m_commitsUnsyncedBanner, 1);
+    listLayout->addWidget(outgoingRow);
     // Files touched by the pending-sync commits, shown when the banner's
     // "Show files" link is toggled: one expandable entry per pending commit.
     m_commitsUnsyncedFiles = new QTreeWidget(listPage);
@@ -10607,6 +10834,12 @@ void MainWindow::showLoadStatus(const QString &what)
     if (!m_topMessage || what.isEmpty())
         return;
     m_topMessageIsPromptBubble = false;
+    m_topMessagePromptImagePaths.clear();
+    if (m_topMessagePromptHeader)
+        m_topMessagePromptHeader->hide();
+    if (m_topMessagePromptStatusLabel)
+        m_topMessagePromptStatusLabel->hide();
+    renderTopMessagePromptImages();
     m_topMessageHovering = false;
     m_topMessageRaw = what;
     // Blue, persistent progress pill — distinct from the green success / red
@@ -10629,6 +10862,10 @@ void MainWindow::showLoadStatus(const QString &what)
         if (m_topMessageFlight)
             m_topMessageFlight->stop();
         m_topMessageSlidingOut = false;
+        // stop() never emits finished(), so the in-flight motion's flags have to
+        // be cleared here or positionTopMessageBubble would refuse to re-anchor.
+        m_topMessageEntering = false;
+        m_topMessageShifting = false;
         positionTopMessageBubble();
         m_topMessageContainer->show();
         m_topMessageContainer->raise();
@@ -10638,6 +10875,9 @@ void MainWindow::showLoadStatus(const QString &what)
         m_topMessageTimer->stop(); // don't let it slide away mid-load
     if (m_topMessageCopy)
         m_topMessageCopy->hide();
+    m_topMessageActionRunId = -1;
+    if (m_topMessageActionOutput)
+        m_topMessageActionOutput->hide();
     if (m_topMessageSendToPrompt)
         m_topMessageSendToPrompt->hide();
     if (m_topMessageClose)

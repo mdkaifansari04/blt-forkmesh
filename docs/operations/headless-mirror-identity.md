@@ -104,40 +104,21 @@ Use direct JSON command arrays. Do not place them behind a shell:
 }
 ```
 
-Each enabled public repository uses the same helper for its encrypted archive:
+Public repositories do not use the age helper. The gateway receives the
+protected plaintext bare path directly:
 
 ```json
 {
-  "encryptedArchive": {
-    "scheme": "age-encrypted-tar-v1",
-    "ciphertextPath": "/var/lib/forkmesh/archives/forkmesh.age",
-    "ciphertextSha256": "<seal response ciphertextSha256>",
-    "keyReference": "<seal response keyReference>",
-    "materializeCommand": [
-      "/usr/bin/python3",
-      "/opt/forkmesh/tools/headless_mirror_identity.py",
-      "--state-dir",
-      "/var/lib/forkmesh/identity",
-      "materialize"
-    ]
-  },
+  "gitDir": "/srv/git/forkmesh.git",
   "integrity": {
-    "expectedRefsSha256": "<seal response expectedRefsSha256>"
+    "expectedRefsSha256": "<canonical heads-and-tags SHA-256>"
   }
 }
 ```
 
-The gateway passes the ciphertext path, digest, opaque key reference, and an
-empty owner-only temporary destination on stdin. The helper returns only:
-
-```json
-{"ok": true, "repositoryPath": "repository.git"}
-```
-
-It rejects a non-empty destination and rejects absolute/traversal names,
-duplicate paths, symbolic links, hard links, devices, FIFOs, sockets, and
-unknown tar entry types before extraction. Files are then created through
-directory file descriptors with no-follow and exclusive-create flags.
+The identity helper remains responsible for capability, health, manifest, and
+catalog signatures. Its older public seal/materialize modes exist only for
+upgrade compatibility and are not called by refresh or gateway serving.
 
 For a Tunnel endpoint, give `cloudflare_tunnel_bootstrap.py` this helper as its
 manifest signer command and supply `nodePublicKey` from `public-info` as the
@@ -154,45 +135,29 @@ schema must support the selected variant. Tunnel is the production default.
 
 For a service manager, set a restrictive umask, a dedicated `User`, no
 privilege escalation, a read-only application tree, and write access only to
-the identity, encrypted archive, and ephemeral runtime directories. The
+the identity, public bare repository, and gateway-state directories. The
 gateway itself must continue listening only on loopback behind Cloudflare
 Tunnel or an equivalently restricted TLS proxy.
 
-## Initial sync and post-receive reseal
+## Initial sync and post-receive refresh
 
-`seal-repository` accepts paths over stdin so repository and archive paths do
-not become helper arguments:
+After Git updates the bare source, run the refresh orchestrator. It computes the
+canonical heads-and-tags pin and atomically installs a gateway configuration
+that points directly at `sourceRepository`:
 
 ```json
 {
   "schemaVersion": 1,
-  "type": "forkmesh.repository-archive-seal",
   "sourceRepository": "/srv/git/forkmesh.git",
-  "ciphertextPath": "/var/lib/forkmesh/archives/forkmesh.age"
+  "gitDir": "/srv/git/forkmesh.git"
 }
 ```
 
-The helper verifies that the source is bare, clones a fresh owner-only mirror
-snapshot with local hard-linking disabled, packages exactly
-`repository.git`, streams the tar to age, verifies the age header, and
-atomically replaces the requested ciphertext. It returns public metadata:
-
-```json
-{
-  "ok": true,
-  "scheme": "age-encrypted-tar-v1",
-  "ciphertextSha256": "<sha256>",
-  "ciphertextBytes": 123,
-  "keyReference": "forkmesh-headless-age:<opaque-public-id>",
-  "expectedRefsSha256": "<canonical-heads-and-tags-sha256>"
-}
-```
-
-An SSH post-receive orchestrator can run this operation, atomically update the
-public gateway JSON with the returned hashes, run
-`mirror_gateway.py --check`, and restart the gateway. Service restart policy is
-intentionally external to the identity helper. Never restart against a new
-ciphertext while retaining the old digest in the gateway configuration.
+The push-triggered path performs no tar, age, archive materialization, or full
+Git fsck. It validates the bare repository, checks that refs stay stable during
+configuration validation, atomically swaps the refs-pinned config, and removes
+legacy public `.age` generations. The explicit `check` command retains the full
+Git fsck for periodic integrity monitoring.
 
 ## Operator-only signatures
 

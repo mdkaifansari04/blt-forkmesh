@@ -1005,7 +1005,8 @@ def _response(data, status=200, **_kwargs):
 
 def _load_handler(
     *, rows, first_hosted=None,
-    linked_canonical=False, endpoint_nodes=None,
+    linked_canonical=False, endpoint_nodes=None, endpoint_records=None,
+    serve_counts=None,
 ):
     calls = []
 
@@ -1019,6 +1020,8 @@ def _load_handler(
         if "FROM repo_first_hosted" in sql:
             return first_hosted or []
         if "FROM mirror_https_endpoints" in sql:
+            if endpoint_records is not None:
+                return endpoint_records
             if endpoint_nodes is not None:
                 return [
                     {"node_name": node, "checked_at": _Clock.now()}
@@ -1035,6 +1038,8 @@ def _load_handler(
                 for item in rows
                 if item.get("data", {}).get("visibility", "public") == "public"
             ]
+        if "FROM mirror_serve_counters" in sql:
+            return serve_counts or []
         return []
 
     async def d1_first(_env, sql, *args):
@@ -1125,6 +1130,39 @@ def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
     # its clone-integrity verdict.
     assert any("FROM repo_state_history" in call for call in calls)
     assert all("integrity" in mirror for mirror in response["data"]["mirrors"])
+
+
+def test_repo_mirrors_handler_aggregates_traffic_across_group_aliases():
+    handler, calls = _load_handler(
+        rows=[
+            {"key_bi": "a", "data": _row(
+                "a", "mirror2", "forkmesh", root="abc")["data"]},
+            {"key_bi": "b", "data": _row(
+                "b", "mirror10", "forkmesh", root="abc",
+                source="remote-clone")["data"]},
+        ],
+        serve_counts=[
+            {"node_name": "mirror2", "clones": 8, "website": 21},
+            {"node_name": "mirror10", "clones": 5, "website": 34},
+        ],
+    )
+
+    response = asyncio.run(
+        handler(object(), _Request("GET"), "mirror2", "forkmesh")
+    )
+
+    mirrors = {
+        mirror["node"]: mirror for mirror in response["data"]["mirrors"]
+    }
+    assert mirrors["mirror2"]["clonesServed"] == 8
+    assert mirrors["mirror2"]["websiteServed"] == 21
+    assert mirrors["mirror10"]["clonesServed"] == 5
+    assert mirrors["mirror10"]["websiteServed"] == 34
+    query = next(
+        sql for sql in calls if "FROM mirror_serve_counters" in sql
+    )
+    assert "SUM(clones) AS clones" in query
+    assert "GROUP BY node_name" in query
 
 
 def test_repo_mirrors_handler_keeps_inactive_rows_visible_offline():
@@ -1232,6 +1270,44 @@ def test_repo_mirrors_handler_uses_one_signed_endpoint_snapshot_for_status():
         if mirror["node"] == "kaif-node"
     )
     assert live["lastSeen"] == _Clock.now()
+
+
+def test_repo_mirrors_handler_uses_routing_quorum_for_clone_availability():
+    rows = [
+        {"key_bi": "source", "data": _row(
+            "source", "jett", "forkmesh", root="abc",
+            state_hash="a" * 64,
+        )["data"]},
+        {"key_bi": "mirror", "data": _row(
+            "mirror", "mirror9", "forkmesh", root="abc",
+            state_hash="b" * 64, source="remote-clone",
+        )["data"]},
+    ]
+    rows[1]["data"]["machineName"] = "mirror9"
+    handler, _ = _load_handler(
+        rows=rows,
+        endpoint_records=[{
+            "node_name": "mirror9",
+            "checked_at": _Clock.now(),
+            "forkmesh_verified_at": _Clock.now(),
+            "healthy": 1,
+            "forkmesh_active": 1,
+            "integrity": "ok",
+            "abuse_blocked": 0,
+        }],
+    )
+
+    response = asyncio.run(
+        handler(object(), _Request("GET"), "jett", "forkmesh")
+    )
+
+    mirror = next(
+        item for item in response["data"]["mirrors"]
+        if item["node"] == "mirror9"
+    )
+    assert mirror["integrity"] == "ok"
+    assert mirror["cloneAvailable"] is True
+    assert mirror["activity"] == "serving"
 
 
 def test_fresh_healthy_ok_https_endpoint_hydrates_mirror_online():
@@ -1342,7 +1418,7 @@ def test_worker_exposes_repo_mirrors_route_and_uses_payload_builder():
 def test_worker_exposes_exact_node_readme_reachability_probe():
     assert "REPO_MIRROR_REACHABILITY_RE = re.compile" in URLS_TEXT
     assert "repo_mirror_reachability_handler" in ENTRY_TEXT
-    assert 'node not in context.get("nodes", set())' in ENTRY_TEXT
+    assert 'admitted = node in context.get("nodes", set())' in ENTRY_TEXT
     assert 'WHERE node_name=?' in ENTRY_TEXT
     assert '"blob", {"path": "README.md"}' in ENTRY_TEXT
     assert '"readmeLoaded": bool(reachable)' in ENTRY_TEXT
@@ -1354,6 +1430,38 @@ def test_worker_exposes_exact_node_readme_reachability_probe():
     probe = ENTRY_TEXT[probe_start:probe_end]
     assert "for endpoint in" not in probe
     assert "_https_mirror_route_advance" not in probe
+
+
+def test_reachability_probe_asks_every_group_mirror_before_judging_it():
+    # adhoc #1422: the probe used to reject a node unless the router already
+    # considered it servable — inside the state-pin window AND holding a fresh
+    # health lease AND passing a repository proof — so a single mirror reported
+    # "README loaded" while every other one reported "Unavailable" without a
+    # request ever having been made to it. Any mirror in the group gets a real
+    # README.md request; the serving gates only classify a failure afterwards.
+    probe_start = ENTRY_TEXT.index("async def repo_mirror_reachability_handler")
+    probe_end = ENTRY_TEXT.index("\n\ndef _https_mirror_merge_body", probe_start)
+    probe = ENTRY_TEXT[probe_start:probe_end]
+    # A mirror of this repo that is merely behind the pin window is still probed.
+    assert 'node not in context.get("groupNodes", set())' in probe
+    assert '"groupNodes": group_nodes,' in ENTRY_TEXT
+    # No pre-emptive bail on the cached lease/proof state.
+    assert "endpoint_unavailable" not in probe
+    assert "return result(False, \"repository_proof_failed\")" not in probe
+    assert "https_routing.endpoint_eligible" not in probe
+    # Only a node with nowhere to send the request short-circuits.
+    assert 'return result(False, "endpoint_not_registered")' in probe
+    assert '"endpointRegistered": endpoint_registered,' in probe
+    # Failures are classified after the fact, most upstream cause first.
+    classifier_start = ENTRY_TEXT.index(
+        "async def _mirror_reachability_failure_reason")
+    classifier = ENTRY_TEXT[classifier_start:ENTRY_TEXT.index(
+        "\n\nasync def repo_mirror_reachability_handler", classifier_start)]
+    for reason in ("state_pin_not_admitted", "repository_proof_failed",
+                   "endpoint_stale"):
+        assert reason in classifier
+    assert classifier.index("state_pin_not_admitted") < classifier.index(
+        "repository_proof_failed") < classifier.index("endpoint_stale")
 
 
 def test_hydrate_live_host_probes_capped_concurrent_and_memoized():

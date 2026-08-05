@@ -1,5 +1,8 @@
 #include "../src/MainWindow.h"
+#include "../src/MainWindowInternal.h"
+#include "../src/BackgroundActivity.h"
 #include "../src/ClaudeTranscriptView.h"
+#include "../src/LogTimelineChart.h"
 #include "../src/PlatformLogFilter.h"
 #include "ForkMeshVersion.h"
 
@@ -9,30 +12,38 @@
 #include <QComboBox>
 #include <QClipboard>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QFile>
 #include <QCheckBox>
 #include <QDebug>
+#include <QDialogButtonBox>
 #include <QDir>
+#include <QDateTimeEdit>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QImage>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QFileInfo>
+#include <QHelpEvent>
 #include <QImage>
+#include <QPixmap>
 #include <QPointer>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QSemaphore>
 #include <QSet>
 #include <QThread>
 #include <QTimer>
+#include <QToolTip>
 #include <QPushButton>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -59,12 +70,12 @@ bool isTemporaryChatGuest(const MemberInfo &m);
 QString agentModelLabel(const QString &model);
 bool agentModelIsClaudeStyle(const QString &model);
 bool agentModelMatchesProvider(const QString &provider, const QString &model);
-struct MirrorBranchTip {
-    QString branch;
-    QString commit;
-};
 MirrorBranchTip mirrorPrimaryBranchTip(const QString &mirrorPath,
                                        const QString &workTree);
+QString gitTimeoutError(QProcess &process, int waitedMs);
+bool isTransientGitError(const QString &err);
+QString branchDiffErrorHtml(const QString &branch, const QString &err,
+                            int attempts);
 }
 } // namespace forkmesh
 
@@ -123,6 +134,235 @@ bool iconContainsChromaKey(const QIcon &icon)
         }
     }
     return false;
+}
+
+void checkFooterOverlayGeometry(MainWindow &window)
+{
+    window.testShowHomeSection();
+    window.testSetLogOverlayExpanded(false);
+    QApplication::processEvents();
+
+    auto *dock = window.findChild<QWidget *>(QStringLiteral("logDock"));
+    auto *log = window.findChild<QWidget *>(QStringLiteral("footerLeftRegion"));
+    auto *prompt = window.findChild<QWidget *>(QStringLiteral("promptOverlayHost"));
+    auto *promptWrapper = window.findChild<QWidget *>(QStringLiteral("promptWrapper"));
+    auto *avatar = window.findChild<QPushButton *>(QStringLiteral("serverFooterButton"));
+    auto *lights = dynamic_cast<forkmesh::ui::LogActivityLights *>(
+        window.findChild<QWidget *>(QStringLiteral("debugActivityLights")));
+    auto *header = dynamic_cast<forkmesh::ui::LogActivityLights *>(
+        window.findChild<QWidget *>(QStringLiteral("logActivityHeader")));
+    auto *debugBar = window.findChild<QWidget *>(QStringLiteral("debugBar"));
+    auto *version = window.findChild<QPushButton *>(
+        QStringLiteral("statusVersionButton"));
+    check(dock && log && prompt && lights && header && debugBar && version &&
+              !log->isVisible() && !debugBar->isVisible() && lights->isDebug() &&
+              lights->lightCount() == 30 &&
+              prompt->geometry().center().x() > dock->rect().center().x() &&
+              prompt->geometry().bottom() == dock->rect().bottom(),
+          QStringLiteral("all 30 labeled log categories start collapsed in the "
+                         "version-controlled debug bar"));
+    if (version && debugBar) {
+        version->click();
+        QApplication::processEvents();
+        check(debugBar->isVisible() && lights->isVisibleTo(debugBar) &&
+                  window.findChild<QWidget *>(
+                      QStringLiteral("debugResourceChart")) != nullptr,
+              QStringLiteral("clicking the footer version reveals debug activity "
+                             "and the enlarged four-resource chart"));
+
+        const quint64 gitCountBefore = lights->countFor(QStringLiteral("GIT"));
+        lights->pulse(QStringLiteral("GIT"));
+        lights->pulse(QStringLiteral("GIT"));
+        check(lights->countFor(QStringLiteral("GIT")) == gitCountBefore + 2,
+              QStringLiteral("the debug row keeps per-category occurrence counts"));
+
+        const qint64 minute = QDateTime::currentMSecsSinceEpoch() - 60000;
+        const QJsonArray systems = {
+            QJsonObject{
+                {QStringLiteral("id"), QStringLiteral("website")},
+                {QStringLiteral("label"), QStringLiteral("Website")},
+                {QStringLiteral("minutes"),
+                 QJsonArray{QJsonObject{
+                     {QStringLiteral("minuteTs"), double(minute)},
+                     {QStringLiteral("status"), QStringLiteral("operational")}}}}},
+            QJsonObject{
+                {QStringLiteral("id"), QStringLiteral("api")},
+                {QStringLiteral("label"), QStringLiteral("API")},
+                {QStringLiteral("minutes"),
+                 QJsonArray{QJsonObject{
+                     {QStringLiteral("minuteTs"), double(minute)},
+                     {QStringLiteral("status"), QStringLiteral("down")}}}}},
+        };
+        check(window.testApplyFooterWebsiteStatusPayload(
+                  QJsonObject{{QStringLiteral("ok"), true},
+                              {QStringLiteral("now"), double(minute + 60000)},
+                              {QStringLiteral("systems"), systems}}) &&
+                  lights->websiteStatusCount() == 2 &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("operational") &&
+                  lights->websiteStatusFor(QStringLiteral("api")) ==
+                      QStringLiteral("down"),
+              QStringLiteral("the debug row appends labeled green/red website "
+                             "minute states"));
+    }
+
+    // The prompt avatar is the lower-right launcher: clicking it collapses the
+    // composer to the circular avatar, and hovering that avatar opens it again.
+    check(promptWrapper && avatar && promptWrapper->isVisible() &&
+              avatar->parentWidget() == prompt && prompt->width() > avatar->width(),
+          QStringLiteral("prompt starts expanded with its avatar in the overlay"));
+    if (avatar && promptWrapper && prompt && dock) {
+        avatar->click();
+        QApplication::processEvents();
+        check(!promptWrapper->isVisible() && prompt->size() == QSize(34, 34) &&
+                  prompt->geometry().right() >= dock->width() - 12,
+              QStringLiteral("clicking the prompt avatar minimizes to the bottom-right circle"));
+
+        QEvent enter(QEvent::Enter);
+        QApplication::sendEvent(avatar, &enter);
+        QApplication::processEvents();
+        check(promptWrapper->isVisible() && prompt->width() > avatar->width(),
+              QStringLiteral("hovering the minimized avatar restores the prompt"));
+    }
+
+    window.testSetLogOverlayExpanded(true);
+    QApplication::processEvents();
+    check(log && lights && header && log->isVisible() && lights->isVisible() &&
+              header->isVisible() && header->lightCount() == 30 &&
+              log->geometry().center().x() < dock->rect().center().x() &&
+              log->geometry().bottom() == dock->rect().bottom() &&
+              header->geometry().top() >= log->rect().top(),
+          QStringLiteral("the compact log opens at the lower-left with its "
+                         "expanded 30-category header"));
+
+    window.testShowLogSection();
+    QApplication::processEvents();
+    check(!log->isVisible() && lights->isVisible(),
+          QStringLiteral("the full Log view leaves the debug category row visible"));
+    window.testShowHomeSection();
+    QApplication::processEvents();
+}
+
+// Give queued animations (the entry rise and the stack's shuffle up) time to
+// land without blocking the window, which would trip the UI-stall watchdog.
+void settleAnimations(int timeoutMs = 400)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs)
+        QApplication::processEvents(QEventLoop::AllEvents, 10);
+}
+
+// adhoc #1444: the alert stack has to hug its own content and read as one evenly
+// spaced column that rises into place. The reference screenshot showed a prompt
+// confirmation stretched down the entire window with empty bands between its
+// sent marker, its agent line and the prompt itself.
+void checkAlertStackLayout(MainWindow &window)
+{
+    window.testShowPromptBubble(
+        QStringLiteral("please add the small icon of the user agent used for the "
+                       "session to the left of the status, and move the file "
+                       "count left of the diff colour bars"),
+        QStringLiteral("Started a CC agent on your prompt (claude-opus-5, Auto)."));
+    QApplication::processEvents();
+
+    auto *container = window.findChild<QWidget *>(QStringLiteral("topMessage"));
+    auto *header =
+        window.findChild<QLabel *>(QStringLiteral("topMessagePromptHeader"));
+    auto *status =
+        window.findChild<QLabel *>(QStringLiteral("topMessagePromptStatus"));
+    auto *text = window.findChild<QLabel *>(QStringLiteral("topMessageText"));
+    auto *actions = window.findChild<QWidget *>(QStringLiteral("topMessageActions"));
+    if (!container || !header || !status || !text || !actions) {
+        check(false, QStringLiteral("the prompt confirmation stacks its lines "
+                                    "without empty bands"));
+        return;
+    }
+
+    // Every card enters by rising: it is placed below its anchor and glides up.
+    const QRect anchored = window.testTopMessageRect();
+    check(container->isVisible() && container->y() > anchored.y(),
+          QStringLiteral("an arriving alert starts below its anchor and slides "
+                         "up into place"));
+    settleAnimations();
+    check(container->geometry() == anchored,
+          QStringLiteral("the alert lands exactly on its prompt-anchored slot"));
+
+    const int markerGap = status->y() - (header->y() + header->height());
+    const int textGap = text->y() - (status->y() + status->height());
+    check(header->isVisible() && status->isVisible() && text->isVisible() &&
+              markerGap == forkmesh::ui::kToastLineSpacing &&
+              textGap == forkmesh::ui::kToastLineSpacing,
+          QStringLiteral("the prompt confirmation stacks its lines without "
+                         "empty bands"));
+
+    // The bubble is its lines plus one caption row — not a slab sized to the
+    // window. 4px of slack absorbs rounding in the wrapped-text measurement.
+    const int lines = text->geometry().bottom() - header->geometry().top() + 1;
+    const int chrome = actions->height() + forkmesh::ui::kToastRowSpacing +
+                       forkmesh::ui::kToastPadTop +
+                       forkmesh::ui::kToastPadBottom;
+    check(anchored.height() <= lines + chrome + 4,
+          QStringLiteral("the alert is only as tall as the lines it holds plus "
+                         "its caption row"));
+
+    // A second arrival queues below the active toast, and the column stays one
+    // evenly spaced list anchored above the prompt. (The confirmation goes first:
+    // anything arriving while it counts down would queue behind it too.)
+    window.testDismissTopMessage();
+    QApplication::processEvents();
+    window.testFlashMessage(QStringLiteral("Mirror sync finished"));
+    QApplication::processEvents();
+    window.testFlashMessage(QStringLiteral("Push rejected: remote has newer "
+                                           "commits on main"),
+                            true);
+    settleAnimations();
+    auto *queue = window.findChild<QScrollArea *>(QStringLiteral("topMessageQueue"));
+    const QRect stacked = window.testTopMessageRect();
+    check(window.testTopMessageQueueDepth() == 1 && queue && queue->isVisible() &&
+              queue->width() == stacked.width() &&
+              queue->y() - stacked.bottom() == forkmesh::ui::kToastStackGap,
+          QStringLiteral("a queued alert sits one gap under the active one in "
+                         "the same column"));
+
+    auto *card = queue ? queue->findChild<QWidget *>(
+                             QStringLiteral("topMessageQueueCard"))
+                       : nullptr;
+    auto *cardActions =
+        card ? card->findChild<QWidget *>(QStringLiteral("topMessageQueueActions"))
+             : nullptr;
+    auto *cardBadge =
+        card ? card->findChild<QLabel *>(QStringLiteral("topMessageQueueTypeBadge"))
+             : nullptr;
+    auto *cardText =
+        card ? card->findChild<QLabel *>(QStringLiteral("topMessageQueueText"))
+             : nullptr;
+    const int cardChrome = cardActions ? cardActions->height() +
+                                             forkmesh::ui::kToastRowSpacing +
+                                             forkmesh::ui::kToastPadTop +
+                                             forkmesh::ui::kToastPadBottom
+                                       : 0;
+    check(card && cardActions && cardBadge && cardText &&
+              cardBadge->parentWidget() == cardActions &&
+              card->height() <= cardText->height() + cardChrome + 4,
+          QStringLiteral("a queued card keeps its kind badge on the caption row "
+                         "so it stays two lines tall"));
+
+    if (!qEnvironmentVariableIsEmpty("FORKMESH_ALERT_SHOT")) {
+        qInfo("ALERTSHOT bubble=%s queue=%s lines=%d chrome=%d card=%d",
+              qPrintable(QString::number(anchored.height())),
+              qPrintable(QString::number(queue ? queue->height() : -1)), lines,
+              chrome, card ? card->height() : -1);
+        const QRect stack = stacked.united(queue ? queue->geometry() : stacked)
+                                .adjusted(-8, -8, 8, 8);
+        window.grab(stack).save(
+            qEnvironmentVariable("FORKMESH_ALERT_SHOT"));
+    }
+
+    window.testDismissTopMessage();
+    QApplication::processEvents();
+    check(container && !container->isVisible() && queue && !queue->isVisible(),
+          QStringLiteral("dismissing clears the whole alert stack"));
 }
 
 QString widgetPath(QWidget *widget)
@@ -341,6 +581,108 @@ void stopChildProcesses(QObject &root)
     }
 }
 
+void runLogTimelineChecks(MainWindow &window)
+{
+    {
+        LogTimelineChart retentionChart;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        retentionChart.setRange(now - 1000, now + 1000);
+        retentionChart.setEntries({{now, QStringLiteral("NET")},
+                                   {now, QStringLiteral("GIT")},
+                                   {now, QStringLiteral("NET")}});
+        retentionChart.removeEntry(now, QStringLiteral("NET"));
+        check(retentionChart.visibleEntryCount() == 2,
+              QStringLiteral("timeline retention removes only one matching "
+                             "evicted log entry"));
+        retentionChart.removeEntry(now, QStringLiteral("MISSING"));
+        check(retentionChart.visibleEntryCount() == 2,
+              QStringLiteral("timeline retention ignores an entry outside its "
+                             "loaded slice"));
+    }
+    window.testResetNetworkLog();
+    window.testLogSystem(QStringLiteral("Timeline session started"));
+    window.testLogSystem(QStringLiteral("Pushed 2 commits to origin/main"));
+    window.testLogSystem(QStringLiteral("Network request completed"));
+    window.testShowLogSection();
+    QApplication::processEvents();
+
+    QWidget *chart = window.testLogTimelineChart();
+    check(chart && chart->isVisible(),
+          QStringLiteral("the Log page shows its activity chart"));
+    check(chart && chart->maximumHeight() <= 72,
+          QStringLiteral("the activity chart stays a thin top rail"));
+    check(window.testNetworkLogView() && window.testNetworkLogView()->isVisible(),
+          QStringLiteral("the paged network log remains visible below the rail"));
+    check(window.findChild<QListWidget *>(QStringLiteral("logEventList")) ==
+              nullptr,
+          QStringLiteral("the duplicate Recent Pings feed is removed"));
+    check(window.testLogTimelineVisibleCount() >= 3,
+          QStringLiteral("the 24-hour timeline includes all freshly logged events"));
+
+    QStringList ranges;
+    QPushButton *customRangeButton = nullptr;
+    for (QPushButton *button :
+         window.findChildren<QPushButton *>(QStringLiteral("logRangeButton"))) {
+        ranges << button->text();
+        if (button->text() == QLatin1String("Custom..."))
+            customRangeButton = button;
+    }
+    check(ranges.contains(QStringLiteral("24h")) &&
+              ranges.contains(QStringLiteral("7 days")) &&
+              ranges.contains(QStringLiteral("30 days")) &&
+              ranges.contains(QStringLiteral("Custom...")),
+          QStringLiteral("the timeline offers preset and custom timeframes"));
+
+    bool customRangeApplied = false;
+    if (customRangeButton) {
+        QTimer::singleShot(0, &window, [&customRangeApplied] {
+            auto *dialog = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            auto *from = dialog ? dialog->findChild<QDateTimeEdit *>(
+                                      QStringLiteral("logCustomFrom"))
+                                : nullptr;
+            auto *to = dialog ? dialog->findChild<QDateTimeEdit *>(
+                                    QStringLiteral("logCustomTo"))
+                              : nullptr;
+            auto *buttons = dialog ? dialog->findChild<QDialogButtonBox *>() : nullptr;
+            if (!from || !to || !buttons ||
+                !buttons->button(QDialogButtonBox::Ok)) {
+                if (dialog)
+                    dialog->reject();
+                return;
+            }
+            const QDateTime now = QDateTime::currentDateTime();
+            from->setDateTime(now.addSecs(-60 * 60));
+            to->setDateTime(now.addSecs(60));
+            customRangeApplied = true;
+            buttons->button(QDialogButtonBox::Ok)->click();
+        });
+        customRangeButton->click();
+    }
+    check(customRangeApplied && customRangeButton &&
+              customRangeButton->isChecked() &&
+              window.testLogTimelineVisibleCount() >= 3,
+          QStringLiteral("a custom start and end time applies to the chart"));
+
+    if (chart) {
+        const QPointF start(chart->width() * 0.35, chart->height() * 0.5);
+        const QPointF end(chart->width() * 0.70, chart->height() * 0.5);
+        QMouseEvent press(QEvent::MouseButtonPress, start,
+                          chart->mapToGlobal(start.toPoint()),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent release(QEvent::MouseButtonRelease, end,
+                            chart->mapToGlobal(end.toPoint()),
+                            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(chart, &press);
+        QApplication::sendEvent(chart, &release);
+        check(window.testLogTimelineSummary().contains(QStringLiteral("Zoomed")),
+              QStringLiteral("dragging across the timeline zooms into that area"));
+    }
+    window.testSetLogTimelineHours(7 * 24);
+    check(!window.testLogTimelineSummary().contains(QStringLiteral("Zoomed")),
+          QStringLiteral("choosing a timeframe resets the chart zoom"));
+    window.testResetNetworkLog();
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -386,10 +728,25 @@ int main(int argc, char *argv[])
     const QString testApplicationName =
         QStringLiteral("WindowResize-") + QFileInfo(dataDir.path()).fileName();
     app.setApplicationName(testApplicationName);
+    const QString darkTheme = QString::fromLatin1(Theme::styleSheetForDark(true));
+    const QString lightTheme = QString::fromLatin1(Theme::styleSheetForDark(false));
+    check(darkTheme.contains(QStringLiteral(
+              "QToolTip {\n    background-color: #161b22; color: #e6edf3;")) &&
+              lightTheme.contains(QStringLiteral(
+              "QToolTip {\n    background-color: #ffffff; color: #1f2328;")) &&
+              lightTheme.contains(QStringLiteral(
+              "border: 1px solid #d0d7de; padding: 4px;")),
+          QStringLiteral("tooltips use the active app theme's canvas, text, and border"));
     const bool fleetBinaryInstallOnly =
         app.arguments().contains(QStringLiteral("--fleet-binary-install-only"));
     const bool hostsLayoutOnly =
         app.arguments().contains(QStringLiteral("--hosts-layout-only"));
+    const bool issuesRedesignOnly =
+        app.arguments().contains(QStringLiteral("--issues-redesign-only"));
+    const bool logTimelineOnly =
+        app.arguments().contains(QStringLiteral("--log-timeline-only"));
+    const bool footerOverlayOnly =
+        app.arguments().contains(QStringLiteral("--footer-overlay-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -405,6 +762,57 @@ int main(int argc, char *argv[])
     if (appDataDir.exists() && !appDataDir.removeRecursively()) {
         qCritical("FAIL: could not clear temporary app data directory");
         return 1;
+    }
+
+    // The chrome compresses the four resource histories into one chart while
+    // preserving the distinct hover and click affordances of each quadrant.
+    {
+        using ResourceChart = forkmesh::ui::ResourceQuadrantSparkline;
+        ResourceChart chart;
+        chart.setResourceToolTip(ResourceChart::Cpu, QStringLiteral("CPU details"));
+        chart.setResourceToolTip(ResourceChart::Memory, QStringLiteral("Memory details"));
+        chart.setResourceToolTip(ResourceChart::Swap, QStringLiteral("Swap details"));
+        chart.setResourceToolTip(ResourceChart::Disk, QStringLiteral("Disk details"));
+        for (int resource = 0; resource < ResourceChart::ResourceCount; ++resource) {
+            chart.addSample(static_cast<ResourceChart::Resource>(resource),
+                            20.0 + resource * 20.0, 100.0);
+            chart.addSample(static_cast<ResourceChart::Resource>(resource),
+                            25.0 + resource * 20.0, 100.0);
+        }
+
+        int diagnosticsClicks = 0;
+        int memoryClicks = 0;
+        for (ResourceChart::Resource resource : {ResourceChart::Cpu, ResourceChart::Swap,
+                                                 ResourceChart::Disk}) {
+            chart.setClickHandler(resource, [&diagnosticsClicks] { ++diagnosticsClicks; });
+        }
+        chart.setClickHandler(ResourceChart::Memory, [&memoryClicks] { ++memoryClicks; });
+        chart.show();
+        QApplication::processEvents();
+
+        const auto click = [&chart](const QPoint &position) {
+            const QPointF global = chart.mapToGlobal(position);
+            QMouseEvent press(QEvent::MouseButtonPress, QPointF(position), global,
+                              Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(&chart, &press);
+        };
+        click(QPoint(8, 8));
+        click(QPoint(25, 8));
+        click(QPoint(8, 25));
+        click(QPoint(25, 25));
+        check(diagnosticsClicks == 3 && memoryClicks == 1,
+              QStringLiteral("resource chart keeps the per-quadrant click actions"));
+
+        const auto hover = [&chart](const QPoint &position, const QString &expected) {
+            QHelpEvent event(QEvent::ToolTip, position, chart.mapToGlobal(position));
+            QApplication::sendEvent(&chart, &event);
+            return QToolTip::text() == expected;
+        };
+        check(hover(QPoint(8, 8), QStringLiteral("CPU details")) &&
+                  hover(QPoint(25, 8), QStringLiteral("Memory details")) &&
+                  hover(QPoint(8, 25), QStringLiteral("Swap details")) &&
+                  hover(QPoint(25, 25), QStringLiteral("Disk details")),
+              QStringLiteral("resource chart keeps the per-quadrant hover details"));
     }
 
     // issue #300: the headless node runs on the offscreen QPA plugin, whose
@@ -458,21 +866,244 @@ int main(int argc, char *argv[])
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(
             "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
-    check(detailedStartupSteps >= 20 &&
+    if (!issuesRedesignOnly && !logTimelineOnly && !footerOverlayOnly)
+        check(detailedStartupSteps >= 7 &&
               startupLog.contains(QStringLiteral(
-                  "BEGIN MainWindow: load repository catalog from settings")) &&
+                  "BEGIN MainWindow: read connection state and cached model list")) &&
               startupLog.contains(QStringLiteral(
-                  "DONE  MainWindow: load repository catalog from settings (")) &&
+                  "DONE  MainWindow: read connection state and cached model list (")) &&
               startupLog.contains(QStringLiteral(
-                  "BEGIN MainWindow: warm Code, Branches and Worktrees UI")) &&
+                  "BEGIN MainWindow: populate Hosts navigation count")) &&
               startupLog.contains(QStringLiteral(
-                  "DONE  MainWindow: warm Code, Branches and Worktrees UI (")) &&
+                  "DONE  MainWindow: populate Hosts navigation count (")) &&
               startupLog.contains(QStringLiteral(
                   "startup job scheduled: initial mirror synchronization in "
-                  "15000ms")),
+                  "1000ms")),
           QString("startup log names and times every material constructor phase "
                   "(detailed steps=%1)")
-              .arg(detailedStartupSteps));
+                  .arg(detailedStartupSteps));
+
+    if (logTimelineOnly) {
+        window.show();
+        QApplication::processEvents();
+        runLogTimelineChecks(window);
+        stopChildProcesses(window);
+        return failures == 0 ? 0 : 1;
+    }
+
+    if (footerOverlayOnly) {
+        window.resize(1200, 720);
+        window.show();
+        QApplication::processEvents();
+        checkFooterOverlayGeometry(window);
+        return failures == 0 ? 0 : 1;
+    }
+
+    if (issuesRedesignOnly) {
+        window.show();
+        QApplication::processEvents();
+        const bool shown = window.testShowRepoIssuesTab();
+        QApplication::processEvents();
+
+        QTableWidget *issueList =
+            window.findChild<QTableWidget *>(QStringLiteral("issueList"));
+        QLineEdit *topSearch =
+            window.findChild<QLineEdit *>(QStringLiteral("globalSearch"));
+        QLineEdit *legacySearch =
+            window.findChild<QLineEdit *>(QStringLiteral("issueListSearchState"));
+        QPushButton *prioritize = window.findChild<QPushButton *>(
+            QStringLiteral("issuePrioritizeAction"));
+        QPushButton *analyze = window.findChild<QPushButton *>(
+            QStringLiteral("issueAnalyzeAction"));
+        QPushButton *sync = window.findChild<QPushButton *>(
+            QStringLiteral("issueHeaderAction"));
+        QPlainTextEdit *composer =
+            window.findChild<QPlainTextEdit *>(QStringLiteral("issueQuickAdd"));
+
+        check(shown && issueList && issueList->horizontalHeader()->isHidden() &&
+                  issueList->frameShape() == QFrame::NoFrame,
+              QStringLiteral("issues render as a headerless, frameless summary list"));
+        check(topSearch &&
+                  topSearch->placeholderText().startsWith(
+                      QStringLiteral("Search issues")) &&
+                  topSearch->toolTip().contains(QStringLiteral("is:open")) &&
+                  legacySearch && legacySearch->isHidden(),
+              QStringLiteral("top search owns issue filtering and documents operators "
+                             "(placeholder=%1 tooltip=%2 legacyHidden=%3)")
+                  .arg(topSearch ? topSearch->placeholderText() : QStringLiteral("missing"),
+                       topSearch ? topSearch->toolTip() : QStringLiteral("missing"))
+                  .arg(legacySearch && legacySearch->isHidden()));
+        check(window.testIssueDetailVisible(),
+              QStringLiteral("issue detail remains visible beside the list"));
+        check(prioritize && analyze && sync && prioritize->sizeHint().height() >= 40 &&
+                  analyze->sizeHint().height() >= 40,
+              QStringLiteral("issue actions use the rail-style icon tile row"));
+
+        if (prioritize)
+            prioritize->click();
+        check(composer && composer->toPlainText().contains(
+                              QStringLiteral("triaging a software project's open issue backlog")),
+              QStringLiteral("Prioritize drafts an editable composer prompt"));
+        if (analyze)
+            analyze->click();
+        check(composer && composer->toPlainText().contains(
+                              QStringLiteral("ALREADY implemented in the codebase")),
+              QStringLiteral("Analyze drafts an editable composer prompt"));
+        return failures == 0 ? 0 : 1;
+    }
+
+    // Codex can explicitly mark either account-rate-limit window unavailable.
+    // The two prompt gauges must show their independent live percentages first,
+    // then clear rather than displaying stale figures from a previous plan.
+    {
+        const qint64 resetSeconds =
+            QDateTime::currentMSecsSinceEpoch() / 1000 + 6 * 60 * 60;
+        window.testApplyCodexRateLimits(
+            QJsonObject{{QStringLiteral("primary"),
+                         QJsonObject{{QStringLiteral("usedPercent"), 25},
+                                     {QStringLiteral("resetsAt"), resetSeconds},
+                                     {QStringLiteral("windowDurationMins"), 300}}},
+                        {QStringLiteral("secondary"),
+                         QJsonObject{{QStringLiteral("usedPercent"), 65},
+                                     {QStringLiteral("resetsAt"),
+                                      resetSeconds + 7 * 24 * 60 * 60},
+                                     {QStringLiteral("windowDurationMins"),
+                                      7 * 24 * 60}}}});
+        const QString liveTip = window.testCodexUsageToolTip();
+        check(liveTip.contains(QStringLiteral("5-hour remaining: 75%")) &&
+                  liveTip.contains(QStringLiteral("Weekly remaining: 35%")) &&
+                  liveTip.contains(QStringLiteral("resets in")),
+              QStringLiteral("Codex 5-hour and weekly gauges show live usage"));
+
+        window.testApplyCodexRateLimits(
+            QJsonObject{{QStringLiteral("primary"), QJsonValue::Null},
+                        {QStringLiteral("secondary"), QJsonValue::Null}});
+        const QString unavailableTip = window.testCodexUsageToolTip();
+        check(unavailableTip.contains(
+                  QString::fromUtf8("5-hour remaining: \xE2\x80\x94")) &&
+                  unavailableTip.contains(
+                      QString::fromUtf8("Weekly remaining: \xE2\x80\x94")) &&
+                  !unavailableTip.contains(QStringLiteral("resets in")),
+              QStringLiteral("Codex gauges clear unavailable windows"));
+    }
+
+    // The prompt meters are click targets, ordered Codex then Claude Code, and
+    // their menus combine per-account usage with account and terminal actions.
+    {
+        QWidget *codexMeter = window.findChild<QWidget *>(
+            QStringLiteral("codexAccountUsageButton"));
+        QWidget *claudeMeter = window.findChild<QWidget *>(
+            QStringLiteral("claudeAccountUsageButton"));
+        check(codexMeter && claudeMeter &&
+                  codexMeter->parentWidget() == claudeMeter->parentWidget() &&
+                  codexMeter->x() < claudeMeter->x() &&
+                  codexMeter->cursor().shape() == Qt::PointingHandCursor &&
+                  claudeMeter->cursor().shape() == Qt::PointingHandCursor,
+              QStringLiteral("prompt usage buttons are clickable with Codex left "
+                             "and Claude Code right"));
+
+        const qint64 resetSeconds =
+            QDateTime::currentMSecsSinceEpoch() / 1000 + 7 * 24 * 60 * 60;
+        window.testApplyClaudeUsageResponse(QJsonObject{
+            {QStringLiteral("five_hour"),
+             QJsonObject{{QStringLiteral("utilization"), 0.12}}},
+            {QStringLiteral("seven_day"),
+             QJsonObject{{QStringLiteral("utilization"), 42.0}}},
+            {QStringLiteral("seven_day_fable_5"),
+             QJsonObject{{QStringLiteral("utilization"), QStringLiteral("0.37")},
+                         {QStringLiteral("resetsAt"), resetSeconds}}}});
+        const QString claudeTip = window.testClaudeUsageToolTip();
+        check(claudeTip.contains(QStringLiteral("5-hour: 12%")) &&
+                  claudeTip.contains(QStringLiteral("Weekly: 42%")) &&
+                  claudeTip.contains(QStringLiteral("Fable: 37%")) &&
+                  claudeTip.contains(QStringLiteral("resets in")),
+              QStringLiteral("Claude meter parses versioned Fable limits and "
+                             "fraction/string usage values"));
+
+        window.testShowAgentAccountMenu(QStringLiteral("claude-code"));
+        QApplication::processEvents();
+        QMenu *accountMenu = window.findChild<QMenu *>(
+            QStringLiteral("claudeAccountUsageMenu"));
+        QStringList menuText;
+        if (accountMenu)
+            for (QAction *action : accountMenu->actions())
+                if (!action->isSeparator())
+                    menuText << action->text().trimmed();
+        check(accountMenu &&
+                  menuText.contains(QStringLiteral("Claude Code accounts and usage")) &&
+                  std::any_of(menuText.cbegin(), menuText.cend(),
+                              [](const QString &text) {
+                                  return text.startsWith(
+                                      QStringLiteral("Fable weekly: 37% used"));
+                              }) &&
+                  menuText.contains(QString::fromUtf8("Add account\xE2\x80\xA6")) &&
+                  menuText.contains(QString::fromUtf8(
+                      "Log out active account\xE2\x80\xA6")) &&
+                  menuText.contains(QStringLiteral(
+                      "Launch Claude Code in system terminal")),
+              QStringLiteral("click menu shows account usage, add/logout and "
+                             "system-terminal actions"));
+        if (accountMenu)
+            accountMenu->close();
+
+        const QString profileId = QStringLiteral("test-secondary");
+        const QString profileDir =
+            QDir(appDataPath).filePath(QStringLiteral("agent-accounts/claude/") +
+                                       profileId);
+        QDir().mkpath(profileDir);
+        {
+            QSettings settings;
+            settings.beginGroup(forkmesh::ui::agentAccountProfilesGroup(
+                QStringLiteral("claude-code")));
+            settings.beginGroup(profileId);
+            settings.setValue(QStringLiteral("label"),
+                              QStringLiteral("Secondary"));
+            settings.setValue(QStringLiteral("configDir"), profileDir);
+            settings.endGroup();
+            settings.endGroup();
+            settings.setValue(
+                forkmesh::ui::agentAccountUsageSetting(
+                    QStringLiteral("claude-code"), profileId,
+                    QStringLiteral("claudeUsageFablePct")),
+                58);
+        }
+        window.testSelectAgentAccount(QStringLiteral("claude-code"), profileId);
+        check(forkmesh::ui::activeAgentAccount(
+                  QStringLiteral("claude-code")).id == profileId &&
+                  forkmesh::ui::activeAgentAccountEnv(
+                      QStringLiteral("claude-code")) ==
+                      QStringList{QStringLiteral("CLAUDE_CONFIG_DIR=") + profileDir} &&
+                  window.testClaudeUsageToolTip().contains(
+                      QStringLiteral("Fable: 58%")),
+              QStringLiteral("selecting an account activates its provider config "
+                             "root and cached limits"));
+
+        window.testShowAgentAccountMenu(QStringLiteral("claude-code"));
+        QApplication::processEvents();
+        accountMenu = window.findChild<QMenu *>(
+            QStringLiteral("claudeAccountUsageMenu"));
+        bool hasEditAction = false;
+        if (accountMenu) {
+            for (QAction *action : accountMenu->actions()) {
+                if (action->objectName() ==
+                    QStringLiteral("agentAccountEdit_%1").arg(profileId))
+                    hasEditAction = true;
+            }
+        }
+        check(hasEditAction,
+              QStringLiteral("account menu offers editing for saved accounts"));
+        check(window.testRenameAgentAccount(QStringLiteral("claude-code"),
+                                            profileId,
+                                            QStringLiteral("Work Claude")) &&
+                  forkmesh::ui::activeAgentAccount(
+                      QStringLiteral("claude-code")).label ==
+                      QStringLiteral("Work Claude"),
+              QStringLiteral("editing an account persists its label"));
+        if (accountMenu)
+            accountMenu->close();
+        window.testSelectAgentAccount(QStringLiteral("claude-code"),
+                                      QStringLiteral("default"));
+    }
 
     // adhoc #115: the first-run screen that asked for a username and a relay
     // host is retired — it only ever loaded straight into the app — so a freshly
@@ -553,6 +1184,58 @@ int main(int argc, char *argv[])
                       appPath->toolTip().contains(
                           QCoreApplication::applicationFilePath()),
                   QStringLiteral("status bar shows the running app's location"));
+            QPushButton *version = statusBar->findChild<QPushButton *>(
+                QStringLiteral("statusVersionButton"));
+            statusBar->layout()->activate();
+            QApplication::processEvents();
+            check(version && appPath && version->geometry().left() >=
+                                               appPath->geometry().right(),
+                  QStringLiteral("clickable version sits to the right of the app path"));
+
+            // adhoc #1389: slow background work no longer reserves a permanent
+            // footer column. Each kind appears as one 18px status icon, and the
+            // segmented rotating ring is driven by the live process count.
+            QWidget *backgroundHost = statusBar->findChild<QWidget *>(
+                QStringLiteral("statusBackgroundTasks"));
+            check(backgroundHost &&
+                      window.findChild<QWidget *>(
+                          QStringLiteral("backgroundTaskQueue")) == nullptr,
+                  QStringLiteral("background work moved from the footer panel "
+                                 "into the bottom status bar"));
+
+            const quint64 cleanupOne = forkmesh::BackgroundActivity::begin(
+                QStringLiteral("cleanup"), QStringLiteral("first test cleanup"));
+            const quint64 cleanupTwo = forkmesh::BackgroundActivity::begin(
+                QStringLiteral("cleanup"), QStringLiteral("second test cleanup"));
+            QWidget *cleanupChip = nullptr;
+            QElapsedTimer chipWait;
+            chipWait.start();
+            while (!cleanupChip && chipWait.elapsed() < 1000) {
+                QApplication::processEvents(QEventLoop::AllEvents, 20);
+                QThread::msleep(10);
+                const auto chips = backgroundHost
+                                       ? backgroundHost->findChildren<QWidget *>(
+                                             QStringLiteral(
+                                                 "statusBackgroundTaskChip"))
+                                       : QList<QWidget *>();
+                for (QWidget *chip : chips) {
+                    if (chip->property("processKind").toString() ==
+                        QStringLiteral("cleanup")) {
+                        cleanupChip = chip;
+                        break;
+                    }
+                }
+            }
+            check(cleanupChip && cleanupChip->size() == QSize(18, 18) &&
+                      cleanupChip->property("processCount").toInt() == 2 &&
+                      cleanupChip->toolTip().contains(
+                          QString(QChar(0x00D7)) + QStringLiteral("2")) &&
+                      cleanupChip->accessibleDescription().contains(
+                          QStringLiteral("2 processes")),
+                  QStringLiteral("one compact process icon carries the live "
+                                 "background-work count"));
+            forkmesh::BackgroundActivity::end(cleanupOne);
+            forkmesh::BackgroundActivity::end(cleanupTwo);
         }
     }
 
@@ -713,6 +1396,54 @@ int main(int argc, char *argv[])
                       "FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256=")),
               QStringLiteral(
                   "direct controller uploads pin the exact local binary SHA-256"));
+
+        // The source-tree test must not depend on a developer having already
+        // built the release companion.  Put a tiny non-empty executable in
+        // PATH so this exercises the package framing and remote installer
+        // deterministically; production still fails closed when the packaged
+        // Go binary is absent.
+        QTemporaryDir mirrorPackageDir;
+        const QByteArray originalPath = qgetenv("PATH");
+        QFile mirrorBinaryFixture(
+            mirrorPackageDir.filePath(QStringLiteral("forkmesh-mirror-node")));
+        const bool mirrorFixtureReady = mirrorPackageDir.isValid() &&
+            mirrorBinaryFixture.open(QIODevice::WriteOnly) &&
+            mirrorBinaryFixture.write("#!/bin/sh\nexit 0\n") > 0;
+        mirrorBinaryFixture.close();
+        if (mirrorFixtureReady) {
+            mirrorBinaryFixture.setPermissions(
+                QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                QFileDevice::ExeOwner | QFileDevice::ReadGroup |
+                QFileDevice::ExeGroup | QFileDevice::ReadOther |
+                QFileDevice::ExeOther);
+            qputenv("PATH", mirrorPackageDir.path().toUtf8() + ':' +
+                                originalPath);
+        }
+        qsizetype mirrorUploadBytes = -1;
+        QString mirrorUploadError;
+        const QString mirrorCommand =
+            window.testVultrGoMirrorInstallRemoteCommand(
+                &mirrorUploadBytes, &mirrorUploadError);
+        qputenv("PATH", originalPath);
+        check(mirrorFixtureReady && !mirrorCommand.isEmpty() &&
+                  mirrorUploadError.isEmpty() &&
+                  mirrorUploadBytes > 0 &&
+                  mirrorCommand.contains(QStringLiteral(
+                      "systemctl enable --now forkmesh-mirror-node.service")) &&
+                  mirrorCommand.contains(QStringLiteral(
+                      "Go mirror-node installed and running (no Qt/GTK packages)")) &&
+                  !mirrorCommand.contains(QStringLiteral("install.sh")),
+              QStringLiteral(
+                  "Vultr uses one native Go mirror package without the desktop installer"));
+        QProcess mirrorSyntax;
+        mirrorSyntax.start(QStringLiteral("bash"),
+                           {QStringLiteral("-n"), QStringLiteral("-c"),
+                            mirrorCommand});
+        const bool mirrorSyntaxFinished = mirrorSyntax.waitForFinished(5000);
+        check(mirrorSyntaxFinished &&
+                  mirrorSyntax.exitStatus() == QProcess::NormalExit &&
+                  mirrorSyntax.exitCode() == 0,
+              QStringLiteral("Vultr Go mirror remote command is valid shell syntax"));
     }
     if (fleetBinaryInstallOnly)
         return failures == 0 ? 0 : 1;
@@ -980,6 +1711,42 @@ int main(int argc, char *argv[])
                          "disabled non-custodial placeholder"));
     window.show();
     QApplication::processEvents();
+
+    // The Log destination is a timeline rather than a second scrolling text
+    // feed or a duplicate of the Pings page. Its timeframe presets and direct
+    // area selection keep dense activity explorable without losing the category
+    // filters.
+    runLogTimelineChecks(window);
+
+    // adhoc #1389: notification actions are caption-height controls, not the
+    // full-height buttons shown in the reference screenshot. The queued cards
+    // share these same object names and theme rules.
+    if (QWidget *toast = window.findChild<QWidget *>(
+            QStringLiteral("topMessage"))) {
+        QPushButton *toastAction = toast->findChild<QPushButton *>(
+            QStringLiteral("topMessageAction"));
+        const QList<QPushButton *> toastGhosts =
+            toast->findChildren<QPushButton *>(QStringLiteral("ghostButton"));
+        const bool ghostsAreThin =
+            !toastGhosts.isEmpty() &&
+            std::all_of(toastGhosts.cbegin(), toastGhosts.cend(),
+                        [](const QPushButton *button) {
+                            return button->maximumHeight() <= 18 &&
+                                   button->sizeHint().height() <= 18 &&
+                                   button->iconSize().height() <= 12;
+                        });
+        check(toastAction && toastAction->maximumHeight() <= 18 &&
+                  toastAction->sizeHint().height() <= 18 &&
+                  toastAction->iconSize().height() <= 11 && ghostsAreThin,
+              QStringLiteral("alert action buttons use the thinner caption "
+                             "treatment"));
+    } else {
+        check(false, QStringLiteral("alert action buttons use the thinner "
+                                   "caption treatment"));
+    }
+
+    checkAlertStackLayout(window);
+
     window.testRunDeferredStartupNow();
     QApplication::processEvents();
 
@@ -1689,8 +2456,9 @@ int main(int argc, char *argv[])
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
-    // The queue floats over the list's lower-right corner, preserving the rows
-    // behind it while keeping the common capacity adjustment one click away.
+    // The complete fleet toolbar floats over the session list's bottom-right
+    // corner, preserving rows while keeping bulk actions, terminal launchers,
+    // and queue controls together.
     {
         QLabel *queueStatus = window.findChild<QLabel *>(
             QStringLiteral("agentQueueStatusLabel"));
@@ -1698,22 +2466,64 @@ int main(int argc, char *argv[])
             QStringLiteral("agentQueueLimitDecreaseButton"));
         QPushButton *increase = window.findChild<QPushButton *>(
             QStringLiteral("agentQueueLimitIncreaseButton"));
+        QPushButton *startAll = window.findChild<QPushButton *>(
+            QStringLiteral("agentStartAllButton"));
+        QPushButton *stopAll = window.findChild<QPushButton *>(
+            QStringLiteral("agentStopAllButton"));
+        QPushButton *deleteMerged = window.findChild<QPushButton *>(
+            QStringLiteral("agentDeleteMergedButton"));
+        QPushButton *hideDetail = window.findChild<QPushButton *>(
+            QStringLiteral("issueIconButton"));
+        QPushButton *claudeTerminal = window.findChild<QPushButton *>(
+            QStringLiteral("agentClaudeTerminalButton"));
+        QPushButton *codexTerminal = window.findChild<QPushButton *>(
+            QStringLiteral("agentCodexTerminalButton"));
         QLineEdit *settingsLimit = window.findChild<QLineEdit *>(
             QStringLiteral("maxRunningAgentsEdit"));
         QWidget *queueOverlay = window.findChild<QWidget *>(
             QStringLiteral("agentQueueOverlay"));
-        check(queueStatus && decrease && increase && settingsLimit && queueOverlay &&
+        check(queueStatus && decrease && increase && startAll && stopAll &&
+                  deleteMerged && hideDetail && claudeTerminal && codexTerminal &&
+                  settingsLimit &&
+                  queueOverlay &&
                   queueOverlay->parentWidget() &&
-                  queueOverlay->parentWidget()->parentWidget() &&
-                  queueOverlay->parentWidget()->parentWidget()->objectName() ==
-                      QStringLiteral("issueTable") &&
+                  queueOverlay->parentWidget()->objectName() ==
+                      QStringLiteral("agentsListPane") &&
+                  startAll->parentWidget() == queueOverlay &&
+                  stopAll->parentWidget() == queueOverlay &&
+                  deleteMerged->parentWidget() == queueOverlay &&
+                  hideDetail->parentWidget() == queueOverlay &&
+                  claudeTerminal->parentWidget() == queueOverlay &&
+                  codexTerminal->parentWidget() == queueOverlay &&
                   queueOverlay->isVisible() &&
                   queueOverlay->x() + queueOverlay->width() + 12 ==
                       queueOverlay->parentWidget()->width() &&
+                  queueOverlay->y() + queueOverlay->height() + 12 ==
+                      queueOverlay->parentWidget()->height() &&
                   queueStatus->text() == QStringLiteral("Queue: 0 / 5"),
-              QStringLiteral("Agents queue floats over the list viewport with its "
-                             "queued count and run limit"));
+              QStringLiteral("Agents fleet controls float together at the list "
+                             "bottom with terminal launchers and queue controls"));
         if (queueStatus && decrease && increase && settingsLimit) {
+            AgentSession runningOne;
+            runningOne.id = 133890;
+            runningOne.owner = QStringLiteral("me");
+            runningOne.name = QStringLiteral("r");
+            runningOne.prompt = QStringLiteral("Queue running-count fixture");
+            runningOne.status = AgentStatus::Running;
+            AgentSession runningTwo = runningOne;
+            runningTwo.id = 133891;
+            window.testAddAgentSession(runningOne);
+            window.testAddAgentSession(runningTwo);
+            QSettings().setValue(QStringLiteral("agents/maxRunning"), 11);
+            window.testRefreshAgentQueueControls();
+            check(queueStatus->text() == QStringLiteral("Queue: 2 / 11") &&
+                      queueStatus->toolTip().contains(QStringLiteral("2 agents running")),
+                  QStringLiteral("queue readout shows running agents against the "
+                                 "concurrent-agent limit"));
+            window.testRemoveAgentSession(runningOne.id);
+            window.testRemoveAgentSession(runningTwo.id);
+            QSettings().setValue(QStringLiteral("agents/maxRunning"), 5);
+            window.testRefreshAgentQueueControls();
             increase->click();
             check(QSettings().value(QStringLiteral("agents/maxRunning")).toInt() == 6 &&
                       queueStatus->text() == QStringLiteral("Queue: 0 / 6") &&
@@ -1727,6 +2537,24 @@ int main(int argc, char *argv[])
                   QStringLiteral("one click lowers the queue's concurrent-agent "
                                  "limit and syncs Settings"));
         }
+    }
+    // A restored Codex session can retain its persisted Running status after its
+    // app-server transport has gone away. Its Continue action must requeue it;
+    // otherwise a follow-up prompt is accepted by the UI but has no process to
+    // receive it.
+    {
+        AgentSession detachedCodex;
+        detachedCodex.id = 133892;
+        detachedCodex.owner = QStringLiteral("me");
+        detachedCodex.name = QStringLiteral("r");
+        detachedCodex.provider = QStringLiteral("codex");
+        detachedCodex.prompt = QStringLiteral("Detached Codex transport fixture");
+        detachedCodex.status = AgentStatus::Running;
+        window.testAddAgentSession(detachedCodex);
+        check(window.testQueueDetachedRunningAgentSession(detachedCodex.id),
+              QStringLiteral("a detached Running Codex session can be requeued "
+                             "for a follow-up prompt"));
+        window.testRemoveAgentSession(detachedCodex.id);
     }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
@@ -1770,20 +2598,43 @@ int main(int argc, char *argv[])
         addAgent(133906, AgentStatus::Stopped);
         addAgent(133907, AgentStatus::Cleared);
         window.testRefreshAgentDotMatrix();
-        check(window.testAgentDotCount() == dotsBefore + 3,
-              QStringLiteral("agent matrix shows only running, queued, and waiting "
-                             "sessions (not terminal history)"));
+        check(window.testAgentDotCount() == dotsBefore + 7,
+              QStringLiteral("agent matrix shows sessions in every lifecycle "
+                             "state, including terminal history"));
+
+        // The chrome matrix is deliberately unbounded: every agent must remain
+        // visible and clickable, including sessions beyond its former
+        // 66-dot limit.
+        for (int id = 133908; id < 133978; ++id)
+            addAgent(id, AgentStatus::Running);
+        window.testRefreshAgentDotMatrix();
+        check(window.testAgentDotCount() == dotsBefore + 77,
+              QStringLiteral("agent matrix keeps every session visible "
+                             "beyond 66 dots"));
 
         window.testSetAgentSessionStatus(133901, AgentStatus::Success);
         window.testSetAgentSessionStatus(133902, AgentStatus::Success);
         window.testSetAgentSessionStatus(133903, AgentStatus::Success);
-        check(window.testAgentDotCount() == dotsBefore,
-              QStringLiteral("agent matrix removes each dot when its session "
+        for (int id = 133908; id < 133978; ++id)
+            window.testSetAgentSessionStatus(id, AgentStatus::Success);
+        check(window.testAgentDotCount() == dotsBefore + 77,
+              QStringLiteral("agent matrix retains each dot when its session "
                              "reaches a terminal state"));
 
-        for (int id = 133901; id <= 133907; ++id)
+        for (int id = 133901; id < 133978; ++id)
             window.testRemoveAgentSession(id);
     }
+
+    // The source-of-truth inbox count is one response shared by all three
+    // collaboration tabs. Each action must surface its own value before the
+    // user opens the review list.
+    window.testSetPendingInboxCounts(3, 2, 4);
+    check(window.testIssueInboxBadgeCount() == 3 &&
+              window.testPullInboxBadgeCount() == 2 &&
+              window.testDiscussionInboxButtonText().contains(
+                  QStringLiteral("4")),
+          QStringLiteral("issue, PR, and discussion inbox actions show their "
+                         "pending submission counts"));
 
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
@@ -2271,19 +3122,22 @@ int main(int argc, char *argv[])
             check(mirror1Id == QStringLiteral("mirror1-new-key"),
                   QString("the newer identity wins the deduped Mirror nodes row "
                           "(got id %1)").arg(mirror1Id));
+            check(window.testMirrorNodeCardsAreCompact(),
+                  QStringLiteral("Mirror nodes render as three-row cards with "
+                                 "resource gauges and live node, sync, commit, "
+                                 "health, and reachability controls"));
             check(!sawOffline,
                   QStringLiteral("offline mirror nodes are hidden while Online only is checked"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 1) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 2) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
-            // Columns: Node, Owner, Latest commit, Message, Author, Synced,
-            // Sync delay, Size, Issues, Commits, Branches, Pulls, Discussions,
-            // CPU, RAM, Disk, Platform, … — the sync-delay column pushes
-            // Disk/Platform to 15/16.
-            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 15)
+            // Hidden data-model columns remain stable behind the card: Node,
+            // Sync, Owner, commit identity, sync facts, repo counts, pending
+            // inbox counts, Health, then CPU/RAM/Disk/Platform.
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 20)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 16) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 21) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             const QString healthTip = window.testMirrorNodeCellToolTip(
@@ -2457,9 +3311,25 @@ int main(int argc, char *argv[])
         check(window.testGitWorkspaceIsExclusive(),
               QStringLiteral("a branch diff gives the Git rail exclusive ownership: "
                              "no Code chrome and no visible diff outside Git"));
-        check(window.testGitPromptFloatsBottomRight(),
-              QStringLiteral("Git floats only its prompt at the lower-right, "
-                             "leaving the graph's left side at full height"));
+        check(window.testGitPromptFloatsBottomLeft(),
+              QStringLiteral("Git keeps the global prompt overlay at the "
+                             "lower-left without reserving footer height"));
+        // Returning through the Code route keeps the same global prompt overlay;
+        // it is never reparented into a page-specific footer.
+        window.testClickRepoDetailTab(0);
+        QApplication::processEvents();
+        QFrame *promptWrapper = window.findChild<QFrame *>(
+            QStringLiteral("promptWrapper"));
+        QWidget *footerDock = window.findChild<QWidget *>(
+            QStringLiteral("logDock"));
+        QWidget *promptOverlayHost = window.findChild<QWidget *>(
+            QStringLiteral("promptOverlayHost"));
+        check(promptWrapper && footerDock && promptOverlayHost &&
+                  promptWrapper->parentWidget() == promptOverlayHost &&
+                  footerDock->isVisibleTo(&window) &&
+                  promptWrapper->isVisibleTo(&window),
+              QStringLiteral("Code and Git share the same visible global prompt "
+                             "overlay"));
 
         // adhoc #420: following a branch link must land on the branch straight
         // away. The panel's git reads run on a worker thread now, so the
@@ -2470,9 +3340,9 @@ int main(int argc, char *argv[])
         // silently omitted these and made the consolidated view look empty while
         // an agent was still working.
         const QString livePath = wtPath + QStringLiteral("/live-uncommitted.txt");
-        // Move main ahead immediately before opening the branch. The Git route's
-        // automatic pull must merge that new main tip inside the linked agent
-        // worktree, then rerender the range without losing its local file.
+        // Move main ahead immediately before opening the branch. Navigation is
+        // read-only: merely reviewing this linked agent branch must not create a
+        // merge commit or rewrite its worktree.
         {
             QFile mainShared(wtRepo.path() +
                              QStringLiteral("/auto-stash-overlap.txt"));
@@ -2530,51 +3400,52 @@ int main(int argc, char *argv[])
                   .arg(window.testCompareIndicatorText().isEmpty()
                            ? QStringLiteral("<hidden>")
                            : window.testCompareIndicatorText()));
-        QElapsedTimer autoPullTimer;
-        autoPullTimer.start();
-        QString autoPullCounts;
-        while (autoPullTimer.elapsed() < 5000) {
-            QApplication::processEvents(QEventLoop::AllEvents, 20);
-            autoPullCounts = gitOutput(
-                wtRepo.path(),
-                {"rev-list", "--left-right", "--count",
-                 "main...feature/keep-selected"});
-            if (autoPullCounts.startsWith(QLatin1Char('0')))
-                break;
-        }
-        check(autoPullCounts.startsWith(QLatin1Char('0')),
-              QString("opening a linked agent branch automatically pulls main "
-                      "into its own worktree (main...branch = %1)")
-                  .arg(autoPullCounts));
-        QFile restoredShared(wtPath +
-                             QStringLiteral("/auto-stash-overlap.txt"));
-        restoredShared.open(QIODevice::ReadOnly);
-        const QByteArray restoredSharedText = restoredShared.readAll();
-        const QString restoredStatus =
-            gitOutput(wtPath, {"status", "--short", "--",
-                               "auto-stash-overlap.txt"});
-        check(restoredSharedText.contains("agent changed line 1\n") &&
-                  restoredSharedText.contains("main changed line 12\n") &&
-                  restoredStatus.contains(QStringLiteral("auto-stash-overlap.txt")) &&
-                  gitOutput(wtPath, {"stash", "list"}).isEmpty(),
-              QString("Pull main protects and restores edits in files also changed "
-                      "on main (status = %1, stash = %2)")
-                  .arg(restoredStatus,
-                       gitOutput(wtPath, {"stash", "list"})));
-        // Advance main again and suppress the automatic path for this one view,
-        // so the actual toolbar button has to perform the update. This catches
+        QApplication::processEvents();
+        const QString reviewHead =
+            gitOutput(wtPath, {"rev-parse", "HEAD"}).trimmed();
+        const QString reviewCounts = gitOutput(
+            wtRepo.path(), {"rev-list", "--left-right", "--count",
+                            "main...feature/keep-selected"});
+        check(reviewCounts.startsWith(QLatin1Char('1')) &&
+                  reviewHead == gitOutput(
+                                    wtRepo.path(),
+                                    {"rev-parse", "feature/keep-selected"})
+                                    .trimmed(),
+              QString("opening a branch does not mutate its history "
+                      "(main...branch = %1)")
+                  .arg(reviewCounts));
+
+        // Bulk synchronization must also leave a divergent active agent branch
+        // untouched, and it must not manufacture a merge commit on a divergent
+        // inactive ref. A strictly-behind idle ref can still fast-forward.
+        runGitChecked(wtRepo.path(),
+                      {"branch", "regression/divergent-idle",
+                       "feature/keep-selected"});
+        runGitChecked(wtRepo.path(),
+                      {"branch", "regression/behind-idle", "main^"});
+        const QString divergentIdleHead =
+            gitOutput(wtRepo.path(),
+                      {"rev-parse", "regression/divergent-idle"})
+                .trimmed();
+        window.testPullBaseIntoAllBranches();
+        check(gitOutput(wtPath, {"rev-parse", "HEAD"}).trimmed() == reviewHead &&
+                  gitOutput(wtRepo.path(),
+                            {"rev-parse", "regression/divergent-idle"})
+                          .trimmed() == divergentIdleHead &&
+                  gitOutput(wtRepo.path(),
+                            {"rev-parse", "regression/behind-idle"})
+                          .trimmed() ==
+                      gitOutput(wtRepo.path(), {"rev-parse", "main"}).trimmed(),
+              QStringLiteral("bulk synchronization only fast-forwards idle refs"));
+        runGitChecked(wtRepo.path(),
+                      {"branch", "-D", "regression/divergent-idle"});
+        runGitChecked(wtRepo.path(),
+                      {"branch", "-D", "regression/behind-idle"});
+
+        // The actual toolbar button performs the intentional update. This catches
         // the manual route passing m_branchDiffBranch by reference across
         // event-pumping Git calls.
-        QFile manualPullFile(wtRepo.path() + QStringLiteral("/manual-pull.txt"));
-        if (manualPullFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            manualPullFile.write("arrived through Pull main\n");
-            manualPullFile.close();
-        }
-        runGitChecked(wtRepo.path(), {"add", "manual-pull.txt"});
-        runGitChecked(wtRepo.path(), {"commit", "-m", "advance main for manual pull"});
         window.testSwitchToBranchImmediateSelection(
-            QStringLiteral("feature/keep-selected"));
-        window.testSuppressAutoPullForBranch(
             QStringLiteral("feature/keep-selected"));
         QElapsedTimer pullButtonTimer;
         pullButtonTimer.start();
@@ -2587,14 +3458,26 @@ int main(int argc, char *argv[])
             wtRepo.path(),
             {"rev-list", "--left-right", "--count",
              "main...feature/keep-selected"});
+        QFile restoredShared(wtPath +
+                             QStringLiteral("/auto-stash-overlap.txt"));
+        restoredShared.open(QIODevice::ReadOnly);
+        const QByteArray restoredSharedText = restoredShared.readAll();
+        const QString restoredStatus =
+            gitOutput(wtPath, {"status", "--short", "--",
+                               "auto-stash-overlap.txt"});
         check(pullButtonClicked && manualPullCounts.startsWith(QLatin1Char('0')) &&
-                  QFileInfo::exists(wtPath + QStringLiteral("/manual-pull.txt")),
-              QString("Pull main button updates the linked branch it was clicked "
-                      "for (clicked = %1, main...branch = %2, file = %3)")
+                  restoredSharedText.contains("agent changed line 1\n") &&
+                  restoredSharedText.contains("main changed line 12\n") &&
+                  restoredStatus.contains(
+                      QStringLiteral("auto-stash-overlap.txt")) &&
+                  gitOutput(wtPath, {"stash", "list"}).isEmpty(),
+              QString("Pull main explicitly updates the linked branch and "
+                      "restores local edits (clicked=%1 counts=%2 status=%3 "
+                      "stash=%4)")
                   .arg(pullButtonClicked)
                   .arg(manualPullCounts)
-                  .arg(QFileInfo::exists(
-                           wtPath + QStringLiteral("/manual-pull.txt"))));
+                  .arg(restoredStatus,
+                       gitOutput(wtPath, {"stash", "list"})));
 
         // If main edits the exact same hunk as an agent's uncommitted change,
         // Git can finish the merge and only then fail while reapplying its
@@ -2620,8 +3503,6 @@ int main(int argc, char *argv[])
         runGitChecked(wtRepo.path(),
                       {"commit", "-m", "main overlaps protected agent edit"});
         window.testSwitchToBranchImmediateSelection(
-            QStringLiteral("feature/keep-selected"));
-        window.testSuppressAutoPullForBranch(
             QStringLiteral("feature/keep-selected"));
         QElapsedTimer conflictPullTimer;
         conflictPullTimer.start();
@@ -2728,6 +3609,11 @@ int main(int argc, char *argv[])
         // The rail's Git entry is the stable home destination: it always clears
         // a branch/worktree comparison and returns to main.
         window.testClickRailGitButton();
+        check(window.testSourceControlDiffText().contains(
+                  QStringLiteral("Loading changes on main")),
+              QString("the rail clears the previous branch/commit diff before "
+                      "refreshing main (pane = \"%1\")")
+                  .arg(window.testSourceControlDiffText().left(80).simplified()));
         QApplication::processEvents();
         check(window.testBrowsedBranch() == QStringLiteral("main") &&
                   window.testCommitWorkspacePage() == 0 &&
@@ -2934,6 +3820,51 @@ int main(int argc, char *argv[])
                   .arg(window.testBranchDiffPaintedFromCache()
                            ? QStringLiteral("yes")
                            : QStringLiteral("no")));
+
+        // adhoc #1384: a branch whose diff can't be read used to leave one red
+        // line — "Could not diff <branch>: git timed out" — with no command, no
+        // output from git and no way forward. The timeout now names the command
+        // it killed and carries whatever the child had printed, the pane shows
+        // that verbatim in a terminal block, and transient failures are retried
+        // before the user ever sees one.
+        {
+            QProcess stalled;
+            stalled.setProgram(QStringLiteral("git"));
+            stalled.setArguments({QStringLiteral("-C"), wtRepo.path(),
+                                  QStringLiteral("diff"),
+                                  QStringLiteral("--binary")});
+            stalled.start();
+            const QString timeoutErr = forkmesh::ui::gitTimeoutError(stalled, 8000);
+            check(timeoutErr.contains(QStringLiteral("git timed out after 8s")) &&
+                      timeoutErr.contains(QStringLiteral("diff --binary")),
+                  QString("a killed git read reports the command it stalled on, "
+                          "not a bare \"git timed out\" (adhoc #1384, err = %1)")
+                      .arg(timeoutErr.left(120).simplified()));
+            check(forkmesh::ui::isTransientGitError(timeoutErr) &&
+                      forkmesh::ui::isTransientGitError(QStringLiteral(
+                          "Unable to create '/r/.git/index.lock': File exists.")),
+                  QStringLiteral("a timeout and a contended index lock are both "
+                                 "worth another attempt (adhoc #1384)"));
+            check(!forkmesh::ui::isTransientGitError(
+                      QStringLiteral("fatal: bad revision 'nope'")),
+                  QStringLiteral("a deterministic git error is not retried, so a "
+                                 "real problem still shows straight away "
+                                 "(adhoc #1384)"));
+            const QString failHtml = forkmesh::ui::branchDiffErrorHtml(
+                QStringLiteral("agent/thing"),
+                QStringLiteral("git timed out after 8s: git -C /r diff\n"
+                               "error: unable to read /r/.git/index"),
+                3);
+            check(failHtml.contains(QStringLiteral("Could not diff agent/thing")) &&
+                      failHtml.contains(QStringLiteral("<pre")) &&
+                      failHtml.contains(
+                          QStringLiteral("unable to read /r/.git/index")) &&
+                      failHtml.contains(QStringLiteral("Tried 3 times")) &&
+                      failHtml.contains(QStringLiteral("href='retry:diff'")),
+                  QString("the failure pane shows git's terminal output and a "
+                          "Retry link (adhoc #1384, html = %1)")
+                      .arg(failHtml.left(120).simplified()));
+        }
 
         // Leave the fixture as the branch/merge tests below expect it.
         runGitChecked(wtRepo.path(),
@@ -3340,15 +4271,19 @@ int main(int argc, char *argv[])
                   !quickProvider->isVisible() && !seeded.testQuickAddModelVisible(),
               QString("one icon-rich composer dropdown combines agents and models (%1)")
                   .arg(agentModelLabels.join(QStringLiteral(", "))));
-        // The menu is ordered strongest-model-first, and the superseded /
-        // small-sibling models are left out entirely (adhoc #1204). Offline this
-        // is the static fallback line-up, so the order is exact: the Auto router
-        // above every concrete model, then Claude strongest-first, then Codex —
-        // with Haiku 4.5 and GPT-5.4-Mini dropped.
+        // The menu is ordered strongest-model-first. Offline this is the static
+        // fallback line-up, so the order is exact: the Auto router above every
+        // concrete model, then every Claude model, then every Codex model.
         QStringList rankedLabels;
         for (int i = 0; i < quickAgentModel->count(); ++i) {
             // Manual and the two API agents carry no model of their own.
             if (quickAgentModel->itemData(i, Qt::UserRole + 1).toString().isEmpty())
+                continue;
+            // Cloudflare chat models form their own group below the ranked
+            // coding agents and are verified separately.
+            const QString provider = quickAgentModel->itemData(i).toString();
+            if (provider != QStringLiteral("claude-code") &&
+                provider != QStringLiteral("codex"))
                 continue;
             rankedLabels << quickAgentModel->itemText(i);
         }
@@ -3356,9 +4291,11 @@ int main(int argc, char *argv[])
                                            QStringLiteral("Fable 5"),
                                            QStringLiteral("Opus 4.8"),
                                            QStringLiteral("Sonnet 4.6"),
+                                           QStringLiteral("Haiku 4.5"),
                                            QStringLiteral("GPT-5.5"),
-                                           QStringLiteral("GPT-5.4")}),
-              QString("composer models sort most powerful first, weak ones hidden (%1)")
+                                           QStringLiteral("GPT-5.4"),
+                                           QStringLiteral("GPT-5.4-Mini")}),
+              QString("composer models sort most powerful first and show every model (%1)")
                   .arg(rankedLabels.join(QStringLiteral(", "))));
         QComboBox *canonicalModel =
             seeded.findChild<QComboBox *>(QStringLiteral("quickAddModelSelector"));
@@ -3386,6 +4323,106 @@ int main(int argc, char *argv[])
                   canonicalModel &&
                   canonicalModel->currentData().toString() == concreteClaudeModel,
               QStringLiteral("one combined-menu click updates provider and model state"));
+
+        // adhoc #1445: every model row wears the outcome of the run that finished
+        // most recently on it, as a ✓ / ✗ the delegate paints green or red. Two
+        // fixtures for the ways the mark used to go stale: a failure that was
+        // *created* after the success it precedes (the list is ordered by
+        // creation, so it sorted first), and a failure on a sibling model that
+        // used to stamp every row of the same family.
+        {
+            const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+            const auto addOutcome = [&seeded](int id, const QString &model,
+                                              const QString &status,
+                                              qint64 createdAtMs,
+                                              qint64 finishedAtMs) {
+                AgentSession session;
+                session.id = id;
+                session.owner = QStringLiteral("me");
+                session.name = QStringLiteral("provider-picker");
+                session.prompt = QStringLiteral("Model status fixture");
+                session.provider = QStringLiteral("claude-code");
+                session.model = model;
+                session.status = status;
+                session.createdAtMs = createdAtMs;
+                session.startedAtMs = createdAtMs;
+                session.finishedAtMs = finishedAtMs;
+                if (status == AgentStatus::Failed)
+                    session.lastError = QStringLiteral("credit balance too low");
+                seeded.testAddAgentSession(session);
+            };
+            // Newest finish, oldest creation: a long run that was resumed and has
+            // just succeeded.
+            addOutcome(144501, QStringLiteral("claude-opus-4-8"),
+                       AgentStatus::Success, nowMs - 36000000, nowMs - 60000);
+            addOutcome(144502, QStringLiteral("claude-opus-4-8"),
+                       AgentStatus::Failed, nowMs - 18000000, nowMs - 14400000);
+            // No run of its own on Sonnet 4.6, so that row still reports its
+            // family's last outcome.
+            addOutcome(144503, QStringLiteral("claude-sonnet-4-5"),
+                       AgentStatus::Failed, nowMs - 7200000, nowMs - 7100000);
+            seeded.testRefreshQuickAddAgentModelSelector();
+            QApplication::processEvents();
+            const QString opusStatus = seeded.testQuickAddAgentModelStatus(
+                QStringLiteral("claude-opus-4-8"));
+            const QString opusLabel = seeded.testQuickAddAgentModelLabel(
+                QStringLiteral("claude-opus-4-8"));
+            const QString sonnetStatus = seeded.testQuickAddAgentModelStatus(
+                QStringLiteral("claude-sonnet-4-6"));
+            const QString haikuStatus = seeded.testQuickAddAgentModelStatus(
+                QStringLiteral("claude-haiku-4-5"));
+            check(opusStatus == QStringLiteral("ok") &&
+                      opusLabel.startsWith(QStringLiteral("Opus 4.8")) &&
+                      opusLabel.endsWith(QString::fromUtf8("\xE2\x9C\x93")) &&
+                      sonnetStatus == QStringLiteral("failed") &&
+                      haikuStatus.isEmpty(),
+                  QString("the model menu marks a model by its newest finished run "
+                          "(Opus %1 \"%2\", Sonnet %3, Haiku %4)")
+                      .arg(opusStatus, opusLabel, sonnetStatus,
+                           haikuStatus.isEmpty() ? QStringLiteral("unmarked")
+                                                 : haikuStatus));
+            for (int id = 144501; id <= 144503; ++id)
+                seeded.testRemoveAgentSession(id);
+            seeded.testRefreshQuickAddAgentModelSelector();
+            QApplication::processEvents();
+        }
+        // Every active Workers AI fallback must appear as its own selectable
+        // composer row. Selecting each row updates the same hidden provider and
+        // model controls quickAddIssue() reads when it sends /api/ai/ask.
+        bool allCloudflareModelsSelectable = quickAgentModel && canonicalModel;
+        QStringList selectedCloudflareModels;
+        for (const auto &choice :
+             forkmesh::ui::cloudflareAiFallbackModels()) {
+            int row = -1;
+            for (int i = 0; quickAgentModel && i < quickAgentModel->count(); ++i) {
+                if (quickAgentModel->itemData(i).toString() ==
+                        QStringLiteral("cloudflare-ai") &&
+                    quickAgentModel->itemData(i, Qt::UserRole + 1).toString() ==
+                        choice.first) {
+                    row = i;
+                    break;
+                }
+            }
+            allCloudflareModelsSelectable &= row >= 0;
+            if (row < 0)
+                continue;
+            quickAgentModel->setCurrentIndex(row);
+            QApplication::processEvents();
+            selectedCloudflareModels << canonicalModel->currentData().toString();
+            allCloudflareModelsSelectable &=
+                seeded.testQuickAddAgentProvider() ==
+                    QStringLiteral("cloudflare-ai") &&
+                canonicalModel->currentData().toString() == choice.first;
+        }
+        check(allCloudflareModelsSelectable &&
+                  selectedCloudflareModels.size() ==
+                      forkmesh::ui::cloudflareAiFallbackModels().size(),
+              QString("every active Cloudflare model is selectable in the "
+                      "prompt area (%1)")
+                  .arg(selectedCloudflareModels.join(QStringLiteral(", "))));
+        if (concreteClaudeChoice >= 0)
+            quickAgentModel->setCurrentIndex(concreteClaudeChoice);
+        QApplication::processEvents();
 
         // adhoc #38: the composer's speed (reasoning-effort) picker sits next to
         // the mode selector, offers the CLI's ladder with "Ultra" for xhigh, and
@@ -3489,6 +4526,7 @@ int main(int argc, char *argv[])
                   !composerChecks.contains(QStringLiteral("Task")),
               QString("the composer has no YOLO/Task toggles (%1)")
                   .arg(composerChecks.join(QStringLiteral(", "))));
+        checkFooterOverlayGeometry(seeded);
         check(seeded.findChild<QLabel *>(QStringLiteral("quickAddEnterBadge")) ==
                   nullptr,
               QStringLiteral("no corner Enter badge on the send buttons"));
@@ -3986,6 +5024,9 @@ int main(int argc, char *argv[])
         mergeSession.issueTitle = QStringLiteral("note a task merging into main");
         mergeSession.baseBranch = QStringLiteral("main");
         mergeSession.status = AgentStatus::Success;
+        // adhoc #1443: the "#" cell leads with the provider that ran the session,
+        // and the hover card names it.
+        mergeSession.provider = QStringLiteral("claude-code");
         check(!mergeSession.merged,
               QStringLiteral("the merge-note fixture starts unmerged"));
         check(window.testAgentStatusCellText(mergeSession.id).isEmpty(),
@@ -4041,6 +5082,54 @@ int main(int argc, char *argv[])
                       "health badges "
                       "(adhoc #403, got %1)")
                   .arg(window.testAgentStatusCellBadges(2910, chip)));
+        const QString agentTip = window.testAgentStatusCellToolTip(2910, chip);
+        check(agentTip.startsWith(QStringLiteral("<table")) &&
+                  agentTip.contains(QStringLiteral("Agent #2910")) &&
+                  agentTip.contains(QStringLiteral("7 files changed")) &&
+                  agentTip.contains(QStringLiteral("2 uncommitted changes")) &&
+                  agentTip.contains(QStringLiteral("4 ahead")) &&
+                  agentTip.count(QStringLiteral("<tr>")) ==
+                      agentTip.count(QStringLiteral("<img ")),
+              QStringLiteral("every line in an agent hover card has an icon"));
+        // adhoc #1443: the hover card also has to explain the marks the cell
+        // paints — which agent ran it, the branch button's ring colour, the amber
+        // dot on its corner, and the down arrow beside it — since none of them
+        // can be read off the row on their own.
+        check(agentTip.contains(QStringLiteral("Claude Code")) &&
+                  agentTip.contains(QStringLiteral("`claude` CLI")),
+              QStringLiteral("the hover card names the provider that ran the "
+                             "session (adhoc #1443)"));
+        check(agentTip.contains(QStringLiteral("blue ring")) &&
+                  agentTip.contains(QStringLiteral("still on disk")),
+              QStringLiteral("the hover card explains the branch button's ring "
+                             "colour (adhoc #1443)"));
+        check(agentTip.contains(QStringLiteral("amber dot")),
+              QStringLiteral("the hover card explains the dot on the branch "
+                             "button (adhoc #1443)"));
+        check(agentTip.contains(QString::fromUtf8("\xE2\xAC\x87 arrow")) &&
+                  agentTip.contains(QStringLiteral("9 commits behind main")),
+              QStringLiteral("the hover card explains the down arrow beside the "
+                             "branch button (adhoc #1443)"));
+        // QStringLiteral wraps a u"" literal, so a UTF-8 byte escape in one lands
+        // as a code point per byte: the churn line used to read "added Â·
+        // removed" in the card. Every separator has to survive as itself.
+        check(agentTip.contains(QString::fromUtf8("added \xC2\xB7 ")) &&
+                  !agentTip.contains(QString::fromUtf8("\xC3\x82")),
+              QStringLiteral("the hover card's punctuation is not mangled into "
+                             "mojibake (adhoc #1443)"));
+        // A session whose checkout has been cleaned up says so, and says the ring
+        // goes grey with it.
+        AgentDiffStat gone = chip;
+        gone.worktree.clear();
+        gone.dirty = 0;
+        gone.behind = 0;
+        const QString goneTip = window.testAgentStatusCellToolTip(2910, gone);
+        check(goneTip.contains(QStringLiteral("grey ring")) &&
+                  goneTip.contains(QStringLiteral("no dot")) &&
+                  !goneTip.contains(QString::fromUtf8("\xE2\xAC\x87 arrow")),
+              QStringLiteral("a cleaned-up, clean, up-to-date session explains a "
+                             "grey ring and no dot, and mentions no arrow "
+                             "(adhoc #1443)"));
         // A cleaned-up session with no patch yet leaves every badge unknown, so
         // the chip falls back to the plain branch button.
         check(window.testAgentStatusCellBadges(2910, AgentDiffStat()) ==
@@ -4182,6 +5271,41 @@ int main(int argc, char *argv[])
                   739, QStringLiteral("agent/adhoc-7391-pr-link")) == 7391,
               QStringLiteral("PR lookup is repository-scoped by number and "
                              "branch"));
+        check(window.testAgentPrButtonText(7391) ==
+                  QStringLiteral("View PR #739"),
+              QStringLiteral("an Agent's Create PR action becomes a numbered "
+                             "link to the created pull request"));
+
+        check(window.testRepoRequiresPeerApproval(),
+              QStringLiteral("repositories require peer approval by default"));
+        window.testSetRepoRequirePeerApproval(false);
+        check(!window.testRepoRequiresPeerApproval(),
+              QStringLiteral("repository settings can make peer approval "
+                             "optional"));
+        bool savedOptionalPolicy = false;
+        {
+            QSettings settings;
+            const int count = settings.beginReadArray(
+                QStringLiteral("repositories/items"));
+            for (int i = 0; i < count; ++i) {
+                settings.setArrayIndex(i);
+                if (settings.value(QStringLiteral("owner")).toString() ==
+                        QLatin1String("me") &&
+                    settings.value(QStringLiteral("name")).toString() ==
+                        QLatin1String("r")) {
+                    savedOptionalPolicy =
+                        !settings.value(QStringLiteral("requirePeerApproval"),
+                                        true)
+                             .toBool();
+                    break;
+                }
+            }
+            settings.endArray();
+        }
+        check(savedOptionalPolicy,
+              QStringLiteral("the optional peer-approval policy persists on "
+                             "the repository record"));
+        window.testSetRepoRequirePeerApproval(true);
 
         check(window.testBindAgentSessionsToPull(
                   740, QStringLiteral("manual/pr-740")) &&
@@ -4337,7 +5461,9 @@ int main(int argc, char *argv[])
                              "(adhoc #222)"));
     }
 
-    // adhoc #15: the network log renders only its newest segment up front, and
+    // adhoc #15: the hidden rich renderer still pages its newest segment for
+    // footer deep-links and add-to-prompt actions without returning the old
+    // scrolling pane to the Log page.
     // scrolling to the top loads the next older segment instead of capping
     // history at whatever first rendered.
     {

@@ -34,10 +34,9 @@ def test_diagnostics_bar_is_compact_expandable_and_device_local():
         assert sensitive in APP
     assert ".world-diagnostics summary" in CSS
     assert ".world-diagnostics[open]" in CSS
-    assert 'data-world-diagnostics-music-progress' in APP
-    assert 'data-world-diagnostics-music-position' in APP
     assert ".world-diagnostics-compact" in CSS
-    assert ".world-diagnostics-music-compact progress" in CSS
+    assert 'data-world-diagnostics-music-progress' not in APP
+    assert ".world-diagnostics-music-compact" not in CSS
     assert "@media (max-width: 480px)" in CSS
 
 
@@ -105,19 +104,15 @@ def test_socket_diagnostics_use_existing_frames_and_one_hertz_ui_sampling():
         assert sensitive not in diagnostics
 
 
-def test_music_playbar_reuses_the_local_one_hertz_diagnostics_sample():
+def test_diagnostics_do_not_include_retired_song_playback_state():
     diagnostics = _section(
         APP,
         "  collectDiagnostics(",
         "\n  startActivityTicker()",
     )
-    assert "playback.element?.currentTime" in diagnostics
-    assert "playback.element?.duration" in diagnostics
-    assert 'this.$("[data-world-diagnostics-music-progress]")' in diagnostics
-    assert "musicProgress.max = duration || 1;" in diagnostics
-    assert "musicProgress.value = position;" in diagnostics
-    assert "setInterval(" not in diagnostics
-    assert "fetch(" not in diagnostics
+    assert "activeAudio" not in diagnostics
+    assert "focusMusic" not in diagnostics
+    assert "diagnostics-music" not in diagnostics
 
 
 def test_mobile_renderer_has_low_memory_and_page_lifecycle_recovery():
@@ -165,6 +160,17 @@ def test_local_point_lights_are_budgeted_and_reported_separately():
     assert "activePointLights" in SCENE
     assert "activeLights" in APP
     assert "activePointLights" in APP
+
+
+def test_compact_renderer_reports_district_residency_and_gpu_limits():
+    assert "residency: compactDistrictDiagnostics()" in SCENE
+    assert "releasedGeometries" in SCENE
+    assert "releasedTextures" in SCENE
+    assert "maxTextureSize: Math.max" in SCENE
+    assert "maxTextures: Math.max" in SCENE
+    assert "residency: scene?.residency" in APP
+    assert "maxTextureSize: clampCount" in APP
+    assert "maxTextures: clampCount" in APP
 
 
 def test_build_marker_is_strictly_reduced_to_version_and_git_revision():

@@ -36,8 +36,8 @@ def test_badge_widget_scrolls_and_is_fed_per_file_stats():
     # must not count as changes, and each tile reuses the file-list icon.
     feed = PULLS[PULLS.index("QList<PullBadgeWidget::FileEntry> badgeFiles;"):]
     feed = feed[:feed.index("m_pullBadgeWidget->setPull(") + 400]
-    assert 'line.startsWith(QLatin1String("+++"))' in feed
-    assert 'line.startsWith(QLatin1String("---"))' in feed
+    assert 'line.startsWith(QLatin1String("+++ "))' in feed
+    assert 'line.startsWith(QLatin1String("--- "))' in feed
     assert "iconForFile(it.key().section('/', -1))" in feed
     # Deselecting clears the badge.
     assert "m_pullBadgeWidget->clearPull();" in PULLS

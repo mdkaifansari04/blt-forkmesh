@@ -649,34 +649,36 @@ def test_office_walkway_meets_the_lobby_without_a_gap_or_step():
     assert "OFFICE_LOBBY_SURFACE_Y / 2" in floor_surface
 
 
-def test_office_glass_uses_one_stable_non_depth_writing_envelope():
+def test_office_restores_clear_glass_and_camera_lods_its_interior():
     scene = source(SCENE_PATH)
-    material_helper = scene[
-        scene.index("function makeMaterial("):
-        scene.index("function setShadows(")
-    ]
+    office = function_body(scene, "createForkMeshOffice")
     exterior = scene[
-        scene.index('const glass = makeMaterial(THREE, "#9ef7c6"'):
+        scene.index('const facade = makeMaterial(THREE, "#9ef7c6"'):
         scene.index("const doorMaterial = makeMaterial", scene.index(
-            'const glass = makeMaterial(THREE, "#9ef7c6"'
+            'const facade = makeMaterial(THREE, "#9ef7c6"'
         ))
     ]
-    assert "parameters.depthWrite = options.depthWrite" in material_helper
     for contract in (
+        'facade.name = "forkmesh-office-clear-glass"',
+        "transparent: true",
         "opacity: 0.24",
         "metalness: 0",
         "roughness: 0.62",
         "depthWrite: false",
     ):
         assert contract in exterior
-    assert "officeFloorGlassMaterial" not in scene
-    assert (
-        "new THREE.BoxGeometry(0.18, OFFICE_FLOOR_HEIGHT - 0.7, OFFICE_DEPTH)"
-        not in scene
-    )
-    assert "child.material?.transparent" in scene
-    assert "child.castShadow = false" in scene
-    assert "child.receiveShadow = false" in scene
+    assert office.count("facade,") == 4
+    door = scene[
+        scene.index('const doorMaterial = makeMaterial(THREE, "#c9fff3"'):
+        scene.index("const elevatorFacadeMinX", scene.index(
+            'const doorMaterial = makeMaterial(THREE, "#c9fff3"'
+        ))
+    ]
+    assert "transparent: true" in door
+    assert "opacity: 0.3" in door
+    assert "depthWrite: false" in door
+    assert 'officeInterior.visible = officeSceneMode !== "town" || exteriorDetailed' in scene
+    assert 'if (mode === "office") return [officeInterior]' in scene
 
 
 def test_tower_is_five_stories_and_about_ten_times_the_old_width():
@@ -713,14 +715,26 @@ def test_tower_is_five_stories_and_about_ten_times_the_old_width():
     assert "forkmesh-office-executive-strategy-table" not in scene
 
 
-def test_aerial_lod_never_removes_world_sections_and_sol_sign_is_attached():
+def test_aerial_lod_pages_mobile_districts_and_keeps_navigation_visible():
     scene = source(SCENE_PATH)
     assert "const detailTargets = [" not in scene
     assert "setFarDetailVisible(" not in scene
     assert "farDetailVisibility" not in scene
-    assert "Repositories, organizations, fediverse displays, every" in scene
-    assert "officeInterior.visible = true" in scene
-    assert 'officeSceneMode === "town" || floorId === officeCurrentFloorId' in scene
+    assert "const COMPACT_DISTRICT_RESIDENCY = Object.freeze" in scene
+    assert "function updateCompactDistrictResidency(force = false)" in scene
+    assert "if (!compactRenderer) return;" in scene
+    assert "district.distance <= district.enter" in scene
+    assert "district.distance <= district.exit" in scene
+    assert "releaseCompactDistrictGpuResources(root)" in scene
+    assert "disposeOwnedGeometry" in scene
+    assert "texture.dispose()" in scene
+    assert "terrain and navigation markers" in scene
+    assert 'const OFFICE_EXTERIOR_LOD_DISTANCE = 235;' in scene
+    assert "camera.position.distanceTo(officeLodWorldPosition)" in scene
+    assert 'world.userData.officeExteriorDetailLevel = exteriorDetailed' in scene
+    assert 'world.userData.officeExteriorDetailLevel === "furnished"' in scene
+    assert 'officeInterior.visible = officeSceneMode !== "town" || exteriorDetailed' in scene
+    assert 'officeSceneMode === "town"\n        ? exteriorDetailed' in scene
     assert "const showOfficeInterior" not in scene
     assert "floorGroup.visible = true;" in scene
     assert "group.add(treasurySign);" in scene
@@ -742,8 +756,11 @@ def test_office_floor_visibility_syncs_immediately_on_every_story_change():
         scene.index("function syncOfficeFloorVisibility()"):
         scene.index("function updateSceneLevelOfDetail(")
     ]
-    assert "officeInterior.visible = true;" in visibility
-    assert 'officeSceneMode === "town" || floorId === officeCurrentFloorId' in visibility
+    assert "officeInterior.getWorldPosition(officeLodWorldPosition);" in visibility
+    assert "camera.position.distanceTo(officeLodWorldPosition)" in visibility
+    assert 'officeInterior.visible = officeSceneMode !== "town" || exteriorDetailed;' in visibility
+    assert 'officeSceneMode === "town"\n        ? exteriorDetailed' in visibility
+    assert ": floorId === officeCurrentFloorId;" in visibility
     warp = scene[
         scene.index("function warpToOfficeFloor(floorId)"):
         scene.index("function tryOfficeFloorWarpDoorway", scene.index("function warpToOfficeFloor(floorId)"))
@@ -1434,7 +1451,7 @@ def test_rooftop_has_glass_safety_barriers_and_explicit_exit_jump():
     assert "rooftop.add(barrier)" in scene
     jump = scene[
         scene.index('if (event.code === "Space")'):
-        scene.index('if (event.code === "KeyR"')
+        scene.index('if (event.code === "KeyE"')
     ]
     assert "const roofJumpStarted = beginOfficeRoofJump();" in jump
     assert 'officeSceneMode === "town"' in jump

@@ -281,3 +281,16 @@ def test_aquarium_animation_is_lobby_only_and_capped_at_twenty_hertz():
     assert 'officeSceneMode === "lobby"' in SCENE
     assert 'officeCurrentFloorId === "lobby"' in SCENE
     assert "officeAquarium.setAnimationActive(aquariumAnimationActive)" in SCENE
+
+
+def test_aquarium_fish_draw_batches_are_hidden_outside_the_office():
+    aquarium = _aquarium_block()
+    assert "let fishBodiesVisible = false" in aquarium
+    assert "function setFishBodiesVisible(value)" in aquarium
+    assert "school.visible = fishBodiesVisible" in aquarium
+    assert "body.visible = fishBodiesVisible" in aquarium
+    assert "tail.visible = fishBodiesVisible" in aquarium
+    assert "fins.visible = fishBodiesVisible" in aquarium
+    assert "setFishBodiesVisible(fishBodiesVisible)" in aquarium
+    assert "setFishBodiesVisible," in aquarium
+    assert 'officeAquarium.setFishBodiesVisible(officeSceneMode !== "town")' in SCENE

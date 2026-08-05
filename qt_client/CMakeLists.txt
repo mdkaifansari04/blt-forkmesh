@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.11 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.16 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -156,6 +156,7 @@ set(FORKMESH_MAIN_WINDOW_SOURCES
     src/MainWindowSetup.cpp
     src/MainWindowChat.cpp
     src/MainWindowTasks.cpp
+    src/MainWindowNotes.cpp
     src/MainWindowIssues.cpp
     src/MainWindowSourceControl.cpp
     src/MainWindowDiscussions.cpp
@@ -165,6 +166,7 @@ set(FORKMESH_MAIN_WINDOW_SOURCES
     src/MainWindowProjects.cpp
     src/MainWindowBranches.cpp
     src/MainWindowReleases.cpp
+    src/MainWindowMirrorNode.cpp
     src/MainWindowShortcuts.cpp
     src/MainWindowSearch.cpp
     src/MainWindowSettings.cpp
@@ -212,6 +214,7 @@ set(FORKMESH_APP_SOURCES
     src/CoveStore.cpp
     src/ChatHistoryLimits.h
     src/ChatVisitorPresence.h
+    src/NoteListEntry.h
     src/ServerNode.h
     src/ServerNode.cpp
     src/OfficeChannelMirror.h
@@ -274,6 +277,8 @@ set(FORKMESH_APP_SOURCES
     src/AgentStore.h
     src/AgentStore.cpp
     src/AgentJail.h
+    src/VirtualMachineRuntime.h
+    src/VirtualMachineRuntime.cpp
     src/AgentPromptImages.h
     src/AgentPromptImages.cpp
     src/UsageLimitCalendar.h
@@ -322,6 +327,8 @@ set(FORKMESH_APP_SOURCES
     src/NodeDiagnostics.cpp
     src/LocalBackupStore.h
     src/LocalBackupStore.cpp
+    src/LogTimelineChart.h
+    src/LogTimelineChart.cpp
     src/McpConnector.h
     src/McpConnector.cpp
     src/StartupTrace.h
@@ -531,6 +538,9 @@ install(PROGRAMS
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/forkmesh_mcp_server.py"
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/tools")
 install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/../packaging/systemd/forkmesh-mirror-node.service"
+    DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/packaging/systemd")
+install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/wrangler.toml"
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/pyproject.toml"
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/uv.lock"
@@ -619,6 +629,7 @@ if(FORKMESH_BUILD_TESTS)
         src/ReferenceLinks.h
         src/ChatHistoryLimits.h
         src/ChatVisitorPresence.h
+        src/NoteListEntry.h
         src/SystemStats.h
         src/SystemStats.cpp
         src/NodeDiagnostics.h
@@ -817,10 +828,24 @@ if(FORKMESH_BUILD_TESTS)
         src/CodexAppServerSession.h
         src/CodexAppServerSession.cpp
         src/CodexTranscriptStyle.h
+        src/VirtualMachineRuntime.h
+        src/VirtualMachineRuntime.cpp
     )
     target_link_libraries(forkmesh-codex-tests PRIVATE Qt6::Core)
     if(APPLE)
         set_target_properties(forkmesh-codex-tests PROPERTIES MACOSX_BUNDLE FALSE)
+    endif()
+
+    # Boot-scoped Lima/QEMU command construction and host/guest boundary tests.
+    qt_add_executable(forkmesh-vm-runtime-tests
+        tests/test_virtual_machine_runtime.cpp
+        src/VirtualMachineRuntime.h
+        src/VirtualMachineRuntime.cpp
+    )
+    target_link_libraries(forkmesh-vm-runtime-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-vm-runtime-tests PROPERTIES
+            MACOSX_BUNDLE FALSE)
     endif()
 
     # Nightly end-to-end mesh-loop test (issue #352): drives the real client
@@ -943,7 +968,7 @@ if(FORKMESH_BUILD_TESTS)
     # FORKMESH_BUILD_TESTS=OFF anyway.
     set_target_properties(
         forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
-        forkmesh-codex-tests
+        forkmesh-codex-tests forkmesh-vm-runtime-tests
         forkmesh-control-tests forkmesh-chat-transport-tests
         forkmesh-action-security-tests
         forkmesh-private-mirror-tests
@@ -976,6 +1001,7 @@ if(FORKMESH_BUILD_TESTS)
     add_test(NAME forkmesh-world-speech-tests
              COMMAND forkmesh-world-speech-tests)
     add_test(NAME forkmesh-codex-tests COMMAND forkmesh-codex-tests)
+    add_test(NAME forkmesh-vm-runtime-tests COMMAND forkmesh-vm-runtime-tests)
     add_test(NAME forkmesh-control-tests COMMAND forkmesh-control-tests)
     add_test(NAME forkmesh-chat-transport-tests
              COMMAND forkmesh-chat-transport-tests)
@@ -992,6 +1018,14 @@ if(FORKMESH_BUILD_TESTS)
     add_test(NAME forkmesh-e2e COMMAND forkmesh-e2e)
     set_tests_properties(forkmesh-tests forkmesh-window-tests forkmesh-perf-tests PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    # The default developer/CI suite stays intentionally small: deployment
+    # trust boundaries, private/public mirror encryption, and the agent
+    # transport. The remaining targets are available for focused changes.
+    set_tests_properties(
+        forkmesh-control-tests forkmesh-private-mirror-tests
+        forkmesh-public-mirror-tests forkmesh-codex-tests
+        forkmesh-vm-runtime-tests
+        PROPERTIES LABELS "critical" TIMEOUT 20)
     # The e2e loop drives real git subprocesses and needs the stub agent's path.
     set_tests_properties(forkmesh-e2e PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;FORKMESH_E2E_STUB_AGENT=$<TARGET_FILE:forkmesh-e2e-stub-agent>")
@@ -1001,6 +1035,7 @@ if(FORKMESH_BUILD_TESTS)
         USES_TERMINAL)
     add_dependencies(check forkmesh-tests forkmesh-ide-tests
         forkmesh-world-speech-tests forkmesh-codex-tests
+        forkmesh-vm-runtime-tests
         forkmesh-control-tests forkmesh-chat-transport-tests
         forkmesh-action-security-tests
         forkmesh-private-mirror-tests
@@ -1014,7 +1049,8 @@ if(FORKMESH_BUILD_TESTS)
     # dirty-after-configure regression observable in focused test builds.
     foreach(_forkmesh_test_target
             forkmesh-tests forkmesh-ide-tests forkmesh-world-speech-tests
-            forkmesh-codex-tests forkmesh-control-tests
+            forkmesh-codex-tests forkmesh-vm-runtime-tests
+            forkmesh-control-tests
             forkmesh-chat-transport-tests
             forkmesh-action-security-tests
             forkmesh-private-mirror-tests forkmesh-public-mirror-tests

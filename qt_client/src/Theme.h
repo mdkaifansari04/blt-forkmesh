@@ -222,6 +222,14 @@ QPushButton#socialIconButton:hover { border-color: #6e7681; }
     font-size: 11px; padding: 0 4px;
 }
 #appStatusBar QPushButton:hover { color: #58a6ff; }
+#statusVersionButton:checked { color: #58a6ff; font-weight: 700; }
+#debugBar { background-color: #0d1117; border-top: 1px solid #30363d; }
+#debugBarScroll, #debugBarContent { background: transparent; border: none; }
+#debugBarSeparator { color: #30363d; }
+#debugBarScroll QScrollBar:horizontal { height: 7px; }
+/* Background-work chips (adhoc #1389): the chips paint themselves, so the host
+   only has to stay out of the way of the strip's own fill. */
+#statusBackgroundTasks { background: transparent; }
 
 /* --- Nav rail --- */
 #navRail { background-color: #010409; border-right: 1px solid #30363d; }
@@ -292,6 +300,7 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #sizeBarFill { background-color: #3fb950; border-radius: 3px; }
 #overviewMetricTrack { background-color: #21262d; border-radius: 2px; }
 #overviewMetricFill { background-color: #3fb950; border-radius: 2px; }
+#overviewLoadingPlaceholder { background-color: #30363d; border-radius: 3px; }
 #overviewUpdatedTime { color: #8b949e; font-size: 10px; }
 #readmeView {
     background: transparent; border: none; padding: 0; color: #e6edf3;
@@ -382,9 +391,6 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 }
 #appVersionLabel {
     background: transparent; color: #e6edf3; font-size: 13px; font-weight: 700;
-}
-#chromeVersionLabel {
-    background: transparent; color: #8b949e; font-size: 9px; font-weight: 600;
 }
 #breadcrumb { background: transparent; font-size: 14px; font-weight: 600; }
 #issueDetailOverlay { background-color: #0d1117; }
@@ -487,7 +493,15 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none; color: #6e7681; padding: 0;
 }
 #topMessage { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
-#topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+#topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
+    background: transparent; border: none; font-size: 12px; font-weight: 600;
+}
+#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptImage {
+    background: rgba(48,54,61,0.35); border: 1px solid #30363d;
+    border-radius: 5px; padding: 3px;
+}
+#topMessagePromptImage:hover { border-color: #58a6ff; }
 #topMessageQueue { background: transparent; border: none; }
 #topMessageQueueContent { background: transparent; }
 #topMessageQueueCard { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; }
@@ -500,6 +514,10 @@ QPushButton#agentsMagicButton:checked {
 }
 /* Countdown / queue depth, dimmed, on the action row under the message. */
 #topMessageMeta { background: transparent; border: none; color: #6e7681; font-size: 11px; }
+#topMessageTypeBadge, #topMessageQueueTypeBadge {
+    background: rgba(88,166,255,0.16); border: 1px solid rgba(88,166,255,0.42);
+    border-radius: 6px; color: #79c0ff; font-size: 10px; font-weight: 700; padding: 1px 5px;
+}
 #topMessageOverlay { background-color: #161b22; border: 1px solid #30363d;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #c9d1d9; }
@@ -508,6 +526,19 @@ QPushButton#topMessageAction {
     border-radius: 6px; color: #58a6ff; font-size: 11px; font-weight: 600; padding: 2px 6px;
 }
 QPushButton#topMessageAction:hover { background: rgba(88,166,255,0.22); color: #79c0ff; }
+/* Alert-card controls are deliberately thinner than app buttons (adhoc #1389):
+   the toast is an overlay, so Copy / View agent / Send to prompt / dismiss read
+   as one caption line under the message instead of standing full button height.
+   Both IDs are named so these win the cascade over the rules above. */
+#topMessage QPushButton#ghostButton, #topMessageQueueCard QPushButton#ghostButton {
+    font-size: 11px; padding: 0 6px; min-height: 16px; max-height: 18px;
+}
+/* Qt's min/max-height bound the content box, and this one is the only bordered
+   button in the row, so its ceiling is 2px lower to land on the same 18px line. */
+#topMessage QPushButton#topMessageAction,
+#topMessageQueueCard QPushButton#topMessageAction {
+    font-size: 11px; padding: 0 6px; min-height: 14px; max-height: 16px;
+}
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #30363d; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #8b949e;
@@ -587,6 +618,21 @@ QPushButton#successButton:hover { background-color: #2ea043; color: #ffffff; }
 #sidebar QListWidget::item:selected {
     background-color: #1f6feb; color: #ffffff; border-radius: 6px; padding: 5px 8px; margin: 1px 0;
 }
+
+#notesList {
+    background-color: transparent;
+    border: none;
+    padding: 0;
+}
+#notesList::item {
+    color: #c9d1d9; border-radius: 6px; padding: 6px 8px; margin: 1px 0;
+}
+#notesList::item:hover {
+    background-color: #161b22; border-radius: 6px; padding: 6px 8px; margin: 1px 0;
+}
+#notesList::item:selected {
+    background-color: #238636; color: #ffffff; border-radius: 6px; padding: 6px 8px; margin: 1px 0;
+}
 QWidget#memberRow { background: transparent; }
 QPushButton#memberNameButton {
     background: transparent; border: none; color: #c9d1d9;
@@ -611,7 +657,7 @@ QPushButton#memberDeleteButton:hover {
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
-#footerLogPanel, #backgroundTaskQueue {
+#footerLogPanel {
     background-color: #0d1117;
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 6px;
@@ -863,12 +909,13 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #010409; border: none;
     color: #8b949e; font-family: monospace; font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
-#logEventList {
-    background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
-    color: #8b949e; font-family: monospace; font-size: 12px;
+#logTimelineChart { background-color: #010409; border-radius: 8px; }
+#logTimelineSummary { color: #8b949e; font-size: 12px; }
+#logRangeButton { padding: 4px 10px; }
+#logRangeButton:checked {
+    color: #ffffff; background-color: #1f6feb; border-color: #1f6feb;
 }
-#logDock { background-color: #010409; border-top: 1px solid #30363d; }
+#logDock { background: transparent; border: none; }
 #logDock QLabel { background: transparent; }
 #composerBar { background-color: #0d1117; border-top: 1px solid #30363d; }
 #composerInputRow {
@@ -1010,12 +1057,13 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     font-family: monospace;
     font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
-#logEventList {
-    background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
-    color: #8b949e; font-family: monospace; font-size: 12px;
+#logTimelineChart { background-color: #010409; border-radius: 8px; }
+#logTimelineSummary { color: #8b949e; font-size: 12px; }
+#logRangeButton { padding: 4px 10px; }
+#logRangeButton:checked {
+    color: #ffffff; background-color: #1f6feb; border-color: #1f6feb;
 }
-#logDock { background-color: #010409; border-top: 1px solid #30363d; }
+#logDock { background: transparent; border: none; }
 #issueQuickAdd {
     background-color: #0d1117;
     border: 1px dashed #30363d;
@@ -1030,7 +1078,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     background-color: #0d1117; border: 1px solid rgba(57,211,83,0.55); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #39d353; }
-#footerLogPanel, #backgroundTaskQueue {
+#footerLogPanel {
     background-color: #0d1117;
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 8px;
@@ -1321,6 +1369,12 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     border: none;
     border-bottom: 1px solid #30363d;
 }
+#issueList {
+    background-color: #0d1117; border: none; outline: 0;
+    selection-background-color: transparent; gridline-color: transparent;
+}
+#issueList::item { padding: 0; border: none; }
+#issueList::item:selected { background: transparent; color: #e6edf3; }
 /* The task list is a list, not a table (adhoc #56): no frame, no grid, no
    banding, and no stylesheet selection fill — the row delegate paints its own
    pill so the icon strip and the title sit on one clean surface. */
@@ -1453,8 +1507,8 @@ QWidget {
     font-size: 14px;
 }
 QToolTip {
-    background-color: #24292f; color: #ffffff;
-    border: 1px solid #24292f; padding: 4px;
+    background-color: #ffffff; color: #1f2328;
+    border: 1px solid #d0d7de; padding: 4px;
 }
 
 /* --- Setup page --- */
@@ -1647,6 +1701,7 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #sizeBarFill { background-color: #2da44e; border-radius: 3px; }
 #overviewMetricTrack { background-color: #eaeef2; border-radius: 2px; }
 #overviewMetricFill { background-color: #2da44e; border-radius: 2px; }
+#overviewLoadingPlaceholder { background-color: #d8dee4; border-radius: 3px; }
 #overviewUpdatedTime { color: #656d76; font-size: 10px; }
 #readmeView {
     background: transparent; border: none; padding: 0; color: #1f2328;
@@ -1732,9 +1787,6 @@ QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328
 }
 #appVersionLabel {
     background: transparent; color: #1f2328; font-size: 13px; font-weight: 700;
-}
-#chromeVersionLabel {
-    background: transparent; color: #656d76; font-size: 9px; font-weight: 600;
 }
 #issueDetailOverlay { background-color: #ffffff; }
 #globalSearch {
@@ -1853,7 +1905,15 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none; color: #6e7781; padding: 0;
 }
 #topMessage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
-#topMessageText { background: transparent; border: none; font-size: 12px; font-weight: 600; }
+#topMessageText, #topMessagePromptHeader, #topMessagePromptStatus {
+    background: transparent; border: none; font-size: 12px; font-weight: 600;
+}
+#topMessagePromptStatus { font-weight: 500; }
+#topMessagePromptImage {
+    background: #f6f8fa; border: 1px solid #d0d7de;
+    border-radius: 5px; padding: 3px;
+}
+#topMessagePromptImage:hover { border-color: #0969da; }
 #topMessageQueue { background: transparent; border: none; }
 #topMessageQueueContent { background: transparent; }
 #topMessageQueueCard { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; }
@@ -1864,6 +1924,10 @@ QPushButton#agentsMagicButton:checked {
     background: transparent; border: none;
 }
 #topMessageMeta { background: transparent; border: none; color: #6e7781; font-size: 11px; }
+#topMessageTypeBadge, #topMessageQueueTypeBadge {
+    background: rgba(9,105,218,0.10); border: 1px solid rgba(9,105,218,0.35);
+    border-radius: 6px; color: #0550ae; font-size: 10px; font-weight: 700; padding: 1px 5px;
+}
 #topMessageOverlay { background-color: #ffffff; border: 1px solid #d0d7de;
                      border-radius: 10px; }
 #topMessageOverlayText { font-size: 12px; font-weight: 600; color: #1f2328; }
@@ -1872,6 +1936,14 @@ QPushButton#topMessageAction {
     border-radius: 6px; color: #0969da; font-size: 11px; font-weight: 600; padding: 2px 6px;
 }
 QPushButton#topMessageAction:hover { background: rgba(9,105,218,0.16); color: #0550ae; }
+/* See the dark rules: the alert cards' action row stays one thin line. */
+#topMessage QPushButton#ghostButton, #topMessageQueueCard QPushButton#ghostButton {
+    font-size: 11px; padding: 0 6px; min-height: 16px; max-height: 18px;
+}
+#topMessage QPushButton#topMessageAction,
+#topMessageQueueCard QPushButton#topMessageAction {
+    font-size: 11px; padding: 0 6px; min-height: 14px; max-height: 16px;
+}
 QPushButton#notificationButton, QPushButton#notificationButtonAlert {
     background: transparent; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 2px 6px; font-size: 13px; color: #656d76;
@@ -1951,6 +2023,21 @@ QPushButton#successButton:hover { background-color: #1a7f37; color: #ffffff; }
 #sidebar QListWidget::item:selected {
     background-color: #0969da; color: #ffffff; border-radius: 6px; padding: 5px 8px; margin: 1px 0;
 }
+
+#notesList {
+    background-color: transparent;
+    border: none;
+    padding: 0;
+}
+#notesList::item {
+    color: #1f2328; border-radius: 6px; padding: 6px 8px; margin: 1px 0;
+}
+#notesList::item:hover {
+    background-color: #f6f8fa; border-radius: 6px; padding: 6px 8px; margin: 1px 0;
+}
+#notesList::item:selected {
+    background-color: #1f883d; color: #ffffff; border-radius: 6px; padding: 6px 8px; margin: 1px 0;
+}
 QWidget#memberRow { background: transparent; }
 QPushButton#memberNameButton {
     background: transparent; border: none; color: #1f2328;
@@ -1975,7 +2062,7 @@ QPushButton#memberDeleteButton:hover {
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 6px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
-#footerLogPanel, #backgroundTaskQueue {
+#footerLogPanel {
     background-color: #ffffff;
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 6px;
@@ -2206,12 +2293,13 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: #ffffff; border: none;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
-#logEventList {
-    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
-    color: #1f2328; font-family: monospace; font-size: 12px;
+#logTimelineChart { background-color: #ffffff; border-radius: 8px; }
+#logTimelineSummary { color: #656d76; font-size: 12px; }
+#logRangeButton { padding: 4px 10px; }
+#logRangeButton:checked {
+    color: #ffffff; background-color: #0969da; border-color: #0969da;
 }
-#logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
+#logDock { background: transparent; border: none; }
 #logDock QLabel { background: transparent; }
 
 /* --- Bottom status bar: one text line tall, so everything in it is compact. */
@@ -2224,6 +2312,13 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     font-size: 11px; padding: 0 4px;
 }
 #appStatusBar QPushButton:hover { color: #0969da; }
+#statusVersionButton:checked { color: #0969da; font-weight: 700; }
+#debugBar { background-color: #ffffff; border-top: 1px solid #d0d7de; }
+#debugBarScroll, #debugBarContent { background: transparent; border: none; }
+#debugBarSeparator { color: #d0d7de; }
+#debugBarScroll QScrollBar:horizontal { height: 7px; }
+/* See the dark rule: the chips are painted, the host is just a layout. */
+#statusBackgroundTasks { background: transparent; }
 
 #composerBar { background-color: #ffffff; border-top: 1px solid #d0d7de; }
 #composerInputRow {
@@ -2363,12 +2458,13 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     font-family: monospace;
     font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
-#logEventList {
-    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
-    color: #1f2328; font-family: monospace; font-size: 12px;
+#logTimelineChart { background-color: #ffffff; border-radius: 8px; }
+#logTimelineSummary { color: #656d76; font-size: 12px; }
+#logRangeButton { padding: 4px 10px; }
+#logRangeButton:checked {
+    color: #ffffff; background-color: #0969da; border-color: #0969da;
 }
-#logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
+#logDock { background: transparent; border: none; }
 #issueQuickAdd {
     background-color: #ffffff;
     border: 1px dashed #d0d7de;
@@ -2383,7 +2479,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     background-color: #ffffff; border: 1px solid rgba(26,127,55,0.5); border-radius: 8px;
 }
 #promptWrapper:focus-within { border-color: #1a7f37; }
-#footerLogPanel, #backgroundTaskQueue {
+#footerLogPanel {
     background-color: #ffffff;
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 8px;
@@ -2670,6 +2766,12 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     border: none;
     border-bottom: 1px solid #d0d7de;
 }
+#issueList {
+    background-color: #ffffff; border: none; outline: 0;
+    selection-background-color: transparent; gridline-color: transparent;
+}
+#issueList::item { padding: 0; border: none; }
+#issueList::item:selected { background: transparent; color: #1f2328; }
 /* Light-theme twin of the headerless task list (adhoc #56). */
 #organizationTasksTable {
     background-color: #ffffff;

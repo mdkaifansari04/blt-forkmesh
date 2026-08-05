@@ -3067,6 +3067,28 @@ test("Office lobby marine aquarium is visible, ambient, and animated", async ({
   expect(second.lightIntensity).not.toBe(first.lightIntensity);
 });
 
+test("aquarium fish render only while visiting the Office", async ({ page }) => {
+  await prepareWorldPage(page, "office-aquarium-fish-visibility");
+  await waitForWorld(page);
+  const visibility = await page.locator("forkmesh-world").evaluate((shell) => {
+    const aquarium = shell.world.scene.getObjectByName(
+      "forkmesh-office-marine-aquarium",
+    );
+    const batches = () => [
+      "forkmesh-office-aquarium-user-fish-bodies",
+      "forkmesh-office-aquarium-user-fish-tails",
+      "forkmesh-office-aquarium-user-fish-fins",
+    ].map((name) => aquarium.getObjectByName(name).visible);
+    const outside = batches();
+    shell.world.enterOfficeLobby({ floorId: "lobby" });
+    const inside = batches();
+    return { outside, inside };
+  });
+
+  expect(visibility.outside).toEqual([false, false, false]);
+  expect(visibility.inside).toEqual([true, true, true]);
+});
+
 test("reef controls stay tank-mounted and report a live country school", async ({
   page,
 }) => {
@@ -4777,12 +4799,12 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
   });
 });
 
-test("Office glass has one stable shell and one elevator-car layer", async ({
+test("Office facade conceals interiors while preserving elevator glazing", async ({
   page,
 }) => {
-  await prepareWorldPage(page, "office-stable-glass");
+  await prepareWorldPage(page, "office-opaque-facade");
   await waitForWorld(page);
-  const glass = await page.locator("forkmesh-world").evaluate((shell) => {
+  const facade = await page.locator("forkmesh-world").evaluate((shell) => {
     const scene = shell.world.scene;
     const transparentMeshes = (root) => {
       const meshes = [];
@@ -4798,7 +4820,7 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
       if (
         object.isMesh &&
         object.userData?.landmark === "office" &&
-        object.material?.transparent
+        object.material?.name === "forkmesh-office-opaque-facade"
       ) {
         exterior.push(object);
       }
@@ -4810,6 +4832,14 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
     ].flatMap((floorId) => transparentMeshes(
       scene.getObjectByName(`forkmesh-office-floor-${floorId}`)
     ));
+    const teamFloorsHidden = [
+      "marketing",
+      "engineering",
+      "infrastructure",
+    ].every((floorId) =>
+      scene.getObjectByName(`forkmesh-office-floor-${floorId}`)?.visible === false
+    );
+    const officeInterior = scene.getObjectByName("forkmesh-office-interior");
     const rooftop = transparentMeshes(
       scene.getObjectByName("forkmesh-office-floor-rooftop")
     );
@@ -4826,13 +4856,15 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
     return {
       exterior: {
         count: exterior.length,
-        stable: exterior.every((mesh) =>
-          mesh.material.depthWrite === false &&
-          mesh.castShadow === false &&
-          mesh.receiveShadow === false
+        opaque: exterior.every((mesh) =>
+          mesh.material.transparent === false &&
+          mesh.material.opacity === 1 &&
+          mesh.material.depthWrite !== false
         ),
       },
       teamLayerCount: teamLayers.length,
+      teamFloorsHidden,
+      interiorHidden: officeInterior?.visible === false,
       rooftop: {
         count: rooftop.length,
         stable: rooftop.every((mesh) => mesh.material.depthWrite === false),
@@ -4847,23 +4879,25 @@ test("Office glass has one stable shell and one elevator-car layer", async ({
       doors: {
         count: doors.filter(Boolean).length,
         stable: doors.every((mesh) =>
-          mesh?.material?.transparent === true &&
-          mesh.material.opacity === 0.3 &&
+          mesh?.material?.transparent === false &&
+          mesh.material.opacity === 1 &&
           mesh.material.metalness === 0 &&
-          mesh.material.depthWrite === false &&
-          mesh.castShadow === false &&
-          mesh.receiveShadow === false
+          mesh.material.depthWrite !== false
         ),
       },
     };
   });
-  expect(glass.exterior.count).toBeGreaterThanOrEqual(20);
-  expect(glass.exterior.stable).toBe(true);
-  expect(glass.teamLayerCount).toBe(0);
-  expect(glass.rooftop).toEqual({ count: 5, stable: true });
-  expect(glass.shaftLayerCount).toBe(0);
-  expect(glass.car).toEqual({ count: 5, stable: true });
-  expect(glass.doors).toEqual({ count: 2, stable: true });
+  expect(facade.exterior.count).toBeGreaterThanOrEqual(12);
+  expect(facade.exterior.opaque).toBe(true);
+  expect(facade.teamLayerCount).toBeGreaterThan(0);
+  expect(facade.teamFloorsHidden).toBe(true);
+  expect(facade.interiorHidden).toBe(true);
+  expect(facade.rooftop.count).toBeGreaterThanOrEqual(5);
+  expect(facade.rooftop.stable).toBe(true);
+  expect(facade.shaftLayerCount).toBe(0);
+  expect(facade.car.count).toBeGreaterThanOrEqual(5);
+  expect(facade.car.stable).toBe(true);
+  expect(facade.doors).toEqual({ count: 2, stable: true });
 });
 
 test("Office elevator exposes five floors while enforcing team access", async ({
@@ -5553,112 +5587,8 @@ async function dragThumbstick(
   await client.detach();
 }
 
-async function installFocusMusicAudioProbe(page) {
-  await page.addInitScript(() => {
-    const probe = {
-      created: [],
-      intervalRegistrations: 0,
-    };
-    const nativeSetInterval = window.setInterval.bind(window);
-    window.setInterval = (...args) => {
-      probe.intervalRegistrations += 1;
-      return nativeSetInterval(...args);
-    };
-    class FocusMusicAudio {
-      constructor(src) {
-        this.src = String(src || "");
-        this.currentTime = 0;
-        this.loop = false;
-        this.muted = false;
-        this.paused = true;
-        this.preload = "";
-        this.readyState = 4;
-        this.volume = 1;
-        this.playCalls = 0;
-        this.pauseCalls = 0;
-        this.loadCalls = 0;
-        this.listeners = new Map();
-        probe.created.push(this);
-      }
-      addEventListener(type, listener) {
-        const listeners = this.listeners.get(type) || [];
-        listeners.push(listener);
-        this.listeners.set(type, listeners);
-      }
-      removeEventListener(type, listener) {
-        this.listeners.set(
-          type,
-          (this.listeners.get(type) || []).filter(
-            (candidate) => candidate !== listener,
-          ),
-        );
-      }
-      load() {
-        this.loadCalls += 1;
-      }
-      pause() {
-        this.paused = true;
-        this.pauseCalls += 1;
-      }
-      async play() {
-        this.paused = false;
-        this.playCalls += 1;
-      }
-    }
-    Object.defineProperty(window, "Audio", {
-      configurable: true,
-      writable: true,
-      value: FocusMusicAudio,
-    });
-    window.__forkmeshFocusMusicProbe = probe;
-  });
-}
 
-async function focusMusicProbeSnapshot(page) {
-  return page.evaluate(() => {
-    const probe = window.__forkmeshFocusMusicProbe;
-    return {
-      intervalRegistrations: probe.intervalRegistrations,
-      created: probe.created.map((audio) => ({
-        src: audio.src,
-        currentTime: audio.currentTime,
-        loop: audio.loop,
-        muted: audio.muted,
-        paused: audio.paused,
-        preload: audio.preload,
-        volume: audio.volume,
-        playCalls: audio.playCalls,
-        pauseCalls: audio.pauseCalls,
-        loadCalls: audio.loadCalls,
-      })),
-    };
-  });
-}
-
-async function chooseFocusMusicTrack(page, trackId) {
-  await page
-    .locator(`[data-world-focus-track='${trackId}']`)
-    .evaluate((control) => {
-      const input = control.matches("input[type='radio']")
-        ? control
-        : control.querySelector("input[type='radio']");
-      if (!input) throw new Error("focus music card has no radio control");
-      if (!input.checked) input.click();
-    });
-}
-
-async function focusMusicTrackIsChecked(page, trackId) {
-  return page
-    .locator(`[data-world-focus-track='${trackId}']`)
-    .evaluate((control) => {
-      const input = control.matches("input[type='radio']")
-        ? control
-        : control.querySelector("input[type='radio']");
-      return input?.checked === true;
-    });
-}
-
-test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async ({
+test("@critical enhanced Town Square starts in WebGL and keeps keyboard navigation", async ({
   page,
 }) => {
   await prepareWorldPage(page, "desktop-a");
@@ -5689,6 +5619,72 @@ test("enhanced Town Square starts in WebGL and keeps keyboard navigation", async
   expect(Math.hypot(after.x - before.x, after.z - before.z)).toBeGreaterThan(
     0.05,
   );
+});
+
+test("the side portal isolates the beach scene and provides a return portal", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "beach-scene-portal");
+  await waitForWorld(page);
+
+  const state = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const beach = scene.getObjectByName("forkmesh-beach-scene");
+    const entry = scene.getObjectByName("forkmesh-beach-entry-portal");
+    const exit = scene.getObjectByName("forkmesh-beach-return-portal");
+    const worldRoot = scene.children.find((child) =>
+      Object.hasOwn(child.userData || {}, "activeEnclosureScene")
+    );
+    const initial = {
+      beachVisible: beach?.visible,
+      entryVisible: entry?.visible,
+      exitVisible: exit?.visible,
+      active: worldRoot?.userData?.activeEnclosureScene,
+    };
+    const entered = shell.world.enterBeachScene();
+    const atBeach = {
+      entered,
+      isBeach: shell.world.isBeachScene(),
+      beachVisible: beach?.visible,
+      entryVisible: entry?.visible,
+      exitVisible: exit?.visible,
+      active: worldRoot?.userData?.activeEnclosureScene,
+      position: shell.world.getPosition(),
+    };
+    const left = shell.world.leaveBeachScene();
+    return {
+      initial,
+      atBeach,
+      returned: {
+        left,
+        isBeach: shell.world.isBeachScene(),
+        beachVisible: beach?.visible,
+        entryVisible: entry?.visible,
+        active: worldRoot?.userData?.activeEnclosureScene,
+        position: shell.world.getPosition(),
+      },
+    };
+  });
+
+  expect(state.initial).toEqual({
+    beachVisible: false,
+    entryVisible: true,
+    exitVisible: true,
+    active: "",
+  });
+  expect(state.atBeach.entered).toBe(true);
+  expect(state.atBeach.isBeach).toBe(true);
+  expect(state.atBeach.beachVisible).toBe(true);
+  expect(state.atBeach.entryVisible).toBe(false);
+  expect(state.atBeach.exitVisible).toBe(true);
+  expect(state.atBeach.active).toBe("beach");
+  expect(state.atBeach.position.space).toBe("beach");
+  expect(state.returned.left).toBe(true);
+  expect(state.returned.isBeach).toBe(false);
+  expect(state.returned.beachVisible).toBe(false);
+  expect(state.returned.entryVisible).toBe(true);
+  expect(state.returned.active).toBe("");
+  expect(state.returned.position.space).toBe("town-square");
 });
 
 test("landmark tree clusters stay local while arrival faces inward", async ({
@@ -6164,6 +6160,7 @@ test("mobile refresh keeps a live low-memory renderer and recovers cached pages 
           "[data-world-diagnostics-summary] > span",
         ),
       ];
+      const diagnostics = shell.world.getDiagnostics();
       return {
         canvases: shell.querySelectorAll("[data-world-canvas-wrap] canvas")
           .length,
@@ -6179,6 +6176,7 @@ test("mobile refresh keeps a live low-memory renderer and recovers cached pages 
         frame: renderer.info.render.frame,
         pixel: [...pixel],
         coarse: matchMedia("(pointer: coarse)").matches,
+        residency: diagnostics.residency,
         compactDebugVisible:
           Boolean(summaryRect) &&
           compactItems.length === 9 &&
@@ -6214,12 +6212,48 @@ test("mobile refresh keeps a live low-memory renderer and recovers cached pages 
       shadows: false,
       contextLost: false,
       coarse: true,
+      residency: {
+        enabled: true,
+        resident: 0,
+        total: 5,
+        active: [],
+      },
       compactDebugVisible: true,
     });
     expect(renderer.frame).toBeGreaterThan(0);
     expect(renderer.pixel[0] + renderer.pixel[1] + renderer.pixel[2])
       .toBeGreaterThan(0);
   }
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setSpawn({ x: 130, y: 0.38, z: 0, heading: 0 });
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getDiagnostics().residency.active,
+    ),
+  ).toContain("repositories");
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.setSpawn({ x: 0, y: 0.38, z: 0, heading: 0 });
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const residency = shell.world.getDiagnostics().residency;
+      return {
+        active: residency.active,
+        evictions: residency.evictions,
+      };
+    }),
+  ).toEqual({
+    active: [],
+    evictions: 1,
+  });
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate((shell) => {
+      const residency = shell.world.getDiagnostics().residency;
+      return residency.releasedGeometries + residency.releasedTextures;
+    }),
+  ).toBeGreaterThan(0);
 
   const frameBeforeCache = await page.locator("forkmesh-world").evaluate(
     (shell) => {
@@ -6421,7 +6455,6 @@ test("local diagnostics report renderer and existing socket state without new te
     return Boolean(shell?.distanceTimer);
   });
   await page.locator("forkmesh-world").evaluate((shell) => {
-    shell.stopRadio(false);
     shell.lastMovementSentAt = performance.now();
     shell.queueMovementPresence({
       x: 1,
@@ -6439,43 +6472,40 @@ test("local diagnostics report renderer and existing socket state without new te
     });
     shell.sendPresence({ type: "presence" });
     shell.sendPresence({ type: "presence" });
-    shell.activeAudio = {
-      kind: "focus-music",
-      trackId: "cosmic-waves",
-      element: {
-        currentTime: 75,
-        duration: 240,
-      },
-    };
-    shell.focusMusicState = "playing";
-    shell.focusMusicAutoplayPending = false;
     shell.renderDiagnostics();
   });
   await page.waitForTimeout(1150);
 
   const diagnostics = page.locator("[data-world-diagnostics]");
+  const liveChart = diagnostics.locator("[data-world-diagnostics-chart]");
+  await expect(diagnostics).not.toHaveAttribute("open", "");
+  await expect(liveChart).toBeVisible();
+  await expect(
+    liveChart.locator('[data-world-diagnostics-chart-value="fps"]'),
+  ).not.toHaveText("—");
+  await expect(
+    liveChart.locator('[data-world-diagnostics-chart-value="triangles"]'),
+  ).not.toHaveText("—");
+  await expect(
+    liveChart.locator('[data-world-diagnostics-chart-value="memory"]'),
+  ).toContainText("MB");
+  for (const metric of ["fps", "triangles", "memory"]) {
+    await expect(
+      liveChart.locator(
+        `[data-world-diagnostics-chart-line="${metric}"]`,
+      ),
+    ).toHaveAttribute("points", /\d+\.\d,\d+\.\d \d+\.\d,\d+\.\d/);
+  }
+  const collapsedBox = await diagnostics.boundingBox();
+  expect(collapsedBox?.width).toBeGreaterThan(240);
+  expect(collapsedBox?.height).toBeGreaterThanOrEqual(54);
   await expect(diagnostics.locator("summary")).toContainText("FPS");
   await expect(diagnostics.locator("summary")).toContainText("N online");
   await expect(diagnostics.locator("summary")).toContainText("1p");
   await expect(diagnostics.locator("summary")).toContainText("v0.7.0");
-  await expect(diagnostics.locator("summary")).toContainText(
-    "Cosmic Waves",
-  );
   await expect(
-    diagnostics.locator("[data-world-diagnostics-music-position]"),
-  ).toHaveText("1:15/4:00");
-  const playbackPosition = await diagnostics
-    .locator("[data-world-diagnostics-music-progress]")
-    .evaluate((progress) => ({
-      value: progress.value,
-      max: progress.max,
-      text: progress.getAttribute("aria-valuetext"),
-    }));
-  expect(playbackPosition).toEqual({
-    value: 75_000,
-    max: 240_000,
-    text: "Cosmic Waves, 1:15 of 4:00, playing",
-  });
+    diagnostics.locator("[data-world-diagnostics-music-progress]"),
+  ).toHaveCount(0);
   for (const compactMetric of [
     "renderer",
     "frame",
@@ -6510,6 +6540,12 @@ test("local diagnostics report renderer and existing socket state without new te
   expect(snapshot.renderer.frameTimeMs).toBeGreaterThan(0);
   expect(snapshot.renderer.calls).toBeGreaterThan(0);
   expect(snapshot.renderer.triangles).toBeGreaterThan(0);
+  expect(snapshot.history.length).toBeGreaterThanOrEqual(2);
+  expect(snapshot.history.at(-1)).toMatchObject({
+    fps: expect.any(Number),
+    triangles: expect.any(Number),
+    memoryMB: expect.any(Number),
+  });
   expect(snapshot.connection).toMatchObject({
     state: "online",
     peers: 1,
@@ -6966,7 +7002,7 @@ test("Unicode emoji status is local-persisted, coalesced, and available to every
   expect(new URL(page.url()).pathname).toBe("/world/");
 });
 
-test("two live clients synchronize movement without leaking disabled badge fields", async ({
+test("@critical two live clients synchronize movement without leaking disabled badge fields", async ({
   context,
 }) => {
   const observer = await context.newPage();
@@ -9079,7 +9115,7 @@ test("the authenticated member appears immediately and active time advances loca
   expect(stillPaused).toBeCloseTo(paused.totalActiveMs, 3);
 });
 
-test("a fresh member spawns seated in the open Members Circle", async ({
+test("the open Members Circle shows its roster and places arrivals beside it", async ({
   page,
 }) => {
   const session = {
@@ -9094,53 +9130,80 @@ test("a fresh member spawns seated in the open Members Circle", async ({
         nodes: [],
         createdAt: FIXED_NOW - 1_000,
       },
+      {
+        name: "alice",
+        nodes: [],
+        createdAt: FIXED_NOW - 3_000,
+      },
+      {
+        name: "bob",
+        nodes: [],
+        createdAt: FIXED_NOW - 2_000,
+      },
     ],
   });
   await waitForWorld(page);
   await page.waitForFunction(() => {
     const shell = document.querySelector("forkmesh-world");
-    return shell?.world?.scene?.getObjectByName(
-      "campfire-newest-member-name-sparkles",
-    )?.visible === true;
+    return Boolean(
+      shell?.world?.scene?.getObjectByName("members-circle-member-info")
+        ?.material?.map &&
+        shell?.world?.scene?.getObjectByName("avatar:member:alice") &&
+        shell?.world?.scene?.getObjectByName("avatar:member:bob"),
+    );
   });
 
   const arrival = await page.locator("forkmesh-world").evaluate((shell) => {
     const player = shell.world.player;
-    const count = shell.world.scene.getObjectByName("campfire-member-count");
-    const sparkle = shell.world.scene.getObjectByName(
-      "campfire-newest-member-name-sparkles",
-    );
-    const fireSparksLeft = shell.world.scene.getObjectByName(
-      "campfire-newest-member-fire-sparks-left",
-    );
-    const fireSparksRight = shell.world.scene.getObjectByName(
-      "campfire-newest-member-fire-sparks-right",
-    );
-    const flame = shell.world.scene.getObjectByName("campfire-primary-flame");
-    const dirt = shell.world.scene.getObjectByName(
+    const circle = shell.world.scene.getObjectByName(
       "campfire-member-circle-dirt",
+    );
+    const sign = shell.world.scene.getObjectByName("members-circle-info-sign");
+    const info = shell.world.scene.getObjectByName(
+      "members-circle-member-info",
+    );
+    const center = circle.getWorldPosition(circle.position.clone());
+    const removedYurt = shell.world.scene.getObjectByName(
+      "members-center-yurt",
     );
     const startHere = shell.world.scene.getObjectByName(
       "forkmesh-start-here-map",
     );
+    const memberPositions = ["alice", "bob"].map((name) => {
+      const figure = shell.world.scene.getObjectByName(`avatar:member:${name}`);
+      const position = figure.position;
+      return {
+        name,
+        x: position.x,
+        y: position.y,
+        z: position.z,
+        radius: Math.hypot(
+          position.x - center.x,
+          position.z - center.z,
+        ),
+      };
+    });
     return {
-      seated: shell.freshArrivalCampfireSeated,
+      placed: shell.freshArrivalCampfireSeated,
       activity: shell.lastMovement.activity,
       x: player.position.x,
       y: player.position.y,
       z: player.position.z,
       leftKnee: player.userData.leftKnee.rotation.x,
-      countScale: count.scale.toArray(),
-      countY: count.position.y,
-      sparkleVisible: sparkle.visible,
-      fireSparksVisible: fireSparksLeft.visible && fireSparksRight.visible,
-      fireSparksSpan:
-        fireSparksRight.geometry.attributes.position.getX(15) -
-        fireSparksLeft.geometry.attributes.position.getX(15),
-      fireHeight: flame.scale.y,
-      fireWidth: flame.scale.x,
-      dirtY: dirt.position.y,
-      signPresent: Boolean(
+      circlePresent: Boolean(circle),
+      circleVisible: circle.visible,
+      yurtPresent: Boolean(removedYurt),
+      signPosition: sign.position.toArray(),
+      infoPosition: info.position.toArray(),
+      infoRotation: info.rotation.y,
+      infoHasTexture: Boolean(info.material.map),
+      memberBenchesPresent: Boolean(
+        shell.world.scene.getObjectByName("campfire-member-circle"),
+      ),
+      directoryFigures: circle.parent.userData.detailedMemberFigures || 0,
+      memberPositions,
+      dirtY: circle.position.y,
+      oldPathSignPresent: Boolean(
         shell.world.scene.getObjectByName(
           "forkmesh-members-circle-path-sign",
         ),
@@ -9153,43 +9216,340 @@ test("a fresh member spawns seated in the open Members Circle", async ({
     };
   });
 
-  expect(arrival.seated).toBe(true);
-  expect(arrival.activity).toBe("sitting beside the campfire");
-  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeGreaterThan(5);
-  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeLessThan(10);
-  expect(arrival.y).toBeLessThan(0.38);
-  expect(Math.abs(arrival.leftKnee)).toBeGreaterThan(0.5);
-  expect(arrival.countScale).toEqual([9.5, 4.75, 1]);
-  expect(arrival.countY).toBeGreaterThan(14);
-  expect(arrival.sparkleVisible).toBe(true);
-  expect(arrival.fireSparksVisible).toBe(true);
-  expect(Math.abs(arrival.fireSparksSpan)).toBeGreaterThan(8);
-  expect(arrival.fireHeight).toBeGreaterThan(2.5);
-  expect(arrival.fireWidth).toBeGreaterThan(2.5);
+  expect(arrival.placed).toBe(true);
+  expect(arrival.activity).toBe("visiting the Members Circle");
+  expect(arrival.x).toBeCloseTo(0, 5);
+  expect(arrival.z).toBeCloseTo(114.8, 5);
+  expect(arrival.y).toBeCloseTo(0.38, 5);
+  expect(arrival.leftKnee).toBeCloseTo(0, 5);
+  expect(arrival.circlePresent).toBe(true);
+  expect(arrival.circleVisible).toBe(true);
+  expect(arrival.yurtPresent).toBe(false);
+  expect(arrival.signPosition[2]).toBeLessThan(-12);
+  expect(arrival.infoPosition[0]).toBe(0);
+  expect(arrival.infoPosition[1]).toBeGreaterThan(3);
+  expect(arrival.infoRotation).toBeCloseTo(Math.PI, 5);
+  expect(arrival.infoHasTexture).toBe(true);
+  expect(arrival.memberBenchesPresent).toBe(false);
+  expect(arrival.directoryFigures).toBe(2);
+  expect(arrival.memberPositions).toHaveLength(2);
+  for (const member of arrival.memberPositions) {
+    expect(member.y).toBeCloseTo(0.38, 5);
+    expect(member.radius).toBeGreaterThan(4);
+    expect(member.radius).toBeLessThan(10);
+  }
   expect(arrival.dirtY).toBeGreaterThan(0.105);
-  expect(arrival.signPresent).toBe(false);
+  expect(arrival.oldPathSignPresent).toBe(false);
   expect(arrival.startHere.x).toBe(0);
   expect(arrival.startHere.z).toBe(168);
   expect(arrival.startHere.rotation).toBeCloseTo(Math.PI, 5);
 
-  // Position storage contains coordinates but deliberately no activity label.
-  // A clean reload must recognize the bench ring and rebuild the seated pose.
+  // The entrance position persists as a normal standing location.
   await page.reload();
   await waitForWorld(page);
   const reloaded = await page.locator("forkmesh-world").evaluate((shell) => ({
-    activity: shell.lastMovement.activity,
+    x: shell.world.player.position.x,
     y: shell.world.player.position.y,
     leftKnee: shell.world.player.userData.leftKnee.rotation.x,
-    radius: Math.hypot(
-      shell.world.player.position.x,
-      shell.world.player.position.z - 130,
-    ),
+    z: shell.world.player.position.z,
   }));
-  expect(reloaded.activity).toBe("sitting beside the campfire");
-  expect(reloaded.y).toBeLessThan(0.38);
-  expect(Math.abs(reloaded.leftKnee)).toBeGreaterThan(0.5);
-  expect(reloaded.radius).toBeGreaterThan(5);
-  expect(reloaded.radius).toBeLessThan(10);
+  expect(reloaded.x).toBeCloseTo(0, 5);
+  expect(reloaded.y).toBeCloseTo(0.38, 5);
+  expect(reloaded.z).toBeCloseTo(114.8, 5);
+  expect(reloaded.leftKnee).toBeCloseTo(0, 5);
+});
+
+test("camera LOD swaps node boxes while open districts keep displays visible", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "visible-enclosure-exits");
+  await waitForWorld(page);
+
+  const visit = async (objectName, mode) => {
+    await page.locator("forkmesh-world").evaluate((shell, name) => {
+      const destination = shell.world.scene.getObjectByName(name);
+      const center = destination.getWorldPosition(
+        shell.world.player.position.clone(),
+      );
+      shell.world.player.position.set(center.x, 0.38, center.z);
+    }, objectName);
+    await page.waitForFunction(
+      (expected) =>
+        document.querySelector("forkmesh-world")?.world?.player?.parent?.userData
+          ?.activeEnclosureScene === expected,
+      mode,
+    );
+  };
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(60, 0.38, 0);
+  });
+  await page.waitForFunction(() =>
+    document.querySelector("forkmesh-world")?.world?.player?.parent?.userData
+      ?.nodeDetailLevel === "boxes",
+  );
+  const farNodes = await page.locator("forkmesh-world").evaluate((shell) => {
+    const boxes = shell.world.scene.getObjectByName("forkmesh-node-box-lod");
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-node-interior",
+    );
+    return {
+      cover: shell.world.scene.getObjectByName("forkmesh-node-opaque-cover"),
+      boxesVisible: boxes.visible,
+      boxInstances: boxes.count,
+      detailedVisible: interior.visible,
+      panelTargetVisible: shell.world.scene.getObjectByName(
+        "mirror-server-front-panel",
+      )?.visible,
+      activeEnclosure: shell.world.player.parent.userData.activeEnclosureScene,
+    };
+  });
+  expect(farNodes.cover).toBeUndefined();
+  expect(farNodes.boxesVisible).toBe(true);
+  expect(farNodes.boxInstances).toBeGreaterThan(0);
+  expect(farNodes.detailedVisible).toBe(false);
+  expect(farNodes.panelTargetVisible).toBe(false);
+  expect(farNodes.activeEnclosure).toBe("");
+
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.world.player.position.set(0, 0.38, 0);
+  });
+  await page.waitForFunction(() =>
+    document.querySelector("forkmesh-world")?.world?.player?.parent?.userData
+      ?.nodeDetailLevel === "detailed",
+  );
+  const nearNodes = await page.locator("forkmesh-world").evaluate((shell) => ({
+    boxesVisible: shell.world.scene.getObjectByName("forkmesh-node-box-lod")
+      .visible,
+    detailedVisible: shell.world.scene.getObjectByName(
+      "forkmesh-node-interior",
+    ).visible,
+    panelTargetVisible: shell.world.scene.getObjectByName(
+      "mirror-server-front-panel",
+    ).visible,
+  }));
+  expect(nearNodes).toEqual({
+    boxesVisible: false,
+    detailedVisible: true,
+    panelTargetVisible: true,
+  });
+
+  await visit("forkmesh-leaderboard-district", "");
+  const leaderboards = await page.locator("forkmesh-world").evaluate((shell) => {
+    const district = shell.world.scene.getObjectByName(
+      "forkmesh-leaderboard-district",
+    );
+    const interior = shell.world.scene.getObjectByName(
+      "forkmesh-leaderboard-interior",
+    );
+    const cover = shell.world.scene.getObjectByName(
+      "forkmesh-leaderboard-opaque-cover",
+    );
+    return {
+      districtVisible: district.visible,
+      contentVisible: interior.visible,
+      coverPresent: Boolean(cover),
+      activeEnclosure: shell.world.player.parent.userData.activeEnclosureScene,
+    };
+  });
+  expect(leaderboards).toEqual({
+    districtVisible: true,
+    contentVisible: true,
+    coverPresent: false,
+    activeEnclosure: "",
+  });
+
+  await visit("repository-district-content", "");
+  const repositories = await page.locator("forkmesh-world").evaluate((shell) => {
+    const content = shell.world.scene.getObjectByName(
+      "repository-district-content",
+    );
+    const dome = shell.world.scene.getObjectByName(
+      "repository-geodesic-dome",
+    );
+    return {
+      districtVisible: content.parent.visible,
+      contentVisible: content.visible,
+      importKioskVisible: shell.world.scene.getObjectByName(
+        "repository-import-kiosk",
+      ).visible,
+      domePresent: Boolean(dome),
+      activeEnclosure: shell.world.player.parent.userData.activeEnclosureScene,
+    };
+  });
+  expect(repositories).toEqual({
+    districtVisible: true,
+    contentVisible: true,
+    importKioskVisible: true,
+    domePresent: false,
+    activeEnclosure: "",
+  });
+
+  await visit("members-circle-info-sign", "");
+  const members = await page.locator("forkmesh-world").evaluate((shell) => {
+    const circle = shell.world.scene.getObjectByName(
+      "campfire-member-circle-dirt",
+    );
+    const sign = shell.world.scene.getObjectByName("members-circle-info-sign");
+    const info = shell.world.scene.getObjectByName(
+      "members-circle-member-info",
+    );
+    return {
+      circleVisible: circle.visible,
+      signVisible: sign.visible,
+      infoHasTexture: Boolean(info.material.map),
+      yurtPresent: Boolean(
+        shell.world.scene.getObjectByName("members-center-yurt"),
+      ),
+      activeEnclosure: shell.world.player.parent.userData.activeEnclosureScene,
+    };
+  });
+  expect(members).toEqual({
+    circleVisible: true,
+    signVisible: true,
+    infoHasTexture: true,
+    yurtPresent: false,
+    activeEnclosure: "",
+  });
+});
+
+test("scene repeats share geometry and use camera-driven LOD", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "scene-camera-lod", {
+    directoryUsers: [
+      {
+        name: "lod-member",
+        nodes: [],
+        createdAt: FIXED_NOW - 2_000,
+      },
+    ],
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    const scene = shell?.world?.scene;
+    const player = shell?.world?.player;
+    return Boolean(
+      scene?.getObjectByName("avatar:member:lod-member") &&
+        scene?.getObjectByName("forkmesh-world-quadcopter-1") &&
+        scene?.getObjectByName("forkmesh-world-quadcopter-2") &&
+        scene?.getObjectByName("forkmesh-drone-race-course") &&
+        player?.parent?.userData?.nodeDetailSource === "camera",
+    );
+  });
+
+  const contract = await page.locator("forkmesh-world").evaluate((shell) => {
+    const scene = shell.world.scene;
+    const player = shell.world.player;
+    const member = scene.getObjectByName("avatar:member:lod-member");
+    const quadcopters = [1, 2].map((index) =>
+      scene.getObjectByName(`forkmesh-world-quadcopter-${index}`),
+    );
+    const course = scene.getObjectByName("forkmesh-drone-race-course");
+    const sharedGeometries = (root) => {
+      const geometries = new Set();
+      root.traverse((child) => {
+        if (child.geometry?.userData?.forkmeshSharedResource === true) {
+          geometries.add(child.geometry);
+        }
+      });
+      return geometries;
+    };
+    const sharedMaterials = (root) => {
+      const materials = new Set();
+      root.traverse((child) => {
+        const childMaterials = Array.isArray(child.material)
+          ? child.material
+          : child.material
+            ? [child.material]
+            : [];
+        childMaterials.forEach((material) => materials.add(material));
+      });
+      return materials;
+    };
+    const intersects = (left, right) =>
+      [...left].some((entry) => right.has(entry));
+    const playerGeometry = sharedGeometries(player);
+    const memberGeometry = sharedGeometries(member);
+    const firstQuadGeometry = sharedGeometries(quadcopters[0]);
+    const secondQuadGeometry = sharedGeometries(quadcopters[1]);
+    const firstQuadMaterials = sharedMaterials(quadcopters[0]);
+    const secondQuadMaterials = sharedMaterials(quadcopters[1]);
+    const worldRoot = player.parent;
+
+    return {
+      avatars: {
+        bothUseLod:
+          player.userData.avatarLod?.isLOD === true &&
+          member.userData.avatarLod?.isLOD === true,
+        bothHaveTwoLevels:
+          player.userData.avatarLod?.levels?.length === 2 &&
+          member.userData.avatarLod?.levels?.length === 2,
+        sharedGeometryMarked:
+          playerGeometry.size > 0 && memberGeometry.size > 0,
+        shareGeometry: intersects(playerGeometry, memberGeometry),
+      },
+      quadcopters: {
+        rootCount: quadcopters.filter(Boolean).length,
+        distinctRoots: quadcopters[0] !== quadcopters[1],
+        bothAreWorldRoots: quadcopters.every(
+          (quadcopter) => quadcopter.parent === worldRoot,
+        ),
+        bothUseLod: quadcopters.every(
+          (quadcopter) => quadcopter.isLOD && quadcopter.levels.length === 2,
+        ),
+        sharedGeometryMarked:
+          firstQuadGeometry.size > 0 && secondQuadGeometry.size > 0,
+        shareGeometry: intersects(firstQuadGeometry, secondQuadGeometry),
+        shareMaterials: intersects(firstQuadMaterials, secondQuadMaterials),
+      },
+      course: {
+        isWorldRoot: course.parent === worldRoot,
+        isLod: course.isLOD === true,
+        levelCount: course.levels.length,
+        ringCount: course.userData.ringCount,
+        instancedCounts: course.levels.map((level) => ({
+          instanced: level.object.isInstancedMesh === true,
+          count: level.object.count,
+        })),
+      },
+      nodes: {
+        source: worldRoot.userData.nodeDetailSource,
+        distanceFinite: Number.isFinite(worldRoot.userData.nodeDetailDistance),
+        level: worldRoot.userData.nodeDetailLevel,
+      },
+    };
+  });
+
+  expect(contract.avatars).toEqual({
+    bothUseLod: true,
+    bothHaveTwoLevels: true,
+    sharedGeometryMarked: true,
+    shareGeometry: true,
+  });
+  expect(contract.quadcopters).toEqual({
+    rootCount: 2,
+    distinctRoots: true,
+    bothAreWorldRoots: true,
+    bothUseLod: true,
+    sharedGeometryMarked: true,
+    shareGeometry: true,
+    shareMaterials: true,
+  });
+  expect(contract.course).toEqual({
+    isWorldRoot: true,
+    isLod: true,
+    levelCount: 2,
+    ringCount: 10,
+    instancedCounts: [
+      { instanced: true, count: 10 },
+      { instanced: true, count: 10 },
+    ],
+  });
+  expect(contract.nodes.source).toBe("camera");
+  expect(contract.nodes.distanceFinite).toBe(true);
+  expect(["boxes", "detailed"]).toContain(contract.nodes.level);
 });
 
 test("the System Status board countdown advances between minute syncs", async ({
@@ -9359,9 +9719,7 @@ test("tracked public replies open a separate read-only fediverse thread", async 
     .toHaveAttribute("referrerpolicy", "no-referrer");
 });
 
-test("sound button is the master switch for local playback", async ({
-  page,
-}) => {
+test("sound button enables short effects and the sign plays only the ForkMesh song", async ({ page }) => {
   const mediaRequests = [];
   page.on("request", (request) => {
     if (
@@ -9372,9 +9730,12 @@ test("sound button is the master switch for local playback", async ({
     }
   });
   await page.addInitScript(() => {
+    window.__forkmeshEffectStarts = 0;
+    window.__forkmeshSongPlays = [];
     class AudioParam {
       setValueAtTime() {}
       exponentialRampToValueAtTime() {}
+      linearRampToValueAtTime() {}
       cancelScheduledValues() {}
       setTargetAtTime() {}
     }
@@ -9385,13 +9746,16 @@ test("sound button is the master switch for local playback", async ({
         this.detune = new AudioParam();
       }
       connect() {}
-      start() {}
+      start() {
+        window.__forkmeshEffectStarts += 1;
+      }
       stop() {}
     }
     class FakeAudioContext {
       constructor() {
         this.currentTime = 0;
         this.destination = {};
+        this.state = "running";
       }
       createGain() {
         return new Node();
@@ -9400,307 +9764,82 @@ test("sound button is the master switch for local playback", async ({
         return new Node();
       }
       async resume() {}
-      async close() {}
+      async close() {
+        this.state = "closed";
+      }
     }
     Object.defineProperty(window, "AudioContext", {
       configurable: true,
       value: FakeAudioContext,
     });
+    class ForkmeshSongAudio {
+      constructor(src) {
+        this.src = String(src || "");
+        this.currentTime = 0;
+        this.loop = false;
+        this.preload = "";
+      }
+      addEventListener() {}
+      pause() {}
+      async play() {
+        window.__forkmeshSongPlays.push(this.src);
+      }
+    }
+    Object.defineProperty(window, "Audio", {
+      configurable: true,
+      value: ForkmeshSongAudio,
+    });
   });
-  await prepareWorldPage(page, "soundtrack");
+  await prepareWorldPage(page, "short-effects");
   await waitForWorld(page);
-  expect(
-    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
-  ).toBeNull();
 
-  await page.locator("forkmesh-world").evaluate(async (shell) => {
-    const now = document.createElement("div");
-    now.dataset.worldMediaNow = "";
-    shell.append(now);
-    await shell.playRadio("forkmesh-focus");
-  });
-  await expect(page.locator("[data-world-media-now]")).toContainText(
-    "Use the Sound button",
+  await page.locator("[data-world-sound-toggle]").evaluate((button) =>
+    button.click(),
   );
-  expect(
-    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
-  ).toBeNull();
-  await page.locator("[data-world-sound-toggle]").click();
   await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
     "aria-pressed",
     "true",
   );
+  const startsAfterEnable = await page.evaluate(
+    () => window.__forkmeshEffectStarts,
+  );
+  expect(startsAfterEnable).toBeGreaterThan(0);
+
   await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.playRadio("forkmesh-focus"),
+    shell.playCountryJoinSound("US", true),
   );
-  const playback = await page.locator("forkmesh-world").evaluate((shell) => ({
-    durationMs: shell.activeAudio?.durationMs,
-    scoreOffsetMs: shell.activeAudio?.scoreOffsetMs,
-    license: shell.activeAudio?.license,
-  }));
-  expect(playback.durationMs).toBe(4 * 60 * 60 * 1000);
-  expect(playback.scoreOffsetMs).toBeGreaterThanOrEqual(0);
-  expect(playback.scoreOffsetMs).toBeLessThan(playback.durationMs);
-  expect(playback.license).toContain("CC0-1.0");
-  await expect(page.locator("[data-world-track]")).toContainText(
-    "loops independently of the UTC display",
+  expect(await page.evaluate(() => window.__forkmeshEffectStarts)).toBeGreaterThan(
+    startsAfterEnable,
   );
+  await page.locator("forkmesh-world").evaluate((shell) =>
+    shell.playForkmeshSong(),
+  );
+  expect(await page.evaluate(() => window.__forkmeshSongPlays)).toEqual([
+    "/assets/songs/ForkMeshForever(IndiePop).mp3",
+  ]);
   expect(mediaRequests).toEqual([]);
 
-  await page.locator("[data-world-sound-toggle]").click();
+  await page.locator("[data-world-sound-toggle]").evaluate((button) =>
+    button.click(),
+  );
   await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
     "aria-pressed",
     "false",
   );
-  await expect(page.locator("[data-world-media-now]")).toContainText(
-    "Nothing is playing",
-  );
   expect(
     await page.locator("forkmesh-world").evaluate((shell) => ({
       soundEnabled: shell.soundEnabled,
-      activeAudio: shell.activeAudio,
       soundContext: shell.soundContext,
+      hasFocusPlayer: typeof shell.playFocusMusic === "function",
     })),
   ).toEqual({
     soundEnabled: false,
-    activeAudio: null,
     soundContext: null,
+    hasFocusPlayer: false,
   });
-
-  // The same button can turn audio consent back on after a full shutdown.
-  await page.locator("[data-world-sound-toggle]").click();
-  await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
 });
 
-test("the ForkMesh song button plays the first-party track only on request", async ({
-  page,
-}) => {
-  await page.addInitScript(() => {
-    window.__forkmeshSongPlays = [];
-    HTMLMediaElement.prototype.play = function play() {
-      window.__forkmeshSongPlays.push(this.getAttribute("src") || this.src);
-      return Promise.resolve();
-    };
-    HTMLMediaElement.prototype.pause = function pause() {};
-  });
-  await prepareWorldPage(page, "forkmesh-song");
-  await waitForWorld(page);
-
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-  const button = page.locator("[data-world-radio='forkmesh-song']");
-  await expect(button).toHaveText("Listen to the ForkMesh song");
-  expect(await page.evaluate(() => window.__forkmeshSongPlays)).toEqual([]);
-
-  await button.click();
-  expect(await page.evaluate(() => window.__forkmeshSongPlays)).toEqual([
-    "/assets/songs/ForkMeshForever(IndiePop).mp3",
-  ]);
-  await expect(page.locator("[data-world-media-now]")).toContainText(
-    "ForkMesh Forever (Indie Pop)",
-  );
-
-  await page.locator("[data-world-radio-stop]").click();
-  expect(
-    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
-  ).toBeNull();
-  await expect(page.locator("[data-world-media-now]")).toContainText(
-    "Nothing is playing",
-  );
-});
-
-test("focus music defaults to Cosmic Waves and preserves local controls", async ({
-  page,
-}) => {
-  const mediaRequests = [];
-  page.on("request", (request) => {
-    if (new URL(request.url()).pathname.startsWith("/assets/music/")) {
-      mediaRequests.push(request.url());
-    }
-  });
-  await installFocusMusicAudioProbe(page);
-  await prepareWorldPage(page, "focus-music-consent");
-  await waitForWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-
-  const tracks = page.locator("[data-world-focus-track]");
-  await expect(tracks).toHaveCount(3);
-  const cosmic = page.locator(
-    "[data-world-focus-track='cosmic-waves']",
-  );
-  await expect(cosmic).toBeVisible();
-  expect(await focusMusicTrackIsChecked(page, "cosmic-waves")).toBe(true);
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Cosmic Waves is selected. Press Play",
-  );
-
-  const idle = await focusMusicProbeSnapshot(page);
-  expect(idle.created).toEqual([]);
-  expect(mediaRequests).toEqual([]);
-  const intervalRegistrationsBeforePlay = idle.intervalRegistrations;
-
-  await page.locator("[data-world-focus-play]").click();
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Cosmic Waves is playing",
-  );
-  let playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created).toHaveLength(1);
-  expect(playback.created[0]).toMatchObject({
-    src: "/assets/music/cosmic-waves.ogg",
-    loop: true,
-    muted: false,
-    paused: false,
-    volume: 0.35,
-    playCalls: 1,
-  });
-  expect(playback.intervalRegistrations).toBe(
-    intervalRegistrationsBeforePlay,
-  );
-  expect(mediaRequests).toEqual([]);
-
-  await chooseFocusMusicTrack(page, "dreamscape");
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "DreamScape is playing",
-  );
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created).toHaveLength(2);
-  expect(playback.created[0]).toMatchObject({
-    currentTime: 0,
-    paused: true,
-    pauseCalls: 1,
-  });
-  expect(playback.created[1]).toMatchObject({
-    src: "/assets/music/dreamscape.ogg",
-    loop: true,
-    paused: false,
-    playCalls: 1,
-  });
-
-  await page.locator("[data-world-focus-pause]").click();
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "DreamScape is paused",
-  );
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created[1]).toMatchObject({
-    paused: true,
-    pauseCalls: 1,
-  });
-  await expect(page.locator("[data-world-focus-pause]")).toHaveText("Resume");
-
-  await page.locator("[data-world-focus-pause]").click();
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created[1]).toMatchObject({
-    paused: false,
-    playCalls: 2,
-  });
-
-  await page.locator("[data-world-focus-volume]").fill("62");
-  await expect(page.locator("[data-world-focus-volume]")).toHaveValue("62");
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created[1].volume).toBeCloseTo(0.62, 5);
-
-  await page.locator("[data-world-focus-mute]").click();
-  await expect(page.locator("[data-world-focus-mute]")).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created[1].muted).toBe(true);
-
-  const stored = await page.evaluate(() =>
-    JSON.parse(localStorage.getItem("forkmesh.world.settings.v1")),
-  );
-  expect(stored).toMatchObject({
-    focusMusicTrackId: "dreamscape",
-    focusMusicVolume: 62,
-    focusMusicMuted: true,
-  });
-
-  await page.locator("[data-world-focus-stop]").click();
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Press Play",
-  );
-  playback = await focusMusicProbeSnapshot(page);
-  expect(playback.created[1]).toMatchObject({
-    currentTime: 0,
-    paused: true,
-  });
-  expect(
-    await page.locator("forkmesh-world").evaluate((shell) => shell.activeAudio),
-  ).toBeNull();
-  expect(playback.intervalRegistrations).toBe(
-    intervalRegistrationsBeforePlay,
-  );
-});
-
-test("focus music selection and controls persist without autoplaying on reload", async ({
-  page,
-}) => {
-  await installFocusMusicAudioProbe(page);
-  await prepareWorldPage(page, "focus-music-persistence");
-  await waitForWorld(page);
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-
-  await chooseFocusMusicTrack(page, "too-brief-a-time");
-  await page.locator("[data-world-focus-volume]").fill("48");
-  await page.locator("[data-world-focus-mute]").click();
-  expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
-
-  await page.reload();
-  await waitForWorldReady(page);
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-  expect(await focusMusicTrackIsChecked(page, "too-brief-a-time")).toBe(true);
-  await expect(page.locator("[data-world-focus-volume]")).toHaveValue("48");
-  await expect(page.locator("[data-world-focus-mute]")).toHaveAttribute(
-    "aria-pressed",
-    "true",
-  );
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Press Play",
-  );
-  expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
-
-  await page.locator("[data-world-focus-play]").click();
-  const restoredPlayback = await focusMusicProbeSnapshot(page);
-  expect(restoredPlayback.created).toHaveLength(1);
-  expect(restoredPlayback.created[0]).toMatchObject({
-    src: "/assets/music/too-brief-a-time.ogg",
-    loop: true,
-    muted: true,
-    paused: false,
-    volume: 0.48,
-    playCalls: 1,
-  });
-
-  await page.evaluate(() => {
-    const key = "forkmesh.world.settings.v1";
-    const settings = JSON.parse(localStorage.getItem(key));
-    settings.focusMusicTrackId = "not-a-bundled-track";
-    localStorage.setItem(key, JSON.stringify(settings));
-  });
-  await page.reload();
-  await waitForWorldReady(page);
-  await page.locator("forkmesh-world").evaluate((shell) =>
-    shell.openLandmark("broadcast"),
-  );
-  expect(await focusMusicTrackIsChecked(page, "cosmic-waves")).toBe(true);
-  await expect(page.locator("[data-world-focus-now]")).toContainText(
-    "Cosmic Waves is selected. Press Play",
-  );
-  expect((await focusMusicProbeSnapshot(page)).created).toEqual([]);
-});
-
-test("portrait coarse-pointer thumbstick and visual viewport remain usable", async ({
+test("@critical portrait coarse-pointer thumbstick and visual viewport remain usable", async ({
   browser,
 }) => {
   test.setTimeout(60_000);

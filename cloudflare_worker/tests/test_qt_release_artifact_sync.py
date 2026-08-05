@@ -86,10 +86,9 @@ def test_release_dialog_can_prune_previous_artifacts_after_publish():
     assert "form->addRow(QString(), pruneArtifactsCheck);" in prompt
     assert "pruneArtifactsCheck->isChecked()" in prompt
     assert "pruneReleaseArtifactsForCurrentRepo(tag);" in prompt
-    assert prompt.index("runGitCapture(dir, {\"tag\", \"-a\", tag") < prompt.index(
+    assert prompt.index("user.email=actions@forkmesh.local") < prompt.index(
         "pruneReleaseArtifactsForCurrentRepo(tag);"
     )
-
     assert "mirrorReleaseBlobs(mirrorPath)" in prune
     assert "hashDir.removeRecursively()" in prune
     assert "QLocale().formattedDataSize(bytesDeleted)" in prune
@@ -99,6 +98,20 @@ def test_release_dialog_can_prune_previous_artifacts_after_publish():
     assert "candidate.name == repo.name" in prune
     assert "candidate.mirrorPath == mirrorPath" in prune
     assert "publishRepository(i, false);" in prune
+
+
+def test_release_tag_sets_a_tagger_identity_without_global_git_config():
+    source = RELEASES.read_text(encoding="utf-8")
+    prompt = source[
+        source.index("void MainWindow::promptNewRelease()")
+        : source.index("void MainWindow::showReleaseDetail")
+    ]
+
+    tag_start = prompt.index("// Annotated tag")
+    tag_call = prompt[tag_start : prompt.index("logSystem(", tag_start)]
+    assert '"-c", QStringLiteral("user.email=actions@forkmesh.local")' in tag_call
+    assert '"-c", QStringLiteral("user.name=ForkMesh Actions")' in tag_call
+    assert '"tag",\n                        "-a", tag, targetRef, "-m", message' in tag_call
 
 
 def test_releases_table_has_per_release_push_to_mirrors_action():

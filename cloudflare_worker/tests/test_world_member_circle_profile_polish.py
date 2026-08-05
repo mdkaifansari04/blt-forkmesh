@@ -10,28 +10,18 @@ HTML = (ROOT / "cloudflare_worker/public/world/index.html").read_text()
 ENTRY = (ROOT / "cloudflare_worker/src/entry.py").read_text()
 
 
-def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
+def test_members_circle_is_an_open_fixed_cost_clearing():
     assert "function campfireDirtTexture(THREE)" in SCENE
     assert 'campfireGround.name = "campfire-member-circle-dirt"' in SCENE
-    assert "campfireGround.scale.setScalar(outerRadius + 1.45)" in SCENE
-    assert "function rebuildCampfireMemberLogs(total)" in SCENE
-    assert "rebuildCampfireMemberLogs(count)" in SCENE
-    assert "log.userData.memberLogIndex = index" in SCENE
-    # adhoc #427: the blaze is a milestone marker — it holds its size through a
-    # hundred accounts and steps up only when the next century lands.
+    assert "const MEMBER_CLEARING_RADIUS = 12;" in SCENE
+    assert "campfireGround.scale.setScalar(MEMBER_CLEARING_RADIUS + 0.8)" in SCENE
+    assert "membersYurt" not in SCENE
+    assert "members-yurt" not in SCENE
+    assert "function rebuildCampfireMemberLogs" not in SCENE
+    assert "memberLogIndex" not in SCENE
+    # The hearth remains bounded and independent of roster growth.
     assert "const CAMPFIRE_BASE_FIRE_LEVEL = 3;" in SCENE
-    assert "const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.35;" in SCENE
-    assert "const CAMPFIRE_MAX_FIRE_LEVEL = 5.4;" in SCENE
-    assert "const fireCenturies = Math.floor(count / 100);" in SCENE
-    assert (
-        "CAMPFIRE_BASE_FIRE_LEVEL + fireCenturies * CAMPFIRE_FIRE_LEVEL_PER_CENTURY"
-        in SCENE
-    )
-    # The procedural fire stays rooted at the logs while milestone growth is
-    # applied to the effect itself, so it cannot sink into the pit.
     assert "proceduralFire.position.y = FLAME_BASE_Y;" in SCENE
-    assert "const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;" in SCENE
-    assert "proceduralFire.scale.set(" in SCENE
 
 
 def test_campfire_uses_layered_procedural_flames_and_atmosphere():
@@ -49,17 +39,26 @@ def test_campfire_uses_layered_procedural_flames_and_atmosphere():
     assert "fireLight.position.set(" in SCENE
 
 
-def test_member_count_floats_high_above_the_fire_without_a_plate():
-    assert "function campfireMemberCountTexture(THREE, total, newest = \"\")" in SCENE
-    assert 'memberCountSprite.name = "campfire-member-count-high"' in SCENE
-    assert "memberCountSprite.position.y = 13.5;" in SCENE
-    assert "memberCountSprite.scale.set(10.8, 4.05, 1);" in SCENE
+def test_member_count_is_on_a_shared_mesh_sign_at_the_open_approach():
+    assert "function membersCircleInfoTexture(THREE, total, newest = \"\")" in SCENE
+    assert 'memberCircleInfo.name = "members-circle-info-sign"' in SCENE
+    assert 'memberCircleInfoFace.name = "members-circle-member-info"' in SCENE
+    assert "cloneSharedPlane(" in SCENE
+    assert '"member-circle-sign-post"' in SCENE
+    assert "memberCircleInfo.position.set(0, 0, -MEMBER_CLEARING_RADIUS - 1.1)" in SCENE
+    # PlaneGeometry faces +Z by default, while visitors approach from -Z.
+    assert "memberCircleInfoFace.rotation.y = Math.PI;" in SCENE
+    assert 'context.fillText("MEMBERS CENTER", 512, 92);' in SCENE
 
 
-def test_newest_member_is_named_with_sparkles_high_above_the_fire():
-    assert '"✦ NEWEST MEMBER ✦"' in SCENE
-    assert 'newestMemberSparkles.name = "campfire-newest-member-name-sparkles"' in SCENE
-    assert "newestMemberSparkles.visible = Boolean(latest);" in SCENE
+def test_latest_member_name_is_painted_on_the_door_plaque():
+    texture = SCENE.split("function membersCircleInfoTexture", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert 'latest ? `LATEST · ${latest.toUpperCase()}`' in texture
+    assert "NEWEST MEMBER" not in texture
+    assert "campfire-newest-member-name-sparkles" not in SCENE
+    assert "campfire-member-count-high" not in SCENE
 
 
 def test_campfire_is_three_times_large_not_only_three_times_tall():
@@ -175,17 +174,41 @@ def test_mirror_lights_are_colored_and_warning_states_blink():
     assert "mirrorByName" in APP
 
 
-def test_all_non_walking_directory_members_use_full_seated_avatars():
-    assert "const seatedMemberIds = new Set(" in SCENE
-    assert ".filter((member) => member?.away !== true)" in SCENE
-    assert "CAMPFIRE_DETAILED_MEMBER_LIMIT" not in SCENE
-    assert 'status: "sitting around the campfire"' in SCENE
-    assert "figure.position.add(seat)" in SCENE
-    assert "applySeatedLegPose(figure)" in SCENE
+def test_non_walking_directory_members_use_lod_avatars_in_the_open_circle():
+    interior = SCENE.split("// Populate the open member-circle rings", 1)[1].split(
+        "// Legacy bench-circle implementation", 1
+    )[0]
+    assert "MEMBER_CIRCLE_VISIBLE_LIMIT" in SCENE
+    assert "memberCirclePosition(index, interiorMembers.length)" in interior
+    assert "member?.away === true" in interior
+    assert 'status: "gathering in the open Members Circle"' in interior
+    assert "figure = createAvatar(" in interior
+    assert "figure.position.set(" in interior
+    assert "applyLegPitch(figure, 0, 0)" in interior
     assert "figure.userData.ambientInteraction = null" in SCENE
     assert "const memberWorldDestinations" not in SCENE
     assert "const memberNpcStations" not in SCENE
     assert "ambientRoutePosition" not in SCENE
+
+
+def test_repeated_avatar_meshes_share_geometry_and_use_camera_lod():
+    shared = SCENE.split("function cloneSharedMesh", 1)[1].split(
+        "function setShadows", 1
+    )[0]
+    avatar = SCENE.split(
+        "function createAvatar(THREE, identity, options = {})", 1
+    )[1].split("\nconst WORK_BADGE_ROWS", 1)[0]
+    assert "const sharedMeshPrototypeCaches = new WeakMap();" in SCENE
+    assert "prototype.clone(false)" in shared
+    assert "geometry.userData.forkmeshSharedResource = true" in shared
+    assert "geometry.userData?.forkmeshSharedResource === true" in SCENE
+    assert "return false;" in shared
+    assert "const avatarLod = new THREE.LOD();" in avatar
+    assert 'avatarLod.name = "avatar-camera-lod"' in avatar
+    assert "avatarLod.addLevel(highDetail, 0, 0.12);" in avatar
+    assert "avatarLod.addLevel(farDetail, AVATAR_LOD_DISTANCE, 0.18);" in avatar
+    assert "cloneSharedMesh(" in avatar
+    assert "cloneSharedPlane(" in avatar
 
 
 def test_camera_pan_and_tilt_turn_the_avatar_body_and_head():
@@ -232,12 +255,12 @@ def test_lobby_has_wall_doorways_with_access_and_walk_through_checks():
 
 def test_world_asset_loading_and_unavailable_actions_are_console_quiet():
     for asset in (
-        "city-park-grass-v1.webp",
         "concrete-brick-path-v1.webp",
         "beach-horizon-v1.webp",
     ):
         line = next(line for line in HTML.splitlines() if asset in line)
         assert 'crossorigin="anonymous"' in line
+    assert "city-park-grass-v1.webp" not in HTML
     face = SCENE.split(
         "function makeConsentedProfileFace", 1
     )[1].split("\nfunction ", 1)[0]

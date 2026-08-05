@@ -95,6 +95,13 @@ int main(int argc, char *argv[])
     check(commitFile(upstream, QStringLiteral("README.md"),
                      QByteArrayLiteral("hello\n"), QStringLiteral("first")),
           "seed upstream");
+    check(QDir(upstream).mkpath(QStringLiteral(".forkmesh/stats")),
+          "create tracked stats directory");
+    check(commitFile(upstream,
+                     QStringLiteral(".forkmesh/stats/repository.json"),
+                     QByteArrayLiteral("{\"generated\":false}\n"),
+                     QStringLiteral("seed generated stats")),
+          "seed tracked node stats");
     check(git(upstream, {QStringLiteral("branch"),
                          QStringLiteral("agent/adhoc-1-stale-claim")}),
           "seed stale branch");
@@ -203,10 +210,61 @@ int main(int argc, char *argv[])
     check(again.error.isEmpty(), "no-op refresh reports no error");
     check(again.summary().isEmpty(), "no-op refresh has an empty summary");
 
-    // A dirty primary checkout must never be fast-forwarded under an agent.
+    // Node-local generated stats are tracked but unrelated to this upstream
+    // change. They must not freeze the service-managed checkout forever.
     check(commitFile(upstream, QStringLiteral("README.md"),
                      QByteArrayLiteral("hello v3\n"), QStringLiteral("third")),
           "advance upstream again");
+    QFile stats(QDir(checkout).filePath(
+        QStringLiteral(".forkmesh/stats/repository.json")));
+    check(stats.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+              stats.write(QByteArrayLiteral("{\"generated\":true}\n")) > 0,
+          "update node-local tracked stats");
+    stats.close();
+    const auto withStats =
+        forkmesh::upstream::refreshManagedCheckoutFromUpstream(checkout,
+                                                               upstream);
+    check(withStats.error.isEmpty(), "stats refresh reports no error");
+    check(withStats.headFastForwarded,
+          "unrelated tracked stats do not block fast-forward");
+    check(revParse(checkout, QStringLiteral("main")) ==
+              revParse(upstream, QStringLiteral("main")),
+          "main advances with node-local stats present");
+    check(stats.open(QIODevice::ReadOnly) &&
+              stats.readAll() == QByteArrayLiteral("{\"generated\":true}\n"),
+          "node-local stats survive fast-forward");
+    stats.close();
+
+    // If upstream changed that same generated file, Git cannot preserve both
+    // versions. A managed node may discard only this known regenerated path and
+    // retry; that is the recovery needed by old fleet checkouts.
+    check(commitFile(upstream,
+                     QStringLiteral(".forkmesh/stats/repository.json"),
+                     QByteArrayLiteral("{\"generated\":\"upstream\"}\n"),
+                     QStringLiteral("refresh generated stats schema")),
+          "advance upstream generated stats");
+    const auto statsConflict =
+        forkmesh::upstream::refreshManagedCheckoutFromUpstream(checkout,
+                                                               upstream);
+    check(statsConflict.error.isEmpty(),
+          "generated stats conflict reports no error");
+    check(statsConflict.headFastForwarded,
+          "generated-only conflict is regenerated and fast-forwarded");
+    check(revParse(checkout, QStringLiteral("main")) ==
+              revParse(upstream, QStringLiteral("main")),
+          "main advances across generated stats conflict");
+    check(stats.open(QIODevice::ReadOnly) &&
+              stats.readAll() ==
+                  QByteArrayLiteral("{\"generated\":\"upstream\"}\n"),
+          "generated stats adopts the upstream schema before regeneration");
+    stats.close();
+
+    // A conflicting dirty primary checkout must never be overwritten under an
+    // agent. Git's merge safety check distinguishes it from the unrelated stats
+    // case above.
+    check(commitFile(upstream, QStringLiteral("README.md"),
+                     QByteArrayLiteral("hello v4\n"), QStringLiteral("fourth")),
+          "advance upstream into a conflicting path");
     QFile dirty(QDir(checkout).filePath(QStringLiteral("README.md")));
     check(dirty.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
               dirty.write(QByteArrayLiteral("local edit\n")) > 0,

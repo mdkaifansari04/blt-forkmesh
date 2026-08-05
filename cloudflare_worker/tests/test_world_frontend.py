@@ -366,7 +366,7 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
         "queueMicrotask(() => onFediverseProfile(target))",
         '"FEDIVERSE · UNAVAILABLE"',
         'activityRing.name = "avatar-activity-ring"',
-        "new THREE.PlaneGeometry(0.88, 0.88)",
+        "cloneSharedPlane(\n    THREE,\n    0.88,\n    0.88,",
     ):
         assert contract in SCENE
     assert '"account-activity-light"' not in SCENE
@@ -792,249 +792,47 @@ def test_world_has_consent_aware_activity_events_and_media():
     assert "Empty houses reveal nothing about offline users" in APP
     assert 'id: "workshops"' not in DATA
     assert 'workshops: () => this.workshopPanelHTML()' not in APP
-    assert "data-world-radio-stop" in APP
-    assert "Audio never starts automatically" in APP
     assert "ice5.somafm.com" not in DATA
     assert "data-world-sound-toggle" in APP
     assert "this.soundEnabled = false" in APP
     assert "This is the only path that creates the shared cue context" in APP
     assert "if (!this.soundEnabled)" in APP
-    assert "Audio never starts automatically" in APP
 
 
-def test_broadcast_garden_offers_the_first_party_forkmesh_song_on_demand():
-    assert (PUBLIC / "assets" / "songs" / "ForkMeshForever(IndiePop).mp3").exists()
-    assert "Listen to the ForkMesh song" in DATA
-    assert '"/assets/songs/ForkMeshForever(IndiePop).mp3"' in DATA
-    assert 'playMode: "hosted"' in DATA
-    assert "station.actionLabel" in APP
-    assert 'station.playMode === "hosted"' in APP
-    assert "async playHostedTrack(station, now)" in APP
-    hosted = APP[APP.index("  async playHostedTrack("):APP.index(
-        "\n  stopRadio(", APP.index("  async playHostedTrack(")
-    )]
-    assert "element.loop = false" in hosted
-    assert "await element.play()" in hosted
-    assert "data-world-radio-stop" in hosted
-
-
-def test_focus_music_catalog_manifest_and_bundles_are_complete_long_form_and_platform_safe(
-):
-    music_dir = PUBLIC / "assets" / "music"
-    manifest = json.loads(
-        (music_dir / "music-manifest.json").read_text(encoding="utf-8")
-    )
-    module_uri = (WORLD / "world-data.js").resolve().as_uri()
-    completed = subprocess.run(
-        [
-            "node",
-            "--input-type=module",
-            "-e",
-            (
-                f'import {{ FOCUS_MUSIC_TRACKS }} from {json.dumps(module_uri)};'
-                "process.stdout.write(JSON.stringify(FOCUS_MUSIC_TRACKS));"
-            ),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    tracks = json.loads(completed.stdout)
-
-    assert len(tracks) == 3
-    assert tracks[0]["id"] == "cosmic-waves"
-    assert tracks[0]["name"] == "Cosmic Waves"
-    assert "const DEFAULT_FOCUS_MUSIC_TRACK_ID = FOCUS_MUSIC_TRACKS[0].id;" in APP
-    assert len({track["id"] for track in tracks}) == 3
-    assert len({track["trackUrl"] for track in tracks}) == 3
-
-    assert manifest["schemaVersion"] == 2
-    assert manifest["license"] == {
-        "id": "CC0-1.0",
-        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
-    }
-    manifest_tracks = manifest["tracks"]
-    assert [track["id"] for track in manifest_tracks] == [
-        track["id"] for track in tracks
-    ]
-
-    total_bytes = 0
-    for track, record in zip(tracks, manifest_tracks, strict=True):
-        bundled = music_dir / record["bundledFile"]
-        payload = bundled.read_bytes()
-        size = len(payload)
-        total_bytes += size
-
-        assert track["trackUrl"] == f"/assets/music/{record['bundledFile']}"
-        assert track["name"] == record["title"]
-        assert track["artist"] == record["creator"]
-        assert track["sourceUrl"] == record["sourcePage"]
-        assert track["license"] == "CC0 1.0"
-        assert track["licenseUrl"] == manifest["license"]["url"]
-        assert record["sourcePage"].startswith(
-            "https://freemusicarchive.org/music/holiznacc0/"
-        )
-        assert record["sourceFile"].startswith(
-            "https://files.freemusicarchive.org/"
-        )
-        assert len(record["sourceSha256"]) == 64
-        assert set(record["sourceSha256"]) <= set("0123456789abcdef")
-        assert record["sourceDurationSeconds"] >= 20 * 60
-        assert record["sourceBytes"] > size
-        assert abs(
-            record["sourceDurationSeconds"] - record["durationSeconds"]
-        ) < 0.1
-        assert record["durationSeconds"] >= 20 * 60
-        assert record["bundledCodec"] == "Ogg Vorbis"
-        assert record["bundledSampleRateHz"] == 44100
-        assert record["bundledChannels"] == 2
-        assert record["modification"]
-        assert size == record["bundledBytes"]
-        assert size <= 25 * 1024 * 1024
-        assert hashlib.sha256(payload).hexdigest() == record["bundledSha256"]
-
-    assert total_bytes == sum(
-        record["bundledBytes"] for record in manifest_tracks
-    )
-    assert total_bytes <= 50 * 1024 * 1024
-    assert max(record["durationSeconds"] for record in manifest_tracks) >= 45 * 60
-
-
-def test_focus_music_is_local_long_form_playback_without_polling():
-    for selector in (
-        "data-world-focus-track",
-        "data-world-focus-play",
-        "data-world-focus-pause",
-        "data-world-focus-stop",
-        "data-world-focus-mute",
-        "data-world-focus-volume",
-        "data-world-focus-now",
+def test_world_keeps_only_the_forkmesh_song_plus_short_event_effects():
+    assert not (PUBLIC / "assets" / "music").exists()
+    song = PUBLIC / "assets" / "songs" / "ForkMeshForever(IndiePop).mp3"
+    assert song.exists()
+    assert song.stat().st_size > 2 * 1024 * 1024
+    for retired in (
+        "FOCUS_MUSIC_TRACKS",
+        "RADIO_STATIONS",
+        "playFocusMusic",
+        "playHostedTrack",
+        "playRadio",
+        "data-world-focus",
+        "data-world-radio",
+        "new AudioElement",
+        "new window.Audio(",
     ):
-        assert selector in APP
-    assert "Three full-length ambient instrumentals ship with ForkMesh." in APP
-    assert "Each plays for 22–45 minutes before repeating" in APP
-    assert "focusMusicTrackId: DEFAULT_FOCUS_MUSIC_TRACK_ID" in APP
-    assert "focusMusicVolume: DEFAULT_FOCUS_MUSIC_VOLUME" in APP
-    assert "focusMusicMuted: false" in APP
-    assert "writeJSON(localStorage, SETTINGS_KEY, {" in APP
-
-    start = APP.index("  async playFocusMusic(")
-    end = APP.index("\n  stopFocusMusic(", start)
-    playback = APP[start:end]
-    assert "new AudioElement(track.trackUrl)" in playback
-    assert "element.loop = true" in playback
-    assert "await element.play()" in playback
-    assert "setInterval(" not in playback
-    assert "setTimeout(" not in playback
-    assert "fetch(" not in playback
-    assert "WebSocket" not in playback
-    assert "BroadcastChannel" not in playback
-
-    connected = APP[
-        APP.index("  connectedCallback()"):APP.index(
-            "\n  disconnectedCallback()", APP.index("  connectedCallback()")
-        )
-    ]
-    assert "playFocusMusic(" not in connected
-    bootstrap = APP[
-        APP.index("  async bootstrap()"):APP.index(
-            "\n  handleVisibility", APP.index("  async bootstrap()")
-        )
-    ]
-    assert "void this.playFocusMusic({ autoplay: true })" in bootstrap
-
-
-def test_join_cues_are_country_specific_local_opt_in_and_rate_limited():
+        assert retired not in APP
+        assert retired not in DATA
+    assert "onPlayForkmeshSong" in APP
+    assert "async playForkmeshSong()" in APP
+    assert "playForkmeshSong = true" in SCENE
+    assert "PLAY FORKMESH SONG" in SCENE
+    assert "CLICK TO PLAY ONCE · LOCAL" in SCENE
+    assert "new Audio(FORKMESH_SONG.trackUrl)" in APP
+    assert "element.loop = false" in APP
+    assert "await element.play()" in APP
+    assert "this.stopForkmeshSong();" in APP
+    assert 'this.playCountryJoinSound("FM", true);' in APP
     assert "playCountryJoinSound(countryCode, force = false)" in APP
-    assert 'message.type === "join"' in APP
-    assert "this.playCountryJoinSound(player.countryCode)" in APP
-    assert "code.charCodeAt(0) * 37 + code.charCodeAt(1) * 17" in APP
-    assert "this.joinSoundTimes.length >= 3" in APP
-    cue = APP[APP.index("  playCountryJoinSound("):APP.index(
-        "\n  saveSettings()", APP.index("  playCountryJoinSound(")
-    )]
-    assert "if (!this.soundEnabled || !context" in cue
-    assert "countryCode" in cue
-    assert "speechSynthesis" not in cue
+    assert "playOfficeElevatorSound(stage, trip = {})" in APP
+    assert "this.soundContext = new AudioContext();" in APP
 
 
-def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
-    assert "if (this.mobileMovementActive) return;" in APP
-    assert "this.mobileMovementActive = true;" in APP
-    assert "this.mobileMovementActive = false;" in APP
-    assert "this.coarsePointerViewport" in APP
-    assert "this.lastStableViewportWidth" in APP
-    assert "Math.abs(width - this.lastStableViewportWidth) < 2" in APP
-    assert "address-bar expansion and contraction" in APP
-    assert "overscroll-behavior: none;" in CSS
-    assert "position: fixed;" in CSS[
-        CSS.index("body.world-active {"):
-        CSS.index("}", CSS.index("body.world-active {"))
-    ]
-    assert 'this.addEventListener("touchmove", this.blockWorldPullToRefresh' in APP
-    assert "capture: true" in APP
-    pull_guard = APP[
-        APP.index("  blockWorldPullToRefresh ="):
-        APP.index("\n  syncViewportHeight =", APP.index("  blockWorldPullToRefresh ="))
-    ]
-    assert "event.preventDefault();" in pull_guard
-    assert "[data-world-thumbstick]" in pull_guard
-    assert "[data-world-canvas-wrap]" in pull_guard
-    assert "pendingTouchResize = true;" in SCENE
-    assert "externalTouchInteractionActive" in SCENE
-    assert "setTouchInteractionActive" in SCENE
-    assert "touchPointers.size > 0 || externalTouchInteractionActive" in SCENE
-    assert "this.world?.setTouchInteractionActive?.(true);" in APP
-    assert "this.world?.setTouchInteractionActive?.(false);" in APP
-    mobile = CSS[CSS.index("@media (max-width: 720px)"):]
-    assert ".world-right-rail {" in mobile
-    assert "display: grid;" in mobile
-    assert ".world-map {" not in CSS[
-        CSS.index("@media (max-width: 980px)"):
-        CSS.index("@media (max-width: 720px)")
-    ]
-
-
-def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
-    for contract in (
-        'const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1."',
-        "const SAVED_VIEWS_MAX = 5;",
-        "function normalizedSavedWorldView(record)",
-        "data-world-save-view",
-        "data-world-saved-view-list",
-        "captureSavedViewThumbnail()",
-        'thumbnail.toDataURL("image/webp", 0.62)',
-        "saveCurrentWorldView()",
-        "editSavedWorldView(id)",
-        "restoreSavedWorldView(id)",
-        "officeController?.restoreSavedView?.(view)",
-    ):
-        assert contract in APP
-    for contract in (
-        "function getSavedViewState()",
-        "function restoreSavedViewState(view = {})",
-        "floorId: officeCurrentFloorId",
-        "camera: cameraState",
-        "getSavedViewState,",
-        "restoreSavedViewState,",
-    ):
-        assert contract in SCENE
-
-
-def test_world_navigation_uses_fixed_spatial_shortcuts_and_five_saved_views():
-    template = APP.split("function worldTemplate(", 1)[1].split(
-        "\nfunction ", 1
-    )[0]
-    assert 'new Set(["office", "campfire"])' in template
-    assert 'data-expanded="true"' in template
-    assert "Remember" in template
-    assert "Quick views" not in template
-    assert "Reward pool" not in template
-    assert '<div class="world-saved-view-list" data-world-saved-view-list>' in template
-    assert '.slice(0, SAVED_VIEWS_MAX)' in APP.split("renderSavedViews()", 1)[1]
-
-
-def test_clicking_the_physical_fire_frames_the_people_around_it():
+def test_campfire_focus_keeps_its_camera_behavior():
     hit = SCENE.split("if (hit?.object?.userData?.campfirePit)", 1)[1].split(
         "\n    if (", 1
     )[0]
@@ -1046,7 +844,6 @@ def test_clicking_the_physical_fire_frames_the_people_around_it():
     assert "cameraFocus = campfire.position.clone();" in focus
     assert "setCameraZoom(Math.min(cameraZoom, 0.68));" in focus
 
-
 def test_retired_vm1_forkmesh_stub_is_not_rendered_as_a_portal():
     catalog = SCENE.split("function updateRepositoryCatalog(", 1)[1].split(
         "const activeKey", 1
@@ -1056,22 +853,18 @@ def test_retired_vm1_forkmesh_stub_is_not_rendered_as_a_portal():
     assert "record.liveHost !== true" in catalog
 
 
-def test_toolbar_sound_button_is_the_master_switch_for_all_local_audio():
+def test_toolbar_sound_button_controls_the_short_effect_context():
     toggle = APP[
         APP.index("  async toggleWorldSound() {"):
         APP.index("\n  syncWorldSoundButton()", APP.index("  async toggleWorldSound() {"))
     ]
-    assert "this.stopRadio();" in toggle
-    assert "this.focusMusicAutoplayPending = false;" in toggle
     assert toggle.count("this.syncWorldSoundButton();") >= 3
-    assert "if (!this.soundEnabled)" in APP[
-        APP.index("  async playFocusMusic("):
-        APP.index("\n  async toggleFocusMusicPause()", APP.index("  async playFocusMusic("))
-    ]
-    assert "if (!this.soundEnabled)" in APP[
-        APP.index("  async playHostedTrack("):
-        APP.index("\n  stopRadio(", APP.index("  async playHostedTrack("))
-    ]
+    assert "this.soundContext = new AudioContext();" in toggle
+    assert "await this.soundContext.resume();" in toggle
+    assert "this.playCountryJoinSound(\"FM\", true);" in toggle
+    assert "await context?.close?.()" in toggle
+    assert "activeAudio" not in toggle
+    assert "stopRadio" not in toggle
 
 
 def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
@@ -1127,8 +920,6 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert "this.setWorldRightRailExpanded(false)" in bind_ui
     assert 'a[href^=\'/dashboard/chat\']' in APP
     assert 'href="/dashboard/chat" target="_blank"' not in APP
-    assert 'playMode: "external"' in DATA
-    assert "does not embed, restream, record" in APP
     for media_feature in (
         "Shared listening room",
         "DJ session",
@@ -2382,43 +2173,21 @@ def test_world_settings_moves_focus_before_hiding_the_panel():
     assert "panel.inert = true;" in toggle
 
 
-def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
-    # adhoc #287: one bench per registered account rings the campfire. A
-    # bounded recent subset appears as seated figures facing the fire, members
-    # walking the world leave their named bench empty, and the ring rebuilds
-    # wider whenever a new account joins so everyone still fits. adhoc #291
-    # adds one extra bench that always stays open for the next guest, and
-    # adhoc #303 one more per guest already in the world, names every bench
-    # so an empty one says who is out and about, and seats accounts that
-    # signed up after the tab loaded straight from their presence frame.
-    assert "function rebuildCampfireCircle" in SCENE
-    assert '"campfire-member-circle"' in SCENE
-    assert (
-        "rebuildCampfireCircle(\n      Math.max(total, roster.length) "
-        "+ guestSeats + 1,\n    )" in SCENE
-    )
-    assert "function setCampfireSeatLabel" in SCENE
-    assert "function drawCampfireSeatPlate" in SCENE
-    assert "function repaintCampfireSeatLabels" in SCENE
-    assert 'labelMesh.name = "campfire-member-bench-label-atlas"' in SCENE
-    assert '"OPEN SEAT"' in SCENE
-    assert '"OUT AND ABOUT"' in SCENE
-    assert "campfire.userData.seatByName" in SCENE
+def test_world_members_center_is_an_open_fixed_cost_circle_with_bounded_roster():
+    assert "const MEMBER_CLEARING_RADIUS = 12;" in SCENE
+    assert 'memberCircleInfo.name = "members-circle-info-sign"' in SCENE
+    assert "function membersCircleInfoTexture" in SCENE
+    assert "membersYurt" not in SCENE
     assert "noteDirectoryMembers" in APP
-    # Concentric rows hold 25 people each and preserve one aligned walk-in gap.
-    assert "const CAMPFIRE_MEMBERS_PER_ROW = 25;" in SCENE
-    assert "const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);" in SCENE
-    assert "CAMPFIRE_ENTRANCE_WIDTH / radius" in SCENE
-    assert '"sitting around the campfire"' in SCENE
-    # Figures and idle live avatars both face the pit at the circle's centre.
-    # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
-    # negated form pointed everyone away from the flames (adhoc #291).
-    assert SCENE.count("Math.atan2(offset.x, offset.z)") >= 1
-    assert SCENE.count("Math.atan2(seat.x, seat.z)") >= 1
-    assert "Math.atan2(-offset.x, -offset.z)" not in SCENE
-    assert "Math.atan2(-seat.x, -seat.z)" not in SCENE
-    # Idle/returning live members take the empty tail benches.
-    assert "campfire.userData.memberFigureCount" in SCENE
+    lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
+        "// Legacy bench-circle implementation", 1
+    )[0]
+    assert "MEMBER_CIRCLE_VISIBLE_LIMIT" in lounge
+    assert ".slice(0, MEMBER_CIRCLE_VISIBLE_LIMIT);" in lounge
+    assert "memberCirclePosition(index, interiorMembers.length)" in lounge
+    assert "campfire.userData.memberFigureCount = seen.size;" in lounge
+    assert "return;" in lounge
+    assert "createAvatar(" in lounge
 
     nodes = SCENE[
         SCENE.index("  function updateNetworkNodes"):
@@ -2753,17 +2522,6 @@ def test_verified_fediverse_feedback_is_manual_pending_and_owner_confirmed():
     assert "owner node confirms" in FEDIVERSE_REVIEW_DOC
     assert "Follow-up consent is off by default" in FEDIVERSE_REVIEW_DOC
 
-
-def test_generated_world_score_is_opt_in_four_hour_and_redistributable():
-    assert "function createProceduralWorldSoundtrack" in APP
-    assert "durationMs: WORLD_SCORE_LOOP_MS" in APP
-    assert "15 * 60 * 1000" in APP
-    assert "CC0-1.0" in APP
-    assert "Local score offset" in APP
-    assert "loops independently of the UTC display" in APP
-    assert "Audio never starts automatically" in APP
-    assert "Original four-hour local procedural score" in DATA
-    assert "world-soundtrack-license.md" in DATA
 
 
 def test_linked_payout_page_has_a_truthful_non_custodial_notice():

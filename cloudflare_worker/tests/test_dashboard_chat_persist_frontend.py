@@ -469,13 +469,26 @@ def test_world_chat_has_a_primer_multiline_repository_action_composer():
         "selectedComposerRepository()",
         "runFullComposerAction(inputEl, attachmentControl)",
         "ForkMeshDashboardActions?.submitWebIssue",
-        "const queued = await queueOrgAgent(",
+        "return await queueOrgAgent(",
         '"agent",',
         'fullAction.value !== "chat"',
         "inputEl.style.height",
         'destination.searchParams.set("worldEmbed", "1")',
     ):
         assert contract in CHAT
+
+
+def test_chat_prompt_input_expands_from_its_top_resize_handle():
+    # The grip is deliberately separate from the composer shell: pulling it up
+    # changes only the prompt textarea's inline height, and pulling it down to
+    # the minimum clears that override so the prompt snaps back to its resting
+    # size.
+    assert "data-dashboard-chat-input-resize-handle" in CHAT_VIEW
+    assert 'aria-label="Resize message input"' in CHAT_VIEW
+    assert "wireFullInputResizeHandle()" in CHAT
+    assert "drag.startHeight + drag.startY - event.clientY" in CHAT
+    assert 'fullInput.style.height = ""' in CHAT
+    assert "fullInputManualHeight" in CHAT
 
 
 def test_world_chat_is_a_transparent_bubble_hud_with_context_and_emotes():

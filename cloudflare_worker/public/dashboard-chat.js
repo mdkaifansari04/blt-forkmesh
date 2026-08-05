@@ -1,6 +1,7 @@
 // Dashboard ForkMesh room chat integration.
 // Keeps the current dashboard UI, but uses the same encrypted room protocol as
 // the production chat from forkmesh-today/cloudflare_worker/public/chat.js.
+const chatModerationPromise = import("./chat-moderation.js").catch(() => null);
 
 function mountForkMeshDashboardChat() {
   const ROOM_NAME = "general";
@@ -72,10 +73,33 @@ function mountForkMeshDashboardChat() {
     `/api/repo/${encodeURIComponent(ROOM_OWNER)}` +
     `/${encodeURIComponent(ROOM_REPO)}/rooms/${encodeURIComponent(ACTIVE_ROOM)}/ws`;
   const FORKBOT_ENDPOINT = "/api/forkbot/chat";
+  // Cloudflare Workers AI model pick, shared with the public chat composer and
+  // the dashboard home ForkBot composer (both write this key).
+  const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";
   const FORKBOT_SENDER_ID = "forkbot";
   const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
   const CLAUDE_SENDER_ID = "claude";
   const CODEX_SENDER_ID = "codex";
+
+  function forkbotModel() {
+    try {
+      return localStorage.getItem(FORKBOT_MODEL_KEY) || "";
+    } catch (_) {
+      return "";
+    }
+  }
+
+  async function moderateDashboardText(value) {
+    const moderation = await chatModerationPromise;
+    if (!moderation) return null;
+    return moderation.moderateChatText(value);
+  }
+
+  async function moderateDashboardPlain(plain) {
+    const moderation = await chatModerationPromise;
+    if (!moderation) return null;
+    return moderation.moderateChatPlain(plain);
+  }
   // The task board addresses one general bot instead of naming a vendor.
   const ORG_BOT_SENDER_ID = "agent";
   // "codex"/"claude" survive only so a stored selection still routes to the
@@ -100,6 +124,9 @@ function mountForkMeshDashboardChat() {
   const fullLog = document.querySelector("#fullChatMessages");
   const sideLog = document.querySelector("#sideChatMessages");
   const fullInput = document.querySelector("#fullChatInput");
+  const fullInputResizeHandle = document.querySelector(
+    "[data-dashboard-chat-input-resize-handle]",
+  );
   const sideInput = document.querySelector("#sideChatInput");
   const fullSend = document.querySelector("#fullChatSend");
   const fullTaskSend = document.querySelector("#fullChatTaskSend");
@@ -143,6 +170,74 @@ function mountForkMeshDashboardChat() {
 
   let pendingWorldComposerPrefill = null;
   const seenParentNotifications = new Set();
+  let fullInputManualHeight = 0;
+
+  function defaultFullInputHeight() {
+    if (!fullInput) return 48;
+    const minHeight = Number.parseFloat(getComputedStyle(fullInput).minHeight);
+    return Number.isFinite(minHeight) ? minHeight : 48;
+  }
+
+  function maxFullInputHeight() {
+    return Math.max(
+      defaultFullInputHeight(),
+      Math.min(480, Math.round(window.innerHeight * 0.6)),
+    );
+  }
+
+  function setFullInputManualHeight(height) {
+    if (!fullInput) return;
+    const minimum = defaultFullInputHeight();
+    const nextHeight = Math.min(maxFullInputHeight(), Math.max(minimum, height));
+    if (nextHeight <= minimum) {
+      fullInputManualHeight = 0;
+      fullInput.style.height = "";
+    } else {
+      fullInputManualHeight = nextHeight;
+      fullInput.style.height = `${nextHeight}px`;
+    }
+    fullInputResizeHandle?.setAttribute(
+      "aria-valuenow",
+      String(Math.round(fullInputManualHeight || minimum)),
+    );
+  }
+
+  function wireFullInputResizeHandle() {
+    if (!fullInput || !fullInputResizeHandle) return;
+    let drag = null;
+    fullInputResizeHandle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      drag = {
+        pointerId: event.pointerId,
+        startY: event.clientY,
+        startHeight: fullInput.getBoundingClientRect().height,
+      };
+      fullInputResizeHandle.setPointerCapture(event.pointerId);
+    });
+    fullInputResizeHandle.addEventListener("pointermove", (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      setFullInputManualHeight(drag.startHeight + drag.startY - event.clientY);
+    });
+    const finishDrag = (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      if (fullInputResizeHandle.hasPointerCapture(event.pointerId)) {
+        fullInputResizeHandle.releasePointerCapture(event.pointerId);
+      }
+      drag = null;
+    };
+    fullInputResizeHandle.addEventListener("pointerup", finishDrag);
+    fullInputResizeHandle.addEventListener("pointercancel", finishDrag);
+    fullInputResizeHandle.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      event.preventDefault();
+      const currentHeight = fullInput.getBoundingClientRect().height;
+      const step = event.shiftKey ? 48 : 16;
+      setFullInputManualHeight(
+        currentHeight + (event.key === "ArrowUp" ? step : -step),
+      );
+    });
+  }
 
   function fileFromWorldComposerAttachment(value) {
     if (!value || typeof value !== "object") return null;
@@ -1975,10 +2070,16 @@ function mountForkMeshDashboardChat() {
     dialog.querySelector("[data-chat-thread-input]")?.focus();
   }
 
-  function sendThreadReply() {
+  async function sendThreadReply() {
     if (!activeThreadRootId || !canJoinChat() || !threadDialog) return;
     const input = threadDialog.querySelector("[data-chat-thread-input]");
-    const text = String(input?.value || "").trim().slice(0, MAX_TEXT);
+    const moderation = await moderateDashboardText(
+      String(input?.value || "").trim().slice(0, MAX_TEXT));
+    if (!moderation) {
+      setStatus("Chat filter unavailable · message not sent");
+      return;
+    }
+    const text = moderation.text;
     if (!text) return;
     const plain = makePlain("thread-reply", {
       rootId: activeThreadRootId,
@@ -1988,6 +2089,7 @@ function mountForkMeshDashboardChat() {
     if (input) input.value = "";
     renderThreadEntry(plain, "self", true);
     runWhenConnected(() => send(plain));
+    if (moderation.changed) appendSystem("Some words were filtered.");
   }
 
   function renderThreadEntry(entry, kind = "peer", live = false) {
@@ -2257,9 +2359,15 @@ function mountForkMeshDashboardChat() {
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
   }
 
-  function saveMessageEdit(record, source) {
+  async function saveMessageEdit(record, source) {
     if (record.senderId !== selfId) return;
-    const text = String(source || "").trim().slice(0, MAX_TEXT);
+    const moderation = await moderateDashboardText(
+      String(source || "").trim().slice(0, MAX_TEXT));
+    if (!moderation) {
+      setStatus("Chat filter unavailable · edit not sent");
+      return;
+    }
+    const text = moderation.text;
     if (!text) return;
     const editedAt = Date.now();
     const plain = makePlain("edit", {
@@ -2284,6 +2392,7 @@ function mountForkMeshDashboardChat() {
     }
     seen.add(plain.id);
     runWhenConnected(() => send(plain));
+    if (moderation.changed) appendSystem("Some words were filtered.");
   }
 
   // Deleting is irreversible for every reader, so ask first — inline, because
@@ -3078,7 +3187,7 @@ function mountForkMeshDashboardChat() {
       scheduleHistoryReplayFallback();
       return;
     }
-    const plain = await decryptObject(envelope);
+    const plain = await moderateDashboardPlain(await decryptObject(envelope));
     if (!plain) return;
     handlePlain(plain);
   }
@@ -3105,7 +3214,14 @@ function mountForkMeshDashboardChat() {
       showUserOnlyState();
       return Promise.resolve();
     }
-    return encryptObject(plain).then((envelope) => {
+    return moderateDashboardPlain(plain).then((moderated) => {
+      if (!moderated) {
+        setStatus("Chat filter unavailable · message not sent");
+        return null;
+      }
+      return encryptObject(moderated);
+    }).then((envelope) => {
+      if (!envelope) return;
       if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(envelope));
@@ -3217,8 +3333,10 @@ function mountForkMeshDashboardChat() {
     });
   }
 
-  function broadcastBotMessage(text, sender = FORKBOT_SENDER_ID) {
-    const plain = makeBotPlain(text, sender);
+  async function broadcastBotMessage(text, sender = FORKBOT_SENDER_ID) {
+    const moderation = await moderateDashboardText(text);
+    if (!moderation) return;
+    const plain = makeBotPlain(moderation.text, sender);
     // Claude/Codex prompts and replies are intentionally absent from the
     // shared room. The Engineering-only session endpoint remains the durable
     // transcript; this local line is merely immediate feedback to its author.
@@ -3251,6 +3369,7 @@ function mountForkMeshDashboardChat() {
           sender: displayName(),
           room: ACTIVE_SPACE || ROOM_NAME,
           context,
+          model: forkbotModel(),
         }),
       });
       const data = await response.json().catch(() => ({}));
@@ -4333,7 +4452,7 @@ function mountForkMeshDashboardChat() {
     }
   }
 
-  function sendFrom(inputEl, attachmentControl) {
+  async function sendFrom(inputEl, attachmentControl) {
     if (
       inputEl === fullInput &&
       fullAction &&
@@ -4346,7 +4465,13 @@ function mountForkMeshDashboardChat() {
       showUserOnlyState();
       return;
     }
-    const text = (inputEl?.value || "").trim();
+    const moderation = await moderateDashboardText(
+      (inputEl?.value || "").trim());
+    if (!moderation) {
+      setStatus("Chat filter unavailable · message not sent");
+      return;
+    }
+    const text = moderation.text;
     if (!text && !attachmentControl?.draft.length) return;
     closeMentionSuggest();
     if (text) {
@@ -4366,6 +4491,7 @@ function mountForkMeshDashboardChat() {
         appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
         emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
         void maybeAskOrgAgent(clipped);
+        if (moderation.changed) appendSystem("Some words were filtered.");
         return;
       }
       runWhenConnected(() => {
@@ -4376,6 +4502,7 @@ function mountForkMeshDashboardChat() {
         appendMessage("self", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
         emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
         void maybeAskForkbot(clipped);
+        if (moderation.changed) appendSystem("Some words were filtered.");
       });
     }
     void sendDashboardDraft(attachmentControl);
@@ -4447,6 +4574,12 @@ function mountForkMeshDashboardChat() {
     inputEl.addEventListener("input", () => updateMentionSuggest(inputEl));
     inputEl.addEventListener("input", () => {
       if (inputEl !== fullInput) return;
+      if (fullInputManualHeight) {
+        setFullInputManualHeight(
+          Math.max(fullInputManualHeight, inputEl.scrollHeight),
+        );
+        return;
+      }
       inputEl.style.height = "auto";
       inputEl.style.height = `${Math.min(inputEl.scrollHeight, 128)}px`;
     });
@@ -4661,6 +4794,7 @@ function mountForkMeshDashboardChat() {
       });
     void loadComposerRepositories();
     void loadTaskRouting();
+    wireFullInputResizeHandle();
     wireInput(fullInput, fullSend);
     wireTaskSend();
     wireInput(sideInput, sideSend);

@@ -1,6 +1,7 @@
 #include "ClaudeStreamSession.h"
 
 #include "AgentJail.h"
+#include "VirtualMachineRuntime.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -32,6 +33,7 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
         else if (eq < 0 && !kv.isEmpty())
             env.remove(kv);
     }
+    forkmesh::vm::applyGuestEnvironmentPolicy(env);
     m_proc->setProcessEnvironment(env);
 
     connect(m_proc, &QProcess::readyReadStandardOutput, this,
@@ -70,7 +72,18 @@ void ClaudeStreamSession::start(const QString &cwd, const QStringList &extraEnv,
     // Jail (adhoc #236): cap the agent's memory before handing the shell to
     // claude. The rlimit survives the exec and is inherited by subprocesses.
     cmd = AgentJail::wrapCommand(cmd, memoryLimitMb);
-    m_proc->start(QStringLiteral("bash"), {QStringLiteral("-lc"), cmd});
+    const forkmesh::vm::LaunchCommand launch =
+        forkmesh::vm::isolateCommand(
+            QStringLiteral("bash"), {QStringLiteral("-lc"), cmd}, cwd);
+    if (!launch.error.isEmpty()) {
+        QProcess *failed = m_proc;
+        m_proc = nullptr;
+        failed->deleteLater();
+        emit stderrText(QStringLiteral("KVM launch failed: %1").arg(launch.error));
+        QTimer::singleShot(0, this, [this] { emit finished(-1); });
+        return;
+    }
+    m_proc->start(launch.program, launch.arguments);
 
     if (!initialPrompt.isEmpty())
         writeUserTurn(initialPrompt);

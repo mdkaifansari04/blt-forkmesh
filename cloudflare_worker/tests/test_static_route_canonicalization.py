@@ -25,6 +25,7 @@ CANONICAL_PAGE_ROUTES = {
     "/dashboard/network": "/dashboard/network/index.html",
     "/dashboard/chat": "/dashboard/chat/index.html",
     "/dashboard/tasks": "/dashboard/tasks/index.html",
+    "/dashboard/notes": "/dashboard/notes/index.html",
     "/dashboard/settings": "/dashboard/settings/index.html",
     "/dashboard/profile": "/dashboard/profile/index.html",
     "/dashboard/profile/repositories": "/dashboard/profile/repositories/index.html",
@@ -46,6 +47,7 @@ CANONICAL_PAGE_ROUTES = {
     "/about": "/about.html",
     "/features": "/features.html",
     "/homev2": "/homev2.html",
+    "/new-home": "/new-home.html",
     "/pricing": "/pricing.html",
     "/press": "/press.html",
     "/careers": "/careers.html",
@@ -76,6 +78,7 @@ BLOCKED_HTML_ALIASES = {
     "/about.html",
     "/features.html",
     "/homev2.html",
+    "/new-home.html",
     "/pricing.html",
     "/press.html",
     "/careers.html",
@@ -83,6 +86,7 @@ BLOCKED_HTML_ALIASES = {
     "/privacy.html",
     "/terms.html",
     "/status.html",
+    "/dashboard/notes/index.html",
 }
 
 BLOG_POST_REDIRECT_RULES = {
@@ -104,6 +108,8 @@ NON_ROUTED_HTML_ASSETS = {
     # The repo-detail document: fetched by the Worker for every /owner/repo
     # route, never a navigable asset path of its own.
     "dashboard/repo.html",
+    # Worker-served template for opaque /notes/<id> publication URLs.
+    "notes/view.html",
     # Duplicate static copy kept for source parity; its public route is
     # canonicalized to the index-backed route above.
     "docs.html",

@@ -15,8 +15,9 @@
 // refreshManagedCheckoutFromUpstream() closes that loop. Before each seal, it
 // fetches the relay clone URL into the checkout and converges local refs on
 // upstream without ever discarding local-only work:
-//   - the branch checked out in any worktree is fast-forwarded only when that
-//     worktree is clean, via its own worktree (reset for forced branches);
+//   - the branch checked out in any worktree is fast-forwarded through its own
+//     worktree, relying on Git to preserve unrelated tracked edits and reject
+//     conflicting ones (forced-branch resets still require a clean worktree);
 //   - other local heads are force-moved only when their tip is already
 //     contained in the upstream tip (a pure fast-forward);
 //   - heads that vanished upstream are deleted only when fully contained in
@@ -61,9 +62,9 @@ RefreshOutcome refreshManagedCheckoutFromUpstream(
 // offline. Differences from the managed-checkout refresh: the user's remote
 // configuration is never touched (one-shot fetch by URL into a scratch
 // remote-tracking namespace), nothing is ever pruned, and no branch is force
-// tracked — every local ref moves only by fast-forward through a clean
-// worktree, so local-only commits always survive and supersede the mesh on
-// this node's next publish.
+// tracked — every local ref moves only by fast-forward through its worktree,
+// so Git preserves local edits and local-only commits always survive and
+// supersede the mesh on this node's next publish.
 RefreshOutcome convergeSourceCheckoutFromMesh(const QString &checkoutPath,
                                               const QString &meshUrl);
 

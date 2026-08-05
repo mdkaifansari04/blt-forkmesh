@@ -378,7 +378,7 @@ verify_public_assets() {
         "/assets/blog/features/forkmesh-forever.webp image/webp"
         "/assets/video/forkmesh-forever.mp4 video/mp4"
         "/assets/video/forkmesh-forever.en.vtt text/vtt"
-        "/assets/music/cosmic-waves.ogg audio/ogg"
+        "/assets/songs/ForkMeshForever(IndiePop).mp3 audio/mpeg"
         "/dashboard/tailwind.css text/css"
     )
 
@@ -795,6 +795,10 @@ publish_release_binary() {
         echo "note: cmake not found — skipping release binary build." >&2
         return 0
     fi
+    if ! command -v go >/dev/null 2>&1; then
+        echo "ERROR: Go is required to publish the native mirror-node companion." >&2
+        return 1
+    fi
 
     # Detect current platform (same logic as release.yml).
     local os arch
@@ -812,11 +816,15 @@ publish_release_binary() {
     esac
     local asset="forkmesh-${os}-${arch}"
     [ "$os" = "windows" ] && asset="${asset}.exe"
+    local mirror_asset="forkmesh-mirror-node-${os}-${arch}"
+    [ "$os" = "windows" ] && mirror_asset="${mirror_asset}.exe"
 
     # Check if this asset is already published. Only the dedicated, explicit
     # republish command may replace it; an ordinary Worker deploy remains cheap
     # and idempotent.
-    if [ -f ../.forkmesh/releases/latest/SHASUMS256.txt ] && grep -q "  $asset" ../.forkmesh/releases/latest/SHASUMS256.txt 2>/dev/null; then
+    if [ -f ../.forkmesh/releases/latest/SHASUMS256.txt ] &&
+       grep -q "  $asset" ../.forkmesh/releases/latest/SHASUMS256.txt 2>/dev/null &&
+       grep -q "  $mirror_asset" ../.forkmesh/releases/latest/SHASUMS256.txt 2>/dev/null; then
         if [ "$force" != "1" ]; then
             echo "Release binary for $asset is already published."
             echo "To rebuild the same version from the current clean commit, run:" >&2
@@ -901,6 +909,14 @@ publish_release_binary() {
         echo "ERROR: failed to build release binary." >&2
         return 1
     fi
+    local mirror_built="../mirror_node/forkmesh-mirror-node"
+    [ "$os" = "windows" ] && mirror_built="${mirror_built}.exe"
+    if ! (cd ../mirror_node && CGO_ENABLED=0 go build -trimpath \
+        -ldflags='-s -w' -o "$(basename "$mirror_built")" \
+        ./cmd/forkmesh-mirror-node); then
+        echo "ERROR: failed to build the Go mirror-node companion." >&2
+        return 1
+    fi
 
     # Locate the built executable.
     local built=""
@@ -937,6 +953,8 @@ publish_release_binary() {
     # cloudflare_worker/.forkmesh and then staged the untouched root manifest.
     cp "$built" "$asset"
     chmod 0755 "$asset" || true
+    cp "$mirror_built" "$mirror_asset"
+    chmod 0755 "$mirror_asset" || true
     local cas_dir="${FORKMESH_RELEASE_CAS:-../.forkmesh/release-blobs}"
     case "$cas_dir" in
         /*) ;;
@@ -955,9 +973,10 @@ publish_release_binary() {
         publish_args+=(--repo "$FORKMESH_REPO")
     fi
     publish_args+=("cloudflare_worker/$asset")
+    publish_args+=("cloudflare_worker/$mirror_asset")
     if ! publish_output="$(cd .. && tools/forkmesh-release-publish.sh \
         "${publish_args[@]}" 2>&1)"; then
-        rm -f "$asset"
+        rm -f "$asset" "$mirror_asset" "$mirror_built"
         echo "ERROR: failed to publish release binary." >&2
         return 1
     fi
@@ -967,11 +986,13 @@ publish_release_binary() {
     # compiled. A same-semver republish is only complete when release.json,
     # SHASUMS256.txt, the signed manifest, and the served CAS all agree on these
     # new bytes.
-    local asset_hash
+    local asset_hash mirror_asset_hash
     if command -v sha256sum >/dev/null 2>&1; then
         asset_hash="$(sha256sum "$asset" | awk '{print $1}')"
+        mirror_asset_hash="$(sha256sum "$mirror_asset" | awk '{print $1}')"
     else
         asset_hash="$(shasum -a 256 "$asset" | awk '{print $1}')"
+        mirror_asset_hash="$(shasum -a 256 "$mirror_asset" | awk '{print $1}')"
     fi
     if ! grep -Fqx "$asset_hash  $asset" \
             ../.forkmesh/releases/latest/SHASUMS256.txt ||
@@ -983,15 +1004,19 @@ publish_release_binary() {
             ../.forkmesh/releases/latest/release.json ||
        ! grep -Fq "\"name\":\"$asset\",\"blob_sha256\":\"$asset_hash\"" \
             ../.forkmesh/releases/latest/release.json ||
+       ! grep -Fqx "$mirror_asset_hash  $mirror_asset" \
+            ../.forkmesh/releases/latest/SHASUMS256.txt ||
+       ! grep -Fq "\"name\":\"$mirror_asset\",\"blob_sha256\":\"$mirror_asset_hash\"" \
+            ../.forkmesh/releases/latest/release.json ||
        [ ! -f ../.forkmesh/releases/latest/release.json.sig ] ||
        [ "$(wc -c < ../.forkmesh/releases/latest/release.json.sig | tr -d ' ')" != "64" ] ||
        [ ! -f "$cas_dir/sha256/${asset_hash:0:2}/$asset_hash/data" ]; then
-        rm -f "$asset"
+        rm -f "$asset" "$mirror_asset" "$mirror_built"
         echo "ERROR: release metadata/CAS verification did not match the freshly built commit and binary." >&2
         return 1
     fi
     echo "Verified release metadata: v${release_version}, tag ${tag_commit:0:12}, build ${build_commit:0:12}, sha256:${asset_hash:0:12}."
-    rm -f "$asset"
+    rm -f "$asset" "$mirror_asset" "$mirror_built"
 
     # Stage the release metadata for commit.
     git add ../.forkmesh/releases/latest/SHASUMS256.txt \

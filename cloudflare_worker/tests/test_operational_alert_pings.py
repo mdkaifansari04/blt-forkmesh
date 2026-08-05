@@ -82,8 +82,8 @@ def test_admin_setting_exposes_independent_ping_and_email_controls():
         ENTRY_TEXT.index('elif action == "set_operational_alerts"'):
         ENTRY_TEXT.index('elif action == "set_repo_terms_flag"')
     ]
-    assert 'name="pings_enabled"' in renderer
-    assert 'name="email_enabled"' in renderer
-    assert 'settings.get("statusPings", True)' in renderer
-    assert 'updated_alerts["statusPings"] = pings_enabled' in handler
-    assert 'updated_alerts["statusEmails"] = email_enabled' in handler
+    assert 'name="ping_%s"' in renderer
+    assert 'name="email_%s"' in renderer
+    assert 'name="continual_%s"' in renderer
+    assert '"statusMonitors"' in handler
+    assert '"continual": form.get(' in handler

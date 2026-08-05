@@ -493,8 +493,8 @@ namespace {
 // pipe per standard channel plus the child watcher), so an unbounded fan-out
 // walks straight through the 1024-descriptor soft limit and the whole process
 // starts failing with "QProcess: Cannot create pipe (Too many open files)" —
-// including work that has nothing to do with git, such as the age/tar pipeline
-// behind the encrypted public mirror. Cap what is in flight and queue the rest;
+// including unrelated sync and network work. Cap what is in flight and queue
+// the rest;
 // every callback here already re-checks generation counters and widget pointers
 // before touching the UI, so a read that starts late is safe.
 constexpr int kMaxDetachedGitInFlight = 12;
@@ -997,29 +997,19 @@ void MainWindow::switchToBranch(const QString &branch, int agentSessionId)
     // setRepoBranch below reassigns m_repoBranch, which some callers pass in by
     // reference — copy before the string underneath us can change.
     const QString target = branch.trimmed();
-    // Every explicit branch navigation is a fresh opportunity to catch up with
-    // a base that may have advanced since this branch was last viewed. Internal
-    // rerenders keep the attempted marker, so a failed update still cannot loop.
-    m_branchAutoPullAttempted.clear();
     m_branchDiffPullNumber = -1; // plain branch mode
     showOverviewCommits();
     const QString base = branchCompareBase();
-    if (!target.isEmpty() && target != m_repoBranch) {
-        setRepoBranch(target); // rebuilds the graph + branch button for the ref
-    } else {
-        // Already browsing this ref: fill the workspace the same deferred way
-        // the Commits toggle does.
-        QTimer::singleShot(0, this, [this] {
-            if (commitsListIsCurrent())
-                refreshSourceControl();
-            else
-                loadCommits();
-        });
-    }
+    const bool branchChanged = !target.isEmpty() && target != m_repoBranch;
+    if (branchChanged)
+        // Changing m_repoBranch is cheap. Defer the overview/history rebuild
+        // until the selected branch and its loading state are on screen.
+        setRepoBranch(target, /*loadContent=*/false);
     if (target.isEmpty() || target == base) {
         // The base has no range against itself: plain working-tree view.
         m_branchDiffAgentSessionId = -1;
         setCommitWorkspacePage(kCommitWorkspaceChangesPage);
+        showSourceControlLoading(target.isEmpty() ? base : target);
     } else {
         // Compare against the base on the right pane (merge/PR toolbar
         // included), with the left column's CHANGES + graph staying put.
@@ -1029,6 +1019,25 @@ void MainWindow::switchToBranch(const QString &branch, int agentSessionId)
         if (m_branchDiffView)
             m_branchDiffView->setFocus();
     }
+    // loadRepoOverview() is deliberately expensive (a recursive tree walk and
+    // per-entry history), yet it is hidden behind the Git workspace. Starting
+    // it after this turn lets the branch-specific placeholder paint first and
+    // avoids delaying every branch click on invisible Code-overview work.
+    QTimer::singleShot(0, this, [this, target, branchChanged] {
+        if (branchChanged) {
+            if (m_repoBranch != target)
+                return; // a newer branch selection won
+            loadRepoOverview(QString());
+            loadCommits();
+            return;
+        }
+        // Already browsing this ref: fill the workspace the same deferred way
+        // the Commits toggle does.
+        if (commitsListIsCurrent())
+            refreshSourceControl();
+        else
+            loadCommits();
+    });
     // Branch selection is a browser-style destination: Back/Forward must be
     // able to return to the previous branch (or the main Git view).
     scheduleNavRecord();
@@ -1283,18 +1292,17 @@ bool MainWindow::testGitWorkspaceIsExclusive() const
     return true;
 }
 
-bool MainWindow::testGitPromptFloatsBottomRight() const
+bool MainWindow::testGitPromptFloatsBottomLeft() const
 {
-    constexpr int kPromptMargin = 8;
-    return m_footerDock && m_footerLeftRegion && m_promptWrapper &&
-           m_commitsStack && m_footerDock->isHidden() &&
-           m_footerLeftRegion->isHidden() &&
-           m_promptWrapper->parentWidget() == m_commitsStack &&
-           m_promptWrapper->isVisible() && m_promptWrapper->width() <= 560 &&
-           m_promptWrapper->x() + m_promptWrapper->width() ==
-               m_commitsStack->width() - kPromptMargin &&
-           m_promptWrapper->y() + m_promptWrapper->height() ==
-               m_commitsStack->height() - kPromptMargin;
+    return m_footerDock && m_globalOverlayHost && m_promptOverlayHost &&
+           m_promptWrapper && m_footerDock->parentWidget() == m_globalOverlayHost &&
+           m_footerDock->isVisible() && m_promptOverlayHost->isVisible() &&
+           m_promptOverlayHost->width() <= 560 &&
+           m_promptOverlayHost->geometry().left() == 8 &&
+           m_promptOverlayHost->geometry().bottom() ==
+               m_footerDock->rect().bottom() &&
+           m_footerDock->y() + m_footerDock->height() <=
+               m_globalOverlayHost->height();
 }
 
 int MainWindow::testCommitWorkspacePage() const
@@ -1687,12 +1695,6 @@ bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             refreshIssueList();
             updateIssueActionState();
         }
-        // adhoc #250: with the "Auto after merge" toggle on, bring every other
-        // branch up to date with the just-merged base in the same step. It runs
-        // without a confirmation prompt and sets its own detail notice
-        // summarizing how many branches advanced.
-        if (m_branchAutoPullAllCheck && m_branchAutoPullAllCheck->isChecked())
-            pullBaseIntoAllBranches();
     } else {
         // The branch did not land cleanly in main — roll back any in-progress merge so
         // the checkout is left clean, and keep the worktree and branch so their work
@@ -2546,28 +2548,16 @@ QWidget *MainWindow::buildBranchesTab()
     setOcticon(refreshButton, "sync", 16);
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::loadBranchesPanel);
     addRefreshSpin(refreshButton);
-    // Bring every behind branch up to date with the default branch in one click;
-    // its label/enabled state is refreshed in loadBranchesPanel() once the base
-    // name and behind-counts are known.
-    m_branchPullAllButton = new QPushButton("Pull into all");
+    // Fast-forward inactive branches which contain no work of their own. This
+    // deliberately never merges the base into divergent agent branches: doing
+    // that after each landing manufactured merge commits which later fed back
+    // through main as those branches landed.
+    m_branchPullAllButton = new QPushButton("Fast-forward idle");
     m_branchPullAllButton->setObjectName("ghostButton");
     m_branchPullAllButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_branchPullAllButton, "download", 16);
     connect(m_branchPullAllButton, &QPushButton::clicked, this,
             &MainWindow::pullBaseIntoAllBranches);
-    // Opt-in: when checked, every successful "Merge to main" auto-runs the
-    // "Pull into all" above so the remaining branches catch up with the merge
-    // without a second click (adhoc #250). Persisted so it survives restart.
-    m_branchAutoPullAllCheck = new QCheckBox("Auto after merge");
-    m_branchAutoPullAllCheck->setCursor(Qt::PointingHandCursor);
-    m_branchAutoPullAllCheck->setToolTip(
-        "Automatically pull the default branch into every behind branch after a "
-        "merge to main succeeds.");
-    m_branchAutoPullAllCheck->setChecked(
-        QSettings().value(kBranchAutoPullAllSetting, false).toBool());
-    connect(m_branchAutoPullAllCheck, &QCheckBox::toggled, this, [](bool on) {
-        QSettings().setValue(kBranchAutoPullAllSetting, on);
-    });
     // Tidy up branches that are fully merged into the default branch (0 behind and
     // 0 ahead of it); enabled in loadBranchesPanel() once those counts are known.
     m_branchDeleteMergedButton = new QPushButton("Delete merged");
@@ -2580,7 +2570,6 @@ QWidget *MainWindow::buildBranchesTab()
     headerRow->addWidget(m_branchesSummary);
     headerRow->addStretch();
     headerRow->addWidget(m_branchPullAllButton);
-    headerRow->addWidget(m_branchAutoPullAllCheck);
     headerRow->addWidget(refreshButton);
     // "Delete merged" prunes every branch that's 0 behind / 0 ahead of the
     // default branch; keep it right beside "New branch" so the create/cleanup
@@ -2957,8 +2946,10 @@ QWidget *MainWindow::buildBranchRangePane()
 
     // Merge the selected branch straight into the default branch (an empty
     // worktree path tells mergeWorktreeIntoMain not to prune any worktree).
+    // Ghost, not green: "Merge & clean up" beside it is the finishing move worth
+    // drawing the eye, and two green buttons in a row read as one wide target.
     m_branchMergeButton = new StackedIconButton("Merge to main");
-    m_branchMergeButton->setObjectName("primaryButton");
+    m_branchMergeButton->setObjectName("ghostButton");
     m_branchMergeButton->setProperty("buttonSize", "sm");
     m_branchMergeButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_branchMergeButton, "check-circle", 14);
@@ -3497,7 +3488,7 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
     // The action column is Fixed-width because ResizeToContents can't see
     // its cell widgets; size it to the widest action row we build below.
     int actionWidth = 0;
-    bool anyBehind = false;
+    bool anyFastForwardable = false;
     bool anyMerged = false; // fully-merged branches the "Delete merged" action can remove
     // Branches whose merge verdict isn't memoised yet, as (branch, cache key).
     // Probed on a worker thread once the table is built (adhoc #416).
@@ -3654,9 +3645,10 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         // Row actions: just delete here — the Pull / Fix with agent / Create PR /
         // Merge to main actions live in the detail-pane toolbar and act on the
         // selected branch (issue #116). The ahead/behind/conflict counts above
-        // still drive the header's "Pull into all" / "Delete merged" enablement.
-        if (writable && branch != base && behind > 0)
-            anyBehind = true;
+        // still drive the safe bulk fast-forward / delete enablement.
+        if (writable && branch != base && behind > 0 && ahead == 0 &&
+            worktreePath.isEmpty())
+            anyFastForwardable = true;
         auto *actions = new QWidget;
         // Keep the container transparent so the row's hover/selection highlight
         // shows through it; the global "QWidget { background }" rule would
@@ -3831,20 +3823,20 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
     m_branchesTable->horizontalHeader()->resizeSection(
         kBranchesDeleteColumn, qMax(actionWidth + 4, 30));
 
-    // Header "Pull <base> into all" reflects the current base and is enabled only
-    // when there's at least one behind branch to update.
+    // Bulk sync is intentionally limited to inactive refs that can fast-forward.
     if (m_branchPullAllButton) {
         m_branchPullAllButton->setText(
-            base.isEmpty() ? QStringLiteral("Pull into all")
-                           : QStringLiteral("Pull %1 into all").arg(base));
-        m_branchPullAllButton->setEnabled(writable && anyBehind);
+            base.isEmpty() ? QStringLiteral("Fast-forward idle")
+                           : QStringLiteral("Fast-forward idle to %1").arg(base));
+        m_branchPullAllButton->setEnabled(writable && anyFastForwardable);
         m_branchPullAllButton->setToolTip(
             !writable
                 ? QStringLiteral("Read-only mirror \xE2\x80\x94 nothing to update")
-                : anyBehind
-                      ? QStringLiteral("Merge %1 into every branch that's behind it")
+                : anyFastForwardable
+                      ? QStringLiteral("Fast-forward inactive branches with no unique "
+                                       "commits to %1")
                             .arg(base)
-                      : QStringLiteral("All branches are up to date with %1")
+                      : QStringLiteral("No inactive branch can fast-forward to %1")
                             .arg(base));
     }
 
@@ -4541,48 +4533,6 @@ void MainWindow::applyBranchDetailActions(const QString &branch, const QString &
                           : "Read-only mirror \xE2\x80\x94 nothing to merge into here"));
     }
 
-    // The buttons now say whether the branch is behind and whether it conflicts,
-    // which is exactly what auto-pull needs to decide.
-    maybeAutoPullBranch(branch);
-}
-
-// Auto-pull: as soon as the branch's detail view is behind base with no conflict,
-// try the same update "Pull main" would do by hand, spinning that button while it
-// runs, so landing on a branch is enough to bring it current without an extra
-// click. Skipped when there's a conflict (the "Fix with agent" / "Merge editor"
-// buttons own that case) and attempted at most once per branch so a declined
-// stash prompt can't nag on every incidental rebuild of this panel while the
-// branch stays selected. Deferred a tick so it runs after the caller's own render
-// rather than recursing into it (the pull re-renders itself via showBranchDiff()
-// once it succeeds). Also held off while a background sweep is still deciding
-// whether the branch conflicts: the Fix button is hidden until that verdict
-// lands, and pulling a conflicting branch on the strength of a not-yet-known
-// answer would surface a "couldn't update cleanly" notice the user never asked
-// for (adhoc #416).
-void MainWindow::maybeAutoPullBranch(const QString &branch)
-{
-    if (branch.isEmpty() || m_branchDiffBranch != branch)
-        return;
-    // Reviewing a PR must not rewrite its head branch as a side effect of
-    // opening the diff; the PR page's own Update button owns that (adhoc #107).
-    if (m_branchDiffPullNumber >= 0)
-        return;
-    if (!m_branchPullButton || !m_branchPullButton->isEnabled() ||
-        (m_branchFixButton && m_branchFixButton->isVisible()) ||
-        m_branchConflictProbes.contains(branch) ||
-        m_branchAutoPullAttempted == branch)
-        return;
-    m_branchAutoPullAttempted = branch;
-    startButtonSpin(m_branchPullButton);
-    QTimer::singleShot(0, this, [this, branch] {
-        QPushButton *const spinButton = m_branchPullButton;
-        const auto spinGuard =
-            qScopeGuard([this, spinButton] { stopButtonSpin(spinButton); });
-        if (m_branchDiffBranch != branch)
-            return;
-        GitKeepAlive keepAlive;
-        updateBranchFromBase(branch);
-    });
 }
 
 void MainWindow::openBranchInCodium(const QString &branch)
@@ -4658,9 +4608,8 @@ void MainWindow::showBranchDiff(const QString &branch, int agentSessionId)
     m_branchDiffBranch = branch;
     m_branchDiffAgentSessionId = agentSessionId;
     updateCommitsCompareIndicator(); // "<branch> -> <base>" on the branch row
-    // Fills in the detail bar (and, once it knows the branch is behind and
-    // conflict-free, kicks off the auto-pull) from a worker thread — see
-    // updateBranchDetailActions / maybeAutoPullBranch.
+    // Fill in the detail bar from a worker thread. Viewing a branch is strictly
+    // read-only; updating it requires the explicit Pull button.
     updateBranchDetailActions(branch);
 
     m_branchDiffFileSpans.clear();
@@ -4908,6 +4857,7 @@ void MainWindow::renderBranchScopeDiff()
         QString err;
         QString emptyMessage;
         QString viewedContext;
+        int attempts = 1;
     };
     runOffThread<ScopeDiff>(
         [dir, base, branch, work, pullNumber]() {
@@ -4918,26 +4868,57 @@ void MainWindow::renderBranchScopeDiff()
                                   : QStringLiteral("branch/") + branch;
             r.emptyMessage =
                 QStringLiteral("No changes between %1 and %2.").arg(branch, base);
-            // Review only what the branch adds from its merge base. Comparing
-            // complete snapshots with `base..branch` makes every newer file on
-            // a behind base appear as a reverse, unrelated branch change — the
-            // Agents page might correctly report 3 files while Git reports 22.
-            // A checked-out branch still includes committed, staged, unstaged,
-            // deleted and untracked files through the temporary-index helper.
-            if (!work.isEmpty()) {
-                QByteArray mergeBaseOut;
-                const bool foundMergeBase =
-                    runGitCapture(dir, {QStringLiteral("merge-base"), base, branch},
-                                  &mergeBaseOut, nullptr);
-                const QString contentBase =
-                    foundMergeBase && !mergeBaseOut.trimmed().isEmpty()
-                        ? QString::fromUtf8(mergeBaseOut).trimmed()
-                        : base;
-                if (!buildWorkingTreeDiff(work, contentBase, &r.out, &r.err))
-                    r.ok = false;
-            } else if (!runGitCapture(dir, {"diff", base + "..." + branch},
-                                      &r.out, &r.err)) {
-                r.ok = false;
+            auto readDiff = [&](ScopeDiff &attempt) {
+                // Review only what the branch adds from its merge base. Comparing
+                // complete snapshots with `base..branch` makes every newer file on
+                // a behind base appear as a reverse, unrelated branch change — the
+                // Agents page might correctly report 3 files while Git reports 22.
+                // A checked-out branch still includes committed, staged, unstaged,
+                // deleted and untracked files through the temporary-index helper.
+                if (!work.isEmpty()) {
+                    QByteArray mergeBaseOut;
+                    const bool foundMergeBase = runGitCapture(
+                        dir, {QStringLiteral("merge-base"), base, branch},
+                        &mergeBaseOut, nullptr);
+                    const QString contentBase =
+                        foundMergeBase && !mergeBaseOut.trimmed().isEmpty()
+                            ? QString::fromUtf8(mergeBaseOut).trimmed()
+                            : base;
+                    if (!buildWorkingTreeDiff(work, contentBase, &attempt.out,
+                                              &attempt.err))
+                        attempt.ok = false;
+                } else if (!runGitCapture(dir, {"diff", base + "..." + branch},
+                                          &attempt.out, &attempt.err)) {
+                    attempt.ok = false;
+                }
+            };
+            // An 8s "git timed out" here is usually the machine being busy or
+            // another git holding the index, not a diff that can never be read —
+            // and the pane's only recovery used to be for the reader to guess
+            // that clicking the branch again might work. Retry transient
+            // failures in place (adhoc #1384); a deterministic error falls
+            // straight through on the first attempt, so a real problem still
+            // appears immediately.
+            // Lock contention fails instantly, so three attempts there cost
+            // nothing; a timeout costs 8s each, and a pane that sits on its
+            // placeholder for half a minute is worse than an error the reader
+            // can act on — so stop retrying once the whole read has spent
+            // kRetryDeadlineMs.
+            constexpr int kMaxAttempts = 3;
+            constexpr int kRetryDeadlineMs = 12000;
+            QElapsedTimer spent;
+            spent.start();
+            for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+                r.ok = true;
+                r.out.clear();
+                r.err.clear();
+                r.attempts = attempt;
+                readDiff(r);
+                if (r.ok || !isTransientGitError(r.err))
+                    break;
+                if (attempt == kMaxAttempts || spent.hasExpired(kRetryDeadlineMs))
+                    break;
+                QThread::msleep(250 * attempt); // let the contention clear
             }
             return r;
         },
@@ -4949,9 +4930,7 @@ void MainWindow::renderBranchScopeDiff()
             if (!r.ok) {
                 m_branchDiffPendingFade = false;
                 setDiffHtml(m_branchDiffView,
-                    QStringLiteral(
-                        "<p style='color:#f85149'>Could not diff %1: %2</p>")
-                        .arg(branch.toHtmlEscaped(), r.err.toHtmlEscaped()));
+                            branchDiffErrorHtml(branch, r.err, r.attempts));
                 return;
             }
             // The pane may already be showing this exact patch, repainted from
@@ -5937,6 +5916,9 @@ void MainWindow::pullBaseIntoAllBranches()
             "This is a read-only mirror; branches can't be updated here.", true);
         return;
     }
+    // This action mutates refs, so make its eligibility decision from the live
+    // branch set rather than a panel cache that may predate an agent checkout.
+    m_branchesCache.clear();
     const QStringList branches = repoBranches();
     const QString base = repoDefaultBranch(branches);
     if (base.isEmpty())
@@ -5950,8 +5932,8 @@ void MainWindow::pullBaseIntoAllBranches()
     if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
         currentBranch = QString::fromUtf8(headOut).trimmed();
 
-    // First pass: how many branches are actually behind, so we can bail early
-    // when there's nothing to do.
+    // Count only branches that can move without a merge commit or a worktree
+    // update. Divergent and active branches require an explicit Pull action.
     const auto behindOf = [&](const QString &branch, int *ahead) -> int {
         QByteArray counts;
         if (!runGitCapture(dir,
@@ -5972,12 +5954,15 @@ void MainWindow::pullBaseIntoAllBranches()
     for (const QString &branch : branches) {
         if (branch == base || branch == currentBranch)
             continue;
-        if (behindOf(branch, nullptr) > 0)
+        int ahead = 0;
+        if (behindOf(branch, &ahead) > 0 && ahead == 0 &&
+            worktreePathForBranch(dir, branch).isEmpty())
             ++behindCount;
     }
     if (behindCount == 0) {
         setRepoDetailNotice(
-            QStringLiteral("Every branch is already up to date with %1.").arg(base));
+            QStringLiteral("No inactive branch can be fast-forwarded to %1.")
+                .arg(base));
         return;
     }
 
@@ -5993,7 +5978,7 @@ void MainWindow::pullBaseIntoAllBranches()
     });
 
     int updated = 0;
-    QStringList conflicts, skipped;
+    QStringList failed, skipped;
     for (const QString &branch : branches) {
         if (branch == base)
             continue;
@@ -6001,48 +5986,25 @@ void MainWindow::pullBaseIntoAllBranches()
         const int behind = behindOf(branch, &ahead);
         if (behind == 0)
             continue;
-        if (branch == currentBranch) {
+        // Never synthesize a merge commit during a bulk sync. Those commits were
+        // subsequently merged back into main and triggered another bulk sync,
+        // producing the repeated main -> agent -> main history loop.
+        if (branch == currentBranch ||
+            !worktreePathForBranch(dir, branch).isEmpty() || ahead > 0) {
             skipped << branch;
             continue;
         }
-        // No commits of its own: a plain fast-forward of the ref, no merge needed.
-        if (ahead == 0) {
-            if (runGitCapture(dir, {"fetch", ".", base + ":" + branch}, nullptr,
-                              nullptr))
-                ++updated;
-            else
-                conflicts << branch;
-            continue;
-        }
-        // Real merge: resolve it in memory; on a clean result, write the merge
-        // commit straight onto the branch ref without disturbing the work tree.
-        const QString tree = branchMergeTree(dir, base, branch);
-        if (tree.isEmpty()) {
-            conflicts << branch;
-            continue;
-        }
-        QByteArray commitOut;
-        const QString msg = QStringLiteral("Merge %1 into %2").arg(base, branch);
-        if (!runGitCapture(dir,
-                           {"commit-tree", tree, "-p", branch, "-p", base, "-m", msg},
-                           &commitOut, nullptr)) {
-            conflicts << branch;
-            continue;
-        }
-        const QString commit = QString::fromUtf8(commitOut).trimmed();
-        if (commit.isEmpty() ||
-            !runGitCapture(dir, {"update-ref", "refs/heads/" + branch, commit},
-                           nullptr, nullptr)) {
-            conflicts << branch;
-            continue;
-        }
-        ++updated;
+        if (runGitCapture(dir, {"fetch", ".", base + ":" + branch}, nullptr,
+                          nullptr))
+            ++updated;
+        else
+            failed << branch;
     }
 
-    logSystem(QStringLiteral("Git: pulled %1 into %2 branch(es); %3 conflict(s).")
-                  .arg(base)
+    logSystem(QStringLiteral("Git: fast-forwarded %1 branch(es) to %2; %3 failed.")
                   .arg(updated)
-                  .arg(conflicts.size()));
+                  .arg(base)
+                  .arg(failed.size()));
     // Every branch this touched has a different range against the base now, so
     // none of their cached patches may be repainted again (adhoc #227).
     clearBranchDiffCache();
@@ -6050,18 +6012,16 @@ void MainWindow::pullBaseIntoAllBranches()
     loadBranchesPanel();
 
     QString summary =
-        QStringLiteral("Pulled %1 into %2 branch(es).").arg(base).arg(updated);
-    if (!conflicts.isEmpty())
-        summary += QStringLiteral(" %1 have conflicts (%2) — use \"Fix with "
-                                  "agent\" in the list.")
-                       .arg(conflicts.size())
-                       .arg(conflicts.join(QStringLiteral(", ")));
+        QStringLiteral("Fast-forwarded %1 inactive branch(es) to %2.")
+            .arg(updated)
+            .arg(base);
+    if (!failed.isEmpty())
+        summary += QStringLiteral(" %1 failed (%2).")
+                       .arg(failed.size())
+                       .arg(failed.join(QStringLiteral(", ")));
     if (!skipped.isEmpty())
-        summary += QStringLiteral(" Skipped the checked-out branch %1.")
+        summary += QStringLiteral(" Left active or divergent branches unchanged (%1).")
                        .arg(skipped.join(QStringLiteral(", ")));
-    // Conflicts are an expected outcome here — branches that diverged from the
-    // base need an agent to reconcile them — so report the summary as an ordinary
-    // notice rather than a persistent red error toast.
     setRepoDetailNotice(summary);
 }
 
@@ -6269,6 +6229,16 @@ void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
             renderBranchScopeDiff();
         if (m_branchDiffView)
             m_branchDiffView->verticalScrollBar()->setValue(scroll);
+        return;
+    }
+    // "Retry" on the failure pane (adhoc #1384): re-run the read from scratch.
+    // The cached patch is invalid after a failure, so this is the only way back
+    // to a diff short of re-clicking the branch.
+    if (url.scheme() == QLatin1String("retry")) {
+        setDiffHtml(m_branchDiffView,
+                    QStringLiteral("<p style='color:#8b949e'>Retrying %1…</p>")
+                        .arg(m_branchDiffBranch.toHtmlEscaped()));
+        renderBranchScopeDiff();
         return;
     }
     if (url.scheme() != QLatin1String("viewed"))

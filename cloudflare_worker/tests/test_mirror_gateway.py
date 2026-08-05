@@ -102,6 +102,23 @@ def make_bare_repository(tmp_path):
     return bare, commit
 
 
+def test_routing_generation_ignores_auxiliary_heads_but_tracks_default_and_tags(
+    tmp_path,
+):
+    bare, main_commit = make_bare_repository(tmp_path)
+    routing_before = gateway.routing_refs_sha256(bare)
+    full_before = gateway.refs_sha256(bare)
+
+    run([
+        "git", "update-ref", "refs/heads/agent/in-flight", main_commit,
+    ], bare)
+    assert gateway.refs_sha256(bare) != full_before
+    assert gateway.routing_refs_sha256(bare) == routing_before
+
+    run(["git", "tag", "v1-routing-test", main_commit], bare)
+    assert gateway.routing_refs_sha256(bare) != routing_before
+
+
 def test_runtime_cleanup_removes_only_gateway_materializations(tmp_path):
     runtime = tmp_path / "runtime"
     runtime.mkdir(mode=0o700)
@@ -167,8 +184,6 @@ def write_config(
     manifest_path.write_text(
         json.dumps(signed_manifest()), encoding="utf-8"
     )
-    ciphertext = tmp_path / "project.tar.age"
-    ciphertext.write_bytes(b"test-only-encrypted-public-repository")
     if repositories is None:
         repositories = [
             {
@@ -176,14 +191,7 @@ def write_config(
                 "name": "project",
                 "visibility": "public",
                 "enabled": True,
-                "encryptedArchive": {
-                    "scheme": "age-encrypted-tar-v1",
-                    "ciphertextPath": str(ciphertext),
-                    "ciphertextSha256": hashlib.sha256(
-                        ciphertext.read_bytes()).hexdigest(),
-                    "keyReference": "keychain:test/alice-project",
-                    "materializeCommand": ["materialize-test-archive"],
-                },
+                "gitDir": str(bare),
                 "releaseStore": str(tmp_path / "releases"),
                 "integrity": {
                     "expectedRefsSha256": gateway.refs_sha256(bare)
@@ -376,19 +384,19 @@ def test_config_requires_loopback_public_integrity_and_no_secret_fields(tmp_path
             },
         }
     ]
-    with pytest.raises(gateway.GatewayError, match="plaintext gitDir"):
-        gateway.load_config(
-            write_config(tmp_path, bare, repositories=plaintext_public)
-        )
+    loaded = gateway.load_config(
+        write_config(tmp_path, bare, repositories=plaintext_public)
+    )
+    assert loaded.repositories[0].git_dir == bare
+    assert loaded.repositories[0].encrypted_archive is None
 
     ambiguous_path = write_config(tmp_path, bare)
     ambiguous = json.loads(ambiguous_path.read_text())
-    ambiguous["repositories"][0]["encryptedArchive"]["scheme"] = (
-        "operator-envelope-v1")
+    ambiguous["repositories"][0]["encryptedArchive"] = {
+        "scheme": "age-encrypted-tar-v1"
+    }
     ambiguous_path.write_text(json.dumps(ambiguous))
-    with pytest.raises(
-        gateway.GatewayError, match="age-encrypted-tar-v1"
-    ):
+    with pytest.raises(gateway.GatewayError, match="unknown field"):
         gateway.load_config(ambiguous_path)
 
 
@@ -425,7 +433,7 @@ def test_config_allows_read_only_git_dir_only_in_hosted_import_root(
     assert config.repositories[0].encrypted_archive is None
 
 
-def test_identical_alias_archives_materialize_once_with_distinct_configs(
+def test_identical_alias_plaintext_mirrors_share_git_dir_with_distinct_configs(
     tmp_path,
 ):
     bare, _commit = make_bare_repository(tmp_path)
@@ -440,8 +448,8 @@ def test_identical_alias_archives_materialize_once_with_distinct_configs(
     try:
         mirror = app.repositories[("mirror-two", "project")]
         organization = app.repositories[("forkmesh", "project")]
-        assert len(materializer.archives) == 1
-        assert len(materializer.destinations) == 1
+        assert materializer.archives == []
+        assert materializer.destinations == []
         assert mirror is not organization
         assert mirror.git_dir == organization.git_dir == bare
         assert mirror.config is config.repositories[0]
@@ -451,13 +459,13 @@ def test_identical_alias_archives_materialize_once_with_distinct_configs(
         app.close()
 
 
-def test_alias_archive_metadata_difference_materializes_separately(tmp_path):
+def test_aliases_can_use_distinct_plaintext_mirrors(tmp_path):
     bare, _commit = make_bare_repository(tmp_path)
     config_path = write_alias_config(tmp_path, bare)
     value = json.loads(config_path.read_text(encoding="utf-8"))
-    value["repositories"][1]["encryptedArchive"]["keyReference"] = (
-        "keychain:test/forkmesh-project"
-    )
+    second = tmp_path / "second.git"
+    shutil.copytree(bare, second)
+    value["repositories"][1]["gitDir"] = str(second)
     config_path.write_text(json.dumps(value), encoding="utf-8")
     materializer = FakeArchiveMaterializer(bare)
     app = gateway.GatewayApplication(
@@ -467,10 +475,11 @@ def test_alias_archive_metadata_difference_materializes_separately(tmp_path):
         materializer=materializer,
     )
     try:
-        assert len(materializer.archives) == 2
-        assert materializer.archives[0] != materializer.archives[1]
-        assert len(set(materializer.destinations)) == 2
+        assert materializer.archives == []
+        assert materializer.destinations == []
         assert len(app.repositories) == 2
+        assert app.repositories[("mirror-two", "project")].git_dir == bare
+        assert app.repositories[("forkmesh", "project")].git_dir == second
         assert app.quarantined_count == 0
     finally:
         app.close()
@@ -493,7 +502,7 @@ def test_bad_alias_integrity_is_quarantined_without_poisoning_shared_archive(
         clock_ms=lambda: NOW,
     )
     try:
-        assert len(materializer.archives) == 1
+        assert materializer.archives == []
         assert ("mirror-two", "project") not in app.repositories
         assert ("forkmesh", "project") in app.repositories
         assert app.quarantined_count == 1
@@ -516,7 +525,7 @@ def test_bad_alias_integrity_is_quarantined_without_poisoning_shared_archive(
         app.close()
 
 
-def test_failed_archive_identity_is_materialized_once_and_quarantines_aliases(
+def test_public_plaintext_repositories_do_not_invoke_archive_materializer(
     tmp_path,
 ):
     bare, _commit = make_bare_repository(tmp_path)
@@ -538,9 +547,9 @@ def test_failed_archive_identity_is_materialized_once_and_quarantines_aliases(
         materializer=materializer,
     )
     try:
-        assert len(materializer.calls) == 1
-        assert app.repositories == {}
-        assert app.quarantined_count == 2
+        assert materializer.calls == []
+        assert len(app.repositories) == 2
+        assert app.quarantined_count == 0
     finally:
         app.close()
 
@@ -703,7 +712,8 @@ def test_signed_repository_health_proof_binds_forkmesh_identity_and_refs(
     repository = app.repositories[("alice", "project")]
     assert proof["available"] is True
     assert proof["integrity"] == "ok"
-    assert proof["refsSha256"] == gateway.refs_sha256(repository.git_dir)
+    assert proof["refsSha256"] == gateway.routing_refs_sha256(
+        repository.git_dir)
     assert {"git-info-refs", "git-upload-pack", "tree", "raw"} <= set(
         proof["operations"]
     )
@@ -722,6 +732,51 @@ def test_signed_repository_health_proof_binds_forkmesh_identity_and_refs(
     assert payload["challenge"]["messageType"] == (
         "forkmesh-https-health-repository-v1"
     )
+
+
+def test_health_tolerates_auxiliary_head_churn_but_not_main_changes(application):
+    app, _commit, _release_hash, _logs = application
+    repository = app.repositories[("alice", "project")]
+    trusted_routing = gateway.routing_refs_sha256(repository.git_dir)
+    main_commit = run(
+        ["git", "rev-parse", "refs/heads/main"], repository.git_dir)
+
+    run([
+        "git", "update-ref", "refs/heads/agent/in-flight", main_commit,
+    ], repository.git_dir)
+    response = app.dispatch(
+        "GET",
+        (
+            f"/health?nonce=auxiliary-proof-01&issuedAt={NOW}"
+            "&owner=alice&repo=project"
+        ),
+        {},
+        b"",
+    )
+    proof = decode_json(response)["repositoryProof"]
+    assert proof["available"] is True
+    assert proof["refsSha256"] == trusted_routing
+
+    divergent = run(
+        ["git", "rev-parse", "refs/heads/forkmesh/pulls"],
+        repository.git_dir,
+    )
+    assert divergent != main_commit
+    run([
+        "git", "update-ref", "refs/heads/main", divergent,
+    ], repository.git_dir)
+    response = app.dispatch(
+        "GET",
+        (
+            f"/health?nonce=default-change-01&issuedAt={NOW}"
+            "&owner=alice&repo=project"
+        ),
+        {},
+        b"",
+    )
+    proof = decode_json(response)["repositoryProof"]
+    assert proof["available"] is False
+    assert proof["integrity"] == "unavailable"
 
 
 def test_unknown_and_private_health_proofs_are_uniform_signed_unavailable(
@@ -1542,12 +1597,10 @@ def test_source_never_enables_push_or_default_request_logging():
     assert "def log_message" in source
     assert "BaseHTTPRequestHandler logs client IP and raw path" in source
     assert "gateway must listen on loopback" in source
-    assert "plaintextPublicRepository" not in schema["$defs"]
-    enabled = schema["$defs"]["encryptedPublicRepository"]["allOf"][1]
-    assert "encryptedArchive" in enabled["required"]
-    assert "gitDir" not in json.dumps(enabled)
-    scheme = enabled["properties"]["encryptedArchive"]["properties"]["scheme"]
-    assert scheme == {"const": "age-encrypted-tar-v1"}
+    enabled = schema["$defs"]["publicRepository"]["allOf"][1]
+    assert "gitDir" in enabled["required"]
+    assert "encryptedArchive" not in json.dumps(enabled)
+    assert "enabled public repository requires plaintext gitDir storage" in source
     assert "operator-envelope-v1" not in source
 
 

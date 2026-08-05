@@ -98,12 +98,12 @@ def test_office_exit_preserves_heading_instead_of_reversing_the_visitor():
     assert "setCameraMode(\"third-person\", \"office-exit\")" in leave
 
 
-def test_repository_circle_uses_avatar_orbit_and_external_record_boards():
+def test_repository_circle_uses_avatar_orbit_in_the_open_district():
     assert 'icon.scale.set(1.14, 1.14, 1)' in SCENE
     assert "const orbitRadius = 4.25" in SCENE
-    assert "const pullBoard = addRecordBoard(" in SCENE
-    assert 'pulls,\n      "pull",\n      -7.75,' in SCENE
-    assert 'issues,\n      "issue",\n      7.75,' in SCENE
+    assert 'content.name = "repository-district-content"' in SCENE
+    assert "function createRepositoryGeodesicDome" not in SCENE
+    assert "repository-geodesic-dome" not in SCENE
     assert '"repository-create-button"' not in SCENE
     follower_texture = _function_body(SCENE, "repositoryFollowerIconTexture")
     assert "256, 256" in follower_texture
@@ -111,31 +111,9 @@ def test_repository_circle_uses_avatar_orbit_and_external_record_boards():
     assert "fillText" not in follower_texture
 
 
-def test_repository_record_boards_show_verified_status_and_page_by_twenty_five():
-    assert "const REPOSITORY_ISSUE_CARDS_VISIBLE = 25" in SCENE
-    assert "const REPOSITORY_PULL_CARDS_VISIBLE = 25" in SCENE
-    assert "const REPOSITORY_RECORDS_MAX = 250" in SCENE
-    assert "function repositoryPullReviewStatus(pull = {})" in SCENE
-    for status in (
-        '"merged"',
-        '"conflict"',
-        '"draft"',
-        '"closed"',
-        '"ready"',
-        '"open"',
-        '"unavailable"',
-    ):
-        assert status in _function_body(SCENE, "repositoryPullReviewStatus")
-    assert "repositoryRecordCountTexture(" in SCENE
-    assert '"OPEN ISSUES"' in SCENE
-    assert '"OPEN PRS"' in SCENE
-    assert "repositoryRecordPageTexture(" in SCENE
-    assert "function changeRepositoryRecordPage(kind, direction)" in SCENE
-    assert (
-        "`repository-${kind}-page-${direction < 0 ? \"prev\" : \"next\"}`"
-        in SCENE
-    )
-    assert "repositoryRecordPageKind" in _function_body(SCENE, "handleWheel")
+def test_repository_records_stay_bounded_in_the_web_workbench_not_the_world_scene():
     assert "const selected = numbered.slice(0, 250)" in WORLD
     assert ".slice(0, 250);" in _function_body(WORLD, "repositoryPullRecords")
     assert "offset += 60" in _function_body(WORLD, "loadRepositoryBlobBatches")
+    refresh = _function_body(WORLD, "syncRepositoryScene")
+    assert "updateRepositoryRecordDesk" not in refresh

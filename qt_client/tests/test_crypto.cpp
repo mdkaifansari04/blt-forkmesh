@@ -22,6 +22,7 @@
 #include "../src/McpConnector.h"
 #include "../src/NetworkBackoff.h"
 #include "../src/NodeDiagnostics.h"
+#include "../src/NoteListEntry.h"
 #include "../src/PlatformLogFilter.h"
 #include "../src/ProjectStore.h"
 #include "../src/PullAiReview.h"
@@ -550,6 +551,62 @@ int main(int argc, char *argv[])
                   QString::fromUtf8(file.readAll()).contains(
                       QStringLiteral("ForkMesh: Codex usage is ready")),
               "usage-limit calendar event is written atomically under app data");
+    }
+
+    {
+        // Notes sidebar rows. The list used to show only storage + version,
+        // so a note that was never published and one that is live on the web
+        // read identically — the report was "my published note did not show
+        // up on the web and did not show in the list of notes locally".
+        const QJsonObject draft{{"title", "Draft"}, {"version", 3}};
+        check(NoteListEntry::lines(draft, {}, "local", false) ==
+                  QStringList{"Draft", "Storage: Local only · Visibility: On this computer · Rev 3"},
+              "a local-only note names its storage and stays off the web");
+
+        // Asked for the cloud but never got there: the row says so instead of
+        // looking exactly like a saved-but-private note.
+        check(NoteListEntry::lines(draft, {}, "both", false).at(1) ==
+                  QStringLiteral("Storage: Local + cloud · Visibility: Not published yet · Rev 3"),
+              "a note with no cloud copy is labelled as not published yet");
+
+        const QJsonObject published{
+            {"title", "Launch plan"}, {"version", 4}, {"visibility", "public"},
+            {"views", 12}, {"readers", 4},
+            {"shares", QJsonArray{
+                QJsonObject{{"name", "bob"}, {"role", "editor"}},
+                QJsonObject{{"name", "acme"}, {"role", "viewer"}}}}};
+        const QStringList row =
+            NoteListEntry::lines(published, published, "both", true);
+        check(row.at(1) == QStringLiteral(
+                  "Storage: Local + cloud · Visibility: Public · Views: 12 views from 4 readers · Rev 4"),
+              "a published note shows its status and read count");
+        check(row.at(2) ==
+                  QStringLiteral("Shared with bob (editor), acme (viewer)"),
+              "the row names every collaborator the note is shared with");
+
+        // Shared but not published, and read exactly once by one reader.
+        const QJsonObject shared{
+            {"title", "Spec"}, {"version", 1}, {"visibility", "private"},
+            {"views", 1}, {"readers", 1},
+            {"shares", QJsonArray{
+                QJsonObject{{"name", "bob"}, {"role", "viewer"}}}}};
+        check(NoteListEntry::lines(shared, shared, "cloud", true) ==
+                  QStringList{"Spec", "Storage: Cloud · Visibility: Shared · Views: 1 view · Rev 1",
+                              "Shared with bob (viewer)"},
+              "a shared private note reads as Shared, not Public");
+
+        // Signed out: the cloud copy is unreadable, but the mirrored
+        // visibility on the local record still tells the truth.
+        const QJsonObject mirrored{{"title", "Launch plan"}, {"version", 4},
+                                   {"visibility", "public"}};
+        check(NoteListEntry::lines(mirrored, {}, "both", true) ==
+                  QStringList{"Launch plan", "Storage: Local + cloud · Visibility: Public · Rev 4",
+                              "Not shared with anyone"},
+              "a published note still reads as Public without the listing");
+
+        // An unread draft is not labelled "0 views".
+        check(NoteListEntry::viewsLabel(QJsonObject{{"views", 0}}).isEmpty(),
+              "a note nobody has read carries no view count");
     }
 
     {
@@ -4767,6 +4824,10 @@ int main(int argc, char *argv[])
                             .filePath(QStringLiteral(".forkmesh/issues/open/1")))
                        .exists(),
               "closing an issue moves its folder from open/ to closed/");
+        check(repo.setPriority(n, 8999, &err),
+              "setPriority accepts the expanded lowest rank");
+        check(!repo.setPriority(n, 9000, &err),
+              "setPriority rejects ranks beyond 8999");
         check(repo.setPriority(n, 3, &err), "setPriority succeeds");
         check(repo.assignAgent(n, "codex", 42, true, "queued", &err),
               "assignAgent succeeds");
@@ -5171,6 +5232,37 @@ int main(int argc, char *argv[])
         check(webBaseOid != webHeadOid,
               "browser pull fixture resolves distinct immutable commits");
 
+        // Path lookup is on the hot read path: readPull() calls pullDir()
+        // repeatedly for every PR. Once the metadata worktree exists, asking
+        // for it must be a cached/file-only operation and must not spawn git.
+        // Put a marker executable first on PATH to make that guarantee exact
+        // rather than relying on a timing threshold.
+        {
+            QTemporaryDir fakeGitDir;
+            const QString marker = fakeGitDir.filePath(QStringLiteral("called"));
+            const QString fakeGit = fakeGitDir.filePath(QStringLiteral("git"));
+            check(writeTestFile(
+                      fakeGit,
+                      QStringLiteral("#!/bin/sh\nprintf called >> '%1'\nexit 99\n")
+                          .arg(marker)
+                          .toUtf8()),
+                  "write metadata lookup git-spawn sentinel");
+            check(QFile::setPermissions(
+                      fakeGit, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                   QFileDevice::ExeOwner),
+                  "make metadata lookup git-spawn sentinel executable");
+            const QByteArray originalPath = qgetenv("PATH");
+            qputenv("PATH", fakeGitDir.path().toUtf8());
+            const QString expectedMeta = pulls.metaWorkTree();
+            bool stable = !expectedMeta.isEmpty();
+            for (int i = 0; i < 100; ++i)
+                stable = stable && pulls.metaWorkTree() == expectedMeta;
+            qputenv("PATH", originalPath);
+            check(stable, "repeated PR metadata path lookup stays stable");
+            check(!QFileInfo::exists(marker),
+                  "repeated PR metadata path lookup starts no git subprocess");
+        }
+
         // A remote node files a review event via the inbox; it must append+commit.
         PullEvent remoteReview;
         remoteReview.type = "review";
@@ -5184,6 +5276,20 @@ int main(int argc, char *argv[])
         check(!loadedPulls.isEmpty() &&
                   loadedPulls.first().reviewSummary() == "changes_requested",
               "a later changes-requested review supersedes approval");
+        const QString closedPullDir =
+            pulls.metaWorkTree() + "/pulls/" + QString::number(pn);
+        check(pulls.setStatus(pn, "closed", &err),
+              "closing a pull request succeeds");
+        loadedPulls = pulls.loadAll();
+        bool foundClosedPull = false;
+        for (const PullRequest &candidate : std::as_const(loadedPulls))
+            if (candidate.number == pn)
+                foundClosedPull = true;
+        check(!foundClosedPull && !QFile::exists(closedPullDir),
+              "closing removes the PR metadata and change payload");
+        check(gitOutput({"log", "--format=%H", "forkmesh/pulls", "--",
+                         QStringLiteral("pulls/%1").arg(pn)}).trimmed().isEmpty(),
+              "closing purges the PR from pull-ledger history");
 
         // --- DiscussionStore round-trip ---------------------------------
         DiscussionStore discussions(tmp.path(), QString(), &identity, "tester");
@@ -5418,6 +5524,30 @@ int main(int argc, char *argv[])
                       QFile::exists(tmp.path() + "/gamma.txt") &&
                       !QFile::exists(tmp.path() + "/beta.txt"),
                   "merging applies the kept files and not the deleted one");
+            const QString mergedStoredDir =
+                pulls.metaWorkTree() + "/pulls/" + QString::number(dn);
+            check(!QFile::exists(mergedStoredDir + "/changes.patch") &&
+                      !QFile::exists(mergedStoredDir + "/commits.mbox"),
+                  "merging removes a stored PR's patch and commit payload");
+            PullRequest mergedStored;
+            for (const PullRequest &p : pulls.loadAll())
+                if (p.number == dn)
+                    mergedStored = p;
+            check(mergedStored.status == "merged" &&
+                      mergedStored.patch.isEmpty() &&
+                      mergedStored.commits.isEmpty(),
+                  "a merged stored PR exposes no diff or commit payload");
+            QProcess payloadHistory;
+            payloadHistory.start(
+                "git",
+                {"-C", pulls.metaWorkTree(), "log", "--format=%H", "--all", "--",
+                 QStringLiteral("pulls/%1/changes.patch").arg(dn),
+                 QStringLiteral("pulls/%1/commits.mbox").arg(dn)});
+            payloadHistory.waitForFinished(30000);
+            check(payloadHistory.exitStatus() == QProcess::NormalExit &&
+                      payloadHistory.exitCode() == 0 &&
+                      payloadHistory.readAllStandardOutput().trimmed().isEmpty(),
+                  "merging purges the stored payload from ledger and metadata-ref history");
         }
 
         // --- PullStore deletePull works with a dirty working tree -----------
@@ -5530,8 +5660,11 @@ int main(int argc, char *argv[])
                     merged = p;
             check(merged.status == "merged",
                   "the branch-backed PR is marked merged");
-            check(merged.patch.contains("bb1.txt"),
-                  "a merged branch-backed PR's diff stays viewable via the snapshot");
+            check(merged.patch.isEmpty() && merged.commits.isEmpty(),
+                  "a merged branch-backed PR exposes no diff or commit payload");
+            check(!QFile::exists(bdir + "/changes.patch") &&
+                      !QFile::exists(bdir + "/commits.mbox"),
+                  "a merged branch-backed PR stores metadata only");
         }
 
         // --- PullStore agent edit: multi-file changes on the PR's branch -----
@@ -7037,6 +7170,10 @@ int main(int argc, char *argv[])
         // by these tickets, so a lost or double-retired one leaves a spinner
         // running forever (or hides work that is still going).
         QStringList seen;
+        forkmesh::BackgroundActivity::setListener(nullptr);
+        const quint64 startup = forkmesh::BackgroundActivity::begin(
+            QStringLiteral("startup"), QStringLiteral("already running"),
+            forkmesh::ActionTelemetry::Execution::Worker);
         forkmesh::BackgroundActivity::setListener(
             [&seen](quint64 id, const QString &kind, const QString &detail,
                     forkmesh::ActionTelemetry::Execution execution,
@@ -7054,6 +7191,10 @@ int main(int argc, char *argv[])
                                 .arg(id)
                                 .arg(kind, detail, lane));
             });
+        check(seen == QStringList({
+                  QStringLiteral("+:%1:startup:already running:worker")
+                      .arg(startup)}),
+              "attaching a listener replays work that started before the footer");
         const quint64 first =
             forkmesh::BackgroundActivity::begin(QStringLiteral("git"),
                                                 QStringLiteral("git log"));
@@ -7063,26 +7204,30 @@ int main(int argc, char *argv[])
               "each background ticket gets its own non-zero id");
         forkmesh::BackgroundActivity::end(first);
         forkmesh::BackgroundActivity::end(second);
+        forkmesh::BackgroundActivity::end(startup);
         forkmesh::BackgroundActivity::end(0); // no-op guard for untracked work
         check(seen == QStringList({
+                  QStringLiteral("+:%1:startup:already running:worker")
+                      .arg(startup),
                   QStringLiteral("+:%1:git:git log:async").arg(first),
                   QStringLiteral("+:%1:net::async").arg(second),
                   QStringLiteral("-:%1:::async").arg(first),
-                  QStringLiteral("-:%1:::async").arg(second)}),
+                  QStringLiteral("-:%1:::async").arg(second),
+                  QStringLiteral("-:%1:::worker").arg(startup)}),
               "every begin/end pair reaches the listener exactly once, in order");
 
         {
             const forkmesh::BackgroundScope scope(QStringLiteral("scan"));
-            check(seen.size() == 5 && seen.last().startsWith(QLatin1Char('+')),
+            check(seen.size() == 7 && seen.last().startsWith(QLatin1Char('+')),
                   "a background scope opens its ticket on construction");
         }
-        check(seen.size() == 6 && seen.last().startsWith(QLatin1Char('-')),
+        check(seen.size() == 8 && seen.last().startsWith(QLatin1Char('-')),
               "a background scope retires its ticket when it unwinds");
 
         forkmesh::BackgroundActivity::setListener(nullptr);
         forkmesh::BackgroundActivity::end(
             forkmesh::BackgroundActivity::begin(QStringLiteral("git")));
-        check(seen.size() == 6,
+        check(seen.size() == 8,
               "a detached bus drops announcements instead of calling a dead "
               "listener");
     }
@@ -7679,10 +7824,12 @@ int main(int argc, char *argv[])
         // find a grandchild by command name and ignore everything outside the
         // tree it was asked about.
         using SystemStats::descendantsNamed;
-        check(descendantsNamed(0, QStringLiteral("sleep")).count == 0 &&
+        using SystemStats::descendantProcesses;
+        check(descendantProcesses(0).isEmpty() &&
+                  descendantsNamed(0, QStringLiteral("sleep")).count == 0 &&
                   descendantsNamed(QCoreApplication::applicationPid(), QString())
                           .count == 0,
-              "an invalid root PID or empty name counts nothing");
+              "an invalid root PID or empty name reports nothing");
 
         QProcess child;
         // `sh` execs the sleep, so the match is a grandchild of this process —
@@ -7701,6 +7848,19 @@ int main(int argc, char *argv[])
             }
             check(load.count >= 1 && load.residentBytes > 0,
                   "a descendant process is counted with its resident memory");
+            bool foundSleep = false;
+            for (const SystemStats::DescendantProcess &process :
+                 descendantProcesses(QCoreApplication::applicationPid())) {
+                // /bin/sh may exec sleep or fork it before waiting, so the
+                // observed child's PID is not guaranteed to be QProcess's PID.
+                if (process.pid > 0 && process.parentPid > 0 &&
+                    process.command == QLatin1String("sleep")) {
+                    foundSleep = true;
+                    break;
+                }
+            }
+            check(foundSleep,
+                  "a descendant process snapshot identifies the child PID and command");
             check(descendantsNamed(child.processId(),
                                    QStringLiteral("forkmesh-tests"))
                           .count == 0,

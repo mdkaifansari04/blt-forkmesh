@@ -18,6 +18,8 @@
 #include <QTextOption>
 #include <QUrl>
 #include <QEvent>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFrame>
 #include <QShowEvent>
 
@@ -171,6 +173,89 @@ struct AgentImageBatch {
 };
 
 QString agentMergeBase(const AgentSession &s);
+QString usageExhaustedSetting(const QString &providerKey,
+                             const QString &windowKey);
+QString usageResetSetting(const QString &providerKey,
+                         const QString &windowKey);
+
+QString briefFailureReason(const AgentSession &session)
+{
+    QString why = session.lastError.simplified();
+    why = why.left(120);
+    return why;
+}
+
+QString agentUsageWindowLabel(const QString &windowKey)
+{
+    if (windowKey == QLatin1String("5h"))
+        return QStringLiteral("5-hour");
+    if (windowKey == QLatin1String("weekly"))
+        return QStringLiteral("weekly");
+    if (windowKey == QLatin1String("fable"))
+        return QStringLiteral("Fable weekly");
+    return windowKey;
+}
+
+QString agentUsageLimitCountdownText(const AgentSession &session)
+{
+    const QString providerKey =
+        agentIsClaudeProvider(session.provider)
+            ? QStringLiteral("claude")
+            : (agentIsCodexProvider(session.provider)
+                   ? QStringLiteral("codex")
+                   : QString());
+    if (providerKey.isEmpty())
+        return QString();
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QSettings settings;
+    QString bestLabel;
+    qint64 bestRemaining = 0;
+
+    auto considerWindow = [&](const QString &windowKey) {
+        const QString exhaustedKey = usageExhaustedSetting(providerKey, windowKey);
+        if (exhaustedKey.isEmpty() || !settings.value(exhaustedKey).toBool())
+            return;
+        const QString resetKey = usageResetSetting(providerKey, windowKey);
+        const qint64 resetAt = settings.value(resetKey).toLongLong();
+        if (resetAt <= 0)
+            return;
+        const qint64 remaining = resetAt - now;
+        if (remaining <= 0)
+            return;
+        if (bestRemaining == 0 || remaining < bestRemaining) {
+            bestRemaining = remaining;
+            bestLabel = agentUsageWindowLabel(windowKey);
+        }
+    };
+
+    considerWindow(QStringLiteral("5h"));
+    considerWindow(QStringLiteral("weekly"));
+    if (providerKey == QLatin1String("claude"))
+        considerWindow(QStringLiteral("fable"));
+
+    if (bestRemaining <= 0)
+        return QString();
+    return QStringLiteral("%1 usage limit reached · resets in %2")
+        .arg(bestLabel, humanizeRemaining(bestRemaining));
+}
+
+QString agentSuccessOutcomeText(const AgentSession &session)
+{
+    QStringList parts;
+    if (session.numTurns > 0)
+        parts << QStringLiteral("%1 turns").arg(session.numTurns);
+    if (session.durationMs > 0)
+        parts << QStringLiteral("%1s").arg(session.durationMs / 1000);
+    if (session.totalTokens > 0)
+        parts << QStringLiteral("%1 tokens")
+                     .arg(formatCount(session.totalTokens));
+    if (session.costUsd > 0.0)
+        parts << agentCostText(session.costUsd);
+    if (parts.isEmpty())
+        return QStringLiteral("Done");
+    return QStringLiteral("Done · %1").arg(parts.join(QStringLiteral(" · ")));
+}
 
 int agentStatusModelIconIndex(const AgentSession &session)
 {
@@ -212,6 +297,13 @@ QString agentStatusBadgeText(const AgentSession &session)
     return QStringLiteral("Idle");
 }
 
+QIcon agentStatusPillIcon(const AgentSession &session)
+{
+    if (session.merged || session.status == AgentStatus::Success)
+        return themedOcticon("check-circle", QColor("#3fb950"), 14);
+    return agentControlIcon(agentStatusModelIconIndex(session));
+}
+
 QString agentStatusBadgeTone(const AgentSession &session)
 {
     if (session.merged || session.status == AgentStatus::Success)
@@ -232,8 +324,18 @@ QString agentStatusBadgeToolTip(const AgentSession &session)
     details << agentStatusBadgeText(session);
     if (session.merged)
         details << QStringLiteral("Merged into %1").arg(agentMergeBase(session));
-    if (session.status == AgentStatus::Failed && !session.lastError.trimmed().isEmpty())
-        details << session.lastError.trimmed();
+    if (session.status == AgentStatus::Success &&
+        (session.numTurns > 0 || session.durationMs > 0 ||
+         session.totalTokens > 0 || session.costUsd > 0.0))
+        details << QStringLiteral("Brief stats: %1")
+                       .arg(agentSuccessOutcomeText(session).mid(
+                           QStringLiteral("Done · ").size()));
+    else if (session.status == AgentStatus::Failed &&
+             !session.lastError.trimmed().isEmpty())
+        details << QStringLiteral("Failure reason: %1").arg(session.lastError.trimmed());
+    if (const QString usageLine = agentUsageLimitCountdownText(session);
+        !usageLine.isEmpty())
+        details << usageLine;
     details << QStringLiteral("Click to show session details.");
     return details.join(QLatin1Char('\n'));
 }
@@ -479,9 +581,9 @@ QHash<QString, QString> backgroundBranchTips(const QString &gitDir)
 QStringList localProviderCredentialValues()
 {
     QStringList values;
-    QFile credentials(
-        QDir::homePath() +
-        QStringLiteral("/.claude/.credentials.json"));
+    QFile credentials(agentAccountCredentialPath(
+        QStringLiteral("claude-code"),
+        activeAgentAccount(QStringLiteral("claude-code")).configDir));
     if (credentials.open(QIODevice::ReadOnly)) {
         const QJsonObject oauth =
             QJsonDocument::fromJson(credentials.readAll())
@@ -490,6 +592,18 @@ QStringList localProviderCredentialValues()
                 .toObject();
         values << oauth.value(QStringLiteral("accessToken")).toString()
                << oauth.value(QStringLiteral("refreshToken")).toString();
+    }
+    QFile codexAuth(agentAccountCredentialPath(
+        QStringLiteral("codex"),
+        activeAgentAccount(QStringLiteral("codex")).configDir));
+    if (codexAuth.open(QIODevice::ReadOnly)) {
+        const QJsonObject auth =
+            QJsonDocument::fromJson(codexAuth.readAll()).object();
+        const QJsonObject tokens = auth.value(QStringLiteral("tokens")).toObject();
+        values << tokens.value(QStringLiteral("access_token")).toString()
+               << tokens.value(QStringLiteral("refresh_token")).toString()
+               << tokens.value(QStringLiteral("openAiApiKey")).toString()
+               << auth.value(QStringLiteral("access_token")).toString();
     }
     const QSettings settings;
     values << settings.value(kClaudeApiKeySetting).toString()
@@ -512,14 +626,36 @@ QStringList localProviderCredentialValues()
 QJsonObject localCliAvailability(const QString &provider)
 {
     const bool codex = agentIsCodexProvider(provider);
+    const AgentAccountProfile account = activeAgentAccount(provider);
     const QString program =
         codex ? QStringLiteral("codex") : QStringLiteral("claude");
+    if (forkmesh::vm::active()) {
+        const QString unavailable = forkmesh::vm::availabilityError();
+        const bool runtimeReady = unavailable.isEmpty();
+        return {
+            {QStringLiteral("provider"),
+             codex ? QStringLiteral("codex") : QStringLiteral("claude-code")},
+            {QStringLiteral("binaryFound"), runtimeReady},
+            {QStringLiteral("loginState"),
+             runtimeReady ? QStringLiteral("unchecked")
+                          : QStringLiteral("missing")},
+            {QStringLiteral("message"),
+             runtimeReady
+                 ? QStringLiteral(
+                       "%1 installation and login are checked inside KVM when "
+                       "the agent starts.")
+                       .arg(codex ? QStringLiteral("Codex")
+                                  : QStringLiteral("Claude Code"))
+                 : unavailable},
+            {QStringLiteral("credentialSource"), QStringLiteral("KVM guest")},
+        };
+    }
     const bool binaryFound =
         !QStandardPaths::findExecutable(program).isEmpty();
     bool loggedIn = false;
     if (codex) {
-        QFile auth(
-            QDir::homePath() + QStringLiteral("/.codex/auth.json"));
+        QFile auth(agentAccountCredentialPath(
+            provider, activeAgentAccount(provider).configDir));
         if (auth.open(QIODevice::ReadOnly)) {
             const QJsonObject record =
                 QJsonDocument::fromJson(auth.readAll()).object();
@@ -529,11 +665,11 @@ QJsonObject localCliAvailability(const QString &provider)
                 !record.value(QStringLiteral("OPENAI_API_KEY")).toString().isEmpty();
         }
         loggedIn = loggedIn ||
-            !qEnvironmentVariable("OPENAI_API_KEY").trimmed().isEmpty();
+            (account.builtIn &&
+             !qEnvironmentVariable("OPENAI_API_KEY").trimmed().isEmpty());
     } else {
-        QFile credentials(
-            QDir::homePath() +
-            QStringLiteral("/.claude/.credentials.json"));
+        QFile credentials(agentAccountCredentialPath(
+            provider, activeAgentAccount(provider).configDir));
         if (credentials.open(QIODevice::ReadOnly)) {
             const QJsonObject oauth =
                 QJsonDocument::fromJson(credentials.readAll())
@@ -545,23 +681,25 @@ QJsonObject localCliAvailability(const QString &provider)
                 !oauth.value(QStringLiteral("refreshToken")).toString().isEmpty();
         }
         loggedIn = loggedIn ||
-            !qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed().isEmpty() ||
-            !qEnvironmentVariable("ANTHROPIC_AUTH_TOKEN").trimmed().isEmpty() ||
-            !qEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN").trimmed().isEmpty();
+            (account.builtIn &&
+             (!qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed().isEmpty() ||
+              !qEnvironmentVariable("ANTHROPIC_AUTH_TOKEN").trimmed().isEmpty() ||
+              !qEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN").trimmed().isEmpty()));
     }
     QString credentialSource;
     if (codex) {
         credentialSource =
-            !qEnvironmentVariable("OPENAI_API_KEY").trimmed().isEmpty()
+            account.builtIn &&
+                    !qEnvironmentVariable("OPENAI_API_KEY").trimmed().isEmpty()
                 ? QStringLiteral("OPENAI_API_KEY")
                 : loggedIn ? QStringLiteral("device login") : QString();
-    } else if (
+    } else if (account.builtIn &&
         !qEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN").trimmed().isEmpty()) {
         credentialSource = QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN");
-    } else if (
+    } else if (account.builtIn &&
         !qEnvironmentVariable("ANTHROPIC_AUTH_TOKEN").trimmed().isEmpty()) {
         credentialSource = QStringLiteral("ANTHROPIC_AUTH_TOKEN");
-    } else if (
+    } else if (account.builtIn &&
         !qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed().isEmpty()) {
         credentialSource = QStringLiteral("ANTHROPIC_API_KEY");
     } else if (loggedIn) {
@@ -747,6 +885,115 @@ QString agentStatusLabel(const AgentSession &s)
     return s.merged ? QStringLiteral("merged") : agentStatusText(s.status);
 }
 
+// The octicon the "#" cell's run-state glyph is drawn with, or an empty name for
+// a cleared/unknown state, which draws no glyph at all (the hover card still
+// names the state in words). One chain, read by both the cell and its tooltip.
+QString agentStatusCellIconName(const AgentSession &s)
+{
+    if (s.merged)
+        return QStringLiteral("git-merge");
+    // Genie runs still working (adhoc #38): a violet sparkle rather than the
+    // shared spinner/clock, so a run off the website's shared task list is
+    // recognisable in the list. animateRunningAgentIcons() spins this one too.
+    if (s.genieInFlight())
+        return QStringLiteral("sparkle");
+    if (s.status == AgentStatus::Running)
+        return QStringLiteral("sync");
+    if (s.status == AgentStatus::Success)
+        return QStringLiteral("check-circle");
+    if (s.status == AgentStatus::Stopped)
+        return QStringLiteral("stop");
+    if (s.status == AgentStatus::Waiting)
+        return QStringLiteral("hand");
+    if (s.status == AgentStatus::Failed)
+        return QStringLiteral("x");
+    // A queued session gets the amber clock (adhoc #433) — with the concurrency
+    // cap in place it can sit there for a while, so the list has to say why
+    // nothing is happening.
+    if (s.status == AgentStatus::Queued)
+        return QStringLiteral("history");
+    return QString();
+}
+
+// Which agent actually ran a session, as one small glyph for the "#" cell's
+// leading edge (adhoc #1443): the list said what a run did and how it went, but
+// never who did it, and the four providers behave differently enough that it is
+// the first thing asked of a row. The shape says how it ran — a terminal for the
+// CLI providers that drive a real checkout, a cloud for the raw API scripts —
+// and the tint says whose model answered: Anthropic's clay for the Claude
+// family, OpenAI's green for Codex/OpenAI. A session with no recorded (or an
+// unrecognised) provider gets no glyph rather than a wrong one.
+struct AgentProviderGlyph {
+    QString icon; // empty: nothing to draw and nothing to say
+    QColor tint;
+    QString text; // the hover card's line for it
+};
+
+AgentProviderGlyph agentProviderGlyph(const QString &provider)
+{
+    const QColor claude("#d97757");
+    const QColor openai("#10a37f");
+    if (provider == QLatin1String("claude-code"))
+        return {QStringLiteral("terminal"), claude,
+                QStringLiteral("Claude Code — run by the `claude` CLI")};
+    if (agentIsCodexProvider(provider))
+        return {QStringLiteral("terminal"), openai,
+                QStringLiteral("Codex — run by the `codex` CLI")};
+    if (agentIsClaudeProvider(provider))
+        return {QStringLiteral("cloud"), claude,
+                QStringLiteral("Claude API — run against Anthropic's API")};
+    if (agentUsesOpenAiKey(provider))
+        return {QStringLiteral("cloud"), openai,
+                QStringLiteral("OpenAI API — run against OpenAI's API")};
+    return {QString(), QColor(), QString()};
+}
+
+// Sizes of the two glyphs at the head of every "#" cell. The provider rides a
+// touch smaller than the status: it says who, which is context for the state,
+// not the state itself.
+constexpr int kAgentStatusGlyphPx = 14;
+constexpr int kAgentProviderGlyphPx = 12;
+constexpr int kAgentProviderGapPx = 3;
+constexpr int kAgentLeadGlyphsPx =
+    kAgentProviderGlyphPx + kAgentProviderGapPx + kAgentStatusGlyphPx;
+
+// The "#" cell's leading decoration: the provider glyph, then the run-state
+// glyph. A table item carries exactly one icon, so the pair is composed into a
+// single pixmap here rather than spending a column on the provider — the
+// provider sits left of the status, where the eye starts the row. Sessions
+// without a provider glyph keep the bare status pixmap, so their status stays
+// on the same vertical line as everyone else's.
+QPixmap agentLeadGlyphPixmap(const QString &provider, const QPixmap &status)
+{
+    const AgentProviderGlyph badge = agentProviderGlyph(provider);
+    if (badge.icon.isEmpty())
+        return status;
+    QPixmap out = crispIconPixmap(kAgentLeadGlyphsPx, kAgentStatusGlyphPx,
+                                  iconDevicePixelRatio());
+    QPainter p(&out);
+    p.drawPixmap(0, (kAgentStatusGlyphPx - kAgentProviderGlyphPx) / 2,
+                 tintedOcticonPixmap(badge.icon, badge.tint, kAgentProviderGlyphPx));
+    if (!status.isNull())
+        p.drawPixmap(kAgentProviderGlyphPx + kAgentProviderGapPx, 0, status);
+    p.end();
+    return out;
+}
+
+// One row in the Agents list's rich hover card. QToolTip understands the same
+// small rich-text subset as QLabel, so the app's tinted octicons can give every
+// fact a stable visual anchor instead of leaving a dense wall of text. Keep the
+// text escaped here: branch names and worktree paths can contain HTML syntax.
+// Write any punctuation above ASCII (—, ·, ⬇) as the character itself:
+// QStringLiteral wraps its argument in a u"" literal, so a UTF-8 byte escape
+// like "\xC2\xB7" lands as one code point per byte and the card reads "Â·".
+QString agentHoverRow(const QString &icon, const QColor &tint, const QString &text)
+{
+    return QStringLiteral(
+               "<tr><td style='padding:1px 7px 1px 0; vertical-align:middle;'>"
+               "%1</td><td style='padding:1px 0; white-space:nowrap;'>%2</td></tr>")
+        .arg(octiconMarkup(icon, 13, tint), text.toHtmlEscaped());
+}
+
 // Fill the agent table's leading "#" cell for a session: the session id, the run
 // state as a coloured glyph, and the branch button's roles (adhoc #29 folded the
 // old Status column's glyph and chip in here, so the icons read down the list's
@@ -772,36 +1019,20 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                                 : QStringLiteral("-"));
     cell->setData(Qt::UserRole, s.id);
     cell->setData(kTableSortRole, s.id);
-    // Status glyph (issue #108): a blue spinner while running
-    // (adhoc #23/#50), a purple merge mark once it lands, a green check on success, a
-    // red stop sign when halted, an orange hand while it waits on the user, and a
-    // red X circle on failure (issue #322). The running glyph is seeded at frame 0
-    // here;
-    // animateRunningAgentIcons() spins it. A queued session gets the amber clock
-    // (adhoc #433) — with the concurrency cap in place it can sit there for a
-    // while, so the list has to say why nothing is happening. Other states carry
-    // no icon.
-    if (s.merged)
-        cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
-    // Genie runs still working (adhoc #38): a violet sparkle rather than the
-    // shared spinner/clock, so a run off the website's shared task list is
-    // recognisable in the list. animateRunningAgentIcons() spins this one too.
-    else if (s.genieInFlight())
-        cell->setIcon(themedOcticon("sparkle", QColor(Theme::kGenie), 14));
-    else if (s.status == AgentStatus::Running)
-        cell->setIcon(themedOcticon("sync", QColor(Theme::kRunning), 14));
-    else if (s.status == AgentStatus::Success)
-        cell->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
-    else if (s.status == AgentStatus::Stopped)
-        cell->setIcon(themedOcticon("stop", QColor("#f85149"), 14));
-    else if (s.status == AgentStatus::Waiting)
-        cell->setIcon(themedOcticon("hand", QColor("#e3742f"), 14));
-    else if (s.status == AgentStatus::Failed)
-        cell->setIcon(themedOcticon("x", QColor("#f85149"), 14));
-    else if (s.status == AgentStatus::Queued)
-        cell->setIcon(themedOcticon("history", QColor("#d29922"), 14));
-    else
-        cell->setIcon(QIcon());
+    // Provider glyph then status glyph (adhoc #1443 put the provider in front of
+    // the state — see agentLeadGlyphPixmap). Status (issue #108): a blue spinner
+    // while running (adhoc #23/#50), a purple merge mark once it lands, a green
+    // check on success, a red stop sign when halted, an orange hand while it waits
+    // on the user, and a red X circle on failure (issue #322). The running glyph is
+    // seeded at frame 0 here; animateRunningAgentIcons() spins it.
+    const QString statusIcon = agentStatusCellIconName(s);
+    const QPixmap statusPixmap =
+        statusIcon.isEmpty()
+            ? QPixmap()
+            : tintedOcticonPixmap(statusIcon, agentStatusIconColor(s),
+                                  kAgentStatusGlyphPx);
+    const QPixmap lead = agentLeadGlyphPixmap(s.provider, statusPixmap);
+    cell->setIcon(lead.isNull() ? QIcon() : QIcon(lead));
     // The branch drives the cell's branch button (adhoc #377); AgentBranchButton-
     // Delegate paints it and opens the branch on click, so a session without one
     // simply gets no button.
@@ -825,64 +1056,114 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // state, so the tooltip has to name it outright. The session number and the
     // full "updated" timestamp lead it now that the cell itself shows neither
     // (adhoc #84).
-    QStringList tip{QStringLiteral("Agent #%1").arg(s.id)};
+    QString tip = QStringLiteral(
+        "<table cellspacing='0' cellpadding='0' style='border-collapse:collapse;'>");
+    auto addTip = [&tip](const QString &icon, const QColor &tint,
+                         const QString &text) {
+        tip += agentHoverRow(icon, tint, text);
+    };
+    addTip(QStringLiteral("person"), QColor("#8b949e"),
+           QStringLiteral("Agent #%1").arg(s.id));
+    // Who ran it, naming the glyph the cell now leads with (adhoc #1443).
+    const AgentProviderGlyph providerGlyph = agentProviderGlyph(s.provider);
+    if (!providerGlyph.icon.isEmpty())
+        addTip(providerGlyph.icon, providerGlyph.tint, providerGlyph.text);
     if (updatedMs > 0)
-        tip << QStringLiteral("Updated %1")
+        addTip(QStringLiteral("history"), QColor("#8b949e"),
+               QStringLiteral("Updated %1")
                    .arg(QDateTime::fromMSecsSinceEpoch(updatedMs).toString(
-                       QStringLiteral("yyyy-MM-dd HH:mm:ss")));
-    tip << agentStatusLabel(s);
+                       QStringLiteral("yyyy-MM-dd HH:mm:ss"))));
+    addTip(statusIcon.isEmpty() ? QStringLiteral("circle-slash") : statusIcon,
+           agentStatusIconColor(s), agentStatusLabel(s));
     if (s.genie)
-        tip << QStringLiteral("Genie \xE2\x80\x94 working the organization's "
-                              "shared task list from the website's remote MCP");
+        addTip(QStringLiteral("sparkle"), QColor(Theme::kGenie),
+               QStringLiteral("Genie — working the organization's "
+                              "shared task list from the website's remote MCP"));
     if (!s.merged && s.status == AgentStatus::Queued)
-        tip << QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
-                              "agent slots frees up (Settings \xE2\x86\x92 Agents)")
-                   .arg(maxRunningAgents());
+        addTip(QStringLiteral("history"), QColor("#d29922"),
+               QStringLiteral("Queued — starts when one of the %1 running "
+                              "agent slots frees up (Settings → Agents)")
+                   .arg(maxRunningAgents()));
     if (s.merged)
-        tip << QStringLiteral("Worktree/PR merged into %1%2")
+        addTip(QStringLiteral("git-merge"), QColor("#a371f7"),
+               QStringLiteral("Worktree/PR merged into %1%2")
                    .arg(agentMergeBase(s),
                         s.mergedAtMs > 0
                             ? QStringLiteral(" on %1").arg(
                                   QDateTime::fromMSecsSinceEpoch(s.mergedAtMs)
                                       .toString(QStringLiteral("MMM d  hh:mm")))
-                            : QString());
+                            : QString()));
     if (!s.branchName.isEmpty()) {
-        tip << QStringLiteral("Click the branch button to review %1 in the Git view")
-                   .arg(s.branchName);
+        addTip(QStringLiteral("git-branch"), QColor("#3fb950"),
+               QStringLiteral("Click the branch button to review %1 in the Git view")
+                   .arg(s.branchName));
         if (stat.files >= 0)
-            tip << QStringLiteral("%1 file%2 changed")
+            addTip(QStringLiteral("file-diff"), QColor("#58a6ff"),
+                   QStringLiteral("%1 file%2 changed")
                        .arg(stat.files)
-                       .arg(stat.files == 1 ? QString() : QStringLiteral("s"));
+                       .arg(stat.files == 1 ? QString() : QStringLiteral("s")));
+        // The button's ring colour is a state of its own (adhoc #403), so the
+        // hover card has to name it rather than leave it to be guessed at
+        // (adhoc #1443): blue while the session's own checkout is still on disk,
+        // grey once it has been cleaned up, amber when the branch stopped merging
+        // cleanly (below).
         if (stat.worktree.isEmpty())
-            tip << QStringLiteral("No worktree checked out");
+            addTip(QStringLiteral("worktree"), QColor("#8b949e"),
+                   QStringLiteral("No worktree checked out — the branch "
+                                  "button's grey ring means this session's "
+                                  "checkout is gone"));
         else
-            tip << QStringLiteral("Worktree: %1").arg(stat.worktree);
+            addTip(QStringLiteral("worktree"), QColor("#58a6ff"),
+                   QStringLiteral("Worktree: %1 — the branch button's "
+                                  "blue ring means this checkout is still on disk")
+                       .arg(stat.worktree));
+        // …and likewise the amber pip painted on the button's corner.
         if (stat.dirty > 0)
-            tip << QStringLiteral("%1 uncommitted change%2 in the worktree")
+            addTip(QStringLiteral("diff"), QColor("#d29922"),
+                   QStringLiteral("%1 uncommitted change%2 in the worktree "
+                                  "— what the amber dot on the branch "
+                                  "button's corner counts")
                        .arg(stat.dirty)
-                       .arg(stat.dirty == 1 ? QString() : QStringLiteral("s"));
+                       .arg(stat.dirty == 1 ? QString() : QStringLiteral("s")));
         else if (stat.dirty == 0)
-            tip << QStringLiteral("Worktree is clean");
+            addTip(QStringLiteral("check-circle"), QColor("#3fb950"),
+                   QStringLiteral("Worktree is clean — no dot on the "
+                                  "branch button"));
     }
     // What the churn bar draws, in figures (adhoc #84), and what the chip's
     // orange alert glyph means (adhoc #446) — both moved in from the dropped Diff
     // column's tooltip (adhoc #92).
     if (stat.conflicted)
-        tip << QStringLiteral("Conflicts with %1 — click the orange alert on the "
-                              "branch button to have this agent merge base in and "
-                              "resolve")
-                   .arg(base.isEmpty() ? QStringLiteral("base") : base);
+        addTip(QStringLiteral("alert"), QColor("#e3742f"),
+               QStringLiteral("Conflicts with %1 — the branch button turns amber; "
+                              "click the orange alert on it to have this agent "
+                              "merge base in and resolve")
+                   .arg(base.isEmpty() ? QStringLiteral("base") : base));
+    // The down arrow beside the button (adhoc #1443): base has moved on and this
+    // branch has not taken it in yet. Painted only when there is no conflict to
+    // report, so the tooltip explains it on exactly the rows that show it.
+    else if (stat.behind > 0)
+        addTip(QStringLiteral("download"), QColor("#e3742f"),
+               QStringLiteral("The ⬇ arrow beside the branch button "
+                              "(and its amber ring): this branch is %1 commit%2 "
+                              "behind %3 and needs base merged in to catch up")
+                   .arg(stat.behind)
+                   .arg(stat.behind == 1 ? QString() : QStringLiteral("s"))
+                   .arg(base.isEmpty() ? QStringLiteral("base") : base));
     if (stat.added >= 0 && stat.removed >= 0)
-        tip << QStringLiteral("%1 line%2 added \xC2\xB7 %3 removed")
+        addTip(QStringLiteral("diff"), QColor("#8b949e"),
+               QStringLiteral("%1 line%2 added · %3 removed")
                    .arg(stat.added)
                    .arg(stat.added == 1 ? QString() : QStringLiteral("s"))
-                   .arg(stat.removed);
+                   .arg(stat.removed));
     if (stat.ahead >= 0 && stat.behind >= 0)
-        tip << QString::fromUtf8("%1 ahead \xC2\xB7 %2 behind %3")
+        addTip(QStringLiteral("git-compare"), QColor("#a371f7"),
+               QString::fromUtf8("%1 ahead · %2 behind %3")
                    .arg(stat.ahead)
                    .arg(stat.behind)
-                   .arg(base.isEmpty() ? QStringLiteral("base") : base);
-    cell->setToolTip(tip.join(QLatin1Char('\n')));
+                   .arg(base.isEmpty() ? QStringLiteral("base") : base));
+    tip += QStringLiteral("</table>");
+    cell->setToolTip(tip);
 }
 
 // Effective run duration for the header Time stat + the Speed figure. While a
@@ -995,10 +1276,11 @@ static constexpr int kAgentIssueColumn = 1;
 // Draws the tail end of every "#" cell (adhoc #92 folded the old Diff column in
 // here so the title column spans the rest of the list): a small branch button
 // for every session that has one, which opens that branch when it's clicked
-// (adhoc #377) and carries the orange conflict alert inside it (adhoc #446 —
-// clicking that glyph steers the agent into merging base and resolving), and,
-// between the chip and the Issue title, the tiny two-bar green/red picture of
-// the lines the session added and removed (adhoc #84). Subclasses the agents
+// (adhoc #377) and carries the orange conflict alert beside it (adhoc #446 —
+// clicking that glyph steers the agent into merging base and resolving), then
+// the files-changed count and, right against the Issue title, the tiny two-bar
+// green/red picture of the lines the session added and removed (adhoc #84 —
+// count and bars are neighbours since adhoc #1443). Subclasses the agents
 // list's own item delegate so the column keeps its green selected-row outline.
 class AgentBranchButtonDelegate : public SelectionBorderRowDelegate
 {
@@ -1020,7 +1302,8 @@ public:
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
-        s.rwidth() += chipWidth(opt) + 2 * kButtonMargin + kBarWidth + kButtonMargin;
+        s.rwidth() += chipWidth(opt) + countWidth(opt) + kGlyphSize +
+                      4 * kButtonMargin + 2 * kChipGap + kBarWidth;
         s.rheight() = qMax(s.height(), kBarHeight + 6);
         return s;
     }
@@ -1078,33 +1361,35 @@ public:
         // upscale the 12px pixmap to fill the chip.
         const QColor ink(dark ? (hot ? "#c9d1d9" : "#8b949e")
                               : (hot ? "#1f2328" : "#656d76"));
-        QRect glyph(r.left() + kChipPadding, r.center().y() - kGlyphSize / 2,
+        QRect glyph(r.center().x() - kGlyphSize / 2,
+                    r.center().y() - kGlyphSize / 2,
                     kGlyphSize, kGlyphSize);
         themedOcticon("git-branch", ink, kGlyphSize).paint(painter, glyph);
-        // Files the session's patch touched, in small type beside the glyph. The
-        // count field runs from the glyph to the alert's slot, which is reserved
-        // whether or not this row conflicts (adhoc #94), and the digits are
-        // right-aligned in it — so a "3" and a "15" end on the same edge instead
-        // of drifting apart down the list.
-        const QString files = filesText(index);
-        if (!files.isEmpty()) {
-            const int textLeft = glyph.right() + 1 + kChipGap;
-            const int textRight = conflictRect(option, index).left() - kChipGap;
-            painter->setPen(ink);
-            painter->setFont(chipFont(option));
-            painter->drawText(QRect(textLeft, r.top(), textRight - textLeft + 1,
-                                    r.height()),
-                              Qt::AlignVCenter | Qt::AlignRight, files);
-        }
-        // Conflict alert, inside the chip rather than a button of its own in a
-        // column of its own (adhoc #92): the orange glyph at the chip's trailing
-        // edge, which is its own click target.
+        painter->restore();
+
+        // Only the branch glyph is boxed. Counts and branch-health glyphs sit
+        // beside it directly on the row, matching the compact screenshot and
+        // avoiding the old orange rectangle around unrelated metadata.
+        // Conflict/behind health comes first, immediately after the chip: it is
+        // branch state, and it belongs with the button it is about.
         if (conflicted)
             themedOcticon("alert", accent, kGlyphSize)
                 .paint(painter, conflictRect(option, index));
         else if (behind)
             themedOcticon("download", accent, kGlyphSize)
                 .paint(painter, conflictRect(option, index));
+        // The files-changed count sits last, right against the churn bars
+        // (adhoc #1443): count and bars are one picture of the same diff, so they
+        // read together instead of with the health glyph wedged between them.
+        const QString files = filesText(index);
+        if (!files.isEmpty()) {
+            const QRect count = countRect(option, index);
+            painter->save();
+            painter->setPen(ink);
+            painter->setFont(chipFont(option));
+            painter->drawText(count, Qt::AlignCenter, files);
+            painter->restore();
+        }
         // Uncommitted work in that worktree: an amber pip on the chip's corner,
         // ringed in the list background so it stays legible over the border.
         if (branchDirty(index) > 0) {
@@ -1112,7 +1397,6 @@ public:
             painter->setBrush(QColor(dark ? "#d29922" : "#bf8700"));
             painter->drawEllipse(QPointF(r.right() - 0.5, r.top() + 1.5), 3.0, 3.0);
         }
-        painter->restore();
     }
 
     // Clicks land here before the view starts an edit, so a press+release inside
@@ -1200,32 +1484,46 @@ private:
     // count the cell can print ("99+") and the alert glyph's slot are budgeted on
     // every row, so the chips read as a single column of identical buttons
     // instead of an edge that steps in and out with each row's contents.
-    static int chipWidth(const QStyleOptionViewItem &opt)
+    static int chipWidth(const QStyleOptionViewItem &)
     {
-        return 2 * kChipPadding + kGlyphSize + kChipGap +
-               QFontMetrics(chipFont(opt)).horizontalAdvance(QStringLiteral("99+")) +
-               kChipGap + kGlyphSize;
+        return kButtonSize;
     }
 
     static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &)
     {
         const QRect cell = opt.rect;
         const int h = qMin(kButtonSize, cell.height() - 2);
-        // The bars sit outermost (right up against the title) and their slot is
+        // Right of the chip, in order: the health glyph, the files-changed count,
+        // then the bars outermost (right up against the title). Every slot is
         // held open on every row, churn or not, so the chip's trailing edge lands
         // in the same place all the way down the list.
-        const int right = cell.right() - kBarWidth - kButtonMargin;
+        const int metadata = kGlyphSize + kChipGap + countWidth(opt) + kChipGap;
+        const int right = cell.right() - kBarWidth - kButtonMargin - metadata;
         const int w = qMin(chipWidth(opt), qMax(0, cell.width() - 2 * kButtonMargin));
         return QRect(right - kButtonMargin - w + 1, cell.center().y() - h / 2 + 1, w,
                      h);
     }
 
-    // The conflict glyph's own click target: the trailing slot inside the chip.
+    static int countWidth(const QStyleOptionViewItem &opt)
+    {
+        return QFontMetrics(chipFont(opt)).horizontalAdvance(QStringLiteral("99+"));
+    }
+
+    // The conflict/behind glyph's own click target, immediately after the chip
+    // (adhoc #1443 put it here, ahead of the count, so the count can sit against
+    // the churn bars it belongs with).
     static QRect conflictRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
     {
         const QRect chip = buttonRect(opt, idx);
-        return QRect(chip.right() - kChipPadding - kGlyphSize + 1,
+        return QRect(chip.right() + kChipGap + 1,
                      chip.center().y() - kGlyphSize / 2, kGlyphSize, kGlyphSize);
+    }
+
+    static QRect countRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    {
+        const QRect chip = buttonRect(opt, idx);
+        return QRect(conflictRect(opt, idx).right() + kChipGap + 1, chip.top(),
+                     countWidth(opt), chip.height());
     }
 
     // Height of one bar for `lines`, floored at a visible stub so "1 line
@@ -1523,26 +1821,26 @@ ActivityRailButton *railActionButton(const QString &icon, const QString &caption
     return button;
 }
 
-// The queue belongs to the list it controls, rather than to a footer that
-// permanently steals vertical space from that list.  Keep it as a child of the
-// table viewport so rows continue underneath it, and re-anchor it whenever the
-// viewport moves or changes size.
+// The fleet bar belongs to the session-list pane, rather than to a footer that
+// permanently steals vertical space from the list. Keep it over that pane's
+// lower-right edge so it stays with the list when the detail pane opens, and
+// re-anchor it whenever the pane changes size.
 class AgentQueueOverlay final : public QFrame
 {
 public:
-    explicit AgentQueueOverlay(QWidget *viewport)
-        : QFrame(viewport), m_viewport(viewport)
+    explicit AgentQueueOverlay(QWidget *pane)
+        : QFrame(pane), m_pane(pane)
     {
         setObjectName(QStringLiteral("agentQueueOverlay"));
         setAttribute(Qt::WA_StyledBackground);
-        if (m_viewport)
-            m_viewport->installEventFilter(this);
+        if (m_pane)
+            m_pane->installEventFilter(this);
     }
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (watched == m_viewport &&
+        if (watched == m_pane &&
             (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
             QTimer::singleShot(0, this, [this] { reposition(); });
         }
@@ -1558,16 +1856,16 @@ protected:
 private:
     void reposition()
     {
-        if (!m_viewport || !isVisible())
+        if (!m_pane || !isVisible())
             return;
         adjustSize();
         constexpr int kMargin = 12;
-        move(qMax(kMargin, m_viewport->width() - width() - kMargin),
-             qMax(kMargin, m_viewport->height() - height() - kMargin));
+        move(qMax(kMargin, m_pane->width() - width() - kMargin),
+             qMax(kMargin, m_pane->height() - height() - kMargin));
         raise();
     }
 
-    QWidget *m_viewport = nullptr;
+    QWidget *m_pane = nullptr;
 };
 
 } // namespace
@@ -1575,8 +1873,10 @@ private:
 QWidget *MainWindow::buildAgentsTab()
 {
     auto *page = new QWidget;
+    page->setObjectName(QStringLiteral("agentsPage"));
 
     auto *listPane = new QWidget;
+    listPane->setObjectName(QStringLiteral("agentsListPane"));
     listPane->setMinimumWidth(260);
     // No heading at all any more (adhoc #224): with the repository band hidden
     // on this tab (updateRepoActivityRail) and the toolbar moved to the pane's
@@ -1655,9 +1955,12 @@ QWidget *MainWindow::buildAgentsTab()
     // The square's slot has to be asked for: a view with no iconSize of its own
     // hands the delegate QStyleOptionViewItem's 16px default, which caps
     // (QIcon::actualSize) the 20px thumbnail down to 16 and draws it softened.
-    // The "#" cell's 14px status glyphs are unaffected — actualSize only ever
-    // shrinks, so they keep their own size inside the wider slot.
-    m_agentTable->setIconSize(QSize(kAgentThumbnailPx, kAgentThumbnailPx));
+    // The box is wide enough for the "#" cell's provider+status pair too (adhoc
+    // #1443): actualSize only ever shrinks, so a narrower box would squash that
+    // pixmap to fit, and both the 20px square and the 14px-tall glyph pair keep
+    // their own size inside this one.
+    m_agentTable->setIconSize(
+        QSize(qMax(kAgentThumbnailPx, kAgentLeadGlyphsPx), kAgentThumbnailPx));
     // Hold every row tall enough for that square. The rows are a fixed height
     // (nothing puts the vertical header in ResizeToContents), so without this a
     // narrow default section would clip the thumbnail on the rows that have one
@@ -1703,6 +2006,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentDeleteMergedButton = railActionButton(
         QStringLiteral("trash"), QStringLiteral("Del merged"),
         "Delete the worktree, branch and session of every merged agent");
+    m_agentDeleteMergedButton->setObjectName("agentDeleteMergedButton");
     connect(m_agentDeleteMergedButton, &QPushButton::clicked, this,
             &MainWindow::deleteAllMergedAgentSessions);
 
@@ -1739,6 +2043,7 @@ QWidget *MainWindow::buildAgentsTab()
         QStringLiteral("circle-slash"), QStringLiteral("Stop all"),
         "Stop every running agent and cancel the queued ones. External "
         "Claude Code sessions started outside ForkMesh are left alone.");
+    m_agentStopAllButton->setObjectName("agentStopAllButton");
     connect(m_agentStopAllButton, &QPushButton::clicked, this,
             &MainWindow::stopAllRunningAgents);
 
@@ -1749,16 +2054,100 @@ QWidget *MainWindow::buildAgentsTab()
         QStringLiteral("rocket"), QStringLiteral("Start all"),
         "Resume every stopped or failed agent. Merged sessions and external "
         "Claude Code sessions started outside ForkMesh are left alone.");
+    m_agentStartAllButton->setObjectName("agentStartAllButton");
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
-    // Float the queue above the list's lower-right corner.  It makes live fleet
-    // capacity easy to read without reserving a footer row, while the visible
-    // list continues behind the compact, translucent panel.
-    auto *agentQueueOverlay = new AgentQueueOverlay(m_agentTable->viewport());
+    // Keep every fleet action in one floating bar at the bottom-right of the
+    // session-list pane. Queue capacity, bulk controls, and interactive
+    // provider terminals are all available from one place.
+    auto *agentQueueOverlay = new AgentQueueOverlay(listPane);
     auto *agentQueueLayout = new QHBoxLayout(agentQueueOverlay);
     agentQueueLayout->setContentsMargins(8, 6, 8, 6);
     agentQueueLayout->setSpacing(4);
+
+    auto openProviderTerminal = [this](const QString &program,
+                                       const QString &providerName,
+                                       const QString &dialogObjectName,
+                                       const QString &terminalObjectName) {
+        if (m_headless) {
+            logSystem(QStringLiteral("Cannot open %1 on a headless node.")
+                          .arg(providerName));
+            return;
+        }
+        const QString repoPath = repoGitDir();
+        if (repoPath.isEmpty()) {
+            flashMessage(QStringLiteral("Open a repository before starting %1.")
+                             .arg(providerName),
+                         true);
+            return;
+        }
+        if (forkmesh::vm::active()) {
+            const QString vmError = forkmesh::vm::availabilityError().isEmpty()
+                                        ? forkmesh::vm::pathError(repoPath)
+                                        : forkmesh::vm::availabilityError();
+            if (!vmError.isEmpty()) {
+                flashMessage(vmError, true);
+                return;
+            }
+        }
+
+        auto *dialog = new QDialog(this);
+        dialog->setObjectName(dialogObjectName);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle(QStringLiteral("%1 terminal").arg(providerName));
+        dialog->resize(900, 560);
+        auto *layout = new QVBoxLayout(dialog);
+        auto *notice = new QLabel(
+            QStringLiteral("<b>%1</b> is running %2 in <code>%3</code>.")
+                .arg(providerName.toHtmlEscaped(),
+                     forkmesh::vm::active()
+                         ? QStringLiteral("inside the KVM guest")
+                         : QStringLiteral("on this host"),
+                     repoPath.toHtmlEscaped()),
+            dialog);
+        notice->setWordWrap(true);
+        layout->addWidget(notice);
+        auto *terminal = new TerminalWidget(dialog);
+        terminal->setObjectName(terminalObjectName);
+        layout->addWidget(terminal, 1);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+        connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+        layout->addWidget(buttons);
+        dialog->show();
+        dialog->raise();
+        const QString command =
+            forkmesh::vm::active()
+                ? forkmesh::vm::interactiveCommand(program, repoPath)
+                : program;
+        terminal->runCommand(command, repoPath, {}, !forkmesh::vm::active());
+        terminal->setFocus();
+    };
+
+    auto *claudeTerminalButton = railActionButton(
+        QStringLiteral("terminal"), QStringLiteral("Claude"),
+        "Open Claude Code in a new terminal at this repository");
+    claudeTerminalButton->setObjectName("agentClaudeTerminalButton");
+    connect(claudeTerminalButton, &QPushButton::clicked, this,
+            [openProviderTerminal] {
+                openProviderTerminal(QStringLiteral("claude"),
+                                     QStringLiteral("Claude Code"),
+                                     QStringLiteral("agentClaudeTerminalDialog"),
+                                     QStringLiteral("agentClaudeTerminal"));
+            });
+
+    auto *codexTerminalButton = railActionButton(
+        QStringLiteral("terminal"), QStringLiteral("Codex"),
+        "Open Codex in a new terminal at this repository");
+    codexTerminalButton->setObjectName("agentCodexTerminalButton");
+    connect(codexTerminalButton, &QPushButton::clicked, this,
+            [openProviderTerminal] {
+                openProviderTerminal(QStringLiteral("codex"),
+                                     QStringLiteral("Codex"),
+                                     QStringLiteral("agentCodexTerminalDialog"),
+                                     QStringLiteral("agentCodexTerminal"));
+            });
+
     auto *queueIcon = new QPushButton(agentQueueOverlay);
     queueIcon->setObjectName("agentQueueIcon");
     queueIcon->setFixedSize(24, 28);
@@ -1787,26 +2176,19 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentQueueLimitIncreaseButton, &QPushButton::clicked, this, [this] {
         setAgentConcurrencyLimit(maxRunningAgents() + 1);
     });
+    agentQueueLayout->addWidget(m_agentStartAllButton);
+    agentQueueLayout->addWidget(m_agentStopAllButton);
+    agentQueueLayout->addWidget(m_agentDeleteMergedButton);
+    agentQueueLayout->addWidget(m_agentHideDetailButton);
+    agentQueueLayout->addWidget(claudeTerminalButton);
+    agentQueueLayout->addWidget(codexTerminalButton);
     agentQueueLayout->addWidget(queueIcon);
     agentQueueLayout->addWidget(m_agentQueueLimitDecreaseButton);
     agentQueueLayout->addWidget(m_agentQueueStatusLabel);
     agentQueueLayout->addWidget(m_agentQueueLimitIncreaseButton);
     refreshAgentQueueControls();
 
-    // The remaining bulk actions stay in a compact footer.  The queue itself
-    // lives above the rows, so no search field or queue controls consume width
-    // down here.
-    auto *agentListToolbar = new QHBoxLayout;
-    agentListToolbar->setContentsMargins(10, 2, 10, 8);
-    agentListToolbar->setSpacing(6);
-    agentListToolbar->addWidget(m_agentStartAllButton, 0);
-    agentListToolbar->addWidget(m_agentStopAllButton, 0);
-    agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
-    agentListToolbar->addStretch(1);
-    agentListToolbar->addWidget(m_agentHideDetailButton, 0, Qt::AlignVCenter);
-
     listLayout->addWidget(m_agentTable, 1);
-    listLayout->addLayout(agentListToolbar);
 
     auto *detailPane = new QWidget;
     // Keep the whole title on one line; the detail pane's actual right edge is
@@ -1871,6 +2253,17 @@ QWidget *MainWindow::buildAgentsTab()
             runner->stop();
         stopStreamSession(m_selectedAgentSessionId);
     });
+
+    // A paused session can pick up its previous thread without making the user
+    // hunt for the composer. Keep this beside its failure/success pill so the
+    // recovery path is immediately available where the outcome is shown.
+    m_agentStartButton = railActionButton(
+        QStringLiteral("play"), QStringLiteral("Continue"),
+        "Resume this session from where it left off");
+    m_agentStartButton->setObjectName("agentContinueButton");
+    m_agentStartButton->hide();
+    connect(m_agentStartButton, &QPushButton::clicked, this,
+            &MainWindow::continueSelectedAgentSession);
 
     // Delete the agent together with its worktree folder and branch in one action.
     // adhoc #51 folded the session-only "Delete" that sat beside it into this one
@@ -1940,14 +2333,20 @@ QWidget *MainWindow::buildAgentsTab()
     // "View PR" — appears once the session produced a pull request.
     m_agentViewPrButton = railActionButton(
         QStringLiteral("git-pull-request"), QStringLiteral("View PR"),
-        "Review this session's pull request in the Git view");
+        "Open this session's pull request");
+    m_agentViewPrButton->setObjectName(QStringLiteral("agentViewPrButton"));
     m_agentViewPrButton->hide();
     connect(m_agentViewPrButton, &QPushButton::clicked, this, [this] {
-        AgentSession *s = findAgentSession(m_selectedAgentSessionId);
-        if (s && s->prNumber > 0)
-            // Land on the PR's commits/files/diff in the Git view (adhoc #107);
-            // the pane's "PR #N" button goes on to the full PR page.
-            openPullDiffInGitView(s->prNumber);
+        const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+        if (!s || s->prNumber <= 0)
+            return;
+        // Agents are global while pull requests belong to the repository detail
+        // currently bound behind the page. Bind first so an agent from another
+        // repo cannot open the same-numbered PR in the wrong repository.
+        const int number = s->prNumber;
+        const int repoIndex = repoIndexFor(s->owner, s->name);
+        if (repoIndex >= 0 && bindRepoDetailToRepo(repoIndex))
+            switchToPullTab(number);
     });
 
     // "Create PR" — a run finishing no longer opens a pull request by itself
@@ -2052,12 +2451,14 @@ QWidget *MainWindow::buildAgentsTab()
     // branch in the Git view (adhoc #131 — switchToAgentBranch points the view at
     // the session's own repository first) or that worktree's row in the Worktrees
     // tab. They are plain full-size buttons (adhoc #61), with the names they open
-    // in the status popup and the tooltip. Both are green (adhoc #84): opening a
-    // branch or checkout is the safe, ordinary thing to do from a finished run,
-    // so they read as go actions beside the red Stop/Delete pair.
-    m_agentBranchButton = railActionButton(
+    // in the status popup and the tooltip. Branch is tinted green: reviewing the
+    // work is the thing you reach for from a finished run, so it reads as the go
+    // action in the row.
+    auto *branchButton = railActionButton(
         QStringLiteral("git-branch"), QStringLiteral("Branch"),
         "Open this session's branch in the Git view");
+    branchButton->setAccentTint(true);
+    m_agentBranchButton = branchButton;
     m_agentBranchButton->hide(); // shown per-session in refreshAgentDetailMeta
     connect(m_agentBranchButton, &QPushButton::clicked, this,
             [this] { switchToAgentBranch(m_selectedAgentSessionId); });
@@ -2071,7 +2472,7 @@ QWidget *MainWindow::buildAgentsTab()
             switchToWorktree(s->branchName);
     });
 
-    // Session actions: "+ issue", View PR, Start, Stop, Delete, Branch and
+    // Session actions: "+ issue", View PR, Continue, Stop, Delete, Branch and
     // Worktree.
     // Each already manages its own visibility (they appear per session), so they
     // are only laid out here. adhoc #35 moved them off the header onto the output
@@ -3274,26 +3675,40 @@ void MainWindow::applyOrgAgentJobsPayload(const RepositoryRecord &repo,
 void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                                         const QJsonObject &job)
 {
-    const QJsonObject gateAvailability =
-        localCliAvailability(QStringLiteral("claude-code"));
-    if (!gateAvailability.value(QStringLiteral("binaryFound")).toBool()) {
-        reportOrgAgentJob(
-            repo, job, QStringLiteral("rejected"), QStringLiteral("rejected"),
-            0,
-            QStringLiteral(
-                "Claude Code binary is missing; the required Haiku security "
-                "preflight cannot run."));
-        return;
-    }
-    if (gateAvailability.value(QStringLiteral("loginState")).toString() !=
-        QLatin1String("available")) {
-        reportOrgAgentJob(
-            repo, job, QStringLiteral("rejected"), QStringLiteral("rejected"),
-            0,
-            QStringLiteral(
-                "Claude Code login is missing; sign in on this mirror before "
-                "the required Haiku security preflight can run."));
-        return;
+    const RepositoryRecord writable = writableRecordFor(repo);
+    const QString workdir =
+        writable.localPath.isEmpty() ? repo.localPath : writable.localPath;
+    if (forkmesh::vm::active()) {
+        const QString vmError = forkmesh::vm::availabilityError().isEmpty()
+                                    ? forkmesh::vm::pathError(workdir)
+                                    : forkmesh::vm::availabilityError();
+        if (!vmError.isEmpty()) {
+            reportOrgAgentJob(repo, job, QStringLiteral("rejected"),
+                              QStringLiteral("rejected"), 0, vmError);
+            return;
+        }
+    } else {
+        const QJsonObject gateAvailability =
+            localCliAvailability(QStringLiteral("claude-code"));
+        if (!gateAvailability.value(QStringLiteral("binaryFound")).toBool()) {
+            reportOrgAgentJob(
+                repo, job, QStringLiteral("rejected"),
+                QStringLiteral("rejected"), 0,
+                QStringLiteral(
+                    "Claude Code binary is missing; the required Haiku security "
+                    "preflight cannot run."));
+            return;
+        }
+        if (gateAvailability.value(QStringLiteral("loginState")).toString() !=
+            QLatin1String("available")) {
+            reportOrgAgentJob(
+                repo, job, QStringLiteral("rejected"),
+                QStringLiteral("rejected"), 0,
+                QStringLiteral(
+                    "Claude Code login is missing; sign in on this mirror before "
+                    "the required Haiku security preflight can run."));
+            return;
+        }
     }
     const QString prompt = job.value(QStringLiteral("prompt")).toString();
     const QString safetyPrompt = QStringLiteral(
@@ -3306,12 +3721,32 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
         "JSON: {\"verdict\":\"ALLOW|DENY\",\"reason\":\"short reason\"}.\n"
         "<untrusted_prompt>\n%1\n</untrusted_prompt>")
         .arg(prompt.left(8000));
+    const QStringList gateArguments{
+        QStringLiteral("-lc"),
+        QStringLiteral(
+            "exec claude -p --model 'haiku' --max-turns 1 --tools ''")};
+    const forkmesh::vm::LaunchCommand gateLaunch =
+        forkmesh::vm::isolateCommand(QStringLiteral("bash"), gateArguments,
+                                     workdir, false);
+    if (!gateLaunch.error.isEmpty()) {
+        reportOrgAgentJob(repo, job, QStringLiteral("rejected"),
+                          QStringLiteral("rejected"), 0, gateLaunch.error);
+        return;
+    }
     auto *proc = new QProcess(this);
-    const RepositoryRecord writable = writableRecordFor(repo);
-    proc->setWorkingDirectory(
-        writable.localPath.isEmpty() ? repo.localPath : writable.localPath);
+    proc->setWorkingDirectory(workdir);
     QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    for (const QString &entry :
+         activeAgentAccountEnv(QStringLiteral("claude-code"))) {
+        const int equals = entry.indexOf(QLatin1Char('='));
+        if (equals > 0)
+            environment.insert(entry.left(equals), entry.mid(equals + 1));
+    }
     environment.remove(QStringLiteral("ANTHROPIC_API_KEY"));
+    environment.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
+    environment.remove(QStringLiteral("ANTHROPIC_ADMIN_KEY"));
+    environment.remove(QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN"));
+    forkmesh::vm::applyGuestEnvironmentPolicy(environment);
     proc->setProcessEnvironment(environment);
     proc->setProcessChannelMode(QProcess::SeparateChannels);
     QTimer::singleShot(45000, proc, [proc] { proc->kill(); });
@@ -3359,27 +3794,29 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
                 localAgentId,
                 job.value(QStringLiteral("prompt")).toString());
         } else if (kind == QLatin1String("start")) {
-            const QJsonObject providerAvailability =
-                localCliAvailability(
-                    job.value(QStringLiteral("provider")).toString());
-            if (!providerAvailability
-                     .value(QStringLiteral("binaryFound")).toBool()) {
-                reportOrgAgentJob(
-                    repo, job, QStringLiteral("approved"),
-                    QStringLiteral("failed"), 0,
-                    providerAvailability
-                        .value(QStringLiteral("message")).toString());
-                return;
-            }
-            if (providerAvailability
-                    .value(QStringLiteral("loginState")).toString() !=
-                QLatin1String("available")) {
-                reportOrgAgentJob(
-                    repo, job, QStringLiteral("approved"),
-                    QStringLiteral("failed"), 0,
-                    providerAvailability
-                        .value(QStringLiteral("message")).toString());
-                return;
+            if (!forkmesh::vm::active()) {
+                const QJsonObject providerAvailability =
+                    localCliAvailability(
+                        job.value(QStringLiteral("provider")).toString());
+                if (!providerAvailability
+                         .value(QStringLiteral("binaryFound")).toBool()) {
+                    reportOrgAgentJob(
+                        repo, job, QStringLiteral("approved"),
+                        QStringLiteral("failed"), 0,
+                        providerAvailability
+                            .value(QStringLiteral("message")).toString());
+                    return;
+                }
+                if (providerAvailability
+                        .value(QStringLiteral("loginState")).toString() !=
+                    QLatin1String("available")) {
+                    reportOrgAgentJob(
+                        repo, job, QStringLiteral("approved"),
+                        QStringLiteral("failed"), 0,
+                        providerAvailability
+                            .value(QStringLiteral("message")).toString());
+                    return;
+                }
             }
             int repoIndex = -1;
             for (int i = 0; i < m_repositories.size(); ++i) {
@@ -3457,13 +3894,10 @@ void MainWindow::runOrgAgentSafetyCheck(const RepositoryRecord &repo,
         reportOrgAgentJob(repo, job, QStringLiteral("approved"),
                           QStringLiteral("running"), localAgentId, reason);
     });
-    // A login shell resolves the same device-local Claude CLI/OAuth used by
+    // A login shell resolves the same runtime-local Claude CLI/OAuth used by
     // normal sessions. Empty --tools plus one turn makes this preflight
     // tool-free; any CLI/auth/JSON failure follows the DENY path above.
-    proc->start(QStringLiteral("bash"),
-                {QStringLiteral("-lc"),
-                 QStringLiteral(
-                     "exec claude -p --model 'haiku' --max-turns 1 --tools ''")});
+    proc->start(gateLaunch.program, gateLaunch.arguments);
     proc->write(safetyPrompt.toUtf8());
     proc->closeWriteChannel();
 }
@@ -4495,12 +4929,17 @@ void MainWindow::markAgentLimitWindow(const QString &provider)
         claude ? kClaudeLimitWeekStartSetting : kCodexLimitWeekStartSetting;
     QSettings settings;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const QString accountId = activeAgentAccount(provider).id;
     // A rolling window only restarts once the previous one has fully elapsed;
     // activity inside an open window keeps the same reset time.
     auto refreshAnchor = [&](const QString &key, qint64 windowMs) {
         const qint64 start = settings.value(key).toLongLong();
         if (start <= 0 || now - start >= windowMs)
             settings.setValue(key, now);
+        settings.setValue(
+            agentAccountUsageSetting(provider, accountId,
+                                     agentAccountUsageField(key)),
+            settings.value(key));
     };
     refreshAnchor(k5h, kAgentLimit5hMs);
     refreshAnchor(kWeek, kAgentLimitWeekMs);
@@ -4546,6 +4985,7 @@ void MainWindow::refreshCodexUsageRemaining()
     auto *chart = static_cast<TokenUsageMiniChart *>(m_navCodexUsage);
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QSettings settings;
+    const QString accountId = activeAgentAccount(QStringLiteral("codex")).id;
     auto update = [&](bool weekly, const QString &key, qint64 windowMs,
                       const QString &pctKey, const QString &resetKey) {
         const qint64 providerReset = settings.value(resetKey).toLongLong();
@@ -4561,6 +5001,12 @@ void MainWindow::refreshCodexUsageRemaining()
             // and let the "ready"/estimate path below take over.
             settings.remove(pctKey);
             settings.remove(resetKey);
+            settings.remove(agentAccountUsageSetting(
+                QStringLiteral("codex"), accountId,
+                agentAccountUsageField(pctKey)));
+            settings.remove(agentAccountUsageSetting(
+                QStringLiteral("codex"), accountId,
+                agentAccountUsageField(resetKey)));
         } else if (settings.contains(pctKey)) {
             // Live account utilization from the app-server. Show it whenever we
             // have it — including for a window that carried usedPercent but no
@@ -4608,9 +5054,35 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
         return;
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QSettings settings;
-    auto apply = [&](bool weekly, const QJsonObject &window,
+    const QString accountId = activeAgentAccount(QStringLiteral("codex")).id;
+    auto scoped = [&](const QString &globalKey) {
+        return agentAccountUsageSetting(QStringLiteral("codex"), accountId,
+                                        agentAccountUsageField(globalKey));
+    };
+    auto apply = [&](bool weekly, const QJsonValue &windowValue,
                      const QString &pctKey, const QString &resetKey,
                      const QString &anchorKey) {
+        // The app-server deliberately uses null for a window unavailable to the
+        // current account. Keep a previous account's percentage or reset from
+        // leaking into that empty gauge; an absent key, by contrast, is a
+        // partial update and must leave the last known window untouched.
+        if (windowValue.isNull()) {
+            settings.remove(pctKey);
+            settings.remove(resetKey);
+            settings.remove(anchorKey);
+            settings.remove(scoped(pctKey));
+            settings.remove(scoped(resetKey));
+            settings.remove(scoped(anchorKey));
+            settings.setValue(
+                usageExhaustedSetting(QStringLiteral("codex"),
+                                      weekly ? QStringLiteral("weekly")
+                                             : QStringLiteral("5h")),
+                false);
+            return;
+        }
+        if (windowValue.isUndefined())
+            return;
+        const QJsonObject window = windowValue.toObject();
         if (window.isEmpty())
             return;
         const int used = qBound(0, window.value(QStringLiteral("usedPercent")).toInt(),
@@ -4620,14 +5092,19 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
         if (resetMs > 0 && resetMs < 10'000'000'000LL)
             resetMs *= 1000; // app-server uses Unix seconds today
         settings.setValue(pctKey, used);
-        if (resetMs > 0)
+        settings.setValue(scoped(pctKey), used);
+        if (resetMs > 0) {
             settings.setValue(resetKey, resetMs);
+            settings.setValue(scoped(resetKey), resetMs);
+        }
         const qint64 durationMs = static_cast<qint64>(
                                       window.value(QStringLiteral("windowDurationMins"))
                                           .toDouble()) *
                                   60 * 1000;
-        if (resetMs > 0 && durationMs > 0)
+        if (resetMs > 0 && durationMs > 0) {
             settings.setValue(anchorKey, resetMs - durationMs);
+            settings.setValue(scoped(anchorKey), resetMs - durationMs);
+        }
         const QString windowKey = weekly ? QStringLiteral("weekly")
                                          : QStringLiteral("5h");
         const QString exhaustedKey =
@@ -4650,22 +5127,25 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
                                          : QStringLiteral("5-hour"),
                                   knownReset);
         }
-        if (m_navCodexUsage) {
-            const qint64 remaining = resetMs - now;
-            static_cast<TokenUsageMiniChart *>(m_navCodexUsage)
-                ->setRemaining(weekly, 100 - used,
-                               remaining > 0
-                                   ? QStringLiteral("resets in %1")
-                                         .arg(humanizeRemaining(remaining))
-                                   : QString());
-        }
     };
-    apply(false, rateLimits.value(QStringLiteral("primary")).toObject(),
+    apply(false, rateLimits.value(QStringLiteral("primary")),
           kCodexUsage5hPctSetting, kCodexUsage5hResetSetting,
           kCodexLimit5hStartSetting);
-    apply(true, rateLimits.value(QStringLiteral("secondary")).toObject(),
+    apply(true, rateLimits.value(QStringLiteral("secondary")),
           kCodexUsageWeekPctSetting, kCodexUsageWeekResetSetting,
           kCodexLimitWeekStartSetting);
+    // Render from the complete cached state only after both windows are
+    // updated. This preserves an existing countdown on partial updates and
+    // derives the local countdown when Codex omits resetsAt.
+    refreshCodexUsageRemaining();
+    if (m_navCodexUsage) {
+        auto *chart = static_cast<TokenUsageMiniChart *>(m_navCodexUsage);
+        if (rateLimits.value(QStringLiteral("primary")).isNull())
+            chart->setRemaining(/*weekly=*/false, -1, QString());
+        if (rateLimits.value(QStringLiteral("secondary")).isNull())
+            chart->setRemaining(/*weekly=*/true, -1, QString());
+    }
+    refreshAgentAccountUsageMenu(QStringLiteral("codex"));
     refreshAgentLimitLabel();
 }
 
@@ -4711,9 +5191,15 @@ void MainWindow::applyClaudeUsage(bool weekly, int percent)
     if (m_navTokenUsage)
         static_cast<TokenUsageMiniChart *>(m_navTokenUsage)->setUsage(weekly, pct);
     QSettings settings;
-    settings.setValue(weekly ? kClaudeUsageWeekPctSetting
-                             : kClaudeUsage5hPctSetting,
-                      pct);
+    const QString pctKey = weekly ? kClaudeUsageWeekPctSetting
+                                  : kClaudeUsage5hPctSetting;
+    settings.setValue(pctKey, pct);
+    settings.setValue(
+        agentAccountUsageSetting(
+            QStringLiteral("claude-code"),
+            activeAgentAccount(QStringLiteral("claude-code")).id,
+            agentAccountUsageField(pctKey)),
+        pct);
     // Issue #346: track "ran out" (>=99%) so a later drop can be recognised as
     // a refill rather than just another low-usage poll, and fire the opt-in
     // email once when that happens.
@@ -4761,6 +5247,12 @@ void MainWindow::applyClaudeFableUsage(int percent)
             ->setUsage(TokenUsageMiniChart::Fable, pct);
     QSettings settings;
     settings.setValue(kClaudeUsageFablePctSetting, pct);
+    settings.setValue(
+        agentAccountUsageSetting(
+            QStringLiteral("claude-code"),
+            activeAgentAccount(QStringLiteral("claude-code")).id,
+            agentAccountUsageField(kClaudeUsageFablePctSetting)),
+        pct);
     if (pct >= 99) {
         settings.setValue(kClaudeUsageFableExhaustedSetting, true);
         scheduleUsageLimitReminder(QStringLiteral("claude"),
@@ -4785,6 +5277,12 @@ void MainWindow::applyClaudeFableReset(qint64 resetMs)
 {
     QSettings settings;
     settings.setValue(kClaudeUsageFableResetSetting, resetMs);
+    settings.setValue(
+        agentAccountUsageSetting(
+            QStringLiteral("claude-code"),
+            activeAgentAccount(QStringLiteral("claude-code")).id,
+            agentAccountUsageField(kClaudeUsageFableResetSetting)),
+        resetMs);
     if (settings.value(kClaudeUsageFableExhaustedSetting, false).toBool()) {
         scheduleUsageLimitReminder(QStringLiteral("claude"),
                                    QStringLiteral("fable"),
@@ -4813,6 +5311,12 @@ void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
     const QString exhaustedKey = weekly ? kClaudeUsageWeekExhaustedSetting
                                         : kClaudeUsage5hExhaustedSetting;
     settings.setValue(resetKey, resetMs);
+    settings.setValue(
+        agentAccountUsageSetting(
+            QStringLiteral("claude-code"),
+            activeAgentAccount(QStringLiteral("claude-code")).id,
+            agentAccountUsageField(resetKey)),
+        resetMs);
     if (settings.value(exhaustedKey, false).toBool()) {
         scheduleUsageLimitReminder(
             QStringLiteral("claude"),
@@ -4828,6 +5332,107 @@ void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
     static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
         ->setReset(weekly, remaining > 0 ? humanizeRemaining(remaining)
                                          : QString());
+}
+
+void MainWindow::applyClaudeUsageResponse(const QJsonObject &root)
+{
+    auto percentage = [](const QJsonObject &window, bool *ok) {
+        QJsonValue value = window.value(QStringLiteral("utilization"));
+        if (value.isUndefined())
+            value = window.value(QStringLiteral("utilisation"));
+        if (value.isUndefined())
+            value = window.value(QStringLiteral("used_percent"));
+        bool numeric = value.isDouble();
+        double amount = value.toDouble();
+        if (!numeric && value.isString())
+            amount = value.toString().toDouble(&numeric);
+        *ok = numeric;
+        return qBound(0, qRound(amount >= 0.0 && amount <= 1.0
+                                    ? amount * 100.0
+                                    : amount),
+                      100);
+    };
+    auto resetMs = [](const QJsonObject &window) -> qint64 {
+        QJsonValue value = window.value(QStringLiteral("resets_at"));
+        if (value.isUndefined() || value.isNull())
+            value = window.value(QStringLiteral("resetsAt"));
+        if (value.isString()) {
+            const QDateTime when =
+                QDateTime::fromString(value.toString(), Qt::ISODate);
+            return when.isValid() ? when.toMSecsSinceEpoch() : 0;
+        }
+        if (!value.isDouble())
+            return 0;
+        qint64 stamp = static_cast<qint64>(value.toDouble());
+        if (stamp > 0 && stamp < 10'000'000'000LL)
+            stamp *= 1000;
+        return stamp;
+    };
+    auto apply = [&](const QString &key, TokenUsageMiniChart::Window window) {
+        const QJsonObject details = root.value(key).toObject();
+        bool valid = false;
+        const int pct = percentage(details, &valid);
+        if (!valid)
+            return false;
+        if (window == TokenUsageMiniChart::Fable) {
+            applyClaudeFableUsage(pct);
+            if (const qint64 reset = resetMs(details))
+                applyClaudeFableReset(reset);
+        } else {
+            const bool weekly = window == TokenUsageMiniChart::Weekly;
+            applyClaudeUsage(weekly, pct);
+            if (const qint64 reset = resetMs(details))
+                applyClaudeReset(weekly, reset);
+        }
+        return true;
+    };
+
+    apply(QStringLiteral("five_hour"), TokenUsageMiniChart::FiveHour);
+    apply(QStringLiteral("seven_day"), TokenUsageMiniChart::Weekly);
+
+    // Anthropic has renamed the model-specific window as the premium model
+    // changed. Prefer an explicit Fable key (including its versioned spelling),
+    // then a window whose metadata names Fable, and only then the historical
+    // premium/Opus aliases. Missing/null windows do not overwrite a real cached
+    // Fable figure with a misleading 0%.
+    const QStringList explicitFableKeys = {
+        QStringLiteral("seven_day_fable"),
+        QStringLiteral("seven_day_fable_5"),
+        QStringLiteral("seven_day_fable5")};
+    bool fableApplied = false;
+    for (const QString &key : explicitFableKeys) {
+        if (apply(key, TokenUsageMiniChart::Fable)) {
+            fableApplied = true;
+            break;
+        }
+    }
+    for (auto it = root.constBegin(); it != root.constEnd(); ++it) {
+        if (fableApplied)
+            break;
+        const QJsonObject details = it.value().toObject();
+        const QString metadata =
+            (it.key() + QLatin1Char(' ') +
+             details.value(QStringLiteral("model")).toString() + QLatin1Char(' ') +
+             details.value(QStringLiteral("model_name")).toString() + QLatin1Char(' ') +
+             details.value(QStringLiteral("label")).toString()).toLower();
+        if (metadata.contains(QStringLiteral("fable")) &&
+            apply(it.key(), TokenUsageMiniChart::Fable)) {
+            fableApplied = true;
+            break;
+        }
+    }
+    const QStringList legacyPremiumKeys = {
+        QStringLiteral("seven_day_premium"),
+        QStringLiteral("seven_day_opus")};
+    if (!fableApplied) {
+        for (const QString &key : legacyPremiumKeys) {
+            if (apply(key, TokenUsageMiniChart::Fable)) {
+                fableApplied = true;
+                break;
+            }
+        }
+    }
+    refreshAgentAccountUsageMenu(QStringLiteral("claude-code"));
 }
 
 void MainWindow::refreshClaudeCodeUsage(bool fromHover)
@@ -4856,7 +5461,10 @@ void MainWindow::refreshClaudeCodeUsage(bool fromHover)
     // HTTP 429) so a burst of prompt-send / hover refreshes doesn't hammer it.
     // Being inside the backoff means the last attempt failed, so the hover box
     // stays red rather than claiming a refresh that never left the app.
-    if (!m_pollBackoff.ready(QStringLiteral("claude-usage"),
+    const QString accountId =
+        activeAgentAccount(QStringLiteral("claude-code")).id;
+    const QString pollKey = QStringLiteral("claude-usage-%1").arg(accountId);
+    if (!m_pollBackoff.ready(pollKey,
                              QDateTime::currentMSecsSinceEpoch())) {
         giveUp();
         return;
@@ -4869,82 +5477,28 @@ void MainWindow::refreshClaudeCodeUsage(bool fromHover)
     req.setRawHeader("Accept", "application/json");
 
     QNetworkReply *reply = m_networkAccess->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, fromHover] {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, fromHover, pollKey, accountId] {
         const QByteArray body = reply->readAll();
         reply->deleteLater();
         // On any error (expired token, offline) keep the last-known figures
         // rather than blanking the gauge; the next poll retries — with a
         // growing backoff so a sustained failure stops hammering the endpoint.
         if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(QStringLiteral("claude-usage"),
+            m_pollBackoff.noteFailure(pollKey,
                                       QDateTime::currentMSecsSinceEpoch());
             if (fromHover)
                 flashUsageChart(m_navTokenUsage, false);
             return;
         }
-        m_pollBackoff.noteSuccess(QStringLiteral("claude-usage"));
+        m_pollBackoff.noteSuccess(pollKey);
+        // A fast account switch can happen while this request is in flight.
+        // Never paint or cache account A's limits under newly-active account B.
+        if (activeAgentAccount(QStringLiteral("claude-code")).id != accountId)
+            return;
         if (fromHover)
             flashUsageChart(m_navTokenUsage, true);
-        const QJsonObject root = QJsonDocument::fromJson(body).object();
-        // This endpoint has shipped utilization in two shapes — a 0..1 fraction
-        // (0.42) and an already-scaled 0..100 percentage (42.0). Multiplying a
-        // percentage by 100 pinned every gauge at its clamp, so the figures read
-        // as maxed even when barely used (adhoc #47). Treat anything <= 1 as a
-        // fraction and pass a percentage straight through so both are correct.
-        auto pctOf = [&root](const QString &key) {
-            const double u = root.value(key)
-                                 .toObject()
-                                 .value(QStringLiteral("utilization"))
-                                 .toDouble();
-            return qRound(u <= 1.0 ? u * 100.0 : u);
-        };
-        // resets_at is the wall-clock instant the window clears. Accept either an
-        // ISO 8601 string or a numeric Unix timestamp (seconds), and tolerate the
-        // camelCase spelling, so a format tweak on the endpoint won't silently
-        // drop the countdown. Returns 0 when absent/unparseable (issue #50).
-        auto resetMsOf = [&root](const QString &key) -> qint64 {
-            const QJsonObject win = root.value(key).toObject();
-            QJsonValue v = win.value(QStringLiteral("resets_at"));
-            if (v.isUndefined() || v.isNull())
-                v = win.value(QStringLiteral("resetsAt"));
-            if (v.isString()) {
-                const QDateTime when =
-                    QDateTime::fromString(v.toString(), Qt::ISODate);
-                return when.isValid() ? when.toMSecsSinceEpoch() : 0;
-            }
-            if (v.isDouble()) {
-                const double secs = v.toDouble();
-                return secs > 0 ? static_cast<qint64>(secs * 1000.0) : 0;
-            }
-            return 0;
-        };
-        // five_hour = rolling session window; seven_day = the plan-wide weekly
-        // window (matches the "weekly" rate-limit event and the CLI's /usage).
-        if (root.contains(QStringLiteral("five_hour"))) {
-            applyClaudeUsage(false, pctOf(QStringLiteral("five_hour")));
-            if (const qint64 r = resetMsOf(QStringLiteral("five_hour")))
-                applyClaudeReset(false, r);
-        }
-        if (root.contains(QStringLiteral("seven_day"))) {
-            applyClaudeUsage(true, pctOf(QStringLiteral("seven_day")));
-            if (const qint64 r = resetMsOf(QStringLiteral("seven_day")))
-                applyClaudeReset(true, r);
-        }
-        // The premium per-model weekly window — the account's Fable allowance,
-        // separate from the plan-wide one (adhoc #96). The endpoint has spelled
-        // this key differently as the top model changed, so take the first
-        // spelling that's actually present rather than pinning one.
-        const QStringList fableKeys = {QStringLiteral("seven_day_fable"),
-                                       QStringLiteral("seven_day_opus"),
-                                       QStringLiteral("seven_day_premium")};
-        for (const QString &key : fableKeys) {
-            if (!root.contains(key))
-                continue;
-            applyClaudeFableUsage(pctOf(key));
-            if (const qint64 r = resetMsOf(key))
-                applyClaudeFableReset(r);
-            break;
-        }
+        applyClaudeUsageResponse(QJsonDocument::fromJson(body).object());
     });
 }
 
@@ -5286,9 +5840,8 @@ void MainWindow::reloadAgents()
 }
 
 // Count badge on the rail's Agents entry (adhoc #194), riding the icon's corner
-// like every other rail count. It shows the number of *running* sessions rather
-// than every session ever started (adhoc #70): the rail answers "how much is
-// happening right now", and the full tally stays in the tooltip.
+// like every other rail count. It shows the total number of sessions, while the
+// tooltip also reports how many are running.
 void MainWindow::updateAgentsNavBadge()
 {
     if (!m_agentsNavButton)
@@ -5300,7 +5853,7 @@ void MainWindow::updateAgentsNavBadge()
             ++running;
     if (auto *railButton =
             dynamic_cast<ActivityRailButton *>(m_agentsNavButton))
-        railButton->setBadgeCount(running);
+        railButton->setBadgeCount(total);
     if (total > 0) {
         m_agentsNavButton->setToolTip(
             QStringLiteral("Agents \xE2\x80\x94 %1 running of %2 session%3")
@@ -5313,10 +5866,10 @@ void MainWindow::updateAgentsNavBadge()
     refreshAgentDotMatrix();
 }
 
-// The fleet matrix beside that button: one tiny square per active session,
-// tinted to the same colour as its status icon in the agents list. Completed
-// history belongs in the Agents page; keeping it out of the chrome means a
-// square always represents work that is running, queued, or waiting for input.
+// The fleet matrix beside that button: one tiny square per session, tinted to
+// the same colour as its status icon in the agents list. It intentionally keeps
+// completed, failed, stopped, cleared, and merged history in the top bar too:
+// the matrix is the complete, at-a-glance roster rather than only live work.
 // Each running session's live-output meter feeds the night-rider sweep so the
 // row shows real activity rather than a decorative animation. Cheap enough to
 // call from the scanner tick — the vector is small and the widget repaints
@@ -5329,13 +5882,6 @@ void MainWindow::refreshAgentDotMatrix()
     dots.reserve(m_agentSessions.size());
     QHash<QString, int> tally; // status label -> count, for the tooltip
     for (const AgentSession &session : std::as_const(m_agentSessions)) {
-        const bool active =
-            !session.merged &&
-            (session.status == AgentStatus::Running ||
-             session.status == AgentStatus::Queued ||
-             session.status == AgentStatus::Waiting);
-        if (!active)
-            continue;
         AgentDotMatrix::Dot dot;
         dot.sessionId = session.id;
         dot.color = agentStatusIconColor(session);
@@ -5375,14 +5921,10 @@ void MainWindow::refreshAgentDotMatrix()
     if (key == m_agentDotTooltipKey)
         return;
     m_agentDotTooltipKey = key;
-    QString tip = QStringLiteral("%1 active agent session%2 \xE2\x80\x94 %3")
+    QString tip = QStringLiteral("%1 agent session%2 \xE2\x80\x94 %3")
                       .arg(dots.size())
                       .arg(dots.size() == 1 ? QString() : QStringLiteral("s"),
                            key);
-    // The grid is bounded, so say so rather than silently dropping the tail.
-    const int shown = m_agentDotMatrix->shownCount();
-    if (shown < dots.size())
-        tip += QStringLiteral("\n(showing the first %1)").arg(shown);
     tip += QStringLiteral("\nClick a square to open that session.");
     m_agentDotMatrix->setToolTip(tip);
 }
@@ -6279,6 +6821,19 @@ QString MainWindow::testAgentStatusCellBadges(int sessionId,
     return QString();
 }
 
+QString MainWindow::testAgentStatusCellToolTip(int sessionId,
+                                               const AgentDiffStat &stat) const
+{
+    for (const AgentSession &s : m_agentSessions) {
+        if (s.id != sessionId)
+            continue;
+        QTableWidgetItem item;
+        applyAgentStatusCell(&item, s, stat, agentMergeBase(s), s.id);
+        return item.toolTip();
+    }
+    return QString();
+}
+
 bool MainWindow::testAgentSessionMerged(int sessionId) const
 {
     for (const AgentSession &s : m_agentSessions)
@@ -6815,6 +7370,30 @@ static SystemStats::DescendantLoad agentCompilerLoad(qint64 rootPid)
     return cached;
 }
 
+// A concise, safe-to-display snapshot of the processes still owned by an
+// agent. SystemStats intentionally supplies only kernel command names rather
+// than full argument strings: a command line can contain prompt text, paths or
+// credentials, while the command and PID are enough to identify a straggler.
+static QString agentSubprocessText(
+    const QList<SystemStats::DescendantProcess> &processes)
+{
+    QStringList labels;
+    constexpr int kShownProcesses = 4;
+    for (int i = 0; i < processes.size() && i < kShownProcesses; ++i) {
+        const SystemStats::DescendantProcess &process = processes.at(i);
+        labels << QStringLiteral("%1 (PID %2)")
+                      .arg(process.command.isEmpty()
+                               ? QStringLiteral("process")
+                               : process.command.toHtmlEscaped())
+                      .arg(process.pid);
+    }
+    if (processes.size() > kShownProcesses)
+        labels << QStringLiteral("+%1 more").arg(processes.size() - kShownProcesses);
+    return QStringLiteral("%1 running &middot; %2")
+        .arg(processes.size())
+        .arg(labels.join(QStringLiteral(", ")));
+}
+
 // Rebuild only the detail header's key/value meta lines for a session — the
 // identity block, the issue/PR chips, Speed/Diff/Updated (adhoc #35) and the run
 // Stats (turns/time/cost/tokens) — plus the toolbar's Branch/Worktree buttons,
@@ -7019,14 +7598,28 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     // cc1plus compilers running under this session's own process tree, so the
     // host's "high memory" list can be attributed to this agent (adhoc #57).
     // Only shown while the tree actually holds some.
-    const SystemStats::DescendantLoad compilers =
-        agentCompilerLoad(agentSessionProcessId(sessionId));
+    const qint64 agentPid = agentSessionProcessId(sessionId);
+    const SystemStats::DescendantLoad compilers = agentCompilerLoad(agentPid);
     if (compilers.count > 0) {
         headers << QStringLiteral("cc1plus");
         lines << QStringLiteral("%1 &middot; %2")
                      .arg(compilers.count)
                      .arg(SystemStats::formatBytes(compilers.residentBytes)
                               .toHtmlEscaped());
+    }
+    // A result event arrives before a long-lived CLI transport has necessarily
+    // reaped its build/test children. Show the exact remaining process snapshot
+    // where the user already checks session status, rather than claiming Done
+    // while the agent is still doing work in the background.
+    if (agentPid > 0) {
+        headers << QStringLiteral("Process");
+        lines << QStringLiteral("Agent CLI (PID %1)").arg(agentPid);
+    }
+    const QList<SystemStats::DescendantProcess> subprocesses =
+        SystemStats::descendantProcesses(agentPid);
+    if (!subprocesses.isEmpty()) {
+        headers << QStringLiteral("Subprocesses");
+        lines << agentSubprocessText(subprocesses);
     }
     QString meta = agentDetailTableHtml(headers, lines);
     if (!mergedMeta.isEmpty())
@@ -7144,16 +7737,17 @@ void MainWindow::showAgentSession(int sessionId)
     refreshAgentStatusPill(sessionId);
 
     // View PR button appears once a pull request exists for this session; the
-    // Create PR button is its counterpart until then. (The rail-style tile's
-    // caption is fixed, so the PR number rides the tooltip rather than the
-    // label.)
+    // Create PR button is its counterpart until then. Include the number in the
+    // visible action so creation has an immediate, unambiguous link target.
     if (m_agentViewPrButton) {
         m_agentViewPrButton->setVisible(session->prNumber > 0);
-        if (session->prNumber > 0)
+        if (session->prNumber > 0) {
+            m_agentViewPrButton->setText(
+                QStringLiteral("View PR #%1").arg(session->prNumber));
             m_agentViewPrButton->setToolTip(
-                QStringLiteral("Review PR #%1's commits, files and diff in the "
-                               "Git view")
+                QStringLiteral("Open pull request #%1")
                     .arg(session->prNumber));
+        }
     }
     if (m_agentCreatePrButton)
         m_agentCreatePrButton->setVisible(session->prNumber <= 0 &&
@@ -7467,6 +8061,14 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         // Claude API: bundled Python script talking to api.anthropic.com. Legacy
         // "claude" sessions resolve here too.
         config.command = claudeCommandSetting();
+        if (forkmesh::vm::active() &&
+            config.command.contains(QStringLiteral("forkmesh_claude_agent.py"))) {
+            QString stagedScript = claudeAgentScriptPath(
+                forkmesh::vm::worktreeRoot() + QStringLiteral("/runtime"));
+            stagedScript.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
+            config.command =
+                QStringLiteral("python3 '%1' {promptFile}").arg(stagedScript);
+        }
         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
         config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
         config.model = QStringLiteral("claude-sonnet-4-6");
@@ -8131,10 +8733,17 @@ void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
                                     "cannot be started."));
         return;
     }
-    // Already running (in its own runner) or queued — nothing to do. Other
-    // sessions may run in parallel, so we don't block on a global "busy".
-    if (session->status == AgentStatus::Running ||
-        session->status == AgentStatus::Queued ||
+    // Do not start a second copy of a genuinely live session.  The persisted
+    // status alone is not a transport liveness signal: after a Codex app-server
+    // window exits or disconnects, a session can still read Running even though
+    // it no longer has a process to receive a prompt.  Treat that stale state as
+    // resumable so Continue and a follow-up prompt reconnect it instead of
+    // silently leaving the message in m_pendingSteerMessage.
+    ClaudeStreamSession *claude = m_streamSessions.value(session->id);
+    CodexAppServerSession *codex = m_codexStreams.value(session->id);
+    const bool liveTransport =
+        (claude && claude->running()) || (codex && codex->running());
+    if (session->status == AgentStatus::Queued || liveTransport ||
         runnerForSession(session->id))
         return;
 
@@ -8713,21 +9322,15 @@ void MainWindow::setAgentConcurrencyLimit(int limit)
 void MainWindow::refreshAgentQueueControls()
 {
     const int limit = maxRunningAgents();
-    int queued = 0;
-    for (const AgentSession &session : std::as_const(m_agentSessions)) {
-        if (!session.merged && !isExternalSession(session.id) &&
-            session.status == AgentStatus::Queued) {
-            ++queued;
-        }
-    }
+    const int running = runningAgentCount();
     if (m_agentQueueStatusLabel) {
         m_agentQueueStatusLabel->setText(
-            QStringLiteral("Queue: %1 / %2").arg(queued).arg(limit));
+            QStringLiteral("Queue: %1 / %2").arg(running).arg(limit));
         m_agentQueueStatusLabel->setToolTip(
-            QStringLiteral("%1 agent%2 queued; up to %3 run at once. Use − / + "
+            QStringLiteral("%1 agent%2 running; up to %3 run at once. Use − / + "
                            "to adjust the concurrent-agent limit.")
-                .arg(queued)
-                .arg(queued == 1 ? QString() : QStringLiteral("s"))
+                .arg(running)
+                .arg(running == 1 ? QString() : QStringLiteral("s"))
                 .arg(limit));
     }
     if (m_agentQueueLimitDecreaseButton)
@@ -8965,11 +9568,26 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
 {
     if (!m_agentTerminal || !m_agentStore)
         return;
+    if (forkmesh::vm::active()) {
+        const QString vmError = forkmesh::vm::availabilityError().isEmpty()
+                                    ? forkmesh::vm::pathError(repoPath)
+                                    : forkmesh::vm::availabilityError();
+        if (!vmError.isEmpty()) {
+            session.status = AgentStatus::Failed;
+            session.lastError = vmError;
+            m_agentStore->saveSession(session);
+            flashMessage(vmError, true);
+            return;
+        }
+    }
 
     // Seed the agent with a prompt file pointing at the issue.
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
-        QStringLiteral("/forkmesh-agent");
+    const QString dir = forkmesh::vm::active()
+                            ? forkmesh::vm::worktreeRoot() +
+                                  QStringLiteral("/prompts")
+                            : QStandardPaths::writableLocation(
+                                  QStandardPaths::TempLocation) +
+                                  QStringLiteral("/forkmesh-agent");
     QDir().mkpath(dir);
     const QString promptFile =
         dir + QStringLiteral("/issue-%1.md").arg(session.issueNumber);
@@ -9019,14 +9637,17 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
         << QStringLiteral("ANTHROPIC_AUTH_TOKEN")
         << QStringLiteral("ANTHROPIC_ADMIN_KEY")
         << QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN");
+    env << activeAgentAccountEnv(QStringLiteral("claude-code"));
 
     // Make ForkMesh act as the IDE this CLI connects to (issue #191): start the
     // localhost bridge for this checkout and inject the discovery env vars so
     // `claude` auto-connects (in-app diffs, selection, open-file context). The
     // user can also trigger it from the CLI with /ide.
-    if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
-        if (bridge->start(repoPath))
-            env << bridge->env();
+    if (!forkmesh::vm::active()) {
+        if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
+            if (bridge->start(repoPath))
+                env << bridge->env();
+        }
     }
 
     session.status = AgentStatus::Running;
@@ -9044,7 +9665,14 @@ void MainWindow::startClaudeCodeTerminal(AgentSession &session, const Issue &iss
     reloadAgents();
     if (m_agentOutputStack)
         m_agentOutputStack->setCurrentWidget(m_agentTerminal);
-    m_agentTerminal->runCommand(cmd, repoPath, env);
+    const QString runtimeCommand =
+        forkmesh::vm::active()
+            ? forkmesh::vm::interactiveCommand(
+                  QStringLiteral("bash"), repoPath,
+                  {QStringLiteral("-lc"), cmd})
+            : cmd;
+    m_agentTerminal->runCommand(runtimeCommand, repoPath, env,
+                                !forkmesh::vm::active());
 }
 
 // Run Claude Code in stream-json mode and render its events as a native,
@@ -9170,7 +9798,15 @@ void MainWindow::runClaudeAutoTriageRung(int sessionId, int rung, bool errorsOnl
     auto *proc = new QProcess(live);
     proc->setWorkingDirectory(workdir);
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QStringList accountEnv =
+        activeAgentAccountEnv(QStringLiteral("claude-code"));
+    for (const QString &entry : accountEnv) {
+        const int equals = entry.indexOf(QLatin1Char('='));
+        if (equals > 0)
+            env.insert(entry.left(equals), entry.mid(equals + 1));
+    }
     env.remove(QStringLiteral("ANTHROPIC_API_KEY")); // same auth as the agent run
+    forkmesh::vm::applyGuestEnvironmentPolicy(env);
     proc->setProcessEnvironment(env);
     // Don't let a hung triage stall the agent launch forever.
     QTimer::singleShot(45000, proc, [proc] { proc->kill(); });
@@ -9258,10 +9894,18 @@ void MainWindow::runClaudeAutoTriageRung(int sessionId, int rung, bool errorsOnl
     // often lacks ~/.local/bin. The triage prompt goes in on stdin, so nothing
     // user-controlled needs shell quoting; the ladder id is a fixed [a-z0-9-]
     // string, single-quoted defensively all the same.
-    proc->start(QStringLiteral("bash"),
-                {QStringLiteral("-lc"),
-                 QStringLiteral("exec claude -p --model '%1' --max-turns 1")
-                     .arg(r.id)});
+    const QStringList triageArguments{
+        QStringLiteral("-lc"),
+        QStringLiteral("exec claude -p --model '%1' --max-turns 1").arg(r.id)};
+    const forkmesh::vm::LaunchCommand triageLaunch =
+        forkmesh::vm::isolateCommand(QStringLiteral("bash"), triageArguments,
+                                     workdir, false);
+    if (!triageLaunch.error.isEmpty()) {
+        proc->start(QStringLiteral("sh"),
+                    {QStringLiteral("-c"), QStringLiteral("exit 125")});
+    } else {
+        proc->start(triageLaunch.program, triageLaunch.arguments);
+    }
     proc->write(triage.toUtf8());
     proc->closeWriteChannel();
 }
@@ -9725,11 +10369,17 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                  QStringLiteral("CODEX_API_KEY"),
                                  QStringLiteral("OPENAI_ACCESS_TOKEN"),
                                  QStringLiteral("OPENAI_ADMIN_KEY")};
+            codexEnv << activeAgentAccountEnv(QStringLiteral("codex"));
             // Jail (adhoc #236): private scratch env + memory cap for this run.
             int jailMb = 0;
             if (QSettings().value(kAgentJailSetting, false).toBool()) {
                 jailMb = agentJailMemoryMb();
-                codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
+                const QString jailDir =
+                    forkmesh::vm::active()
+                        ? forkmesh::vm::worktreeRoot() +
+                              QStringLiteral("/jails/s%1").arg(sid)
+                        : AgentJail::sessionJailDir(sid);
+                codexEnv << AgentJail::envEntries(jailDir);
             }
             live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
                         effort, jailMb, codexResumeFallbackPrompt);
@@ -9744,9 +10394,12 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             << QStringLiteral("ANTHROPIC_AUTH_TOKEN")
             << QStringLiteral("ANTHROPIC_ADMIN_KEY")
             << QStringLiteral("CLAUDE_CODE_OAUTH_TOKEN");
-        if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
-            if (bridge->start(workdir))
-                env << bridge->env();
+        env << activeAgentAccountEnv(QStringLiteral("claude-code"));
+        if (!forkmesh::vm::active()) {
+            if (ClaudeIdeBridge *bridge = ensureIdeBridge()) {
+                if (bridge->start(workdir))
+                    env << bridge->env();
+            }
         }
         if (AgentSession *as = findAgentSession(sid))
             m_agentStore->appendLog(
@@ -9780,7 +10433,12 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             int jailMb = 0;
             if (QSettings().value(kAgentJailSetting, false).toBool()) {
                 jailMb = agentJailMemoryMb();
-                launchEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
+                const QString jailDir =
+                    forkmesh::vm::active()
+                        ? forkmesh::vm::worktreeRoot() +
+                              QStringLiteral("/jails/s%1").arg(sid)
+                        : AgentJail::sessionJailDir(sid);
+                launchEnv << AgentJail::envEntries(jailDir);
             }
             // Identity goes to the log only; the prompt carries nothing beyond
             // the task (adhoc #2 follow-up).
@@ -9833,9 +10491,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             "from — does the repository have a commit yet?"));
         return;
     }
-    const QString wtRoot =
-        QStandardPaths::writableLocation(QStandardPaths::TempLocation)
-        + QStringLiteral("/forkmesh-worktrees");
+    if (forkmesh::vm::active() && !forkmesh::vm::pathIsShared(repoPath)) {
+        failLaunch(forkmesh::vm::pathError(repoPath));
+        return;
+    }
+    const QString wtRoot = forkmesh::vm::active()
+                               ? forkmesh::vm::worktreeRoot()
+                               : QStandardPaths::writableLocation(
+                                     QStandardPaths::TempLocation) +
+                                     QStringLiteral("/forkmesh-worktrees");
     QDir().mkpath(wtRoot);
     const QString wtPath =
         wtRoot + QStringLiteral("/issue-%1-s%2").arg(issueNumber).arg(sid);
@@ -10808,6 +11472,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
     // in the agents list, not just the open transcript (issue #296).
     if (type == QLatin1String("result")) {
         if (AgentSession *as = findAgentSession(sessionId)) {
+            bool awaitSubprocesses = false;
             const int turns = ev.value(QStringLiteral("num_turns")).toInt();
             const qint64 dur = static_cast<qint64>(
                 ev.value(QStringLiteral("duration_ms")).toDouble());
@@ -10825,6 +11490,7 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
             // handler only promotes Running/Waiting to Success, so this sticks.
             const bool userStopped = as->status == AgentStatus::Stopped;
             if (!userStopped && ClaudeTranscriptView::resultIsError(ev)) {
+                m_agentCompletionChecks.remove(sessionId);
                 as->status = AgentStatus::Failed;
                 as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 // Same wording the transcript's "✗ Failed" row shows, so the
@@ -10832,21 +11498,25 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
                 // a bare status or a raw "error_max_turns" token.
                 as->lastError = ClaudeTranscriptView::failureReason(ev);
             } else if (as->status == AgentStatus::Running) {
-                // A clean `result` means the turn finished successfully — the agent
-                // said its piece (e.g. "Done") and isn't blocked on the user. Mark
-                // it "Done" (Success) rather than "Waiting" (adhoc #163). The
-                // process stays alive for follow-ups; a new user turn flips it back
-                // to Running. Guarded on Running so a prior AskUserQuestion/permission
-                // "Waiting" set earlier in this turn isn't clobbered.
-                as->status = AgentStatus::Success;
-                as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
-                as->lastError.clear();
+                // A clean `result` says the CLI has finished its response, but
+                // not necessarily that the build/test children it launched have
+                // exited. Keep this turn visibly Working until the process tree
+                // drains; completeAgentSessionWhenSubprocessesExit() then makes
+                // the Success transition atomically. A new turn clears this
+                // pending check in markAgentSessionRunning().
+                m_agentCompletionChecks.insert(sessionId);
+                awaitSubprocesses = true;
+            } else if (userStopped) {
+                m_agentCompletionChecks.remove(sessionId);
             }
             if (m_agentStore && !isExternalSession(sessionId))
                 m_agentStore->saveSession(*as);
             updateAgentCostCell(sessionId);
             updateAgentRunSummaryCells(sessionId); // fill the Turns/Time columns
-            updateAgentStatusCell(sessionId);
+            if (awaitSubprocesses)
+                completeAgentSessionWhenSubprocessesExit(sessionId);
+            else
+                updateAgentStatusCell(sessionId);
         }
         // app-server remains alive between turns, unlike the one-shot runner.
         // A clean Codex turn used to capture/open the PR right here; PRs are
@@ -10958,6 +11628,9 @@ QString MainWindow::lastCodexThreadId(int sessionId) const
 // another turn means it isn't just a merged, done session — clear the flag.
 void MainWindow::markAgentSessionRunning(int sessionId)
 {
+    // A fresh turn supersedes any delayed completion poll from the previous
+    // result; that old poll must never turn this new turn into Done.
+    m_agentCompletionChecks.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status == AgentStatus::Running)
         return;
@@ -10974,10 +11647,44 @@ void MainWindow::markAgentSessionRunning(int sessionId)
     updateAgentStatusCell(sessionId);
 }
 
+void MainWindow::completeAgentSessionWhenSubprocessesExit(int sessionId)
+{
+    if (!m_agentCompletionChecks.contains(sessionId))
+        return;
+    AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->status != AgentStatus::Running) {
+        m_agentCompletionChecks.remove(sessionId);
+        return;
+    }
+
+    const QList<SystemStats::DescendantProcess> subprocesses =
+        SystemStats::descendantProcesses(agentSessionProcessId(sessionId));
+    if (!subprocesses.isEmpty()) {
+        // Keep the session visibly Working and let the detail popup expose the
+        // snapshot above. A short, single-shot poll avoids a permanent timer
+        // for idle sessions and lets a just-exited child disappear promptly.
+        if (sessionId == m_selectedAgentSessionId)
+            refreshAgentDetailMeta(sessionId);
+        QTimer::singleShot(250, this, [this, sessionId] {
+            completeAgentSessionWhenSubprocessesExit(sessionId);
+        });
+        return;
+    }
+
+    m_agentCompletionChecks.remove(sessionId);
+    session->status = AgentStatus::Success;
+    session->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+    session->lastError.clear();
+    if (m_agentStore && !isExternalSession(sessionId))
+        m_agentStore->saveSession(*session);
+    updateAgentStatusCell(sessionId);
+}
+
 // The agent's turn ended (or it needs permission) and it's now waiting on the
 // user: flag the session "Waiting" in the list and raise a top-bar notification.
 void MainWindow::notifyAgentWaiting(int sessionId, bool needsPermission)
 {
+    m_agentCompletionChecks.remove(sessionId);
     AgentSession *s = findAgentSession(sessionId);
     if (!s || s->status != AgentStatus::Running)
         return; // only meaningful for a session that was actively running
@@ -11114,7 +11821,7 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     if (!session)
         return;
     m_agentStatusPill->setProperty("outcomeTone", agentStatusBadgeTone(*session));
-    m_agentStatusPill->setIcon(agentControlIcon(agentStatusModelIconIndex(*session)));
+    m_agentStatusPill->setIcon(agentStatusPillIcon(*session));
     m_agentStatusPill->setText(agentStatusBadgeText(*session));
     m_agentStatusPill->setToolTip(agentStatusBadgeToolTip(*session));
     m_agentStatusPill->style()->unpolish(m_agentStatusPill);
@@ -11151,9 +11858,15 @@ void MainWindow::animateRunningAgentIcons()
         // A genie turns its own violet sparkle rather than the shared sync
         // arrows (adhoc #38), so its glyph survives the animation instead of
         // being overwritten frame by frame.
-        idItem->setIcon(QIcon(rotatedTintedOcticonPixmap(
-            s->genie ? "sparkle" : "sync",
-            QColor(s->genie ? Theme::kGenie : Theme::kRunning), 14, angle)));
+        // The provider glyph rides in front of the spinner (adhoc #1443), so it
+        // has to be recomposed every frame — the cell carries one icon, and this
+        // path overwrites it.
+        idItem->setIcon(QIcon(agentLeadGlyphPixmap(
+            s->provider,
+            rotatedTintedOcticonPixmap(
+                s->genie ? "sparkle" : "sync",
+                QColor(s->genie ? Theme::kGenie : Theme::kRunning),
+                kAgentStatusGlyphPx, angle))));
         // Tick the detail header's run stats (elapsed time, and the live tok/s
         // figure whose run duration grows against the wall clock — issue #245,
         // moved here from the table by adhoc #35) for the open session — meta
@@ -11686,31 +12399,95 @@ void MainWindow::renderAgentDiff(int sessionId, const AgentDiffProbe &probe)
     const QString base = sessionDiffBase(sessionId, dir);
     // Turning the patch into HTML is the expensive half of this function — the
     // stall watchdog caught renderSplitDiffHtml() alone blocking the GUI thread
-    // for ~590 ms on a large session diff. It fires on every transcript burst
-    // while an agent streams, and the patch is usually byte-identical to the one
-    // we rendered a moment ago, so key the rendered HTML *and* its file table on
-    // the patch bytes and skip the whole render when nothing changed (adhoc #93).
-    // The setHtml skip below stayed, but it only saved the layout, not the build.
+    // for 6.3 s on a large session diff. It fires on every transcript burst
+    // while an agent streams, so this takes two precautions:
+    //
+    //  1. The patch is usually byte-identical to the one rendered a moment ago,
+    //     so the rendered HTML *and* its file table are keyed on the patch bytes
+    //     and a re-render is skipped outright when nothing changed (adhoc #93).
+    //  2. On a real change the build runs on a worker thread and only the widget
+    //     updates (applyAgentDiff) happen here. renderDiffHtmlSplit touches no
+    //     GUI state; the split/unified preference is a QSettings read, so it is
+    //     resolved here and passed in.
     const QString renderKey = QString::number(sessionId) + QLatin1Char('\n') + dir +
                               QLatin1Char('\n') + base;
-    static QList<DiffFileEntry> renderedFiles; // paired with m_agentDiffRenderKey
-    QList<DiffFileEntry> files;
-    QString shown;
+    // The parsed file table that goes with m_agentDiffLastHtml, plus enough to
+    // keep at most one worker render in flight and coalesce the rest. Function-
+    // local (there is only ever one main window) because neither DiffFileEntry
+    // nor a nested AgentDiffProbe member is nameable at MainWindow scope.
+    struct RenderState {
+        QList<DiffFileEntry> files; // matches m_agentDiffLastHtml
+        bool busy = false;          // a worker render is in flight
+        bool queued = false;        // …and a newer probe arrived while it ran
+        int queuedSession = -1;
+        AgentDiffProbe queuedProbe;
+    };
+    static RenderState state;
     if (renderKey == m_agentDiffRenderKey && probe.patch == m_agentDiffRenderedPatch &&
         !m_agentDiffLastHtml.isEmpty()) {
-        files = renderedFiles;
-        shown = m_agentDiffLastHtml;
-    } else {
-        const QString html =
-            renderDiffHtml(QString::fromUtf8(probe.patch), files, dir, base, QString(),
-                           QString(), QHash<QString, QString>(), QSet<QString>());
-        shown = html.isEmpty()
-                    ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>")
-                    : html;
-        m_agentDiffRenderKey = renderKey;
-        m_agentDiffRenderedPatch = probe.patch;
-        renderedFiles = files;
+        applyAgentDiff(sessionId, probe, state.files, m_agentDiffLastHtml);
+        return;
     }
+    if (state.busy) {
+        // Keep only the newest probe: a streaming burst must not queue one worker
+        // render per turn, and every earlier patch is superseded anyway.
+        state.queued = true;
+        state.queuedSession = sessionId;
+        state.queuedProbe = probe;
+        return;
+    }
+    state.busy = true;
+    // Everything the worker touches is captured by value (see the git-pump UAF
+    // family: nothing shared with the GUI thread may be read off it).
+    const bool split = diffSplitPref();
+    const QByteArray patch = probe.patch;
+    struct AgentDiffRender {
+        QString html;
+        QList<DiffFileEntry> files;
+    };
+    runOffThread<AgentDiffRender>(
+        [split, patch, dir, base] {
+            AgentDiffRender out;
+            out.html = renderDiffHtmlSplit(split, QString::fromUtf8(patch), out.files,
+                                           dir, base, QString(), QString(),
+                                           QHash<QString, QString>(), QSet<QString>());
+            return out;
+        },
+        [this, sessionId, probe, renderKey, patch](AgentDiffRender out) {
+            RenderState &st = state;
+            st.busy = false;
+            // A render for a session the user has since clicked away from is
+            // dropped rather than stamped over the cache for the live one.
+            if (m_agentDiffView && sessionId == m_selectedAgentSessionId) {
+                const QString shown =
+                    out.html.isEmpty()
+                        ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>")
+                        : out.html;
+                m_agentDiffRenderKey = renderKey;
+                m_agentDiffRenderedPatch = patch;
+                st.files = out.files;
+                applyAgentDiff(sessionId, probe, st.files, shown);
+            }
+            if (st.queued) {
+                st.queued = false;
+                const int sid = st.queuedSession;
+                const AgentDiffProbe next = st.queuedProbe;
+                st.queuedSession = -1;
+                st.queuedProbe = AgentDiffProbe();
+                renderAgentDiff(sid, next);
+            }
+        });
+}
+
+// The GUI-thread half of renderAgentDiff: `shown` is already-built HTML and
+// `files` its parsed per-file table.
+void MainWindow::applyAgentDiff(int sessionId, const AgentDiffProbe &probe,
+                                const QList<DiffFileEntry> &files,
+                                const QString &shown)
+{
+    if (!m_agentDiffView || sessionId != m_selectedAgentSessionId)
+        return;
+    const QString dir = sessionWorkdir(sessionId);
     // Re-running setHtml when the rendered diff is byte-identical to what's
     // already on screen just re-freezes the UI for no visible change (this fires
     // on every transcript burst while an agent streams). Skip it when unchanged;
@@ -11859,6 +12636,16 @@ void MainWindow::updateAgentFilesTabState(int sessionId)
         m_agentWtDeleteButton->setEnabled(feature && onDisk);
 }
 
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testAgentPrButtonText(int sessionId)
+{
+    showAgentSession(sessionId);
+    return m_agentViewPrButton && m_agentViewPrButton->isVisible()
+               ? m_agentViewPrButton->text()
+               : QString();
+}
+#endif
+
 // Open a ForkMesh pull request from the session's changes (diff since baseRef),
 // mirroring onAgentFinished's PR path but for the live-tree transcript session.
 void MainWindow::maybeCreatePullForStreamSession(int sessionId)
@@ -11950,6 +12737,75 @@ void MainWindow::landAgentPullForSession(AgentSession session, const QString &pa
             m_agentStore->appendLog(
                 session, QStringLiteral("==> Created pull request #%1.\n").arg(pr));
             linkAgentPullToIssue(session, pr); // record it in the issue's Development section
+            // Agent-created pull requests should enter the same repository CI
+            // path as an explicit "Run checks against this PR" click. Resolve
+            // the materialized PR ref so workflows test exactly the code under
+            // review, never a later movement of the session branch.
+            QByteArray tip;
+            const QString gitDir = repo.localPath.trimmed();
+            const QString prRef =
+                QStringLiteral("refs/pr/%1/head").arg(pr);
+            const QString runnerRef =
+                QStringLiteral("refs/heads/pr/%1").arg(pr);
+            QByteArray runnerTip;
+            if (!gitDir.isEmpty() &&
+                runGitCapture(gitDir,
+                              {QStringLiteral("rev-parse"), prRef}, &tip,
+                              nullptr) &&
+                !tip.trimmed().isEmpty() &&
+                runGitCapture(gitDir,
+                              {QStringLiteral("rev-parse"), runnerRef},
+                              &runnerTip, nullptr) &&
+                runnerTip.trimmed() == tip.trimmed()) {
+                // Action runners clone the served bare mirror, not the agent's
+                // private worktree. Publish the ordinary pr/<n> branch that
+                // materializePullRef created so even an uncommitted agent patch
+                // (synthesized into a PR commit) is fetchable by the runner.
+                QString pushError;
+                const QString commit = QString::fromUtf8(tip).trimmed();
+                const QString explicitKey =
+                    repo.owner + QLatin1Char('\x1f') + repo.name +
+                    QLatin1Char('\x1f') + commit.toLower();
+                // The push hook reports this ref too. Mark it before starting
+                // git (whose wait pumps the GUI loop) so the hook cannot race
+                // ahead and queue a duplicate run.
+                m_explicitActionPushes.insert(explicitKey);
+                const bool runnerCanFetch =
+                    !repo.mirrorPath.trimmed().isEmpty() &&
+                    runGitCapture(
+                        gitDir,
+                        {QStringLiteral("push"), repo.mirrorPath,
+                         runnerRef + QLatin1Char(':') + runnerRef},
+                        nullptr, &pushError);
+                if (runnerCanFetch) {
+                    queueWorkflowsForCommit(
+                        ri, repo.owner, repo.name, commit, runnerRef);
+                    QTimer::singleShot(60000, this, [this, explicitKey] {
+                        m_explicitActionPushes.remove(explicitKey);
+                    });
+                    m_agentStore->appendLog(
+                        session,
+                        QStringLiteral("==> Queued repository checks for pull request #%1.\n")
+                            .arg(pr));
+                } else {
+                    m_explicitActionPushes.remove(explicitKey);
+                    const QString detail =
+                        pushError.trimmed().isEmpty()
+                            ? QStringLiteral("the served mirror is unavailable")
+                            : pushError.trimmed().right(240);
+                    m_agentStore->appendLog(
+                        session,
+                        QStringLiteral("!! Could not publish pull request #%1's "
+                                       "test ref to the action runner: %2\n")
+                            .arg(pr)
+                            .arg(detail));
+                }
+            } else {
+                m_agentStore->appendLog(
+                    session,
+                    QStringLiteral("!! Could not resolve pull request #%1 to run checks.\n")
+                        .arg(pr));
+            }
             if (ri == m_repoDetailIndex)
                 reloadPulls();
         } else {
@@ -12512,6 +13368,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
     processAgentQueue();
     looperOnSessionFinished(sessionId); // adhoc #92: chain to the next open issue
     maybeStartQueuedRebuild(); // adhoc #75: a rebuild may be waiting on this run
+    refreshQuickAddAgentModelSelector();
 }
 
 void MainWindow::updateAgentActionState()
@@ -12538,17 +13395,19 @@ void MainWindow::updateAgentActionState()
         externalIsLive(m_externalSurfaced.value(m_selectedAgentSessionId).uuid);
     if (m_agentStopButton)
         m_agentStopButton->setEnabled(running || externalRunning);
-    // "Start" (adhoc #20) is Stop's counterpart on the detail page: live for one
-    // of our own sessions that isn't already in flight. External (watch-only)
-    // rows belong to another process, and a queued session is already on its
-    // way — continueAgentSession() would drop both on the floor.
+    // "Continue" is Stop's counterpart on the detail page: show it for one of
+    // our own sessions that isn't already in flight. External
+    // (watch-only) rows belong to another process, and a queued session is
+    // already on its way — continueAgentSession() would drop both on the floor.
     if (m_agentStartButton) {
         const AgentSession *startable =
             selected ? findAgentSession(m_selectedAgentSessionId) : nullptr;
-        m_agentStartButton->setEnabled(
+        const bool canContinue =
             startable && !running && !externalSelected &&
             !startable->associationOnly &&
-            startable->status != AgentStatus::Queued);
+            startable->status != AgentStatus::Queued;
+        m_agentStartButton->setEnabled(canContinue);
+        m_agentStartButton->setVisible(canContinue);
     }
     // "Stop all" doesn't depend on the selection — it's live whenever any
     // ForkMesh session is running, waiting or queued anywhere (adhoc #433).

@@ -11,7 +11,7 @@
         </button>
 
         <a data-dashboard-logo class="brand flex items-center gap-2 shrink-0" href="/dashboard" aria-label="Refresh ForkMesh Dashboard">
-          <img class="brand-mark h-8 w-8 object-contain" src="/assets/forkmesh-mark.svg" alt="" aria-hidden="true" />
+          <img class="brand-mark h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
           <span
             data-app-version
             class="hidden rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground"
@@ -19,8 +19,15 @@
           ></span>
         </a>
 
-        <div class="hidden min-w-0 items-center gap-2 text-sm font-semibold text-foreground sm:flex">
-          <span data-dashboard-header-context class="min-w-0 truncate">Dashboard</span>
+        <div class="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold text-foreground">
+          <h1 class="min-w-0 truncate">
+            <span data-dashboard-header-context class="min-w-0 truncate">Dashboard</span>
+          </h1>
+          <div data-repo-header-meta class="hidden shrink-0 items-center gap-1.5">
+            <span data-repo-header-visibility class="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] font-normal text-muted-foreground"></span>
+            <span data-repo-header-terms></span>
+            <span data-repo-availability-status class="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] font-normal text-muted-foreground"></span>
+          </div>
         </div>
 
         <div data-global-search-shell class="relative ml-auto hidden h-9 w-full max-w-sm min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground focus-within:border-ring focus-within:text-foreground lg:flex">

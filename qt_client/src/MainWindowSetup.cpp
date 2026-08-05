@@ -25,9 +25,39 @@ QString MainWindow::chatHistoryKey() const
     if (m_activeServer < 0 || m_activeServer >= m_servers.size())
         return {};
     const ServerConfig &s = m_servers.at(m_activeServer);
-    const QByteArray seed = (s.url + "\n" + s.room).toUtf8();
     return QString::fromLatin1(
-        QCryptographicHash::hash(seed, QCryptographicHash::Sha256).toHex());
+        QCryptographicHash::hash(
+            (s.url + "\n" + s.room).toUtf8(), QCryptographicHash::Sha256)
+            .toHex());
+}
+
+QString MainWindow::chatHistoryPathForServerUrl(const QString &serverUrl,
+                                                const QString &room) const
+{
+    const QString url = serverUrl.trimmed();
+    if (url.isEmpty())
+        return {};
+    const QString key = QString::fromLatin1(
+        QCryptographicHash::hash((url + "\n" + room).toUtf8(),
+                                 QCryptographicHash::Sha256)
+            .toHex());
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
+           "/chat_history/" + key + ".json";
+}
+
+QStringList MainWindow::chatHistoryCompatibilityPaths() const
+{
+    if (m_activeServer < 0 || m_activeServer >= m_servers.size() ||
+        m_activeServer >= m_legacyServerUrls.size() ||
+        m_activeServer >= m_legacyServerRooms.size())
+        return {};
+    const ServerConfig &server = m_servers.at(m_activeServer);
+    const QString legacyUrl = m_legacyServerUrls.at(m_activeServer).trimmed();
+    const QString legacyRoom = m_legacyServerRooms.at(m_activeServer);
+    if (legacyUrl.isEmpty() ||
+        (legacyUrl == server.url && legacyRoom == server.room))
+        return {};
+    return {chatHistoryPathForServerUrl(legacyUrl, legacyRoom)};
 }
 
 QString MainWindow::chatHistoryPath() const
@@ -177,7 +207,17 @@ void MainWindow::saveChatHistory()
 
 void MainWindow::loadChatHistory()
 {
-    const QString path = chatHistoryPath();
+    QString path = chatHistoryPath();
+    bool migrated = false;
+    if (!path.isEmpty() && !QFileInfo::exists(path)) {
+        for (const QString &legacyPath : chatHistoryCompatibilityPaths()) {
+            if (QFileInfo::exists(legacyPath)) {
+                path = legacyPath;
+                migrated = true;
+                break;
+            }
+        }
+    }
     if (path.isEmpty() || !QFileInfo::exists(path))
         return;
     QFile file(path);
@@ -272,6 +312,13 @@ void MainWindow::loadChatHistory()
         // history shows up on first load.
         rebuildConversationView();
     }
+
+    // The relay URL/room format changed when entries were canonicalized and the
+    // shared room was renamed. Save the recovered state under the current key
+    // immediately, while retaining the old file as a harmless fallback for one
+    // older installation.
+    if (migrated)
+        saveChatHistory();
 }
 
 void MainWindow::scheduleChatSave()
@@ -812,6 +859,11 @@ QStringList MainWindow::testSourceControlPaths() const
         }
     }
     return paths;
+}
+
+QString MainWindow::testSourceControlDiffText() const
+{
+    return m_scmDiff ? m_scmDiff->toPlainText() : QString();
 }
 
 QString MainWindow::testScmCommitControlsState() const
@@ -1390,6 +1442,7 @@ void MainWindow::startSession()
         AccountCapability::normalizedAccount(m_accountName) != name) {
         setDesktopCapability(m_accountName, false);
         m_accountAuthenticated = false;
+        m_accountEmail.clear();
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
@@ -2089,6 +2142,12 @@ void MainWindow::fetchRoomPassphrase()
 
 void MainWindow::startOfficeChannelMirror()
 {
+    // A service-managed mirror keeps this Qt compatibility process only for
+    // repository inbox leases. Office/chat polling is user-facing desktop work
+    // and returned a predictable 401 every 30 seconds for node-only accounts.
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     // Same gate as fetchRoomPassphrase: the relay hands the office rooms only
     // to an account that can sign for itself with this node's identity key.
     const QString node = accountOwner();
@@ -2892,6 +2951,13 @@ bool MainWindow::serviceManagedCheckout(const QString &localPath) const
 
 void MainWindow::ensureFlagshipRepo()
 {
+    // The dedicated mirror daemon owns repository discovery, stable-ref sync,
+    // gateway repinning, and catalog publication.  The temporary Qt companion
+    // only bridges legacy issue/PR/discussion intake and must not open or scan
+    // the repository on its GUI thread.
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     if (!m_networkAccess)
         return;
     const QString canonicalOwner = QStringLiteral("forkmesh");
@@ -3074,11 +3140,13 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         return true;
     if (!isValidNodeName(accountName))
         return false;
+    m_accountEmail.clear();
     if (m_accountAuthenticated &&
         AccountCapability::normalizedAccount(m_accountName) !=
             AccountCapability::normalizedAccount(accountName)) {
         setDesktopCapability(m_accountName, false);
         m_accountAuthenticated = false;
+        m_accountEmail.clear();
         m_accountTier = QStringLiteral("free");
         m_accountSolanaVerified = false;
         m_isAdmin = false;
@@ -3091,6 +3159,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         lookup.value("pubkey").toString() == m_profileIdentity.publicKey()) {
         m_accountAuthenticated = true;
         m_accountName = accountName;
+        m_accountEmail = lookup.value("email").toString().trimmed();
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
         setDesktopCapability(accountName, true);
@@ -3123,6 +3192,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
     if (lookup.value("exists").toBool() &&
         lookup.value("status").toString() == "active") {
         m_accountSolanaVerified = true;
+        m_accountEmail = lookup.value("email").toString().trimmed();
         setDesktopCapability(accountName, false);
     }
     // Trust a previously authenticated marker whenever the relay gave no
@@ -3142,6 +3212,7 @@ bool MainWindow::authenticateSilently(const QString &accountName)
         m_accountName = accountName;
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
+        m_accountEmail.clear();
         refreshSettingsEmailVerifiedBadge();
         return true;
     }
@@ -3179,6 +3250,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
     auto activateSession = [&](const QString &owner, bool emailVerified) {
         m_accountAuthenticated = true;
         m_accountName = accountName;
+        m_accountEmail.clear();
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true;
         setDesktopCapability(accountName, true);
@@ -3316,6 +3388,7 @@ bool MainWindow::registerNodeAccountSilently(const QString &accountName)
 
     m_accountAuthenticated = true;
     m_accountName = accountName;
+    m_accountEmail = fresp.value("email").toString().trimmed();
     m_accountTier = QStringLiteral("active");
     m_accountSolanaVerified = true; // registered = active network member
     setDesktopCapability(accountName, true);
@@ -3431,6 +3504,7 @@ bool MainWindow::verifyTotpLogin(const QString &email,
     auto acceptLogin = [&](const QJsonObject &payload, bool ownsDesktopKey) {
         m_accountAuthenticated = true;
         m_accountName = payload.value("nodeName").toString(accountName);
+        m_accountEmail = payload.value("email").toString().trimmed();
         m_accountTier = QStringLiteral("active");
         // True means this local Qt identity is the account's registered desktop
         // key and can publish/host/sign owner-only actions. False is a safe
@@ -3743,6 +3817,7 @@ bool MainWindow::runSignupFlow(const QString &accountName, const QString &solana
         }
         m_accountAuthenticated = true;
         m_accountName = name;
+        m_accountEmail.clear();
         m_accountTier = QStringLiteral("active");
         m_accountSolanaVerified = true; // joined = active network member
         setDesktopCapability(name, true);
@@ -3976,6 +4051,11 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
 
 void MainWindow::setFooterUpdateLine(const QString &line)
 {
+    const QString badge = logBadgeFor(line);
+    if (m_logActivityLights)
+        m_logActivityLights->pulse(badge);
+    if (m_logActivityHeader)
+        m_logActivityHeader->pulse(badge);
     if (!m_footerUpdateLog)
         return;
     const QString clean = line.trimmed();

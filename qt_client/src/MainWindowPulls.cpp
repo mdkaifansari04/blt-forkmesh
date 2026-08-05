@@ -289,6 +289,68 @@ void setPullActionBadge(QPushButton *button, int count)
         tile->setBadgeCount(qMax(0, count));
 }
 
+QString pendingInboxAuthor(const QString &kind, const QJsonObject &item)
+{
+    QJsonObject object;
+    if (kind == QLatin1String("pulls") && item.contains("pull"))
+        object = item.value("pull").toObject();
+    else
+        object = item.value("event").toObject();
+    const QString name = object.value("authorName").toString().trimmed();
+    const QString author = object.value("author").toString().trimmed();
+    return !name.isEmpty() ? name
+                           : (!author.isEmpty() ? author.left(12)
+                                                : QStringLiteral("Unknown"));
+}
+
+QString pendingInboxSummary(const QString &kind, const QJsonObject &item)
+{
+    const int number = item.value("number").toInt();
+    if (kind == QLatin1String("issues")) {
+        const QJsonObject event = item.value("event").toObject();
+        const QString type = event.value("type").toString();
+        QString title = event.value("title").toString().trimmed();
+        if (title.isEmpty())
+            title = item.value("titleIfNew").toString().trimmed();
+        if (type == QLatin1String("open"))
+            return title.isEmpty() ? QStringLiteral("New issue") : title;
+        const QString action = type == QLatin1String("comment")
+            ? QStringLiteral("Comment")
+            : (type.isEmpty() ? QStringLiteral("Issue update")
+                              : type.left(1).toUpper() + type.mid(1));
+        return number > 0 ? QStringLiteral("%1 on issue #%2").arg(action).arg(number)
+                          : action;
+    }
+    if (kind == QLatin1String("pulls")) {
+        if (item.contains("pull")) {
+            const QJsonObject pull = item.value("pull").toObject();
+            const int pullNumber = pull.value("number").toInt(number);
+            const QString title = pull.value("title").toString().trimmed();
+            return pullNumber > 0
+                ? QStringLiteral("PR #%1: %2").arg(pullNumber).arg(
+                      title.isEmpty() ? QStringLiteral("New pull request") : title)
+                : (title.isEmpty() ? QStringLiteral("New pull request") : title);
+        }
+        const QString type = item.value("event").toObject()
+                                 .value("type").toString().trimmed();
+        return number > 0
+            ? QStringLiteral("%1 on PR #%2")
+                  .arg(type.isEmpty() ? QStringLiteral("Review") : type)
+                  .arg(number)
+            : QStringLiteral("Pull request update");
+    }
+
+    const QJsonObject event = item.value("event").toObject();
+    const QString type = event.value("type").toString();
+    QString title = event.value("title").toString().trimmed();
+    if (title.isEmpty())
+        title = item.value("titleIfNew").toString().trimmed();
+    if (type == QLatin1String("open"))
+        return title.isEmpty() ? QStringLiteral("New discussion") : title;
+    return number > 0 ? QStringLiteral("Comment on discussion #%1").arg(number)
+                      : QStringLiteral("Discussion update");
+}
+
 // Locates a named HTML anchor (<a name="...">) inside a QTextDocument.
 // QTextDocument::find only searches visible text, and an anchor carries none,
 // so finding one means walking fragments and checking their char format for it
@@ -2347,7 +2409,8 @@ void MainWindow::renderPullDiff()
         QString(diffSplitPref() ? QLatin1Char('s') : QLatin1Char('u')) +
         QLatin1Char('\x1f') + styleSheet + QLatin1Char('\x1f') +
         viewedKeys.join(QLatin1Char('\x1e')) + QLatin1Char('\x1f') + notesKey +
-        QLatin1Char('\x1f') + fullPatch;
+        QLatin1Char('\x1f') + QString::number(fullPatch.size()) +
+        QLatin1Char(':') + QString::number(qHash(fullPatch));
     if (!m_pullDiffSourceKey.isEmpty() && sourceKey == m_pullDiffSourceKey &&
         !m_pullDiffRenderKey.isEmpty())
         return;
@@ -4114,10 +4177,13 @@ void MainWindow::updatePullActionState()
         }
     }
     const bool mergeable = writable && have && open;
-    // An unresolved "request changes" review holds the merge: a human reviewer's
-    // objection gates the button until it's approved (or the review cleared) —
-    // just as a failed check would, but for review state (issue #359).
-    const bool reviewBlocks = !independentReviewReady;
+    const bool requirePeerApproval =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()
+            ? m_repositories.at(m_repoDetailIndex).requirePeerApproval
+            : true;
+    // When the repository requires peer review, an unresolved "request changes"
+    // review holds the merge until it is approved or cleared (issue #359).
+    const bool reviewBlocks = requirePeerApproval && !independentReviewReady;
     bool behind = false;
     if (mergeable)
         store.isBranchBehindBase(m_currentPullNumber, &behind);
@@ -4151,17 +4217,23 @@ void MainWindow::updatePullActionState()
                 "<span style='color:#8b949e'>Checking for conflicts\xE2\x80\xA6"
                 "</span>"));
             m_pullMergeStatus->show();
-        } else if (independentChangesRequested) {
+        } else if (requirePeerApproval && independentChangesRequested) {
             m_pullMergeStatus->setText(QString::fromUtf8(
                 "<span style='color:#f85149'>\xE2\x9A\xA0 Changes requested "
                 "\xE2\x80\x94 a reviewer is blocking this merge. Resolve their "
                 "review (approve, or clear the request) to merge.</span>"));
             m_pullMergeStatus->show();
-        } else if (!independentReviewReady) {
+        } else if (requirePeerApproval && !independentReviewReady) {
             m_pullMergeStatus->setText(QString::fromUtf8(
                 "<span style='color:#d29922'>Peer approval required "
                 "\xE2\x80\x94 at least one reviewer other than the pull-request "
                 "author must approve before merge.</span>"));
+            m_pullMergeStatus->show();
+        } else if (mergeClean && !requirePeerApproval) {
+            m_pullMergeStatus->setText(QString::fromUtf8(
+                "<span style='color:#3fb950'>\xE2\x9C\x93 No conflicts \xE2\x80\x94 "
+                "peer approval is optional for this repository; ready to "
+                "merge.</span>"));
             m_pullMergeStatus->show();
         } else if (mergeClean) {
             m_pullMergeStatus->setText(QString::fromUtf8(
@@ -4195,6 +4267,7 @@ void MainWindow::updatePullActionState()
         m_pullImportButton->setEnabled(writable);
     if (m_pullSyncButton)
         m_pullSyncButton->setEnabled(writable);
+    refreshPendingInboxBadges();
     if (m_pullDeleteAllMergedButton) {
         int mergedCount = 0;
         for (const PullRequest &pr : m_currentPulls)
@@ -4751,7 +4824,11 @@ void MainWindow::mergeCurrentPull()
     }
     if (!found)
         return;
-    if (!current.independentReviewGateSatisfied()) {
+    const bool requirePeerApproval =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()
+            ? m_repositories.at(m_repoDetailIndex).requirePeerApproval
+            : true;
+    if (requirePeerApproval && !current.independentReviewGateSatisfied()) {
         QMessageBox::warning(
             this, "Merge pull request",
             current.hasIndependentChangesRequested()
@@ -4772,7 +4849,7 @@ void MainWindow::mergeCurrentPull()
         return;
     PullStore store = pullStoreForCurrentRepo();
     QString error;
-    if (!store.mergePull(m_currentPullNumber, &error)) {
+    if (!store.mergePull(m_currentPullNumber, &error, requirePeerApproval)) {
         QMessageBox::warning(this, "Merge pull request", error);
         return;
     }
@@ -7654,7 +7731,11 @@ void MainWindow::mergeAndDeleteCurrentPull()
     }
     if (!found)
         return;
-    if (!current.independentReviewGateSatisfied()) {
+    const bool requirePeerApproval =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()
+            ? m_repositories.at(m_repoDetailIndex).requirePeerApproval
+            : true;
+    if (requirePeerApproval && !current.independentReviewGateSatisfied()) {
         QMessageBox::warning(
             this, "Merge pull request",
             current.hasIndependentChangesRequested()
@@ -7692,7 +7773,7 @@ void MainWindow::mergeAndDeleteCurrentPull()
     // before touching the PR record or its branch.
     PullStore store = pullStoreForCurrentRepo();
     QString error;
-    if (!store.mergePull(m_currentPullNumber, &error)) {
+    if (!store.mergePull(m_currentPullNumber, &error, requirePeerApproval)) {
         QMessageBox::warning(this, "Merge pull request", error);
         return;
     }
@@ -7885,20 +7966,247 @@ void MainWindow::syncPullsInbox()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
-    drainPullsInboxFor(m_repositories.at(m_repoDetailIndex), /*interactive=*/true);
+    showPendingInbox(m_repositories.at(m_repoDetailIndex),
+                     QStringLiteral("pulls"));
 }
 
-void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
+void MainWindow::showPendingInbox(const RepositoryRecord &repo,
+                                  const QString &kind)
+{
+    if (!m_networkAccess || !hasOwnerSigningCapability()) {
+        flashMessage(QStringLiteral("Network access is unavailable."), true);
+        return;
+    }
+
+    QUrl url;
+    if (kind == QLatin1String("issues"))
+        url = issuesApiUrl(repo);
+    else if (kind == QLatin1String("pulls"))
+        url = pullsApiUrl(repo);
+    else if (kind == QLatin1String("discussions"))
+        url = discussionsApiUrl(repo);
+    else
+        return;
+    url.setQuery(signedInboxQuery(
+        repoSegment(repo.owner, QStringLiteral("owner"))));
+
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, repo, kind] {
+        const QByteArray body = reply->readAll();
+        const int status = reply->attribute(
+            QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QNetworkReply::NetworkError networkError = reply->error();
+        const QString networkErrorText = reply->errorString();
+        reply->deleteLater();
+        if (networkError != QNetworkReply::NoError) {
+            QMessageBox::warning(
+                this, QStringLiteral("Sync inbox"),
+                QStringLiteral("Could not load the pending inbox (HTTP %1): %2")
+                    .arg(status)
+                    .arg(networkErrorText));
+            return;
+        }
+        const QJsonArray pending =
+            QJsonDocument::fromJson(body).object().value("pending").toArray();
+        setPendingInboxCount(repo, kind, pending.size());
+        showPendingInboxDialog(repo, kind, pending);
+    });
+}
+
+void MainWindow::showPendingInboxDialog(const RepositoryRecord &repo,
+                                        const QString &kind,
+                                        const QJsonArray &pending)
+{
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("pendingInboxDialog"));
+    dialog.setWindowTitle(QStringLiteral("Pending %1")
+                              .arg(kind == QLatin1String("pulls")
+                                       ? QStringLiteral("pull requests")
+                                       : kind));
+    dialog.resize(680, qBound(260, 180 + pending.size() * 38, 620));
+
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *intro = new QLabel(
+        pending.isEmpty()
+            ? QStringLiteral("This inbox is up to date.")
+            : QStringLiteral("%1 submission%2 waiting to be written into %3/%4.")
+                  .arg(pending.size())
+                  .arg(pending.size() == 1 ? QString() : QStringLiteral("s"))
+                  .arg(repo.owner, repo.name),
+        &dialog);
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+
+    auto *tree = new QTreeWidget(&dialog);
+    tree->setObjectName(QStringLiteral("pendingInboxList"));
+    tree->setColumnCount(3);
+    tree->setHeaderLabels({QStringLiteral("Submission"),
+                           QStringLiteral("Author"), QString()});
+    tree->setRootIsDecorated(false);
+    tree->setAlternatingRowColors(true);
+    tree->setSelectionMode(QAbstractItemView::NoSelection);
+    tree->header()->setStretchLastSection(false);
+    tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    tree->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    layout->addWidget(tree, 1);
+
+    for (const QJsonValue &value : pending) {
+        const QJsonObject item = value.toObject();
+        auto *row = new QTreeWidgetItem(
+            tree, {pendingInboxSummary(kind, item),
+                   pendingInboxAuthor(kind, item), QString()});
+        auto *syncOne = new QPushButton(QStringLiteral("Sync"), tree);
+        syncOne->setObjectName(QStringLiteral("pendingInboxSyncOne"));
+        syncOne->setProperty("buttonSize", "sm");
+        syncOne->setCursor(Qt::PointingHandCursor);
+        tree->setItemWidget(row, 2, syncOne);
+        connect(syncOne, &QPushButton::clicked, &dialog,
+                [this, tree, row, repo, kind, item] {
+            QJsonArray selected;
+            selected.append(item);
+            applyPendingInboxSelection(repo, kind, selected);
+            const int index = tree->indexOfTopLevelItem(row);
+            if (index >= 0)
+                delete tree->takeTopLevelItem(index);
+            setPendingInboxCount(repo, kind, tree->topLevelItemCount());
+        });
+    }
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    QPushButton *syncAll = buttons->addButton(
+        QStringLiteral("Sync all"), QDialogButtonBox::ActionRole);
+    syncAll->setObjectName(QStringLiteral("pendingInboxSyncAll"));
+    syncAll->setEnabled(!pending.isEmpty());
+    connect(syncAll, &QPushButton::clicked, &dialog,
+            [this, &dialog, repo, kind, pending] {
+        applyPendingInboxSelection(repo, kind, pending);
+        setPendingInboxCount(repo, kind, 0);
+        dialog.accept();
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog.exec();
+}
+
+void MainWindow::applyPendingInboxSelection(const RepositoryRecord &repo,
+                                            const QString &kind,
+                                            const QJsonArray &pending)
+{
+    if (pending.isEmpty())
+        return;
+    if (kind == QLatin1String("issues"))
+        applyIssuesInboxPayload(repo, pending, /*interactive=*/true);
+    else if (kind == QLatin1String("pulls"))
+        applyPullsInboxPayload(repo, pending, /*interactive=*/true);
+    else if (kind == QLatin1String("discussions"))
+        applyDiscussionsInboxPayload(repo, pending, /*interactive=*/true);
+
+    // The apply helpers acknowledge exact row ids asynchronously. Refresh the
+    // content-free count shortly afterwards so a failed ack cannot leave an
+    // optimistic badge hidden for the rest of the session.
+    QTimer::singleShot(1500, this, [this, repo] {
+        const QString source =
+            repoSegment(repo.owner, QStringLiteral("owner")) + QLatin1Char('/') +
+            repoSegment(repo.name, QStringLiteral("repository"));
+        QJsonObject cached = m_mirrorPendingCache.value(source);
+        cached.insert(QStringLiteral("clientFetchedAt"), 0);
+        m_mirrorPendingCache.insert(source, cached);
+        refreshPendingInboxBadges();
+    });
+}
+
+void MainWindow::setPendingInboxCount(const RepositoryRecord &repo,
+                                      const QString &kind, int count)
+{
+    const QString source =
+        repoSegment(repo.owner, QStringLiteral("owner")) + QLatin1Char('/') +
+        repoSegment(repo.name, QStringLiteral("repository"));
+    QJsonObject result = m_mirrorPendingCache.value(source);
+    QJsonObject counts = result.value(QStringLiteral("pending")).toObject();
+    counts.insert(kind, qMax(0, count));
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("pending"), counts);
+    result.insert(QStringLiteral("clientFetchedAt"),
+                  double(QDateTime::currentMSecsSinceEpoch()));
+    m_mirrorPendingCache.insert(source, result);
+    refreshPendingInboxBadges();
+}
+
+void MainWindow::refreshPendingInboxBadges()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        setPullActionBadge(m_issueSyncButton, 0);
+        setPullActionBadge(m_pullSyncButton, 0);
+        if (m_discussionSyncButton)
+            m_discussionSyncButton->setText(QStringLiteral("Sync inbox"));
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
+    const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+    const QString source = owner + QLatin1Char('/') + name;
+    const QJsonObject result = m_mirrorPendingCache.value(source);
+    const QJsonObject counts = result.value(QStringLiteral("pending")).toObject();
+    const bool known = result.value(QStringLiteral("ok")).toBool();
+    const int issues = known ? counts.value(QStringLiteral("issues")).toInt() : 0;
+    const int pulls = known ? counts.value(QStringLiteral("pulls")).toInt() : 0;
+    const int discussions =
+        known ? counts.value(QStringLiteral("discussions")).toInt() : 0;
+    setPullActionBadge(m_issueSyncButton, issues);
+    setPullActionBadge(m_pullSyncButton, pulls);
+    if (m_discussionSyncButton) {
+        m_discussionSyncButton->setText(
+            discussions > 0 ? QStringLiteral("Sync inbox (%1)").arg(discussions)
+                            : QStringLiteral("Sync inbox"));
+    }
+    fetchMirrorPendingCounts(owner, name, source);
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+void MainWindow::testSetPendingInboxCounts(int issues, int pulls,
+                                           int discussions)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
+    setPendingInboxCount(repo, QStringLiteral("issues"), issues);
+    setPendingInboxCount(repo, QStringLiteral("pulls"), pulls);
+    setPendingInboxCount(repo, QStringLiteral("discussions"), discussions);
+}
+
+int MainWindow::testIssueInboxBadgeCount() const
+{
+    const auto *button = dynamic_cast<const VerticalIconButton *>(m_issueSyncButton);
+    return button ? int(button->badgeCount()) : 0;
+}
+
+int MainWindow::testPullInboxBadgeCount() const
+{
+    const auto *button = dynamic_cast<const VerticalIconButton *>(m_pullSyncButton);
+    return button ? int(button->badgeCount()) : 0;
+}
+
+QString MainWindow::testDiscussionInboxButtonText() const
+{
+    return m_discussionSyncButton ? m_discussionSyncButton->text() : QString();
+}
+#endif
+
+void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive,
+                                    bool forceMirrorIntake)
 {
     const RepositoryRecord writable = writableRecordFor(repo);
     bool ownerIntake = false;
     {
         PullStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
                         m_userName);
-        ownerIntake = probe.canWrite();
+        ownerIntake = !forceMirrorIntake && probe.canWrite();
     }
     const bool mirrorIntake =
-        !ownerIntake && !repo.previewOnly && !repo.isPrivate &&
+        (forceMirrorIntake || !ownerIntake) && !repo.previewOnly &&
+        !repo.isPrivate &&
         repo.publishToNetwork && !repo.mirrorPath.trimmed().isEmpty() &&
         QDir(repo.mirrorPath).exists();
     if (!ownerIntake && !mirrorIntake)
@@ -7917,7 +8225,11 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
     const QString signer =
         mirrorIntake ? accountOwner().trimmed().toLower()
                      : repoSegment(repo.owner, QStringLiteral("owner"));
-    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
+    // See drainIssuesInboxFor: a public owner is authorized by the relay, not
+    // by a local name-equality test that only yields false negatives.
+    const bool canSign = mirrorIntake ? hasOwnerSigningCapability(signer)
+                                      : hasOwnerSigningCapability();
+    if (signer.isEmpty() || !canSign)
         return;
     const QString intakeKey =
         QStringLiteral("pulls:") + repo.owner.trimmed().toLower() +
@@ -8258,6 +8570,13 @@ void MainWindow::performRelaySync()
     // securely materialize public issue leases for repos it currently serves.
     // Run that independent intake on the same push/fallback cadence.
     pollMirrorIssueInboxes();
+    // The service-managed mirror companion is intentionally not a chat/user
+    // session.  It only drains the three signed mirror-intake endpoints; asking
+    // for the account-owned /api/sync feed both wastes work and produces an
+    // expected 401 for node-only identities.
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     const QString account = m_accountName.isEmpty()
         ? QSettings().value(kAccountNameSetting).toString().trimmed()
         : m_accountName;
@@ -8325,22 +8644,66 @@ void MainWindow::performRelaySync()
                                      .toArray();
         const bool autoSyncIssues =
             QSettings().value(kAutoSyncIssuesSetting, true).toBool();
+        // Local records this response actually spoke for. /api/sync enumerates
+        // `repositories WHERE owner_bi = blind_index(account)`, so it can only
+        // ever name repos whose catalog row is owned by the signed-in ACCOUNT.
+        // A repo served under any other public owner — an organization alias,
+        // or a namespace this node's key owns that is no longer the account
+        // name — is absent from the payload entirely, and an absent repo is
+        // indistinguishable from "nothing queued". Those queues drained fine
+        // through the per-repo endpoints before the consolidated sync replaced
+        // them, so fall back to exactly those for whatever this response left
+        // uncovered.
+        QSet<int> covered;
         for (const QJsonValue &value : repos) {
             const QJsonObject entry = value.toObject();
             const QString entryOwner = entry.value("owner").toString();
             const QString entryName = entry.value("name").toString();
+            // /api/sync names each repo by the ACCOUNT that owns its catalog
+            // row — the same owner catalogOwner() publishes under — while a
+            // repo fronted by an organization keeps the public alias in
+            // RepositoryRecord::owner. Matching on r.owner alone therefore
+            // dropped the entire slice for every aliased repo: issues, pulls,
+            // discussions, prompts and About edits were neither applied NOR
+            // acked, so they sat in the relay queue forever while the source of
+            // truth was online and syncing 200 OK. Accept either identity.
+            // Exact owner+name first, so a plain node-owned repo is never
+            // shadowed by an identically named aliased one; the catalog
+            // identity is only the fallback.
             int idx = -1;
+            int aliasIdx = -1;
             for (int i = 0; i < m_repositories.size(); ++i) {
                 const RepositoryRecord &r = m_repositories.at(i);
-                if (!r.previewOnly &&
-                    r.owner.compare(entryOwner, Qt::CaseInsensitive) == 0 &&
-                    r.name.compare(entryName, Qt::CaseInsensitive) == 0) {
+                if (r.previewOnly ||
+                    r.name.compare(entryName, Qt::CaseInsensitive) != 0)
+                    continue;
+                if (r.owner.compare(entryOwner, Qt::CaseInsensitive) == 0) {
                     idx = i;
                     break;
                 }
+                if (aliasIdx < 0 &&
+                    catalogOwner(r).compare(entryOwner,
+                                            Qt::CaseInsensitive) == 0)
+                    aliasIdx = i;
             }
             if (idx < 0)
+                idx = aliasIdx;
+            if (idx < 0) {
+                // Never silent: an unmatched slice drains nothing, which looks
+                // exactly like "the relay has nothing queued" unless we say so.
+                static QSet<QString> s_unmatchedWarned;
+                const QString key = entryOwner + QLatin1Char('/') + entryName;
+                if (!s_unmatchedWarned.contains(key)) {
+                    s_unmatchedWarned.insert(key);
+                    logSystem(QStringLiteral(
+                                  "Relay sync returned %1, which no local "
+                                  "repository matches, so its queued issues, "
+                                  "pulls and prompts cannot be applied.")
+                                  .arg(key));
+                }
                 continue;
+            }
+            covered.insert(idx);
             const RepositoryRecord repo = m_repositories.at(idx);
             // Organization-agent jobs use their own authenticated lease
             // endpoint rather than the owner-E2EE agentPrompts slice below.
@@ -8381,6 +8744,27 @@ void MainWindow::performRelaySync()
                                   .arg(entryOwner, entryName, aboutError));
                 }
             }
+        }
+        // Repos the consolidated response never named. The per-repo drains
+        // address the relay by the repo's PUBLIC owner (repo.owner) rather than
+        // by the account, so they read the queue the website actually files
+        // into. Each one self-gates on write/signing capability and shares
+        // m_pollBackoff with every other inbox call, so this adds no polling
+        // for a node whose repos the consolidated sync already covers — the
+        // set is empty in that case.
+        for (int i = 0; i < m_repositories.size(); ++i) {
+            if (covered.contains(i))
+                continue;
+            const RepositoryRecord uncovered = m_repositories.at(i);
+            if (uncovered.previewOnly ||
+                uncovered.owner.trimmed().isEmpty() ||
+                uncovered.name.trimmed().isEmpty())
+                continue;
+            const RepositoryRecord writable = writableRecordFor(uncovered);
+            if (autoSyncIssues && worktreeTrackedClean(writable.localPath))
+                drainIssuesInboxFor(uncovered, /*interactive=*/false);
+            drainPullsInboxFor(uncovered, /*interactive=*/false);
+            drainDiscussionsInboxFor(uncovered, /*interactive=*/false);
         }
         // A terminal local run may have completed while the desktop was
         // offline.  Its exact job/lease binding is persisted on AgentSession;

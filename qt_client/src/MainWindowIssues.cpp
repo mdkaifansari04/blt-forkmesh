@@ -21,6 +21,323 @@
 
 using namespace forkmesh::ui;
 
+namespace {
+enum IssueSummaryRole {
+    IssueStatusRole = Qt::UserRole + 20,
+    IssuePriorityRole,
+    IssueVotesRole,
+    IssueLabelsRole,
+    IssueLabelColorsRole,
+    IssueMilestoneRole,
+    IssueCreatedRole,
+    IssueUpdatedRole,
+    IssueAuthorRole,
+    IssueAssigneesRole,
+    IssueProgressRole,
+    IssueFilesRole,
+    IssueAgentRole,
+};
+
+QString compactIssueAge(qint64 timestampMs)
+{
+    if (timestampMs <= 0)
+        return QString::fromUtf8("\xE2\x80\x94");
+    const qint64 seconds = qMax<qint64>(
+        0, (QDateTime::currentMSecsSinceEpoch() - timestampMs) / 1000);
+    if (seconds < 60)
+        return QStringLiteral("now");
+    const qint64 minutes = seconds / 60;
+    if (minutes < 60)
+        return QStringLiteral("%1m").arg(minutes);
+    const qint64 hours = minutes / 60;
+    if (hours < 24)
+        return QStringLiteral("%1h").arg(hours);
+    const qint64 days = hours / 24;
+    if (days < 30)
+        return QStringLiteral("%1d").arg(days);
+    const qint64 months = days / 30;
+    return months < 12 ? QStringLiteral("%1mo").arg(months)
+                       : QStringLiteral("%1y").arg(months / 12);
+}
+
+QColor issuePriorityColor(int priority)
+{
+    static const QColor colors[] = {
+        QColor("#B91C1C"), QColor("#EF4444"), QColor("#F97316"),
+        QColor("#F59E0B"), QColor("#EAB308"), QColor("#84CC16"),
+        QColor("#14B8A6"), QColor("#06B6D4"), QColor("#3B82F6")};
+    return priority >= 1 && priority <= 9 ? colors[priority - 1]
+                                           : QColor("#64748B");
+}
+
+QString issuePriorityMeaning(int priority)
+{
+    static const QStringList meanings{
+        QStringLiteral("Critical"), QStringLiteral("Very high"),
+        QStringLiteral("High"), QStringLiteral("Moderate"),
+        QStringLiteral("Elevated"), QStringLiteral("Normal"),
+        QStringLiteral("Below normal"), QStringLiteral("Low"),
+        QStringLiteral("Very low")};
+    return priority >= 1 && priority <= meanings.size()
+               ? meanings.at(priority - 1)
+               : QStringLiteral("Minimal");
+}
+
+QString issueInitials(const QString &name)
+{
+    const QStringList words = name.simplified().split(QLatin1Char(' '),
+                                                       Qt::SkipEmptyParts);
+    if (words.isEmpty())
+        return QStringLiteral("?");
+    return (words.first().left(1) +
+            (words.size() > 1 ? words.last().left(1) : QString()))
+        .toUpper();
+}
+
+QColor stableAvatarColor(const QString &name)
+{
+    static const QColor colors[] = {QColor("#8250df"), QColor("#0969da"),
+                                    QColor("#1a7f37"), QColor("#bf8700"),
+                                    QColor("#cf222e"), QColor("#0550ae")};
+    return colors[qHash(name) % (sizeof(colors) / sizeof(colors[0]))];
+}
+
+class IssueSummaryDelegate final : public QStyledItemDelegate
+{
+public:
+    explicit IssueSummaryDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &, const QModelIndex &) const override
+    {
+        return QSize(420, 58);
+    }
+
+    void paint(QPainter *p, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const bool selected = option.state & QStyle::State_Selected;
+        const bool hovered = option.state & QStyle::State_MouseOver;
+        const QColor bg = selected ? QColor(dark ? "#183825" : "#dafbe1")
+                                  : hovered ? QColor(dark ? "#161b22" : "#f6f8fa")
+                                            : QColor(dark ? "#0d1117" : "#ffffff");
+        const QColor text(dark ? "#e6edf3" : "#1f2328");
+        const QColor muted(dark ? "#8b949e" : "#656d76");
+        const QRect r = option.rect.adjusted(1, 0, -1, -1);
+        p->fillRect(r, bg);
+        p->setPen(QColor(dark ? "#21262d" : "#d8dee4"));
+        p->drawLine(r.bottomLeft(), r.bottomRight());
+
+        const QString status = index.data(IssueStatusRole).toString();
+        const QColor statusColor(status == QLatin1String("closed") ? "#8250df"
+                                  : status == QLatin1String("deleted") ? "#8b949e"
+                                                                       : "#1a7f37");
+        p->drawPixmap(
+            QPoint(r.left() + 10, r.top() + 10),
+            tintedOcticonPixmap(status == QLatin1String("closed")
+                                    ? QStringLiteral("check-circle")
+                                    : QStringLiteral("issue-opened"),
+                                statusColor, 16));
+
+        QFont titleFont = option.font;
+        titleFont.setWeight(QFont::DemiBold);
+        QFont metaFont = option.font;
+        metaFont.setPixelSize(qMax(10, option.font.pixelSize() - 1));
+        p->setFont(metaFont);
+        p->setPen(muted);
+        int x = r.left() + 34;
+        const QString number =
+            QStringLiteral("#%1").arg(index.data(Qt::UserRole).toInt());
+        p->drawText(QRect(x, r.top() + 7, 55, 20), Qt::AlignVCenter, number);
+        x += QFontMetrics(metaFont).horizontalAdvance(number) + 9;
+
+        const int priority = index.data(IssuePriorityRole).toInt();
+        if (priority > 0) {
+            QFont pf = metaFont;
+            pf.setBold(true);
+            p->setFont(pf);
+            p->setPen(issuePriorityColor(priority));
+            const QString s = QString::number(priority);
+            p->drawText(QRect(x, r.top() + 7, 50, 20), Qt::AlignVCenter, s);
+            x += QFontMetrics(pf).horizontalAdvance(s) + 9;
+        }
+
+        const QStringList labels = index.data(IssueLabelsRole).toStringList();
+        const QStringList colors = index.data(IssueLabelColorsRole).toStringList();
+        const int labelCount = qMin(labels.size(), 4);
+        for (int i = 0; i < labelCount; ++i) {
+            const QColor c(i < colors.size() ? colors.at(i) : "#64748B");
+            const QRectF circle(x - (i ? 5 : 0), r.top() + 8, 18, 18);
+            p->setPen(QPen(bg, 2));
+            p->setBrush(c);
+            p->drawEllipse(circle);
+            QFont lf = metaFont;
+            lf.setPixelSize(9);
+            lf.setBold(true);
+            p->setFont(lf);
+            p->setPen(pillTextColor(c.name()));
+            p->drawText(circle, Qt::AlignCenter, labels.at(i).left(1).toUpper());
+            x += 13;
+        }
+        if (labels.size() > labelCount) {
+            p->setFont(metaFont);
+            p->setPen(muted);
+            p->drawText(QRect(x, r.top() + 7, 28, 20), Qt::AlignVCenter,
+                        QStringLiteral("+%1").arg(labels.size() - labelCount));
+            x += 28;
+        }
+
+        int right = r.right() - 12;
+        const int progress = qBound(0, index.data(IssueProgressRole).toInt(), 100);
+        p->setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 3,
+                       Qt::SolidLine, Qt::RoundCap));
+        p->drawLine(right, r.top() + 8, right, r.bottom() - 8);
+        const int progressTop = r.bottom() - 8 -
+                                qRound((r.height() - 16) * progress / 100.0);
+        p->setPen(QPen(QColor("#2f81f7"), 3, Qt::SolidLine, Qt::RoundCap));
+        p->drawLine(right, progressTop, right, r.bottom() - 8);
+        right -= 18;
+
+        if (index.data(IssueFilesRole).toInt() > 0) {
+            const QRect box(right - 19, r.top() + 9, 19, 19);
+            p->setPen(QColor(dark ? "#58a6ff" : "#0969da"));
+            p->setBrush(QColor(dark ? "#0c2d4a" : "#ddf4ff"));
+            p->drawRoundedRect(box, 4, 4);
+            p->drawPixmap(box.topLeft() + QPoint(3, 3),
+                          tintedOcticonPixmap("file", QColor("#2f81f7"), 13));
+            right -= 27;
+        }
+
+        const QString author = index.data(IssueAuthorRole).toString();
+        QStringList people = index.data(IssueAssigneesRole).toStringList();
+        if (!author.isEmpty() && !people.contains(author))
+            people.prepend(author);
+        const int peopleCount = qMin(people.size(), 2);
+        for (int i = peopleCount - 1; i >= 0; --i) {
+            const QRectF avatar(right - 19, r.top() + 8, 20, 20);
+            p->setPen(QPen(bg, 2));
+            p->setBrush(stableAvatarColor(people.at(i)));
+            p->drawEllipse(avatar);
+            QFont af = metaFont;
+            af.setPixelSize(8);
+            af.setBold(true);
+            p->setFont(af);
+            p->setPen(Qt::white);
+            p->drawText(avatar, Qt::AlignCenter, issueInitials(people.at(i)));
+            right -= 16;
+        }
+
+        const QString milestone = index.data(IssueMilestoneRole).toString();
+        if (!milestone.isEmpty()) {
+            const QRectF ring(right - 19, r.top() + 9, 18, 18);
+            p->setPen(QPen(QColor(dark ? "#30363d" : "#d0d7de"), 2));
+            p->setBrush(Qt::NoBrush);
+            p->drawEllipse(ring);
+            p->setPen(QPen(QColor("#2f81f7"), 2));
+            p->drawArc(ring, 90 * 16, -qMax(12, progress * 360 / 100) * 16);
+            right -= 27;
+        }
+
+        const int votes = index.data(IssueVotesRole).toInt();
+        if (votes != 0) {
+            const QString s = QString::fromUtf8("\xE2\x96\xB2 %1 \xE2\x96\xBC")
+                                  .arg(votes);
+            p->setFont(metaFont);
+            p->setPen(votes > 0 ? QColor("#1a7f37") : QColor("#cf222e"));
+            const int w = QFontMetrics(metaFont).horizontalAdvance(s) + 8;
+            p->drawText(QRect(right - w, r.top() + 7, w, 20), Qt::AlignVCenter, s);
+            right -= w;
+        }
+
+        p->setFont(titleFont);
+        p->setPen(text);
+        const int titleWidth = qMax(20, right - x - 6);
+        p->drawText(QRect(x, r.top() + 6, titleWidth, 22), Qt::AlignVCenter,
+                    QFontMetrics(titleFont).elidedText(
+                        index.data(Qt::DisplayRole).toString(), Qt::ElideRight,
+                        titleWidth));
+
+        QStringList meta{
+            QStringLiteral("created %1").arg(index.data(IssueCreatedRole).toString()),
+            QStringLiteral("updated %1").arg(index.data(IssueUpdatedRole).toString())};
+        if (!author.isEmpty())
+            meta << QStringLiteral("by %1").arg(author);
+        const QString agent = index.data(IssueAgentRole).toString();
+        if (!agent.isEmpty())
+            meta << agent;
+        if (!milestone.isEmpty())
+            meta << milestone;
+        p->setFont(metaFont);
+        p->setPen(muted);
+        p->drawText(QRect(r.left() + 34, r.top() + 31, r.width() - 58, 18),
+                    Qt::AlignVCenter,
+                    QFontMetrics(metaFont).elidedText(
+                        meta.join(QString::fromUtf8(" \xC2\xB7 ")), Qt::ElideRight,
+                        r.width() - 58));
+        p->restore();
+    }
+};
+
+bool issueMatchesQuery(const Issue &issue, const QString &query)
+{
+    QStringList freeText;
+    for (const QString &raw : QProcess::splitCommand(query)) {
+        const int colon = raw.indexOf(QLatin1Char(':'));
+        if (colon <= 0) {
+            freeText << raw;
+            continue;
+        }
+        const QString key = raw.left(colon).toLower();
+        const QString value = raw.mid(colon + 1).trimmed();
+        if (key == QLatin1String("is") || key == QLatin1String("status")) {
+            if (value.compare(issue.status, Qt::CaseInsensitive) != 0)
+                return false;
+        } else if (key == QLatin1String("label")) {
+            if (!issue.labels.contains(value, Qt::CaseInsensitive))
+                return false;
+        } else if (key == QLatin1String("milestone")) {
+            if (issue.milestone.compare(value, Qt::CaseInsensitive) != 0)
+                return false;
+        } else if (key == QLatin1String("author")) {
+            if (!issue.authorName.contains(value, Qt::CaseInsensitive) &&
+                !issue.author.contains(value, Qt::CaseInsensitive))
+                return false;
+        } else if (key == QLatin1String("assignee")) {
+            if (std::none_of(issue.assignees.cbegin(), issue.assignees.cend(),
+                             [&](const QString &a) {
+                                 return a.contains(value, Qt::CaseInsensitive);
+                             }))
+                return false;
+        } else if (key == QLatin1String("priority")) {
+            if (QString::number(issue.priority) != value)
+                return false;
+        } else if (key == QLatin1String("no")) {
+            if ((value == QLatin1String("label") && !issue.labels.isEmpty()) ||
+                (value == QLatin1String("milestone") && !issue.milestone.isEmpty()) ||
+                (value == QLatin1String("assignee") && !issue.assignees.isEmpty()))
+                return false;
+        } else {
+            freeText << raw;
+        }
+    }
+    const QString hay = QStringLiteral("#%1 %2 %3 %4 %5 %6 %7")
+                            .arg(issue.number)
+                            .arg(issue.title)
+                            .arg(issue.priority)
+                            .arg(issue.labels.join(QLatin1Char(' ')), issue.milestone)
+                            .arg(issue.authorName, issue.assignees.join(QLatin1Char(' ')));
+    for (const QString &term : std::as_const(freeText))
+        if (!hay.contains(term, Qt::CaseInsensitive))
+            return false;
+    return true;
+}
+} // namespace
+
 // ---- Issues section --------------------------------------------------------
 
 QWidget *MainWindow::buildIssuesSection()
@@ -30,6 +347,7 @@ QWidget *MainWindow::buildIssuesSection()
     // --- Left: a sortable issue table with filters above.
     auto *listPane = new QWidget;
     listPane->setMinimumWidth(260);
+    listPane->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
 
     auto *heading = new QLabel("Issues");
     heading->setObjectName("channelTitle");
@@ -37,27 +355,24 @@ QWidget *MainWindow::buildIssuesSection()
     auto *issueTabGroup = new QButtonGroup(page);
     m_issueTabGroup = issueTabGroup;
     issueTabGroup->setExclusive(true);
-    auto *issuesTab = new QPushButton;
-    issuesTab->setObjectName("ghostButton");
-    issuesTab->setProperty("buttonSize", "sm");
+    auto *issuesTab = new VerticalIconButton("Issues", VerticalIconButton::Tab);
+    issuesTab->setObjectName("issueViewTab");
     issuesTab->setCheckable(true);
     issuesTab->setChecked(true);
     issuesTab->setCursor(Qt::PointingHandCursor);
     issuesTab->setToolTip("Issues");
     setOcticon(issuesTab, "issue-opened", 16);
-    auto *milestonesTab = new QPushButton("Milestones");
-    milestonesTab->setObjectName("ghostButton");
-    milestonesTab->setProperty("buttonSize", "sm");
+    auto *milestonesTab =
+        new VerticalIconButton("Milestones", VerticalIconButton::Tab);
+    milestonesTab->setObjectName("issueViewTab");
     milestonesTab->setCheckable(true);
     milestonesTab->setCursor(Qt::PointingHandCursor);
-    auto *labelsTab = new QPushButton("Labels");
-    labelsTab->setObjectName("ghostButton");
-    labelsTab->setProperty("buttonSize", "sm");
+    auto *labelsTab = new VerticalIconButton("Labels", VerticalIconButton::Tab);
+    labelsTab->setObjectName("issueViewTab");
     labelsTab->setCheckable(true);
     labelsTab->setCursor(Qt::PointingHandCursor);
-    auto *boardTab = new QPushButton("Board");
-    boardTab->setObjectName("ghostButton");
-    boardTab->setProperty("buttonSize", "sm");
+    auto *boardTab = new VerticalIconButton("Board", VerticalIconButton::Tab);
+    boardTab->setObjectName("issueViewTab");
     boardTab->setCheckable(true);
     boardTab->setCursor(Qt::PointingHandCursor);
     boardTab->setToolTip("Kanban board: drag issues between status columns");
@@ -71,9 +386,9 @@ QWidget *MainWindow::buildIssuesSection()
     // A second "New issue" button at the top of the list pane so filing an issue
     // doesn't require first selecting one to reach the button in the detail header
     // (adhoc #11). Shares promptNewIssue and the same enable/disable rule.
-    m_issueListNewButton = new QPushButton("New issue");
-    m_issueListNewButton->setObjectName("primaryButton");
-    m_issueListNewButton->setProperty("buttonSize", "sm");
+    m_issueListNewButton =
+        new VerticalIconButton("New issue", VerticalIconButton::Action);
+    m_issueListNewButton->setObjectName("issueHeaderAction");
     m_issueListNewButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_issueListNewButton, "plus", 16);
 
@@ -98,8 +413,8 @@ QWidget *MainWindow::buildIssuesSection()
     // is kept for state but hidden from the user.
     m_issuesRepoCombo->hide();
 
-    m_issueSearch = new QLineEdit;
-    m_issueSearch->setObjectName("issueSearch");
+    m_issueSearch = new QLineEdit(listPane);
+    m_issueSearch->setObjectName("issueListSearchState");
     m_issueSearch->setPlaceholderText("Search issues\xE2\x80\xA6");
     m_issueSearch->setClearButtonEnabled(true);
 
@@ -110,41 +425,37 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueLabelFilter->setObjectName("issueControlSm");
     m_issueMilestoneFilter = new QComboBox;
     m_issueMilestoneFilter->setObjectName("issueControlSm");
-    auto *filterRow = new QHBoxLayout;
-    filterRow->setContentsMargins(0, 0, 0, 0);
-    filterRow->addWidget(m_issueSearch, 1);
-    filterRow->addWidget(m_issueLabelFilter);
-    filterRow->addWidget(m_issueMilestoneFilter);
+    // The app-wide top search mirrors into this hidden query state while the
+    // Issues page is active.
+    m_issueSearch->hide();
 
     m_issueNewButton = new QPushButton("New issue");
     m_issueNewButton->setObjectName("primaryButton");
     m_issueNewButton->setProperty("buttonSize", "sm");
     m_issueNewButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_issueNewButton, "plus", 16);
-    m_issueSyncButton = new QPushButton("Sync inbox");
-    m_issueSyncButton->setObjectName("ghostButton");
-    m_issueSyncButton->setProperty("buttonSize", "sm");
+    m_issueSyncButton =
+        new VerticalIconButton("Sync inbox", VerticalIconButton::Action);
+    m_issueSyncButton->setObjectName("issueHeaderAction");
     m_issueSyncButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_issueSyncButton, "sync", 16);
     m_issueSyncButton->setToolTip(
         "Pull issue/comment submissions filed by other nodes and merge them");
-    auto *issueBurnupButton = new QPushButton("Burn-up chart");
-    issueBurnupButton->setObjectName("ghostButton");
-    issueBurnupButton->setProperty("buttonSize", "sm");
+    auto *issueBurnupButton =
+        new VerticalIconButton("Burn-up", VerticalIconButton::Action);
+    issueBurnupButton->setObjectName("issueBurnupAction");
     issueBurnupButton->setCursor(Qt::PointingHandCursor);
     issueBurnupButton->setToolTip(
         "Show open and closed issue totals over time");
     setOcticon(issueBurnupButton, "graph", 16);
-    m_issueDetailToggle = new QPushButton("Show detail");
-    m_issueDetailToggle->setObjectName("ghostButton");
-    m_issueDetailToggle->setCursor(Qt::PointingHandCursor);
-    m_issueDetailToggle->setToolTip("Show/hide the issue detail panel");
+    m_issueDetailToggle = new QPushButton(page);
+    m_issueDetailToggle->hide();
     m_issueCreditsLabel = new QLabel;
     m_issueCreditsLabel->setObjectName("statusLine");
     m_issueCreditsLabel->setToolTip("Voting credits — earn 1 per hour online");
-    auto *reprioritizeButton = new QPushButton("Reprioritize");
-    reprioritizeButton->setObjectName("ghostButton");
-    reprioritizeButton->setProperty("buttonSize", "sm");
+    auto *reprioritizeButton =
+        new VerticalIconButton("Reprioritize", VerticalIconButton::Action);
+    reprioritizeButton->setObjectName("issueReprioritizeAction");
     reprioritizeButton->setCursor(Qt::PointingHandCursor);
     reprioritizeButton->setToolTip(
         "Assign a priority + MVP/Phase 2 label to open issues with no priority, "
@@ -158,25 +469,31 @@ QWidget *MainWindow::buildIssuesSection()
     // "New issue" (adhoc #130/#354, see m_looperToggle), so it is not a button
     // in this action row.
 
-    // Issue #286: hand the README and the open backlog to the default agent and
-    // let it rank the issues. The instruction is editable in Settings -> Agents.
-    // Sits at the top of the panel next to the title (a primary action, not lost
-    // among the ghost buttons of the crowded filter/bulk row below).
-    m_issuePrioritizeButton = new QPushButton("Prioritize from README");
-    m_issuePrioritizeButton->setObjectName("primaryButton");
-    m_issuePrioritizeButton->setProperty("buttonSize", "sm");
+    // Draft an editable README-triage prompt into the footer composer. The user
+    // can review it and choose the agent/model there before sending.
+    m_issuePrioritizeButton = new VerticalIconButton(
+        "Prioritize from README", VerticalIconButton::Action);
+    m_issuePrioritizeButton->setObjectName("issuePrioritizeAction");
     m_issuePrioritizeButton->setCursor(Qt::PointingHandCursor);
     m_issuePrioritizeButton->setToolTip(
         "Ask the default agent to rank the open issues against the project's "
         "README and rewrite each issue's priority. The prompt is editable in "
         "Settings \xE2\x86\x92 Agents.");
     setOcticon(m_issuePrioritizeButton, "rocket", 16);
-    connect(m_issuePrioritizeButton, &QPushButton::clicked, this,
-            &MainWindow::prioritizeIssuesFromReadme);
+    connect(m_issuePrioritizeButton, &QPushButton::clicked, this, [this] {
+        if (!m_issueQuickAdd)
+            return;
+        recordQuickAddHistory(m_issueQuickAdd->toPlainText());
+        m_issueQuickAdd->setPlainText(prioritizePromptSetting());
+        m_issueQuickAdd->moveCursor(QTextCursor::End);
+        m_issueQuickAdd->setFocus();
+        setRepoDetailNotice(
+            "Prioritization prompt drafted — review it, then send it to your agent.");
+    });
 
-    // Agent picker next to the button so a run can target any provider, not just
-    // the saved default. Seeded from the default agent (Settings -> Agents).
-    m_issuePrioritizeAgentCombo = new QComboBox;
+    // Retained as hidden provider state for compatibility with older settings
+    // and the direct-run methods; the visible provider picker is the composer.
+    m_issuePrioritizeAgentCombo = new QComboBox(page);
     m_issuePrioritizeAgentCombo->setObjectName("issueControlSm");
     m_issuePrioritizeAgentCombo->addItem(QStringLiteral("Codex"), kCodexProvider);
     m_issuePrioritizeAgentCombo->addItem(QStringLiteral("OpenAI API"),
@@ -189,39 +506,47 @@ QWidget *MainWindow::buildIssuesSection()
     m_issuePrioritizeAgentCombo->setToolTip(
         "Agent that ranks/reviews the issues. Defaults to your default agent "
         "(Settings \xE2\x86\x92 Agents).");
+    m_issuePrioritizeAgentCombo->hide();
 
-    // Adhoc #139: sibling of "Prioritize from README" that, instead of ranking,
-    // asks the same picked agent to judge how complete/actionable each open issue
-    // is and shows the verdict in a report dialog. Reuses the agent picker above.
-    m_issueCompletenessButton = new QPushButton("Analyze completeness");
-    m_issueCompletenessButton->setObjectName("ghostButton");
-    m_issueCompletenessButton->setProperty("buttonSize", "sm");
+    // Completeness uses the same inspect-before-send drafting workflow.
+    m_issueCompletenessButton =
+        new VerticalIconButton("Analyze", VerticalIconButton::Action);
+    m_issueCompletenessButton->setObjectName("issueAnalyzeAction");
     m_issueCompletenessButton->setCursor(Qt::PointingHandCursor);
     m_issueCompletenessButton->setToolTip(
         "Ask the picked agent to rate how complete each open issue is (clear "
         "problem, enough detail, acceptance criteria), then label each issue "
         "Complete/Partial/Incomplete and set its progress from the verdict.");
     setOcticon(m_issueCompletenessButton, "list-unordered", 16);
-    connect(m_issueCompletenessButton, &QPushButton::clicked, this,
-            &MainWindow::analyzeIssueCompleteness);
+    connect(m_issueCompletenessButton, &QPushButton::clicked, this, [this] {
+        if (!m_issueQuickAdd)
+            return;
+        recordQuickAddHistory(m_issueQuickAdd->toPlainText());
+        m_issueQuickAdd->setPlainText(completenessPrompt());
+        m_issueQuickAdd->moveCursor(QTextCursor::End);
+        m_issueQuickAdd->setFocus();
+        setRepoDetailNotice(
+            "Completeness prompt drafted — review it, then send it to your agent.");
+    });
 
-    // Place them right after the "Issues" heading, ahead of the view-tab toggles:
-    // prioritize, then completeness, then the shared agent picker.
+    // Every list action shares the icon-over-caption top row.
     headingRow->insertWidget(1, m_issuePrioritizeButton);
-    headingRow->insertWidget(2, m_issuePrioritizeAgentCombo);
     headingRow->insertWidget(2, m_issueCompletenessButton);
+    headingRow->insertWidget(4, m_issueSyncButton);
+    headingRow->insertWidget(5, issueBurnupButton);
+    headingRow->insertWidget(6, reprioritizeButton);
 
     // Historical bounty metadata remains visible for audit/migration, but new
     // pledges are disabled because the retired payout flow depended on
     // Worker-held escrow keys.
-    auto *bountyAllAmount = new QLineEdit;
+    auto *bountyAllAmount = new QLineEdit(listPane);
     bountyAllAmount->setObjectName("issueControlSm");
     bountyAllAmount->setPlaceholderText("retired");
     bountyAllAmount->setMaximumWidth(70);
     bountyAllAmount->setEnabled(false);
     bountyAllAmount->setToolTip(
         "New bounty escrow is disabled; historical entries are migration-only.");
-    auto *bountyAllButton = new QPushButton("Bounties retired");
+    auto *bountyAllButton = new QPushButton("Bounties retired", listPane);
     bountyAllButton->setObjectName("ghostButton");
     bountyAllButton->setProperty("buttonSize", "sm");
     bountyAllButton->setEnabled(false);
@@ -229,21 +554,15 @@ QWidget *MainWindow::buildIssuesSection()
         "ForkMesh no longer creates or funds Worker-held bounty escrow.");
     setOcticon(bountyAllButton, "tag", 16);
 
-    auto *actionRow = new QHBoxLayout;
-    actionRow->setContentsMargins(0, 0, 0, 0);
-    actionRow->addWidget(m_issueSyncButton);
-    actionRow->addWidget(issueBurnupButton);
-    actionRow->addWidget(reprioritizeButton);
-    actionRow->addWidget(bountyAllAmount);
-    actionRow->addWidget(bountyAllButton);
-    actionRow->addWidget(m_issueStatusFilter);
-    actionRow->addStretch();
-    actionRow->addWidget(m_issueCreditsLabel);
-    actionRow->addWidget(m_issueDetailToggle);
+    bountyAllAmount->hide();
+    bountyAllButton->hide();
+    headingRow->addWidget(m_issueStatusFilter);
+    headingRow->addWidget(m_issueLabelFilter);
+    headingRow->addWidget(m_issueMilestoneFilter);
+    headingRow->addWidget(m_issueCreditsLabel);
 
     m_issueTable = new QTableWidget(0, 17);
-    m_issueTable->setObjectName("issueTable");
-    installColumnHeaderMenu(m_issueTable); // 3-dots per-column menu (adhoc #73)
+    m_issueTable->setObjectName("issueList");
     enableHoverRowHighlight(m_issueTable);
     m_issueTable->setHorizontalHeaderLabels(
         {"#", "Title", "Priority", "Status", "Votes", "Labels", "Milestone",
@@ -256,13 +575,13 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueTable->setShowGrid(false);
     m_issueTable->setWordWrap(false);
     m_issueTable->setSortingEnabled(true);
-    // The launch backlog opens in execution order: 1 is highest, 99 lowest.
+    // The backlog opens in execution order: 1 is highest, 8999 lowest.
     m_issueTable->sortByColumn(2, Qt::AscendingOrder);
-    m_issueTable->setToolTip("Click a column header to sort. Double-click an "
-                             "editable cell (title, priority, status, labels, "
-                             "milestone, progress, bounty) to edit it.");
+    m_issueTable->setToolTip(
+        "Select an issue to keep its detail visible. Double-click a row to edit its title.");
     QHeaderView *header = m_issueTable->horizontalHeader();
     header->setHighlightSections(false);
+    header->hide();
     header->setSectionResizeMode(0, QHeaderView::ResizeToContents); // #
     // Title is user-expandable: a draggable Interactive column with a generous
     // default width rather than a locked Stretch flex column, so long titles can
@@ -284,7 +603,13 @@ QWidget *MainWindow::buildIssuesSection()
     header->setSectionResizeMode(14, QHeaderView::ResizeToContents); // Comments
     header->setSectionResizeMode(15, QHeaderView::ResizeToContents); // Files
     header->setSectionResizeMode(16, QHeaderView::ResizeToContents); // Assignee
-    makeColumnsResizable(m_issueTable);
+    for (int column = 0; column < m_issueTable->columnCount(); ++column)
+        m_issueTable->setColumnHidden(column, column != 1);
+    header->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_issueTable->setItemDelegateForColumn(
+        1, new IssueSummaryDelegate(m_issueTable));
+    m_issueTable->setMouseTracking(true);
+    m_issueTable->setFrameShape(QFrame::NoFrame);
     // Render the Progress column as a mini bar (keeps row hover via the subclass).
     m_issueTable->setItemDelegateForColumn(11, new ProgressBarDelegate(m_issueTable));
     // Drag along a Progress cell to set the value (handled in eventFilter).
@@ -367,9 +692,6 @@ QWidget *MainWindow::buildIssuesSection()
     listLayout->addWidget(
         makeOverflowToolbar(headingRow, QStringLiteral("issueHeadingToolbar")));
     listLayout->addWidget(m_issuesRepoCombo);
-    listLayout->addLayout(filterRow);
-    listLayout->addWidget(
-        makeOverflowToolbar(actionRow, QStringLiteral("issueBulkToolbar")));
     listLayout->addWidget(m_issueListStack, 1);
 
     // Center: GitHub-style selected issue page: title header, status, timeline and
@@ -573,6 +895,7 @@ QWidget *MainWindow::buildIssuesSection()
     m_issuePriorityValue = new QLabel("No priority");
     m_issueEstimateValue = new QLabel("\xE2\x80\x94");
     m_issueBountyValue = new QLabel("No bounty");
+    m_issueCommentsValue = new QLabel("No comments");
     // Draggable progress bar (drag along the track to set percent complete); the
     // store write and reload happen once on release.
     auto *progressSlider = new ProgressSlider;
@@ -594,7 +917,8 @@ QWidget *MainWindow::buildIssuesSection()
                       m_issueMilestoneValue, m_issueDatesValue,
                       m_issuePriorityValue,
                       m_issueEstimateValue,
-                      m_issueBountyValue}) {
+                      m_issueBountyValue,
+                      m_issueCommentsValue}) {
         v->setObjectName("statusLine");
         v->setWordWrap(true);
         v->setTextFormat(Qt::RichText);
@@ -642,7 +966,7 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDeleteButton->setObjectName("issueDangerLink");
     m_issueDeleteButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_issueDeleteButton, "trash", 15);
-    // Quick priority nudges (a quarter of the 1..99 span per click) shown beside
+    // Quick priority nudges shown beside
     // the Priority gear: chevron-up raises priority, chevron-down lowers it.
     m_issuePriorityRaiseButton = new QPushButton;
     m_issuePriorityLowerButton = new QPushButton;
@@ -825,11 +1149,10 @@ QWidget *MainWindow::buildIssuesSection()
     auto *priorityEditLayout = new QVBoxLayout(priorityEditBox);
     priorityEditLayout->setContentsMargins(0, 0, 0, 0);
     priorityEditLayout->setSpacing(6);
-    m_issuePriorityEdit = new QComboBox(meta);
-    m_issuePriorityEdit->addItem("No priority", 0);
-    for (int priority = 1; priority <= 99; ++priority)
-        m_issuePriorityEdit->addItem(QString::number(priority), priority);
-    m_issuePriorityEdit->setToolTip("1 is highest priority; 99 is lowest");
+    m_issuePriorityEdit = new QSpinBox(meta);
+    m_issuePriorityEdit->setRange(0, 8999);
+    m_issuePriorityEdit->setSpecialValueText("No priority");
+    m_issuePriorityEdit->setToolTip("1 is highest priority; 8999 is lowest");
     auto *prioritySave = makeEditorButton("Save", "primaryButton");
     auto *priorityCancel = makeEditorButton("Cancel", "ghostButton");
     priorityEditLayout->addWidget(m_issuePriorityEdit);
@@ -978,6 +1301,7 @@ QWidget *MainWindow::buildIssuesSection()
                    {m_issueProgressBoostButton});
     addMetaSection("Est. OpenAI cost", m_issueEstimateValue);
     addMetaSection("Bounty", m_issueBountyValue, m_issueBountyButton);
+    addMetaSection("Comments", m_issueCommentsValue);
     addMetaSection("Projects", makeValue("No projects"), makeGear());
     addMetaSection("Milestone", m_issueMilestoneStack, m_issueMilestoneButton);
     addMetaSection("Dates", m_issueDatesStack, m_issueDatesButton);
@@ -1035,7 +1359,7 @@ QWidget *MainWindow::buildIssuesSection()
     metaScroll->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
     metaScroll->setWidget(meta);
 
-    // Collapsible detail panel: the issue thread (center) + metadata sidebar,
+    // Persistent detail panel: the issue thread (center) + metadata sidebar,
     // sharing their own draggable divider.
     auto *issueDetailView = new QWidget;
     auto *detailSplit = new QSplitter(Qt::Horizontal);
@@ -1146,33 +1470,19 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDetail->setMinimumWidth(0);
     m_issueDetail->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Expanding);
 
-    // The issue page overlays the list instead of sharing a splitter with it.
-    // This keeps the detail full-width regardless of how far the user expanded
-    // a table column. Hiding it reveals the untouched list immediately below.
-    m_issueDetail->hide();
-    auto *layout = new QStackedLayout(page);
+    closeDetailButton->hide();
+    auto *issuesSplit = new QSplitter(Qt::Horizontal, page);
+    issuesSplit->setObjectName("issuesListDetailSplit");
+    issuesSplit->setChildrenCollapsible(false);
+    issuesSplit->addWidget(listPane);
+    issuesSplit->addWidget(m_issueDetail);
+    issuesSplit->setStretchFactor(0, 1);
+    issuesSplit->setStretchFactor(1, 2);
+    issuesSplit->setSizes({460, 900});
+    m_issueDetail->show();
+    auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setStackingMode(QStackedLayout::StackAll);
-    layout->addWidget(listPane);
-    layout->addWidget(m_issueDetail);
-
-    connect(m_issueDetailToggle, &QPushButton::clicked, this, [this] {
-        const bool show = !m_issueDetail->isVisible();
-        m_issueDetail->setVisible(show);
-        if (show)
-            m_issueDetail->raise();
-        m_issueDetailToggle->setText(show ? "Hide detail" : "Show detail");
-        // Opening / closing the detail pane moves between the list and the
-        // issue, both of which the Back button can return to.
-        scheduleNavRecord();
-    });
-    connect(closeDetailButton, &QPushButton::clicked, this, [this] {
-        if (m_issueDetail)
-            m_issueDetail->hide();
-        if (m_issueDetailToggle)
-            m_issueDetailToggle->setText("Show detail");
-        scheduleNavRecord();
-    });
+    layout->addWidget(issuesSplit, 1);
     connect(m_issuesRepoCombo, &QComboBox::currentIndexChanged, this,
             [this](int) { reloadIssues(); });
     connect(m_issueStatusFilter, &QComboBox::currentIndexChanged, this,
@@ -1641,11 +1951,11 @@ void MainWindow::selectIssueListTab(int id)
     // Search + label/milestone filters apply to both the table and the board; the
     // Open/Closed status filter is table-only (the board's Done column *is* the
     // closed state). The detail toggle drives the shared right-hand issue panel.
-    m_issueSearch->setVisible(tableMode || boardMode);
+    m_issueSearch->hide();
     m_issueLabelFilter->setVisible(tableMode || boardMode);
     m_issueMilestoneFilter->setVisible(tableMode || boardMode);
     m_issueStatusFilter->setVisible(tableMode);
-    m_issueDetailToggle->setVisible(tableMode || boardMode);
+    m_issueDetailToggle->hide();
     if (boardMode)
         refreshIssueBoard();
     // Issues / Milestones / Labels / Board are four distinct destinations, so
@@ -1876,15 +2186,8 @@ void MainWindow::refreshIssueBoard()
             continue;
         if (!msFilter.isEmpty() && issue.milestone != msFilter)
             continue;
-        if (!search.isEmpty()) {
-            const QString hay = QStringLiteral("#%1 %2 %3 %4 %5")
-                                    .arg(issue.number)
-                                    .arg(issue.title)
-                                    .arg(issue.priority)
-                                    .arg(issue.labels.join(" "), issue.milestone);
-            if (!hay.contains(search, Qt::CaseInsensitive))
-                continue;
-        }
+        if (!search.isEmpty() && !issueMatchesQuery(issue, search))
+            continue;
         buckets[issueBoardColumn(issue)].append(&issue);
     }
 
@@ -2015,7 +2318,7 @@ void MainWindow::refreshIssueList()
     // (now-closed) issue instead of collapsing to the full-width list (issue #188).
     const bool keepCurrent = m_keepCurrentOnReload;
     m_keepCurrentOnReload = false;
-    const bool detailWasOpen = m_issueDetail && m_issueDetail->isVisible();
+    const bool detailWasOpen = true;
 
     // Disable sorting while inserting so rows aren't reordered mid-build.
     // Block signals during the full rebuild so that setRowCount(0),
@@ -2042,18 +2345,44 @@ void MainWindow::refreshIssueList()
         // its normal Open/Closed list with a warning badge below.
         if (issue.isDeleted() && statusFilter != "All")
             continue;
-        // Free-text search over number, title, priority, labels and milestone.
-        if (!search.isEmpty()) {
-            const QString hay = QStringLiteral("#%1 %2 %3 %4 %5")
-                                    .arg(issue.number)
-                                    .arg(issue.title)
-                                    .arg(issue.priority)
-                                    .arg(issue.labels.join(" "), issue.milestone);
-            if (!hay.contains(search, Qt::CaseInsensitive))
-                continue;
-        }
+        if (!search.isEmpty() && !issueMatchesQuery(issue, search))
+            continue;
         visible.append(&issue);
     }
+
+    int openCount = 0;
+    int closedCount = 0;
+    int unprioritizedCount = 0;
+    for (const Issue &issue : std::as_const(m_currentIssues)) {
+        if (issue.isDeleted())
+            continue;
+        if (issue.status == QLatin1String("closed"))
+            ++closedCount;
+        else {
+            ++openCount;
+            if (issue.priority <= 0)
+                ++unprioritizedCount;
+        }
+    }
+    auto badge = [](QAbstractButton *button, qint64 count) {
+        if (auto *tile = dynamic_cast<VerticalIconButton *>(button))
+            tile->setBadgeCount(count);
+    };
+    if (m_issueTabGroup) {
+        badge(m_issueTabGroup->button(0), visible.size());
+        badge(m_issueTabGroup->button(1), m_currentMilestones.size());
+        badge(m_issueTabGroup->button(2), m_currentLabels.size());
+        badge(m_issueTabGroup->button(3), m_currentIssues.size());
+    }
+    badge(m_issuePrioritizeButton, openCount);
+    badge(m_issueCompletenessButton, openCount);
+    badge(findChild<QPushButton *>("issueBurnupAction"), closedCount);
+    badge(findChild<QPushButton *>("issueReprioritizeAction"),
+          unprioritizedCount);
+
+    QHash<QString, QString> labelColorByName;
+    for (const IssueLabel &label : std::as_const(m_currentLabels))
+        labelColorByName.insert(label.name, label.color);
 
     // Allocate the model once. Per-row insert signals forced QTableView through
     // repeated geometry/layout passes even with painting disabled.
@@ -2075,15 +2404,16 @@ void MainWindow::refreshIssueList()
                 QStringLiteral("Assigned to %1").arg(issue.assignees.join(", ")));
         }
         m_issueTable->setItem(row, 1, titleItem);
+        m_issueTable->setRowHeight(row, 58);
 
         auto *priority = new SortTableWidgetItem(
             issue.priority > 0 ? QString::number(issue.priority)
                                : QString::fromUtf8("\xE2\x80\x94"));
-        // Unset priorities sort after 99 without pretending to be priority 100.
+        // Unset priorities sort after the supported rank range.
         priority->setData(kTableSortRole,
-                          issue.priority > 0 ? issue.priority : 100);
+                          issue.priority > 0 ? issue.priority : 9000);
         priority->setTextAlignment(Qt::AlignCenter);
-        priority->setToolTip("1 is highest priority; 99 is lowest");
+        priority->setToolTip("1 is highest priority; 8999 is lowest");
         m_issueTable->setItem(row, 2, priority);
 
         QString statusText = issue.status == "closed" ? "Closed" : "Open";
@@ -2135,6 +2465,7 @@ void MainWindow::refreshIssueList()
         updated->setToolTip(formatIssueRelativeTime(updatedAt));
         m_issueTable->setItem(row, 8, updated);
 
+        QString agentText;
         if (const AgentSession *session = latestAgentSessionForIssue(issue.number)) {
             // Provider name, prefixed with a spinner frame while the agent is
             // still working so the list shows live activity at a glance.
@@ -2143,6 +2474,7 @@ void MainWindow::refreshIssueList()
             if (working)
                 text = QString::fromUtf8(kAgentSpinFrames[m_issueSpinFrame % 10]) +
                        QStringLiteral(" ") + text;
+            agentText = text;
             auto *agentItem = new QTableWidgetItem(text);
             // Running rows carry the same orange as every other spinner (adhoc #23).
             if (working)
@@ -2241,6 +2573,42 @@ void MainWindow::refreshIssueList()
             new QTableWidgetItem(issue.assignees.isEmpty()
                                      ? QString::fromUtf8("\xE2\x80\x94")
                                      : issue.assignees.join(QStringLiteral(", "))));
+
+        QStringList colors;
+        for (const QString &label : issue.labels)
+            colors << labelColorByName.value(label, QStringLiteral("#64748B"));
+        titleItem->setData(Qt::UserRole, issue.number);
+        titleItem->setData(IssueStatusRole,
+                           issue.isDeleted() ? QStringLiteral("deleted")
+                                             : issue.status);
+        titleItem->setData(IssuePriorityRole, issue.priority);
+        titleItem->setData(IssueVotesRole, issue.votes);
+        titleItem->setData(IssueLabelsRole, issue.labels);
+        titleItem->setData(IssueLabelColorsRole, colors);
+        titleItem->setData(IssueMilestoneRole, issue.milestone);
+        titleItem->setData(IssueCreatedRole, compactIssueAge(issue.createdAt));
+        titleItem->setData(IssueUpdatedRole, compactIssueAge(updatedAt));
+        titleItem->setData(IssueAuthorRole, author);
+        titleItem->setData(IssueAssigneesRole, issue.assignees);
+        titleItem->setData(IssueProgressRole, pct);
+        titleItem->setData(
+            IssueFilesRole,
+            m_issueTable->item(row, 15)
+                ? m_issueTable->item(row, 15)->data(kTableSortRole).toInt()
+                : 0);
+        titleItem->setData(IssueAgentRole, agentText);
+        QStringList tooltip{
+            QStringLiteral("#%1 — %2").arg(issue.number).arg(issue.title)};
+        if (issue.priority > 0)
+            tooltip << QStringLiteral("Priority %1 · %2 · %3")
+                           .arg(issue.priority)
+                           .arg(issuePriorityMeaning(issue.priority),
+                                issuePriorityColor(issue.priority).name());
+        if (!issue.labels.isEmpty())
+            tooltip << QStringLiteral("Labels: %1").arg(issue.labels.join(", "));
+        if (!issue.milestone.isEmpty())
+            tooltip << QStringLiteral("Milestone: %1").arg(issue.milestone);
+        titleItem->setToolTip(tooltip.join(QLatin1Char('\n')));
     }
     m_issueTable->setSortingEnabled(true);
     m_issueTable->blockSignals(false);
@@ -2274,30 +2642,20 @@ void MainWindow::refreshIssueList()
             }
         }
         if (!stillThere) {
-            // The issue genuinely vanished (e.g. deleted) — fall back to the
-            // collapsed list below.
             m_issueTable->clearSelection();
             m_currentIssueNumber = -1;
-            if (m_issueDetail && m_issueDetail->isVisible()) {
-                m_issueDetail->hide();
-                if (m_issueDetailToggle)
-                    m_issueDetailToggle->setText("Show detail");
-            }
             renderIssueThread(Issue());
             updateIssueActionState();
         }
     } else {
-        // First load (or the viewed issue is gone): show the table full width
-        // with no row selected; the detail panel stays hidden until a click.
-        m_issueTable->clearSelection();
-        m_currentIssueNumber = -1;
-        if (m_issueDetail && m_issueDetail->isVisible()) {
-            m_issueDetail->hide();
-            if (m_issueDetailToggle)
-                m_issueDetailToggle->setText("Show detail");
+        if (m_issueTable->rowCount() > 0) {
+            m_issueTable->selectRow(0);
+        } else {
+            m_issueTable->clearSelection();
+            m_currentIssueNumber = -1;
+            renderIssueThread(Issue());
+            updateIssueActionState();
         }
-        renderIssueThread(Issue());
-        updateIssueActionState();
     }
 
     // Animate the per-row Agent spinner only while something is actually working.
@@ -2670,6 +3028,12 @@ void MainWindow::renderIssueThread(const Issue &issue)
             m_issueDatesValue->setText("No dates");
         if (m_issuePriorityValue)
             m_issuePriorityValue->setText("No priority");
+        if (m_issueEstimateValue)
+            m_issueEstimateValue->setText(QString::fromUtf8("\xE2\x80\x94"));
+        if (m_issueBountyValue)
+            m_issueBountyValue->setText("No bounty");
+        if (m_issueCommentsValue)
+            m_issueCommentsValue->setText("No comments");
         updateIssueAgentUi(Issue());
         refreshIssueFilesPanel(Issue());
         cancelIssueSidebarEditors();
@@ -2734,8 +3098,11 @@ void MainWindow::renderIssueThread(const Issue &issue)
     }
     m_issuePriorityValue->setText(
         issue.priority > 0
-            ? QStringLiteral("<b>%1</b> <span style='color:#8b949e'>(1 highest, 99 lowest)</span>")
+            ? QStringLiteral("<b style='color:%1'>%2 · %3</b> "
+                             "<span style='color:#8b949e'>(1 highest, 8999 lowest)</span>")
+                  .arg(issuePriorityColor(issue.priority).name())
                   .arg(issue.priority)
+                  .arg(issuePriorityMeaning(issue.priority))
             : QStringLiteral("No priority"));
     if (m_issueProgressSlider)
         static_cast<ProgressSlider *>(m_issueProgressSlider)
@@ -2757,6 +3124,35 @@ void MainWindow::renderIssueThread(const Issue &issue)
         } else {
             m_issueBountyValue->setText(QStringLiteral("No bounty"));
         }
+    }
+    if (m_issueCommentsValue) {
+        QSet<QString> deleted;
+        for (const IssueEvent &ev : issue.events)
+            if (ev.type == QLatin1String("delete") && !ev.target.isEmpty() &&
+                ev.target != QLatin1String("self"))
+                deleted.insert(ev.target);
+        int comments = 0;
+        QString latest;
+        qint64 latestTs = -1;
+        for (const IssueEvent &ev : issue.events) {
+            if (ev.type != QLatin1String("comment") || deleted.contains(ev.id))
+                continue;
+            ++comments;
+            if (ev.ts >= latestTs) {
+                latestTs = ev.ts;
+                latest = ev.authorName.trimmed().isEmpty() ? ev.author.left(8)
+                                                            : ev.authorName.trimmed();
+            }
+        }
+        m_issueCommentsValue->setText(
+            comments == 0
+                ? QStringLiteral("No comments")
+                : QStringLiteral("<b>%1</b>%2")
+                      .arg(comments)
+                      .arg(latest.isEmpty()
+                               ? QString()
+                               : QStringLiteral(" <span style='color:#8b949e'>latest by %1</span>")
+                                     .arg(latest.toHtmlEscaped())));
     }
     updateIssueAgentUi(issue);
     refreshIssueFilesPanel(issue);
@@ -2821,11 +3217,8 @@ void MainWindow::renderIssueThread(const Issue &issue)
                 ? QDateTime::fromMSecsSinceEpoch(issue.endDate).date()
                 : QDate::currentDate());
     }
-    if (m_issuePriorityEdit) {
-        const int selected = m_issuePriorityEdit->findData(issue.priority);
-        if (selected >= 0)
-            m_issuePriorityEdit->setCurrentIndex(selected);
-    }
+    if (m_issuePriorityEdit)
+        m_issuePriorityEdit->setValue(issue.priority);
     cancelIssueSidebarEditors();
 
     // Pre-compute edits (target -> latest edit), deletions, and the opening
@@ -3529,6 +3922,7 @@ void MainWindow::updateIssueActionState()
         m_issueListNewButton->setEnabled(writable || issuesRepoIndex() >= 0);
     if (m_issueSyncButton)
         m_issueSyncButton->setEnabled(writable);
+    refreshPendingInboxBadges();
     if (m_issueTitleEditButton)
         m_issueTitleEditButton->setEnabled(writable && haveIssue);
     if (m_issueTitleEditor)
@@ -3784,11 +4178,10 @@ void MainWindow::composeNewIssue(const QString &prefillTitle,
     typeValue->setObjectName("statusLine");
     addSection("Type", typeValue);
 
-    auto *priorityCombo = new QComboBox(sidebar);
-    priorityCombo->addItem("No priority", 0);
-    for (int priority = 1; priority <= 99; ++priority)
-        priorityCombo->addItem(QString::number(priority), priority);
-    priorityCombo->setToolTip("1 is highest priority; 99 is lowest");
+    auto *priorityCombo = new QSpinBox(sidebar);
+    priorityCombo->setRange(0, 8999);
+    priorityCombo->setSpecialValueText("No priority");
+    priorityCombo->setToolTip("1 is highest priority; 8999 is lowest");
     addSection("Priority", priorityCombo);
 
     auto *projectsValue = new QLabel("No projects", sidebar);
@@ -3866,7 +4259,7 @@ void MainWindow::composeNewIssue(const QString &prefillTitle,
         const QStringList labels = splitIssueFieldList(labelsEdit->text());
         const QStringList assignees = splitIssueFieldList(assigneesEdit->text());
         const QString milestone = milestoneCombo->currentData().toString();
-        const int priority = priorityCombo->currentData().toInt();
+        const int priority = priorityCombo->value();
 
         IssueStore store = issueStoreForCurrentRepo();
         // On a mirror (no work tree) we can't write the issue locally, so send a
@@ -3952,11 +4345,12 @@ void MainWindow::quickAddIssue()
     if (!m_issueQuickAdd)
         return;
     const QString title = m_issueQuickAdd->toPlainText().trimmed();
-    if (title.isEmpty())
+    if (title.isEmpty() && m_quickAddImages.isEmpty())
         return;
     // Remember this prompt so Up can recall it later (adhoc #200). Recording here,
     // before the field is cleared, covers every send path below.
-    recordQuickAddHistory(title);
+    if (!title.isEmpty())
+        recordQuickAddHistory(title);
 
     // "No issue" mode (issue #299): don't create an issue at all — hand the typed
     // text straight to a coding agent as its prompt, like the Agents-tab composer.
@@ -3967,6 +4361,28 @@ void MainWindow::quickAddIssue()
         m_quickAddAgentProvider
             ? m_quickAddAgentProvider->currentData().toString()
             : QStringLiteral("claude-code");
+    // Cloudflare AI is neither an agent nor an issue: the picked Workers AI model
+    // answers the prompt on the relay and the reply is shown (adhoc #1407). It
+    // has no checkout, so it must be handled before the agent hand-off below.
+    if (agentIsCloudflareAiProvider(quickAddProvider)) {
+        if (title.isEmpty())
+            return;
+        const QString model = selectedModelComboValue(m_quickAddClaudeModel);
+        // Workers AI text models take no images here, so say what was dropped
+        // instead of silently discarding the attachments.
+        if (!m_quickAddImages.isEmpty())
+            logSystem(QStringLiteral("Cloudflare AI answers text only; %1 "
+                                     "attached image(s) were not sent.")
+                          .arg(m_quickAddImages.size()));
+        // Keep an unsent prompt in the composer when authentication is missing
+        // or another Workers AI request is still in flight. The old void path
+        // cleared it even though no request had started.
+        if (!sendPromptToCloudflareAi(title, model))
+            return;
+        m_issueQuickAdd->clear();
+        clearQuickAddImages();
+        return;
+    }
     if (quickAddProvider != QLatin1String("manual")) {
         const QString provider = quickAddProvider;
         const QString model = (provider == QLatin1String("claude-code") ||
@@ -3974,6 +4390,7 @@ void MainWindow::quickAddIssue()
                                   ? selectedModelComboValue(m_quickAddClaudeModel)
                                   : QString();
         const bool createPr = m_quickAddCreatePr && m_quickAddCreatePr->isChecked();
+        const QStringList images = m_quickAddImages;
         // Hand any attached images to the agent the same way the new-agent
         // composer does: an "Attached image: <path>" line per file (issue #79).
         QString prompt = title;
@@ -3982,11 +4399,11 @@ void MainWindow::quickAddIssue()
                 prompt += QLatin1Char('\n');
             prompt += QStringLiteral("Attached image: %1").arg(img);
         }
-        if (startAdHocAgentForRepo(issuesRepoIndex(), prompt, provider, createPr,
-                                   model) > 0) {
+        const int agentSessionId = startAdHocAgentForRepo(
+            issuesRepoIndex(), prompt, provider, createPr, model);
+        if (agentSessionId > 0) {
             m_issueQuickAdd->clear();
             clearQuickAddImages();
-            showPromptBubble(title);
             // No issue exists in this mode (that's the point of it), so saying
             // "no issue created" is just noise — show what actually happened
             // instead: which agent, model, and permission mode picked up the
@@ -4001,14 +4418,22 @@ void MainWindow::quickAddIssue()
                 details.isEmpty()
                     ? QString()
                     : QStringLiteral(" (%1)").arg(details.join(QStringLiteral(", ")));
-            setIssueInlineNotice(
+            const QString startedMessage =
                 QStringLiteral("Started a %1 agent on your prompt%2.")
-                    .arg(agentProviderName(provider), suffix));
+                    .arg(agentProviderName(provider), suffix);
+            // Keep the durable log entry, but fold the confirmation into the
+            // prompt bubble so one send does not produce two stacked cards.
+            logSystem(startedMessage);
+            showPromptBubble(prompt, agentSessionId, startedMessage, images);
         }
         return;
     }
 
     IssueStore store = issueStoreForCurrentRepo();
+    if (title.isEmpty()) {
+        flashMessage(QStringLiteral("Add prompt text before creating an issue."), true);
+        return;
+    }
     if (!store.canWrite()) {
         // Mirror node: send the new issue to the source of truth's inbox. The
         // agent hand-off below needs a local issue, so it stays owner-only.
@@ -4017,12 +4442,13 @@ void MainWindow::quickAddIssue()
             return;
         }
         QPointer<QPlainTextEdit> quickAddGuard(m_issueQuickAdd);
+        const QStringList images = m_quickAddImages;
         quickAddGuard->setEnabled(false);
         // Any queued images ride along as the new issue's attachments, same as
         // the canWrite path below (issue #79).
         const bool started = submitNewIssueToInbox(
             title, QString(), {}, QString(), 0, {}, m_quickAddImages, {},
-            [this, quickAddGuard, title](bool ok, const QString &) {
+            [this, quickAddGuard, title, images](bool ok, const QString &) {
                 // submitNewIssueToInbox already flashes the failure toast; on
                 // success, clear the box now that the maintainer actually has
                 // it — clearing it up front (the old behavior) lost the draft
@@ -4033,7 +4459,7 @@ void MainWindow::quickAddIssue()
                 if (ok) {
                     quickAddGuard->clear();
                     clearQuickAddImages();
-                    showPromptBubble(title);
+                    showPromptBubble(title, -1, QString(), images);
                     setIssueInlineNotice("Your signed issue was sent to the "
                                          "maintainer's inbox. It appears once "
                                          "they sync it.");
@@ -4055,9 +4481,10 @@ void MainWindow::quickAddIssue()
                              true);
         return;
     }
+    const QStringList images = m_quickAddImages;
     m_issueQuickAdd->clear();
     clearQuickAddImages();
-    showPromptBubble(title);
+    showPromptBubble(title, -1, QString(), images);
     m_currentIssueNumber = number;
     appendCreatedIssue(store, created);
     propagateRepoUpdate(issuesRepoIndex());
@@ -4891,7 +5318,9 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     const bool topMessageWidget =
         obj == m_topMessageContainer || obj == m_topMessage ||
         obj == m_topMessageScroll || obj == m_topMessageActions ||
-        obj == m_topMessageMeta || obj == m_topMessageCopy ||
+        obj == m_topMessageMeta || obj == m_topMessageTypeBadge ||
+        obj == m_topMessageActionOutput ||
+        obj == m_topMessageCopy ||
         obj == m_topMessageSendToPrompt || obj == m_topMessageClose ||
         (m_topMessageScroll && obj == m_topMessageScroll->viewport());
     if (topMessageWidget && event->type() == QEvent::Enter) {
@@ -4918,6 +5347,13 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
             }
         }
     }
+    // The collapsed prompt leaves only the account avatar at the footer's
+    // lower-right corner. Hovering that launcher should restore the composer
+    // immediately, so the prompt can be reopened without a second click.
+    if (obj == m_userAvatarNavButton && event->type() == QEvent::Enter &&
+        m_promptOverlayCollapsed) {
+        setPromptOverlayCollapsed(false);
+    }
     // Ctrl + mouse wheel over any registered diff viewer zooms its text size,
     // mirroring the +/- buttons (issue #254). Consume so the view doesn't scroll.
     if (event->type() == QEvent::Wheel &&
@@ -4940,11 +5376,14 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     if (event->type() == QEvent::Resize && m_scmDiff &&
         obj == m_scmDiff->viewport())
         layoutScmStickyHeader();
-    // The Git prompt is a lower-right overlay while that workspace is open, so
-    // follow the detail pane rather than reserving height beneath the graph.
+    // The Git prompt is a lower-left overlay while that workspace is open, so
+    // follow the workspace rather than reserving height beneath the graph.
     if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
         obj == m_commitsStack)
         positionGitPromptOverlay();
+    if ((event->type() == QEvent::Resize || event->type() == QEvent::Show) &&
+        obj == m_globalOverlayHost)
+        positionGlobalFooterOverlays();
     // Keep the floating "Log" button pinned to the live-log strip's bottom-right
     // corner as the strip resizes (adhoc #137). Don't consume — the strip still
     // needs the resize.
@@ -5700,7 +6139,7 @@ void MainWindow::saveIssuePriorityInline()
         return;
     IssueStore store = issueStoreForCurrentRepo();
     QString error;
-    const int priority = m_issuePriorityEdit->currentData().toInt();
+    const int priority = m_issuePriorityEdit->value();
     if (!store.setPriority(m_currentIssueNumber, priority, &error)) {
         setIssueInlineNotice(error.isEmpty() ? "Could not update priority." : error,
                              true);
@@ -5714,22 +6153,17 @@ void MainWindow::nudgeIssuePriority(int direction)
 {
     if (m_currentIssueNumber < 0 || direction == 0)
         return;
-    // Priority runs 1 (highest) to 99 (lowest). A quick nudge moves by a quarter
-    // of that span (~25); direction < 0 raises priority (toward 1), direction > 0
-    // lowers it (toward 99).
+    // Priority runs 1 (highest) to 8999 (lowest). Quick nudges move one rank.
     const int kHighest = 1;
-    const int kLowest = 99;
-    const int step = qRound((kLowest - kHighest) * 0.25);
+    const int kLowest = 8999;
+    const int step = 1;
     int original = 0;
     for (const Issue &issue : std::as_const(m_currentIssues))
         if (issue.number == m_currentIssueNumber) {
             original = issue.priority;
             break;
         }
-    // An unset priority starts from the middle of the range so the first nudge
-    // lands somewhere sensible rather than jumping to an extreme.
-    const int base = original > 0 ? original
-                                  : qRound((kHighest + kLowest) / 2.0);
+    const int base = original > 0 ? original : kLowest;
     const int next = qBound(kHighest, base + direction * step, kLowest);
     if (next == original) {
         setIssueInlineNotice(direction < 0 ? "Already at the highest priority."
@@ -5976,7 +6410,7 @@ void MainWindow::reprioritizeBacklog()
         QString error;
         const bool okLabels = store.setLabels(issue.number, labels, &error);
         const bool okPrio =
-            store.setPriority(issue.number, qMin(99, prio), &error);
+            store.setPriority(issue.number, qMin(8999, prio), &error);
         if (okLabels && okPrio)
             ++done;
         else
@@ -6261,7 +6695,7 @@ void MainWindow::prioritizeIssuesFromReadme()
                 continue;
             seen.insert(number);
             QString error;
-            if (writeStore.setPriority(number, qMin(99, prio), &error))
+            if (writeStore.setPriority(number, qMin(8999, prio), &error))
                 ++applied;
             else
                 ++failed;
@@ -7707,27 +8141,29 @@ void MainWindow::syncIssuesInbox()
     const int idx = issuesRepoIndex();
     if (idx < 0)
         return;
-    drainIssuesInboxFor(m_repositories.at(idx), /*interactive=*/true);
+    showPendingInbox(m_repositories.at(idx), QStringLiteral("issues"));
 }
 
-void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
+void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
+                                     bool forceMirrorIntake)
 {
     // The source of truth writes into its normal working copy. A public mirror
-    // with no checkout uses a short-lived linked worktree below, commits onto
-    // the served branch, and acknowledges with ?mirror=1 — a real drain: the
-    // merged submission now lives in the repo itself and propagates across the
-    // mirror mesh, so the relay deletes the row instead of holding it pending
-    // for the source of truth.
+    // uses a short-lived linked worktree below even when it also keeps a normal
+    // browsing checkout, commits onto the served branch, and acknowledges with
+    // ?mirror=1 — a real drain: the merged submission now lives in the repo
+    // itself and propagates across the mirror mesh, so the relay deletes the
+    // row instead of holding it pending for the source of truth.
     const RepositoryRecord writable = writableRecordFor(repo);
     bool ownerIntake = false;
     {
         IssueStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
                          m_userName);
-        ownerIntake = probe.canWrite();
+        ownerIntake = !forceMirrorIntake && probe.canWrite();
     }
     const QString mirrorPath = repo.mirrorPath.trimmed();
     const bool mirrorIntake =
-        !ownerIntake && !repo.previewOnly && !repo.isPrivate &&
+        (forceMirrorIntake || !ownerIntake) && !repo.previewOnly &&
+        !repo.isPrivate &&
         repo.publishToNetwork && !mirrorPath.isEmpty() &&
         QDir(mirrorPath).exists();
     if (!ownerIntake && !mirrorIntake)
@@ -7741,7 +8177,18 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
     const QString signer = mirrorIntake
         ? accountOwner().trimmed().toLower()
         : repoSegment(repo.owner, QStringLiteral("owner"));
-    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
+    // Authorization for a PUBLIC owner is the relay's call: it verifies this
+    // device against that owner's currently trusted keys (organization
+    // owner/admin membership included) and 401s otherwise, exactly as
+    // signedInboxQuery() documents. hasOwnerSigningCapability(signer) instead
+    // demands signer == session account, which can only ever produce FALSE
+    // NEGATIVES — and did: for a repo whose public owner is not the session
+    // account name this returned early on every tick, so the queue had no path
+    // to this node at all while the website showed "+N pending" forever. Mirror
+    // intake genuinely does speak as the account, so it keeps the strict check.
+    const bool canSign = mirrorIntake ? hasOwnerSigningCapability(signer)
+                                      : hasOwnerSigningCapability();
+    if (signer.isEmpty() || !canSign)
         return;
 
     QUrl url = issuesApiUrl(repo);
@@ -7785,6 +8232,27 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(backoffKey,
                                       QDateTime::currentMSecsSinceEpoch());
+            const int status =
+                reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                    .toInt();
+            // A rejected drain is the difference between "nothing is queued"
+            // and "everything is queued and unreachable". Say so once per repo
+            // instead of only backing off: this failure mode is invisible on an
+            // auto-poll, which is how a full inbox stayed stuck behind a silent
+            // early return in the first place.
+            if (status == 401 || status == 403) {
+                static QSet<QString> s_inboxAuthWarned;
+                if (!s_inboxAuthWarned.contains(backoffKey)) {
+                    s_inboxAuthWarned.insert(backoffKey);
+                    logSystem(QStringLiteral(
+                                  "The relay rejected this node's signed issue "
+                                  "drain for %1/%2 as \"%3\" (HTTP %4), so "
+                                  "web-filed issues can't sync down. Re-link "
+                                  "this node to the account that owns %2.")
+                                  .arg(repo.owner, repo.name, signer)
+                                  .arg(status));
+                }
+            }
             if (interactive)
                 setIssueInlineNotice("Could not reach the inbox: " +
                                          reply->errorString(),
@@ -7865,6 +8333,12 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
 
 void MainWindow::pollMirrorIssueInboxes()
 {
+    // Browsing a public mirror on a desktop does not make the signed-in user a
+    // registered mirror endpoint. Sending ?mirror=1 from those sessions caused
+    // the repeated HTTP/2 "Host requires authentication" warnings. Only a
+    // provisioned headless node may compete for mirror intake leases.
+    if (!m_headless)
+        return;
     if (!m_networkAccess || !hasOwnerSigningCapability(accountOwner()))
         return;
     QSet<QString> seen;
@@ -7873,20 +8347,21 @@ void MainWindow::pollMirrorIssueInboxes()
             repo.mirrorPath.trimmed().isEmpty() ||
             !QDir(repo.mirrorPath).exists())
             continue;
-        const RepositoryRecord writable = writableRecordFor(repo);
-        IssueStore probe(writable.localPath, writable.mirrorPath,
-                         &m_profileIdentity, m_userName);
-        if (probe.canWrite())
-            continue;
         const QString key =
             repo.owner.trimmed().toLower() + QLatin1Char('/') +
             repo.name.trimmed().toLower();
         if (seen.contains(key))
             continue;
         seen.insert(key);
-        drainIssuesInboxFor(repo, /*interactive=*/false);
-        drainPullsInboxFor(repo, /*interactive=*/false);
-        drainDiscussionsInboxFor(repo, /*interactive=*/false);
+        // A browsing checkout does not make a peer the source of truth. Force
+        // the signed mirror path here so mirrors with a writable cache can
+        // compete for and permanently materialize relay leases.
+        drainIssuesInboxFor(repo, /*interactive=*/false,
+                            /*forceMirrorIntake=*/true);
+        drainPullsInboxFor(repo, /*interactive=*/false,
+                           /*forceMirrorIntake=*/true);
+        drainDiscussionsInboxFor(repo, /*interactive=*/false,
+                                 /*forceMirrorIntake=*/true);
     }
 }
 

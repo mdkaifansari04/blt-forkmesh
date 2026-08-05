@@ -47,7 +47,7 @@ class _Request:
     url = "https://forkmesh.test/api/repo/o/r/pending"
 
 
-def test_pending_endpoint_counts_all_four_inboxes_in_one_round_trip():
+def test_pending_endpoint_counts_all_three_collaboration_inboxes_in_one_round_trip():
     queries = []
 
     async def noop(*_a, **_k):
@@ -58,12 +58,11 @@ def test_pending_endpoint_counts_all_four_inboxes_in_one_round_trip():
 
     async def d1_all(_env, sql, *args):
         queries.append(sql)
-        assert args == ("bi:o/r",) * 4
+        assert args == ("bi:o/r",) * 3
         return [
             {"k": "issues", "c": 3},
             {"k": "pulls", "c": 0},
             {"k": "discussions", "c": 1},
-            {"k": "commits", "c": 2},
         ]
 
     captured = {}
@@ -75,20 +74,27 @@ def test_pending_endpoint_counts_all_four_inboxes_in_one_round_trip():
         captured["_cache_control"] = cache_control
         return {"status": status, "data": payload}
 
+    # The badge must tally the SAME blind index the drains read, so the handler
+    # resolves an organization alias to its backing node first (a no-op for the
+    # plain node owner used here).
+    async def ap_org_alias_owner(_env, owner, _repo):
+        return owner
+
     ns = _load()
     ns.update({
         "ensure_schema": noop, "blind_index": blind_index,
         "d1_all": d1_all, "json_response": json_response,
+        "_ap_org_alias_owner": ap_org_alias_owner,
     })
     resp = asyncio.run(
         ns["repo_pending_counts_handler"](object(), _Request(), "o", "r"))
     assert resp["status"] == 200
     assert captured["pending"] == {
-        "issues": 3, "pulls": 0, "discussions": 1, "commits": 2}
-    # One UNION statement, not four queries. Counts are never cached: an online
+        "issues": 3, "pulls": 0, "discussions": 1}
+    # One UNION statement, not three queries. Counts are never cached: an online
     # mirror can materialize the row immediately after this read.
     assert len(queries) == 1
-    assert queries[0].count("UNION ALL") == 3
+    assert queries[0].count("UNION ALL") == 2
     assert captured["_cache"] is None
     assert captured["_cache_control"] == (
         "no-store, max-age=0, must-revalidate")
@@ -109,7 +115,7 @@ def test_dashboard_tabs_show_pending_badges_from_the_endpoint():
     assert 'cache: "no-store"' in DASHBOARD_JS
     assert "state.pendingInboxRefreshes" in DASHBOARD_JS
     assert "void loadRepoPendingCounts(repo);" in DASHBOARD_JS
-    # Badge fills for exactly the four inbox-backed tabs and hides at zero.
-    assert '["issues", "pulls", "discussions", "commits"].forEach((tab) => {' in DASHBOARD_JS
+    # Badge fills for exactly the three collaboration inbox-backed tabs.
+    assert '["issues", "pulls", "discussions"].forEach((tab) => {' in DASHBOARD_JS
     assert 'badge.classList.toggle("hidden", n <= 0);' in DASHBOARD_JS
     assert "waiting for the owner node to sync" in DASHBOARD_JS

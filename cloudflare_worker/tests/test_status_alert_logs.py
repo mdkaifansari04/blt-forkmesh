@@ -165,7 +165,9 @@ def test_alert_email_has_direct_manage_link_to_alert_management_controls():
         "<html><body><div><div>alert</div></div></body></html>",
         "mirror:Mirror 2",
     )
-    expected = "https://forkmesh.com/private-admin-console#operational-alerts"
+    expected = (
+        "https://forkmesh.com/private-admin-console"
+        "?view=alerts#operational-alerts")
     assert "Manage this alert: " + expected in text
     assert 'href="' + expected + '"' in html
     assert ">Manage this alert</a>" in html

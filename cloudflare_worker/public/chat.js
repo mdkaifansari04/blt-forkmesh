@@ -27,6 +27,7 @@ import {
   loadIssueRepositories,
 } from "./chat-issue-filing.js";
 import { createChatRoomTransport } from "./chat-room-transport.js";
+import { moderateChatPlain, moderateChatText } from "./chat-moderation.js";
 import { createThreadStore } from "./chat-thread-model.js";
 import {
   dateDividerLabel,
@@ -62,6 +63,11 @@ const PRIVATE_CHANNELS_ENDPOINT = "/api/chat/channels";
 const DIRECT_MESSAGES_ENDPOINT = "/api/chat/direct-messages";
 const PRIVATE_CHANNEL_REFRESH_MS = 30000;
 const FORKBOT_ENDPOINT = "/api/forkbot/chat";
+// Cloudflare Workers AI models ForkBot can be pointed at, plus the picked one.
+// The pick is per-browser (not per-room): it only decides which model this
+// client's own mentions are sent to, and the relay re-validates it.
+const FORKBOT_MODELS_ENDPOINT = "/api/forkbot/models";
+const FORKBOT_MODEL_KEY = "forkmesh.forkbot.model";
 const FORKBOT_SENDER_ID = "forkbot";
 const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
 // Mainnode base host for the room WebSocket. Defaults to the origin that served
@@ -125,6 +131,7 @@ const composerEmojiBtn = document.querySelector("#chat-emoji-button");
 const composerEmojiMenu = document.querySelector("#chat-composer-emoji-menu");
 const composerEmojiButtons = [...document.querySelectorAll("[data-composer-emoji]")];
 const composerMentionBtn = document.querySelector("#chat-mention-button");
+const forkbotModelSelect = document.querySelector("#chat-forkbot-model");
 const dropOverlay = document.querySelector("#chat-drop-overlay");
 const statusEl = document.querySelector("#chat-status");
 const roomsEl = document.querySelector("#chat-rooms");
@@ -2367,10 +2374,12 @@ function openThread(record, trigger = null) {
   threadInput?.focus();
 }
 
-function sendThreadReply() {
+async function sendThreadReply() {
   if (!activeThreadRootId || !threadInput || !canJoinChannel()) return;
   const rootId = activeThreadRootId;
-  const source = threadInput.value.trim().slice(0, MAX_TEXT);
+  const originalSource = threadInput.value.trim().slice(0, MAX_TEXT);
+  const moderation = await moderateChatText(originalSource);
+  const source = moderation.text;
   const text = plainTextFromRichSource(source).slice(0, MAX_TEXT);
   if (!text && !attachmentDraft(rootId).length) return;
   if (text) {
@@ -2394,6 +2403,7 @@ function sendThreadReply() {
     threadRepliesEl?.lastElementChild?.scrollIntoView({ block: "nearest" });
     renderThreadSummary(rootId);
     runWhenConnected(() => send(plain));
+    if (moderation.changed) appendSystem("Some words were filtered.");
   }
   void sendAttachmentDraft({ rootId });
 }
@@ -2407,9 +2417,11 @@ function cancelMessageEdit(record, { restoreFocus = true } = {}) {
   if (restoreFocus) record.editTrigger?.focus();
 }
 
-function saveMessageEdit(record, source) {
+async function saveMessageEdit(record, source) {
   if (!record?.self || record.senderId !== selfId) return;
-  const richSource = String(source || "").trim().slice(0, MAX_TEXT);
+  const originalSource = String(source || "").trim().slice(0, MAX_TEXT);
+  const moderation = await moderateChatText(originalSource);
+  const richSource = moderation.text;
   const text = plainTextFromRichSource(richSource).slice(0, MAX_TEXT);
   if (!text) return;
   const editedAt = Date.now();
@@ -2435,6 +2447,7 @@ function saveMessageEdit(record, source) {
   }
   seen.add(plain.id);
   runWhenConnected(() => send(plain));
+  if (moderation.changed) appendSystem("Some words were filtered.");
 }
 
 function beginMessageEdit(record, trigger) {
@@ -3178,7 +3191,7 @@ async function onFrame(event, key = null, scope = roomScopeForChannel()) {
   }
   const plain = await decryptObject(envelope, key);
   if (!plain) return;
-  handlePlain(plain, scope);
+  handlePlain(await moderateChatPlain(plain), scope);
 }
 
 const DURABLE_TYPES = new Set([
@@ -3224,11 +3237,76 @@ function makeForkbotPlain(text) {
   });
 }
 
-function broadcastForkbotMessage(text) {
-  const plain = makeForkbotPlain(text);
+async function broadcastForkbotMessage(text) {
+  const moderated = await moderateChatText(text);
+  const plain = makeForkbotPlain(moderated.text);
   send(plain);
   seen.add(plain.id);
   appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts, activeChannel);
+}
+
+function forkbotModel() {
+  // The open composer's value is authoritative. Persistence is best-effort:
+  // browsers can deny localStorage while still allowing a person to select and
+  // send a model for this prompt.
+  const selected = String(forkbotModelSelect?.value || "").trim();
+  if (selected) return selected;
+  try {
+    return localStorage.getItem(FORKBOT_MODEL_KEY) || "";
+  } catch (error) {
+    return "";
+  }
+}
+
+function rememberForkbotModel(value) {
+  try {
+    if (value) localStorage.setItem(FORKBOT_MODEL_KEY, value);
+    else localStorage.removeItem(FORKBOT_MODEL_KEY);
+  } catch (error) {
+    /* private-mode storage refusal only costs the pick its persistence */
+  }
+}
+
+// Populate the composer's ForkBot model picker from the relay so a new Workers
+// AI model becomes selectable by deploying the Worker, with no site rebuild.
+// The picker stays hidden when the relay does not offer the endpoint (an older
+// or self-hosted relay), in which case its own default model is used.
+async function loadForkbotModels() {
+  if (!forkbotModelSelect) return;
+  let models = [];
+  try {
+    const response = await fetch(FORKBOT_MODELS_ENDPOINT, {
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) return;
+    const data = await response.json().catch(() => ({}));
+    models = Array.isArray(data?.models) ? data.models : [];
+  } catch (error) {
+    return;
+  }
+  if (!models.length) return;
+  const saved = forkbotModel();
+  forkbotModelSelect.textContent = "";
+  for (const model of models) {
+    const id = String(model?.id || "");
+    if (!id) continue;
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = model.default
+      ? `${model.label || id} (default)`
+      : model.label || id;
+    if (model.description) option.title = model.description;
+    if (id === saved || (!saved && model.default)) option.selected = true;
+    forkbotModelSelect.append(option);
+  }
+  if (!forkbotModelSelect.options.length) return;
+  // A saved pick the relay no longer offers falls through to the first option;
+  // clear it so the stored value cannot outlive the model.
+  if (saved && forkbotModelSelect.value !== saved) rememberForkbotModel("");
+  forkbotModelSelect.hidden = false;
+  forkbotModelSelect.addEventListener("change", () => {
+    rememberForkbotModel(forkbotModelSelect.value);
+  });
 }
 
 async function maybeAskForkbot(text) {
@@ -3247,7 +3325,13 @@ async function maybeAskForkbot(text) {
     const response = await fetch(FORKBOT_ENDPOINT, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ message: text, sender: displayName(), room: ROOM_NAME, context }),
+      body: JSON.stringify({
+        message: text,
+        sender: displayName(),
+        room: ROOM_NAME,
+        context,
+        model: forkbotModel(),
+      }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !data || !data.botMessage) return;
@@ -3750,12 +3834,14 @@ function applyComposerFormat(type) {
   updateMentionSuggest();
 }
 
-function sendCurrentMessage() {
+async function sendCurrentMessage() {
   if (!canJoinChannel()) {
     lockChatForNonUser();
     return;
   }
-  const source = input.value.trim().slice(0, MAX_TEXT);
+  const originalSource = input.value.trim().slice(0, MAX_TEXT);
+  const moderation = await moderateChatText(originalSource);
+  const source = moderation.text;
   const text = plainTextFromRichSource(source).slice(0, MAX_TEXT);
   if (!text && !attachmentDraft().length) return;
   if (text) {
@@ -3782,6 +3868,7 @@ function sendCurrentMessage() {
         plain.richText,
       );
       maybeAskForkbot(text);
+      if (moderation.changed) appendSystem("Some words were filtered.");
     });
   }
   void sendAttachmentDraft();
@@ -3950,6 +4037,7 @@ async function initChat() {
   // Fill the people pane with every registered user (and thereafter pick up
   // brand-new signups), and baseline the header badge counters for this visit.
   refreshUsersDirectory();
+  loadForkbotModels();
   markChatActivitySeen();
   setInterval(() => {
     refreshUsersDirectory();

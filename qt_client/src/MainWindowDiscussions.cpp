@@ -547,6 +547,7 @@ void MainWindow::updateDiscussionActionState()
             writable ? QStringLiteral("Pull pending discussion submissions")
                      : QStringLiteral("Only the owning node can sync this inbox"));
     }
+    refreshPendingInboxBadges();
     const bool haveDiscussion = m_currentDiscussionNumber > 0;
     QString status = QStringLiteral("open");
     for (const Discussion &discussion : std::as_const(m_currentDiscussions))
@@ -955,11 +956,13 @@ void MainWindow::syncDiscussionsInbox()
         setDiscussionInlineNotice("Network access is unavailable.", true);
         return;
     }
-    drainDiscussionsInboxFor(m_repositories.at(m_repoDetailIndex),
-                             /*interactive=*/true);
+    showPendingInbox(m_repositories.at(m_repoDetailIndex),
+                     QStringLiteral("discussions"));
 }
 
-void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactive)
+void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo,
+                                          bool interactive,
+                                          bool forceMirrorIntake)
 {
     if (!m_networkAccess) {
         if (interactive)
@@ -971,10 +974,11 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
     {
         DiscussionStore probe(writable.localPath, writable.mirrorPath,
                               &m_profileIdentity, m_userName);
-        ownerIntake = probe.canWrite();
+        ownerIntake = !forceMirrorIntake && probe.canWrite();
     }
     const bool mirrorIntake =
-        !ownerIntake && !repo.previewOnly && !repo.isPrivate &&
+        (forceMirrorIntake || !ownerIntake) && !repo.previewOnly &&
+        !repo.isPrivate &&
         repo.publishToNetwork && !repo.mirrorPath.trimmed().isEmpty() &&
         QDir(repo.mirrorPath).exists();
     if (!ownerIntake && !mirrorIntake)
@@ -984,7 +988,11 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
     const QString signer =
         mirrorIntake ? accountOwner().trimmed().toLower()
                      : repoSegment(repo.owner, QStringLiteral("owner"));
-    if (signer.isEmpty() || !hasOwnerSigningCapability(signer))
+    // See drainIssuesInboxFor: a public owner is authorized by the relay, not
+    // by a local name-equality test that only yields false negatives.
+    const bool canSign = mirrorIntake ? hasOwnerSigningCapability(signer)
+                                      : hasOwnerSigningCapability();
+    if (signer.isEmpty() || !canSign)
         return;
     const QString intakeKey =
         QStringLiteral("discussions:") + repo.owner.trimmed().toLower() +

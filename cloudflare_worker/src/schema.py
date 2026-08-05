@@ -320,6 +320,12 @@ SCHEMA_STATEMENTS = [
     # squat node names. ip_bi is the same one-way index stored on the account.
     "CREATE TABLE IF NOT EXISTS signup_rate (ip_bi TEXT PRIMARY KEY, "
     "count INTEGER NOT NULL DEFAULT 0, window_start_ts INTEGER NOT NULL DEFAULT 0)",
+    # Per-account Workers AI throttle for POST /api/ai/ask (the desktop
+    # composer's "send this prompt to a Cloudflare AI model" path). Every call
+    # bills the relay's Workers AI account, so a signed account gets a bounded
+    # number per rolling window. Plaintext counters only — no prompt content.
+    "CREATE TABLE IF NOT EXISTS ai_ask_rate (account_bi TEXT PRIMARY KEY, "
+    "count INTEGER NOT NULL DEFAULT 0, window_start_ts INTEGER NOT NULL DEFAULT 0)",
     # Installer link-code rendezvous (adhoc #53): install.sh mints a short code
     # the fresh headless node registers with, and the installing user's desktop
     # app offers the same code signed by its key. Whichever side arrives first
@@ -1273,6 +1279,34 @@ SCHEMA_STATEMENTS = [
         PRIMARY KEY (account_bi, role, scope_type, scope_bi))""",
     "CREATE INDEX IF NOT EXISTS idx_role_grants_role "
     "ON role_grants(role, scope_type, scope_bi, revoked_at, expires_at)",
+    # Polar customer ids and subscription ids remain encrypted; only keyed
+    # blind indexes participate in webhook lookup and uniqueness checks.
+    """CREATE TABLE IF NOT EXISTS polar_customers (
+        account_bi TEXT PRIMARY KEY,
+        external_id_bi TEXT NOT NULL UNIQUE,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS polar_memberships (
+        subscription_bi TEXT PRIMARY KEY,
+        account_bi TEXT NOT NULL,
+        product_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        tier TEXT NOT NULL CHECK (tier IN ('supporter', 'pro')),
+        status TEXT NOT NULL,
+        current_period_end INTEGER NOT NULL DEFAULT 0,
+        provider_modified_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_polar_memberships_account "
+    "ON polar_memberships(account_bi, current_period_end)",
+    "CREATE INDEX IF NOT EXISTS idx_polar_memberships_status "
+    "ON polar_memberships(status, current_period_end)",
+    """CREATE TABLE IF NOT EXISTS polar_webhook_events (
+        event_id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        received_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_polar_webhook_events_received "
+    "ON polar_webhook_events(received_at)",
     # Append-only, content-free audit trail for sensitive state changes. Targets
     # are blind indexes and details are an allowlisted JSON object with no
     # credentials, bodies, addresses, private repo names, or raw IPs.
@@ -2588,6 +2622,62 @@ SCHEMA_STATEMENTS = [
         expires_at INTEGER NOT NULL CHECK (expires_at >= 0))""",
     "CREATE INDEX IF NOT EXISTS idx_organization_discord_oauth_states_org "
     "ON organization_discord_oauth_states(org_bi, expires_at)",
+    # Collaborative Markdown notes. User copy and every retained snapshot are
+    # encrypted; the remaining columns are bounded routing and ACL metadata.
+    """CREATE TABLE IF NOT EXISTS notes (
+        note_id TEXT PRIMARY KEY CHECK (length(note_id) = 32),
+        owner_bi TEXT NOT NULL,
+        visibility TEXT NOT NULL DEFAULT 'private'
+            CHECK (visibility IN ('private','public')),
+        version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        updated_at INTEGER NOT NULL CHECK (updated_at >= 0),
+        published_at INTEGER NOT NULL DEFAULT 0 CHECK (published_at >= 0),
+        data TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_notes_owner_updated "
+    "ON notes(owner_bi, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_notes_public_updated "
+    "ON notes(visibility, updated_at DESC)",
+    """CREATE TABLE IF NOT EXISTS note_shares (
+        note_id TEXT NOT NULL REFERENCES notes(note_id) ON DELETE CASCADE,
+        principal_type TEXT NOT NULL
+            CHECK (principal_type IN ('user','organization')),
+        principal_bi TEXT NOT NULL,
+        principal_name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('viewer','editor')),
+        added_by_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        PRIMARY KEY(note_id, principal_type, principal_bi))""",
+    "CREATE INDEX IF NOT EXISTS idx_note_shares_principal "
+    "ON note_shares(principal_type, principal_bi, note_id)",
+    """CREATE TABLE IF NOT EXISTS note_versions (
+        note_id TEXT NOT NULL REFERENCES notes(note_id) ON DELETE CASCADE,
+        version INTEGER NOT NULL CHECK (version >= 1),
+        author_bi TEXT NOT NULL,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        data TEXT NOT NULL,
+        PRIMARY KEY(note_id, version))""",
+    """CREATE TABLE IF NOT EXISTS note_links (
+        note_id TEXT NOT NULL REFERENCES notes(note_id) ON DELETE CASCADE,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('issue','pull','discussion')),
+        number INTEGER NOT NULL CHECK (number BETWEEN 1 AND 999999999),
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        PRIMARY KEY(note_id, owner, repo, kind, number))""",
+    "CREATE INDEX IF NOT EXISTS idx_note_links_target "
+    "ON note_links(owner, repo, kind, number, note_id)",
+    # Read counts for published notes. One row per note per blinded reader:
+    # the owner sees distinct readers and total reads, and no address is kept.
+    """CREATE TABLE IF NOT EXISTS note_views (
+        note_id TEXT NOT NULL REFERENCES notes(note_id) ON DELETE CASCADE,
+        viewer_key TEXT NOT NULL,
+        first_at INTEGER NOT NULL CHECK (first_at >= 0),
+        last_at INTEGER NOT NULL CHECK (last_at >= 0),
+        hits INTEGER NOT NULL DEFAULT 1 CHECK (hits >= 1),
+        PRIMARY KEY(note_id, viewer_key))""",
+    "CREATE INDEX IF NOT EXISTS idx_note_views_note "
+    "ON note_views(note_id, last_at DESC)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

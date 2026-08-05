@@ -71,6 +71,15 @@ def test_issue_post_succeeds_when_notification_fanout_fails():
     async def blind_index(_env, value):
         return "bi:" + str(value)
 
+    # The handler resolves its storage key through _inbox_repo_key so an
+    # organization alias can never be keyed to a queue no drain reads; this
+    # wire-contract test uses a plain node URL, where it is just the hash.
+    async def inbox_repo_key(_env, _request, owner, repo):
+        return "bi:" + owner + "/" + repo
+
+    class OrgAliasUnresolved(Exception):
+        pass
+
     async def verify_issue_event(_number, _event):
         return True
 
@@ -104,6 +113,8 @@ def test_issue_post_succeeds_when_notification_fanout_fails():
         "json_response": json_response,
         "ensure_schema": ensure_schema,
         "blind_index": blind_index,
+        "_inbox_repo_key": inbox_repo_key,
+        "_OrgAliasUnresolved": OrgAliasUnresolved,
         "verify_issue_event": verify_issue_event,
         "encrypt_row": encrypt_row,
         "d1_first": d1_first,

@@ -299,3 +299,22 @@ def test_world_ui_only_renders_delete_action_for_admins():
     assert "await this.loadWorldData({ forceMirrors: true });" in world
     assert 'cache: force ? "no-store" : "default"' in world
     assert "/api/world/admin/nodes/delete" in ENTRY_TEXT
+
+
+def test_desktop_node_delete_keeps_progress_visible_and_requires_relay_confirmation():
+    chat = (
+        Path(__file__).resolve().parents[2]
+        / "qt_client" / "src" / "MainWindowChat.cpp"
+    ).read_text(encoding="utf-8")
+    header = (
+        Path(__file__).resolve().parents[2]
+        / "qt_client" / "src" / "MainWindow.h"
+    ).read_text(encoding="utf-8")
+    assert "bool m_nodeDeleteInProgress = false;" in header
+    assert "QSet<QString> m_deletedMeshNodeNames;" in header
+    assert "!m_nodeDeleteInProgress" in chat
+    assert 'response.value(QStringLiteral("nodeDeleted"))' in chat
+    assert 'response.value(QStringLiteral("identifiers"))' in chat
+    assert "The relay did not confirm deletion" in chat
+    assert "Relay confirmed deletion of" in chat
+    assert "m_deletedMeshNodeNames.unite(deletedNames);" in chat

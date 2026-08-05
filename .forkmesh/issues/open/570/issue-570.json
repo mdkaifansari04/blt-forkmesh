@@ -1,0 +1,37 @@
+{
+    "assignees": [
+    ],
+    "author": "oNP35iOMiLYO5lq_k4jZBdzLvsqAGATI0bZ1R8TqlEQ",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785754500,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "oNP35iOMiLYO5lq_k4jZBdzLvsqAGATI0bZ1R8TqlEQ",
+            "authorName": "jett",
+            "body": "",
+            "id": "open-web-1785754500",
+            "sig": "dqPn20YpvHxc65HYSiexLB8Gi8OVtYcP-RkoTUvI0C_CffwxhBxaNBHPyB_m5iHdMOfy7C_ZmPpoqaJeuiU-AQ",
+            "title": "Create an assign this issue to yourself button that works for public contributors",
+            "ts": 1785754500,
+            "type": "open"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 570,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "Create an assign this issue to yourself button that works for public contributors",
+    "updatedAt": 1785754500,
+    "votes": 0
+}
