@@ -3690,9 +3690,6 @@ private:
     bool mergeWorktreeIntoMain(const QString &branch,
                                const QString &worktreePath = QString(),
                                bool deleteAgent = false);
-    // Leave the branch review after one of its merge buttons landed the branch,
-    // returning the Git view to the working tree (adhoc #119).
-    void closeBranchDiffAfterMerge();
     // The same merge for an agent session's branch, but bound to that session's
     // repository first — the Agents tab is global, so the repo the detail view
     // holds is often not the session's. False when the bind didn't take.
