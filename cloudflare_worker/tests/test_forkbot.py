@@ -727,7 +727,6 @@ def test_forkbot_model_catalog_lists_the_deployed_default():
         "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
         "@cf/meta/llama-4-scout-17b-16e-instruct",
         "@cf/google/gemma-4-26b-a4b-it",
-        "@cf/zai-org/glm-4.7-flash",
         "@cf/meta/llama-3.1-8b-instruct-fast",
     }
     # Cloudflare retired both of these on 2026-05-30. Keep an explicit guard
@@ -735,6 +734,7 @@ def test_forkbot_model_catalog_lists_the_deployed_default():
     # an id that looks valid but no longer answers.
     assert "@cf/meta/llama-3.1-8b-instruct" not in ids
     assert "@cf/google/gemma-3-12b-it" not in ids
+    assert "@cf/zai-org/glm-4.7-flash" not in ids
 
 
 def test_forkbot_model_options_put_the_configured_default_first():
@@ -896,8 +896,8 @@ def test_ai_ask_dispatches_to_every_published_model():
 
 def test_ai_ask_reads_current_chat_completion_response_shapes():
     responses = {
-        "@cf/zai-org/glm-4.7-flash": {
-            "choices": [{"message": {"content": "GLM answered."}}]},
+        "@cf/meta/llama-4-scout-17b-16e-instruct": {
+            "choices": [{"message": {"content": "Llama answered."}}]},
         "@cf/google/gemma-4-26b-a4b-it": {
             "choices": [{"message": {"content": [
                 {"type": "text", "text": "Gemma "},
@@ -910,7 +910,7 @@ def test_ai_ask_reads_current_chat_completion_response_shapes():
             return responses[model]
 
     for model_id, expected in (
-        ("@cf/zai-org/glm-4.7-flash", "GLM answered."),
+        ("@cf/meta/llama-4-scout-17b-16e-instruct", "Llama answered."),
         ("@cf/google/gemma-4-26b-a4b-it", "Gemma answered."),
     ):
         env, _calls, ns = _env_and_calls(ai=_AI())
