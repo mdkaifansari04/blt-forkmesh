@@ -7467,6 +7467,7 @@ private:
     // agent that edits the PR's branch (reuses the m_aiFix machinery in
     // agentEdit mode).
     void fixCurrentPullFindingsWithAgent();
+    QWidget *m_agentsPage = nullptr; // reserves room for the docked full-width composer
     QTableWidget *m_agentTable = nullptr;
     // Live transcript search behind the top-bar filter. A session whose
     // transcript contains the query stays in the list even when its title says

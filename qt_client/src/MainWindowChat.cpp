@@ -2641,19 +2641,6 @@ void MainWindow::setLogOverlayExpanded(bool expanded)
 void MainWindow::setPromptOverlayCollapsed(bool collapsed)
 {
     m_promptOverlayCollapsed = collapsed;
-    if (!m_promptOverlayHost || !m_promptWrapper)
-        return;
-    m_promptWrapper->setVisible(!collapsed);
-    if (collapsed) {
-        m_promptOverlayHost->setFixedSize(34, 34);
-        m_userAvatarNavButton->setToolTip(QStringLiteral("Show the prompt overlay"));
-    } else {
-        m_promptOverlayHost->setMinimumSize(0, 0);
-        m_promptOverlayHost->setMaximumSize(560, QWIDGETSIZE_MAX);
-        m_promptOverlayHost->setFixedHeight(m_promptWrapper->sizeHint().height());
-        m_promptOverlayHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        m_userAvatarNavButton->setToolTip(QStringLiteral("Collapse the prompt overlay"));
-    }
     positionGlobalFooterOverlays();
 }
 
@@ -2661,8 +2648,55 @@ void MainWindow::positionGlobalFooterOverlays()
 {
     if (!m_globalOverlayHost || !m_footerDock)
         return;
+    const bool onAgents =
+        (!m_sectionStack || m_sectionStack->currentIndex() == 0) &&
+        m_repoDetailStack &&
+        m_repoDetailStack->currentIndex() == kRepoAgentsTab;
+    const bool dockAgentPrompt = onAgents && !m_promptOverlayCollapsed;
+
+    // Agents is the one conversation-first workspace: dock the composer across
+    // its entire foot and keep the transcript/list layout above it. Everywhere
+    // else the same widget remains a compact lower-right overlay, with the live
+    // log able to occupy the opposite corner.
+    if (m_footerLeftRegion)
+        m_footerLeftRegion->setVisible(m_logOverlayExpanded && !onAgents);
+    if (auto *dockRow = qobject_cast<QHBoxLayout *>(m_footerDock->layout())) {
+        dockRow->setStretch(1, dockAgentPrompt ? 0 : 1); // transparent spacer
+        dockRow->setAlignment(
+            m_promptOverlayHost,
+            dockAgentPrompt ? Qt::AlignBottom
+                            : Qt::AlignRight | Qt::AlignBottom);
+    }
+    if (m_promptOverlayHost && m_promptWrapper) {
+        const bool showPrompt = !m_promptOverlayCollapsed;
+        m_promptWrapper->setVisible(showPrompt);
+        if (!showPrompt) {
+            m_promptOverlayHost->setFixedSize(34, 34);
+            m_userAvatarNavButton->setToolTip(
+                QStringLiteral("Show the prompt overlay"));
+        } else {
+            m_promptOverlayHost->setMinimumSize(0, 0);
+            m_promptOverlayHost->setMaximumSize(
+                dockAgentPrompt ? QWIDGETSIZE_MAX : 560, QWIDGETSIZE_MAX);
+            m_promptOverlayHost->setFixedHeight(
+                m_promptWrapper->sizeHint().height());
+            m_promptOverlayHost->setSizePolicy(QSizePolicy::Expanding,
+                                               QSizePolicy::Fixed);
+            m_userAvatarNavButton->setToolTip(
+                dockAgentPrompt
+                    ? QStringLiteral("The prompt is docked on the Agents page")
+                    : QStringLiteral("Collapse the prompt overlay"));
+        }
+    }
     constexpr int kHorizontalMargin = 8;
     const int height = m_footerDock->sizeHint().height();
+    if (m_agentsPage && m_agentsPage->layout()) {
+        const int reserved = dockAgentPrompt ? height : 0;
+        const QMargins old = m_agentsPage->layout()->contentsMargins();
+        if (old.bottom() != reserved)
+            m_agentsPage->layout()->setContentsMargins(
+                old.left(), old.top(), old.right(), reserved);
+    }
     m_footerDock->setGeometry(
         kHorizontalMargin, qMax(0, m_globalOverlayHost->height() - height),
         qMax(0, m_globalOverlayHost->width() - 2 * kHorizontalMargin), height);

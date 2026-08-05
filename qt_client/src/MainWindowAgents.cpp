@@ -1946,6 +1946,7 @@ QStringList MainWindow::testAgentOwnedDiffPaths(const QString &gitDir,
 QWidget *MainWindow::buildAgentsTab()
 {
     auto *page = new QWidget;
+    m_agentsPage = page;
     page->setObjectName(QStringLiteral("agentsPage"));
 
     auto *listPane = new QWidget;
