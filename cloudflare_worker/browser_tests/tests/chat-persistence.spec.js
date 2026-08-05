@@ -4,7 +4,7 @@ const { test, expect } = require("@playwright/test");
 test("ForkBot sends the model selected in the prompt area without storage", async ({
   page,
 }) => {
-  const selectedModel = "@cf/zai-org/glm-4.7-flash";
+  const selectedModel = "@cf/meta/llama-4-scout-17b-16e-instruct";
   let forkbotRequest = null;
 
   await page.addInitScript(() => {
@@ -55,13 +55,13 @@ test("ForkBot sends the model selected in the prompt area without storage", asyn
             label: "Llama 3.3 70B (fast)",
             default: true,
           },
-          { id: selectedModel, label: "GLM 4.7 Flash", default: false },
+          { id: selectedModel, label: "Llama 4 Scout 17B", default: false },
         ],
       };
     } else if (url.pathname === "/api/forkbot/chat") {
       status = 200;
       forkbotRequest = route.request().postDataJSON();
-      body = { ok: true, botMessage: "GLM handled that prompt." };
+      body = { ok: true, botMessage: "Llama handled that prompt." };
     }
     return route.fulfill({
       status,
