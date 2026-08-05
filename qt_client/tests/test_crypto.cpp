@@ -560,13 +560,13 @@ int main(int argc, char *argv[])
         // up on the web and did not show in the list of notes locally".
         const QJsonObject draft{{"title", "Draft"}, {"version", 3}};
         check(NoteListEntry::lines(draft, {}, "local", false) ==
-                  QStringList{"Draft", "Local only · On this computer · v3"},
+                  QStringList{"Draft", "Storage: Local only · Visibility: On this computer · Rev 3"},
               "a local-only note names its storage and stays off the web");
 
         // Asked for the cloud but never got there: the row says so instead of
         // looking exactly like a saved-but-private note.
         check(NoteListEntry::lines(draft, {}, "both", false).at(1) ==
-                  QStringLiteral("Local + cloud · Not published yet · v3"),
+                  QStringLiteral("Storage: Local + cloud · Visibility: Not published yet · Rev 3"),
               "a note with no cloud copy is labelled as not published yet");
 
         const QJsonObject published{
@@ -578,7 +578,7 @@ int main(int argc, char *argv[])
         const QStringList row =
             NoteListEntry::lines(published, published, "both", true);
         check(row.at(1) == QStringLiteral(
-                  "Local + cloud · Public · 12 views from 4 readers · v4"),
+                  "Storage: Local + cloud · Visibility: Public · Views: 12 views from 4 readers · Rev 4"),
               "a published note shows its status and read count");
         check(row.at(2) ==
                   QStringLiteral("Shared with bob (editor), acme (viewer)"),
@@ -591,7 +591,7 @@ int main(int argc, char *argv[])
             {"shares", QJsonArray{
                 QJsonObject{{"name", "bob"}, {"role", "viewer"}}}}};
         check(NoteListEntry::lines(shared, shared, "cloud", true) ==
-                  QStringList{"Spec", "Cloud · Shared · 1 view · v1",
+                  QStringList{"Spec", "Storage: Cloud · Visibility: Shared · Views: 1 view · Rev 1",
                               "Shared with bob (viewer)"},
               "a shared private note reads as Shared, not Public");
 
@@ -600,7 +600,7 @@ int main(int argc, char *argv[])
         const QJsonObject mirrored{{"title", "Launch plan"}, {"version", 4},
                                    {"visibility", "public"}};
         check(NoteListEntry::lines(mirrored, {}, "both", true) ==
-                  QStringList{"Launch plan", "Local + cloud · Public · v4",
+                  QStringList{"Launch plan", "Storage: Local + cloud · Visibility: Public · Rev 4",
                               "Not shared with anyone"},
               "a published note still reads as Public without the listing");
 
