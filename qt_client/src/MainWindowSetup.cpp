@@ -4187,6 +4187,21 @@ QStringList MainWindow::testQuickUpdatePullArguments(const QString &clientDir) c
     return quickUpdatePullArguments(clientDir);
 }
 
+QString MainWindow::testWorkingClientDir() const
+{
+    return workingClientDir();
+}
+
+QString MainWindow::testRunningClientDir() const
+{
+    return runningClientDir();
+}
+
+QString MainWindow::testRunningClientExecutable() const
+{
+    return runningClientExecutable();
+}
+
 QStringList MainWindow::testBuildAndPreviewSteps(const QString &gitDir,
                                                  const QString &previewDir,
                                                  const QString &clientDir,
@@ -4284,12 +4299,15 @@ void MainWindow::runQuickUpdate()
     m_buildButton = m_updateButton;
     m_buildStatusLabel = m_updateStatus;
     m_updateButton->setEnabled(false);
-    const QString clientDir = updateClientDir();
+    const QString clientDir = runningClientDir();
+    const QString relaunchPath = runningClientExecutable();
 
     if (QDir(clientDir).exists("CMakeLists.txt")) {
         setUpdateStatus("Pulling the latest version...");
         runUpdateStep("git", quickUpdatePullArguments(clientDir), clientDir,
-                      [this, clientDir] { buildAndRelaunch(clientDir); });
+                      [this, clientDir, relaunchPath] {
+            buildAndRelaunch(clientDir, QString(), relaunchPath);
+        });
     } else {
         // No checkout anywhere (binary installed without one): clone a fresh
         // copy into the app data directory and update from there from now on.
@@ -4298,7 +4316,9 @@ void MainWindow::runQuickUpdate()
         setUpdateStatus("Downloading the latest version...");
         runUpdateStep("git", {"clone", "--depth", "1", kRepoUrl, repoDir},
                       QFileInfo(repoDir).absolutePath(),
-                      [this, clientDir] { buildAndRelaunch(clientDir); });
+                      [this, clientDir, relaunchPath] {
+            buildAndRelaunch(clientDir, QString(), relaunchPath);
+        });
     }
 }
 
@@ -4439,7 +4459,17 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
         QFileInfo(appPath).canonicalFilePath()) {
         const QString bak = appPath + QStringLiteral(".bak-update");
         QFile::remove(bak);
-        if (!QFile::rename(appPath, bak)) {
+        const bool hadInstalledCopy = QFileInfo::exists(appPath);
+        if (!QDir().mkpath(QFileInfo(appPath).absolutePath())) {
+            setUpdateStatus("Update failed: could not create " +
+                                QFileInfo(appPath).absolutePath(),
+                            true);
+            stopRestartSpin();
+            if (m_buildButton)
+                m_buildButton->setEnabled(true);
+            return;
+        }
+        if (hadInstalledCopy && !QFile::rename(appPath, bak)) {
             setUpdateStatus("Update failed: could not move the current binary "
                             "aside at " + appPath, true);
             stopRestartSpin();
@@ -4448,7 +4478,8 @@ void MainWindow::installAndRelaunch(const QString &built, const QString &appPath
             return;
         }
         if (!QFile::copy(built, appPath)) {
-            QFile::rename(bak, appPath); // restore — never leave appPath empty
+            if (hadInstalledCopy)
+                QFile::rename(bak, appPath); // never leave an old install empty
             setUpdateStatus("Update failed: could not replace " + appPath, true);
             stopRestartSpin();
             if (m_buildButton)
@@ -4707,7 +4738,7 @@ void MainWindow::installPrebuiltAndRelaunch(const QString &artifactPath,
     // touching the installed one, parks the old binary as .bak-update, and
     // relaunches with this instance's own arguments.
     m_updateAsUser.clear();
-    installAndRelaunch(staged, QCoreApplication::applicationFilePath());
+    installAndRelaunch(staged, runningClientExecutable());
 }
 
 void MainWindow::updateRebuildRestart()
@@ -4724,11 +4755,11 @@ void MainWindow::updateRebuildRestart()
     // Under sudo, target the invoking user's home so nothing is written to /root.
     const QString user = invokingNonRootUser();
     const QString home = user.isEmpty() ? QString() : homeForUser(user);
-    const QString clientDir =
-        user.isEmpty() ? updateClientDir() : clientDirUnderHome(home);
+    const QString clientDir = user.isEmpty()
+                                  ? runningClientDir()
+                                  : runningClientDirUnderHome(home);
     const QString relaunchPath =
-        user.isEmpty() ? QCoreApplication::applicationFilePath()
-                       : (home + QStringLiteral("/.local/bin/forkmesh"));
+        runningClientExecutableUnderHome(user.isEmpty() ? QDir::homePath() : home);
     // Build steps and the relaunch run as the user when we are root under sudo.
     m_updateAsUser = user;
 
