@@ -10626,6 +10626,7 @@ void MainWindow::startRestartSpin(QPushButton *button)
 
 void MainWindow::stopRestartSpin()
 {
+    stopRestartCautionFlash();
     if (!m_restartSpinButton)
         return;
     stopButtonSpin(m_restartSpinButton);
