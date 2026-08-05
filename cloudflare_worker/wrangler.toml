@@ -1,6 +1,9 @@
 name = "forkmesh-relay"
 main = "src/entry.py"
-compatibility_flags = [ "python_workers", "disable_python_external_sdk" ]
+# workers-runtime-sdk is supplied by the Python Workers runtime.  Do not add a
+# made-up flag to suppress it: Cloudflare rejects unknown compatibility flags
+# before it can validate a new Worker version.
+compatibility_flags = [ "python_workers" ]
 # Keep the Python/Pyodide runtime on Cloudflare's current snapshot. The older
 # 2026-06-14 snapshot could re-enter one scheduled wrapper task while another
 # request wrapper was executing ("Cannot enter into task ...").
