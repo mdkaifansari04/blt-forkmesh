@@ -4032,19 +4032,17 @@ protected:
             return;
         QWidget *popup = popupContainer();
         fitPopupWidth(v, popup);
-        // Height for every row plus the view frame. sizeHintForRow under-reports
-        // the styled row height (the rows aren't laid out with their stylesheet
-        // metrics yet when the base showPopup returns) and the view's own
-        // sizeHint is just QListView's fixed default, so sum the row hints and add
-        // a small cushion per row to cover the styling. If this still fits the
-        // screen, force the popup and the view to that height so no internal scroll
-        // buttons appear.
+        // Height for every row plus the view frame. sizeHintForRow is the
+        // delegate's exact row height once the base popup has laid it out; adding
+        // extra cushion here made a long picker fill the bottom with blank space.
+        // If this still fits the screen, force the popup and the view to that
+        // height so no internal scroll buttons appear.
         int rowsH = 0;
         for (int row = 0; row < count(); ++row) {
             int rowH = v->sizeHintForRow(row);
             if (rowH <= 0)
                 rowH = fontMetrics().height() + 8;
-            rowsH += rowH + 8;
+            rowsH += rowH;
         }
         const int fullHeight = 2 * v->frameWidth() + rowsH;
         QRect geo = popup->geometry();
