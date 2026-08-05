@@ -7336,6 +7336,7 @@ public:
 protected:
     void paintEvent(QPaintEvent *) override
     {
+        const QVector<int> lanes = sortedCategoryLanes();
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
         const bool dark = currentThemeIsDark();
@@ -7352,38 +7353,39 @@ protected:
         const QColor unseen(dark ? "#6e7681" : "#8c959f");
         const QColor blinkOff(dark ? "#30363d" : "#d0d7de");
         for (int i = 0; i < categoryCount(); ++i) {
+            const int lane = lanes.at(i);
             QColor color = unseen;
-            if (m_counts[i] > 0)
-                color = m_blinkVisible[i]
-                            ? QColor(QString::fromLatin1(categories()[i].accent))
+            if (m_counts[lane] > 0)
+                color = m_blinkVisible[lane]
+                            ? QColor(QString::fromLatin1(categories()[lane].accent))
                             : blinkOff;
             const QRect iconRect = categoryIconRect(i);
             const int iconSize = qMax(7, qMin(iconRect.width(), iconRect.height()));
             const QPixmap pixmap = tintedOcticonPixmap(
-                QString::fromLatin1(categories()[i].icon), color, iconSize);
+                QString::fromLatin1(categories()[lane].icon), color, iconSize);
             painter.drawPixmap(iconRect.center().x() - iconSize / 2,
                                iconRect.center().y() - iconSize / 2, pixmap);
 
             if (m_presentation == Header) {
                 QFont countFont = painter.font();
                 countFont.setPixelSize(qMax(6, qMin(9, categorySlotWidth() - 2)));
-                countFont.setBold(m_counts[i] > 0);
+                countFont.setBold(m_counts[lane] > 0);
                 painter.setFont(countFont);
-                painter.setPen(m_counts[i] > 0 ? color : unseen);
+                painter.setPen(m_counts[lane] > 0 ? color : unseen);
                 painter.drawText(categoryCountRect(i), Qt::AlignHCenter | Qt::AlignTop,
-                                 QString::number(m_counts[i]));
+                                 QString::number(m_counts[lane]));
             } else if (m_presentation == Debug) {
                 // The count rides the icon's top-right corner like the badges on
                 // the rest of the app's icon controls. Keep zeroes visible: the
                 // strip is a complete taxonomy, not just a list of active lanes.
                 QFont countFont = painter.font();
                 countFont.setPixelSize(6);
-                countFont.setBold(m_counts[i] > 0);
+                countFont.setBold(m_counts[lane] > 0);
                 painter.setFont(countFont);
-                painter.setPen(m_counts[i] > 0 ? color : unseen);
-                const QString count = m_counts[i] > 999
+                painter.setPen(m_counts[lane] > 0 ? color : unseen);
+                const QString count = m_counts[lane] > 999
                                           ? QStringLiteral("999+")
-                                          : QString::number(m_counts[i]);
+                                          : QString::number(m_counts[lane]);
                 painter.drawText(categoryCountRect(i),
                                  Qt::AlignLeft | Qt::AlignTop, count);
 
@@ -7394,7 +7396,7 @@ protected:
                 painter.setPen(unseen);
                 painter.drawText(categoryLabelRect(i),
                                  Qt::AlignHCenter | Qt::AlignVCenter,
-                                 QString::fromLatin1(categories()[i].badge));
+                                 QString::fromLatin1(categories()[lane].badge));
             }
         }
 
@@ -7499,7 +7501,8 @@ private:
 
     static const Category *categories()
     {
-        // Same stable order and accents as the full Log page's filter chips.
+        // Taxonomy and accents remain canonical; runtime draw order is driven by
+        // per-session counts (highest first), with a stable tie-break.
         static const Category values[] = {
             {"SESSION", "#f2cc60", "history"},
             {"STATUS", "#56d364", "check-circle"},
@@ -7663,6 +7666,15 @@ private:
 
     int categoryAt(const QPoint &point) const
     {
+        const int displayIndex = categoryDisplayIndexAt(point);
+        if (displayIndex < 0)
+            return -1;
+        const QVector<int> lanes = sortedCategoryLanes();
+        return lanes.value(displayIndex, -1);
+    }
+
+    int categoryDisplayIndexAt(const QPoint &point) const
+    {
         if (m_presentation == Compact) {
             if (point.x() < kCompactPadding ||
                 point.x() >= compactCategoryWidth() - kCompactPadding ||
@@ -7682,6 +7694,21 @@ private:
         if (point.x() < 0 || point.x() >= categoryAreaWidth())
             return -1;
         return qBound(0, point.x() / categorySlotWidth(), categoryCount() - 1);
+    }
+
+    QVector<int> sortedCategoryLanes() const
+    {
+        QVector<int> lanes;
+        lanes.reserve(categoryCount());
+        for (int i = 0; i < categoryCount(); ++i)
+            lanes << i;
+        std::stable_sort(lanes.begin(), lanes.end(),
+                         [this](int left, int right) {
+                             if (m_counts[left] == m_counts[right])
+                                 return left < right;
+                             return m_counts[left] > m_counts[right];
+                         });
+        return lanes;
     }
 
     QRect websiteStatusRect(int index) const

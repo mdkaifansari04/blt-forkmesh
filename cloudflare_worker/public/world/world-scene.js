@@ -25783,12 +25783,15 @@ export function createWorldScene({
       movement.addScaledVector(right, touchMovement.x);
     }
 
-    // Retain the programmatic directional API for older controllers, but the
-    // coarse-pointer UI now uses the proportional analog vector above.
-    if (touchKeys.has("KeyW")) movement.z -= 1;
-    if (touchKeys.has("KeyS")) movement.z += 1;
-    if (touchKeys.has("KeyA")) movement.x -= 1;
-    if (touchKeys.has("KeyD")) movement.x += 1;
+    // Retain the programmatic directional API for older controllers. It must
+    // use the same view-relative basis as keyboard and analog input so a
+    // mounted quadcopter flies where its rider is facing.
+    const legacyForwardInput =
+      Number(touchKeys.has("KeyW")) - Number(touchKeys.has("KeyS"));
+    const legacyRightInput =
+      Number(touchKeys.has("KeyD")) - Number(touchKeys.has("KeyA"));
+    movement.addScaledVector(forward, legacyForwardInput);
+    movement.addScaledVector(right, legacyRightInput);
     const keyboardActive = Boolean(forwardInput || rightInput);
     const bikeDirection = clamp(
       forwardInput +
