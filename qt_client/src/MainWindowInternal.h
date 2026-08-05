@@ -1168,6 +1168,22 @@ public:
                                 : QStringLiteral(" · %1").arg(resetNote)));
     }
 
+    void setUsageData(const QString &label, const QString &value,
+                      const QString &resetNote, int percent)
+    {
+        m_label = label;
+        m_value = value;
+        m_resetNote = resetNote;
+        m_percent = percent;
+        setAccessibleName(QStringLiteral("%1 usage").arg(label));
+        setToolTip(QStringLiteral("%1: %2%3")
+                       .arg(label, value,
+                            resetNote.isEmpty()
+                                ? QString()
+                                : QStringLiteral(" · %1").arg(resetNote)));
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -1178,10 +1194,10 @@ protected:
         const QColor muted(text.red(), text.green(), text.blue(), 150);
         const QColor track(text.red(), text.green(), text.blue(), 38);
         painter.setPen(text);
-        painter.drawText(QRectF(4, 2, 62, 15), Qt::AlignLeft | Qt::AlignVCenter,
+        painter.drawText(QRectF(4, 2, 90, 15), Qt::AlignLeft | Qt::AlignVCenter,
                          m_label);
 
-        const QRectF bar(68, 7, 132, 8);
+        const QRectF bar(96, 7, 132, 8);
         painter.setPen(Qt::NoPen);
         painter.setBrush(track);
         painter.drawRoundedRect(bar, 4, 4);
@@ -1200,11 +1216,11 @@ protected:
         }
 
         painter.setPen(text);
-        painter.drawText(QRectF(208, 2, width() - 212, 15),
+        painter.drawText(QRectF(234, 2, width() - 238, 15),
                          Qt::AlignRight | Qt::AlignVCenter, m_value);
         if (!m_resetNote.isEmpty()) {
             painter.setPen(muted);
-            painter.drawText(QRectF(68, 18, width() - 72, 13),
+            painter.drawText(QRectF(96, 18, width() - 100, 13),
                              Qt::AlignLeft | Qt::AlignVCenter, m_resetNote);
         }
     }
@@ -3413,12 +3429,25 @@ inline QString agentActiveAccountSetting(const QString &provider)
            agentAccountProviderKey(provider);
 }
 
+inline QString agentAccountLabelSetting(const QString &provider,
+                                        const QString &accountId)
+{
+    return QStringLiteral("agents/accountLabels/%1/%2")
+        .arg(agentAccountProviderKey(provider), accountId);
+}
+
 inline QList<AgentAccountProfile> agentAccountProfiles(const QString &provider)
 {
-    QList<AgentAccountProfile> profiles{
-        {QStringLiteral("default"), QStringLiteral("Default account"),
-         agentAccountDefaultConfigDir(provider), true}};
     QSettings settings;
+    const QString defaultLabel =
+        settings.value(agentAccountLabelSetting(provider, QStringLiteral("default")),
+                       QStringLiteral("Default account"))
+            .toString()
+            .trimmed();
+    QList<AgentAccountProfile> profiles{
+        {QStringLiteral("default"),
+         defaultLabel.isEmpty() ? QStringLiteral("Default account") : defaultLabel,
+         agentAccountDefaultConfigDir(provider), true}};
     settings.beginGroup(agentAccountProfilesGroup(provider));
     const QStringList ids = settings.childGroups();
     for (const QString &id : ids) {

@@ -642,6 +642,14 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
                 [this, provider, id = profile.id] {
                     selectAgentAccount(provider, id);
                 });
+        QAction *edit = menu->addAction(
+            QString::fromUtf8("Edit account\xE2\x80\xA6"));
+        edit->setObjectName(QStringLiteral("agentAccountEdit_%1").arg(profile.id));
+        edit->setToolTip(QStringLiteral("Change this account's label"));
+        connect(edit, &QAction::triggered, this,
+                [this, provider, id = profile.id] {
+                    editAgentAccount(provider, id);
+                });
         for (const AgentUsageMenuData &usage :
              agentAccountUsageMenuData(provider, profile.id)) {
             auto *row = new TokenUsageMenuRow(usage.label, usage.value,
@@ -654,6 +662,8 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
             usageAction->setObjectName(
                 QStringLiteral("agentUsage_%1_%2")
                     .arg(profile.id, usage.label.toLower().replace('-', '_')));
+            usageAction->setProperty("agentAccountId", profile.id);
+            usageAction->setProperty("agentUsageLabel", usage.label);
             usageAction->setDefaultWidget(row);
             menu->addAction(usageAction);
         }
@@ -681,6 +691,44 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
     });
 
     menu->popup(globalPosition);
+}
+
+void MainWindow::refreshAgentAccountUsageMenu(const QString &provider)
+{
+    const bool codex = agentIsCodexProvider(provider);
+    auto *menu = findChild<QMenu *>(
+        codex ? QStringLiteral("codexAccountUsageMenu")
+              : QStringLiteral("claudeAccountUsageMenu"));
+    if (!menu)
+        return;
+
+    QHash<QString, QList<AgentUsageMenuData>> usageByAccount;
+    for (const AgentAccountProfile &profile : agentAccountProfiles(provider))
+        usageByAccount.insert(profile.id,
+                              agentAccountUsageMenuData(provider, profile.id));
+
+    for (QAction *action : menu->actions()) {
+        if (!action->objectName().startsWith(QStringLiteral("agentUsage_")))
+            continue;
+        const QString accountId =
+            action->property("agentAccountId").toString();
+        const QString usageLabel =
+            action->property("agentUsageLabel").toString();
+        const QList<AgentUsageMenuData> rows = usageByAccount.value(accountId);
+        const auto match = std::find_if(
+            rows.cbegin(), rows.cend(), [&usageLabel](const AgentUsageMenuData &row) {
+                return row.label == usageLabel;
+            });
+        if (match == rows.cend())
+            continue;
+        action->setText(match->detail);
+        if (auto *usageAction = qobject_cast<QWidgetAction *>(action)) {
+            if (auto *row = static_cast<TokenUsageMenuRow *>(
+                    usageAction->defaultWidget()))
+                row->setUsageData(match->label, match->value,
+                                  match->resetNote, match->percent);
+        }
+    }
 }
 
 void MainWindow::probeClaudeAgentAccountIdentity(const QString &configDir,
@@ -831,6 +879,7 @@ void MainWindow::selectAgentAccount(const QString &provider,
         refreshClaudeCodeUsage();
         refreshClaudeModelCombo();
     }
+    refreshAgentAccountUsageMenu(provider);
     refreshQuickAddAgentModelSelector();
     flashMessage(QStringLiteral("%1 account selected for new agents.")
                      .arg(codex ? QStringLiteral("Codex")
@@ -869,6 +918,80 @@ void MainWindow::addAgentAccount(const QString &provider)
     settings.endGroup();
     selectAgentAccount(provider, id);
     launchAgentSystemTerminal(provider, QStringLiteral("login"));
+}
+
+bool MainWindow::renameAgentAccount(const QString &provider,
+                                    const QString &accountId,
+                                    const QString &label)
+{
+    const QString cleanLabel = label.trimmed();
+    if (cleanLabel.isEmpty())
+        return false;
+    const QList<AgentAccountProfile> profiles = agentAccountProfiles(provider);
+    if (std::none_of(profiles.cbegin(), profiles.cend(), [&accountId](
+                         const AgentAccountProfile &profile) {
+            return profile.id == accountId;
+        }))
+        return false;
+
+    QSettings settings;
+    if (accountId == QLatin1String("default")) {
+        settings.setValue(agentAccountLabelSetting(provider, accountId),
+                          cleanLabel);
+    } else {
+        settings.beginGroup(agentAccountProfilesGroup(provider));
+        settings.beginGroup(accountId);
+        settings.setValue(QStringLiteral("label"), cleanLabel);
+        settings.endGroup();
+        settings.endGroup();
+    }
+    return true;
+}
+
+void MainWindow::editAgentAccount(const QString &provider,
+                                  const QString &accountId)
+{
+    const QList<AgentAccountProfile> profiles = agentAccountProfiles(provider);
+    const auto profile = std::find_if(
+        profiles.cbegin(), profiles.cend(), [&accountId](
+            const AgentAccountProfile &candidate) {
+            return candidate.id == accountId;
+        });
+    if (profile == profiles.cend())
+        return;
+
+    const QString providerName = agentIsCodexProvider(provider)
+                                     ? QStringLiteral("Codex")
+                                     : QStringLiteral("Claude Code");
+    bool ok = false;
+    const QString label = QInputDialog::getText(
+        this, QStringLiteral("Edit %1 account").arg(providerName),
+        QStringLiteral("Account label:"), QLineEdit::Normal, profile->label,
+        &ok)
+                             .trimmed();
+    if (!ok || label.isEmpty() || !renameAgentAccount(provider, accountId, label))
+        return;
+
+    if (auto *menu = findChild<QMenu *>(
+            agentIsCodexProvider(provider)
+                ? QStringLiteral("codexAccountUsageMenu")
+                : QStringLiteral("claudeAccountUsageMenu"))) {
+        for (QAction *account : menu->actions()) {
+            if (account->objectName() !=
+                QStringLiteral("agentAccount_%1").arg(accountId))
+                continue;
+            const QString identity = agentCliIdentityLabel(
+                provider, profile->configDir);
+            QString accountLabel = label;
+            if (!identity.isEmpty())
+                accountLabel += QStringLiteral(" — ") + identity;
+            if (!providerAccountSignedIn(provider, profile->configDir))
+                accountLabel += QString::fromUtf8(" \xC2\xB7 not signed in");
+            account->setText(accountLabel);
+            break;
+        }
+    }
+    flashMessage(QStringLiteral("%1 account renamed.").arg(providerName));
 }
 
 void MainWindow::launchAgentSystemTerminal(const QString &provider,

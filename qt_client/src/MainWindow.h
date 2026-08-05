@@ -1037,6 +1037,12 @@ public:
     {
         selectAgentAccount(provider, accountId);
     }
+    bool testRenameAgentAccount(const QString &provider,
+                                const QString &accountId,
+                                const QString &label)
+    {
+        return renameAgentAccount(provider, accountId, label);
+    }
 #endif
 
     // --- Headless / CLI support (HeadlessConsole) ------------------------------
@@ -2873,6 +2879,10 @@ private:
                                          const QString &baseLabel);
     void selectAgentAccount(const QString &provider, const QString &accountId);
     void addAgentAccount(const QString &provider);
+    void editAgentAccount(const QString &provider, const QString &accountId);
+    bool renameAgentAccount(const QString &provider, const QString &accountId,
+                            const QString &label);
+    void refreshAgentAccountUsageMenu(const QString &provider);
     void launchAgentSystemTerminal(const QString &provider,
                                    const QString &mode = QStringLiteral("agent"));
     QStringList agentAccountUsageLines(const QString &provider,
