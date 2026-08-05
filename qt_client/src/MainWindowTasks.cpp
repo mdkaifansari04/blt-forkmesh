@@ -108,6 +108,17 @@ QString taskTimestamp(qint64 milliseconds)
         .toString(QStringLiteral("yyyy-MM-dd HH:mm"));
 }
 
+// Keep the dense list useful at a glance: the full timestamp remains in the
+// hover card, while the row itself says how long ago the task was created.
+QString taskCreatedAgo(qint64 milliseconds)
+{
+    const QString age = formatShortRelativeTime(milliseconds / 1000);
+    if (age.isEmpty())
+        return QString::fromUtf8("\xE2\x80\x94");
+    return age == QLatin1String("now") ? age
+                                        : age + QStringLiteral(" ago");
+}
+
 QString taskAssigneeLabel(const QJsonObject &task)
 {
     const QString kind = taskText(task, QStringLiteral("assigneeKind"));
@@ -134,6 +145,7 @@ constexpr int kTaskAssigneeRole = Qt::UserRole + 5;
 constexpr int kTaskQaRole = Qt::UserRole + 6;
 constexpr int kTaskQaRequestedRole = Qt::UserRole + 7;
 constexpr int kTaskPriorityRole = Qt::UserRole + 8;
+constexpr int kTaskCreatedAtRole = Qt::UserRole + 9;
 
 // Icon strip geometry, in logical pixels. The slots are fixed so the titles all
 // start at the same x even when a task has no repository or no QA verdict.
@@ -253,6 +265,81 @@ bool taskQaGlyph(const QString &status, bool requested, QString *icon,
     return false;
 }
 
+QString taskTooltipRow(const QString &symbol, const QColor &symbolColor,
+                       const QString &label, const QString &value)
+{
+    const QString shown = value.trimmed().isEmpty()
+                              ? QString::fromUtf8("\xE2\x80\x94")
+                              : value.trimmed();
+    return QStringLiteral(
+               "<tr>"
+               "<td style='padding:2px 7px 2px 0;color:%1;font-weight:700'>%2</td>"
+               "<td style='padding:2px 10px 2px 0;color:#57606a'>%3</td>"
+               "<td style='padding:2px 0;color:#1f2328'>%4</td>"
+               "</tr>")
+        .arg(symbolColor.name(), symbol.toHtmlEscaped(), label.toHtmlEscaped(),
+             shown.toHtmlEscaped());
+}
+
+// The app-wide tooltip follows the selected theme. This particular hover card
+// is a compact task detail surface, so give its content a consistently light
+// canvas and pair every value with the same visual cue used by the row strip.
+QString taskRowTooltipHtml(const QJsonObject &task, const QString &statusKey,
+                           const QString &department,
+                           const QString &repository,
+                           const QString &qaStatus, bool qaRequested)
+{
+    const QString title = taskText(task, QStringLiteral("title"));
+    QString qaSymbol = QStringLiteral("?");
+    QColor qaColor(QStringLiteral("#656d76"));
+    if (qaStatus == QLatin1String("passed")) {
+        qaSymbol = QString::fromUtf8("\xE2\x9C\x93");
+        qaColor = QColor(QStringLiteral("#1a7f37"));
+    } else if (qaStatus == QLatin1String("failed")) {
+        qaSymbol = QString::fromUtf8("\xC3\x97");
+        qaColor = QColor(QStringLiteral("#cf222e"));
+    } else if (qaRequested) {
+        qaSymbol = QString::fromUtf8("\xE2\x97\x89");
+        qaColor = QColor(QStringLiteral("#9a6700"));
+    }
+
+    const qint64 createdAt =
+        qint64(task.value(QStringLiteral("createdAt")).toDouble());
+    const QString created = createdAt > 0
+                                ? QStringLiteral("%1 \xC2\xB7 %2")
+                                      .arg(taskCreatedAgo(createdAt),
+                                           taskTimestamp(createdAt))
+                                : QString::fromUtf8("\xE2\x80\x94");
+    QString html = QStringLiteral(
+        "<table cellspacing='0' cellpadding='0' bgcolor='#f6f8fa' "
+        "style='background-color:#f6f8fa;color:#1f2328;"
+        "border:1px solid #d0d7de;padding:8px'>"
+        "<tr><td colspan='3' style='padding:0 0 6px 0;color:#1f2328;"
+        "font-weight:700'>%1</td></tr>")
+                       .arg(title.toHtmlEscaped());
+    html += taskTooltipRow(QString::fromUtf8("\xE2\x97\x8F"),
+                           taskStatusColor(statusKey, false),
+                           QStringLiteral("Status"),
+                           taskStatusLabel(statusKey));
+    html += taskTooltipRow(QStringLiteral("!"), QColor(QStringLiteral("#9a6700")),
+                           QStringLiteral("Priority"),
+                           QString::number(task.value(QStringLiteral("priority")).toInt()));
+    html += taskTooltipRow(QStringLiteral("#"), taskAccentColor(department),
+                           QStringLiteral("Department"), department);
+    html += taskTooltipRow(QString::fromUtf8("\xE2\x97\x88"),
+                           QColor(QStringLiteral("#0969da")),
+                           QStringLiteral("Repository"), repository);
+    html += taskTooltipRow(QStringLiteral("@"), QColor(QStringLiteral("#8250df")),
+                           QStringLiteral("Assignee"), taskAssigneeLabel(task));
+    html += taskTooltipRow(qaSymbol, qaColor, QStringLiteral("QA"),
+                           qaStatus.isEmpty() ? QStringLiteral("unknown")
+                                              : qaStatus);
+    html += taskTooltipRow(QString::fromUtf8("\xE2\x97\xB7"),
+                           QColor(QStringLiteral("#57606a")),
+                           QStringLiteral("Created"), created);
+    return html + QStringLiteral("</table>");
+}
+
 // Repository and member marks are identicons derived from the name, so a repo
 // or a teammate keeps the same logo everywhere in the app. Generating one means
 // rasterising a PNG, and paint() runs on every repaint of every visible row —
@@ -317,6 +404,8 @@ public:
             index.data(kTaskAssigneeKindRole).toString();
         const QString assignee = index.data(kTaskAssigneeRole).toString();
         const QString qa = index.data(kTaskQaRole).toString();
+        const QString createdAgo =
+            taskCreatedAgo(index.data(kTaskCreatedAtRole).toLongLong());
         const bool done = statusKey == QLatin1String("done");
 
         const QColor muted(selected ? QColor("#c8e1ff")
@@ -389,9 +478,20 @@ public:
             drawGlyph(qaIcon, qaColour);
         x += kTaskSlotWidth + kTaskTitleGap;
 
+        QFont ageFont = option.font;
+        ageFont.setPointSizeF(qMax(7.0, option.font.pointSizeF() - 1.0));
+        painter->setFont(ageFont);
+        const int ageWidth = painter->fontMetrics().horizontalAdvance(createdAgo);
+        const QRect ageRect(option.rect.right() - ageWidth - 8,
+                            option.rect.top(), ageWidth,
+                            option.rect.height());
+        painter->setPen(muted);
+        painter->drawText(ageRect, Qt::AlignVCenter | Qt::AlignRight, createdAgo);
+
         const QRect titleRect(x, option.rect.top(),
-                              option.rect.right() - x - 8,
+                              qMax(0, ageRect.left() - x - 8),
                               option.rect.height());
+        painter->setFont(option.font);
         painter->setPen(selected ? QColor("#ffffff")
                                  : done ? muted
                                         : QColor(dark ? "#e6edf3" : "#1f2328"));
@@ -1064,27 +1164,11 @@ void MainWindow::renderOrganizationTaskRows(const QString &selectTaskId)
         item->setData(
             kTaskPriorityRole,
             QString::number(task.value(QStringLiteral("priority")).toInt()));
-        // The glyphs carry no labels, so the tooltip spells the whole strip
-        // out \u2014 this is where "which department is that icon?" gets answered.
-        item->setToolTip(
-            QStringList{
-                taskText(task, QStringLiteral("title")),
-                QStringLiteral("Status: %1").arg(taskStatusLabel(statusKey)),
-                QStringLiteral("Priority: %1")
-                    .arg(task.value(QStringLiteral("priority")).toInt()),
-                QStringLiteral("Department: %1")
-                    .arg(department.isEmpty()
-                             ? QString::fromUtf8("\xE2\x80\x94")
-                             : department),
-                QStringLiteral("Repository: %1")
-                    .arg(repository.isEmpty()
-                             ? QString::fromUtf8("\xE2\x80\x94")
-                             : repository),
-                QStringLiteral("Assignee: %1").arg(taskAssigneeLabel(task)),
-                QStringLiteral("QA: %1")
-                    .arg(qaStatus.isEmpty() ? QStringLiteral("unknown")
-                                            : qaStatus),
-            }.join(QLatin1Char('\n')));
+        item->setData(
+            kTaskCreatedAtRole,
+            qint64(task.value(QStringLiteral("createdAt")).toDouble()));
+        item->setToolTip(taskRowTooltipHtml(task, statusKey, department,
+                                             repository, qaStatus, qaRequested));
         m_organizationTasksTable->setItem(row, 0, item);
         if (taskText(task, QStringLiteral("id")) == selectedId)
             selectedRow = row;

@@ -136,9 +136,14 @@ def test_qt_task_list_is_a_headerless_icon_strip():
         "kTaskQaRole",
     ):
         assert "item->setData(%s," % role in QT_TASKS, role
-    # The columns carried the only labels, so the row tooltip now spells the
-    # whole strip out.
-    assert 'QStringLiteral("Department: %1")' in QT_TASKS
+    assert "kTaskCreatedAtRole," in QT_TASKS
+    # Creation age is visible without opening the task, while the light hover
+    # card spells each icon strip field out with its own symbol.
+    assert "taskCreatedAgo" in QT_TASKS
+    assert 'QStringLiteral(" ago")' in QT_TASKS
+    assert "background-color:#f6f8fa" in QT_TASKS
+    for label in ("Status", "Priority", "Department", "Repository", "Assignee", "QA"):
+        assert 'QStringLiteral("%s")' % label in QT_TASKS
     # Priority and assignee lost their in-row editors with the columns; the
     # edit dialog is reachable from the row itself instead.
     assert "&QTableWidget::itemDoubleClicked" in QT_TASKS
