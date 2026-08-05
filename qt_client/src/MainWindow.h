@@ -421,6 +421,11 @@ public:
     QStringList testNetworkLog() const { return m_networkLog; }
     void testResetNetworkLog();
     void testLogSystem(const QString &text) { logSystem(text); }
+    void testLoadNetworkLog(const QStringList &lines)
+    {
+        m_networkLog = lines;
+        m_networkLogViewStale = true;
+    }
     // adhoc #73: record a UI stall the way the watchdog does, then read back the
     // fix-it prompt the footer badge drafts into the quick-add composer.
     void testRecordUiStall(qint64 peakMs, const QString &blockingCall,

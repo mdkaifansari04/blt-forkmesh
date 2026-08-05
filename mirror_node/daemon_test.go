@@ -84,6 +84,9 @@ while True:
 	if !status.Ready || !status.LastSyncOK || status.Repositories["mirror9/forkmesh"] == "" || !status.Processes["gateway"] {
 		t.Fatalf("not ready: %+v", status)
 	}
+	if status.Restarts["gateway"] != 0 {
+		t.Fatalf("fresh gateway restarted during initial reconciliation: %+v", status.Restarts)
+	}
 	response, err := client.Get("http://" + statusAddress + "/healthz")
 	if err != nil || response.StatusCode != http.StatusOK {
 		t.Fatalf("health: %v %+v", err, response)

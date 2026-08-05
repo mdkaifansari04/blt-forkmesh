@@ -10,7 +10,12 @@
   "identityKey": "/var/lib/forkmesh/.local/share/ForkMesh/ForkMesh/identity/ed25519.pem",
   "catalogUrl": "https://forkmesh.com/api/repositories",
   "publishOwner": "mirror9",
-  "version": "0.7.13",
+  "version": "0.7.14",
+  "intakeProgram": "/usr/local/bin/forkmesh",
+  "intakeOwner": "forkmesh",
+  "intakeRepository": "forkmesh",
+  "intakePollInterval": "5s",
+  "intakeIdleGrace": "20s",
   "syncInterval": "30s",
   "syncTimeout": "5m",
   "upstreams": {

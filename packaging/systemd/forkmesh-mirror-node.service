@@ -12,6 +12,7 @@ UMask=0077
 Environment=HOME=/var/lib/forkmesh
 Environment=XDG_DATA_HOME=/var/lib/forkmesh/.local/share
 Environment=TMPDIR=/var/lib/forkmesh/tmp
+EnvironmentFile=-/etc/forkmesh/node.env
 ExecStartPre=/usr/local/bin/forkmesh-mirror-node --config /etc/forkmesh/mirror-node.json --check
 ExecStart=/usr/local/bin/forkmesh-mirror-node --config /etc/forkmesh/mirror-node.json
 Restart=on-failure

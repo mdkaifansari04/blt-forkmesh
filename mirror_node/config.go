@@ -30,6 +30,11 @@ type Config struct {
 	Upstreams          map[string][]string `json:"upstreams"`
 	PublishOwner       string              `json:"publishOwner"`
 	Version            string              `json:"version"`
+	IntakeProgram      string              `json:"intakeProgram"`
+	IntakeOwner        string              `json:"intakeOwner"`
+	IntakeRepository   string              `json:"intakeRepository"`
+	IntakePollInterval Duration            `json:"intakePollInterval"`
+	IntakeIdleGrace    Duration            `json:"intakeIdleGrace"`
 	DisableCatalog     bool                `json:"disableCatalog"`
 	DisableCloudflared bool                `json:"disableCloudflared"`
 }
@@ -124,6 +129,25 @@ func (c *Config) validate() error {
 	}
 	if !c.DisableCatalog && (c.CatalogURL == "" || c.PublishOwner == "") {
 		return errors.New("catalogUrl and publishOwner are required")
+	}
+	intakeConfigured := c.IntakeProgram != "" || c.IntakeOwner != "" || c.IntakeRepository != ""
+	if intakeConfigured {
+		if !filepath.IsAbs(c.IntakeProgram) || !nodePattern.MatchString(c.IntakeOwner) ||
+			!repositoryPattern.MatchString(c.IntakeRepository) || c.CatalogURL == "" {
+			return errors.New("intakeProgram, intakeOwner, intakeRepository, and catalogUrl must be valid")
+		}
+		if c.IntakePollInterval.Duration == 0 {
+			c.IntakePollInterval.Duration = 5 * time.Second
+		}
+		if c.IntakePollInterval.Duration < time.Second || c.IntakePollInterval.Duration > 5*time.Minute {
+			return errors.New("intakePollInterval must be between 1s and 5m")
+		}
+		if c.IntakeIdleGrace.Duration == 0 {
+			c.IntakeIdleGrace.Duration = 20 * time.Second
+		}
+		if c.IntakeIdleGrace.Duration < 5*time.Second || c.IntakeIdleGrace.Duration > 10*time.Minute {
+			return errors.New("intakeIdleGrace must be between 5s and 10m")
+		}
 	}
 	if c.Version == "" {
 		c.Version = "dev"

@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -72,6 +73,14 @@ func (p *CatalogPublisher) record(ctx context.Context, repo Repository, stateHas
 	commitCount := gitValue(ctx, repo.GitDir, "rev-list", "--count", "HEAD")
 	branchCount := countLines(gitValue(ctx, repo.GitDir, "for-each-ref", "--format=%(refname)", "refs/heads"))
 	paths := gitLines(ctx, repo.GitDir, "ls-tree", "-r", "--name-only", "HEAD", "--", ".forkmesh")
+	// Open pull metadata has its own branch. Counting pulls/ on HEAD includes
+	// historical records that are deliberately absent from forkmesh/pulls.
+	// Match the desktop publisher and fall back only for older repositories.
+	pullRef := "HEAD"
+	if gitValue(ctx, repo.GitDir, "rev-parse", "--verify", "-q", "refs/heads/forkmesh/pulls^{commit}") != "" {
+		pullRef = "refs/heads/forkmesh/pulls"
+	}
+	paths = append(paths, gitLines(ctx, repo.GitDir, "ls-tree", "-r", "--name-only", pullRef, "--", "pulls")...)
 	issueCount, issueMax, pullCount, discussionCount, artifacts := catalogPathCounts(paths)
 	size := directorySize(repo.GitDir)
 	memUsed, memTotal := memoryUsage()
@@ -161,10 +170,19 @@ func catalogPathCounts(paths []string) (issues, maxIssue, pulls, discussions, ar
 				}
 			}
 		}
+		parts := strings.Split(path, "/")
+		if len(parts) == 3 && parts[0] == "pulls" &&
+			parts[2] == "pull.md" {
+			if _, err := strconv.Atoi(parts[1]); err == nil {
+				pulls++
+			}
+		}
 		if strings.HasPrefix(path, ".forkmesh/pulls/open/") && strings.HasSuffix(path, ".json") {
 			pulls++
 		}
-		if strings.HasPrefix(path, ".forkmesh/discussions/") && strings.HasSuffix(path, ".json") {
+		if strings.HasPrefix(path, ".forkmesh/discussions/") &&
+			(strings.HasSuffix(path, "/discussion.md") ||
+				strings.HasSuffix(path, "/discussion.json")) {
 			discussions++
 		}
 		if strings.HasPrefix(path, ".forkmesh/artifacts/") {
@@ -213,4 +231,62 @@ func diskUsage(path string) (uint64, uint64) {
 	return total - free, total
 }
 
-func cpuPercent() int { return 0 }
+var (
+	cpuMu       sync.Mutex
+	cpuPrevious cpuTimes
+	readCPUStat = func() ([]byte, error) { return os.ReadFile("/proc/stat") }
+)
+
+type cpuTimes struct {
+	idle  uint64
+	total uint64
+}
+
+func parseCPUTimes(raw []byte) (cpuTimes, bool) {
+	line := strings.SplitN(string(raw), "\n", 2)[0]
+	fields := strings.Fields(line)
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return cpuTimes{}, false
+	}
+	var sample cpuTimes
+	for index, field := range fields[1:] {
+		value, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			return cpuTimes{}, false
+		}
+		sample.total += value
+		if index == 3 || index == 4 { // idle + iowait
+			sample.idle += value
+		}
+	}
+	return sample, sample.total > 0
+}
+
+func cpuPercent() int {
+	raw, err := readCPUStat()
+	if err != nil {
+		return 0
+	}
+	current, ok := parseCPUTimes(raw)
+	if !ok {
+		return 0
+	}
+	cpuMu.Lock()
+	previous := cpuPrevious
+	cpuPrevious = current
+	cpuMu.Unlock()
+	if previous.total == 0 || current.total <= previous.total ||
+		current.idle < previous.idle {
+		return 0
+	}
+	totalDelta := current.total - previous.total
+	idleDelta := current.idle - previous.idle
+	if idleDelta >= totalDelta {
+		return 0
+	}
+	percent := int((100*(totalDelta-idleDelta) + totalDelta/2) / totalDelta)
+	if percent > 100 {
+		return 100
+	}
+	return percent
+}

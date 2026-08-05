@@ -22,6 +22,7 @@ type Daemon struct {
 	gateway       GatewayConfig
 	identity      *Identity
 	supervisor    *Supervisor
+	intake        *IntakeBridge
 	startedAt     time.Time
 	mu            sync.RWMutex
 	lastSyncAt    time.Time
@@ -67,7 +68,16 @@ func NewDaemon(cfg Config) (*Daemon, error) {
 			return nil, errors.New("gateway contains an unsupported repository")
 		}
 	}
-	return &Daemon{config: cfg, gateway: gateway, identity: identity, supervisor: NewSupervisor(), startedAt: time.Now(), repoStates: map[string]string{}}, nil
+	var intake *IntakeBridge
+	if cfg.IntakeProgram != "" {
+		intake, err = NewIntakeBridge(cfg.IntakeProgram, cfg.CatalogURL,
+			cfg.IntakeOwner, cfg.IntakeRepository, cfg.IntakePollInterval.Duration,
+			cfg.IntakeIdleGrace.Duration)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &Daemon{config: cfg, gateway: gateway, identity: identity, supervisor: NewSupervisor(), intake: intake, startedAt: time.Now(), repoStates: map[string]string{}}, nil
 }
 
 func (d *Daemon) Run(ctx context.Context, executable string) error {
@@ -87,7 +97,6 @@ func (d *Daemon) Run(ctx context.Context, executable string) error {
 		}
 		specs = append(specs, ProcessSpec{Name: "cloudflared", Program: d.config.Cloudflared, Args: []string{"tunnel", "--no-autoupdate", "--protocol", "http2", "run"}, Env: environment, Output: io.Discard})
 	}
-	go d.supervisor.Run(ctx, specs)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", d.handleHealth)
 	mux.HandleFunc("/readyz", d.handleReady)
@@ -99,6 +108,15 @@ func (d *Daemon) Run(ctx context.Context, executable string) error {
 	}
 	serverErr := make(chan error, 1)
 	go func() { serverErr <- d.server.Serve(listener) }()
+	// Publish health immediately, but reconcile refs and the gateway pin before
+	// starting either child. A fresh node used to start the gateway with a stale
+	// pin, stop it moments later, then sit through the supervisor's retry delay.
+	// Preflighting once makes the first gateway process the usable one.
+	d.syncOnce(ctx)
+	go d.supervisor.Run(ctx, specs)
+	if d.intake != nil {
+		go d.intake.Run(ctx)
+	}
 	go d.syncLoop(ctx)
 	select {
 	case <-ctx.Done():
@@ -121,7 +139,6 @@ func (d *Daemon) Run(ctx context.Context, executable string) error {
 func (d *Daemon) configPath() string { return os.Getenv("FORKMESH_MIRROR_NODE_CONFIG") }
 
 func (d *Daemon) syncLoop(ctx context.Context) {
-	d.syncOnce(ctx)
 	ticker := time.NewTicker(d.config.SyncInterval.Duration)
 	defer ticker.Stop()
 	for {
@@ -224,6 +241,11 @@ func (d *Daemon) ready() bool {
 
 func (d *Daemon) status() Status {
 	running, restarts := d.supervisor.Snapshot()
+	if d.intake != nil {
+		intakeRunning, intakeStarts := d.intake.Snapshot()
+		running["intake"] = intakeRunning
+		restarts["intake"] = intakeStarts
+	}
 	ready := d.ready()
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -266,7 +288,11 @@ func copyMap(source map[string]string) map[string]string {
 }
 
 func ValidateRuntime(cfg Config) error {
-	for label, path := range map[string]string{"gateway script": cfg.GatewayScript, "python": cfg.Python, "identity": cfg.IdentityKey} {
+	paths := map[string]string{"gateway script": cfg.GatewayScript, "python": cfg.Python, "identity": cfg.IdentityKey}
+	if cfg.IntakeProgram != "" {
+		paths["intake program"] = cfg.IntakeProgram
+	}
+	for label, path := range paths {
 		if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
 			return fmt.Errorf("%s is unavailable", label)
 		}

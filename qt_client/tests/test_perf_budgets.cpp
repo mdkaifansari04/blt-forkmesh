@@ -191,6 +191,31 @@ int main(int argc, char *argv[])
         ++failures;
     }
 
+    // --- Dense persisted network log: opening Logs previously parsed every
+    // timestamp through QDateTime's locale/time-zone machinery and blocked the
+    // UI for several seconds at the 20,000-line retention limit.
+    QStringList denseLog;
+    denseLog.reserve(20000);
+    const QDateTime logNow = QDateTime::currentDateTime();
+    for (int i = 20000; i > 0; --i) {
+        denseLog.append(logNow.addSecs(-i).toString(
+                            QStringLiteral("yyyy-MM-dd HH:mm:ss")) +
+                        QStringLiteral("  net GET 200 mirror health"));
+    }
+    window.testLoadNetworkLog(denseLog);
+    QElapsedTimer logOpenTimer;
+    logOpenTimer.start();
+    window.testShowLogSection();
+    QApplication::processEvents();
+    checkBudget(QStringLiteral("20,000-line log timeline first paint"),
+                logOpenTimer.elapsed(),
+                envBudgetMs("FORKMESH_PERF_LOG_OPEN_BUDGET_MS", 250));
+    if (window.testLogTimelineVisibleCount() < denseLog.size()) {
+        qCritical("FAIL: dense log timeline omitted retained entries");
+        ++failures;
+    }
+    window.testShowHomeSection();
+
     // --- Repo-detail tab switches, including each tab's first (lazy-build)
     // open -- the Commits tab and the "and more" list tabs (Worktrees,
     // Releases, Mirror nodes) were exactly the ones found slow by feel.

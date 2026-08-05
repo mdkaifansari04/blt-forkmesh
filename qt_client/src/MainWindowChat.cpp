@@ -70,6 +70,44 @@ constexpr int kBackgroundTaskIdleTicksBeforeStop = 12;
 // first ticket is this old, or as soon as the strip goes quiet.
 constexpr qint64 kBackgroundTaskFastFlushMs = 2000;
 
+// Parse the fixed persisted-log timestamp without asking QDateTime's locale and
+// time-zone parser to scan every row. A 20,000-line log used to spend seconds
+// in qMkTime/QDateTimeParser when Logs first opened. The caller caches midnight
+// per date, so normal 24-hour slices need one time-zone conversion, not 20,000.
+qint64 fastStoredLogTimestampMs(const QString &line, QString *cachedDate,
+                                qint64 *cachedMidnightMs)
+{
+    if (line.size() < 19 || line.at(4) != QLatin1Char('-') ||
+        line.at(7) != QLatin1Char('-') || line.at(10) != QLatin1Char(' ') ||
+        line.at(13) != QLatin1Char(':') || line.at(16) != QLatin1Char(':'))
+        return -1;
+    auto digits = [&line](int offset, int length) {
+        int value = 0;
+        for (int i = 0; i < length; ++i) {
+            const ushort digit = line.at(offset + i).unicode();
+            if (digit < '0' || digit > '9')
+                return -1;
+            value = value * 10 + int(digit - '0');
+        }
+        return value;
+    };
+    const QString dateText = line.left(10);
+    if (*cachedDate != dateText) {
+        const QDate date(digits(0, 4), digits(5, 2), digits(8, 2));
+        if (!date.isValid())
+            return -1;
+        *cachedDate = dateText;
+        *cachedMidnightMs = QDateTime(date, QTime(0, 0)).toMSecsSinceEpoch();
+    }
+    const int hour = digits(11, 2);
+    const int minute = digits(14, 2);
+    const int second = digits(17, 2);
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 ||
+        second > 59)
+        return -1;
+    return *cachedMidnightMs + qint64(hour * 3600 + minute * 60 + second) * 1000;
+}
+
 QPushButton *makeInlineHelpButton(const QString &accessibleName,
                                   const QString &helpText,
                                   QWidget *parent = nullptr)
@@ -6481,14 +6519,16 @@ void MainWindow::refreshLogTimelineChart()
     QVector<LogTimelineEntry> entries;
     entries.reserve(int(std::distance(first, last)));
     QColor selectedAccent(QStringLiteral("#58a6ff"));
+    QString cachedDate;
+    qint64 cachedMidnightMs = 0;
     for (auto it = first; it != last; ++it) {
         const QString &line = *it;
-        const QDateTime timestamp =
-            QDateTime::fromString(line.left(19), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-        if (!timestamp.isValid())
+        const qint64 timestampMs =
+            fastStoredLogTimestampMs(line, &cachedDate, &cachedMidnightMs);
+        if (timestampMs < 0)
             continue;
         LogTimelineEntry entry;
-        entry.timestampMs = timestamp.toMSecsSinceEpoch();
+        entry.timestampMs = timestampMs;
         entry.category = logBadgeFor(line);
         const QColor entryAccent(logAccentFor(line));
         if (entry.category == m_logFilter && entryAccent.isValid())
