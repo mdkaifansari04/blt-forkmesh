@@ -480,6 +480,31 @@ const ScmAiModel kScmAiModels[] = {
 };
 const int kScmAiModelCount = int(sizeof(kScmAiModels) / sizeof(kScmAiModels[0]));
 
+// Alert-stack metrics, shared by the code that builds the notification bubble
+// and its queued cards (MainWindowChat.cpp) and the code that measures and
+// anchors them above the prompt (MainWindowSettings.cpp). One set of numbers
+// keeps the active toast and the cards below it on the same compact grid.
+constexpr int kToastPadLeft = 10;
+constexpr int kToastPadTop = 6;
+constexpr int kToastPadRight = 8;
+constexpr int kToastPadBottom = 6;
+// Between the stacked lines inside a card (marker / agent line / message).
+constexpr int kToastLineSpacing = 2;
+// Between a card's message block and its caption row of actions.
+constexpr int kToastRowSpacing = 4;
+// Between cards in the stack, and between the active toast and the first
+// queued card, so the whole column reads as one evenly spaced list.
+constexpr int kToastStackGap = 6;
+// Cards rise into place from just below their anchor rather than appearing.
+// The prompt anchor reserves a 16px gap beneath the stack, so the rise stays
+// inside that gap and no frame of the motion can cover the composer.
+constexpr int kToastEntryRise = 14;
+constexpr int kToastEntryMs = 180;
+// How long the whole column takes to glide to its new anchor when a card
+// arrives or leaves. Short enough to feel immediate, long enough to read as
+// the stack sliding up rather than jumping.
+constexpr int kToastShiftMs = 150;
+
 constexpr int kTableSortRole = Qt::UserRole + 10;
 // Per-cell percentage (0..100) read by ProgressBarDelegate to draw a mini bar.
 constexpr int kProgressBarRole = Qt::UserRole + 11;

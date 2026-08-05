@@ -30,10 +30,12 @@
 #include <QFileInfo>
 #include <QHelpEvent>
 #include <QImage>
+#include <QPixmap>
 #include <QPointer>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QSemaphore>
 #include <QSet>
 #include <QThread>
@@ -168,6 +170,128 @@ void checkFooterOverlayGeometry(MainWindow &window)
                          "lower-left"));
     window.testShowHomeSection();
     QApplication::processEvents();
+}
+
+// Give queued animations (the entry rise and the stack's shuffle up) time to
+// land without blocking the window, which would trip the UI-stall watchdog.
+void settleAnimations(int timeoutMs = 400)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs)
+        QApplication::processEvents(QEventLoop::AllEvents, 10);
+}
+
+// adhoc #1444: the alert stack has to hug its own content and read as one evenly
+// spaced column that rises into place. The reference screenshot showed a prompt
+// confirmation stretched down the entire window with empty bands between its
+// sent marker, its agent line and the prompt itself.
+void checkAlertStackLayout(MainWindow &window)
+{
+    window.testShowPromptBubble(
+        QStringLiteral("please add the small icon of the user agent used for the "
+                       "session to the left of the status, and move the file "
+                       "count left of the diff colour bars"),
+        QStringLiteral("Started a CC agent on your prompt (claude-opus-5, Auto)."));
+    QApplication::processEvents();
+
+    auto *container = window.findChild<QWidget *>(QStringLiteral("topMessage"));
+    auto *header =
+        window.findChild<QLabel *>(QStringLiteral("topMessagePromptHeader"));
+    auto *status =
+        window.findChild<QLabel *>(QStringLiteral("topMessagePromptStatus"));
+    auto *text = window.findChild<QLabel *>(QStringLiteral("topMessageText"));
+    auto *actions = window.findChild<QWidget *>(QStringLiteral("topMessageActions"));
+    if (!container || !header || !status || !text || !actions) {
+        check(false, QStringLiteral("the prompt confirmation stacks its lines "
+                                    "without empty bands"));
+        return;
+    }
+
+    // Every card enters by rising: it is placed below its anchor and glides up.
+    const QRect anchored = window.testTopMessageRect();
+    check(container->isVisible() && container->y() > anchored.y(),
+          QStringLiteral("an arriving alert starts below its anchor and slides "
+                         "up into place"));
+    settleAnimations();
+    check(container->geometry() == anchored,
+          QStringLiteral("the alert lands exactly on its prompt-anchored slot"));
+
+    const int markerGap = status->y() - (header->y() + header->height());
+    const int textGap = text->y() - (status->y() + status->height());
+    check(header->isVisible() && status->isVisible() && text->isVisible() &&
+              markerGap == forkmesh::ui::kToastLineSpacing &&
+              textGap == forkmesh::ui::kToastLineSpacing,
+          QStringLiteral("the prompt confirmation stacks its lines without "
+                         "empty bands"));
+
+    // The bubble is its lines plus one caption row — not a slab sized to the
+    // window. 4px of slack absorbs rounding in the wrapped-text measurement.
+    const int lines = text->geometry().bottom() - header->geometry().top() + 1;
+    const int chrome = actions->height() + forkmesh::ui::kToastRowSpacing +
+                       forkmesh::ui::kToastPadTop +
+                       forkmesh::ui::kToastPadBottom;
+    check(anchored.height() <= lines + chrome + 4,
+          QStringLiteral("the alert is only as tall as the lines it holds plus "
+                         "its caption row"));
+
+    // A second arrival queues below the active toast, and the column stays one
+    // evenly spaced list anchored above the prompt. (The confirmation goes first:
+    // anything arriving while it counts down would queue behind it too.)
+    window.testDismissTopMessage();
+    QApplication::processEvents();
+    window.testFlashMessage(QStringLiteral("Mirror sync finished"));
+    QApplication::processEvents();
+    window.testFlashMessage(QStringLiteral("Push rejected: remote has newer "
+                                           "commits on main"),
+                            true);
+    settleAnimations();
+    auto *queue = window.findChild<QScrollArea *>(QStringLiteral("topMessageQueue"));
+    const QRect stacked = window.testTopMessageRect();
+    check(window.testTopMessageQueueDepth() == 1 && queue && queue->isVisible() &&
+              queue->width() == stacked.width() &&
+              queue->y() - stacked.bottom() == forkmesh::ui::kToastStackGap,
+          QStringLiteral("a queued alert sits one gap under the active one in "
+                         "the same column"));
+
+    auto *card = queue ? queue->findChild<QWidget *>(
+                             QStringLiteral("topMessageQueueCard"))
+                       : nullptr;
+    auto *cardActions =
+        card ? card->findChild<QWidget *>(QStringLiteral("topMessageQueueActions"))
+             : nullptr;
+    auto *cardBadge =
+        card ? card->findChild<QLabel *>(QStringLiteral("topMessageQueueTypeBadge"))
+             : nullptr;
+    auto *cardText =
+        card ? card->findChild<QLabel *>(QStringLiteral("topMessageQueueText"))
+             : nullptr;
+    const int cardChrome = cardActions ? cardActions->height() +
+                                             forkmesh::ui::kToastRowSpacing +
+                                             forkmesh::ui::kToastPadTop +
+                                             forkmesh::ui::kToastPadBottom
+                                       : 0;
+    check(card && cardActions && cardBadge && cardText &&
+              cardBadge->parentWidget() == cardActions &&
+              card->height() <= cardText->height() + cardChrome + 4,
+          QStringLiteral("a queued card keeps its kind badge on the caption row "
+                         "so it stays two lines tall"));
+
+    if (!qEnvironmentVariableIsEmpty("FORKMESH_ALERT_SHOT")) {
+        qInfo("ALERTSHOT bubble=%s queue=%s lines=%d chrome=%d card=%d",
+              qPrintable(QString::number(anchored.height())),
+              qPrintable(QString::number(queue ? queue->height() : -1)), lines,
+              chrome, card ? card->height() : -1);
+        const QRect stack = stacked.united(queue ? queue->geometry() : stacked)
+                                .adjusted(-8, -8, 8, 8);
+        window.grab(stack).save(
+            qEnvironmentVariable("FORKMESH_ALERT_SHOT"));
+    }
+
+    window.testDismissTopMessage();
+    QApplication::processEvents();
+    check(container && !container->isVisible() && queue && !queue->isVisible(),
+          QStringLiteral("dismissing clears the whole alert stack"));
 }
 
 QString widgetPath(QWidget *widget)
@@ -1352,6 +1476,8 @@ int main(int argc, char *argv[])
         check(false, QStringLiteral("alert action buttons use the thinner "
                                    "caption treatment"));
     }
+
+    checkAlertStackLayout(window);
 
     window.testRunDeferredStartupNow();
     QApplication::processEvents();
