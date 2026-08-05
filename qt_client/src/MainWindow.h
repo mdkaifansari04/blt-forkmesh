@@ -754,6 +754,7 @@ public:
     bool testMirrorNodeCardsAreCompact() const;
     QString testMirrorNodeCellText(const QString &nodeName, int column) const;
     QString testMirrorNodeCellToolTip(const QString &nodeName, int column) const;
+    bool testDraftMirrorNodeDiagnostics(const QString &nodeName);
     // Build the exact command used by the fleet-wide binary action without
     // starting SSH. Tests use this to keep that action pinned to the published,
     // checksum-verified release rather than the currently-running executable.
@@ -3879,6 +3880,9 @@ private:
     // Whether `path` is switched off for the open repo.
     bool isWorkflowDisabled(const QString &path) const;
     void loadMirrorNodesPanel();
+    // Put an activated Mirror-nodes Health cell's complete, repo-scoped
+    // diagnostic report into the footer composer for review and agent handoff.
+    void draftMirrorNodeDiagnosticsPrompt(QTableWidgetItem *healthItem);
     // Self-row snapshot for that panel (adhoc #93). The key is filesystem-only —
     // mirror HEAD/refs plus the working tree's HEAD/refs/worktrees mtimes — so
     // deciding "has anything moved?" costs a handful of stats rather than the git
