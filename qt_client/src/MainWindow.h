@@ -2475,12 +2475,12 @@ private:
     // Register a diff viewer so it shares the text-size zoom: tracks it for the
     // +/- buttons and watches its viewport for Ctrl+wheel (issue #254).
     void registerDiffView(QTextEdit *view);
-    // Set a diff viewer's HTML. renderDiffStreamed retains bounded page fragments,
-    // keeps one page resident, and streams that page off the event loop; font-size
-    // changes repaint those fragments without retaining another full HTML copy.
+    // Set a diff viewer's HTML. renderDiffStreamed retains bounded fragments and
+    // streams them into one continuously scrollable document; font-size changes
+    // repaint those fragments without retaining another full HTML copy.
     void setDiffHtml(QTextEdit *view, const QString &html);
-    // Hook run when a diff view's resident page is complete; refreshes state
-    // derived from that page (sticky file positions and search).
+    // Hook run when a diff view has fully streamed; refreshes state derived from
+    // its document (sticky file positions and search).
     void onDiffStreamFinished(QTextEdit *view);
     // Scroll the Files-changed diff to the next/previous change relative to what
     // is currently on screen. delta is +1 (next) or -1 (prev).
