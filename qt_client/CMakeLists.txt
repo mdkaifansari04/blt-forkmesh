@@ -44,12 +44,13 @@ if(FORKMESH_BUILD_COMMIT_OVERRIDE)
     endif()
 endif()
 
-# Baked into the binaries: the quick-update button uses the source dir to
-# git pull + rebuild when running from a checkout. Global is fine here — the
-# value never changes between builds of the same checkout, so it never
+# Baked into the binaries for rebuild-only developer actions and diagnostics.
+# Update & restart deliberately uses an app-managed source clone instead, so it
+# cannot pull, replace, or build inside this working copy. Global is fine here —
+# the value never changes between builds of the same checkout, so it never
 # invalidates incremental builds. (It also must stay global: the inline
-# updateClientDir() in MainWindowInternal.h reads it, so every TU has to see
-# the same value or the ODR is violated.)
+# workingClientDir() in MainWindowInternal.h reads it, so every TU has to see the
+# same value or the ODR is violated.)
 add_compile_definitions(
     FORKMESH_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )

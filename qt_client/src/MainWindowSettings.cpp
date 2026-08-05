@@ -2985,7 +2985,7 @@ void MainWindow::quickRebuildRestart()
     logRestart(QStringLiteral("quick rebuild & restart started"));
     m_buildButton = m_rebuildButton;
     m_buildStatusLabel = m_rebuildStatus;
-    const QString clientDir = updateClientDir();
+    const QString clientDir = workingClientDir();
     if (!QDir(clientDir).exists("CMakeLists.txt")) {
         stopRefreshSpin();
         stopRestartSpin();
@@ -3039,7 +3039,7 @@ void MainWindow::rebuildAndRelaunch()
     m_buildStatusLabel = m_rebuildStatus;
     m_rebuildButton->setEnabled(false);
 
-    const QString clientDir = updateClientDir();
+    const QString clientDir = workingClientDir();
     if (!QDir(clientDir).exists("CMakeLists.txt")) {
         setUpdateStatus("No local source checkout to rebuild from. Use Quick "
                         "update on the start screen instead.",
@@ -3070,7 +3070,7 @@ void MainWindow::maybeAutoUpdate()
     if (anyAgentRunning())
         return; // never yank an in-progress agent session out from under itself
 
-    const QString clientDir = updateClientDir();
+    const QString clientDir = runningClientDir();
     if (!QDir(clientDir).exists("CMakeLists.txt"))
         return; // no local checkout yet; first install goes through the manual/headless flow
 

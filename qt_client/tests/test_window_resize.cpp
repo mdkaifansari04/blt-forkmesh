@@ -772,6 +772,8 @@ int main(int argc, char *argv[])
         app.arguments().contains(QStringLiteral("--log-timeline-only"));
     const bool footerOverlayOnly =
         app.arguments().contains(QStringLiteral("--footer-overlay-only"));
+    const bool updateIsolationOnly =
+        app.arguments().contains(QStringLiteral("--update-isolation-only"));
 
     const QString appDataPath =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
@@ -1922,6 +1924,31 @@ int main(int argc, char *argv[])
         check(window.testQuickUpdatePullArguments(detachedRepo.path()) ==
                   QStringList({"pull", "--ff-only", "origin", "HEAD"}),
               QStringLiteral("quick update pulls origin/HEAD in detached HEAD"));
+    }
+
+    // Update & restart owns a disposable source/binary pair under the app's
+    // managed locations. In particular neither path may resolve into the
+    // checkout baked into this developer build: the update fallback is allowed
+    // to replace its own clone, while the user's working copy must remain byte
+    // for byte untouched.
+    {
+        const QString working =
+            QFileInfo(window.testWorkingClientDir()).absoluteFilePath();
+        const QString running =
+            QFileInfo(window.testRunningClientDir()).absoluteFilePath();
+        const QString executable =
+            QFileInfo(window.testRunningClientExecutable()).absoluteFilePath();
+        const QString workingRoot =
+            QFileInfo(QDir(working).filePath(QStringLiteral("..")))
+                .absoluteFilePath() + QDir::separator();
+        check(running != working && !running.startsWith(workingRoot),
+              QStringLiteral("update source is separate from the working copy"));
+        check(!executable.startsWith(workingRoot),
+              QStringLiteral("updated executable is separate from the working copy"));
+    }
+    if (updateIsolationOnly) {
+        stopChildProcesses(window);
+        return failures == 0 ? 0 : 1;
     }
 
     // Issue #214: "Build & preview" checks the PR head out into a throwaway
