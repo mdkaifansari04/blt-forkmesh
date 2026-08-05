@@ -8328,6 +8328,12 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive,
 
 void MainWindow::pollMirrorIssueInboxes()
 {
+    // Browsing a public mirror on a desktop does not make the signed-in user a
+    // registered mirror endpoint. Sending ?mirror=1 from those sessions caused
+    // the repeated HTTP/2 "Host requires authentication" warnings. Only a
+    // provisioned headless node may compete for mirror intake leases.
+    if (!m_headless)
+        return;
     if (!m_networkAccess || !hasOwnerSigningCapability(accountOwner()))
         return;
     QSet<QString> seen;

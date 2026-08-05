@@ -2347,7 +2347,8 @@ void MainWindow::renderPullDiff()
         QString(diffSplitPref() ? QLatin1Char('s') : QLatin1Char('u')) +
         QLatin1Char('\x1f') + styleSheet + QLatin1Char('\x1f') +
         viewedKeys.join(QLatin1Char('\x1e')) + QLatin1Char('\x1f') + notesKey +
-        QLatin1Char('\x1f') + fullPatch;
+        QLatin1Char('\x1f') + QString::number(fullPatch.size()) +
+        QLatin1Char(':') + QString::number(qHash(fullPatch));
     if (!m_pullDiffSourceKey.isEmpty() && sourceKey == m_pullDiffSourceKey &&
         !m_pullDiffRenderKey.isEmpty())
         return;

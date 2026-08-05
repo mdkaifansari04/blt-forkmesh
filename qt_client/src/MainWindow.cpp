@@ -804,7 +804,8 @@ void MainWindow::runDeferredStartup()
 
     bool headlessBootstrapQueued = false;
     auto runHeadlessBootstrap = [this, &headlessBootstrapQueued] {
-        if (!m_headless)
+        if (!m_headless || qEnvironmentVariableIsSet(
+                               "FORKMESH_EXTERNAL_MIRROR_NODE"))
             return;
         headlessBootstrapQueued = true;
         forkmesh::StartupTraceStep step(
@@ -905,9 +906,13 @@ void MainWindow::runDeferredStartup()
     if (m_headless)
         startNetworking();
 
+    const bool externalMirrorBridge =
+        m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE");
+
     // Restore the last open repository (for a desktop this comes first,
     // matching the old scheduling order).
-    if (m_pendingRestoreRepoIndex >= 0 &&
+    if (!externalMirrorBridge && m_pendingRestoreRepoIndex >= 0 &&
         m_pendingRestoreRepoIndex < m_repositories.size()) {
         const int index = m_pendingRestoreRepoIndex;
         logStartup(QStringLiteral("restoring saved repository index %1")
@@ -962,7 +967,7 @@ void MainWindow::runDeferredStartup()
         logStartup(QStringLiteral(
             "  scheduling background issue metadata reload after restore"));
         reloadIssuesInBackground();
-    } else if (m_repoDetailIndex < 0) {
+    } else if (!externalMirrorBridge && m_repoDetailIndex < 0) {
         // No saved repository to restore: land on the selected node's first repo
         // (if any) so a fresh session opens on real content, not an empty panel.
         int firstRepo = -1;
@@ -989,7 +994,7 @@ void MainWindow::runDeferredStartup()
     // the transcripts that reference them keep their thumbnails past the next
     // reboot (adhoc #66). Deferred: it touches the disk and nothing on screen
     // needs it before the first frame.
-    {
+    if (!externalMirrorBridge) {
         forkmesh::StartupTraceStep step(QStringLiteral(
             "deferred startup: migrate legacy prompt image attachments"));
         startupStep(QStringLiteral("Checking prompt attachments"));
@@ -1002,7 +1007,7 @@ void MainWindow::runDeferredStartup()
     // with its assign-time jump to the Agents tab — a full cold openRepoDetail()
     // (~2s of git reads) before the window could paint, which the restore above
     // then redid. Quiet mode keeps the resumed runs from stealing the view.
-    if (!m_agentQueue.isEmpty()) {
+    if (!externalMirrorBridge && !m_agentQueue.isEmpty()) {
         forkmesh::StartupTraceStep step(
             QStringLiteral("deferred startup: resume %1 queued agent session(s)")
                 .arg(m_agentQueue.size()));
@@ -1028,7 +1033,7 @@ void MainWindow::runDeferredStartup()
     // has no equivalent oauth/usage-style endpoint; its chart already
     // recomputes from the locally tracked window on every launch via
     // buildBreadcrumb's refreshCodexUsageRemaining() call).
-    {
+    if (!externalMirrorBridge) {
         forkmesh::StartupTraceStep step(
             QStringLiteral("deferred startup: refresh Claude Code usage"));
         startupStep(QStringLiteral("Refreshing Claude Code usage"));

@@ -2095,6 +2095,12 @@ void MainWindow::fetchRoomPassphrase()
 
 void MainWindow::startOfficeChannelMirror()
 {
+    // A service-managed mirror keeps this Qt compatibility process only for
+    // repository inbox leases. Office/chat polling is user-facing desktop work
+    // and returned a predictable 401 every 30 seconds for node-only accounts.
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     // Same gate as fetchRoomPassphrase: the relay hands the office rooms only
     // to an account that can sign for itself with this node's identity key.
     const QString node = accountOwner();
@@ -2898,6 +2904,13 @@ bool MainWindow::serviceManagedCheckout(const QString &localPath) const
 
 void MainWindow::ensureFlagshipRepo()
 {
+    // The dedicated mirror daemon owns repository discovery, stable-ref sync,
+    // gateway repinning, and catalog publication.  The temporary Qt companion
+    // only bridges legacy issue/PR/discussion intake and must not open or scan
+    // the repository on its GUI thread.
+    if (m_headless && qEnvironmentVariableIsSet(
+                          "FORKMESH_EXTERNAL_MIRROR_NODE"))
+        return;
     if (!m_networkAccess)
         return;
     const QString canonicalOwner = QStringLiteral("forkmesh");
