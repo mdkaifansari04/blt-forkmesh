@@ -16296,6 +16296,46 @@ export function createWorldScene({
   renderer.toneMappingExposure = 1.08;
   renderer.shadowMap.enabled = !compactRenderer;
   renderer.shadowMap.type = THREE.PCFShadowMap;
+  // A dedicated layer keeps sprites, lines, particles, and labels out of the
+  // triangle inspector. Meshes retain their ordinary layer as well, so
+  // restoring the normal camera mask is lossless.
+  const TRIANGLE_VIEW_LAYER = 31;
+  const triangleViewMaterial = new THREE.MeshBasicMaterial({
+    color: "#72e6ff",
+    wireframe: true,
+    transparent: true,
+    opacity: 0.88,
+    depthTest: true,
+    depthWrite: true,
+  });
+  let triangleViewEnabled = false;
+  let triangleViewCameraMask = camera.layers.mask;
+  let triangleViewLabelsHidden = labelLayer.hidden;
+
+  function tagTriangleViewMeshes() {
+    scene.traverse((child) => {
+      if (child.isMesh) child.layers.enable(TRIANGLE_VIEW_LAYER);
+    });
+  }
+
+  function setTriangleView(enabled = false) {
+    const active = enabled === true;
+    if (active === triangleViewEnabled) return triangleViewEnabled;
+    triangleViewEnabled = active;
+    if (active) {
+      triangleViewCameraMask = camera.layers.mask;
+      triangleViewLabelsHidden = labelLayer.hidden;
+      tagTriangleViewMeshes();
+      camera.layers.set(TRIANGLE_VIEW_LAYER);
+      scene.overrideMaterial = triangleViewMaterial;
+      labelLayer.hidden = true;
+    } else {
+      camera.layers.mask = triangleViewCameraMask;
+      scene.overrideMaterial = null;
+      labelLayer.hidden = triangleViewLabelsHidden;
+    }
+    return triangleViewEnabled;
+  }
   // The sun and almost all shadow casters are static. Rebuilding the complete
   // atlas on every display frame nearly doubles town-square draw calls, so
   // refresh it at a bounded cadence while retaining live shadows.
@@ -20496,6 +20536,10 @@ export function createWorldScene({
     );
     const elapsed = Math.max(1, time - engineeringDebugSampleAt);
     if (elapsed < 1000) return;
+    // Remote avatars and other live meshes may have joined since triangle
+    // view was enabled. Fold them into its mesh-only layer at the same bounded
+    // cadence as the monitor rather than adding another per-frame scene walk.
+    if (triangleViewEnabled) tagTriangleViewMeshes();
     const fps = Math.max(
       0,
       Math.min(999, (engineeringDebugFrames * 1000) / elapsed),
@@ -35268,6 +35312,7 @@ export function createWorldScene({
         disposeOwnedMaterial(child.material, true);
       }
     });
+    triangleViewMaterial.dispose();
     renderer.dispose();
     renderer.domElement.remove();
     labelLayer.replaceChildren();
@@ -35426,6 +35471,8 @@ export function createWorldScene({
     updateRewardPool,
     playRewardEvent,
     setPaused,
+    setTriangleView,
+    isTriangleView: () => triangleViewEnabled,
     dispose,
     setCameraZoom,
     getCameraState: () => ({

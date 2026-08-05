@@ -4653,6 +4653,15 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </summary>
           <div class="world-diagnostics-details" aria-live="off">
             <p>Local one-second samples. Nothing here is transmitted while you are in the World; if the tab crashes, a summary of these readings and your device class is reported so the crash can be fixed. No URLs, locations, form contents, or activity history are collected.</p>
+            <div class="world-diagnostics-triangle-control">
+              <button
+                type="button"
+                data-world-triangle-view
+                aria-pressed="false"
+                title="Hide surfaces, labels, lines, and points and draw only mesh triangle edges"
+              >View triangles</button>
+              <span>Wireframe-only scene</span>
+            </div>
             <dl>
               <div><dt>Renderer</dt><dd data-world-diagnostics-renderer>Starting…</dd></div>
               <div><dt>Frame health</dt><dd data-world-diagnostics-frame-health>Sampling…</dd></div>
@@ -11085,6 +11094,16 @@ class ForkMeshWorld extends HTMLElement {
         this.saveCurrentWorldView();
         return;
       }
+      const triangleView = event.target.closest("[data-world-triangle-view]");
+      if (triangleView) {
+        const enabled = triangleView.getAttribute("aria-pressed") !== "true";
+        const active = this.world?.setTriangleView?.(enabled) === true;
+        triangleView.setAttribute("aria-pressed", String(active));
+        triangleView.textContent = active
+          ? "Show normal world"
+          : "View triangles";
+        return;
+      }
       const savedViewEdit = event.target.closest("[data-world-saved-view-edit]");
       if (savedViewEdit) {
         this.editSavedWorldView(savedViewEdit.dataset.worldSavedViewEdit);
@@ -11863,6 +11882,12 @@ class ForkMeshWorld extends HTMLElement {
       if (debugPanel) {
         this.settings.debugPanel = debugPanel.checked;
         this.commitPublicSettings();
+        if (!debugPanel.checked) {
+          this.world?.setTriangleView?.(false);
+          const triangleView = this.$("[data-world-triangle-view]");
+          triangleView?.setAttribute("aria-pressed", "false");
+          if (triangleView) triangleView.textContent = "View triangles";
+        }
         const diagnostics = this.$("[data-world-diagnostics]");
         if (diagnostics) diagnostics.hidden = !debugPanel.checked;
         const chatTerminal = this.$("[data-world-chat-terminal]");
