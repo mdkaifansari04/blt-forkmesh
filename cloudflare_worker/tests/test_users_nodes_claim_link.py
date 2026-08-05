@@ -188,6 +188,7 @@ def _harness(accounts):
         "verify_password": verify_password,
         "ed25519_verify": ed25519_verify,
         "_is_admin": _is_admin,
+        "_is_main_relay": lambda _env: False,
         "clean_avatar_png": clean_avatar_png,
         "_solana_balance_lamports": _solana_balance_lamports,
         "_random_bytes": _random_bytes,
@@ -268,6 +269,20 @@ def test_claim_flow_links_node_via_heartbeat_code():
     assert accounts["mirror1"]["owner"] == "alice"
     assert "claim_pending" not in accounts["mirror1"]
     assert accounts["alice"]["nodes"] == ["mirror1"]
+
+
+def test_owned_node_heartbeat_reports_its_user_admin_status():
+    accounts = {
+        "admin1": _admin_rec(),
+        "mirror1": dict(_node_rec(), owner="admin1"),
+    }
+    ns = _harness(accounts)
+
+    beat = asyncio.run(ns["_account_heartbeat"](
+        object(), _Request({"nodeName": "mirror1", "ts": "1", "sig": "s"})))
+
+    assert beat["status"] == 200
+    assert beat["data"]["isAdmin"] is True
 
 
 def test_claim_node_accepts_pubkey_as_node_id():

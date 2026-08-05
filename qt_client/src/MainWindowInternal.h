@@ -4027,19 +4027,17 @@ protected:
             return;
         QWidget *popup = popupContainer();
         fitPopupWidth(v, popup);
-        // Height for every row plus the view frame. sizeHintForRow under-reports
-        // the styled row height (the rows aren't laid out with their stylesheet
-        // metrics yet when the base showPopup returns) and the view's own
-        // sizeHint is just QListView's fixed default, so sum the row hints and add
-        // a small cushion per row to cover the styling. If this still fits the
-        // screen, force the popup and the view to that height so no internal scroll
-        // buttons appear.
+        // Height for every row plus the view frame. sizeHintForRow is the
+        // delegate's exact row height once the base popup has laid it out; adding
+        // extra cushion here made a long picker fill the bottom with blank space.
+        // If this still fits the screen, force the popup and the view to that
+        // height so no internal scroll buttons appear.
         int rowsH = 0;
         for (int row = 0; row < count(); ++row) {
             int rowH = v->sizeHintForRow(row);
             if (rowH <= 0)
                 rowH = fontMetrics().height() + 8;
-            rowsH += rowH + 8;
+            rowsH += rowH;
         }
         const int fullHeight = 2 * v->frameWidth() + rowsH;
         QRect geo = popup->geometry();
@@ -9512,7 +9510,7 @@ public:
         update();
     }
 
-    // Green icon+caption tint for a "go" action (the agent detail's Branch
+    // Green filled treatment for a "go" action (the agent detail's Branch
     // button). The painted equivalent of the QSS #successButton green, which
     // this class cannot use — it draws itself rather than a styled QSS box.
     void setAccentTint(bool accent)
@@ -9553,23 +9551,32 @@ protected:
         p.setRenderHint(QPainter::Antialiasing);
         const bool dark = currentThemeIsDark();
         const bool lit = isEnabled() && (isChecked() || underMouse());
-        // The alert and accent tints outrank the resting grey but still brighten
-        // on hover/checked, mirroring the old QSS [alert="true"] rules. A
-        // disabled item (the agent detail reuses this class for its action
-        // buttons, which grey out per session) drops to a low-contrast grey.
+        const bool accentAction = isEnabled() && m_accent;
+        // The alert tint still brightens on hover/checked, mirroring the old
+        // QSS [alert="true"] rules. A disabled item (the agent detail reuses
+        // this class for its action buttons, which grey out per session) drops
+        // to a low-contrast grey.
         const QColor fg =
             !isEnabled() ? QColor(dark ? "#484f58" : "#b6bdc4")
-            : m_alert    ? QColor(dark ? (lit ? "#f0b72f" : "#d29922")
-                                       : (lit ? "#7d4e00" : "#9a6700"))
-            : m_accent   ? QColor(dark ? (lit ? "#56d364" : "#3fb950")
-                                       : (lit ? "#1a7f37" : "#1f883d"))
-                         : (dark ? QColor(lit ? "#e6edf3" : "#8b949e")
-                                 : QColor(lit ? "#1f2328" : "#656d76"));
+                : accentAction ? QColor("#ffffff")
+                : m_alert ? QColor(dark ? (lit ? "#f0b72f" : "#d29922")
+                                         : (lit ? "#7d4e00" : "#9a6700"))
+                          : (dark ? QColor(lit ? "#e6edf3" : "#8b949e")
+                                  : QColor(lit ? "#1f2328" : "#656d76"));
         const bool showLabel = !m_compact && !m_label.isEmpty();
+
+        if (accentAction) {
+            const QColor fill = dark
+                                    ? QColor(lit ? "#2ea043" : "#238636")
+                                    : QColor(lit ? "#2ea043" : "#1f883d");
+            p.setPen(Qt::NoPen);
+            p.setBrush(fill);
+            p.drawRoundedRect(QRectF(rect()).adjusted(1, 2, -1, -2), 6, 6);
+        }
 
         // Selection line along the left edge — same accent green as the repo
         // tabs' checked underline.
-        if (isChecked())
+        if (isChecked() && !accentAction)
             p.fillRect(QRectF(0, 4, 2, height() - 8), QColor("#2ea043"));
 
         // 16px, the repo tab row's icon size, not the 20px the rail used to

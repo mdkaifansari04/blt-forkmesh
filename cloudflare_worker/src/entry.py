@@ -1,25 +1,4 @@
-import asyncio
-import base64
-import gzip
-import hashlib
-import hmac
-import io
-import ipaddress
-import json
-import math
 import re
-import struct
-import time
-import traceback
-from urllib.parse import (
-    parse_qs,
-    parse_qsl,
-    quote,
-    unquote,
-    urlencode,
-    urlparse,
-    urlunparse,
-)
 
 from js import AbortSignal as JsAbortSignal
 from js import Date
@@ -57,7 +36,9 @@ class _LazyModule:
     def _load(self):
         module = self._module
         if module is None:
-            module = __import__(self._name)
+            # ``fromlist`` makes dotted stdlib names (notably urllib.parse)
+            # resolve to the requested leaf module instead of their package.
+            module = __import__(self._name, fromlist=("*",))
             self._module = module
         return module
 
@@ -122,6 +103,26 @@ class _LazyExport:
 # These modules back optional route families.  Do not turn these assignments
 # back into top-level imports: Cloudflare validates Python Worker global scope
 # within a fixed memory budget.
+asyncio = _LazyModule("asyncio")
+base64 = _LazyModule("base64")
+gzip = _LazyModule("gzip")
+hashlib = _LazyModule("hashlib")
+hmac = _LazyModule("hmac")
+io = _LazyModule("io")
+ipaddress = _LazyModule("ipaddress")
+json = _LazyModule("json")
+math = _LazyModule("math")
+struct = _LazyModule("struct")
+time = _LazyModule("time")
+traceback = _LazyModule("traceback")
+_urllib_parse = _LazyModule("urllib.parse")
+parse_qs = _urllib_parse.export("parse_qs")
+parse_qsl = _urllib_parse.export("parse_qsl")
+quote = _urllib_parse.export("quote")
+unquote = _urllib_parse.export("unquote")
+urlencode = _urllib_parse.export("urlencode")
+urlparse = _urllib_parse.export("urlparse")
+urlunparse = _urllib_parse.export("urlunparse")
 organization_discord = _LazyModule("organization_discord")
 notes = _LazyModule("notes")
 polar_integration = _LazyModule("polar_integration")
@@ -129,12 +130,11 @@ polar_integration = _LazyModule("polar_integration")
 # Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
 # lives in its own module. Wallet signing is intentionally not imported into the
 # Worker: reward transfers are prepared as intents for a local external signer.
-from solana import (
-    _base58_encode,
-    _b64url_encode,
-    _solana_rpc,
-    _solana_rpc_write,
-)
+_solana = _LazyModule("solana")
+_base58_encode = _solana.export("_base58_encode")
+_b64url_encode = _solana.export("_b64url_encode")
+_solana_rpc = _solana.export("_solana_rpc")
+_solana_rpc_write = _solana.export("_solana_rpc_write")
 
 MAX_ROOM_NAME = 80
 MAX_CONNECTIONS = 128
@@ -510,137 +510,80 @@ GENERAL_CHAT_EMAIL_INTERVAL_MS = 24 * 60 * 60 * 1000
 GENERAL_CHAT_EMAIL_LOOKBACK_MS = 24 * 60 * 60 * 1000
 GENERAL_CHAT_EMAIL_MAX_RECIPIENTS = 200
 # HTTP route patterns (git smart-HTTP, repo APIs, accounts) live in urls.py so the
-# router's match table is one small, scannable module instead of buried in this
-# 11k-line file. The Worker runtime bundles sibling modules in src/, so this
-# import resolves both on Cloudflare and in the test suite (which parses urls.py
-# the same way it parses this file).
-from urls import (  # noqa: E402
-    ROOM_RE,
-    REPO_ROOM_RE,
-    CHAT_CHANNELS_RE,
-    CHAT_CHANNEL_MEMBERS_RE,
-    CHAT_CHANNEL_ROOM_ACCESS_RE,
-    CHAT_CHANNEL_HISTORY_RE,
-    CHAT_CHANNEL_WS_RE,
-    CHAT_DIRECT_MESSAGES_RE,
-    CHAT_DIRECT_MESSAGE_USERS_RE,
-    CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE,
-    CHAT_DIRECT_MESSAGE_READ_RE,
-    CHAT_DIRECT_MESSAGE_WS_RE,
-    REPO_ISSUES_RE,
-    REPO_PULLS_RE,
-    REPO_PULL_MERGE_RE,
-    REPO_ACTION_RUNS_RE,
-    REPO_DISCUSSIONS_RE,
-    REPO_PENDING_RE,
-    REPO_SUBSCRIBE_RE,
-    REPO_BOUNTY_RE,
-    REPO_SHARES_RE,
-    REPO_SECURITY_SCANS_RE,
-    REPO_MIRRORS_RE,
-    REPO_MIRROR_REACHABILITY_RE,
-    REPO_ABOUT_RE,
-    REPO_LOGO_RE,
-    REPO_LOGO_SUGGESTIONS_RE,
-    REPO_AGENTS_RE,
-    REPO_AGENTS_LIST_RE,
-    REPO_AGENTS_ACK_RE,
-    REPO_AGENTS_PROMPT_RE,
-    REPO_AGENTS_TRANSCRIPT_RE,
-    ORG_AGENT_BOTS_RE,
-    ORG_AGENT_BOT_RE,
-    REPO_ORG_AGENT_JOBS_RE,
-    REPO_ORG_AGENT_JOB_RESULT_RE,
-    REPO_PRIVACY_RE,
-    PRIVATE_REPLICA_ACCESS_RE,
-    REPO_HOST_RE,
-    RELEASE_BLOB_RE,
-    REPO_RELEASE_DOWNLOADS_RE,
-    GIT_INFO_RE,
-    GIT_PACK_RE,
-    GIT_RECEIVE_RE,
-    ACCOUNTS_RE,
-    ACCOUNT_CONTRIBUTIONS_RE,
-    ACCOUNT_FOLLOW_RE,
-    REFERRAL_LINK_RE,
-    REFERRAL_CARD_RE,
-    ORGS_RE,
-    ORG_RE,
-    ORG_MEMBERS_RE,
-    ORG_TEAMS_RE,
-    ORG_TEAM_MEMBERS_RE,
-    ORG_REPOS_RE,
-    ORG_BOT_TOKENS_RE,
-    ORG_DISCORD_RE,
-    DISCORD_OAUTH_CALLBACK_RE,
-    MAILTRAP_WEBHOOK_RE,
-    POLAR_INTEGRATION_RE,
-    BOT_SESSION_RE,
-    ORG_SUCCESSION_RE,
-    ORG_FEDIVERSE_RE,
-    BADGES_RE,
-    BADGE_ACCOUNT_RE,
-    REPO_API_PREFIX_RE,
-    AP_USER_RE,
-    AP_USER_SUB_RE,
-    AP_REPO_RE,
-    AP_REPO_SUB_RE,
-    AP_OBJECT_RE,
-    AP_OBJECT_MEDIA_RE,
-    REPO_FEDI_COMMENTS_RE,
-    REPO_AP_PUBLISH_RE,
-    REPO_AP_DIGEST_RE,
-    REPO_AP_POSTS_RE,
-    REPO_CARD_RE,
-    REPO_MEDIA_RE,
-    REPO_STAR_RE,
+# router's match table is one small, scannable module instead of buried here.
+# Keep its many compiled regexes out of deployment validation; the first routed
+# request resolves these transparent exports from the bundled sibling module.
+_urls = _LazyModule("urls")
+_URL_EXPORT_NAMES = (
+    "ROOM_RE", "REPO_ROOM_RE", "CHAT_CHANNELS_RE",
+    "CHAT_CHANNEL_MEMBERS_RE", "CHAT_CHANNEL_ROOM_ACCESS_RE",
+    "CHAT_CHANNEL_HISTORY_RE", "CHAT_CHANNEL_WS_RE",
+    "CHAT_DIRECT_MESSAGES_RE", "CHAT_DIRECT_MESSAGE_USERS_RE",
+    "CHAT_DIRECT_MESSAGE_ROOM_ACCESS_RE", "CHAT_DIRECT_MESSAGE_READ_RE",
+    "CHAT_DIRECT_MESSAGE_WS_RE", "REPO_ISSUES_RE", "REPO_PULLS_RE",
+    "REPO_PULL_MERGE_RE", "REPO_ACTION_RUNS_RE", "REPO_DISCUSSIONS_RE",
+    "REPO_PENDING_RE", "REPO_SUBSCRIBE_RE", "REPO_BOUNTY_RE",
+    "REPO_SHARES_RE", "REPO_SECURITY_SCANS_RE", "REPO_MIRRORS_RE",
+    "REPO_MIRROR_REACHABILITY_RE", "REPO_ABOUT_RE", "REPO_LOGO_RE",
+    "REPO_LOGO_SUGGESTIONS_RE", "REPO_AGENTS_RE", "REPO_AGENTS_LIST_RE",
+    "REPO_AGENTS_ACK_RE", "REPO_AGENTS_PROMPT_RE",
+    "REPO_AGENTS_TRANSCRIPT_RE", "ORG_AGENT_BOTS_RE", "ORG_AGENT_BOT_RE",
+    "REPO_ORG_AGENT_JOBS_RE", "REPO_ORG_AGENT_JOB_RESULT_RE",
+    "REPO_PRIVACY_RE", "PRIVATE_REPLICA_ACCESS_RE", "REPO_HOST_RE",
+    "RELEASE_BLOB_RE", "REPO_RELEASE_DOWNLOADS_RE", "GIT_INFO_RE",
+    "GIT_PACK_RE", "GIT_RECEIVE_RE", "ACCOUNTS_RE",
+    "ACCOUNT_CONTRIBUTIONS_RE", "ACCOUNT_FOLLOW_RE", "REFERRAL_LINK_RE",
+    "REFERRAL_CARD_RE", "ORGS_RE", "ORG_RE", "ORG_MEMBERS_RE",
+    "ORG_TEAMS_RE", "ORG_TEAM_MEMBERS_RE", "ORG_REPOS_RE",
+    "ORG_BOT_TOKENS_RE", "ORG_DISCORD_RE", "DISCORD_OAUTH_CALLBACK_RE",
+    "MAILTRAP_WEBHOOK_RE", "POLAR_INTEGRATION_RE", "BOT_SESSION_RE",
+    "ORG_SUCCESSION_RE", "ORG_FEDIVERSE_RE", "BADGES_RE",
+    "BADGE_ACCOUNT_RE", "REPO_API_PREFIX_RE", "AP_USER_RE",
+    "AP_USER_SUB_RE", "AP_REPO_RE", "AP_REPO_SUB_RE", "AP_OBJECT_RE",
+    "AP_OBJECT_MEDIA_RE", "REPO_FEDI_COMMENTS_RE", "REPO_AP_PUBLISH_RE",
+    "REPO_AP_DIGEST_RE", "REPO_AP_POSTS_RE", "REPO_CARD_RE",
+    "REPO_MEDIA_RE", "REPO_STAR_RE",
 )
+for _url_export_name in _URL_EXPORT_NAMES:
+    globals()[_url_export_name] = _urls.export(_url_export_name)
+del _url_export_name
+del _URL_EXPORT_NAMES
 
-# Static route ownership rules: repo shortcuts are Python-owned so hard refresh
-# on /owner/repo serves the dashboard shell; direct implementation-file URLs
-# such as /login.html stay non-public.
-from static_routes import (  # noqa: E402
-    BLOCKED_STATIC_HTML_PATHS,
-    DASHBOARD_PAGE_ASSETS,
-    DASHBOARD_REPO_ASSET,
-    dashboard_section_redirect,
-    looks_like_repo_route,
-)
+# Static route ownership is only consulted once an HTTP request reaches the
+# application router. Compiling its route tables during validation wastes
+# startup memory, so keep the module behind the same lazy boundary as the
+# optional API domains below. The one string constant is cheaper to repeat than
+# to wrap because call sites concatenate it directly.
+_static_routes = _LazyModule("static_routes")
+BLOCKED_STATIC_HTML_PATHS = _static_routes.export("BLOCKED_STATIC_HTML_PATHS")
+DASHBOARD_PAGE_ASSETS = _static_routes.export("DASHBOARD_PAGE_ASSETS")
+DASHBOARD_REPO_ASSET = "dashboard/repo.html"
+dashboard_section_redirect = _static_routes.export("dashboard_section_redirect")
+looks_like_repo_route = _static_routes.export("looks_like_repo_route")
 
-# Release manifest + content-addressed blob helpers (tag/asset validation, the
-# CAS blob path layout, the canonical signable manifest body, semver ordering)
-# live in releases.py — another pure, js-free sibling module the runtime bundles
-# and the test suite imports directly. Only verify_release_manifest stays below,
-# since it reaches into this file's Ed25519/sha256 crypto.
-from releases import (  # noqa: E402
-    RELEASE_TAG_RE,
-    RELEASE_SEMVER_RE,
-    SHA256_HEX_RE,
-    valid_release_tag,
-    valid_asset_name,
-    valid_sha256_hex,
-    cas_blob_relpath,
-    release_asset_line,
-    release_manifest_content,
-    release_signing_message,
-    generate_shasums,
-    release_semver_key,
-    resolve_latest_release,
-    asset_upload_decision,
-)
+# Release helpers are needed only by repository release routes.
+_releases = _LazyModule("releases")
+valid_release_tag = _releases.export("valid_release_tag")
+valid_asset_name = _releases.export("valid_asset_name")
+valid_sha256_hex = _releases.export("valid_sha256_hex")
+cas_blob_relpath = _releases.export("cas_blob_relpath")
+release_asset_line = _releases.export("release_asset_line")
+release_manifest_content = _releases.export("release_manifest_content")
+release_signing_message = _releases.export("release_signing_message")
+generate_shasums = _releases.export("generate_shasums")
+release_semver_key = _releases.export("release_semver_key")
+resolve_latest_release = _releases.export("resolve_latest_release")
+asset_upload_decision = _releases.export("asset_upload_decision")
 
-# Git smart-HTTP wire helpers (pkt-line, ref-advertisement canonicalization,
-# request-body decoding) and the repo-blob content-type/filename mapping live
-# in their own stdlib-only module — see git_http.py.
-from git_http import (  # noqa: E402
-    REPO_BLOB_CONTENT_TYPES,
-    advertised_refs_canonical,
-    decode_git_request_body,
-    git_advert_cache_key,
-    pkt_line,
-    repo_blob_content_type,
-    repo_blob_filename,
-)
+# Git wire helpers pull in gzip/io and are used only by clone/blob routes.
+_git_http = _LazyModule("git_http")
+REPO_BLOB_CONTENT_TYPES = _git_http.export("REPO_BLOB_CONTENT_TYPES")
+advertised_refs_canonical = _git_http.export("advertised_refs_canonical")
+decode_git_request_body = _git_http.export("decode_git_request_body")
+git_advert_cache_key = _git_http.export("git_advert_cache_key")
+pkt_line = _git_http.export("pkt_line")
+repo_blob_content_type = _git_http.export("repo_blob_content_type")
+repo_blob_filename = _git_http.export("repo_blob_filename")
 
 # SSH key parsing is only used by account/repository key routes.
 ssh_auth = _LazyModule("ssh_keys")
@@ -671,42 +614,34 @@ def set_mirror_request_status(*args, **kwargs): return _mirrors.set_mirror_reque
 def select_clone_fallback(*args, **kwargs): return _mirrors.select_clone_fallback(*args, **kwargs)
 def served_mirror_groups(*args, **kwargs): return _mirrors.served_mirror_groups(*args, **kwargs)
 
-# Catalog-record sanitization (string cleaning, path-segment validation, the
-# public catalog-record builder) lives in catalog.py -- another pure, js-free
-# sibling module the runtime bundles and the test suite parses directly.
-from catalog import (  # noqa: E402
-    MAX_REPO_SEGMENT,
-    clean_string,
-    safe_catalog_record,
-    safe_contribution_transport,
-    safe_segment,
-)
+# Catalog sanitizers load on the first route that needs user/catalog input.
+# Keep the tiny public length limit local because it is passed as a concrete
+# integer throughout this module.
+MAX_REPO_SEGMENT = 80
+_catalog = _LazyModule("catalog")
+clean_string = _catalog.export("clean_string")
+safe_catalog_record = _catalog.export("safe_catalog_record")
+safe_contribution_transport = _catalog.export("safe_contribution_transport")
+safe_segment = _catalog.export("safe_segment")
 contributions = _LazyModule("contributions")
 
 # The D1 table/index DDL list is only needed when a request or cron first
 # ensures storage.  It is large enough to keep out of Python global scope.
 schema = _LazyModule("schema")
 
-# Signed-event crypto + canonicalization -- the Ed25519/SHA-256 verify
-# primitives and the per-event canonical-content builders (which must
-# byte-match the desktop client's *Store contentForSigning/canonicalString)
-# live in events.py, another one-directional sibling module (adhoc #279).
-from events import (  # noqa: E402
-    DISCUSSION_CATEGORIES,
-    DISCUSSION_CATEGORY_MAP,
-    b64url_decode,
-    discussion_event_content,
-    ed25519_verify,
-    issue_event_content,
-    normalized_discussion_category,
-    pull_comment_content,
-    sha256_hex,
-    verify_discussion_event,
-    verify_issue_event,
-    verify_pull_comment_event,
-    verify_pull_event,
-    verify_release_manifest,
-)
+# Signed-event crypto is needed only when a signed mutation is handled. It also
+# imports WebCrypto bridge objects, so deferring it saves more than source bytes.
+_events = _LazyModule("events")
+b64url_decode = _events.export("b64url_decode")
+discussion_event_content = _events.export("discussion_event_content")
+ed25519_verify = _events.export("ed25519_verify")
+issue_event_content = _events.export("issue_event_content")
+sha256_hex = _events.export("sha256_hex")
+verify_discussion_event = _events.export("verify_discussion_event")
+verify_issue_event = _events.export("verify_issue_event")
+verify_pull_comment_event = _events.export("verify_pull_comment_event")
+verify_pull_event = _events.export("verify_pull_event")
+verify_release_manifest = _events.export("verify_release_manifest")
 
 # ActivityPub federation protocol spine (WebFinger/NodeInfo/actor/Note builders,
 # draft-cavage HTTP-signature strings, the Digest header format, remote-document
@@ -20529,7 +20464,13 @@ async def _account_heartbeat(env, request):
     else:
         notification_preferences = dict(
             prefs_rec.get("notification_preferences") or {})
-    is_admin = await _is_admin(env, name)
+    # A desktop heartbeat is signed by the machine node, while administrator
+    # status belongs to its owning user after the users/nodes split. Checking
+    # only `name` leaves an admin's linked desktop looking like a non-admin and
+    # keeps admin-only app navigation (including Users) hidden. Standalone
+    # legacy user-clients still fall back to their own name.
+    admin_account = owner or name
+    is_admin = await _is_admin(env, admin_account)
     response = {"ok": True, "online": True,
                 "hasPayoutAddress": bool(rec.get("solana")),
                 "payoutCustody": "external-self-custodial-public-address",
