@@ -418,6 +418,7 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                                 bool probeConflict, bool autoSyncCompleted)
 {
     AgentDiffStat stat;
+    bool trackedDirty = false;
     // forkmesh/pulls is the shared signed PR ledger, not an agent-authored code
     // branch. Comparing its historical storage tree to main produces a bogus
     // 99+ file badge and can trigger an equally bogus behind/conflict state.
@@ -436,6 +437,12 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
             const QString lines = QString::fromUtf8(dirtyOut).trimmed();
             stat.dirty =
                 lines.isEmpty() ? 0 : lines.count(QLatin1Char('\n')) + 1;
+            for (const QString &line : lines.split(QLatin1Char('\n'))) {
+                if (!line.isEmpty() && !line.startsWith(QLatin1String("??"))) {
+                    trackedDirty = true;
+                    break;
+                }
+            }
         }
     }
     if (!gitDir.isEmpty() && !base.isEmpty() && !session.branchName.isEmpty() &&
@@ -478,7 +485,7 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
         // user opens it one by one. Never touch an active or dirty worktree, and
         // preflight the merge tree so a genuine conflict stays completely
         // unchanged and visible for manual resolution.
-        if (autoSyncCompleted && stat.behind > 0 && stat.dirty == 0 &&
+        if (autoSyncCompleted && stat.behind > 0 && !trackedDirty &&
             !stat.worktree.isEmpty()) {
             const bool canMerge =
                 runGitCapture(gitDir,
@@ -7035,6 +7042,13 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch,
     if (!mergeVerified || !m_agentStore || m_repoDetailIndex < 0 ||
         m_repoDetailIndex >= m_repositories.size())
         return false;
+    // Every successful merge advances the comparison base for every surviving
+    // agent branch, even when the merged PR did not originate from an agent.
+    // Arm the coalesced worker now: completed clean worktrees are updated there,
+    // active/dirty ones are retried by the reload that follows their completion.
+    // This is intentionally independent of whether the merged PR matches a
+    // session below.
+    m_agentDiffRefreshPending = true;
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     bool changed = false;
     QList<int> mergedIds;
@@ -7067,7 +7081,8 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch,
         refreshAgentTable();
         if (m_selectedAgentSessionId > 0)
             showAgentSession(m_selectedAgentSessionId);
-    }
+    } else
+        refreshAgentTable();
     return changed;
 }
 

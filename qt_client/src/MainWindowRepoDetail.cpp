@@ -9190,9 +9190,12 @@ void MainWindow::ensureRepoDetailTabBuilt(int index)
     QElapsedTimer buildTimer;
     buildTimer.start();
     const forkmesh::BackgroundScope buildAction(
-        QStringLiteral("ui-build"),
+        QStringLiteral("uibuild"),
         QStringLiteral("build repository tab %1").arg(index),
-        forkmesh::ActionTelemetry::Execution::UiBlocking);
+        // QWidget construction is GUI-only. Tabs are lazy-built after the
+        // window is responsive and this scope is a bounded deferred UI apply,
+        // not worker-eligible computation.
+        forkmesh::ActionTelemetry::Execution::UiDeferred);
 
     QWidget *page = nullptr;
     if (index == 0)

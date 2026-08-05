@@ -27,6 +27,8 @@ QString executionName(ActionTelemetry::Execution execution)
         return QStringLiteral("async");
     case ActionTelemetry::Execution::Worker:
         return QStringLiteral("worker");
+    case ActionTelemetry::Execution::UiDeferred:
+        return QStringLiteral("ui-deferred");
     case ActionTelemetry::Execution::UiBlocking:
         return QStringLiteral("ui-blocking");
     }

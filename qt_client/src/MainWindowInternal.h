@@ -78,6 +78,7 @@
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QGraphicsOpacityEffect>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -96,6 +97,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QWidgetAction>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QEnterEvent>
 #include <QMessageBox>
 #include <QContextMenuEvent>
@@ -10783,21 +10785,73 @@ inline QString headBranchFromFile(const QString &dir)
 
 // Run a git command in `dir`, capturing stdout. Returns false (with stderr in
 // `err`) on failure. Used by the in-client repo file browser.
-inline bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
-                   QString *err)
+struct GitCaptureResult {
+    bool ok = false;
+    QByteArray output;
+    QString error;
+};
+
+// Own and wait for the process on the current thread. GUI callers enter through
+// runGitCapture(), which moves this whole operation to the shared worker pool.
+inline GitCaptureResult runGitCaptureDirect(const QString &dir,
+                                            const QStringList &args,
+                                            const QByteArray *input = nullptr)
 {
+    GitCaptureResult result;
     QProcess process;
     process.start("git", QStringList{"-C", dir} + args);
-    if (!waitForGit(process, err))
-        return false;
-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        if (err)
-            *err = QString::fromUtf8(process.readAllStandardError()).trimmed();
-        return false;
+    if (input) {
+        process.write(*input);
+        process.closeWriteChannel();
     }
+    if (!waitForGit(process, &result.error))
+        return result;
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        result.error = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        return result;
+    }
+    result.output = process.readAllStandardOutput();
+    result.ok = true;
+    return result;
+}
+
+// Preserve the small synchronous helper API used throughout the client while
+// ensuring Git never owns or waits for a process on the GUI thread. The local
+// loop excludes user input but continues paints/timers and receives the future;
+// unlike the old waitForGit pump, the process and its blocking wait are wholly
+// worker-owned and telemetry therefore reports the real execution lane.
+inline GitCaptureResult runGitCaptureBackgrounded(const QString &dir,
+                                                  const QStringList &args,
+                                                  const QByteArray *input = nullptr)
+{
+    const QCoreApplication *app = QCoreApplication::instance();
+    if (!app || QThread::currentThread() != app->thread())
+        return runGitCaptureDirect(dir, args, input);
+
+    const QByteArray inputCopy = input ? *input : QByteArray();
+    const bool hasInput = input != nullptr;
+    QFutureWatcher<GitCaptureResult> watcher;
+    QEventLoop loop;
+    QObject::connect(&watcher, &QFutureWatcher<GitCaptureResult>::finished,
+                     &loop, &QEventLoop::quit);
+    watcher.setFuture(QtConcurrent::run([dir, args, inputCopy, hasInput] {
+        return runGitCaptureDirect(dir, args,
+                                   hasInput ? &inputCopy : nullptr);
+    }));
+    if (!watcher.isFinished())
+        loop.exec(QEventLoop::ExcludeUserInputEvents);
+    return watcher.result();
+}
+
+inline bool runGitCapture(const QString &dir, const QStringList &args,
+                          QByteArray *out, QString *err)
+{
+    const GitCaptureResult result = runGitCaptureBackgrounded(dir, args);
     if (out)
-        *out = process.readAllStandardOutput();
-    return true;
+        *out = result.output;
+    if (err)
+        *err = result.error;
+    return result.ok;
 }
 
 // Run a git command in `dir` feeding `input` on stdin (e.g. cat-file --batch),
@@ -10808,20 +10862,13 @@ inline bool runGitCaptureInput(const QString &dir, const QStringList &args,
                                const QByteArray &input, QByteArray *out,
                                QString *err)
 {
-    QProcess process;
-    process.start("git", QStringList{"-C", dir} + args);
-    process.write(input);
-    process.closeWriteChannel();
-    if (!waitForGit(process, err))
-        return false;
-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        if (err)
-            *err = QString::fromUtf8(process.readAllStandardError()).trimmed();
-        return false;
-    }
+    const GitCaptureResult result =
+        runGitCaptureBackgrounded(dir, args, &input);
     if (out)
-        *out = process.readAllStandardOutput();
-    return true;
+        *out = result.output;
+    if (err)
+        *err = result.error;
+    return result.ok;
 }
 
 inline QString worktreeHeadBranch(const QString &workTree)

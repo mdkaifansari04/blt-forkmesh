@@ -430,7 +430,11 @@ void appendDiffStreamBatch(QTextEdit *view, const QString &batch)
             .arg(batch.size())
             .arg(view->objectName().isEmpty() ? QStringLiteral("unnamed view")
                                                : view->objectName()),
-        forkmesh::ActionTelemetry::Execution::UiBlocking);
+        // QTextDocument is GUI-owned, so insertion itself cannot run on a
+        // worker. scheduleDiffStreamBatch() bounds it and posts one batch per
+        // event-loop turn; distinguish that deferred apply from computation
+        // that actually blocks the UI thread.
+        forkmesh::ActionTelemetry::Execution::UiDeferred);
     // Append at the document's end via a private cursor so the user's current
     // scroll position is left untouched as the rest fills in below.
     QTextCursor cur(view->document());
@@ -524,7 +528,9 @@ void renderDiffStreamed(QTextEdit *view, const QString &html,
                 .arg(view->objectName().isEmpty()
                          ? QStringLiteral("unnamed view")
                          : view->objectName()),
-            forkmesh::ActionTelemetry::Execution::UiBlocking);
+            // The expensive preparation/splitting is complete. This is the
+            // bounded GUI-owned document apply, deferred from streamed work.
+            forkmesh::ActionTelemetry::Execution::UiDeferred);
         view->document()->setDefaultStyleSheet(styleSheet);
         view->setHtml(first);
     }
