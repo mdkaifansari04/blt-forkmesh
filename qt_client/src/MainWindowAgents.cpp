@@ -999,14 +999,9 @@ QString agentStatusCellIconName(const AgentSession &s)
     return QString();
 }
 
-// Which agent actually ran a session, as one small glyph for the "#" cell's
-// leading edge (adhoc #1443): the list said what a run did and how it went, but
-// never who did it, and the four providers behave differently enough that it is
-// the first thing asked of a row. The shape says how it ran — a terminal for the
-// CLI providers that drive a real checkout, a cloud for the raw API scripts —
-// and the tint says whose model answered: Anthropic's clay for the Claude
-// family, OpenAI's green for Codex/OpenAI. A session with no recorded (or an
-// unrecognised) provider gets no glyph rather than a wrong one.
+// Which agent actually ran a session, as text in the hover card. The visual at
+// the leading edge is the model artwork itself (or the PR author's avatar), so
+// this remains useful context without duplicating a provider glyph in the row.
 struct AgentProviderGlyph {
     QString icon; // empty: nothing to draw and nothing to say
     QColor tint;
@@ -1032,33 +1027,36 @@ AgentProviderGlyph agentProviderGlyph(const QString &provider)
     return {QString(), QColor(), QString()};
 }
 
-// Sizes of the two glyphs at the head of every "#" cell. The provider rides a
-// touch smaller than the status: it says who, which is context for the state,
-// not the state itself.
-constexpr int kAgentStatusGlyphPx = 14;
-constexpr int kAgentProviderGlyphPx = 12;
-constexpr int kAgentProviderGapPx = 3;
-constexpr int kAgentLeadGlyphsPx =
-    kAgentProviderGlyphPx + kAgentProviderGapPx + kAgentStatusGlyphPx;
+// A single identity badge now owns the far-left position in every Agents row:
+// model artwork for agent sessions, and the PR author's avatar for PR-linked
+// sessions. Status is a coloured stroke around that badge, rather than a second
+// competing icon, so the first mark answers who/what and the border answers how
+// it is going.
+constexpr int kAgentLeadGlyphsPx = 20;
+constexpr int kAgentIdentityArtworkPx = 14;
 
-// The "#" cell's leading decoration: the provider glyph, then the run-state
-// glyph. A table item carries exactly one icon, so the pair is composed into a
-// single pixmap here rather than spending a column on the provider — the
-// provider sits left of the status, where the eye starts the row. Sessions
-// without a provider glyph keep the bare status pixmap, so their status stays
-// on the same vertical line as everyone else's.
-QPixmap agentLeadGlyphPixmap(const QString &provider, const QPixmap &status)
+QPixmap agentLeadGlyphPixmap(const AgentSession &session,
+                             const QPixmap &pullAuthorAvatar = QPixmap())
 {
-    const AgentProviderGlyph badge = agentProviderGlyph(provider);
-    if (badge.icon.isEmpty())
-        return status;
-    QPixmap out = crispIconPixmap(kAgentLeadGlyphsPx, kAgentStatusGlyphPx,
+    QPixmap artwork = pullAuthorAvatar;
+    if (artwork.isNull())
+        artwork = agentControlIcon(agentStatusModelIconIndex(session)).pixmap(
+            kAgentIdentityArtworkPx, kAgentIdentityArtworkPx);
+    if (artwork.isNull())
+        return QPixmap();
+    QPixmap out = crispIconPixmap(kAgentLeadGlyphsPx, kAgentLeadGlyphsPx,
                                   iconDevicePixelRatio());
     QPainter p(&out);
-    p.drawPixmap(0, (kAgentStatusGlyphPx - kAgentProviderGlyphPx) / 2,
-                 tintedOcticonPixmap(badge.icon, badge.tint, kAgentProviderGlyphPx));
-    if (!status.isNull())
-        p.drawPixmap(kAgentProviderGlyphPx + kAgentProviderGapPx, 0, status);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const int inset = (kAgentLeadGlyphsPx - kAgentIdentityArtworkPx) / 2;
+    p.drawPixmap(QRect(inset, inset, kAgentIdentityArtworkPx,
+                       kAgentIdentityArtworkPx), artwork);
+    QPen statusRing(agentStatusIconColor(session), 2.0);
+    statusRing.setJoinStyle(Qt::RoundJoin);
+    p.setPen(statusRing);
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QRectF(1.0, 1.0, kAgentLeadGlyphsPx - 2.0,
+                         kAgentLeadGlyphsPx - 2.0));
     p.end();
     return out;
 }
@@ -1089,7 +1087,8 @@ QString agentHoverRow(const QString &icon, const QColor &tint, const QString &te
 // the title column has the rest of the list to itself.
 void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                           const AgentDiffStat &stat = AgentDiffStat(),
-                          const QString &base = QString(), int sessionId = 0)
+                          const QString &base = QString(), int sessionId = 0,
+                          const QPixmap &pullAuthorAvatar = QPixmap())
 {
     // What the cell reads is the session's age, not its number (adhoc #84): the
     // separate "Updated" column is gone and its value moved in here, while the
@@ -1103,19 +1102,12 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                                 : QStringLiteral("-"));
     cell->setData(Qt::UserRole, s.id);
     cell->setData(kTableSortRole, s.id);
-    // Provider glyph then status glyph (adhoc #1443 put the provider in front of
-    // the state — see agentLeadGlyphPixmap). Status (issue #108): a blue spinner
-    // while running (adhoc #23/#50), a purple merge mark once it lands, a green
-    // check on success, a red stop sign when halted, an orange hand while it waits
-    // on the user, and a red X circle on failure (issue #322). The running glyph is
-    // seeded at frame 0 here; animateRunningAgentIcons() spins it.
+    // The leading identity badge is model artwork for ordinary sessions or the
+    // author's face for a PR. Its status is the surrounding stroke: blue while
+    // running, purple once merged, green on success, red when halted/failed and
+    // amber while queued or waiting.
     const QString statusIcon = agentStatusCellIconName(s);
-    const QPixmap statusPixmap =
-        statusIcon.isEmpty()
-            ? QPixmap()
-            : tintedOcticonPixmap(statusIcon, agentStatusIconColor(s),
-                                  kAgentStatusGlyphPx);
-    const QPixmap lead = agentLeadGlyphPixmap(s.provider, statusPixmap);
+    const QPixmap lead = agentLeadGlyphPixmap(s, pullAuthorAvatar);
     cell->setIcon(lead.isNull() ? QIcon() : QIcon(lead));
     // The branch drives the cell's branch button (adhoc #377); AgentBranchButton-
     // Delegate paints it and opens the branch on click, so a session without one
@@ -1297,23 +1289,6 @@ QString agentSpeedText(const AgentSession &s, qint64 tokens)
 // time, so thinking and tool calls drag the average down), which is the point:
 // the lights should still visibly differentiate an ordinary run from a fast one.
 constexpr double kAgentFastTokensPerSecond = 30.0;
-
-// How far a running session's "sync" spinner turns per animation tick (adhoc
-// #50): the glyph spins at the speed the model is actually producing, from a
-// slow turn on a barely-emitting run up to a fast one at
-// kAgentFastTokensPerSecond, on the same 0..1 throughput scale the fleet
-// matrix's activity lights use. A session with no rate yet still creeps, so a
-// just-started run never reads as frozen. Degrees are per kAgentSpinTickMs tick.
-constexpr double kAgentSpinSlowDegrees = 12.0;  // ~0.55 rev/s
-constexpr double kAgentSpinFastDegrees = 66.0;  // ~3.0 rev/s
-
-double agentSpinStepDegrees(const AgentSession &s, qint64 tokens)
-{
-    const double throughput = qBound(
-        0.0, agentTokensPerSecond(s, tokens) / kAgentFastTokensPerSecond, 1.0);
-    return kAgentSpinSlowDegrees +
-           throughput * (kAgentSpinFastDegrees - kAgentSpinSlowDegrees);
-}
 
 // What an agent changed, as words — the number of files its patch touched, the
 // lines it added and removed, and how far its branch sits ahead of / behind base
@@ -6755,7 +6730,7 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
     // edge; adhoc #84 — the age took the session number's place in the text).
     // Sortable because the cell no longer displays the number it sorts by.
     applyAgentStatusCell(sortable(kAgentIdColumn), session, diffStat, agentBase,
-                         session.id);
+                         session.id, agentSessionPullAvatar(session));
     // Issue-scoped sessions show "#<issue> <title>"; PR-scoped ones (e.g. the
     // conflict auto-fixer, issueNumber 0) just show their title.
     QString title = session.issueNumber > 0 ? QStringLiteral("#%1 %2")
@@ -6800,6 +6775,34 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
     // created/started/finished/merged now reads as the "#" cell's own text, with
     // the full timestamp in that cell's tooltip — see applyAgentStatusCell, which
     // also carries what the "Diff" column used to hold (adhoc #92).
+}
+
+QPixmap MainWindow::agentSessionPullAvatar(const AgentSession &session)
+{
+    if (session.prNumber <= 0)
+        return QPixmap();
+    for (const PullRequest &pr : std::as_const(m_currentPulls)) {
+        if (pr.number != session.prNumber)
+            continue;
+        // The same avatar precedence as a PR conversation: a peer's published
+        // picture, then this user's chosen profile picture, then a stable face
+        // for an author whose image has not reached this node yet.
+        const QPixmap cached = m_avatars.value(pr.author);
+        if (!cached.isNull())
+            return roundedRectPixmap(cached, kAgentIdentityArtworkPx,
+                                     kAgentIdentityArtworkPx / 2.0);
+        if (!pr.author.isEmpty() && pr.author == m_profileIdentity.publicKey())
+            return roundedAvatar(effectiveUserAvatar(), kAgentIdentityArtworkPx,
+                                 0.5);
+        const QString author = pr.authorName.trimmed().isEmpty()
+                                   ? (pr.author.isEmpty()
+                                          ? QString::number(pr.number)
+                                          : pr.author)
+                                   : pr.authorName.trimmed();
+        return roundedAvatar(forkMeshAvatarPng(author.toLower()),
+                             kAgentIdentityArtworkPx, 0.5);
+    }
+    return QPixmap();
 }
 
 AgentSession *MainWindow::findAgentSession(int sessionId)
@@ -11852,7 +11855,9 @@ void MainWindow::updateAgentStatusCell(int sessionId)
         // Reuse the memoised diff stat so the branch chip keeps its files/dirty/
         // worktree badges across a bare status flip without re-shelling git here
         // (an absent entry simply leaves the badges off until the next refresh).
-        applyAgentStatusCell(idItem, *s, m_agentDiffStats.value(sessionId));
+        applyAgentStatusCell(idItem, *s, m_agentDiffStats.value(sessionId),
+                             QString(), sessionId,
+                             agentSessionPullAvatar(*s));
         break;
     }
     // Keep the top-bar fleet matrix's per-session square in step with every
@@ -11909,7 +11914,8 @@ void MainWindow::applyAgentDiffStatResult(int generation, int repoIndex,
         if (!item || item->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker blocker(m_agentTable);
-        applyAgentStatusCell(item, *session, stat);
+        applyAgentStatusCell(item, *session, stat, QString(), sessionId,
+                             agentSessionPullAvatar(*session));
         m_agentTable->viewport()->update(m_agentTable->visualItemRect(item));
         break;
     }
@@ -11935,11 +11941,10 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     m_agentStatusPill->show();
 }
 
-// Spin the blue "sync" glyph on every running row's "#" cell so the agents
-// list shows a live spinner (issue #108). Driven by m_agentsSpinTimer, which only
-// ticks while a session is running, so finished rows keep their static icon.
-// Each row spins at its own session's tok/s (adhoc #50), so a fast run visibly
-// outruns a slow one instead of every row turning in lockstep.
+// Keep the live session metadata ticking while an agent runs. The list badge is
+// intentionally static now: status is its coloured outline, which keeps the
+// model artwork or PR author avatar visible instead of replacing it with a
+// spinner every frame.
 void MainWindow::animateRunningAgentIcons()
 {
     if (!m_agentTable)
@@ -11956,23 +11961,6 @@ void MainWindow::animateRunningAgentIcons()
         const AgentSession *s = findAgentSession(idItem->data(Qt::UserRole).toInt());
         if (!s || s->merged || s->status != AgentStatus::Running)
             continue;
-        // The spinner sits on the "#" cell (adhoc #29 — see applyAgentRowCells for
-        // the column layout).
-        double &angle = m_agentRowSpinAngles[s->id];
-        angle = std::fmod(angle + agentSpinStepDegrees(*s, sessionTokenTotal(*s)),
-                          360.0);
-        // A genie turns its own violet sparkle rather than the shared sync
-        // arrows (adhoc #38), so its glyph survives the animation instead of
-        // being overwritten frame by frame.
-        // The provider glyph rides in front of the spinner (adhoc #1443), so it
-        // has to be recomposed every frame — the cell carries one icon, and this
-        // path overwrites it.
-        idItem->setIcon(QIcon(agentLeadGlyphPixmap(
-            s->provider,
-            rotatedTintedOcticonPixmap(
-                s->genie ? "sparkle" : "sync",
-                QColor(s->genie ? Theme::kGenie : Theme::kRunning),
-                kAgentStatusGlyphPx, angle))));
         // Tick the detail header's run stats (elapsed time, and the live tok/s
         // figure whose run duration grows against the wall clock — issue #245,
         // moved here from the table by adhoc #35) for the open session — meta
