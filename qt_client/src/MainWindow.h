@@ -4280,6 +4280,9 @@ private:
     // centralised failure handler (runUpdateStep) agnostic to which one it was.
     void startRestartSpin(QPushButton *button);
     void stopRestartSpin();
+    // Advance the determinate ring around the active restart spinner. This is
+    // intentionally phase-based: build output is not a portable progress signal.
+    void setRestartSpinProgress(int percent);
     // Flips an in-progress restart spin between the refresh-arrows look (a
     // rebuild actually running) and a spinning hourglass (queued behind other
     // agent actions, not doing anything itself yet).
