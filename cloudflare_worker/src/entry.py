@@ -350,9 +350,6 @@ FORKBOT_AI_MODEL_CHOICES = (
     ("@cf/google/gemma-4-26b-a4b-it",
      "Gemma 4 26B",
      "Efficient reasoning, coding, and a long context window."),
-    ("@cf/zai-org/glm-4.7-flash",
-     "GLM 4.7 Flash",
-     "Fast multilingual instruction following and coding."),
     ("@cf/meta/llama-3.1-8b-instruct-fast",
      "Llama 3.1 8B (fast)",
      "Low-latency answers for straightforward prompts."),
@@ -34584,7 +34581,7 @@ async def _forkbot_run_ai(
             # JSON mode returns the parsed object under "response".
             if isinstance(value, dict):
                 return value
-        # Current Workers AI chat models such as GLM 4.7 Flash and Gemma 4
+        # Current Workers AI chat models such as Llama 4 Scout and Gemma 4
         # return the OpenAI Chat Completions shape instead of the older
         # top-level {"response": "..."} shape. Accept the first usable choice
         # and both content encodings Cloudflare documents: a string or an array
