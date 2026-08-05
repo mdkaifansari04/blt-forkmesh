@@ -300,26 +300,35 @@ void setDiffSplitPref(bool split);
 // overlay (adhoc #56). Unlike diffFileHeaderHtml this carries no Viewed toggle
 // or table layout — it renders inline in a QLabel.
 QString diffStickyLabelHtml(const DiffFileEntry &f);
-// Progressive diff rendering (adhoc #421). QTextEdit::setHtml() parses, styles
-// and lays out the whole document synchronously on the GUI thread, so handing it
-// a multi-megabyte diff froze the window — which is why large diffs used to be
-// replaced by a "hidden for speed" notice. These split rendered HTML into
-// per-file blocks, bound pathological rich-text tables (the full patch remains
-// in the PR/Git data), and lay out only the first screenful up front. Remaining
-// bounded blocks stream one event-loop turn at a time.
+// Progressive, paged diff rendering. QTextEdit::setHtml() parses, styles and
+// lays out the whole document synchronously on the GUI thread, so handing it a
+// multi-megabyte diff freezes the window. Large files are split at row
+// boundaries and grouped into bounded pages; one page is resident at a time and
+// its small fragments stream one event-loop turn at a time. No diff rows are
+// discarded.
 void renderDiffStreamed(QTextEdit *view, const QString &html,
                         const QString &styleSheet);
+// Repaint the resident page with a new stylesheet (diff zoom/theme changes)
+// without retaining a second copy of the complete source HTML on the widget.
+bool restyleDiffStreamed(QTextEdit *view, const QString &styleSheet);
+// Select the page containing an anchor and scroll to it once that page's
+// progressive render reaches the anchor. Used by changed-file navigation.
+void scrollDiffToAnchor(QTextEdit *view, const QString &anchor);
+// Introspection/navigation used by the embedded page controls and performance
+// regression test.
+int diffPageCount(QTextEdit *view);
+int diffCurrentPage(QTextEdit *view);
+void showDiffPage(QTextEdit *view, int page);
 // Ensure a streamed diff continues filling. This deliberately does *not* force
 // its remaining HTML into the document synchronously: doing that from an anchor
 // jump or a document-wide search bypassed the streaming limits and recreated the
 // multi-second UI stalls streaming was introduced to prevent. Operations may use
 // the portion currently available; their normal stream-finished hooks refresh
-// complete-document state once the bounded batches have landed.
+// resident-page state once the bounded batches have landed.
 void flushDiffStream(QTextEdit *view);
-// Register a callback run every time `view`'s diff finishes streaming (and
-// immediately at the end of a render that needed no streaming), for state that
-// is derived from the complete document. Hooks are additive: register once per
-// owner, at construction.
+// Register a callback run every time the resident diff page finishes streaming
+// (and immediately when it needed no streaming), for state derived from that
+// page's document. Hooks are additive: register once per owner, at construction.
 void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook);
 bool autoMarkViewedOnScrollPref();
 void setAutoMarkViewedOnScrollPref(bool on);
@@ -363,11 +372,9 @@ public:
                                  return;
                              // Jump the diff to the file's header, aligned to the top.
                              // Suppress the scroll that fires so it can't re-select.
-                             // The target file may still be queued behind the
-                             // visible window, so land the whole diff first.
+                             // The target may be queued or live on another page.
                              m_ignoreScroll = true;
-                             flushDiffStream(m_diff);
-                             m_diff->scrollToAnchor(anchor);
+                             scrollDiffToAnchor(m_diff, anchor);
                              m_ignoreScroll = false;
                              refresh(/*syncSelection=*/false);
                          });
