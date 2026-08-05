@@ -183,7 +183,7 @@ const DETAIL_WIDTH_STEP = 48;
 const SETTINGS_WIDTH_KEY = "forkmesh.world.settingsWidth.v1";
 const SETTINGS_WIDTH_MIN = 360;
 const REFRESH_POSITION_KEY = "forkmesh.world.refresh-position.v1";
-// Start outside the closed yurt so its roster is not drawn before entry.
+// Start just outside the open Members Circle for a readable first view.
 const FRESH_ARRIVAL_CAMPFIRE_PREVIEW = Object.freeze({
   x: 0,
   y: 0.38,
@@ -2457,8 +2457,8 @@ function normalizeMediaSpaces(value) {
     .slice(0, 50);
 }
 
-// The public user-profile directory also populates the bounded member-avatar
-// rings inside the Members Center yurt.
+// The public user-profile directory also populates the open member-avatar
+// rings around the Members Center fire.
 function normalizeMemberDirectory(value) {
   return (Array.isArray(value?.users) ? value.users : [])
     .map((user) => ({
@@ -7285,7 +7285,7 @@ class ForkMeshWorld extends HTMLElement {
       );
       if (this.restoredPosition) {
         // Older builds persisted bench-ring coordinates. The current scene
-        // restores them as a normal standing position around the yurt.
+        // restores them as a normal standing position around the circle.
         const restoredCampfireSeat =
           !this.sharedView &&
           this.world.restoreCampfireSeatIfNearby?.(
@@ -18801,7 +18801,7 @@ class ForkMeshWorld extends HTMLElement {
     );
   }
 
-  // First-time Town Square arrivals start outside the Members Center yurt.
+  // First-time Town Square arrivals start beside the open Members Circle.
   seatFreshArrivalAtCampfire() {
     // A saved pose, shared view, or explicit regional destination always wins.
     // Only a truly unplaced Town Square arrival starts at the social circle.
@@ -18829,7 +18829,7 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     this.closeLandmark();
-    this.toast("Welcome to the Members Center yurt.");
+    this.toast("Welcome to the Members Circle.");
   }
 
   broadcastPanelHTML() {
@@ -29997,9 +29997,9 @@ class ForkMeshWorld extends HTMLElement {
 
   syncMemberLounge() {
     if (!this.world?.updateMemberLounge) return;
-    // Populate the yurt from the public directory. Members already rendered as
-    // live or opted-in idle avatars keep their richer presence avatar instead
-    // of receiving a duplicate interior figure.
+    // Populate the open circle from the public directory. Members already
+    // rendered as live or opted-in idle avatars keep their richer presence
+    // avatar instead of receiving a duplicate directory figure.
     const present = new Set();
     const registered = [];
     let guests = 0;
