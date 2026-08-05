@@ -18,6 +18,9 @@ FORKMESH_FOREVER_VIDEO = PUBLIC / "assets" / "video" / "forkmesh-forever.mp4"
 FORKMESH_FOREVER_CAPTIONS = (
     PUBLIC / "assets" / "video" / "forkmesh-forever.en.vtt"
 )
+LATEST_UPDATE_SLUG = "safer-rooms-steadier-mirrors"
+LATEST_UPDATE_POST = PUBLIC / "blog" / LATEST_UPDATE_SLUG / "index.html"
+LATEST_UPDATE_IMAGE = FEATURE_IMAGES / f"{LATEST_UPDATE_SLUG}.webp"
 
 
 class BlogNavParser(HTMLParser):
@@ -103,10 +106,11 @@ def test_blog_page_indexes_every_feature_post():
     html = _read(BLOG_PAGE)
     posts = _feature_post_paths()
 
-    assert len(posts) == 75
-    assert html.count('class="blog1-card" href="/blog/') == 75
-    assert html.count('class="blog1-search-result" href="/blog/') == 75
-    assert html.count('data-blog-search-text=') == 75
+    assert len(posts) == 76
+    assert html.count('class="blog1-card" href="/blog/') == 76
+    assert html.count('class="blog1-search-result" href="/blog/') == 76
+    assert html.count('data-blog-search-text=') == 76
+    assert 'href="/blog/safer-rooms-steadier-mirrors/"' in html
     assert 'href="/blog/a-week-closer-to-the-mesh/"' in html
     assert 'href="/blog/forkmesh-forever/"' in html
     assert 'href="/blog/building-forkmesh-in-the-open/"' in html
@@ -134,7 +138,7 @@ def test_feature_blog_posts_have_images_and_article_shells():
 def test_every_blog_post_carries_fillable_social_permalinks():
     posts = sorted((PUBLIC / "blog").glob("*/index.html"))
 
-    assert len(posts) == 76
+    assert len(posts) == 77
     for post in posts:
         html = _read(post)
         for marker in (
@@ -173,10 +177,50 @@ def test_feature_blog_images_exist_for_each_generated_post():
     posts = _feature_post_paths()
     images = sorted(FEATURE_IMAGES.glob("*.webp"))
 
-    assert len(images) == 75
+    assert len(images) == 76
     for post in posts:
         slug = post.parent.name
         assert FEATURE_IMAGES.joinpath(slug + ".webp").is_file()
+
+
+def test_latest_product_update_has_production_metadata_art_and_navigation():
+    post = _read(LATEST_UPDATE_POST)
+    index = _read(BLOG_PAGE)
+    previous = _read(
+        PUBLIC / "blog" / "a-week-closer-to-the-mesh" / "index.html"
+    )
+
+    for marker in (
+        '<link rel="canonical" href="https://forkmesh.com/blog/safer-rooms-steadier-mirrors/">',
+        '<meta property="article:published_time" content="2026-08-05T00:00:00-04:00">',
+        '<meta property="og:image:width" content="1672">',
+        '<meta property="og:image:height" content="941">',
+        'src="/assets/blog/features/safer-rooms-steadier-mirrors.webp"',
+        '<span class="pill">August 5, 2026</span>',
+        '<span>7 min read</span>',
+        '<section data-blog-social',
+        'data-reddit=""',
+        'data-mastodon=""',
+        'data-twitter=""',
+        'href="/blog/a-week-closer-to-the-mesh/">A week closer to the mesh →',
+    ):
+        assert marker in post
+
+    assert index.index('href="/blog/safer-rooms-steadier-mirrors/"') < index.index(
+        'href="/blog/a-week-closer-to-the-mesh/"'
+    )
+    assert (
+        'href="/blog/safer-rooms-steadier-mirrors/">← Safer rooms, steadier mirrors'
+        in previous
+    )
+
+    image = LATEST_UPDATE_IMAGE.read_bytes()
+    assert image[:4] == b"RIFF" and image[8:12] == b"WEBP"
+    assert image[12:16] == b"VP8 "
+    frame = image[20:30]
+    assert frame[3:6] == b"\x9d\x01\x2a"
+    assert int.from_bytes(frame[6:8], "little") & 0x3FFF == 1672
+    assert int.from_bytes(frame[8:10], "little") & 0x3FFF == 941
 
 
 def test_forkmesh_forever_post_embeds_a_deployable_captioned_video():
@@ -281,6 +325,7 @@ if __name__ == "__main__":
     test_every_blog_post_carries_fillable_social_permalinks()
     test_blog_social_renderer_shows_unfilled_networks_as_empty()
     test_feature_blog_images_exist_for_each_generated_post()
+    test_latest_product_update_has_production_metadata_art_and_navigation()
     test_forkmesh_forever_post_embeds_a_deployable_captioned_video()
     test_blog_page_search_opens_dialog()
     test_blog_page_uses_landing_green_accent_for_primary_art()
