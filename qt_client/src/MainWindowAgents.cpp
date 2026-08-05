@@ -418,6 +418,7 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                                 bool probeConflict, bool autoSyncCompleted)
 {
     AgentDiffStat stat;
+    bool trackedDirty = false;
     // forkmesh/pulls is the shared signed PR ledger, not an agent-authored code
     // branch. Comparing its historical storage tree to main produces a bogus
     // 99+ file badge and can trigger an equally bogus behind/conflict state.
@@ -436,6 +437,12 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
             const QString lines = QString::fromUtf8(dirtyOut).trimmed();
             stat.dirty =
                 lines.isEmpty() ? 0 : lines.count(QLatin1Char('\n')) + 1;
+            for (const QString &line : lines.split(QLatin1Char('\n'))) {
+                if (!line.isEmpty() && !line.startsWith(QLatin1String("??"))) {
+                    trackedDirty = true;
+                    break;
+                }
+            }
         }
     }
     if (!gitDir.isEmpty() && !base.isEmpty() && !session.branchName.isEmpty() &&
@@ -478,7 +485,7 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
         // user opens it one by one. Never touch an active or dirty worktree, and
         // preflight the merge tree so a genuine conflict stays completely
         // unchanged and visible for manual resolution.
-        if (autoSyncCompleted && stat.behind > 0 && stat.dirty == 0 &&
+        if (autoSyncCompleted && stat.behind > 0 && !trackedDirty &&
             !stat.worktree.isEmpty()) {
             const bool canMerge =
                 runGitCapture(gitDir,
@@ -5120,6 +5127,7 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
         if (rateLimits.value(QStringLiteral("secondary")).isNull())
             chart->setRemaining(/*weekly=*/true, -1, QString());
     }
+    refreshAgentAccountUsageMenu(QStringLiteral("codex"));
     refreshAgentLimitLabel();
 }
 
@@ -5373,10 +5381,16 @@ void MainWindow::applyClaudeUsageResponse(const QJsonObject &root)
         QStringLiteral("seven_day_fable"),
         QStringLiteral("seven_day_fable_5"),
         QStringLiteral("seven_day_fable5")};
-    for (const QString &key : explicitFableKeys)
-        if (apply(key, TokenUsageMiniChart::Fable))
-            return;
+    bool fableApplied = false;
+    for (const QString &key : explicitFableKeys) {
+        if (apply(key, TokenUsageMiniChart::Fable)) {
+            fableApplied = true;
+            break;
+        }
+    }
     for (auto it = root.constBegin(); it != root.constEnd(); ++it) {
+        if (fableApplied)
+            break;
         const QJsonObject details = it.value().toObject();
         const QString metadata =
             (it.key() + QLatin1Char(' ') +
@@ -5384,15 +5398,23 @@ void MainWindow::applyClaudeUsageResponse(const QJsonObject &root)
              details.value(QStringLiteral("model_name")).toString() + QLatin1Char(' ') +
              details.value(QStringLiteral("label")).toString()).toLower();
         if (metadata.contains(QStringLiteral("fable")) &&
-            apply(it.key(), TokenUsageMiniChart::Fable))
-            return;
+            apply(it.key(), TokenUsageMiniChart::Fable)) {
+            fableApplied = true;
+            break;
+        }
     }
     const QStringList legacyPremiumKeys = {
         QStringLiteral("seven_day_premium"),
         QStringLiteral("seven_day_opus")};
-    for (const QString &key : legacyPremiumKeys)
-        if (apply(key, TokenUsageMiniChart::Fable))
-            return;
+    if (!fableApplied) {
+        for (const QString &key : legacyPremiumKeys) {
+            if (apply(key, TokenUsageMiniChart::Fable)) {
+                fableApplied = true;
+                break;
+            }
+        }
+    }
+    refreshAgentAccountUsageMenu(QStringLiteral("claude-code"));
 }
 
 void MainWindow::refreshClaudeCodeUsage(bool fromHover)
@@ -7023,6 +7045,13 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch,
     if (!mergeVerified || !m_agentStore || m_repoDetailIndex < 0 ||
         m_repoDetailIndex >= m_repositories.size())
         return false;
+    // Every successful merge advances the comparison base for every surviving
+    // agent branch, even when the merged PR did not originate from an agent.
+    // Arm the coalesced worker now: completed clean worktrees are updated there,
+    // active/dirty ones are retried by the reload that follows their completion.
+    // This is intentionally independent of whether the merged PR matches a
+    // session below.
+    m_agentDiffRefreshPending = true;
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     bool changed = false;
     QList<int> mergedIds;
@@ -7055,7 +7084,8 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch,
         refreshAgentTable();
         if (m_selectedAgentSessionId > 0)
             showAgentSession(m_selectedAgentSessionId);
-    }
+    } else
+        refreshAgentTable();
     return changed;
 }
 
@@ -8721,10 +8751,17 @@ void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
                                     "cannot be started."));
         return;
     }
-    // Already running (in its own runner) or queued — nothing to do. Other
-    // sessions may run in parallel, so we don't block on a global "busy".
-    if (session->status == AgentStatus::Running ||
-        session->status == AgentStatus::Queued ||
+    // Do not start a second copy of a genuinely live session.  The persisted
+    // status alone is not a transport liveness signal: after a Codex app-server
+    // window exits or disconnects, a session can still read Running even though
+    // it no longer has a process to receive a prompt.  Treat that stale state as
+    // resumable so Continue and a follow-up prompt reconnect it instead of
+    // silently leaving the message in m_pendingSteerMessage.
+    ClaudeStreamSession *claude = m_streamSessions.value(session->id);
+    CodexAppServerSession *codex = m_codexStreams.value(session->id);
+    const bool liveTransport =
+        (claude && claude->running()) || (codex && codex->running());
+    if (session->status == AgentStatus::Queued || liveTransport ||
         runnerForSession(session->id))
         return;
 

@@ -2175,6 +2175,34 @@ forkmesh-world.world-admin-error-arrival::after {
   line-height: 1.5;
 }
 
+.world-diagnostics-triangle-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.world-diagnostics-triangle-control button {
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid #58a6ff;
+  background: rgb(31 111 235 / 0.18);
+  color: #b9dcff;
+  font: 750 11px/1.2 "ForkMesh Mono", ui-monospace, monospace;
+  white-space: nowrap;
+}
+
+.world-diagnostics-triangle-control button[aria-pressed="true"] {
+  border-color: var(--world-mint);
+  background: rgb(46 160 67 / 0.2);
+  color: var(--world-mint);
+}
+
+.world-diagnostics-triangle-control span {
+  color: #80978b;
+  font-size: 11px;
+}
+
 .world-diagnostics dl {
   display: grid;
   gap: 3px;

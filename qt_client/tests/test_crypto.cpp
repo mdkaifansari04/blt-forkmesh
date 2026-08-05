@@ -7184,7 +7184,9 @@ int main(int argc, char *argv[])
                         : execution ==
                                   forkmesh::ActionTelemetry::Execution::Worker
                               ? QStringLiteral("worker")
-                              : QStringLiteral("ui");
+                              : execution == forkmesh::ActionTelemetry::Execution::UiDeferred
+                                    ? QStringLiteral("ui-deferred")
+                                    : QStringLiteral("ui");
                 seen.append(QStringLiteral("%1:%2:%3:%4:%5")
                                 .arg(started ? QStringLiteral("+")
                                              : QStringLiteral("-"))
@@ -8023,6 +8025,12 @@ int main(int argc, char *argv[])
               "a node that never reported is unknown, not healthy");
         check(worstSeverity({}) == Ok && worstSeverity(ranked) == Critical,
               "the worst severity drives the row's colour");
+        const QString verboseDetail = detailText({findingFor(evaluate(link),
+                                                            "relay-flap")});
+        check(verboseDetail.contains(QStringLiteral("Warning [relay-flap]")) &&
+                  verboseDetail.contains(QStringLiteral("Correlate disconnect times")) &&
+                  verboseDetail.contains(QStringLiteral("verify heartbeats stay connected")),
+              "diagnostic detail expands a compact finding into actionable checks");
 
         // Wire form: bounded in both directions, so neither our heartbeat nor a
         // hostile peer's can inflate a frame or a tooltip.

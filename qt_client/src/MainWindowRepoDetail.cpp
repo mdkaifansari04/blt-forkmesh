@@ -7536,9 +7536,8 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
     if (m_commitDiffView && !m_pendingCommitFileScroll.isEmpty()) {
         for (const DiffFileEntry &f : files) {
             if (f.path == m_pendingCommitFileScroll) {
-                // The file may still be queued behind the visible window.
-                flushDiffStream(m_commitDiffView);
-                m_commitDiffView->scrollToAnchor(f.anchor);
+                // The file may live on a later bounded diff page.
+                scrollDiffToAnchor(m_commitDiffView, f.anchor);
                 break;
             }
         }
@@ -9190,9 +9189,12 @@ void MainWindow::ensureRepoDetailTabBuilt(int index)
     QElapsedTimer buildTimer;
     buildTimer.start();
     const forkmesh::BackgroundScope buildAction(
-        QStringLiteral("ui-build"),
+        QStringLiteral("uibuild"),
         QStringLiteral("build repository tab %1").arg(index),
-        forkmesh::ActionTelemetry::Execution::UiBlocking);
+        // QWidget construction is GUI-only. Tabs are lazy-built after the
+        // window is responsive and this scope is a bounded deferred UI apply,
+        // not worker-eligible computation.
+        forkmesh::ActionTelemetry::Execution::UiDeferred);
 
     QWidget *page = nullptr;
     if (index == 0)
@@ -9869,7 +9871,7 @@ void MainWindow::updateRepoActivityRail()
     syncGitCommitFilter();
     syncAgentPageSearch();
     if (onChanges)
-        QTimer::singleShot(0, this, &MainWindow::positionTopMessageBubble);
+        QTimer::singleShot(0, this, [this] { positionTopMessageBubble(); });
 }
 
 void MainWindow::setGitPromptOverlay(bool enabled)
@@ -10862,6 +10864,10 @@ void MainWindow::showLoadStatus(const QString &what)
         if (m_topMessageFlight)
             m_topMessageFlight->stop();
         m_topMessageSlidingOut = false;
+        // stop() never emits finished(), so the in-flight motion's flags have to
+        // be cleared here or positionTopMessageBubble would refuse to re-anchor.
+        m_topMessageEntering = false;
+        m_topMessageShifting = false;
         positionTopMessageBubble();
         m_topMessageContainer->show();
         m_topMessageContainer->raise();

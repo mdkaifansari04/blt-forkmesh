@@ -635,9 +635,29 @@ def test_dashboard_profile_repository_count_uses_loaded_repository_groups():
     assert "function renderProfileRepositoryCount" in dashboard_js
     assert '$$("[data-profile-repo-count]").forEach' in dashboard_js
     assert "renderProfileRepositoryCount();" in dashboard_js
-    # Counts follow the same source as the list: the whole catalog on the
-    # dashboard, scoped to the viewed account in public-profile mode.
+    # Counts follow the same source as the list, which is scoped to the viewed
+    # account on every profile page (see the owner-scoping test below).
     assert "profileRepositoryGroups().length" in dashboard_js
+
+
+def test_dashboard_profile_repositories_are_scoped_to_the_viewed_account():
+    # The authenticated catalog returns every public repo plus the private repos
+    # shared WITH the viewer, so the profile must filter by owner itself. It
+    # previously only did so in public-profile mode, which listed the whole mesh
+    # under "Your repositories" and counted repos the account does not own
+    # (#538). The filter must therefore be unconditional.
+    dashboard_js = _read(PUBLIC / "dashboard.js")
+    body = dashboard_js.split("function profileRepositoryGroups()", 1)[1]
+    body = body.split("function renderProfileRepositories", 1)[0]
+
+    # No public-profile-only gate around the filter.
+    assert "if (state.publicProfile)" not in body
+    # The subject-derived aliases are always applied to the loaded groups.
+    assert "profileRepositoryAliases()" in body
+    assert "repoBelongsToProfile(sourceOfTruth(group), aliases)" in body
+    assert "(group.members || []).some((member) => repoBelongsToProfile(member, aliases))" in body
+    # An account with no resolvable identity owns nothing - never the catalog.
+    assert "if (!aliases.size) return [];" in body
 
 
 def test_dashboard_home_uses_github_dark_typography_and_blue_links():
@@ -1284,7 +1304,7 @@ def test_repository_settings_move_out_of_about_and_add_owner_delete():
     assert 'location.assign("/dashboard/repos")' in dashboard_js
 
 
-def test_dashboard_repository_detail_view_uses_full_width_container():
+def test_dashboard_repository_detail_view_is_bounded_on_wide_screens():
     # The explore view lives on the worker-served repo page document (built
     # from the repo view partial).
     for path in (PUBLIC / "dashboard" / "repo.html", VIEWS / "repo.html"):
@@ -1294,7 +1314,7 @@ def test_dashboard_repository_detail_view_uses_full_width_container():
             : dashboard.index('data-repo-detail')
         ]
 
-        assert "w-full max-w-none" in explore
+        assert "mx-auto w-full max-w-7xl" in explore
         assert "max-w-5xl mx-auto" not in explore
 
 

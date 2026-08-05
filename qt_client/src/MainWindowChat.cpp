@@ -642,6 +642,14 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
                 [this, provider, id = profile.id] {
                     selectAgentAccount(provider, id);
                 });
+        QAction *edit = menu->addAction(
+            QString::fromUtf8("Edit account\xE2\x80\xA6"));
+        edit->setObjectName(QStringLiteral("agentAccountEdit_%1").arg(profile.id));
+        edit->setToolTip(QStringLiteral("Change this account's label"));
+        connect(edit, &QAction::triggered, this,
+                [this, provider, id = profile.id] {
+                    editAgentAccount(provider, id);
+                });
         for (const AgentUsageMenuData &usage :
              agentAccountUsageMenuData(provider, profile.id)) {
             auto *row = new TokenUsageMenuRow(usage.label, usage.value,
@@ -654,6 +662,8 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
             usageAction->setObjectName(
                 QStringLiteral("agentUsage_%1_%2")
                     .arg(profile.id, usage.label.toLower().replace('-', '_')));
+            usageAction->setProperty("agentAccountId", profile.id);
+            usageAction->setProperty("agentUsageLabel", usage.label);
             usageAction->setDefaultWidget(row);
             menu->addAction(usageAction);
         }
@@ -681,6 +691,44 @@ void MainWindow::showAgentAccountMenu(const QString &provider,
     });
 
     menu->popup(globalPosition);
+}
+
+void MainWindow::refreshAgentAccountUsageMenu(const QString &provider)
+{
+    const bool codex = agentIsCodexProvider(provider);
+    auto *menu = findChild<QMenu *>(
+        codex ? QStringLiteral("codexAccountUsageMenu")
+              : QStringLiteral("claudeAccountUsageMenu"));
+    if (!menu)
+        return;
+
+    QHash<QString, QList<AgentUsageMenuData>> usageByAccount;
+    for (const AgentAccountProfile &profile : agentAccountProfiles(provider))
+        usageByAccount.insert(profile.id,
+                              agentAccountUsageMenuData(provider, profile.id));
+
+    for (QAction *action : menu->actions()) {
+        if (!action->objectName().startsWith(QStringLiteral("agentUsage_")))
+            continue;
+        const QString accountId =
+            action->property("agentAccountId").toString();
+        const QString usageLabel =
+            action->property("agentUsageLabel").toString();
+        const QList<AgentUsageMenuData> rows = usageByAccount.value(accountId);
+        const auto match = std::find_if(
+            rows.cbegin(), rows.cend(), [&usageLabel](const AgentUsageMenuData &row) {
+                return row.label == usageLabel;
+            });
+        if (match == rows.cend())
+            continue;
+        action->setText(match->detail);
+        if (auto *usageAction = qobject_cast<QWidgetAction *>(action)) {
+            if (auto *row = static_cast<TokenUsageMenuRow *>(
+                    usageAction->defaultWidget()))
+                row->setUsageData(match->label, match->value,
+                                  match->resetNote, match->percent);
+        }
+    }
 }
 
 void MainWindow::probeClaudeAgentAccountIdentity(const QString &configDir,
@@ -831,6 +879,7 @@ void MainWindow::selectAgentAccount(const QString &provider,
         refreshClaudeCodeUsage();
         refreshClaudeModelCombo();
     }
+    refreshAgentAccountUsageMenu(provider);
     refreshQuickAddAgentModelSelector();
     flashMessage(QStringLiteral("%1 account selected for new agents.")
                      .arg(codex ? QStringLiteral("Codex")
@@ -869,6 +918,80 @@ void MainWindow::addAgentAccount(const QString &provider)
     settings.endGroup();
     selectAgentAccount(provider, id);
     launchAgentSystemTerminal(provider, QStringLiteral("login"));
+}
+
+bool MainWindow::renameAgentAccount(const QString &provider,
+                                    const QString &accountId,
+                                    const QString &label)
+{
+    const QString cleanLabel = label.trimmed();
+    if (cleanLabel.isEmpty())
+        return false;
+    const QList<AgentAccountProfile> profiles = agentAccountProfiles(provider);
+    if (std::none_of(profiles.cbegin(), profiles.cend(), [&accountId](
+                         const AgentAccountProfile &profile) {
+            return profile.id == accountId;
+        }))
+        return false;
+
+    QSettings settings;
+    if (accountId == QLatin1String("default")) {
+        settings.setValue(agentAccountLabelSetting(provider, accountId),
+                          cleanLabel);
+    } else {
+        settings.beginGroup(agentAccountProfilesGroup(provider));
+        settings.beginGroup(accountId);
+        settings.setValue(QStringLiteral("label"), cleanLabel);
+        settings.endGroup();
+        settings.endGroup();
+    }
+    return true;
+}
+
+void MainWindow::editAgentAccount(const QString &provider,
+                                  const QString &accountId)
+{
+    const QList<AgentAccountProfile> profiles = agentAccountProfiles(provider);
+    const auto profile = std::find_if(
+        profiles.cbegin(), profiles.cend(), [&accountId](
+            const AgentAccountProfile &candidate) {
+            return candidate.id == accountId;
+        });
+    if (profile == profiles.cend())
+        return;
+
+    const QString providerName = agentIsCodexProvider(provider)
+                                     ? QStringLiteral("Codex")
+                                     : QStringLiteral("Claude Code");
+    bool ok = false;
+    const QString label = QInputDialog::getText(
+        this, QStringLiteral("Edit %1 account").arg(providerName),
+        QStringLiteral("Account label:"), QLineEdit::Normal, profile->label,
+        &ok)
+                             .trimmed();
+    if (!ok || label.isEmpty() || !renameAgentAccount(provider, accountId, label))
+        return;
+
+    if (auto *menu = findChild<QMenu *>(
+            agentIsCodexProvider(provider)
+                ? QStringLiteral("codexAccountUsageMenu")
+                : QStringLiteral("claudeAccountUsageMenu"))) {
+        for (QAction *account : menu->actions()) {
+            if (account->objectName() !=
+                QStringLiteral("agentAccount_%1").arg(accountId))
+                continue;
+            const QString identity = agentCliIdentityLabel(
+                provider, profile->configDir);
+            QString accountLabel = label;
+            if (!identity.isEmpty())
+                accountLabel += QStringLiteral(" — ") + identity;
+            if (!providerAccountSignedIn(provider, profile->configDir))
+                accountLabel += QString::fromUtf8(" \xC2\xB7 not signed in");
+            account->setText(accountLabel);
+            break;
+        }
+    }
+    flashMessage(QStringLiteral("%1 account renamed.").arg(providerName));
 }
 
 void MainWindow::launchAgentSystemTerminal(const QString &provider,
@@ -7277,6 +7400,9 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessage->setFocusPolicy(Qt::NoFocus);
     // A one-line QLabel otherwise reports its entire text width as its minimum.
     m_topMessage->setMinimumWidth(1);
+    // Wrapped text only ever needs the height its lines occupy; see the prompt
+    // header for why sharing spare height between the stacked lines is wrong.
+    m_topMessage->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
     connect(m_topMessage, &QLabel::linkActivated, this, [this](const QString &href) {
         if (href.startsWith(QLatin1String("fm:agent:"))) {
             // "agent is waiting for you" toast: jump straight to that session.
@@ -7301,6 +7427,11 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessagePromptHeader->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_topMessagePromptHeader->setMinimumWidth(1);
     m_topMessagePromptHeader->setFocusPolicy(Qt::NoFocus);
+    // Each stacked line hugs its own text. Left on the default Preferred policy
+    // they shared any leftover bubble height between them, which is what opened
+    // the empty bands between the marker, the agent line and the prompt.
+    m_topMessagePromptHeader->setSizePolicy(QSizePolicy::Preferred,
+                                            QSizePolicy::Minimum);
     m_topMessagePromptHeader->hide();
 
     m_topMessagePromptStatusLabel = new QLabel;
@@ -7310,13 +7441,17 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessagePromptStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_topMessagePromptStatusLabel->setMinimumWidth(1);
     m_topMessagePromptStatusLabel->setFocusPolicy(Qt::NoFocus);
+    m_topMessagePromptStatusLabel->setSizePolicy(QSizePolicy::Preferred,
+                                                 QSizePolicy::Minimum);
     m_topMessagePromptStatusLabel->hide();
 
     m_topMessagePromptImages = new QWidget;
     m_topMessagePromptImages->setObjectName("topMessagePromptImages");
     auto *promptImagesRow = new QHBoxLayout(m_topMessagePromptImages);
-    promptImagesRow->setContentsMargins(0, 2, 0, 0);
-    promptImagesRow->setSpacing(5);
+    promptImagesRow->setContentsMargins(0, 1, 0, 0);
+    promptImagesRow->setSpacing(4);
+    m_topMessagePromptImages->setSizePolicy(QSizePolicy::Preferred,
+                                            QSizePolicy::Fixed);
     m_topMessagePromptImages->hide();
 
     // Every bubble can be copied. A notification is often the quickest useful
@@ -7417,7 +7552,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageQueueContent->setObjectName("topMessageQueueContent");
     m_topMessageQueueLayout = new QVBoxLayout(m_topMessageQueueContent);
     m_topMessageQueueLayout->setContentsMargins(0, 0, 0, 0);
-    m_topMessageQueueLayout->setSpacing(8);
+    m_topMessageQueueLayout->setSpacing(kToastStackGap);
     m_topMessageQueueScroll->setWidget(m_topMessageQueueContent);
     m_topMessageQueueScroll->hide();
 
@@ -7435,11 +7570,15 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageBody->setObjectName("topMessageBody");
     auto *topMessageBodyLayout = new QVBoxLayout(m_topMessageBody);
     topMessageBodyLayout->setContentsMargins(0, 0, 0, 0);
-    topMessageBodyLayout->setSpacing(4);
+    topMessageBodyLayout->setSpacing(kToastLineSpacing);
     topMessageBodyLayout->addWidget(m_topMessagePromptHeader);
     topMessageBodyLayout->addWidget(m_topMessagePromptStatusLabel);
     topMessageBodyLayout->addWidget(m_topMessage);
     topMessageBodyLayout->addWidget(m_topMessagePromptImages);
+    // Any height beyond what the lines need collects here instead of being
+    // spread between them, so the content stays a tight block at the top of the
+    // bubble even when the scroll viewport is a little taller than the text.
+    topMessageBodyLayout->addStretch(1);
     m_topMessageBody->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
     m_topMessageScroll->setWidget(m_topMessageBody);
     // setWidget turns on the label's own background fill, which would paint a
@@ -7451,6 +7590,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_topMessageActions = new QWidget;
     m_topMessageActions->setObjectName("topMessageActions");
     m_topMessageActions->setFocusPolicy(Qt::NoFocus);
+    m_topMessageActions->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     auto *topMessageActionRow = new QHBoxLayout(m_topMessageActions);
     topMessageActionRow->setContentsMargins(0, 0, 0, 0);
     topMessageActionRow->setSpacing(4);
@@ -7463,8 +7603,9 @@ QWidget *MainWindow::buildBreadcrumb()
     topMessageActionRow->addWidget(m_topMessageClose);
 
     auto *topMessageColumn = new QVBoxLayout(m_topMessageContainer);
-    topMessageColumn->setContentsMargins(12, 8, 10, 8);
-    topMessageColumn->setSpacing(6);
+    topMessageColumn->setContentsMargins(kToastPadLeft, kToastPadTop,
+                                         kToastPadRight, kToastPadBottom);
+    topMessageColumn->setSpacing(kToastRowSpacing);
     topMessageColumn->addWidget(m_topMessageScroll, 1);
     topMessageColumn->addWidget(m_topMessageActions);
     for (QWidget *widget : {static_cast<QWidget *>(m_topMessage),
@@ -7495,6 +7636,7 @@ QWidget *MainWindow::buildBreadcrumb()
             advanceTopMessageQueue();
             return;
         }
+        m_topMessageShifting = false;
         if (m_topMessageEntering) {
             m_topMessageEntering = false;
             if (m_topMessageTimer && m_topMessageSecondsLeft > 0 &&
@@ -7502,6 +7644,13 @@ QWidget *MainWindow::buildBreadcrumb()
                 m_topMessageTimer->start(1000);
         }
     });
+    // The queued stack rides the same motion: a new card lands at the bottom of
+    // the column and everything above it glides up together, so a burst reads as
+    // one list moving rather than cards teleporting into place.
+    m_topMessageQueueFlight =
+        new QPropertyAnimation(m_topMessageQueueScroll, "geometry", this);
+    m_topMessageQueueFlight->setDuration(kToastShiftMs);
+    m_topMessageQueueFlight->setEasingCurve(QEasingCurve::OutCubic);
     m_topMessageContainer->hide();
 
     // User avatar, created before the global prompt and reparented into its

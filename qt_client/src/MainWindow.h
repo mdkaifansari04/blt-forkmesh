@@ -434,6 +434,20 @@ public:
         onUiStall(peakMs, blockingCall, backtrace);
     }
     QString testStallFixPrompt() const { return stallFixPrompt(); }
+    // adhoc #1444: the alert stack has to hug its own content and stay one
+    // evenly spaced column. These raise a real bubble (and a real queued card)
+    // so the layout test can measure the geometry the user actually sees.
+    void testFlashMessage(const QString &text, bool error = false)
+    {
+        flashMessage(text, error);
+    }
+    void testShowPromptBubble(const QString &prompt, const QString &status)
+    {
+        showPromptBubble(prompt, -1, status);
+    }
+    QRect testTopMessageRect() { return topMessageBubbleRect(); }
+    int testTopMessageQueueDepth() const { return m_topMessageQueue.size(); }
+    void testDismissTopMessage() { dismissTopMessage(); }
     // False (without opening the modal fallback dialog, which would block a test
     // run) when this window has no footer composer to draft into.
     bool testDraftStallPromptInComposer();
@@ -740,6 +754,7 @@ public:
     bool testMirrorNodeCardsAreCompact() const;
     QString testMirrorNodeCellText(const QString &nodeName, int column) const;
     QString testMirrorNodeCellToolTip(const QString &nodeName, int column) const;
+    bool testDraftMirrorNodeDiagnostics(const QString &nodeName);
     // Build the exact command used by the fleet-wide binary action without
     // starting SSH. Tests use this to keep that action pinned to the published,
     // checksum-verified release rather than the currently-running executable.
@@ -809,6 +824,18 @@ public:
     int testAgentDotCount() const;
     void testSetAgentSessionStatus(int sessionId, const QString &status);
     void testRemoveAgentSession(int sessionId);
+    // A transport can disappear while the persisted session is still marked
+    // Running.  Queue it without launching a real CLI so the UI test can prove
+    // that Continue (and a follow-up prompt) recovers this detached state.
+    bool testQueueDetachedRunningAgentSession(int sessionId)
+    {
+        continueAgentSession(sessionId, /*deferRefresh=*/true);
+        const AgentSession *session = findAgentSession(sessionId);
+        const bool queued = session && session->status == AgentStatus::Queued &&
+                            m_agentQueue.contains(sessionId);
+        m_agentQueue.removeAll(sessionId);
+        return queued;
+    }
     // Live search: type into the top bar the way a user does (textChanged drives
     // the whole feature), persist a line of a session's transcript, force the
     // debounced transcript scan to run now, and read the filtered list back.
@@ -1024,6 +1051,12 @@ public:
                                 const QString &accountId)
     {
         selectAgentAccount(provider, accountId);
+    }
+    bool testRenameAgentAccount(const QString &provider,
+                                const QString &accountId,
+                                const QString &label)
+    {
+        return renameAgentAccount(provider, accountId, label);
     }
 #endif
 
@@ -2401,13 +2434,12 @@ private:
     // Register a diff viewer so it shares the text-size zoom: tracks it for the
     // +/- buttons and watches its viewport for Ctrl+wheel (issue #254).
     void registerDiffView(QTextEdit *view);
-    // Set a diff viewer's HTML, remembering the source so a later font-size
-    // change can re-render it in place without re-running its renderer. Renders
-    // progressively (renderDiffStreamed): the visible window first, the rest off
-    // the event loop, so no diff ever blocks the GUI thread (adhoc #421).
+    // Set a diff viewer's HTML. renderDiffStreamed retains bounded page fragments,
+    // keeps one page resident, and streams that page off the event loop; font-size
+    // changes repaint those fragments without retaining another full HTML copy.
     void setDiffHtml(QTextEdit *view, const QString &html);
-    // Hook run when a diff view's streamed document is complete; refreshes the
-    // state derived from the whole document (sticky file positions, search).
+    // Hook run when a diff view's resident page is complete; refreshes state
+    // derived from that page (sticky file positions and search).
     void onDiffStreamFinished(QTextEdit *view);
     // Scroll the Files-changed diff to the next/previous change relative to what
     // is currently on screen. delta is +1 (next) or -1 (prev).
@@ -2864,6 +2896,10 @@ private:
                                          const QString &baseLabel);
     void selectAgentAccount(const QString &provider, const QString &accountId);
     void addAgentAccount(const QString &provider);
+    void editAgentAccount(const QString &provider, const QString &accountId);
+    bool renameAgentAccount(const QString &provider, const QString &accountId,
+                            const QString &label);
+    void refreshAgentAccountUsageMenu(const QString &provider);
     void launchAgentSystemTerminal(const QString &provider,
                                    const QString &mode = QStringLiteral("agent"));
     QStringList agentAccountUsageLines(const QString &provider,
@@ -3846,6 +3882,9 @@ private:
     // Whether `path` is switched off for the open repo.
     bool isWorkflowDisabled(const QString &path) const;
     void loadMirrorNodesPanel();
+    // Put an activated Mirror-nodes Health cell's complete, repo-scoped
+    // diagnostic report into the footer composer for review and agent handoff.
+    void draftMirrorNodeDiagnosticsPrompt(QTableWidgetItem *healthItem);
     // Self-row snapshot for that panel (adhoc #93). The key is filesystem-only —
     // mirror HEAD/refs plus the working tree's HEAD/refs/worktrees mtimes — so
     // deciding "has anything moved?" costs a handful of stats rather than the git
@@ -4839,8 +4878,17 @@ private:
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the current notification bubble
     void renderTopMessagePromptImages(); // rebuild thumbnails for a sent prompt
-    void positionTopMessageBubble(); // size + anchor the bubble above the prompt
+    // Size + anchor the bubble above the prompt. animate=true glides the stack
+    // to its new anchor (a card arrived or left) instead of snapping it there.
+    void positionTopMessageBubble(bool animate = false);
     QRect topMessageBubbleRect(); // calculates the prompt-anchored stack geometry
+    // Height the stacked bubble lines need at a given text width, measured line
+    // by line rather than from the container's own sizeHint.
+    int topMessageBodyHeight(int textWidth) const;
+    // Park the queued-card column under the active toast, optionally gliding.
+    void placeTopMessageQueue(const QRect &bubble, bool animate);
+    // Slide a freshly shown bubble up into its anchor.
+    void animateTopMessageEntry(const QRect &target);
     void setTopMessagePaused(bool paused); // hover pauses the countdown
     void slideTopMessageOut(); // countdown finished: ease the bubble off the right edge, then advance
     // Animate a submitted prompt into a bubble. When it launched or steered an
@@ -5354,8 +5402,11 @@ private:
     // Composer-to-bubble send motion, reused for the slide-off exit so only one
     // animation ever drives the bubble's geometry.
     QPropertyAnimation *m_topMessageFlight = nullptr;
+    // Same motion for the queued column beneath it, so the two move as one stack.
+    QPropertyAnimation *m_topMessageQueueFlight = nullptr;
     bool m_topMessageSlidingOut = false;  // countdown finished; bubble is easing off the right edge
     bool m_topMessageEntering = false;    // wait for the entry glide before starting its countdown
+    bool m_topMessageShifting = false;    // gliding up/down because the queue changed depth
     QPushButton *m_topMessageCopy = nullptr;
     QPushButton *m_topMessageActionOutput = nullptr;
     QPushButton *m_topMessageSendToPrompt = nullptr;

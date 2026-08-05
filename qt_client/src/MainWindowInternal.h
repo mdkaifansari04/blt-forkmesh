@@ -78,6 +78,7 @@
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QFrame>
+#include <QFutureWatcher>
 #include <QGraphicsOpacityEffect>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -96,6 +97,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QWidgetAction>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QEnterEvent>
 #include <QMessageBox>
 #include <QContextMenuEvent>
@@ -300,26 +302,35 @@ void setDiffSplitPref(bool split);
 // overlay (adhoc #56). Unlike diffFileHeaderHtml this carries no Viewed toggle
 // or table layout — it renders inline in a QLabel.
 QString diffStickyLabelHtml(const DiffFileEntry &f);
-// Progressive diff rendering (adhoc #421). QTextEdit::setHtml() parses, styles
-// and lays out the whole document synchronously on the GUI thread, so handing it
-// a multi-megabyte diff froze the window — which is why large diffs used to be
-// replaced by a "hidden for speed" notice. These split rendered HTML into
-// per-file blocks, bound pathological rich-text tables (the full patch remains
-// in the PR/Git data), and lay out only the first screenful up front. Remaining
-// bounded blocks stream one event-loop turn at a time.
+// Progressive, paged diff rendering. QTextEdit::setHtml() parses, styles and
+// lays out the whole document synchronously on the GUI thread, so handing it a
+// multi-megabyte diff freezes the window. Large files are split at row
+// boundaries and grouped into bounded pages; one page is resident at a time and
+// its small fragments stream one event-loop turn at a time. No diff rows are
+// discarded.
 void renderDiffStreamed(QTextEdit *view, const QString &html,
                         const QString &styleSheet);
+// Repaint the resident page with a new stylesheet (diff zoom/theme changes)
+// without retaining a second copy of the complete source HTML on the widget.
+bool restyleDiffStreamed(QTextEdit *view, const QString &styleSheet);
+// Select the page containing an anchor and scroll to it once that page's
+// progressive render reaches the anchor. Used by changed-file navigation.
+void scrollDiffToAnchor(QTextEdit *view, const QString &anchor);
+// Introspection/navigation used by the embedded page controls and performance
+// regression test.
+int diffPageCount(QTextEdit *view);
+int diffCurrentPage(QTextEdit *view);
+void showDiffPage(QTextEdit *view, int page);
 // Ensure a streamed diff continues filling. This deliberately does *not* force
 // its remaining HTML into the document synchronously: doing that from an anchor
 // jump or a document-wide search bypassed the streaming limits and recreated the
 // multi-second UI stalls streaming was introduced to prevent. Operations may use
 // the portion currently available; their normal stream-finished hooks refresh
-// complete-document state once the bounded batches have landed.
+// resident-page state once the bounded batches have landed.
 void flushDiffStream(QTextEdit *view);
-// Register a callback run every time `view`'s diff finishes streaming (and
-// immediately at the end of a render that needed no streaming), for state that
-// is derived from the complete document. Hooks are additive: register once per
-// owner, at construction.
+// Register a callback run every time the resident diff page finishes streaming
+// (and immediately when it needed no streaming), for state derived from that
+// page's document. Hooks are additive: register once per owner, at construction.
 void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook);
 bool autoMarkViewedOnScrollPref();
 void setAutoMarkViewedOnScrollPref(bool on);
@@ -363,11 +374,9 @@ public:
                                  return;
                              // Jump the diff to the file's header, aligned to the top.
                              // Suppress the scroll that fires so it can't re-select.
-                             // The target file may still be queued behind the
-                             // visible window, so land the whole diff first.
+                             // The target may be queued or live on another page.
                              m_ignoreScroll = true;
-                             flushDiffStream(m_diff);
-                             m_diff->scrollToAnchor(anchor);
+                             scrollDiffToAnchor(m_diff, anchor);
                              m_ignoreScroll = false;
                              refresh(/*syncSelection=*/false);
                          });
@@ -480,6 +489,31 @@ const ScmAiModel kScmAiModels[] = {
     {"openai", "gpt-4.1-nano", "OpenAI GPT-4.1 nano", 0.10, 0.40, true},
 };
 const int kScmAiModelCount = int(sizeof(kScmAiModels) / sizeof(kScmAiModels[0]));
+
+// Alert-stack metrics, shared by the code that builds the notification bubble
+// and its queued cards (MainWindowChat.cpp) and the code that measures and
+// anchors them above the prompt (MainWindowSettings.cpp). One set of numbers
+// keeps the active toast and the cards below it on the same compact grid.
+constexpr int kToastPadLeft = 10;
+constexpr int kToastPadTop = 6;
+constexpr int kToastPadRight = 8;
+constexpr int kToastPadBottom = 6;
+// Between the stacked lines inside a card (marker / agent line / message).
+constexpr int kToastLineSpacing = 2;
+// Between a card's message block and its caption row of actions.
+constexpr int kToastRowSpacing = 4;
+// Between cards in the stack, and between the active toast and the first
+// queued card, so the whole column reads as one evenly spaced list.
+constexpr int kToastStackGap = 6;
+// Cards rise into place from just below their anchor rather than appearing.
+// The prompt anchor reserves a 16px gap beneath the stack, so the rise stays
+// inside that gap and no frame of the motion can cover the composer.
+constexpr int kToastEntryRise = 14;
+constexpr int kToastEntryMs = 180;
+// How long the whole column takes to glide to its new anchor when a card
+// arrives or leaves. Short enough to feel immediate, long enough to read as
+// the stack sliding up rather than jumping.
+constexpr int kToastShiftMs = 150;
 
 constexpr int kTableSortRole = Qt::UserRole + 10;
 // Per-cell percentage (0..100) read by ProgressBarDelegate to draw a mini bar.
@@ -1168,6 +1202,22 @@ public:
                                 : QStringLiteral(" · %1").arg(resetNote)));
     }
 
+    void setUsageData(const QString &label, const QString &value,
+                      const QString &resetNote, int percent)
+    {
+        m_label = label;
+        m_value = value;
+        m_resetNote = resetNote;
+        m_percent = percent;
+        setAccessibleName(QStringLiteral("%1 usage").arg(label));
+        setToolTip(QStringLiteral("%1: %2%3")
+                       .arg(label, value,
+                            resetNote.isEmpty()
+                                ? QString()
+                                : QStringLiteral(" · %1").arg(resetNote)));
+        update();
+    }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -1178,10 +1228,10 @@ protected:
         const QColor muted(text.red(), text.green(), text.blue(), 150);
         const QColor track(text.red(), text.green(), text.blue(), 38);
         painter.setPen(text);
-        painter.drawText(QRectF(4, 2, 62, 15), Qt::AlignLeft | Qt::AlignVCenter,
+        painter.drawText(QRectF(4, 2, 90, 15), Qt::AlignLeft | Qt::AlignVCenter,
                          m_label);
 
-        const QRectF bar(68, 7, 132, 8);
+        const QRectF bar(96, 7, 132, 8);
         painter.setPen(Qt::NoPen);
         painter.setBrush(track);
         painter.drawRoundedRect(bar, 4, 4);
@@ -1200,11 +1250,11 @@ protected:
         }
 
         painter.setPen(text);
-        painter.drawText(QRectF(208, 2, width() - 212, 15),
+        painter.drawText(QRectF(234, 2, width() - 238, 15),
                          Qt::AlignRight | Qt::AlignVCenter, m_value);
         if (!m_resetNote.isEmpty()) {
             painter.setPen(muted);
-            painter.drawText(QRectF(68, 18, width() - 72, 13),
+            painter.drawText(QRectF(96, 18, width() - 100, 13),
                              Qt::AlignLeft | Qt::AlignVCenter, m_resetNote);
         }
     }
@@ -3093,9 +3143,9 @@ const QString kPushAlertSetting = QStringLiteral("actions/pushAlert");
 // migration: older builds stored a plain bool here; new builds read/write
 // kActionAlertModeSetting ("all" / "failed" / "none") instead.
 const QString kActionAlertSetting = QStringLiteral("actions/runAlert");
-// Which action runs raise a desktop alert: "all" (start + every finish),
-// "failed" (only failures), or "none" (never). Mirrors GitHub's per-account
-// Actions notification choice.
+// Which action runs raise a desktop alert: "all" (start + every non-stopped
+// finish), "failed" (only failures), or "none" (never). Mirrors GitHub's
+// per-account Actions notification choice.
 const QString kActionAlertModeSetting = QStringLiteral("actions/runAlertMode");
 
 // Resolve the effective action-alert mode, migrating the legacy bool: an
@@ -3413,12 +3463,25 @@ inline QString agentActiveAccountSetting(const QString &provider)
            agentAccountProviderKey(provider);
 }
 
+inline QString agentAccountLabelSetting(const QString &provider,
+                                        const QString &accountId)
+{
+    return QStringLiteral("agents/accountLabels/%1/%2")
+        .arg(agentAccountProviderKey(provider), accountId);
+}
+
 inline QList<AgentAccountProfile> agentAccountProfiles(const QString &provider)
 {
-    QList<AgentAccountProfile> profiles{
-        {QStringLiteral("default"), QStringLiteral("Default account"),
-         agentAccountDefaultConfigDir(provider), true}};
     QSettings settings;
+    const QString defaultLabel =
+        settings.value(agentAccountLabelSetting(provider, QStringLiteral("default")),
+                       QStringLiteral("Default account"))
+            .toString()
+            .trimmed();
+    QList<AgentAccountProfile> profiles{
+        {QStringLiteral("default"),
+         defaultLabel.isEmpty() ? QStringLiteral("Default account") : defaultLabel,
+         agentAccountDefaultConfigDir(provider), true}};
     settings.beginGroup(agentAccountProfilesGroup(provider));
     const QStringList ids = settings.childGroups();
     for (const QString &id : ids) {
@@ -10729,21 +10792,73 @@ inline QString headBranchFromFile(const QString &dir)
 
 // Run a git command in `dir`, capturing stdout. Returns false (with stderr in
 // `err`) on failure. Used by the in-client repo file browser.
-inline bool runGitCapture(const QString &dir, const QStringList &args, QByteArray *out,
-                   QString *err)
+struct GitCaptureResult {
+    bool ok = false;
+    QByteArray output;
+    QString error;
+};
+
+// Own and wait for the process on the current thread. GUI callers enter through
+// runGitCapture(), which moves this whole operation to the shared worker pool.
+inline GitCaptureResult runGitCaptureDirect(const QString &dir,
+                                            const QStringList &args,
+                                            const QByteArray *input = nullptr)
 {
+    GitCaptureResult result;
     QProcess process;
     process.start("git", QStringList{"-C", dir} + args);
-    if (!waitForGit(process, err))
-        return false;
-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        if (err)
-            *err = QString::fromUtf8(process.readAllStandardError()).trimmed();
-        return false;
+    if (input) {
+        process.write(*input);
+        process.closeWriteChannel();
     }
+    if (!waitForGit(process, &result.error))
+        return result;
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        result.error = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        return result;
+    }
+    result.output = process.readAllStandardOutput();
+    result.ok = true;
+    return result;
+}
+
+// Preserve the small synchronous helper API used throughout the client while
+// ensuring Git never owns or waits for a process on the GUI thread. The local
+// loop excludes user input but continues paints/timers and receives the future;
+// unlike the old waitForGit pump, the process and its blocking wait are wholly
+// worker-owned and telemetry therefore reports the real execution lane.
+inline GitCaptureResult runGitCaptureBackgrounded(const QString &dir,
+                                                  const QStringList &args,
+                                                  const QByteArray *input = nullptr)
+{
+    const QCoreApplication *app = QCoreApplication::instance();
+    if (!app || QThread::currentThread() != app->thread())
+        return runGitCaptureDirect(dir, args, input);
+
+    const QByteArray inputCopy = input ? *input : QByteArray();
+    const bool hasInput = input != nullptr;
+    QFutureWatcher<GitCaptureResult> watcher;
+    QEventLoop loop;
+    QObject::connect(&watcher, &QFutureWatcher<GitCaptureResult>::finished,
+                     &loop, &QEventLoop::quit);
+    watcher.setFuture(QtConcurrent::run([dir, args, inputCopy, hasInput] {
+        return runGitCaptureDirect(dir, args,
+                                   hasInput ? &inputCopy : nullptr);
+    }));
+    if (!watcher.isFinished())
+        loop.exec(QEventLoop::ExcludeUserInputEvents);
+    return watcher.result();
+}
+
+inline bool runGitCapture(const QString &dir, const QStringList &args,
+                          QByteArray *out, QString *err)
+{
+    const GitCaptureResult result = runGitCaptureBackgrounded(dir, args);
     if (out)
-        *out = process.readAllStandardOutput();
-    return true;
+        *out = result.output;
+    if (err)
+        *err = result.error;
+    return result.ok;
 }
 
 // Run a git command in `dir` feeding `input` on stdin (e.g. cat-file --batch),
@@ -10754,20 +10869,13 @@ inline bool runGitCaptureInput(const QString &dir, const QStringList &args,
                                const QByteArray &input, QByteArray *out,
                                QString *err)
 {
-    QProcess process;
-    process.start("git", QStringList{"-C", dir} + args);
-    process.write(input);
-    process.closeWriteChannel();
-    if (!waitForGit(process, err))
-        return false;
-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        if (err)
-            *err = QString::fromUtf8(process.readAllStandardError()).trimmed();
-        return false;
-    }
+    const GitCaptureResult result =
+        runGitCaptureBackgrounded(dir, args, &input);
     if (out)
-        *out = process.readAllStandardOutput();
-    return true;
+        *out = result.output;
+    if (err)
+        *err = result.error;
+    return result.ok;
 }
 
 inline QString worktreeHeadBranch(const QString &workTree)

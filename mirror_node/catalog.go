@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,6 +29,95 @@ type CatalogPublisher struct {
 	Version  string
 	Identity *Identity
 	Client   *http.Client
+}
+
+// EndpointPublisher renews the short-lived, account-bound HTTPS routing lease
+// after this node has published its latest repository state.  Catalog records
+// and endpoint leases are deliberately separate: the former advertises what a
+// node has, while the latter proves that the exact public origin can serve it.
+type EndpointPublisher struct {
+	CatalogURL string
+	Node       string
+	BaseURL    string
+	Version    string
+	Identity   *Identity
+	Client     *http.Client
+}
+
+func (p *EndpointPublisher) Publish(ctx context.Context) (bool, error) {
+	endpointURL, err := mirrorEndpointURL(p.CatalogURL)
+	if err != nil {
+		return false, err
+	}
+	issuedAt := time.Now().UnixMilli()
+	message := strings.Join([]string{
+		"forkmesh-https-endpoint-v1",
+		p.Node,
+		p.BaseURL,
+		p.Identity.PublicKey(),
+		strconv.FormatInt(issuedAt, 10),
+	}, "\n")
+	payload := map[string]any{
+		"node": p.Node, "baseUrl": p.BaseURL,
+		"publicKey": p.Identity.PublicKey(), "issuedAt": issuedAt,
+		"signature": p.Identity.Sign([]byte(message)),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return false, err
+	}
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, endpointURL, bytes.NewReader(body))
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "ForkMesh-Mirror-Node/"+p.Version)
+	client := p.Client
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		return false, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return false, fmt.Errorf("endpoint registration returned HTTP %d: %s",
+			response.StatusCode, boundedText(raw, 240))
+	}
+	var result struct {
+		OK      bool   `json:"ok"`
+		Node    string `json:"node"`
+		BaseURL string `json:"baseUrl"`
+		Health  string `json:"health"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return false, errors.New("endpoint registration returned invalid JSON")
+	}
+	if !result.OK || result.Node != p.Node || result.BaseURL != p.BaseURL ||
+		(result.Health != "active" && result.Health != "pending") {
+		return false, errors.New("endpoint registration returned invalid lease state")
+	}
+	return result.Health == "active", nil
+}
+
+func mirrorEndpointURL(catalogURL string) (string, error) {
+	parsed, err := url.Parse(catalogURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" ||
+		(parsed.Scheme != "https" && parsed.Scheme != "http") {
+		return "", errors.New("catalogUrl is not an absolute HTTP URL")
+	}
+	parsed.Path = "/api/mirrors/https"
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }
 
 func (p *CatalogPublisher) Publish(ctx context.Context, repo Repository, stateHash string) error {

@@ -618,8 +618,8 @@ QWidget *MainWindow::buildSettingsSection()
     actionAlertCombo->addItem("Action pings: off", QStringLiteral("none"));
     actionAlertCombo->setToolTip(
         "Desktop notifications for .forkmesh/ workflows: pop one for every run "
-        "(start and finish), only when a run fails, or never. The in-app "
-        "Pings page logs every run regardless.");
+        "(start and finish, except manually stopped runs), only when a run "
+        "fails, or never. The in-app Pings page logs every run regardless.");
     {
         const int idx = actionAlertCombo->findData(actionAlertMode());
         actionAlertCombo->setCurrentIndex(idx < 0 ? 0 : idx);
@@ -4773,11 +4773,9 @@ static constexpr int kPromptBubbleSeconds = 8;
 // finishes. It stays fully opaque throughout — the exit is the motion, not a fade
 // (adhoc #226), so the message is legible right up to the moment it leaves.
 static constexpr int kToastSlideOutMs = 320;
-// Routine notifications enter from just below their final position. Keeping
-// this shorter than the prompt-send flight makes bursts feel responsive without
-// the queue cards popping into place.
-static constexpr int kToastEntryMs = 180;
-static constexpr int kToastEntryOffset = 18;
+// Cards enter from just below their final position; the rise itself and the
+// stack's shuffle-up live in MainWindowInternal.h (kToastEntryRise /
+// kToastEntryMs / kToastShiftMs) because the layout code shares them.
 
 // Cap the visible notification backlog. A runaway retry loop firing messages
 // faster than they can be read should not grow the queue without bound; the
@@ -4871,7 +4869,9 @@ void MainWindow::queueTopMessage(const QString &text, bool error,
     while (m_topMessageQueue.size() > kToastQueueLimit)
         m_topMessageQueue.removeFirst();
     renderTopMessageQueue();
-    positionTopMessageBubble(); // move the active bubble up above the new card
+    // Glide the active bubble up above the new card instead of teleporting it,
+    // so a burst of arrivals reads as the stack sliding up one row at a time.
+    positionTopMessageBubble(true);
     renderTopMessageCountdown();
 }
 
@@ -4894,18 +4894,22 @@ void MainWindow::renderTopMessageQueue()
         card->setObjectName("topMessageQueueCard");
         card->setAttribute(Qt::WA_StyledBackground, true);
         auto *column = new QVBoxLayout(card);
-        column->setContentsMargins(12, 8, 10, 8);
-        column->setSpacing(6);
+        column->setContentsMargins(kToastPadLeft, kToastPadTop, kToastPadRight,
+                                   kToastPadBottom);
+        column->setSpacing(kToastRowSpacing);
 
+        // The kind badge shares the caption row with the countdown and the
+        // buttons, exactly like the active toast, so a queued card is two lines
+        // instead of three and the whole column stays compact.
         auto *typeBadge = new QLabel(topMessageKindLabel(entry.kind), card);
         typeBadge->setObjectName("topMessageQueueTypeBadge");
         typeBadge->setFocusPolicy(Qt::NoFocus);
-        column->addWidget(typeBadge, 0, Qt::AlignLeft);
 
         auto *label = new QLabel(card);
         label->setObjectName("topMessageQueueText");
         label->setTextFormat(Qt::RichText);
         label->setWordWrap(true);
+        label->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
         const QString color = entry.error ? QStringLiteral("#f85149")
                                           : QStringLiteral("#3fb950");
@@ -4917,14 +4921,21 @@ void MainWindow::renderTopMessageQueue()
 
         auto *actions = new QWidget(card);
         actions->setObjectName("topMessageQueueActions");
+        actions->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         auto *actionRow = new QHBoxLayout(actions);
         actionRow->setContentsMargins(0, 0, 0, 0);
         actionRow->setSpacing(4);
+        actionRow->addWidget(typeBadge);
+        // "queued · 5s" instead of a sentence: the caption row has to hold the
+        // buttons too, and the tooltip carries the explanation.
         auto *timer = new QLabel(
-            QStringLiteral("%1s timer when it reaches the top")
-                .arg(entry.durationSeconds), card);
+            QString::fromUtf8("queued \xC2\xB7 %1s").arg(entry.durationSeconds),
+            actions);
         timer->setObjectName("topMessageQueueMeta");
         timer->setFocusPolicy(Qt::NoFocus);
+        timer->setToolTip(QStringLiteral("Counts down for %1s once it reaches "
+                                         "the top of the stack")
+                              .arg(entry.durationSeconds));
         actionRow->addWidget(timer);
         actionRow->addStretch(1);
 
@@ -4965,7 +4976,6 @@ void MainWindow::renderTopMessageQueue()
         m_topMessageQueueLayout->addWidget(card);
     }
 
-    m_topMessageQueueContent->adjustSize();
     m_topMessageQueueScroll->setVisible(!m_topMessageQueue.isEmpty());
 }
 
@@ -5002,7 +5012,7 @@ void MainWindow::dismissQueuedTopMessage(quint64 id)
             continue;
         m_topMessageQueue.erase(it);
         renderTopMessageQueue();
-        positionTopMessageBubble();
+        positionTopMessageBubble(true); // the stack closes the gap smoothly
         renderTopMessageCountdown();
         return;
     }
@@ -5093,8 +5103,11 @@ void MainWindow::renderTopMessagePromptImages()
     for (const QString &path : std::as_const(m_topMessagePromptImagePaths)) {
         auto *thumbnail = new QPushButton(m_topMessagePromptImages);
         thumbnail->setObjectName("topMessagePromptImage");
-        thumbnail->setFixedSize(76, 76);
-        thumbnail->setIconSize(QSize(68, 68));
+        // A confirmation only has to prove which images went with the prompt;
+        // a caption-sized chip does that without doubling the card's height
+        // (click it for the full-size view).
+        thumbnail->setFixedSize(46, 46);
+        thumbnail->setIconSize(QSize(40, 40));
         thumbnail->setCursor(Qt::PointingHandCursor);
         thumbnail->setToolTip(QStringLiteral("View %1")
                                   .arg(QFileInfo(path).fileName()));
@@ -5111,6 +5124,28 @@ void MainWindow::renderTopMessagePromptImages()
     row->addStretch(1);
     m_topMessagePromptImages->setVisible(
         m_topMessageIsPromptBubble && !m_topMessagePromptImagePaths.isEmpty());
+}
+
+// Exact height the bubble's stacked lines occupy at a given width. Measured
+// through the layout's heightForWidth, which asks every wrapped label how tall
+// it really is at that width. The container's own sizeHint cannot answer this —
+// a word-wrapped QLabel reports its unwrapped metrics there, which sized the
+// bubble to a wildly wrong height and left the message floating in empty bands
+// (adhoc #1444).
+int MainWindow::topMessageBodyHeight(int textWidth) const
+{
+    if (!m_topMessageBody)
+        return 0;
+    QLayout *layout = m_topMessageBody->layout();
+    if (!layout)
+        return 0;
+    layout->activate();
+    const int hfw = layout->hasHeightForWidth()
+                        ? layout->heightForWidth(textWidth)
+                        : -1;
+    // No wrapped line to measure (a plain one-line pill, say): the layout's own
+    // sizeHint is exact for those.
+    return hfw > 0 ? hfw : layout->sizeHint().height();
 }
 
 // Calculate a readable floating-bubble rectangle directly above the prompt.
@@ -5142,21 +5177,30 @@ QRect MainWindow::topMessageBubbleRect()
         if (m_topMessageActions &&
             m_topMessageActions->isVisibleTo(m_topMessageContainer))
             chrome += m_topMessageActions->sizeHint().height() + column->spacing();
-        const int textWidth = qMax(40, bubbleWidth - pad.left() - pad.right());
+        const int roomForText = qMax(18, maxBubbleHeight - chrome);
+        int textWidth = qMax(40, bubbleWidth - pad.left() - pad.right());
         int textHeight = 0;
         if (m_topMessageBody) {
             m_topMessageBody->setFixedWidth(textWidth);
-            if (QLayout *bodyLayout = m_topMessageBody->layout())
-                bodyLayout->activate();
-            m_topMessageBody->adjustSize();
-            textHeight = m_topMessageBody->sizeHint().height();
-        } else {
-            textHeight = m_topMessage->heightForWidth(textWidth);
+            textHeight = topMessageBodyHeight(textWidth);
         }
         if (textHeight <= 0)
-            textHeight = m_topMessageBody ? m_topMessageBody->sizeHint().height()
-                                          : m_topMessage->sizeHint().height();
-        textHeight = qBound(18, textHeight, qMax(18, maxBubbleHeight - chrome));
+            textHeight = m_topMessage->heightForWidth(textWidth);
+        if (textHeight <= 0)
+            textHeight = m_topMessage->sizeHint().height();
+        // Only a message too tall for the window scrolls, and then the scroll bar
+        // takes width from the text. Re-wrap inside what is left so the ends of
+        // those lines cannot hide behind the bar.
+        if (m_topMessageBody && textHeight > roomForText) {
+            QScrollBar *bar = m_topMessageScroll->verticalScrollBar();
+            const int barWidth = bar ? bar->sizeHint().width() : 0;
+            if (barWidth > 0 && textWidth - barWidth > 40) {
+                textWidth -= barWidth;
+                m_topMessageBody->setFixedWidth(textWidth);
+                textHeight = qMax(textHeight, topMessageBodyHeight(textWidth));
+            }
+        }
+        textHeight = qBound(18, textHeight, roomForText);
         m_topMessageScroll->setFixedHeight(textHeight);
         column->activate();
         bubbleHeight = textHeight + chrome;
@@ -5167,41 +5211,131 @@ QRect MainWindow::topMessageBubbleRect()
     const int x = qMax(margin, width() - bubbleWidth - margin);
     int queueHeight = 0;
     if (m_topMessageQueueScroll && m_topMessageQueueContent &&
-        !m_topMessageQueue.isEmpty()) {
+        m_topMessageQueueLayout && !m_topMessageQueue.isEmpty()) {
         m_topMessageQueueContent->setFixedWidth(bubbleWidth);
-        if (m_topMessageQueueLayout)
-            m_topMessageQueueLayout->activate();
-        m_topMessageQueueContent->adjustSize();
-        const int queueRoom = qMax(0, roomForBubble - bubbleHeight - 8);
-        queueHeight = qMin(m_topMessageQueueContent->sizeHint().height(), queueRoom);
+        m_topMessageQueueLayout->activate();
+        // Same measurement as the active bubble: ask the cards how tall they
+        // wrap at this width instead of trusting a sizeHint that ignores it.
+        int contentHeight =
+            m_topMessageQueueLayout->hasHeightForWidth()
+                ? m_topMessageQueueLayout->heightForWidth(bubbleWidth)
+                : 0;
+        if (contentHeight <= 0)
+            contentHeight = m_topMessageQueueLayout->minimumSize().height();
+        m_topMessageQueueContent->setFixedHeight(qMax(0, contentHeight));
+        const int queueRoom =
+            qMax(0, roomForBubble - bubbleHeight - kToastStackGap);
+        queueHeight = qMin(contentHeight, queueRoom);
         m_topMessageQueueScroll->setFixedWidth(bubbleWidth);
-        m_topMessageQueueScroll->setFixedHeight(queueHeight);
+        m_topMessageQueueScroll->setFixedHeight(qMax(0, queueHeight));
         m_topMessageQueueScroll->setVisible(queueHeight > 0);
     } else if (m_topMessageQueueScroll) {
         m_topMessageQueueScroll->hide();
     }
     const int y = qMax(margin, promptTop - bubbleHeight - queueHeight -
-                                   (queueHeight > 0 ? 8 : 0));
+                                   (queueHeight > 0 ? kToastStackGap : 0));
     return QRect(x, y, bubbleWidth, bubbleHeight);
 }
 
+// Park the queued column immediately under the active toast. Animated, it rises
+// into its new place: a card lands at the bottom of the column and the ones
+// above it glide up, which is what makes a burst read as one moving stack.
+void MainWindow::placeTopMessageQueue(const QRect &bubble, bool animate)
+{
+    if (!m_topMessageQueueScroll)
+        return;
+    if (m_topMessageQueueFlight)
+        m_topMessageQueueFlight->stop();
+    if (!m_topMessageQueueScroll->isVisible())
+        return;
+    const QRect target(bubble.left(), bubble.bottom() + kToastStackGap,
+                       m_topMessageQueueScroll->width(),
+                       m_topMessageQueueScroll->height());
+    const QRect current = m_topMessageQueueScroll->geometry();
+    // A column that was already on screen glides up from where it stood; the
+    // first card rises out of the gap the prompt anchor reserves beneath it.
+    const bool hadColumn = m_topMessageQueue.size() > 1 && current.isValid();
+    const QRect source =
+        hadColumn ? current : target.translated(0, kToastEntryRise);
+    if (animate && m_topMessageQueueFlight && source != target) {
+        m_topMessageQueueScroll->setGeometry(source);
+        m_topMessageQueueFlight->setStartValue(source);
+        m_topMessageQueueFlight->setEndValue(target);
+        m_topMessageQueueFlight->start();
+    } else {
+        m_topMessageQueueScroll->setGeometry(target);
+    }
+    if (auto *bar = m_topMessageQueueScroll->verticalScrollBar())
+        bar->setValue(bar->maximum()); // keep the newest queued card visible
+    m_topMessageQueueScroll->raise();
+}
+
 // Size and anchor the floating bubble. Called whenever its content changes and
-// when the window moves or resizes.
-void MainWindow::positionTopMessageBubble()
+// when the window moves or resizes. animate=true is for a change in stack depth:
+// the toast slides to its new anchor rather than jumping there.
+void MainWindow::positionTopMessageBubble(bool animate)
 {
     if (!m_topMessageContainer)
         return;
-    if (m_topMessageSlidingOut || m_topMessageEntering)
+    if (m_topMessageSlidingOut)
         return; // the exit animation owns the geometry until it lands
     const QRect bubble = topMessageBubbleRect();
-    m_topMessageContainer->setGeometry(bubble);
-    if (m_topMessageQueueScroll && m_topMessageQueueScroll->isVisible()) {
-        m_topMessageQueueScroll->move(bubble.left(), bubble.bottom() + 9);
-        if (auto *bar = m_topMessageQueueScroll->verticalScrollBar())
-            bar->setValue(bar->maximum()); // keep the newest queued card visible
-        m_topMessageQueueScroll->raise();
+    if (m_topMessageEntering) {
+        // A card arrived while this one was still rising. Re-aim the same motion
+        // at the new anchor: dropping the request instead would leave the toast
+        // sitting on top of the card that just joined the stack.
+        if (m_topMessageFlight)
+            m_topMessageFlight->setEndValue(bubble);
+        placeTopMessageQueue(bubble, animate);
+        m_topMessageContainer->raise();
+        return;
     }
+    const QRect current = m_topMessageContainer->geometry();
+    // Only a pure move is worth animating; a resize (the message changed, or the
+    // window did) has to land immediately or the bubble would visibly stretch.
+    if (animate && m_topMessageFlight && m_topMessageContainer->isVisible() &&
+        current.size() == bubble.size() && current != bubble) {
+        m_topMessageShifting = true;
+        m_topMessageFlight->stop();
+        m_topMessageFlight->setDuration(kToastShiftMs);
+        m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
+        m_topMessageFlight->setStartValue(current);
+        m_topMessageFlight->setEndValue(bubble);
+        m_topMessageFlight->start();
+    } else {
+        if (m_topMessageShifting && m_topMessageFlight)
+            m_topMessageFlight->stop(); // don't let a shift finish over this
+        m_topMessageShifting = false;
+        m_topMessageContainer->setGeometry(bubble);
+    }
+    placeTopMessageQueue(bubble, animate);
     m_topMessageContainer->raise();
+}
+
+// Show the bubble by sliding it up into its anchor. Every arrival uses this, so a
+// prompt confirmation and a background notification enter identically.
+void MainWindow::animateTopMessageEntry(const QRect &target)
+{
+    if (!m_topMessageContainer)
+        return;
+    if (m_topMessageFlight)
+        m_topMessageFlight->stop();
+    m_topMessageSlidingOut = false;
+    m_topMessageEntering = false;
+    m_topMessageShifting = false;
+    const QRect source = target.translated(0, kToastEntryRise);
+    m_topMessageContainer->setGeometry(source);
+    m_topMessageContainer->show();
+    m_topMessageContainer->raise();
+    placeTopMessageQueue(target, false);
+    if (m_topMessageFlight && source != target) {
+        m_topMessageEntering = true;
+        m_topMessageFlight->setDuration(kToastEntryMs);
+        m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
+        m_topMessageFlight->setStartValue(source);
+        m_topMessageFlight->setEndValue(target);
+        m_topMessageFlight->start();
+    }
 }
 
 // A hovered bubble should remain completely stable: stop the visible seconds
@@ -5242,6 +5376,7 @@ void MainWindow::slideTopMessageOut()
     if (m_topMessageSlidingOut)
         return; // already on its way out
     m_topMessageEntering = false;
+    m_topMessageShifting = false;
     m_topMessageSlidingOut = true;
     // Drop the countdown as it leaves, so the last thing on screen is the message
     // itself rather than a stale "0s".
@@ -5300,14 +5435,9 @@ void MainWindow::showPromptBubble(const QString &prompt, int agentSessionId,
     if (m_topMessageActions)
         m_topMessageActions->show();
 
-    const QRect target = topMessageBubbleRect();
-    m_topMessageContainer->setGeometry(target);
-    m_topMessageContainer->show();
-    m_topMessageContainer->raise();
-    if (m_topMessageFlight)
-        m_topMessageFlight->stop();
-    m_topMessageSlidingOut = false;
-    m_topMessageEntering = false;
+    // The confirmation rises into the same anchor a notification uses, so the two
+    // kinds of card never enter differently.
+    animateTopMessageEntry(topMessageBubbleRect());
 
     if (!m_topMessageTimer) {
         m_topMessageTimer = new QTimer(this);
@@ -5422,33 +5552,10 @@ void MainWindow::flashMessage(const QString &text, bool error,
     if (m_topMessageActions)
         m_topMessageActions->show();
 
-    if (m_topMessageContainer) {
-        // A previous bubble may have been mid-slide. Start just below the final
-        // dock and glide up once its text and actions have been measured. This
-        // also makes the next card in a burst load smoothly after the card above
-        // it leaves.
-        if (m_topMessageFlight)
-            m_topMessageFlight->stop();
-        m_topMessageSlidingOut = false;
-        m_topMessageEntering = false;
-        const QRect target = topMessageBubbleRect();
-        // The prompt anchor reserves a 16px gap below the final card. Keep the
-        // entry motion inside that gap, so even its first frame cannot overlap
-        // the prompt.
-        const QRect source = target.translated(
-            0, qMin(kToastEntryOffset, 15));
-        m_topMessageContainer->setGeometry(source);
-        m_topMessageContainer->show();
-        m_topMessageContainer->raise();
-        if (m_topMessageFlight && source != target) {
-            m_topMessageEntering = true;
-            m_topMessageFlight->setDuration(kToastEntryMs);
-            m_topMessageFlight->setEasingCurve(QEasingCurve::OutCubic);
-            m_topMessageFlight->setStartValue(source);
-            m_topMessageFlight->setEndValue(target);
-            m_topMessageFlight->start();
-        }
-    }
+    // A previous bubble may have been mid-slide. Start just below the final dock
+    // and glide up once its text and actions have been measured. This also makes
+    // the next card in a burst rise smoothly after the card above it leaves.
+    animateTopMessageEntry(topMessageBubbleRect());
     if (!m_topMessageEntering)
         m_topMessageTimer->start(1000);
 }
@@ -5500,8 +5607,11 @@ void MainWindow::dismissTopMessage()
         m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
     if (m_topMessageFlight)
         m_topMessageFlight->stop();
+    if (m_topMessageQueueFlight)
+        m_topMessageQueueFlight->stop();
     m_topMessageSlidingOut = false;
     m_topMessageEntering = false;
+    m_topMessageShifting = false;
     if (m_topMessage)
         m_topMessage->hide();
     if (m_topMessageContainer)

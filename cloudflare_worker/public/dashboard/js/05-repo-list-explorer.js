@@ -352,7 +352,7 @@
     const url = String(value || "");
     return (
       /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
-      || /^\/api\/repo\/[^/?#]+\/[^/?#]+\/raw\?[^#]+$/i.test(url)
+      || /^\/api\/repo\/[^/?#]+\/[^/?#]+\/(?:raw\?[^#]+|media\/logo\.png(?:\?[^#]*)?)$/i.test(url)
     )
       ? url
       : "";
@@ -973,18 +973,21 @@
     renderHomeAgentSessions();
   }
 
-  // The repo groups the profile pages list: the whole catalog on the
-  // session's own dashboard, but ONLY the viewed account's repos in
-  // public-profile mode (/@name).
+  // The repo groups the profile pages list: ONLY the viewed account's own
+  // repos - the signed-in session on /dashboard/profile, the fetched account
+  // in public-profile mode (/@name). profileRepositoryAliases() already
+  // defaults to that subject. The authenticated catalog deliberately returns
+  // every public repo plus the private repos shared WITH the viewer, so the
+  // profile has to scope by owner itself; without it "Your repositories"
+  // listed the whole mesh and counted other people's repos as the account's
+  // own (#538). An account with no resolvable identity owns nothing.
   function profileRepositoryGroups() {
-    let groups = groupRepositories(state.repositories || []);
-    if (state.publicProfile) {
-      const aliases = profileRepositoryAliases(state.publicProfile);
-      groups = groups.filter((group) =>
-        repoBelongsToProfile(sourceOfTruth(group), aliases) ||
-        (group.members || []).some((member) => repoBelongsToProfile(member, aliases)));
-    }
-    return groups;
+    const groups = groupRepositories(state.repositories || []);
+    const aliases = profileRepositoryAliases();
+    if (!aliases.size) return [];
+    return groups.filter((group) =>
+      repoBelongsToProfile(sourceOfTruth(group), aliases) ||
+      (group.members || []).some((member) => repoBelongsToProfile(member, aliases)));
   }
 
   function renderProfileRepositories() {
@@ -1494,41 +1497,13 @@
       })).join(" ");
   }
 
-  function servedMirrorStats(name) {
-    const servedName = String(name || "").trim().toLowerCase();
-    if (!servedName) return "";
-    const mirror = (state.repoMirrors || []).find((candidate) => {
-      const mirrorName = String(candidate.owner || candidate.node || candidate.name || "").trim().toLowerCase();
-      return mirrorName && mirrorName === servedName;
-    });
-    if (!mirror) return "";
-    const counters = [];
-    const clones = normalizedCount(mirror.clonesServed);
-    const website = normalizedCount(mirror.websiteServed);
-    if (clones !== null) counters.push(`${formatCount(clones)} clones`);
-    if (website !== null) counters.push(`${formatCount(website)} website requests`);
-    return counters.join(" - ");
-  }
-
   function renderRepoServedBy(node, tookMs) {
     const name = String(node || "").trim();
     state.repoServedBy = name ? { name, tookMs: Number(tookMs) || 0 } : null;
-    const badge = $("[data-repo-detail]")?.querySelector("[data-repo-served-by]");
-    if (badge) {
-      if (!name) {
-        badge.hidden = true;
-        badge.textContent = "";
-      } else {
-        // Confirms the page loaded from a live mirror and which one (the
-        // router round-robins browse traffic across every online mirror of
-        // the repo).
-        const speed = formatServeSpeed(tookMs);
-        badge.textContent = [`served by ${name}`, speed, servedMirrorStats(name)]
-          .filter(Boolean)
-          .join(" - ");
-        badge.hidden = false;
-      }
-    }
+    // This status belongs with the repository identity. Keeping it in the
+    // header avoids a duplicate, easily missed status line beside the file
+    // breadcrumb while preserving the exact mirror that served the request.
+    renderHeaderContext("explore");
     // Re-render the repo's mirror lists so the node that just answered gets
     // its green "serving this request" highlight without waiting on a fresh
     // /mirrors fetch.
