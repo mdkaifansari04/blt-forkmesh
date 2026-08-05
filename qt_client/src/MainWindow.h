@@ -5719,6 +5719,13 @@ private:
     QLabel *m_nodesStatus = nullptr;            // "N nodes · M online" summary line
     QPushButton *m_nodesRefreshButton = nullptr;
     QScrollArea *m_nodeDetailScroll = nullptr;  // detail panel for the selected node
+    // A delete involves provider cleanup followed by a relay mutation.  Keep
+    // that progress visible while ordinary roster refreshes arrive, and retain
+    // a small local tombstone so an older in-flight directory response cannot
+    // put a relay-confirmed deletion back on the Nodes page.
+    bool m_nodeDeleteInProgress = false;
+    QString m_nodeDeleteTarget;
+    QSet<QString> m_deletedMeshNodeNames;
     // Node names (lowercased) the relay currently reports online — an update
     // channel or a fresh signed heartbeat. Merged into the Nodes page's status so
     // headless mirror nodes that serve via the relay (but never join this
