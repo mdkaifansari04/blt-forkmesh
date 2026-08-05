@@ -902,6 +902,48 @@ int main(int argc, char *argv[])
               footerHtml.endsWith(
                   QStringLiteral("<div class='diffend'>END OF DIFF</div>")),
           QStringLiteral("diffs have bottom review space and an explicit end bar"));
+
+    // The changed-file list owns keyboard focus after a click: Up/Down must
+    // select the adjacent file, scroll its diff section into place, and update
+    // the floating header with the same file metadata.
+    {
+        QTextBrowser navDiff;
+        navDiff.resize(420, 140);
+        QListWidget navList;
+        auto *first = new QListWidgetItem(QStringLiteral("one.cpp"), &navList);
+        auto *second = new QListWidgetItem(QStringLiteral("two.cpp"), &navList);
+        first->setData(Qt::UserRole, QStringLiteral("file-0"));
+        second->setData(Qt::UserRole, QStringLiteral("file-1"));
+        QList<forkmesh::ui::DiffFileEntry> navFiles;
+        forkmesh::ui::DiffFileEntry one;
+        one.path = QStringLiteral("one.cpp");
+        one.anchor = QStringLiteral("file-0");
+        one.adds = 1;
+        forkmesh::ui::DiffFileEntry two;
+        two.path = QStringLiteral("two.cpp");
+        two.anchor = QStringLiteral("file-1");
+        two.adds = 2;
+        navFiles << one << two;
+        QString navHtml =
+            QStringLiteral("<a name=\"file-0\"></a><div>one.cpp</div>");
+        for (int i = 0; i < 80; ++i)
+            navHtml += QStringLiteral("<div>line %1</div>").arg(i);
+        navHtml += QStringLiteral("<a name=\"file-1\"></a><div>two.cpp</div>");
+        navDiff.setHtml(navHtml);
+        forkmesh::ui::DiffFileNavigator navigator(
+            &navDiff, &navList, Qt::UserRole, &navDiff);
+        navigator.rebuild(navFiles, 12);
+        navList.setCurrentRow(0);
+        navList.setFocus();
+        QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+        QApplication::sendEvent(&navList, &down);
+        QApplication::processEvents();
+        auto *sticky = navDiff.findChild<QLabel *>(
+            QStringLiteral("diffStickyHeader"));
+        check(navList.currentRow() == 1 && sticky && sticky->isVisible() &&
+                  sticky->text().contains(QStringLiteral("two.cpp")),
+              QStringLiteral("file-list Down selects the next file and updates its header"));
+    }
     const QString startupLog = startupMessages.join(QLatin1Char('\n'));
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(
