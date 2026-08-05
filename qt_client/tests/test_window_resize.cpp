@@ -5896,9 +5896,24 @@ int main(int argc, char *argv[])
         other.prNumber = 0;
         window.testAddAgentSession(other);
 
+        // A prior crashed ref publication must not poison every later branch
+        // merge. Model the orphaned lock from the reported failure; a lock this
+        // old cannot belong to a live HEAD update and is safe to recover.
+        const QString staleHeadLock =
+            cleanupRepo.path() + QStringLiteral("/.git/HEAD.lock");
+        QFile staleLock(staleHeadLock);
+        if (staleLock.open(QIODevice::WriteOnly)) {
+            staleLock.setFileTime(QDateTime::currentDateTime().addSecs(-120),
+                                  QFileDevice::FileModificationTime);
+            staleLock.close();
+        }
+
         check(window.testMergeBranchAndCleanUp(cleanBranch),
               QStringLiteral("\"Merge & clean up\" lands the agent branch in the "
                              "default branch"));
+        check(!QFileInfo::exists(staleHeadLock),
+              QStringLiteral("merge recovers an orphaned HEAD.lock instead of "
+                             "misreporting a content conflict"));
         check(gitOutput(cleanupRepo.path(), {"branch", "--list", cleanBranch})
                   .isEmpty(),
               QStringLiteral("\"Merge & clean up\" deletes the merged branch"));
