@@ -889,6 +889,34 @@ int main(int argc, char *argv[])
     MainWindow window;
     qInstallMessageHandler(startupPrevious);
     g_capturedMessages = nullptr;
+
+    // Prompt shortcut headers can dedicate a fresh run to one exact CLI model.
+    // Those routing fields configure the launcher and must not leak into the
+    // task text the model receives.
+    {
+        QTemporaryDir shortcutDir;
+        const QString shortcutPath =
+            shortcutDir.filePath(QStringLiteral("write-update.md"));
+        QFile shortcut(shortcutPath);
+        const bool wrote = shortcut.open(QIODevice::WriteOnly | QIODevice::Text) &&
+                           shortcut.write(
+                               "# name: Write update\n"
+                               "# description: Publish the next update.\n"
+                               "# agent: CODEX\n"
+                               "# model: gpt-5.6-sol\n\n"
+                               "Inspect changes since the last post.\n") > 0;
+        shortcut.close();
+        const QStringList metadata = window.testShortcutMetadata(shortcutPath);
+        check(wrote && metadata.size() == 5 &&
+                  metadata.at(0) == QStringLiteral("Write update") &&
+                  metadata.at(1) == QStringLiteral("Publish the next update.") &&
+                  metadata.at(2) == QStringLiteral("codex") &&
+                  metadata.at(3) == QStringLiteral("gpt-5.6-sol") &&
+                  metadata.at(4) ==
+                      QStringLiteral("Inspect changes since the last post."),
+              QStringLiteral("shortcut metadata pins a dedicated model and is "
+                             "removed from its launch prompt"));
+    }
     const QString startupLog = startupMessages.join(QLatin1Char('\n'));
     const int detailedStartupSteps =
         startupLog.count(QRegularExpression(QStringLiteral(
