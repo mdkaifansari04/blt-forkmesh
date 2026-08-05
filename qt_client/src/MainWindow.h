@@ -5368,10 +5368,10 @@ private:
     AgentDotMatrix *m_agentDotMatrix = nullptr;
     AgentBotFleetOverlay *m_agentBotFleet = nullptr;
     QPushButton *m_agentSummonAllButton = nullptr;
-    // A launch can precede the lazy Agents page or happen while it is hidden.
-    // Hold that bot until the page is visible so its sky-drop is never spent
-    // off-screen.
-    int m_pendingAgentBotSummonId = 0;
+    // Launches can precede the lazy Agents page or happen while it is hidden.
+    // Hold those bots until the page is visible so their sky-drops are never
+    // spent off-screen.
+    QList<int> m_pendingAgentBotSummonIds;
     // One dot per node on the network, immediately right of the agent squares
     // with a faint divider between the two groups (adhoc #124).
     NodeDotMatrix *m_nodeDotMatrix = nullptr;

@@ -6040,10 +6040,11 @@ void MainWindow::summonAgentBot(int sessionId)
     // visible Agents navigation consumes this pending summon instead.
     if (!m_agentBotFleet || !m_agentBotFleet->parentWidget() ||
         !m_agentBotFleet->parentWidget()->isVisibleTo(this)) {
-        m_pendingAgentBotSummonId = sessionId;
+        if (!m_pendingAgentBotSummonIds.contains(sessionId))
+            m_pendingAgentBotSummonIds.append(sessionId);
         return;
     }
-    m_pendingAgentBotSummonId = 0;
+    m_pendingAgentBotSummonIds.removeAll(sessionId);
     refreshAgentBotFleet();
     if (m_agentSummonAllButton) {
         const QSignalBlocker blocker(m_agentSummonAllButton);
@@ -6054,14 +6055,28 @@ void MainWindow::summonAgentBot(int sessionId)
 
 void MainWindow::schedulePendingAgentBotSummon()
 {
-    if (m_pendingAgentBotSummonId <= 0)
+    if (m_pendingAgentBotSummonIds.isEmpty())
         return;
     QTimer::singleShot(0, this, [this] {
-        if (m_pendingAgentBotSummonId <= 0)
+        if (m_pendingAgentBotSummonIds.isEmpty() || !m_agentBotFleet ||
+            !m_agentBotFleet->parentWidget() ||
+            !m_agentBotFleet->parentWidget()->isVisibleTo(this))
             return;
-        const int sessionId = m_pendingAgentBotSummonId;
-        m_pendingAgentBotSummonId = 0;
-        summonAgentBot(sessionId);
+        const QList<int> pending = m_pendingAgentBotSummonIds;
+        m_pendingAgentBotSummonIds.clear();
+        if (pending.size() == 1) {
+            summonAgentBot(pending.first());
+            return;
+        }
+        // Several launches accumulated behind another page. Reveal the complete
+        // roster in one staggered sky-drop rather than letting the last launch
+        // overwrite all earlier animations.
+        refreshAgentBotFleet();
+        if (m_agentSummonAllButton) {
+            const QSignalBlocker blocker(m_agentSummonAllButton);
+            m_agentSummonAllButton->setChecked(true);
+        }
+        m_agentBotFleet->summonAll();
     });
 }
 

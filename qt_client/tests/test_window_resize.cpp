@@ -962,10 +962,11 @@ int main(int argc, char *argv[])
         check(window.testHasAgentSession(sol.id) &&
                   window.testHasAgentSession(fable.id),
               QStringLiteral("pre-page bot sessions enter the agent roster"));
-        // A real launch may happen before this lazy tab exists. Queue the Sol
-        // bot first, then navigate: its drop must be deferred until it can be
-        // seen rather than expiring behind the repository overview.
+        // Real launches may happen before this lazy tab exists. Queue both bots
+        // first, then navigate: their drops must be deferred until they can be
+        // seen rather than the last launch overwriting the first off-screen.
         window.testSummonAgentBot(sol.id);
+        window.testSummonAgentBot(fable.id);
         window.testOpenAgentsOverview();
         QApplication::processEvents();
         check(window.testHasAgentSession(sol.id) &&
