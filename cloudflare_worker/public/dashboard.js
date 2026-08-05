@@ -597,9 +597,20 @@
 
   function repoCanonicalIdentity(repo) {
     const source = String(repo?.source || "").trim();
-    if (source === "remote-clone") {
-      const parsed = parseCloneUrlIdentity(repo?.cloneUrl);
-      if (parsed) return parsed;
+    const parsed = parseCloneUrlIdentity(repo?.cloneUrl);
+    // A locally served copy can still be a clone of another ForkMesh route.
+    // Keep the upstream's canonical name in that case; otherwise a serving
+    // node such as jett would relabel forkmesh/forkmesh as jett/forkmesh.
+    let isThisForkMeshOrigin = false;
+    try {
+      const cloneUrl = new URL(String(repo?.cloneUrl || ""), location.origin);
+      isThisForkMeshOrigin = cloneUrl.origin === location.origin;
+    } catch (_) {}
+    if (parsed && (
+      source === "remote-clone"
+      || (source === "local-node" && isThisForkMeshOrigin)
+    )) {
+      return parsed;
     }
     return {
       owner: String(repo?.owner || "").trim(),
@@ -3552,8 +3563,11 @@
       }
       if (repoTerms) repoTerms.innerHTML = repositoryTermsBadge(repo, true);
       if (repoAvailability) {
-        repoAvailability.textContent = viaMirror
-          ? "served by mirror"
+        const servedBy = String(state.repoServedBy?.name || "").trim();
+        repoAvailability.textContent = servedBy
+          ? `served by ${servedBy}`
+          : viaMirror
+            ? "served by mirror"
           : live
             ? "mirror online"
             : "mirror offline";
@@ -6163,7 +6177,7 @@
     const url = String(value || "");
     return (
       /^data:image\/(?:svg\+xml|png|jpeg|webp)(?:;|,)/i.test(url)
-      || /^\/api\/repo\/[^/?#]+\/[^/?#]+\/raw\?[^#]+$/i.test(url)
+      || /^\/api\/repo\/[^/?#]+\/[^/?#]+\/(?:raw\?[^#]+|media\/logo\.png(?:\?[^#]*)?)$/i.test(url)
     )
       ? url
       : "";
@@ -7305,41 +7319,13 @@
       })).join(" ");
   }
 
-  function servedMirrorStats(name) {
-    const servedName = String(name || "").trim().toLowerCase();
-    if (!servedName) return "";
-    const mirror = (state.repoMirrors || []).find((candidate) => {
-      const mirrorName = String(candidate.owner || candidate.node || candidate.name || "").trim().toLowerCase();
-      return mirrorName && mirrorName === servedName;
-    });
-    if (!mirror) return "";
-    const counters = [];
-    const clones = normalizedCount(mirror.clonesServed);
-    const website = normalizedCount(mirror.websiteServed);
-    if (clones !== null) counters.push(`${formatCount(clones)} clones`);
-    if (website !== null) counters.push(`${formatCount(website)} website requests`);
-    return counters.join(" - ");
-  }
-
   function renderRepoServedBy(node, tookMs) {
     const name = String(node || "").trim();
     state.repoServedBy = name ? { name, tookMs: Number(tookMs) || 0 } : null;
-    const badge = $("[data-repo-detail]")?.querySelector("[data-repo-served-by]");
-    if (badge) {
-      if (!name) {
-        badge.hidden = true;
-        badge.textContent = "";
-      } else {
-        // Confirms the page loaded from a live mirror and which one (the
-        // router round-robins browse traffic across every online mirror of
-        // the repo).
-        const speed = formatServeSpeed(tookMs);
-        badge.textContent = [`served by ${name}`, speed, servedMirrorStats(name)]
-          .filter(Boolean)
-          .join(" - ");
-        badge.hidden = false;
-      }
-    }
+    // This status belongs with the repository identity. Keeping it in the
+    // header avoids a duplicate, easily missed status line beside the file
+    // breadcrumb while preserving the exact mirror that served the request.
+    renderHeaderContext("explore");
     // Re-render the repo's mirror lists so the node that just answered gets
     // its green "serving this request" highlight without waiting on a fresh
     // /mirrors fetch.
@@ -12070,7 +12056,11 @@
         const loadedLogo = await loadNativeRepositoryLogo(
           nativeRepositoryLogoEndpoint(repo),
         );
-        const logoUrl = String(loadedLogo?.dataUrl || "");
+        // The relay resolves this in the same precedence order users expect:
+        // an owner-selected logo first, then the project's root logo.png, then
+        // generated artwork. Do not bypass it with the generated-logo endpoint.
+        const logoUrl = nativeRepositoryLogoDataUrl(body.logoUrl)
+          || String(loadedLogo?.dataUrl || "");
         const fallbackUrl = String(loadedLogo?.fallbackDataUrl || "");
         if (logoUrl) {
           logo.decoding = "async";
@@ -15281,7 +15271,7 @@
     detail.innerHTML = `
       <div data-repo-layout="github-like" class="min-w-0">
         <div data-repo-github-header class="border-b border-border bg-background">
-          <div class="flex min-w-0 overflow-x-auto px-3 sm:px-6" role="tablist" aria-label="Repository sections">
+          <div class="mx-auto flex w-full max-w-7xl min-w-0 overflow-x-auto px-3 sm:px-6" role="tablist" aria-label="Repository sections">
             ${["code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", ...(canSeeAgentsTab ? ["agents"] : []), ...(canSeeSettingsTab ? ["settings"] : [])].map((tab) => {
               const meta = tabMeta[tab];
               const isDiscussions = tab === "discussions";
@@ -15315,10 +15305,7 @@
 		                ${renderRepoCodeButton(repo, false)}
 		              </div>
 		              <div data-repo-pathbar class="my-3 flex min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between">
-			                <div class="flex min-w-0 items-center gap-2">
-			                  <div class="min-w-0 truncate text-xs text-muted-foreground" data-repo-breadcrumb></div>
-			                  <span data-repo-served-by hidden title="Mirror node that served this page (round-robined across online mirrors)" class="shrink-0 items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 font-mono text-[10px] text-muted-foreground"></span>
-			                </div>
+	                <div class="min-w-0 truncate text-xs text-muted-foreground" data-repo-breadcrumb></div>
 		                <div data-repo-focus-actions class="hidden flex shrink-0 flex-wrap items-center gap-2">
 		                  <button type="button" data-repo-file-finder-open class="inline-flex h-8 min-w-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-left text-xs text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"><i data-lucide="search" class="h-3.5 w-3.5 shrink-0"></i><span class="min-w-0 truncate">Go to file</span><span class="ml-auto rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">T</span></button>
 		                  <button type="button" aria-disabled="true" class="inline-flex h-8 items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-background"><i data-lucide="plus" class="h-3.5 w-3.5 text-muted-foreground"></i>Add file</button>

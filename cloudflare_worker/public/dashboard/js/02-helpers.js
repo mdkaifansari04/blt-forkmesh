@@ -476,9 +476,20 @@
 
   function repoCanonicalIdentity(repo) {
     const source = String(repo?.source || "").trim();
-    if (source === "remote-clone") {
-      const parsed = parseCloneUrlIdentity(repo?.cloneUrl);
-      if (parsed) return parsed;
+    const parsed = parseCloneUrlIdentity(repo?.cloneUrl);
+    // A locally served copy can still be a clone of another ForkMesh route.
+    // Keep the upstream's canonical name in that case; otherwise a serving
+    // node such as jett would relabel forkmesh/forkmesh as jett/forkmesh.
+    let isThisForkMeshOrigin = false;
+    try {
+      const cloneUrl = new URL(String(repo?.cloneUrl || ""), location.origin);
+      isThisForkMeshOrigin = cloneUrl.origin === location.origin;
+    } catch (_) {}
+    if (parsed && (
+      source === "remote-clone"
+      || (source === "local-node" && isThisForkMeshOrigin)
+    )) {
+      return parsed;
     }
     return {
       owner: String(repo?.owner || "").trim(),

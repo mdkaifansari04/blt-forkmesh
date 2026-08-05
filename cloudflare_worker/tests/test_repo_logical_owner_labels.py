@@ -149,6 +149,36 @@ console.log("ok");
     assert output.strip() == "ok"
 
 
+def test_locally_served_forkmesh_clone_keeps_the_upstream_identity():
+    output = _run(
+        "repoCanonicalIdentity",
+        """
+const { repoCanonicalIdentity } = global.__dashboardExports;
+assert.deepEqual(
+  repoCanonicalIdentity({
+    owner: "jett",
+    name: "forkmesh",
+    source: "local-node",
+    cloneUrl: "https://forkmesh.test/forkmesh/forkmesh",
+  }),
+  { owner: "forkmesh", name: "forkmesh" },
+);
+// An unrelated local checkout must retain its local repository identity.
+assert.deepEqual(
+  repoCanonicalIdentity({
+    owner: "jett",
+    name: "forkmesh",
+    source: "local-node",
+    cloneUrl: "https://github.com/forkmesh/forkmesh.git",
+  }),
+  { owner: "jett", name: "forkmesh" },
+);
+console.log("ok");
+""",
+    )
+    assert output.strip() == "ok"
+
+
 def test_repository_links_follow_the_organization_label():
     # adhoc #132: a card that reads "forkmesh/forkmesh" must also navigate
     # there. Organization aliases are routable (org_alias_rewrite maps

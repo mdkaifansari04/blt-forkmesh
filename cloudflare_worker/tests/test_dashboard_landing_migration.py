@@ -1284,7 +1284,7 @@ def test_repository_settings_move_out_of_about_and_add_owner_delete():
     assert 'location.assign("/dashboard/repos")' in dashboard_js
 
 
-def test_dashboard_repository_detail_view_uses_full_width_container():
+def test_dashboard_repository_detail_view_is_bounded_on_wide_screens():
     # The explore view lives on the worker-served repo page document (built
     # from the repo view partial).
     for path in (PUBLIC / "dashboard" / "repo.html", VIEWS / "repo.html"):
@@ -1294,7 +1294,7 @@ def test_dashboard_repository_detail_view_uses_full_width_container():
             : dashboard.index('data-repo-detail')
         ]
 
-        assert "w-full max-w-none" in explore
+        assert "mx-auto w-full max-w-7xl" in explore
         assert "max-w-5xl mx-auto" not in explore
 
 
