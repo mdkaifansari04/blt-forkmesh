@@ -146,17 +146,63 @@ void checkFooterOverlayGeometry(MainWindow &window)
     auto *promptWrapper = window.findChild<QWidget *>(QStringLiteral("promptWrapper"));
     auto *avatar = window.findChild<QPushButton *>(QStringLiteral("serverFooterButton"));
     auto *lights = dynamic_cast<forkmesh::ui::LogActivityLights *>(
-        window.findChild<QWidget *>(QStringLiteral("logActivityLights")));
+        window.findChild<QWidget *>(QStringLiteral("debugActivityLights")));
     auto *header = dynamic_cast<forkmesh::ui::LogActivityLights *>(
         window.findChild<QWidget *>(QStringLiteral("logActivityHeader")));
-    check(dock && log && prompt && lights && header && !log->isVisible() &&
-              lights->isVisible() && lights->lightCount() == 30 &&
+    auto *debugBar = window.findChild<QWidget *>(QStringLiteral("debugBar"));
+    auto *version = window.findChild<QPushButton *>(
+        QStringLiteral("statusVersionButton"));
+    check(dock && log && prompt && lights && header && debugBar && version &&
+              !log->isVisible() && !debugBar->isVisible() && lights->isDebug() &&
+              lights->lightCount() == 30 &&
               prompt->geometry().center().x() > dock->rect().center().x() &&
-              prompt->geometry().bottom() == dock->rect().bottom() &&
-              lights->geometry().left() == dock->rect().left() &&
-              lights->geometry().bottom() == dock->rect().bottom(),
-          QStringLiteral("all 30 collapsed log-category lights stay lower-left "
-                         "while the lower-right prompt is bottom-flush"));
+              prompt->geometry().bottom() == dock->rect().bottom(),
+          QStringLiteral("all 30 labeled log categories start collapsed in the "
+                         "version-controlled debug bar"));
+    if (version && debugBar) {
+        version->click();
+        QApplication::processEvents();
+        check(debugBar->isVisible() && lights->isVisibleTo(debugBar) &&
+                  window.findChild<QWidget *>(
+                      QStringLiteral("debugResourceChart")) != nullptr,
+              QStringLiteral("clicking the footer version reveals debug activity "
+                             "and the enlarged four-resource chart"));
+
+        const quint64 gitCountBefore = lights->countFor(QStringLiteral("GIT"));
+        lights->pulse(QStringLiteral("GIT"));
+        lights->pulse(QStringLiteral("GIT"));
+        check(lights->countFor(QStringLiteral("GIT")) == gitCountBefore + 2,
+              QStringLiteral("the debug row keeps per-category occurrence counts"));
+
+        const qint64 minute = QDateTime::currentMSecsSinceEpoch() - 60000;
+        const QJsonArray systems = {
+            QJsonObject{
+                {QStringLiteral("id"), QStringLiteral("website")},
+                {QStringLiteral("label"), QStringLiteral("Website")},
+                {QStringLiteral("minutes"),
+                 QJsonArray{QJsonObject{
+                     {QStringLiteral("minuteTs"), double(minute)},
+                     {QStringLiteral("status"), QStringLiteral("operational")}}}}},
+            QJsonObject{
+                {QStringLiteral("id"), QStringLiteral("api")},
+                {QStringLiteral("label"), QStringLiteral("API")},
+                {QStringLiteral("minutes"),
+                 QJsonArray{QJsonObject{
+                     {QStringLiteral("minuteTs"), double(minute)},
+                     {QStringLiteral("status"), QStringLiteral("down")}}}}},
+        };
+        check(window.testApplyFooterWebsiteStatusPayload(
+                  QJsonObject{{QStringLiteral("ok"), true},
+                              {QStringLiteral("now"), double(minute + 60000)},
+                              {QStringLiteral("systems"), systems}}) &&
+                  lights->websiteStatusCount() == 2 &&
+                  lights->websiteStatusFor(QStringLiteral("website")) ==
+                      QStringLiteral("operational") &&
+                  lights->websiteStatusFor(QStringLiteral("api")) ==
+                      QStringLiteral("down"),
+              QStringLiteral("the debug row appends labeled green/red website "
+                             "minute states"));
+    }
 
     // The prompt avatar is the lower-right launcher: clicking it collapses the
     // composer to the circular avatar, and hovering that avatar opens it again.
@@ -179,7 +225,7 @@ void checkFooterOverlayGeometry(MainWindow &window)
 
     window.testSetLogOverlayExpanded(true);
     QApplication::processEvents();
-    check(log && lights && header && log->isVisible() && !lights->isVisible() &&
+    check(log && lights && header && log->isVisible() && lights->isVisible() &&
               header->isVisible() && header->lightCount() == 30 &&
               log->geometry().center().x() < dock->rect().center().x() &&
               log->geometry().bottom() == dock->rect().bottom() &&
@@ -189,11 +235,8 @@ void checkFooterOverlayGeometry(MainWindow &window)
 
     window.testShowLogSection();
     QApplication::processEvents();
-    check(!log->isVisible() && lights->isVisible() &&
-              lights->geometry().left() == dock->rect().left() &&
-              lights->geometry().bottom() == dock->rect().bottom(),
-          QStringLiteral("the full Log view returns the category lights to the "
-                         "lower-left"));
+    check(!log->isVisible() && lights->isVisible(),
+          QStringLiteral("the full Log view leaves the debug category row visible"));
     window.testShowHomeSection();
     QApplication::processEvents();
 }
@@ -993,6 +1036,11 @@ int main(int argc, char *argv[])
                       appPath->toolTip().contains(
                           QCoreApplication::applicationFilePath()),
                   QStringLiteral("status bar shows the running app's location"));
+            QPushButton *version = statusBar->findChild<QPushButton *>(
+                QStringLiteral("statusVersionButton"));
+            check(version && appPath && version->geometry().left() >=
+                                               appPath->geometry().right(),
+                  QStringLiteral("clickable version sits to the right of the app path"));
 
             // adhoc #1389: slow background work no longer reserves a permanent
             // footer column. Each kind appears as one 18px status icon, and the

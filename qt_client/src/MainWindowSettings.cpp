@@ -4294,6 +4294,27 @@ void MainWindow::rebuildNetworkLogView()
     m_logViewMutating = false;
 }
 
+void MainWindow::openFullLogForCategory(const QString &category)
+{
+    const QString trimmed = category.trimmed();
+    if (trimmed.isEmpty())
+        return;
+
+    m_logFilter = trimmed;
+    showSection(4);
+    if (m_logNavButton)
+        m_logNavButton->setChecked(true);
+    if (m_logFilterRow)
+        rebuildLogFilterButtons();
+    if (!m_settingsLog)
+        return;
+
+    m_networkLogViewStale = false;
+    rebuildNetworkLogView();
+    refreshLogTimelineChart();
+    m_settingsLog->moveCursor(QTextCursor::End);
+}
+
 void MainWindow::openFullLogAtFooterLine(const QString &rawLine)
 {
     // Drop any active category filter first so the clicked entry is guaranteed to
